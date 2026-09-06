@@ -29,6 +29,19 @@ this module decides between three layouts and runs whichever one the workload al
                Spark) with both GPUs at 76 to 79 percent. The flag is probed for with
                ``llama-server --help`` once per binary; a bundle without it launches
                exactly as before, and ``UNSLOTH_SPARK_PIPELINE_GROUPS=0`` turns it off.
+               The fork keeps the flag out of its usage text, so a build whose ``--help``
+               does not name it is also tried for real (``llama_server_accepts``).
+
+In every topology a GGUF that ships its own MTP head (``<arch>.nextn_predict_layers`` in
+the header: Qwen3.5-4B-MTP, Qwen3.8-27B) self-speculates. The backend's own speculative
+path emits ``--spec-type draft-mtp`` for such a file; this module reads the header, checks
+the bundle's llama-server for ``--spec-type`` and asks for the Spark-measured draft depth
+(``--spec-draft-n-max 3``: 2.6x / 1.9x / 1.6x aggregate decode at 1 / 4 / 8 users on the
+27B, 2.0x / 1.7x / 1.5x on the 4B, against the backend's GPU default of 2). A caller's
+``speculative_type``, ``spec_draft_n_max`` or ``--spec-type`` / draft flags are left
+alone, ``UNSLOTH_SPARK_MTP=0`` launches without speculation, and the status reports
+``mtp`` (enabled / no head / server too old / user override / disabled by env) from the
+argv that actually launched.
 
 The decision is ``studio/spark_cluster.recommend_topology`` (pure, measured); this
 module only gathers its inputs (weights on disk, KV per slot from the GGUF header, the
@@ -75,6 +88,10 @@ ENV_PREFILL_HEAVY = (
 # Layer split only: N adds ``--pipeline-groups N`` when the bundle has the flag; unset
 # or 0 adds nothing. Opt-in for now: see PIPELINE_GROUPS_DEFAULT.
 ENV_PIPELINE_GROUPS = "UNSLOTH_SPARK_PIPELINE_GROUPS"
+# Every topology: "0" launches a paired Spark's llama-server without speculative decoding
+# (speculative_type "off" unless the caller set the field or owns --spec-type in the extras);
+# unset or anything else lets a GGUF with an MTP head draft at MTP_DRAFT_N_MAX.
+ENV_MTP = "UNSLOTH_SPARK_MTP"
 
 TOPOLOGIES = ("single", "replicas", "layer_split")
 RPC_PORT_DEFAULT = 50052
@@ -88,6 +105,57 @@ PROMPT_TOKENS_DEFAULT = 512  # the planner's measured table is keyed by prompt l
 # precondition. UNSLOTH_SPARK_PIPELINE_GROUPS=0 turns it off, =N sets the count.
 PIPELINE_GROUPS_DEFAULT = 2
 PIPELINE_GROUPS_FLAG = "--pipeline-groups"
+# MTP self speculation. A GGUF whose header has <arch>.nextn_predict_layers > 0 ships its own
+# draft head (Unsloth's Qwen3.5-4B-MTP and Qwen3.8-27B do; the Qwen3.6-35B-A3B does not). The
+# backend's speculative-decoding path (LlamaCppBackend._build_speculative_flags in "auto" mode)
+# already emits --spec-type draft-mtp for such a file when its llama-server has --spec-type, and
+# falls back cleanly when the head or the flag is missing; this module never emits a second
+# --spec-type, because extras that own --spec-type switch that path off together with its memory
+# budget, its sub-3B and MLA gates and its retry without speculation. What a Spark changes is
+# the draft depth: the backend's GPU default is 2 (a B200 bench). Measured on this pair with
+# b10796, real-text prompts, npp 128 / ntg 256, --parallel 8, one clock state (1690 MHz):
+#
+#   Qwen3.8-27B UD-Q4_K_XL     baseline 11.2 / 35.7 / 52.1 tok/s at 1 / 4 / 8 users
+#     draft-mtp n-max 3         28.6 / 63.4 / 81.0  = 2.61x / 1.87x / 1.59x  accept 0.88 -> 0.74
+#     draft-mtp n-max 8         32.0 / 63.4 / 70.6  = 2.93x / 1.87x / 1.38x  accept 0.62 -> 0.46
+#   Qwen3.5-4B-MTP UD-Q4_K_XL  baseline 57.6 / 162.0 / 188.1
+#     draft-mtp n-max 3        117.6 / 270.8 / 274.3 = 2.04x / 1.67x / 1.46x
+#     draft-mtp n-max 2        106.9 / 238.5 / 259.8 = 1.86x / 1.47x / 1.38x
+#
+# n-max 3 is the mixed-traffic choice (n-max 8 wins only at one user or on long outputs and
+# loses at 8), so a Spark load of a GGUF with a head asks for --spec-draft-n-max 3 unless the
+# caller set a depth, a speculative_type, or owns --spec-type / a draft model in the extras.
+# A replica copies this node's argv and a layer split's extras add only the RPC arguments, so
+# the same flags reach every topology. Draft models and n-gram speculation are not turned on
+# by default: on this pair both are a single-user trick and a 0.4x to 0.8x loss from 4 users.
+MTP_SPEC_TYPE = "draft-mtp"
+MTP_DRAFT_N_MAX = 3
+SPEC_TYPE_FLAG = "--spec-type"
+SPEC_DRAFT_N_MAX_FLAG = "--spec-draft-n-max"
+# Pass-through flags that make the launch's speculative decoding the caller's: the backend's
+# own rule (--spec-type / --spec-default, see _extra_args_set_spec_type) plus a draft model or
+# any draft knob, which nobody passes without meaning their own speculation setup.
+_SPEC_OWNER_FLAGS = frozenset(
+    {
+        "--spec-type",
+        "--spec-default",
+        "--model-draft",
+        "-md",
+        "--hf-repo-draft",
+        "-hfd",
+        "-hfrd",
+        "--gpu-layers-draft",
+        "--n-gpu-layers-draft",
+        "-ngld",
+        "--device-draft",
+        "-devd",
+        "--cache-type-k-draft",
+        "--cache-type-v-draft",
+        "-ctkd",
+        "-ctvd",
+    }
+)
+_SPEC_OWNER_PREFIXES = ("--spec-draft-", "--draft")
 HELP_PROBE_TIMEOUT_S = 20.0  # llama-server --help; a hung binary is a missing flag
 RELAUNCH_BACKOFF_S = (5.0, 15.0, 45.0)  # bounded: three attempts, then the peer stays down
 PEER_START_TIMEOUT_S = 20.0  # for the rpc-server port to accept; the model load is separate
@@ -614,6 +682,197 @@ def llama_server_supports(flag: str, binary: Optional[str] = None) -> bool:
     return re.search(re.escape(flag) + r"(?![\w-])", text) is not None
 
 
+# ``llama-server <flag> <value> --help`` exit codes keyed by (binary path, mtime, flag). The
+# fork's --pipeline-groups is taken out of argv by tools/server before the common parser runs
+# and is not in the --help text, so a flag the text does not name is tried for real: a build
+# that has it strips it and prints the usage (exit 0); every other build stops at "invalid
+# argument" (exit 1). One run per build and flag; a failure or a hang is cached as rejected.
+_ACCEPTS: Dict[Tuple[str, float, str], bool] = {}
+
+
+def llama_server_accepts(
+    flag: str,
+    value: str = "1",
+    binary: Optional[str] = None,
+) -> bool:
+    """Whether the bundle's llama-server takes ``flag`` (with ``value``) ahead of ``--help``
+    without rejecting it. For flags a build hides from its usage text. Never raises; False
+    on every failure, so a flag the build may lack is never passed."""
+    path = binary or llama_server_binary()
+    if not path or not flag:
+        return False
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return False
+    key = (str(path), mtime, str(flag))
+    cached = _ACCEPTS.get(key)
+    if cached is not None:
+        return cached
+    accepted = False
+    try:
+        done = subprocess.run(
+            [str(path), str(flag), str(value), "--help"],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.PIPE,
+            timeout = HELP_PROBE_TIMEOUT_S,
+        )
+        accepted = done.returncode == 0 and bool((done.stdout or b"").strip())
+    except Exception as exc:
+        logger.info("spark serving: llama-server %s probe failed for %s: %s", flag, path, exc)
+        accepted = False
+    _ACCEPTS[key] = accepted
+    return accepted
+
+
+def _first_shard(path: str) -> str:
+    """The file that carries the header: shard 00001 of a split GGUF, else ``path``."""
+    match = re.match(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", osp.basename(path))
+    if not match:
+        return path
+    prefix, _index, count = match.groups()
+    return osp.join(osp.dirname(path), f"{prefix}-00001-of-{count}.gguf")
+
+
+def gguf_nextn_predict_layers(path: Optional[str]) -> Optional[int]:
+    """``<arch>.nextn_predict_layers`` from the GGUF header: the depth of the MTP head the
+    file ships, 0 when the key says so, None when the file, the key or a reader is missing.
+    Never raises. The backend's streaming header reader (about 30 ms, cached by path and
+    mtime) answers when it is importable, so this and the launch agree; else the ``gguf``
+    package's reader, which the backend already depends on."""
+    if not path:
+        return None
+    try:
+        shard = _first_shard(str(path))
+        if not osp.isfile(shard):
+            return None
+    except Exception:
+        return None
+    try:
+        from utils.models.gguf_metadata import read_gguf_nextn_predict_layers  # type: ignore
+        value = read_gguf_nextn_predict_layers(shard)
+        return int(value) if value is not None else None
+    except Exception:
+        pass
+    try:
+        from gguf import GGUFReader  # type: ignore
+
+        fields = GGUFReader(shard).fields
+        arch_field = fields.get("general.architecture")
+        if arch_field is None:
+            return None
+        arch = bytes(arch_field.parts[arch_field.data[0]]).decode("utf-8", "replace")
+        field = fields.get(f"{arch}.nextn_predict_layers")
+        if field is None:
+            return None
+        return int(field.parts[field.data[0]][0])
+    except Exception:
+        return None
+
+
+def gguf_has_mtp_head(path: Optional[str]) -> bool:
+    """True only when the header says the model ships MTP layers; False on any doubt."""
+    try:
+        return (gguf_nextn_predict_layers(path) or 0) > 0
+    except Exception:
+        return False
+
+
+def extra_args_own_speculation(extra_args: Optional[List[str]]) -> Optional[str]:
+    """The first pass-through flag that makes speculative decoding the caller's, or None."""
+    for arg in extra_args or []:
+        name = str(arg).partition("=")[0]
+        if name in _SPEC_OWNER_FLAGS or name.startswith(_SPEC_OWNER_PREFIXES):
+            return name
+    return None
+
+
+def mtp_plan(
+    gguf_path: Optional[str],
+    extra_args: Optional[List[str]] = None,
+    *,
+    speculative_type: Optional[str] = None,
+    spec_draft_n_max: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Whether a Spark load should ask for MTP self speculation at the Spark depth.
+
+    ``mtp`` is ``enabled`` (the header has the head, the bundle's llama-server has
+    ``--spec-type``, nothing of the caller's stands in the way), ``user override`` (a
+    ``speculative_type`` or ``spec_draft_n_max`` on the request, or a ``--spec-type`` /
+    draft flag in the pass-through arguments: left exactly alone), ``disabled by env``
+    (``UNSLOTH_SPARK_MTP=0``: the launch asks for ``speculative_type`` off), ``no head``,
+    ``server too old`` or ``unknown`` (the GGUF is not on disk before the load, so the
+    backend decides alone and ``after_load`` reports what launched). ``request`` holds
+    the LoadRequest fields to set, ``reason`` says why in one line. The probe of the
+    binary runs only once the header has said there is a head, and the header is read
+    from the first shard of a split file.
+    """
+    out: Dict[str, Any] = {"mtp": "unknown", "reason": None, "request": {}}
+    owner = extra_args_own_speculation(extra_args)
+    if owner:
+        out.update(mtp = "user override", reason = f"{owner} in the pass-through arguments")
+        return out
+    mode = str(speculative_type or "").strip().lower()
+    if mode and mode not in ("auto", "default"):
+        out.update(mtp = "user override", reason = f"speculative_type={speculative_type}")
+        return out
+    if spec_draft_n_max is not None:
+        out.update(mtp = "user override", reason = f"spec_draft_n_max={spec_draft_n_max}")
+        return out
+    if (os.environ.get(ENV_MTP) or "").strip() == "0":
+        out.update(
+            mtp = "disabled by env",
+            reason = f"{ENV_MTP}=0",
+            request = {"speculative_type": "off"},
+        )
+        return out
+    try:
+        on_disk = bool(gguf_path) and osp.isfile(_first_shard(str(gguf_path)))
+    except Exception:
+        on_disk = False
+    if not on_disk:
+        out["reason"] = "GGUF not on disk before the load; the backend decides on its own"
+        return out
+    layers = gguf_nextn_predict_layers(gguf_path)
+    if not layers:
+        out.update(mtp = "no head", reason = "no <arch>.nextn_predict_layers in the GGUF header")
+        return out
+    if not llama_server_supports(SPEC_TYPE_FLAG):
+        out.update(mtp = "server too old", reason = f"bundle llama-server lacks {SPEC_TYPE_FLAG}")
+        return out
+    out.update(
+        mtp = "enabled",
+        reason = (
+            f"{layers} MTP layer(s) in the header; {SPEC_TYPE_FLAG} {MTP_SPEC_TYPE} "
+            f"{SPEC_DRAFT_N_MAX_FLAG} {MTP_DRAFT_N_MAX}"
+        ),
+        request = {"spec_draft_n_max": MTP_DRAFT_N_MAX},
+    )
+    return out
+
+
+def launched_spec_flags(argv: List[str]) -> Tuple[Optional[str], Optional[int]]:
+    """The last ``--spec-type`` value and ``--spec-draft-n-max`` a llama-server argv
+    carries (last wins, as in llama.cpp), or None for each that is absent."""
+    spec: Optional[str] = None
+    depth: Optional[int] = None
+    args = [str(a) for a in argv]
+    for index, arg in enumerate(args):
+        name, _, inline = arg.partition("=")
+        if name not in (SPEC_TYPE_FLAG, SPEC_DRAFT_N_MAX_FLAG):
+            continue
+        value = inline if inline else (args[index + 1] if index + 1 < len(args) else "")
+        if name == SPEC_TYPE_FLAG:
+            spec = value.strip() or None
+        else:
+            try:
+                depth = int(value.strip())
+            except ValueError:
+                continue
+    return spec, depth
+
+
 def _extra_args_slots(extra_args: Optional[List[str]]) -> Optional[int]:
     """The slot count a pass-through already sets (``-np`` / ``--parallel``, last wins,
     the same rule as llama.cpp and LlamaCppBackend._extra_args_n_parallel)."""
@@ -637,7 +896,10 @@ def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> 
 
     ``pipeline_groups`` is 0 with a ``reason`` when the env says so, the value is not
     a number, or the bundle's llama-server has no ``--pipeline-groups`` (the fork's
-    flag is not in every prebuilt yet; a build without it launches as today).
+    flag is not in every prebuilt yet; a build without it launches as today). The
+    flag is looked for in the ``--help`` text first and, failing that, tried for real
+    (``llama_server_accepts``): the fork takes it out of argv ahead of the common
+    parser and does not print it in its usage.
     Otherwise it is the env value or ``PIPELINE_GROUPS_DEFAULT`` (2), and ``slots`` is the
     launch's slot count rounded up to a multiple of it, at least one per group, so no
     group is left without a slot. ``requested_slots`` is the count before rounding.
@@ -667,7 +929,9 @@ def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> 
             else f"{PIPELINE_GROUPS_FLAG} not added"
         )
         return out
-    if not llama_server_supports(PIPELINE_GROUPS_FLAG):
+    if not (
+        llama_server_supports(PIPELINE_GROUPS_FLAG) or llama_server_accepts(PIPELINE_GROUPS_FLAG)
+    ):
         out["reason"] = f"bundle llama-server lacks {PIPELINE_GROUPS_FLAG}"
         return out
     out["pipeline_groups"] = groups
@@ -894,6 +1158,10 @@ class SparkServing:
         self.peer_model_present: Optional[bool] = None
         self.pipeline_groups: int = 0
         self.pipeline_groups_reason: Optional[str] = None
+        # MTP self speculation for the most recent load on this node: mtp_plan's verdict
+        # before the launch, then what the launched argv actually carries.
+        self.mtp: str = "unknown"
+        self.mtp_reason: Optional[str] = "no load yet"
         self._supervisor: Optional[asyncio.Task] = None
         self._relaunch_task: Optional[asyncio.Task] = None
         self._lock: Optional[asyncio.Lock] = None
@@ -922,10 +1190,36 @@ class SparkServing:
 
     # ── Hooks called by the load path ───────────────────────────────────
 
-    async def before_load(self, request: Any, n_parallel: int) -> Any:
+    @staticmethod
+    def _request_with(request: Any, updates: Dict[str, Any]) -> Any:
+        """``request`` with ``updates`` applied: a copy for a pydantic model, in place
+        for anything else. Unchanged (same object) when there is nothing to apply."""
+        if not updates:
+            return request
+        try:
+            return request.model_copy(update = dict(updates))
+        except AttributeError:
+            for key, value in updates.items():
+                setattr(request, key, value)
+            return request
+
+    async def before_load(
+        self,
+        request: Any,
+        n_parallel: int,
+        *,
+        inherited_extra_args: Optional[List[str]] = None,
+    ) -> Any:
         """Decide whether this load must be a layer split, and if so start the peer's
         rpc-server and return a request whose extra args point llama-server at it.
-        Returns the request unchanged on every other path, including any failure."""
+        In every topology, ask for MTP self speculation at the Spark depth when the GGUF
+        has the head and nothing of the caller's says otherwise (``mtp_plan``).
+        Returns the request unchanged on every other path, including any failure.
+
+        ``inherited_extra_args`` are the previous same-model load's pass-through extras
+        that the backend carries into a request which omits the field; a ``--spec-type``
+        the caller owns there counts as theirs, not as room for this module to set.
+        """
         if not enabled():
             return request
         try:
@@ -950,15 +1244,32 @@ class SparkServing:
             users = max(1, int(n_parallel))
             kv_per_user = (kv_total / users) if kv_total else 0.0
             plan = self.decide(model_bytes = size, users = users, kv_bytes_per_user = kv_per_user)
+            # The header read and the --help probe are file and process work: off the loop.
+            extra = getattr(request, "llama_extra_args", None)
+            mtp = await asyncio.to_thread(
+                mtp_plan,
+                local_file,
+                list(extra if extra is not None else (inherited_extra_args or [])),
+                speculative_type = getattr(request, "speculative_type", None),
+                spec_draft_n_max = getattr(request, "spec_draft_n_max", None),
+            )
             if plan.get("topology") != "layer_split":
                 # single or replicas: both are decided again after the load, when the
-                # resolved file is known. Nothing to do before it.
+                # resolved file is known. Nothing else to do before it.
                 self.plan = plan
-                return request
-            peer = peer_address()
-            if not peer:
-                return request
-            return await self._start_layer_split(request, peer, plan, local_file, users)
+                out = request
+            else:
+                peer = peer_address()
+                if peer:
+                    out = await self._start_layer_split(request, peer, plan, local_file, users)
+                else:
+                    out = request
+            # After the topology step: a split may detach a previous replica first, and
+            # the verdict must survive that.
+            self.mtp, self.mtp_reason = str(mtp["mtp"]), mtp.get("reason")
+            if mtp["request"]:
+                logger.info("spark serving: mtp %s (%s)", self.mtp, self.mtp_reason)
+            return self._request_with(out, mtp["request"])
         except Exception as exc:
             self.last_error = f"before_load: {exc}"[:300]
             logger.warning(
@@ -1002,11 +1313,7 @@ class SparkServing:
                 )
             else:
                 logger.info("spark serving: no pipeline groups: %s", self.pipeline_groups_reason)
-            try:
-                return req.model_copy(update = {"llama_extra_args": extra})
-            except AttributeError:
-                req.llama_extra_args = extra
-                return req
+            return self._request_with(req, {"llama_extra_args": extra})
 
         def _fall_back(reason: str) -> Any:
             self.topology, self.reason = "single", reason
@@ -1095,6 +1402,7 @@ class SparkServing:
     async def load_failed(self) -> None:
         """The load raised or came back with nothing resident: stop whatever the
         pre-load step started for it."""
+        self.mtp, self.mtp_reason = "unknown", "the load failed; nothing is running"
         if self.peer_process is not None or self.router is not None:
             await self.detach()
 
@@ -1110,6 +1418,7 @@ class SparkServing:
             process = getattr(llama_backend, "_process", None)
             argv = list(getattr(process, "args", None) or [])
             port = getattr(llama_backend, "_port", None)
+            self._record_launched_mtp(argv)
             if "--rpc" in argv or any(str(a).startswith("--rpc=") for a in argv):
                 # The server that launched is a layer split. Its rpc-server is ours if
                 # before_load started it; a user-supplied --rpc is recorded, not managed.
@@ -1175,6 +1484,34 @@ class SparkServing:
                 "spark serving: post-load step failed, serving on this node only: %s", exc
             )
             await self.detach()
+
+    def _record_launched_mtp(self, argv: List[str]) -> None:
+        """What this node's llama-server was actually launched with, over the pre-load
+        verdict: the backend may have declined the head (too small a model, a binary
+        whose capability probe failed) or the caller's own --spec-type may have won."""
+        if not argv:
+            return
+        spec, depth = launched_spec_flags(argv)
+        if spec is None:
+            if self.mtp == "enabled":
+                self.mtp = "not launched"
+                self.mtp_reason = (
+                    f"planned, but llama-server launched without {SPEC_TYPE_FLAG} "
+                    f"(the backend declined it; see its log)"
+                )
+            return
+        launched = f"launched with {SPEC_TYPE_FLAG} {spec}"
+        if depth is not None:
+            launched += f" {SPEC_DRAFT_N_MAX_FLAG} {depth}"
+        types = {piece.strip() for piece in spec.split(",")}
+        if types & {MTP_SPEC_TYPE, "mtp"}:
+            if self.mtp not in ("user override",):
+                self.mtp = "enabled"
+            self.mtp_reason = launched
+        elif self.mtp in ("enabled", "unknown"):
+            self.mtp, self.mtp_reason = "other speculation", launched
+        else:
+            self.mtp_reason = f"{self.mtp_reason}; {launched}"
 
     async def _start_replicas(
         self, llama_backend: Any, peer: str, plan: Dict[str, Any], slots: int
@@ -1410,7 +1747,9 @@ class SparkServing:
     def status(self) -> Dict[str, Any]:
         # pipeline_groups: the --pipeline-groups value this node's llama-server was
         # launched with, or 0 and the reason (no flag in the bundle, disabled by env,
-        # or not a layer split at all).
+        # or not a layer split at all). mtp: "enabled" when this node's llama-server
+        # (and so every replica) runs the GGUF's own MTP head, else "no head", "server
+        # too old", "user override", "disabled by env", "not launched" or "unknown".
         if self.topology == "layer_split":
             groups, groups_reason = self.pipeline_groups, self.pipeline_groups_reason
         else:
@@ -1425,6 +1764,8 @@ class SparkServing:
             "peer_model_present": self.peer_model_present,
             "pipeline_groups": groups,
             "pipeline_groups_reason": groups_reason,
+            "mtp": self.mtp,
+            "mtp_reason": self.mtp_reason,
             "router": self.router.status() if self.router is not None else None,
             "peer_process": self.peer_process.snapshot() if self.peer_process is not None else None,
             "relaunch_attempts": self.relaunch_attempts,
@@ -1450,6 +1791,7 @@ def reset_for_tests() -> None:
     _CLUSTER = None
     _CLUSTER_LOOKED_UP = False
     _HELP_TEXT.clear()
+    _ACCEPTS.clear()
 
 
 # ── Thin module-level entry points used by the rest of the backend ───────────
@@ -1475,10 +1817,15 @@ def current_topology() -> Optional[str]:
     return state().topology
 
 
-async def before_load(request: Any, n_parallel: int) -> Any:
+async def before_load(
+    request: Any,
+    n_parallel: int,
+    *,
+    inherited_extra_args: Optional[List[str]] = None,
+) -> Any:
     if not enabled():
         return request
-    return await state().before_load(request, n_parallel)
+    return await state().before_load(request, n_parallel, inherited_extra_args = inherited_extra_args)
 
 
 async def after_load(llama_backend: Any, n_parallel: int) -> None:

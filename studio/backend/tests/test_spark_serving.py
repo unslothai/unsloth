@@ -111,6 +111,7 @@ def cluster(monkeypatch, tmp_path):
     monkeypatch.delenv(ss.ENV_TOPOLOGY, raising = False)
     monkeypatch.delenv(ss.ENV_PEER, raising = False)
     monkeypatch.delenv(ss.ENV_PIPELINE_GROUPS, raising = False)
+    monkeypatch.delenv(ss.ENV_MTP, raising = False)
     yield stub
     ss.reset_for_tests()
 
@@ -120,10 +121,18 @@ def cluster(monkeypatch, tmp_path):
 _FAKE_HELP_WITH_FLAG = """usage: llama-server [options]
   -np, --parallel N            number of server slots (default: 4)
   --pipeline-groups N          number of pipeline groups the slots are split over
+  --spec-type none,draft-simple,draft-mtp,ngram-simple
+  --spec-draft-n-max N         number of tokens to draft for speculative decoding (default: 3)
 """
 _FAKE_HELP_WITHOUT_FLAG = """usage: llama-server [options]
   -np, --parallel N            number of server slots (default: 4)
   --kv-unified                 one KV buffer shared by all slots
+"""
+# b10796 without the fork: speculation, no pipeline groups.
+_FAKE_HELP_SPEC_ONLY = """usage: llama-server [options]
+  -np, --parallel N            number of server slots (default: 4)
+  --spec-type none,draft-simple,draft-mtp,ngram-simple
+  --spec-draft-n-max N         number of tokens to draft for speculative decoding (default: 3)
 """
 
 
@@ -132,15 +141,41 @@ def write_fake_llama_server(
     help_text: str,
     *,
     body: str = "",
+    hidden_flags: tuple = (),
 ) -> Path:
+    """A stand-in for the real parser: any ``--pipeline-groups`` argument its usage does not
+    name is rejected with llama.cpp's "invalid argument" and exit 1, unless the flag is in
+    ``hidden_flags``, which is how the fork behaves (it takes the flag out of argv before
+    the common parser and never prints it)."""
     directory.mkdir(parents = True, exist_ok = True)
     script = directory / "llama-server"
+    reject = "--pipeline-groups" not in help_text and "--pipeline-groups" not in hidden_flags
+    check = (
+        'for a in "$@"; do case "$a" in --pipeline-groups|--pipeline-groups=*) '
+        'echo "error: invalid argument: $a" >&2; exit 1;; esac; done\n'
+        if reject
+        else ""
+    )
     script.write_text(
-        "#!/bin/sh\n" 'echo run >> "$0.calls"\n' + body + "cat <<'EOF'\n" + help_text + "EOF\n",
+        "#!/bin/sh\n"
+        'echo run >> "$0.calls"\n' + check + body + "cat <<'EOF'\n" + help_text + "EOF\n",
         encoding = "utf-8",
     )
     script.chmod(0o755)
     return script
+
+
+def write_gguf(path: Path, arch: str, **uint32_keys: int) -> Path:
+    """A minimal GGUF: the architecture plus the given ``<key>: value`` uint32 fields."""
+    gguf = pytest.importorskip("gguf")
+    writer = gguf.GGUFWriter(str(path), arch)
+    for key, value in uint32_keys.items():
+        writer.add_uint32(key, int(value))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
 
 
 def probe_runs(script: Path) -> int:
@@ -276,6 +311,10 @@ def test_replica_argv_repoints_only_host_and_port():
         "8192",
         "--flash-attn",
         "on",
+        "--spec-type",
+        "draft-mtp",
+        "--spec-draft-n-max",
+        "3",
     ]
     out = ss.replica_argv(
         local,
@@ -293,11 +332,15 @@ def test_replica_argv_repoints_only_host_and_port():
         "8192",
         "--flash-attn",
         "on",
+        "--spec-type",
+        "draft-mtp",
+        "--spec-draft-n-max",
+        "3",
         "--host",
         "192.168.200.13",
         "--port",
         "41234",
-    ]
+    ], "the peer runs the same speculation as this node"
 
 
 def test_rpc_server_and_layer_split_arguments():
@@ -384,6 +427,8 @@ class _FakeRequest:
         self.max_seq_length = kw.get("max_seq_length", 0)
         self.cache_type_kv = kw.get("cache_type_kv")
         self.llama_extra_args = kw.get("llama_extra_args")
+        self.speculative_type = kw.get("speculative_type")
+        self.spec_draft_n_max = kw.get("spec_draft_n_max")
 
     def model_copy(self, update):
         clone = _FakeRequest(
@@ -392,6 +437,8 @@ class _FakeRequest:
             max_seq_length = self.max_seq_length,
             cache_type_kv = self.cache_type_kv,
             llama_extra_args = self.llama_extra_args,
+            speculative_type = self.speculative_type,
+            spec_draft_n_max = self.spec_draft_n_max,
         )
         for k, v in update.items():
             setattr(clone, k, v)
@@ -531,6 +578,7 @@ class _FakeBackend:
         port: int,
         gguf_path: str,
         slots: int = 16,
+        argv_extra: Optional[List[str]] = None,
     ):
         self._port = port
         self._process = SimpleNamespace(
@@ -543,6 +591,7 @@ class _FakeBackend:
                 "--parallel",
                 str(slots),
             ]
+            + list(argv_extra or [])
         )
         self._gguf_path = gguf_path
         self._effective_context_length = 4096
@@ -968,3 +1017,264 @@ def test_pipeline_groups_never_run_for_single_or_replicas(cluster, monkeypatch, 
         "reason": "not a paired DGX Spark",
     }
     assert probe_runs(script) == 0
+
+
+# ── MTP self speculation: the header read, the probe and the load hooks ──────
+
+
+def test_llama_server_accepts_finds_a_flag_the_usage_hides(cluster, tmp_path):
+    """The fork takes --pipeline-groups out of argv before the common parser and never
+    prints it, so the --help text alone would say every fork build lacks it."""
+    hidden = write_fake_llama_server(
+        cluster.bundle / "build" / "bin",
+        _FAKE_HELP_SPEC_ONLY,
+        hidden_flags = ("--pipeline-groups",),
+    )
+    assert ss.llama_server_supports("--pipeline-groups") is False
+    assert ss.llama_server_accepts("--pipeline-groups") is True
+    assert ss.llama_server_accepts("--pipeline-groups") is True
+    assert probe_runs(hidden) == 2, "one --help run plus one acceptance run, both cached"
+    plan = ss.pipeline_groups_plan(3)
+    assert plan["pipeline_groups"] == 2 and plan["slots"] == 4 and plan["reason"] is None
+    assert probe_runs(hidden) == 2
+    # A build without it rejects the flag the way llama.cpp does: exit 1, nothing printed.
+    plain = write_fake_llama_server(tmp_path / "plain", _FAKE_HELP_WITHOUT_FLAG)
+    assert ss.llama_server_accepts("--pipeline-groups", binary = str(plain)) is False
+    assert ss.llama_server_accepts("--pipeline-groups", binary = str(plain)) is False
+    assert probe_runs(plain) == 1
+    assert ss.llama_server_accepts("--pipeline-groups", binary = str(tmp_path / "none")) is False
+    assert ss.llama_server_accepts("", binary = str(plain)) is False
+
+
+def test_gguf_nextn_predict_layers_reads_the_header_and_never_raises(tmp_path):
+    head = write_gguf(tmp_path / "mtp.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    assert ss.gguf_nextn_predict_layers(str(head)) == 1
+    assert ss.gguf_has_mtp_head(str(head)) is True
+    plain = write_gguf(tmp_path / "plain.gguf", "qwen35moe", **{"qwen35moe.block_count": 4})
+    assert ss.gguf_nextn_predict_layers(str(plain)) is None
+    assert ss.gguf_has_mtp_head(str(plain)) is False
+    zero = write_gguf(tmp_path / "zero.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 0})
+    assert ss.gguf_nextn_predict_layers(str(zero)) == 0
+    assert ss.gguf_has_mtp_head(str(zero)) is False
+    # The key is scoped to the file's own architecture.
+    other = write_gguf(tmp_path / "other.gguf", "llama", **{"qwen35.nextn_predict_layers": 1})
+    assert ss.gguf_has_mtp_head(str(other)) is False
+    # A split file keeps its header in the first shard; any shard of it answers.
+    write_gguf(tmp_path / "big-00001-of-00003.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    (tmp_path / "big-00003-of-00003.gguf").write_bytes(b"not a header")
+    assert ss.gguf_has_mtp_head(str(tmp_path / "big-00003-of-00003.gguf")) is True
+    assert ss.gguf_has_mtp_head(str(tmp_path / "big-00002-of-00003.gguf")) is True
+    # Garbage, a missing file, an empty path, a directory: False, never an exception.
+    junk = tmp_path / "junk.gguf"
+    junk.write_bytes(b"x" * 64)
+    assert ss.gguf_has_mtp_head(str(junk)) is False
+    assert ss.gguf_has_mtp_head(str(tmp_path / "missing.gguf")) is False
+    assert ss.gguf_has_mtp_head(None) is False and ss.gguf_has_mtp_head("") is False
+    assert ss.gguf_has_mtp_head(str(tmp_path)) is False
+
+
+def test_mtp_plan_verdicts(cluster, monkeypatch, tmp_path):
+    head = str(write_gguf(tmp_path / "mtp.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1}))
+    plain = str(write_gguf(tmp_path / "plain.gguf", "qwen35moe"))
+    # No file yet: the backend decides alone; nothing is asked for.
+    for path in (None, "", str(tmp_path / "missing.gguf")):
+        plan = ss.mtp_plan(path)
+        assert plan["mtp"] == "unknown" and plan["request"] == {}, plan
+    # No head: settled by the header, the binary is never run.
+    plan = ss.mtp_plan(plain)
+    assert plan["mtp"] == "no head" and plan["request"] == {}
+    assert ss.llama_server_binary() is None
+    # A head but no llama-server in the bundle, then one without --spec-type.
+    assert ss.mtp_plan(head)["mtp"] == "server too old"
+    script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
+    plan = ss.mtp_plan(head)
+    assert plan["mtp"] == "server too old" and plan["request"] == {}
+    assert plan["reason"] == "bundle llama-server lacks --spec-type"
+    assert probe_runs(script) == 1
+    # The head and the flag: ask for the Spark depth, and only the depth.
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_SPEC_ONLY)
+    os.utime(script, (time.time() + 5, time.time() + 5))
+    plan = ss.mtp_plan(head)
+    assert plan["mtp"] == "enabled"
+    assert plan["request"] == {"spec_draft_n_max": 3}
+    assert "1 MTP layer(s)" in plan["reason"] and "--spec-draft-n-max 3" in plan["reason"]
+    assert ss.mtp_plan(head, ["--seed", "1", "-np", "4"])["mtp"] == "enabled"
+    for mode in (None, "auto", "default", "AUTO"):
+        assert ss.mtp_plan(head, speculative_type = mode)["mtp"] == "enabled", mode
+    # The caller's speculation, in any of its spellings, is left alone.
+    for extras in (
+        ["--spec-type", "ngram-simple"],
+        ["--spec-type=draft-mtp"],
+        ["--spec-default"],
+        ["--model-draft", "/d.gguf"],
+        ["-md", "/d.gguf"],
+        ["--spec-draft-n-max=8"],
+        ["--spec-draft-model", "/d.gguf"],
+        ["--draft-max", "8"],
+        ["--draft", "4"],
+        ["-hfd", "unsloth/x"],
+    ):
+        plan = ss.mtp_plan(head, extras)
+        assert plan["mtp"] == "user override" and plan["request"] == {}, extras
+        assert extras[0].partition("=")[0] in plan["reason"], (extras, plan)
+    for mode in ("off", "mtp", "ngram", "dflash", "draft-mtp", "none"):
+        plan = ss.mtp_plan(head, speculative_type = mode)
+        assert plan["mtp"] == "user override" and plan["request"] == {}, mode
+    plan = ss.mtp_plan(head, spec_draft_n_max = 2)
+    assert plan["mtp"] == "user override" and plan["reason"] == "spec_draft_n_max=2"
+    # The env opt-out asks for no speculation at all, and never overrides the caller.
+    monkeypatch.setenv(ss.ENV_MTP, "0")
+    plan = ss.mtp_plan(head)
+    assert plan["mtp"] == "disabled by env" and plan["request"] == {"speculative_type": "off"}
+    assert plan["reason"] == f"{ss.ENV_MTP}=0"
+    assert ss.mtp_plan(plain)["mtp"] == "disabled by env"
+    assert ss.mtp_plan(None)["mtp"] == "disabled by env"
+    assert ss.mtp_plan(head, ["--spec-type", "ngram-simple"])["mtp"] == "user override"
+    assert ss.mtp_plan(head, speculative_type = "mtp")["mtp"] == "user override"
+    monkeypatch.setenv(ss.ENV_MTP, "1")
+    assert ss.mtp_plan(head)["mtp"] == "enabled"
+    assert probe_runs(script) == 2, "one run per build; the verdicts above reused it"
+
+
+def test_before_load_asks_for_the_spark_draft_depth_in_every_topology(
+    cluster, monkeypatch, tmp_path
+):
+    """single, replicas and the layer split all launch this node's llama-server through the
+    backend, whose auto mode emits --spec-type draft-mtp for a GGUF with the head; the
+    orchestrator sets the depth it measured and adds no second --spec-type to the extras."""
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    _calls, started = _patch_remote(monkeypatch)
+    for topology in ("single", "replicas"):
+        cluster.topology = topology
+        request = _FakeRequest(str(model), llama_extra_args = ["--seed", "1"])
+        out = run(ss.before_load(request, 16))
+        assert out is not request
+        assert out.spec_draft_n_max == 3 and out.speculative_type is None
+        assert out.llama_extra_args == ["--seed", "1"], "no flag of its own in the extras"
+        assert not started
+        status = ss.status()
+        assert status["mtp"] == "enabled", status
+        assert "--spec-draft-n-max 3" in status["mtp_reason"]
+    cluster.topology = "layer_split"
+    out = run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert out.spec_draft_n_max == 3
+    assert out.llama_extra_args == [
+        "--rpc",
+        "192.168.200.13:50052",
+        "--device",
+        "RPC0,CUDA0",
+        "-sm",
+        "layer",
+        "--cache-ram",
+        "0",
+        "--pipeline-groups",
+        "2",
+        "--parallel",
+        "4",
+    ]
+    assert "--spec-type" not in out.llama_extra_args
+    status = ss.status()
+    assert status["topology"] == "layer_split" and status["mtp"] == "enabled"
+    assert status["pipeline_groups"] == 2
+    run(ss.shutdown())
+    assert ss.status()["mtp"] == "enabled", "the peer going away does not touch this node's launch"
+
+
+def test_before_load_leaves_the_callers_speculation_alone(cluster, monkeypatch, tmp_path):
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    cluster.topology = "single"
+    # Their --spec-type in the extras, on the request or inherited from the previous load.
+    request = _FakeRequest(str(model), llama_extra_args = ["--spec-type", "ngram-simple"])
+    assert run(ss.before_load(request, 4)) is request
+    status = ss.status()
+    assert status["mtp"] == "user override"
+    assert status["mtp_reason"] == "--spec-type in the pass-through arguments"
+    request = _FakeRequest(str(model))
+    out = run(ss.before_load(request, 4, inherited_extra_args = ["--seed", "1", "--spec-default"]))
+    assert out is request and out.spec_draft_n_max is None
+    assert ss.status()["mtp"] == "user override"
+    # Their first-class fields.
+    request = _FakeRequest(str(model), speculative_type = "off")
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["mtp_reason"] == "speculative_type=off"
+    request = _FakeRequest(str(model), spec_draft_n_max = 8)
+    assert run(ss.before_load(request, 4)) is request and request.spec_draft_n_max == 8
+    # The env opt-out: no speculation, said so.
+    monkeypatch.setenv(ss.ENV_MTP, "0")
+    out = run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert out.speculative_type == "off" and out.spec_draft_n_max is None
+    assert ss.status()["mtp"] == "disabled by env"
+    assert ss.status()["mtp_reason"] == f"{ss.ENV_MTP}=0"
+    monkeypatch.delenv(ss.ENV_MTP)
+    # No head, or a build without the flag: unchanged request, and the reason says which.
+    plain = write_gguf(tmp_path / "plain.gguf", "qwen35moe")
+    request = _FakeRequest(str(plain))
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["mtp"] == "no head"
+    old = write_fake_llama_server(tmp_path / "old", _FAKE_HELP_WITHOUT_FLAG)
+    monkeypatch.setattr(ss, "llama_server_binary", lambda: str(old))
+    request = _FakeRequest(str(model))
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["mtp"] == "server too old"
+    assert ss.status()["mtp_reason"] == "bundle llama-server lacks --spec-type"
+    # Off a paired Spark nothing runs and the payload is the fixed refusal.
+    cluster.spark = False
+    request = _FakeRequest(str(model))
+    assert run(ss.before_load(request, 4)) is request
+    assert "mtp" not in ss.status()
+
+
+def test_after_load_reports_the_spec_type_that_launched(cluster, monkeypatch, tmp_path):
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    cluster.topology = "single"
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert ss.status()["mtp"] == "enabled"
+    # The backend emitted the flags: the launch confirms the verdict, with the depth.
+    backend = _FakeBackend(
+        41000, str(model), 4, argv_extra = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "3"]
+    )
+    run(ss.after_load(backend, 4))
+    status = ss.status()
+    assert status["topology"] == "single" and status["mtp"] == "enabled"
+    assert status["mtp_reason"] == "launched with --spec-type draft-mtp --spec-draft-n-max 3"
+    # The backend declined (too small a model, an inconclusive capability probe): say so.
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    run(ss.after_load(_FakeBackend(41000, str(model), 4), 4))
+    status = ss.status()
+    assert status["mtp"] == "not launched" and "without --spec-type" in status["mtp_reason"]
+    # A chained value still counts as the head running; another kind does not.
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    run(
+        ss.after_load(
+            _FakeBackend(41000, str(model), 4, argv_extra = ["--spec-type=ngram-mod,draft-mtp"]), 4
+        )
+    )
+    assert ss.status()["mtp"] == "enabled"
+    run(ss.before_load(_FakeRequest(str(tmp_path / "not-cached.gguf")), 4))
+    assert ss.status()["mtp"] == "unknown"
+    run(
+        ss.after_load(
+            _FakeBackend(41000, str(model), 4, argv_extra = ["--spec-type", "ngram-simple"]), 4
+        )
+    )
+    status = ss.status()
+    assert status["mtp"] == "other speculation"
+    assert status["mtp_reason"] == "launched with --spec-type ngram-simple"
+    # The caller's own choice keeps its verdict and gains the launch detail.
+    run(ss.before_load(_FakeRequest(str(model), speculative_type = "mtp"), 4))
+    run(
+        ss.after_load(
+            _FakeBackend(41000, str(model), 4, argv_extra = ["--spec-type", "draft-mtp"]), 4
+        )
+    )
+    status = ss.status()
+    assert status["mtp"] == "user override"
+    assert status["mtp_reason"] == "launched with --spec-type draft-mtp"
+    assert ss.launched_spec_flags(["x", "--spec-draft-n-max", "abc"]) == (None, None)
+    assert ss.launched_spec_flags(["x", "--spec-type", "none", "--spec-type", "draft-mtp"]) == (
+        "draft-mtp",
+        None,
+    )

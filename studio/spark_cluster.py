@@ -3013,6 +3013,37 @@ PIPELINE_GROUPS_SPLIT_SPEEDUP_RANGE = (1.12, 1.13)  # 32 to 128 rows
 PIPELINE_GROUPS_OVER_ONE_CONTEXT = {32: 1.31, 64: 1.34, 128: 1.37}  # two groups over one context
 PIPELINE_GROUPS_OVER_ONE_CONTEXT_RANGE = (1.31, 1.37)
 PIPELINE_GROUPS_GPU_UTIL = (0.45, 0.78)  # per node, without and with the groups
+# MTP self speculation (llama-server --spec-type draft-mtp) on ONE Spark, prebuilt b10796,
+# real-text prompts, npp 128 / ntg 256, --parallel 8, one clock state (1690 MHz). Ratios are
+# aggregate decode tok/s over the same model with no speculation at the same concurrency;
+# acceptance is accepted / drafted from /metrics. Only a GGUF whose header has
+# <arch>.nextn_predict_layers ships the head (Qwen3.5-4B-MTP and Qwen3.8-27B do, the
+# Qwen3.6-35B-A3B does not), and the flag is a no-op without it. n-max 3 is the mixed-traffic
+# depth: n-max 8 is 2.93x at one user on the 27B but 1.38x at 8 (acceptance 0.46). Draft models
+# and n-gram speculation are NOT defaults here: the 4B as a draft for the 27B is 1.93x at one
+# user and 0.54x to 0.71x from 4 users, and every n-gram variant is about 2x at one user and
+# 0.64x to 1.02x from 4. Greedy output under MTP is not byte identical to the baseline; the
+# control that shows this is not a defect: the baseline is not batch invariant itself (the
+# same four greedy prompts issued together differ from the same prompts issued one by one,
+# on the same server), and the MTP arms diverge on exactly those prompts, late in the text.
+#
+#   users |  27B baseline | 27B MTP n-max 3 | ratio | accept ||  4B baseline | 4B MTP | ratio
+#     1   |     11.2      |      28.6       | 2.61x |  0.88  ||     57.6     | 117.6  | 2.04x
+#     4   |     35.7      |      63.4       | 1.87x |        ||    162.0     | 270.8  | 1.67x
+#     8   |     52.1      |      81.0       | 1.59x |  0.74  ||    188.1     | 274.3  | 1.46x
+#
+# Long outputs (ntg 1024) hold up better: 27B 2.81x at 1 and 2.01x at 8 (acceptance 0.97 / 0.87).
+MTP_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL and Qwen3.5-4B-MTP-UD-Q4_K_XL, llama-server b10796 --spec-type "
+    "draft-mtp --spec-draft-n-max 3, one DGX Spark, 2026-09-05, 1690 MHz, npp 128 / ntg 256"
+)
+MTP_SPEEDUP_27B = {1: 2.61, 4: 1.87, 8: 1.59}  # users -> aggregate decode over no speculation
+MTP_SPEEDUP_4B = {1: 2.04, 4: 1.67, 8: 1.46}
+MTP_SPEEDUP_27B_LONG_OUTPUT = {1: 2.81, 8: 2.01}  # ntg 1024
+MTP_ACCEPTANCE_27B = {1: 0.88, 8: 0.74}
+MTP_ACCEPTANCE_4B = {1: 0.88, 8: 0.72}
+MTP_DRAFT_N_MAX = 3
+MTP_SMALL_MODEL_B = 8.0  # below this many B parameters the 4B table is the closer estimate
 REPLICAS_MIN_USERS = 8
 REPLICAS_FEW_USERS_SPEEDUP = 1.13  # 2 to 4 users, prompt 512
 TOPOLOGIES = ("single", "replicas", "layer_split")
@@ -3057,6 +3088,35 @@ def pipeline_groups_note() -> str:
         f"{min(decode.values()):.2f}x to {max(decode.values()):.2f}x on decode and "
         f"{LAYER_SPLIT_PREFILL_SPEEDUP[0]:.1f}x to {LAYER_SPLIT_PREFILL_SPEEDUP[1]:.2f}x "
         f"on prefill."
+    )
+
+
+def mtp_speedup(users: int = 1, model_size_b: Optional[float] = None) -> float:
+    """MTP self speculation's aggregate decode gain at the nearest measured user count, for
+    a GGUF that ships the head: the 27B table, or the 4B table for a model under
+    ``MTP_SMALL_MODEL_B`` parameters (the smaller the model, the less the head pays). It
+    multiplies whatever the topology gives; 1.0 is the honest number for a GGUF without
+    the head, which the caller knows and this function does not."""
+    small = model_size_b is not None and float(model_size_b) < MTP_SMALL_MODEL_B
+    table = MTP_SPEEDUP_4B if small else MTP_SPEEDUP_27B
+    _users, value = _nearest_concurrency(table, max(1, int(users or 1)))
+    return value
+
+
+def mtp_note() -> str:
+    """What MTP self speculation delivers, for reasons and the ``spark plan`` text. The
+    serving side asks for it only when the GGUF header has the head and the bundle's
+    llama-server has --spec-type, so the no-op case is stated too."""
+    a, b = MTP_SPEEDUP_27B, MTP_SPEEDUP_4B
+    return (
+        f"A GGUF that ships its own MTP head (Qwen3.5-4B-MTP, Qwen3.8-27B) self-speculates "
+        f"(llama-server --spec-type draft-mtp --spec-draft-n-max {MTP_DRAFT_N_MAX}, asked for "
+        f"when the header has nextn_predict_layers and the bundle has the flag): measured on "
+        f"one Spark {a[1]:.2f}x / {a[4]:.2f}x / {a[8]:.2f}x aggregate decode at 1 / 4 / 8 "
+        f"users on the 27B and {b[1]:.2f}x / {b[4]:.2f}x / {b[8]:.2f}x on the 4B, on top of "
+        f"what the topology gives; a no-op for a GGUF without the head. Draft models and "
+        f"n-gram speculation are single-user tricks on this pair (about 2x at one user, a "
+        f"loss from 4) and stay off."
     )
 
 
@@ -3106,6 +3166,10 @@ def recommend_topology(
         "speedup": None,
         "prefill_speedup": None,
         "pipeline_groups_speedup": None,
+        # MTP multiplies the topology's number when the GGUF ships the head (the serving
+        # side checks the header); the planner states the single-Spark measurement.
+        "mtp_speedup": mtp_speedup(users),
+        "mtp_note": mtp_note(),
         "fits_one_node": fits_model,
         "users": users,
         "prompt_tokens": prompt_tokens,
@@ -3677,6 +3741,8 @@ def _cmd_plan(
         print(f"  llama.cpp : {serving['topology']}")
         print(f"              {serving['reason']}")
         print(f"              (measured on {serving['measured_on']})")
+        if serving.get("mtp_note"):
+            print(f"  MTP       : {serving['mtp_note']}")
     exp = plan.get("expected") or {}
     if exp.get("note"):
         print("")

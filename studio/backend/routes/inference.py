@@ -13162,6 +13162,26 @@ def _cancel_scoped_load_attempt(
         return attempt, is_running
 
 
+def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
+    """The previous same-model load's pass-through extras, which
+    ``_resolve_inherited_extra_args`` carries into a request that omits the field. The
+    Spark orchestrator reads them so a ``--spec-type`` the caller owns there is left
+    alone rather than shadowed by the first-class field it would otherwise set."""
+    if getattr(request, "llama_extra_args", None) is not None:
+        return None
+    try:
+        llama_backend = get_llama_cpp_backend()
+        stored = getattr(llama_backend, "extra_args", None)
+        source = getattr(llama_backend, "extra_args_source", None)
+    except Exception:
+        return None
+    if not stored or not source or not source[0]:
+        return None
+    if str(source[0]).lower() != str(getattr(request, "model_path", "") or "").lower():
+        return None
+    return list(stored)
+
+
 async def _run_tracked_load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -13187,7 +13207,11 @@ async def _run_tracked_load_model_impl(
         from core.inference import spark_serving
 
         _spark_slots = _resolve_parallel_slots(request, fastapi_request)
-        request = await spark_serving.before_load(request, _spark_slots)
+        request = await spark_serving.before_load(
+            request,
+            _spark_slots,
+            inherited_extra_args = _spark_inherited_extra_args(request),
+        )
         try:
             response = await _load_model_impl(
                 request,

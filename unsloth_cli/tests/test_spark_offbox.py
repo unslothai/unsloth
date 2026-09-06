@@ -936,6 +936,41 @@ def test_pipeline_groups_do_not_move_the_replicas_rule_for_a_model_that_fits() -
         assert out["topology"] == "single" and out["pipeline_groups_speedup"] is None
 
 
+def test_mtp_tables_are_the_measured_ratios_and_the_note_states_them() -> None:
+    """MTP self speculation multiplies whatever the topology gives, for a GGUF whose header
+    has the head. The planner carries the single-Spark measurement and says the no-op case;
+    the serving side decides per file."""
+    sc = _load("studio/spark_cluster.py")
+    assert sc.MTP_SPEEDUP_27B == {1: 2.61, 4: 1.87, 8: 1.59}
+    assert sc.MTP_SPEEDUP_4B == {1: 2.04, 4: 1.67, 8: 1.46}
+    assert sc.MTP_DRAFT_N_MAX == 3
+    for table in (sc.MTP_SPEEDUP_27B, sc.MTP_SPEEDUP_4B):
+        values = [table[u] for u in sorted(table)]
+        assert values == sorted(values, reverse = True), "the gain shrinks with batching"
+        assert all(v > 1.0 for v in values), "and stays a gain at every measured point"
+    assert sc.mtp_speedup(1) == 2.61 and sc.mtp_speedup(8) == 1.59
+    assert sc.mtp_speedup(32) == 1.59, "snaps to the nearest measured point, never extrapolates"
+    assert sc.mtp_speedup(1, model_size_b = 4) == 2.04 and sc.mtp_speedup(8, model_size_b = 27) == 1.59
+    assert sc.mtp_speedup(0) == 2.61
+    note = sc.mtp_note()
+    for text in (
+        "--spec-type draft-mtp --spec-draft-n-max 3",
+        "2.61x / 1.87x / 1.59x",
+        "2.04x / 1.67x / 1.46x",
+        "no-op",
+        "nextn_predict_layers",
+        "stay off",
+    ):
+        assert text in note, (text, note)
+    # Every topology answer carries the multiplier and the note, unchanged by the topology.
+    for args in ((150 * _GIB, 0.5 * _GIB, 8), (16.4 * _GIB, 0.4 * _GIB, 8), (16.4 * _GIB, 0, 1)):
+        out = sc.recommend_topology(args[0], args[1], args[2], 512, 113 * _GIB)
+        assert out["mtp_speedup"] == sc.mtp_speedup(args[2]) and out["mtp_note"] == note
+    budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
+    plan = sc.plan_deployment(budget * 0.3, n_nodes = 2, intent = "throughput", concurrency = 8)
+    assert plan["serving"]["mtp_speedup"] == 1.59 and "draft-mtp" in plan["serving"]["mtp_note"]
+
+
 def test_recommend_topology_replicas_from_eight_users_up() -> None:
     sc = _load("studio/spark_cluster.py")
     for users in (8, 12, 16, 32, 64):
