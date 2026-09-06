@@ -254,8 +254,12 @@ def test_a_non_ambient_worker_holds_no_credential_for_the_next_caller(
 
     worker = worker_in_process
     for key in (
-        "HF_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_OIDC_RESOURCE",
+        "HF_TOKEN",
+        "HF_HUB_TOKEN",
+        "HUGGING_FACE_HUB_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "HUGGINGFACEHUB_API_TOKEN",
+        "HF_OIDC_RESOURCE",
     ):
         monkeypatch.setenv(key, "hf_operator_secret")
     monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", raising = False)
@@ -266,8 +270,12 @@ def test_a_non_ambient_worker_holds_no_credential_for_the_next_caller(
         seen["env"] = {
             k: os.environ.get(k)
             for k in (
-                "HF_TOKEN", "HF_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN",
-                "HUGGINGFACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "HF_OIDC_RESOURCE",
+                "HF_TOKEN",
+                "HF_HUB_TOKEN",
+                "HUGGING_FACE_HUB_TOKEN",
+                "HUGGINGFACE_HUB_TOKEN",
+                "HUGGINGFACEHUB_API_TOKEN",
+                "HF_OIDC_RESOURCE",
             )
         }
         seen["resolved"] = huggingface_hub.get_token()
@@ -607,8 +615,11 @@ def test_every_export_entry_point_declares_the_anonymous_sentinel_type():
     offenders = []
     for owner in (ExportBackend, ExportOrchestrator):
         for name in (
-            "load_checkpoint", "export_merged_model", "export_base_model",
-            "export_gguf", "export_lora_adapter",
+            "load_checkpoint",
+            "export_merged_model",
+            "export_base_model",
+            "export_gguf",
+            "export_lora_adapter",
         ):
             fn = getattr(owner, name, None)
             if fn is None:
@@ -617,7 +628,9 @@ def test_every_export_entry_point_declares_the_anonymous_sentinel_type():
             if param is not None and param.annotation != HfTokenArg:
                 offenders.append(f"{owner.__name__}.{name}: {param.annotation}")
 
-    assert not offenders, "these can receive the sentinel but do not say so: " + "; ".join(offenders)
+    assert not offenders, "these can receive the sentinel but do not say so: " + "; ".join(
+        offenders
+    )
 
 
 def test_every_hub_write_route_names_the_ambient_policy():
@@ -641,7 +654,10 @@ def test_every_hub_write_route_names_the_ambient_policy():
     for module, name in sorted(gated, key = lambda pair: pair[1]):
         fn = getattr(module, name)
         param = inspect.signature(fn).parameters.get("allow_ambient")
-        if param is None or getattr(param.default, "dependency", None) is not allow_ambient_hf_token:
+        if (
+            param is None
+            or getattr(param.default, "dependency", None) is not allow_ambient_hf_token
+        ):
             missing.append(f"{module.__name__}.{name}")
 
     assert not missing, "these reach a Hub write without the ambient policy: " + ", ".join(missing)
