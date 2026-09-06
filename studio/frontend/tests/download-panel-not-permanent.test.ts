@@ -81,11 +81,11 @@ job list at all, it can no longer know when to unmount.`,
 }
 
 /**
- * Does `condition` test for an empty `jobKeys`? Operand order matters: an
+ * Is this leaf the test "the list is empty"? Operand order matters: an
  * unordered match also accepts `0 < jobKeys.length`, the exact inverse, and the
  * always-true `0 <= jobKeys.length`. Hence the explicit shapes.
  */
-function testsForAnEmptyList(condition: ts.Node, jobKeys: string): boolean {
+function isEmptyTest(node: ts.Node, jobKeys: string): boolean {
   const length = `${jobKeys}.length`;
   const K = ts.SyntaxKind;
   // [left, operator, right], each meaning "the list is empty".
@@ -97,27 +97,60 @@ function testsForAnEmptyList(condition: ts.Node, jobKeys: string): boolean {
     ["0", K.GreaterThanEqualsToken, length],
     ["1", K.GreaterThanToken, length],
   ];
-  let ok = false;
-  const visit = (node: ts.Node): void => {
-    if (ts.isBinaryExpression(node)) {
-      const left = node.left.getText();
-      const right = node.right.getText();
-      const op = node.operatorToken.kind;
-      if (shapes.some(([l, o, r]) => left === l && op === o && right === r)) {
-        ok = true;
-      }
+  if (ts.isBinaryExpression(node)) {
+    const left = node.left.getText();
+    const right = node.right.getText();
+    const op = node.operatorToken.kind;
+    return shapes.some(([l, o, r]) => left === l && op === o && right === r);
+  }
+  // !jobKeys.length
+  return (
+    ts.isPrefixUnaryExpression(node) &&
+    node.operator === K.ExclamationToken &&
+    node.operand.getText() === length
+  );
+}
+
+/**
+ * Does an empty list force `condition` true?
+ *
+ * Finding the comparison somewhere inside the condition is not the same
+ * question, and answers it wrongly in both directions: `jobKeys.length === 0 &&
+ * activeCount > 0` only unmounts for one of the empty states, and
+ * `!(jobKeys.length === 0)` unmounts for none of them. So the condition is
+ * evaluated with the empty test pinned true and every other term unknown; only
+ * a definite true counts.
+ */
+type Truth = true | false | null;
+
+function underAnEmptyList(node: ts.Node, jobKeys: string): Truth {
+  if (isEmptyTest(node, jobKeys)) return true;
+  if (ts.isParenthesizedExpression(node)) {
+    return underAnEmptyList(node.expression, jobKeys);
+  }
+  if (
+    ts.isPrefixUnaryExpression(node) &&
+    node.operator === ts.SyntaxKind.ExclamationToken
+  ) {
+    const inner = underAnEmptyList(node.operand, jobKeys);
+    return inner === null ? null : !inner;
+  }
+  if (ts.isBinaryExpression(node)) {
+    const op = node.operatorToken.kind;
+    const left = underAnEmptyList(node.left, jobKeys);
+    const right = underAnEmptyList(node.right, jobKeys);
+    if (op === ts.SyntaxKind.BarBarToken) {
+      if (left === true || right === true) return true;
+      if (left === false && right === false) return false;
+      return null;
     }
-    if (
-      ts.isPrefixUnaryExpression(node) &&
-      node.operator === K.ExclamationToken &&
-      node.operand.getText() === length
-    ) {
-      ok = true;
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) {
+      if (left === false || right === false) return false;
+      if (left === true && right === true) return true;
+      return null;
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(condition);
-  return ok;
+  }
+  return null; // Any other term: unknown, so it cannot carry the guard.
 }
 
 function returnsNull(statement: ts.Statement): boolean {
@@ -139,7 +172,7 @@ test("the Downloads overlay unmounts when there are no jobs", () => {
     (statement) =>
       ts.isIfStatement(statement) &&
       returnsNull(statement.thenStatement) &&
-      testsForAnEmptyList(statement.expression, jobKeys),
+      underAnEmptyList(statement.expression, jobKeys) === true,
   );
 
   assert.ok(

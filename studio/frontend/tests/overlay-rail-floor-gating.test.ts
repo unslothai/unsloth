@@ -20,7 +20,8 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -149,12 +150,43 @@ function floorLiterals(file: ts.SourceFile): ts.Node[] {
   return found;
 }
 
-/** Is every floor in `literal` gated by the CSS `:has()` on a rendered slot? */
+/**
+ * The components that ARE the protected panel, and the `data-slot` names they
+ * declare, both read out of the tree rather than matched by name. A substring
+ * rule would accept a `<ChangelogToggle>`, and an unresolved `data-slot` would
+ * accept `has-[[data-slot=card-footer]]:`, which an always-present footer makes
+ * permanent. A panel is one that renders the shared notes layout root.
+ */
+function notesPanels(): { components: Set<string>; slots: Set<string> } {
+  const components = new Set<string>();
+  const slots = new Set<string>();
+  const dir = fileURLToPath(src("components"));
+  for (const entry of readdirSync(dir, {
+    recursive: true,
+    withFileTypes: true,
+  })) {
+    if (!entry.isFile() || !entry.name.endsWith(".tsx")) continue;
+    const text = readFileSync(join(entry.parentPath, entry.name), "utf8");
+    if (!text.includes("UPDATE_NOTES_ROOT_CLASS")) continue;
+    for (const hit of text.matchAll(/export function ([A-Z]\w*)/g)) {
+      components.add(hit[1]);
+    }
+    for (const hit of text.matchAll(/data-slot="([^"]+)"/g)) slots.add(hit[1]);
+  }
+  return { components, slots };
+}
+
+const NOTES = notesPanels();
+
+/** Is every floor in `literal` gated by `:has()` on a slot the panel declares? */
 function gatedByHas(literal: ts.Node): boolean {
   const tokens = classTokens(literal).filter(isFloor);
   return (
     tokens.length > 0 &&
-    tokens.every((token) => /has-\[\[data-slot=[^\]]+\]\]:min-h-/.test(token))
+    tokens.every((token) => {
+      const slot = token.match(/has-\[\[data-slot=([^\]]+)\]\]:min-h-/);
+      return slot !== null && NOTES.slots.has(slot[1]);
+    })
   );
 }
 
@@ -182,7 +214,29 @@ function branchConditions(literal: ts.Node): string[] {
  * is true while the panel is closed, which is #10117 exactly. It must render the
  * notes themselves.
  */
-const PROTECTED_PANEL = /(Notes|Changelog)/i;
+/**
+ * The className of the element painted inside the slot this floor is on: the
+ * floor's own JSX element, then its first child element.
+ */
+function paintedSurface(literal: ts.Node): string | null {
+  let node: ts.Node | undefined = literal;
+  while (node && !ts.isJsxAttribute(node)) node = node.parent;
+  // attribute -> attributes -> opening tag -> the element that owns the children
+  const opening = node?.parent?.parent;
+  if (!opening || !ts.isJsxOpeningElement(opening)) return null;
+  const owner = opening.parent;
+  if (!ts.isJsxElement(owner)) return null;
+  for (const child of owner.children) {
+    const tag = openingTag(child);
+    if (!tag) continue;
+    const className = tag.attributes.properties.find(
+      (p): p is ts.JsxAttribute =>
+        ts.isJsxAttribute(p) && p.name.getText() === "className",
+    );
+    return className?.initializer?.getText() ?? "";
+  }
+  return null;
+}
 
 function gatesTheNotes(source: string, condition: string): boolean {
   const name = condition.trim();
@@ -192,7 +246,7 @@ function gatesTheNotes(source: string, condition: string): boolean {
     "g",
   );
   for (const hit of source.matchAll(rendered)) {
-    if (PROTECTED_PANEL.test(hit[2])) return true;
+    if (NOTES.components.has(hit[2])) return true;
   }
   return false;
 }
@@ -258,15 +312,26 @@ is the state that reserved 64.9px in #10117.
 Floor found in: ${literal.getText().slice(0, 200)}
 Ternary conditions around it: ${branchConditions(literal).join(", ") || "(none)"}`,
       );
-    }
 
-    // A gated floor still has to be filled, or the gap returns the other way.
-    assert.match(
-      source,
-      /className="relative flex [^"]*\bgrow\b/,
-      `${resolved.label}: the card carries a floor but its painted surface has
-no \`grow\`, so short content leaves an unpainted gap inside the slot the
-floor reserved.`,
-    );
+      // A gated floor still has to be filled, or the gap returns the other way.
+      // The surface is this floor's own painted child, not any `grow` in the
+      // file: an alternate branch carrying one would answer for a surface that
+      // does not, and the desktop card's rail is never rendered by the browser
+      // suite that would otherwise catch it.
+      const surface = paintedSurface(literal);
+      assert.ok(
+        surface,
+        `${resolved.label}: cannot find the element painted inside the floored
+slot, so nothing checks that the floor is filled.`,
+      );
+      assert.match(
+        surface,
+        /\bgrow\b/,
+        `${resolved.label}: the floored slot's painted child has no \`grow\`, so
+short content leaves an unpainted gap inside the height the floor reserved.
+
+Painted child: ${surface.slice(0, 160)}`,
+      );
+    }
   });
 }
