@@ -2012,6 +2012,12 @@ def test_the_ledger_lock_waits_out_a_holder_and_then_gives_up(monkeypatch, tmp_p
     ledger = _FakeLedger(events, busy = (_INSTALL_MONIKER,))
     api = SimpleNamespace(kernel32 = ledger.install(SimpleNamespace()))
     _reset_ledger_state(monkeypatch)
+    # ctypes.get_last_error is real on Windows and no fake call sets it, so the
+    # poll read a stale value as an unrecoverable error and gave up after one
+    # attempt. The fake's only way to say "contended" is the invalid handle.
+    monkeypatch.setattr(
+        windows_lpac, "_ledger_lock_last_error", lambda: windows_lpac._ERROR_SHARING_VIOLATION
+    )
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path))
 
@@ -2044,6 +2050,12 @@ def test_the_ledger_budget_is_spent_on_other_processes_not_on_this_one(monkeypat
     ledger = _FakeLedger(events)
     api = SimpleNamespace(kernel32 = ledger.install(SimpleNamespace()))
     _reset_ledger_state(monkeypatch)
+    # ctypes.get_last_error is real on Windows and no fake call sets it, so the
+    # poll read a stale value as an unrecoverable error and gave up after one
+    # attempt. The fake's only way to say "contended" is the invalid handle.
+    monkeypatch.setattr(
+        windows_lpac, "_ledger_lock_last_error", lambda: windows_lpac._ERROR_SHARING_VIOLATION
+    )
     # Same reason as the wait test above: the budget has to outlast one attempt
     # on a slow host, or the assertion below reads a loaded runner as a bug.
     monkeypatch.setattr(windows_lpac, "_LEDGER_WAIT_SECONDS", 2.0)
