@@ -5772,15 +5772,18 @@ def _unsloth_save_lora_gguf(
             cmd.append("--trust-remote-code")
 
         # Expose the token to the converter so it can fetch a gated/private base config from the Hub.
+        # The child inherits our env, so every branch has to scrub first: granting one alias leaves
+        # ours sitting in another, and withholding one is not the same as denying it.
         env = os.environ.copy()
+        if (isinstance(token, str) and token) or token is False:
+            for _key in _HF_TOKEN_ENV_KEYS:
+                env.pop(_key, None)
         if isinstance(token, str) and token:
             env["HF_TOKEN"] = token
             env["HUGGING_FACE_HUB_TOKEN"] = token
+            # An inherited HF_HUB_DISABLE_IMPLICIT_TOKEN=1 makes the child ignore what we just granted.
+            env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
         elif token is False:
-            # The child inherits our env, so withholding a token is not denying one: drop every
-            # alias and disable the implicit cached token, else the converter reads ours anyway.
-            for _key in _HF_TOKEN_ENV_KEYS:
-                env.pop(_key, None)
             env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")

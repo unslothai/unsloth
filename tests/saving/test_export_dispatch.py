@@ -376,7 +376,8 @@ def _run_lora_gguf(monkeypatch, tmp_path, token):
     monkeypatch.setattr(save_mod, "get_token", lambda: "host-ambient-token")
     monkeypatch.setattr(save_mod.subprocess, "Popen", _FakePopen)
     monkeypatch.setenv("HF_TOKEN", "host-ambient-token")
-    monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "host-ambient-token")
+    monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "host-legacy-alias")
+    monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 
     save_mod._unsloth_save_lora_gguf(
         _FakePeft(), _FakeTokenizer(), str(tmp_path / "out"), outtype = "f16", token = token
@@ -395,6 +396,10 @@ def test_lora_gguf_converter_gets_an_explicit_token(monkeypatch, tmp_path):
     env = _run_lora_gguf(monkeypatch, tmp_path, token = "caller-token")
     assert env["HF_TOKEN"] == "caller-token"
     assert env["HUGGING_FACE_HUB_TOKEN"] == "caller-token"
+    # Granting one alias while ours sits in another hands the child two credentials.
+    assert "HUGGINGFACEHUB_API_TOKEN" not in env
+    # An inherited =1 would make the child ignore the token we just granted it.
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "0"
 
 
 def test_lora_gguf_converter_keeps_the_ambient_token_when_none(monkeypatch, tmp_path):
