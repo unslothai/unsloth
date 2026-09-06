@@ -428,6 +428,7 @@ def _macos_release_major() -> "int | None":
 
 def _torchcodec_spec_bounds(spec: str) -> "tuple[tuple[int, ...], tuple[int, ...] | None]":
     """`torchcodec>=0.6.0,<0.8.0` -> ((0,6,0), (0,8,0)); an open floor gives (floor, None)."""
+
     def _v(text: str) -> tuple[int, ...]:
         return tuple(int(p) for p in re.findall(r"\d+", text)[:3])
 

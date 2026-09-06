@@ -592,7 +592,8 @@ def _patch_host(ips, monkeypatch, label):
     monkeypatch.setattr(ips, "IS_MAC_INTEL", is_mac_intel)
     monkeypatch.setattr(ips.platform, "machine", lambda: machine)
     monkeypatch.setattr(
-        ips.platform, "mac_ver",
+        ips.platform,
+        "mac_ver",
         lambda: (f"{macos_major}.0" if macos_major else "", ("", "", ""), ""),
     )
 
@@ -664,7 +665,7 @@ def test_the_torchcodec_step_cannot_end_the_install():
     it encodes is the one the extras-no-deps filter above it already states: the audio
     extras step must not take down the install.
     """
-    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
     assert "pip_install_try(" in step, "the torchcodec step must use the non-fatal install"
     assert "\n        pip_install(" not in step, "pip_install() exits on failure"
