@@ -293,8 +293,9 @@ function Install-UnslothStudio {
     # Whether this index ships win_arm64 torchaudio (GA does). Travels to setup.ps1.
     $script:WoaTorchAudio = $false
 
-    # No win_arm64 build on PyPI: today just pyarrow, which datasets needs and which cannot be
-    # built here (apache/arrow#48539). WHEELHOUSE takes a directory or base URL, PYARROW_WHEEL a .whl.
+    # Wheels PyPI has no win_arm64 build of. Anything it DOES build is taken from there instead:
+    # staging skips a wheelhouse copy of a project PyPI publishes at or above the staged version.
+    # WHEELHOUSE takes a directory or base URL, PYARROW_WHEEL a .whl.
     $script:WoaWheelhouse = if ($env:UNSLOTH_WOA_WHEELHOUSE) {
         $env:UNSLOTH_WOA_WHEELHOUSE.Trim().TrimEnd('/')
     } else {
@@ -500,18 +501,70 @@ function Install-UnslothStudio {
         return $Line
     }
 
+    # Exact tags, or a wheel that does not care: cp38-abi3 and py3-none both import on cp313, and
+    # the wheelhouse ships one of each (hf_transfer, sqlite_vec). Free-threaded venvs are excluded
+    # because abi3 is not offered there, which is why Test-WoaWheelAvailable stays exact.
+    function Test-WoaWheelTagsUsable {
+        param([string]$Name, [string]$PyTag, [string]$AbiTag = "")
+        if (-not $AbiTag) { $AbiTag = $PyTag }
+        if (Test-WoaWheelTags -Name $Name -PyTag $PyTag -AbiTag $AbiTag) { return $true }
+        $fields = ($Name -replace '(?i)\.whl$', '') -split '-'
+        if ($fields.Count -lt 5) { return $false }
+        if ($AbiTag -like "*t") { return $false }
+        $abiTags = $fields[$fields.Count - 2] -split '\.'
+        return (($abiTags -contains "abi3") -or ($abiTags -contains "none"))
+    }
+
+    # PyPI alone, and no lower than $Floor: the wheelhouse exists for what PyPI has no win_arm64
+    # build of, so a project that publishes one upstream has to be taken from upstream. An empty
+    # $Floor asks only whether any tag-compatible wheel is published at all.
+    function Test-WoaPyPIWheel {
+        param([string]$Project, [string]$PyTag, [string]$AbiTag = "", [string]$Floor = "", [switch]$AllowAgnostic)
+        if (-not $Project -or -not $PyTag) { return $false }
+        if (-not $AbiTag) { $AbiTag = $PyTag }
+        # pypi.org/simple normalises the project name; a wheel filename carries the underscored form.
+        $slug = ($Project -replace '_', '-').ToLowerInvariant()
+        try {
+            $body = [string](Invoke-RestMethod -Uri "https://pypi.org/simple/$slug/" -UseBasicParsing -TimeoutSec 20)
+        } catch { return $false }
+        foreach ($match in [regex]::Matches($body, "[A-Za-z0-9_.+-]+win_arm64\.whl")) {
+            $name = $match.Value
+            $tagsOk = if ($AllowAgnostic) { Test-WoaWheelTagsUsable -Name $name -PyTag $PyTag -AbiTag $AbiTag }
+                      else { Test-WoaWheelTags -Name $name -PyTag $PyTag -AbiTag $AbiTag }
+            if (-not $tagsOk) { continue }
+            $fields = ($name -replace '(?i)\.whl$', '') -split '-'
+            if ($fields.Count -lt 5) { continue }
+            if (($fields[0] -replace '_', '-').ToLowerInvariant() -ne $slug) { continue }
+            if (-not $Floor) { return $true }
+            # Published is not enough: published at or above what the wheelhouse would have staged,
+            # so the guard can never swap a working wheel for an older upstream one.
+            if (Test-WoaVersionAtLeast -Version $fields[1] -Floor $Floor) { return $true }
+        }
+        return $false
+    }
+
+    # A wheelhouse wheel for a project PyPI already builds for win_arm64 is not a fix, it is a second
+    # source for the same artifact: ours is first in UV_FIND_LINKS, so it wins the tie and the user
+    # gets our binary of something upstream ships itself. Version-aware, so an upstream that is
+    # BEHIND the wheelhouse leaves ours staged rather than downgrading the install.
+    function Test-WoaWheelhouseWheelIsRedundant {
+        param([string]$Name, [string]$PyTag, [string]$AbiTag = "")
+        if ($Name -notlike "*win_arm64*") { return $false }
+        $fields = ($Name -replace '(?i)\.whl$', '') -split '-'
+        if ($fields.Count -lt 5) { return $false }
+        # Only wheels THIS venv could have used: a cp312 wheel sitting in the wheelhouse is not made
+        # redundant by a cp313 wheel on PyPI, and dropping it would answer a question nobody asked.
+        if (-not (Test-WoaWheelTagsUsable -Name $Name -PyTag $PyTag -AbiTag $AbiTag)) { return $false }
+        return (Test-WoaPyPIWheel -Project $fields[0] -PyTag $PyTag -AbiTag $AbiTag -Floor $fields[1] -AllowAgnostic)
+    }
+
     # Exact tags only: the one caller is free-threaded, where abi3 and py3-none are not options.
     function Test-WoaWheelAvailable {
         param([string]$Project, [string]$PythonMinor, [string]$AbiTag = "")
         $tag = "cp" + ($PythonMinor -replace '\.', '')
         if (-not $AbiTag) { $AbiTag = $tag }
         $pattern = "$Project-[^`"'<>\s]*?win_arm64\.whl"
-        try {
-            $body = [string](Invoke-RestMethod -Uri "https://pypi.org/simple/$Project/" -UseBasicParsing -TimeoutSec 20)
-            foreach ($match in [regex]::Matches($body, $pattern)) {
-                if (Test-WoaWheelTags -Name $match.Value -PyTag $tag -AbiTag $AbiTag) { return $true }
-            }
-        } catch {}
+        if (Test-WoaPyPIWheel -Project $Project -PyTag $tag -AbiTag $AbiTag) { return $true }
         if (-not $script:WoaWheelhouse) { return $false }
         if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
             $local = Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "$Project-*win_arm64.whl" -ErrorAction SilentlyContinue |
@@ -597,7 +650,8 @@ function Install-UnslothStudio {
         return $entries
     }
 
-    # PyPI, then a supplied wheel, then the wheelhouse. "" leaves native unselected, not half-set.
+    # An explicitly supplied wheel, then PyPI, then the wheelhouse: UNSLOTH_PYARROW_WHEEL is a
+    # deliberate override and outranks a published wheel. "" leaves native unselected, not half-set.
     function Get-WoaPyarrowSource {
         param([string]$PythonMinor, [string]$AbiTag = "")
         $tag = "cp" + ($PythonMinor -replace '\.', '')
@@ -5140,10 +5194,16 @@ exit 0
         # Mirror the rest of the wheelhouse: anything here is offered to every resolver step and drops
         # itself from the skip and override lists.
         $WoaExtraStaged = 0
+        $_woaExtraTag = "cp" + ($WoaVenvMinor -replace '\.', '')
+        $_woaExtraAbi = Get-WoaAbiTag -PythonMinor $WoaVenvMinor -FreeThreaded ([bool]$script:WoaVenvFreeThreaded)
         if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
             foreach ($wheel in @(Get-ChildItem -LiteralPath $script:WoaWheelhouse -Filter "*.whl" -ErrorAction SilentlyContinue)) {
                 if ($wheel.Name -like "pyarrow-*") { continue }
                 if ($wheel.Name -notlike "*win_arm64*" -and $wheel.Name -notlike "*-any.whl") { continue }
+                if (Test-WoaWheelhouseWheelIsRedundant -Name $wheel.Name -PyTag $_woaExtraTag -AbiTag $_woaExtraAbi) {
+                    substep "windows on arm: PyPI publishes $($wheel.Name) itself -- taking it from there, not the wheelhouse."
+                    continue
+                }
                 # Opened, not just named: _find_links_wheel_versions reads only the filename, so a
                 # truncated wheel drops the package off the skip list and then fails the whole
                 # dependency pass. A disabled optional feature is the outcome that was wanted.
@@ -5166,6 +5226,10 @@ exit 0
                     $name = $match.Value
                     if ($name -like "pyarrow-*") { continue }
                     if ($name -notlike "*win_arm64*" -and $name -notlike "*-any.whl") { continue }
+                    if (Test-WoaWheelhouseWheelIsRedundant -Name $name -PyTag $_woaExtraTag -AbiTag $_woaExtraAbi) {
+                        substep "windows on arm: PyPI publishes $name itself -- taking it from there, not the wheelhouse."
+                        continue
+                    }
                     $dest = Join-Path $WoaWheelDir $name
                     # Reused only if it opens, or every retry re-hands the resolver a partial download.
                     if (Test-Path -LiteralPath $dest) {

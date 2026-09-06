@@ -8,8 +8,9 @@ huggingface-hub==0.36.2; python_version < "3.10"
 
 # Unsloth stack
 datasets==4.3.0
-# No win_arm64 pyarrow at 23.x (apache/arrow#48539). install.ps1 stages one and takes
-# the native path only when it can, so a floor is all this needs.
+# pyarrow has never published a win_arm64 wheel, at 23.x or any other version
+# (apache/arrow#48539 is still open). The floor below is the floor of the wheels install.ps1
+# stages, not of anything upstream ships; it takes the native path only when it has one.
 pyarrow==23.0.1; sys_platform != "win32" or platform_machine != "ARM64"
 pyarrow>=21.0.0; sys_platform == "win32" and platform_machine == "ARM64"
 
