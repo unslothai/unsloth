@@ -209,9 +209,9 @@ def test_the_heartbeat_includes_a_poll_no_preference_can_switch_off():
         '127.0.0.1 "GET /api/inference/audio/stt/status" 200\n'
     )
     assert len(freeze.INTERFACE.findall(optional)) == 5
-    # /api/auth/status is navigation-driven with a 30s TTL (app/auth-guards.ts), never a
-    # timer. Scoring it flatlines the moment the reporter stops clicking, which is the
-    # false FROZE this test exists to keep out.
+    # /api/auth/status is navigation-driven with a 30s TTL (app/auth-guards.ts), never a timer.
+    # Scoring it flatlines the moment the reporter stops clicking, which is the false FROZE this test exists to keep
+    # out.
     assert not freeze.INTERFACE.findall('"GET /api/auth/status" 200')
     # The watchdog stays its own signal; it must not be swept into the interface count.
     assert not freeze.INTERFACE.findall('"GET /api/liveness" 200')
@@ -366,8 +366,8 @@ def test_main_aborts_instead_of_killing_a_running_studio(monkeypatch, capsys, tm
     app.write_text("#!/bin/sh\n")
     app.chmod(0o755)
     monkeypatch.setattr(freeze.sys, "argv", ["unsloth_freeze_report.py", str(app)])
-    # main() writes its report to the working directory. Without this, a regression that
-    # walks past the gate drops a report file into the repository instead of failing here.
+    # main() writes its report to the working directory. Without this, a regression that walks past the gate drops a
+    # report file into the repository instead of failing here.
     monkeypatch.chdir(tmp_path)
     assert freeze.main() == 2
     assert launched == []
@@ -482,8 +482,8 @@ def test_discovery_prefers_an_appimage_that_can_actually_be_started(monkeypatch,
     if Path("/usr/bin/unsloth-studio").is_file() or Path("/opt/Unsloth/unsloth-studio").is_file():
         pytest.skip("a system-wide Unsloth Desktop outranks the discovery being tested")
     assert freeze.find_desktop_app() == [str(runnable)]
-    # With nothing runnable at all it still names the file, so the caller can say which one
-    # needs chmod rather than claiming Unsloth Desktop is not installed.
+    # With nothing runnable at all it still names the file, so the caller can say which one needs chmod rather than
+    # claiming Unsloth Desktop is not installed.
     runnable.chmod(0o644)
     assert freeze.find_desktop_app() == [str(downloaded)]
 
@@ -507,7 +507,7 @@ def test_one_flat_interval_that_recovers_is_not_a_freeze():
         (45, 9, 9),
         (60, 12, 12),
         (75, 12, 15),  # the gap: interface flat, watchdog carries on
-        (90, 15, 18),  # and it comes straight back
+        (90, 15, 18),
         (105, 18, 21),
         (120, 21, 24),
     ]
@@ -551,8 +551,8 @@ def test_a_stall_that_only_starts_as_the_window_closes_is_not_called_a_freeze():
     ]
     got = verdict(samples, warmup = 0)
     assert not got.startswith("FROZE"), got
-    # And it must not be waved through as healthy either: something was seen, it just was
-    # not watched for long enough to name.
+    # And it must not be waved through as healthy either: something was seen, it just was not watched for long enough to
+    # name.
     assert not got.startswith("OK"), got
     assert got.startswith("SUSPECT"), got
     assert "90s" in got
@@ -572,7 +572,7 @@ def test_a_stall_watched_for_exactly_stale_after_is_a_freeze():
         (45, 9, 9),
         (60, 12, 12),
         (75, 15, 15),
-        (90, 15, 18),  # stops here
+        (90, 15, 18),
         (105, 15, 21),
         (120, 15, 24),
         (135, 15, 27),
@@ -634,10 +634,7 @@ def _drive_candidate(
     than an argument list a test made up.
     """
     proc = _FakeApp(dies_after)
-    # Before anything else: the cleanup SIGTERMs proc.pid's process group, and a fake pid is
-    # a real pid to the kernel. Unpatched, a run that ends with the app still alive signals
-    # whatever process group happens to own that number, which on this machine was the test
-    # runner itself.
+    # Before anything else: the cleanup SIGTERMs proc.pid's process group, and a fake pid is a real pid to the kernel.
     signalled = []
     monkeypatch.setattr(freeze.os, "getpgid", lambda pid: pid)
     monkeypatch.setattr(freeze.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)))
@@ -684,8 +681,8 @@ def test_an_exit_seen_only_by_the_cleanup_poll_is_still_recorded(monkeypatch, tm
     None, so the classifier skipped both exit branches and judged the samples on their own,
     and the crash came back as "OK: the interface kept polling for the whole run".
     """
-    # A log growing at a healthy rate throughout, so nothing in the samples hints at the
-    # crash and the verdict has to come from the exit itself.
+    # A log growing at a healthy rate throughout, so nothing in the samples hints at the crash and the verdict has to
+    # come from the exit itself.
     healthy = [_log(3 * n, 3 * n) for n in range(1, 5)]
     result = _drive_candidate(monkeypatch, tmp_path, healthy, dies_after = 4)
     assert result["samples"], "the loop must have run, or this proves nothing"
@@ -714,7 +711,7 @@ def test_signing_out_midway_is_not_reported_as_a_freeze():
         (45, 9, 9),
         (60, 12, 12),
         (75, 15, 15),
-        (90, 15, 18),  # signed out here, so the heartbeat stops
+        (90, 15, 18),
         (105, 15, 21),
         (120, 15, 24),
         (135, 15, 27),
@@ -744,8 +741,8 @@ def test_sign_in_traffic_from_before_the_stall_does_not_clear_a_freeze():
     ]
     got = verdict(samples, warmup = 0, session_at = 30)
     assert got.startswith("FROZE"), got
-    # And a session cleared without any request reaching the backend is still indistinguishable
-    # from a freeze, which is what the absence of evidence is allowed to mean.
+    # And a session cleared without any request reaching the backend is still indistinguishable from a freeze, which is
+    # what the absence of evidence is allowed to mean.
     assert verdict(samples, warmup = 0, session_at = None).startswith("FROZE")
 
 
@@ -758,16 +755,16 @@ def test_the_session_signal_is_the_webview_talking_not_the_shell():
     assert freeze.SESSION.findall('127.0.0.1 "GET /api/auth/status" 200')
     assert freeze.SESSION.findall('127.0.0.1 "POST /api/auth/login" 200')
     assert not freeze.SESSION.findall('127.0.0.1 "POST /api/auth/desktop-login" 200')
-    # And it is not a heartbeat: it must not be swept into the interface count, or a run
-    # sitting on the login screen would count as an interface that was polling.
+    # And it is not a heartbeat: it must not be swept into the interface count, or a run sitting on the login screen
+    # would count as an interface that was polling.
     assert not freeze.INTERFACE.findall('127.0.0.1 "GET /api/auth/status" 200')
 
 
 def test_the_run_records_when_the_session_was_last_asked_about(monkeypatch, tmp_path):
     """The classifier cannot use a signal the run does not collect. This is the loop and the
     handoff to classify() as written, not an argument list invented by a test."""
-    # Heartbeat for the first four samples, then a sign-out at 75s and silence after it,
-    # while the watchdog keeps going to the end.
+    # Heartbeat for the first four samples, then a sign-out at 75s and silence after it, while the watchdog keeps going
+    # to the end.
     scripted = [
         _log(3, 3),
         _log(6, 6),
@@ -864,6 +861,5 @@ def test_a_launch_that_fails_at_execve_does_not_end_the_whole_run(monkeypatch, t
     for r in results:
         assert r["verdict"].startswith("CANNOT RUN"), r["verdict"]
         assert "Exec format error" in r["verdict"]
-        # The report's own schema is unchanged, so a reader (and the summary) can treat
-        # this result like any other.
+        # The report's own schema is unchanged, so a reader (and the summary) can treat this result like any other.
         assert r["samples"] == [] and r["interface_polls"] == 0

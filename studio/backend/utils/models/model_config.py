@@ -16,6 +16,13 @@ from utils.paths import (
     resolve_output_dir,
     resolve_export_dir,
 )
+from hub.utils.hf_tokens import (
+    ANONYMOUS_CACHE_IDENTITY,
+    HfTokenArg,
+    apply_token_to_child_env,
+    is_anonymous,
+    normalize_token,
+)
 from utils.utils import without_hf_auth
 from utils.training_runs import (
     base_model_from_run_dir_name as _base_model_from_dir_name,
@@ -31,6 +38,7 @@ from utils.models.gguf_metadata import (
     mmproj_accepts_image,
     pairing_score,
     read_gguf_general_metadata,
+    read_gguf_nextn_predict_layers,
 )
 import structlog
 from loggers import get_logger
@@ -546,6 +554,25 @@ def load_model_config(
 
     revision_kwargs = {"revision": revision} if revision is not None else {}
 
+    if is_anonymous(token):
+        # `False` is falsy: without this it falls past both branches to the ambient call.
+        # Passed as the sentinel rather than via without_hf_auth(), which mutates HF_TOKEN
+        # process-wide and would strip a concurrent download's credential.
+        # token=False denies auth, not the cache, so offline it would read a cached private
+        # config.json anyway; with no network this caller gets nothing instead.
+        if local_files_only or _env_offline():
+            raise OSError(
+                f"config.json for {model_name} is not available to an unauthorized caller"
+            )
+        return AutoConfig.from_pretrained(
+            model_name,
+            trust_remote_code = trust_remote_code,
+            token = False,
+            local_files_only = local_files_only,
+            cache_dir = active_hf_hub_cache(),
+            **revision_kwargs,
+        )
+
     if token:
         return AutoConfig.from_pretrained(
             model_name,
@@ -874,6 +901,13 @@ def __getattr__(name: str) -> Any:
     return _lazy_module_attr(name)
 
 
+def _vision_check_child_env(hf_token: HfTokenArg) -> Dict[str, str]:
+    """Child environment for the vision-check probe, carrying the caller's credential."""
+    env = utf8_child_env(get_hf_cache_paths().child_env(child_env_without_native_path_secret()))
+    apply_token_to_child_env(env, hf_token)
+    return env
+
+
 def _is_vision_model_subprocess(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -886,7 +920,8 @@ def _is_vision_model_subprocess(
     or None for transient failures (timeouts, subprocess errors), which are not
     cached so they can be retried.
     """
-    token_arg = hf_token or ""
+    # Only an explicit token travels in argv; the env below enforces the boundary.
+    token_arg = hf_token if isinstance(hf_token, str) else ""
 
     # Latest-only architectures need the latest sidecar for AutoConfig; other tiers keep 5.5.
     sidecar_dir = _VENV_T5_DIR
@@ -916,9 +951,7 @@ def _is_vision_model_subprocess(
             encoding = "utf-8",
             errors = "replace",
             timeout = 60,
-            env = utf8_child_env(
-                get_hf_cache_paths().child_env(child_env_without_native_path_secret())
-            ),
+            env = _vision_check_child_env(hf_token),
             **_windows_hidden_subprocess_kwargs(),
         )
 
@@ -959,9 +992,14 @@ def _is_vision_model_subprocess(
         return None
 
 
-def _token_fingerprint(token: Optional[str]) -> Optional[str]:
-    """SHA256 digest of the token for use as a cache key (avoids storing the
-    raw bearer token in process memory)."""
+def _token_fingerprint(token: HfTokenArg) -> Optional[str]:
+    """SHA256 digest of the token as a cache key (never the raw bearer in memory).
+
+    The sentinel takes its own identity: sharing ``None``'s slot would serve a caller
+    denied the ambient token a result fetched with it.
+    """
+    if is_anonymous(token):
+        return ANONYMOUS_CACHE_IDENTITY
     if token is None:
         return None
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -1031,6 +1069,10 @@ def is_vision_model(
         resolved_name = model_name
     # Key on effective offline (kwarg OR env) so an offline probe can't poison a later lookup.
     effective_offline = bool(local_files_only or _env_offline())
+    # Offline the probe reads the cache and never authorizes, so local_files_only=False
+    # does not put an anonymous caller back on the wire. It gets the default instead.
+    if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
+        return False
     cache_key: _CapabilityCacheKey = (
         resolved_name,
         _token_fingerprint(hf_token),
@@ -1220,6 +1262,10 @@ def detect_audio_type_checked(
 
     # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
     effective_offline = bool(local_files_only or _env_offline())
+    # Offline the probe reads the cache and never authorizes, so local_files_only=False
+    # does not put an anonymous caller back on the wire. Inconclusive for it instead.
+    if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
+        return None, False
     # Checked on the RAW name, before the casing resolution below, because resolving a
     # repo id that is not in the cache walks every cache directory, and that walk is the
     # cost this cache exists to avoid. A casing variant just takes its own entry, which
@@ -1343,7 +1389,9 @@ def _detect_audio_from_tokenizer(
             if local_path.is_dir():
                 roots.append(local_path)
         else:
-            repo_dir = get_cache_path(model_name)
+            # Read before any network branch and never authorizes, so it would serve a
+            # cached private repo's audio tokens online as well as offline.
+            repo_dir = None if is_anonymous(hf_token) else get_cache_path(model_name)
             if repo_dir is not None and repo_dir.is_dir():
                 snapshots_dir = repo_dir / "snapshots"
                 if snapshots_dir.is_dir() and revision is None:
@@ -1404,7 +1452,8 @@ def _detect_audio_from_tokenizer(
     except Exception:
         return None, read_any
 
-    token = hf_token or os.environ.get("HF_TOKEN")
+    # `False` is falsy, so `or` would reach past it to the ambient credential.
+    token = None if is_anonymous(hf_token) else (hf_token or os.environ.get("HF_TOKEN"))
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     transient = False  # a fetch failed for a non-404 reason (network/5xx)
@@ -1876,33 +1925,34 @@ def detect_mtp_file(
     rejection as no drafter at all.
     """
 
+    if Path(path).is_file() and (read_gguf_nextn_predict_layers(path) or 0) > 0:
+        # A root mtp-*.gguf may mirror an embedded head; -md would replace it.
+        return None
+
     def _matches_weight(candidate: Path) -> bool:
         return _drafter_matches_weight(candidate.name, weight_name, kind = "mtp")
 
     def _launchable(candidate: Path) -> bool:
         return _drafter_split_is_complete(candidate)
 
-    def _smallest_first(candidate: Path) -> tuple[int, int, int, str]:
-        # Cheapest compatible copy wins. Size first: a fixed precision list ranked unknown quants
-        # behind BF16, so a small K-quant lost to a far larger BF16. Precision breaks size ties,
-        # name keeps it stable. Split copies collapse to shard 1, so sum across their shards.
-        # MTP prefers Q4_0 where DSpark prefers Q8_0, so the order is its own.
+    def _smallest_first(candidate: Path) -> tuple[int, int, int, int, str]:
+        # The same order the hub picker uses (mtp_preference_key), so a snapshot
+        # reopen launches the head the download chose. --fit cannot measure a
+        # borrowing head, so it reserves nothing and the MTP context OOMs
+        # (unsloth#10322); that tiebreak sits after precision so a self-contained
+        # bf16 head never displaces a shared Q8_0 one. Sizes sum across shards.
+        from utils.models.drafters.preference import mtp_precision_rank
+
         name = candidate.name.lower()
-        if "-q4_0" in name:
-            precision = 0
-        elif "-q8_0" in name:
-            precision = 1
-        elif "-bf16" in name or "-f16" in name:
-            precision = 2
-        else:
-            precision = 3
+        borrows = 1 if "-shared-" in name else 0
         # Family first, for the same reason as DSpark: both a base-family and a
         # release-specific sidecar prefix-match, and only the longer one is
         # really this weight's drafter.
         return (
             _drafter_stem_rank(candidate.name, kind = "mtp"),
+            mtp_precision_rank(name),
+            borrows,
             _drafter_total_size(candidate),
-            precision,
             name,
         )
 
@@ -3096,6 +3146,10 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     # online lookup can memoize True from tags with no weights cached, and a cached negative can
     # be invalidated by later materialization. The cache probe is local-only, so it's cheap.
     if not is_local_path(model_name) and hf_env_offline():
+        # The marker is read off the HF cache and never authorizes. Offline this caller
+        # cannot establish access, so it reports the default rather than the cache.
+        if is_anonymous(hf_token):
+            return False
         return _embedding_marker_in_hf_cache(model_name)
 
     cache_key = (model_name, hf_token)
@@ -3135,6 +3189,9 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     except Exception as e:
         # Timeout or transient network error: fall back to the local cache marker, don't hard-fail.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
+        if is_anonymous(hf_token):
+            # The anonymous 404 lands here too, and the marker read never authorizes.
+            return False
         is_emb = _embedding_marker_in_hf_cache(model_name)
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
@@ -3470,7 +3527,7 @@ def get_base_model_from_lora_identifier(
     if hf_file_definitely_absent(
         identifier,
         "adapter_config.json",
-        token = hf_token if hf_token else None,
+        token = normalize_token(hf_token),
     ):
         return None
 
@@ -3480,7 +3537,7 @@ def get_base_model_from_lora_identifier(
             cfg_path = hf_hub_download(
                 identifier,
                 "adapter_config.json",
-                token = hf_token if hf_token else None,
+                token = normalize_token(hf_token),
                 cache_dir = active_hf_hub_cache(),
             )
         except (EntryNotFoundError, RepositoryNotFoundError):

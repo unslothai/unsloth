@@ -18,16 +18,14 @@ import ipaddress
 import os
 import socket
 
-# Loopback aliases; any other bind address is treated as network-reachable. Only
-# the exact aliases the rest of the stack assumes for loopback (health checks,
-# banner URLs, run.py all hard-code 127.0.0.1), so other 127.0.0.0/8 addresses
-# are deliberately left out -- they are not supported launch hosts.
+# Only the exact aliases the rest of the stack hard-codes for loopback: other 127.0.0.0/8 addresses are deliberately
+# left out, since they are not supported launch hosts.
+# Health checks, banner URLs and run.py all hard-code 127.0.0.1.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
-# Whether a loopback launch in THIS process auto-enabled the gate. run_server
-# normally runs once per process, but if it is reused with a different host
-# (embedders, tests) a stale loopback default must not carry into a later
-# public bind, so we only ever take back a value we set ourselves.
+# Whether a loopback launch in THIS process auto-enabled the gate.
+# run_server normally runs once per process, but if it is reused with a different host (embedders, tests) we only ever
+# take back a value we set ourselves.
 _auto_enabled = False
 _remote_connector_active = False
 _lan_connector_active = False
@@ -182,11 +180,11 @@ def wildcard_loopback_host(host: str) -> "str | None":
 # Tauri desktop webview origins. api-only serving (the desktop app calling a
 # local backend) locks CORS to these.
 _TAURI_CORS_ORIGINS = (
-    "tauri://localhost",  # Linux/macOS Tauri webview
-    "http://tauri.localhost",  # Windows Tauri webview
-    "http://localhost",  # dev fallback
-    "http://localhost:5173",  # Tauri dev/Vite
-    "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "http://localhost",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 )
 
 
@@ -213,10 +211,8 @@ def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> No
     """
     global _auto_enabled
     current = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
-    # If our prior auto-default was changed out from under us (in-process reuse),
-    # relinquish ownership: an explicit =0 is then honored below as a sticky
-    # force-disable, while a cleared var falls back to the host default like a
-    # fresh process.
+    # If our prior auto-default was changed out from under us, relinquish ownership: an explicit =0 is then a sticky
+    # force-disable, while a cleared var falls back to the host default.
     if _auto_enabled and current != "1":
         _auto_enabled = False
     # An explicit operator value is one we did not set; never touch it.

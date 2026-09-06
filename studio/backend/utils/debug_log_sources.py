@@ -17,14 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# (subdirectory under a studio home, filename glob).
-#
-# Python writers: run.py:_setup_server_disk_logging and the llama / diffusion
-# runners in core/inference/llama_cpp.py. The desktop families come from the
-# Tauri shell (src-tauri/src/diagnostics/phase_log.rs) and land in the logs
-# directory ITSELF, with tauri.log at the home root (rotates to tauri.log.1).
-# backend-* is the shell's capture of backend stdout, and the only record that
-# exists when the backend dies BEFORE _setup_server_disk_logging runs.
+# (subdirectory under a studio home, filename glob). backend-* is the Tauri shell's capture of backend stdout, and the
+# only record that exists when the backend dies before disk logging starts.
+# Python writers are run.py:_setup_server_disk_logging and the llama / diffusion runners in core/inference/llama_cpp.py;
+# the desktop families come from src-tauri/src/diagnostics/phase_log.rs and land in the logs directory ITSELF, with
+# tauri.log at the home root.
 FAMILIES: dict[str, tuple[str, str]] = {
     "server": ("logs/server", "server-*.log"),
     "llama-server": ("logs/llama-server", "llama-*.log"),
@@ -83,18 +80,15 @@ def candidate_roots() -> list[Path]:
     except Exception:
         pass
 
-    # Mirror _swa_cache_path exactly: env override if set, else the legacy home,
-    # never both. Both would pull a DIFFERENT installation's logs into this one.
+    # Mirror _swa_cache_path exactly: env override if set, else the legacy home
+    # Both would pull a DIFFERENT installation's logs into this one.
     env_home = (
         os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
     ).strip()
     if env_home:
-        # Both spellings, because writer and reader disagree about the tilde:
-        # _swa_cache_path builds Path(home) raw, so an unexpanded value (systemd
-        # EnvironmentFile, dotenv) makes the runners write to a directory NAMED
-        # "~" while expanduser looks in the real home. Safe unlike the
-        # env-versus-legacy case above: one value, two spellings, so neither can
-        # be another installation's home.
+        # Both spellings, because writer and reader disagree about the tilde: _swa_cache_path builds Path(home) raw, so
+        # an unexpanded value (systemd EnvironmentFile, dotenv) makes the runners write to a directory NAMED "~" while
+        # expanduser looks in the real home. Safe unlike the env-versus-legacy case above: one value, two spellings.
         for spelling in (Path(env_home).expanduser(), Path(env_home)):
             try:
                 _add(spelling)
@@ -153,21 +147,17 @@ def _family_files(family: str) -> list[Path]:
             entries = list(directory.glob(pattern))
         except OSError:
             continue
-        # Nothing prunes logs/llama-server and one file is written per load
-        # ATTEMPT, so a real install reaches five figures (this host: 11,794)
-        # and realpath + stat on every one cost ~356ms, at a 1 Hz poll. Every
-        # family's filename embeds its creation time (server-YYYYmmdd-HHMMSS,
-        # llama-<epoch>, diffusion-<epoch>, desktop ms epoch), so name order
-        # tracks time order and this presort leaves a handful to stat. Survivors
-        # are still ordered by real mtime below, and the slice is wide enough to
-        # keep a file whose mtime moved after it was written.
+        # Nothing prunes logs/llama-server and one file is written per load ATTEMPT (11,794 on this host), so a filename
+        # presort, which tracks time order, leaves a handful to stat.
+        # Every family's filename embeds its creation time (server-YYYYmmdd-HHMMSS, llama-<epoch>, diffusion-<epoch>,
+        # desktop ms epoch), and realpath + stat on every file cost ~356ms at a 1 Hz poll.
         entries.sort(key = lambda entry: entry.name, reverse = True)
         entries = entries[: MAX_SOURCES_PER_FAMILY * 3]
         for entry in entries:
             try:
                 real = Path(os.path.realpath(entry))
-                # The TARGET must stay inside, so a symlink dropped into the log
-                # directory cannot become a reader for ~/.ssh/id_rsa.
+                # The TARGET must stay inside.
+                # A symlink dropped into the log directory must not become a reader for ~/.ssh/id_rsa.
                 if not _is_inside(real, real_dir):
                     continue
                 if not real.is_file():
@@ -187,10 +177,9 @@ def _family_files(family: str) -> list[Path]:
 
 def _is_current(family: str, path: Path, newest: Optional[Path]) -> bool:
     if family == "server":
-        # uvicorn is single process here, so our own pid is in the active
-        # session's filename: an exact match, not a newest-file guess. Anchored
-        # on the suffix because a substring test for "pid1234" would also match
-        # a retained ...-pid12345.log.
+        # uvicorn is single process here, so our own pid is in the active session's filename: an exact match, not a
+        # newest-file guess. Anchored on the suffix because a substring test for "pid1234" would also match a retained
+        # ...-pid12345.log.
         return path.name.endswith(f"-pid{os.getpid()}.log")
     return newest is not None and path == newest
 
@@ -245,10 +234,9 @@ def default_source_id() -> Optional[str]:
     for source in sources:
         if source.family == "server" and source.is_current:
             return source.id
-    # No live session: the newest file across every family, NOT any retained
-    # server log. Preferring a stale server log opened the tab on a previous run
-    # while the llama log holding the failure sat one entry down, which is the
-    # state after UNSLOTH_STUDIO_NO_FILE_LOG=1 or a failed log setup.
+    # No live session: the newest file across every family, NOT any retained server log, which would open the tab on a
+    # previous run while the llama log holding the failure sat one entry down.
+    # That is the state after UNSLOTH_STUDIO_NO_FILE_LOG=1 or a failed log setup.
     return max(sources, key = lambda s: s.modified_at).id
 
 

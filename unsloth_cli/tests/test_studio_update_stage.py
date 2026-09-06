@@ -221,8 +221,8 @@ def test_stage_refuses_when_the_previous_stage_could_not_be_cleared(monkeypatch,
     _make_venv(tmp_path)
     stale = _studio_stage.stage_root(tmp_path)
     (stale / "leftover").mkdir(parents = True)
-    # discard() swallows its errors, so a locked or undeletable tree would otherwise
-    # be staged into and shipped as if it were a fresh clone.
+    # discard() swallows its errors, so a locked or undeletable tree would otherwise be staged into and
+    # shipped as if it were a fresh clone.
     monkeypatch.setattr(_studio_stage, "discard", lambda root: None)
 
     with pytest.raises(_studio_stage.StageError, match = "could not clear"):
@@ -357,8 +357,8 @@ def test_stage_relocates_the_launcher_the_update_rewrote(monkeypatch, tmp_path):
     stage_venv = home / _studio_stage.STAGE_DIR_NAME / _studio_stage.VENV_NAME
 
     def reinstalling_update(root: Path, args: list[str]) -> int:
-        # What pip/uv do on every upgrade: rewrite the console script with the
-        # interpreter named by absolute path, inside the stage.
+        # What pip/uv do on every upgrade: rewrite the console script with the interpreter named by
+        # absolute path, inside the stage.
         (root / _studio_stage.VENV_NAME / "bin" / "unsloth").write_text(
             f"#!{root / _studio_stage.VENV_NAME}/bin/python\nprint('cli')\n", encoding = "utf-8"
         )
@@ -371,8 +371,8 @@ def test_stage_relocates_the_launcher_the_update_rewrote(monkeypatch, tmp_path):
     _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = reinstalling_update)
 
     launcher = (stage_venv / "bin" / "unsloth").read_text(encoding = "utf-8")
-    # Activation moves the venv out of .update-stage, so an absolute shebang into
-    # it would leave the activated backend unable to start at all.
+    # Activation moves the venv out of .update-stage, so an absolute shebang into it would leave the
+    # activated backend unable to start at all.
     assert launcher.startswith(_studio_stage.RELOCATABLE_SHEBANG)
     assert str(_studio_stage.STAGE_DIR_NAME) not in launcher.splitlines()[1]
 

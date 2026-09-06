@@ -13,10 +13,8 @@ export type ToolHistoryMessage = {
 };
 
 export type StudioToolHistoryOptions = {
-  /**
-   * When set, only these tool-call parts count. Use this to ignore provider
-   * builtins that OpenAI serialization drops, so ownership matches the payload.
-   */
+  /** When set, only these tool-call parts count. Use this to ignore provider builtins that OpenAI
+   *  serialization drops, so ownership matches the payload. */
   toolCallSurvives?: (part: ToolHistoryPart) => boolean;
 };
 
