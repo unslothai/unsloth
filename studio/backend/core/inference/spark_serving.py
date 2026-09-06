@@ -34,7 +34,8 @@ this module decides between three layouts and runs whichever one the workload al
                Groups and speculative decoding are no longer either/or: from
                ``GROUPS_X_MTP_MIN_ROWS`` (16) concurrent rows up, a split asks for both on
                a server that takes them together (the per-group speculative state of
-               unslothai/llama.cpp PR #187, probed for by passing the pair for real), and
+               unslothai/llama.cpp PR #187, probed for by running the server against a
+               model that does not exist, since the refusal is a load-time check), and
                below that crossover it keeps the speculation and drops the groups. See
                ``reconcile_split_speculation``; the status says which of the three ran.
 
@@ -75,7 +76,9 @@ import os
 import os.path as osp
 import re
 import shlex
+import socket
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
@@ -111,6 +114,11 @@ PROMPT_TOKENS_DEFAULT = 512  # the planner's measured table is keyed by prompt l
 # precondition. UNSLOTH_SPARK_PIPELINE_GROUPS=0 turns it off, =N sets the count.
 PIPELINE_GROUPS_DEFAULT = 2
 PIPELINE_GROUPS_FLAG = "--pipeline-groups"
+# The slot count travels as LoadRequest.n_parallel, whose range is llama_server_args
+# PARALLEL_MIN..PARALLEL_MAX. Mirrored here rather than imported: this module is loaded
+# by the CLI and by tests that never import the backend's request models.
+PARALLEL_MIN = 1
+PARALLEL_MAX = 64
 # MTP self speculation. A GGUF whose header has <arch>.nextn_predict_layers > 0 ships its own
 # draft head (Unsloth's Qwen3.5-4B-MTP and Qwen3.8-27B do; the Qwen3.6-35B-A3B does not). The
 # backend's speculative-decoding path (LlamaCppBackend._build_speculative_flags in "auto" mode)
@@ -204,6 +212,12 @@ SPLIT_CONFIG_SPEC = "one context + speculation"
 SPLIT_CONFIG_GROUPS = "groups, no speculation"
 SPLIT_CONFIG_PLAIN = "one context, no speculation"
 HELP_PROBE_TIMEOUT_S = 20.0  # llama-server --help; a hung binary is a missing flag
+# The load-time probe for --pipeline-groups TOGETHER with a drafter (below). The server
+# validates that pair inside load_model, before it reads the weights, so a run against a
+# model path that cannot exist reaches the verdict without touching a GPU or a real file.
+GROUPS_DRAFTER_PROBE_TIMEOUT_S = 30.0
+_GROUPS_REFUSAL_TEXT = "is not supported together with"
+_PROBE_MODEL_NAME = "unsloth-spark-pipeline-groups-probe.gguf"
 RELAUNCH_BACKOFF_S = (5.0, 15.0, 45.0)  # bounded: three attempts, then the peer stays down
 PEER_START_TIMEOUT_S = 20.0  # for the rpc-server port to accept; the model load is separate
 SUPERVISOR_INTERVAL_S = 1.0
@@ -729,15 +743,15 @@ def llama_server_supports(flag: str, binary: Optional[str] = None) -> bool:
     return re.search(re.escape(flag) + r"(?![\w-])", text) is not None
 
 
-# ``llama-server <flag> <value> [more] --help`` exit codes keyed by (binary path, mtime, the
-# probed arguments). The fork's --pipeline-groups is taken out of argv by tools/server before
-# the common parser runs and is not in the --help text, so a flag the text does not name is
-# tried for real: a build that has it strips it and prints the usage (exit 0); every other
-# build stops at "invalid argument" (exit 1). The same probe answers whether a build takes
-# the flag TOGETHER with a drafter, which tools/server also decides at argv parse time: the
-# fork before PR #187 refuses that pair ("--pipeline-groups > 1 is not supported together
-# with speculative decoding", exit 1) and the fork from a1dd7c5e8 on accepts it. One run per
-# build and argument list; a failure or a hang is cached as rejected.
+# Probe verdicts keyed by (binary path, mtime, the probed arguments). Two probes share this
+# cache. The first is ``llama-server <flag> <value> --help``: the fork's --pipeline-groups is
+# taken out of argv by tools/server before the common parser runs and is not in the --help
+# text, so a flag the text does not name is tried for real -- a build that has it strips it
+# and prints the usage (exit 0), every other build stops at "invalid argument" (exit 1). The
+# second, ``llama_server_accepts_groups_with_drafter``, answers whether a build runs the flag
+# TOGETHER with a drafter; that one CANNOT use --help, because the refusal is a check inside
+# load_model, so it runs the server against a model that does not exist and reads the output.
+# One run per build and argument list; a failure or a hang is cached as rejected.
 _ACCEPTS: Dict[Tuple[str, float, Tuple[str, ...]], bool] = {}
 
 
@@ -750,7 +764,7 @@ def llama_server_accepts(
 ) -> bool:
     """Whether the bundle's llama-server takes ``flag`` (with ``value``, and with ``extra``
     after it) ahead of ``--help`` without rejecting it. For flags a build hides from its
-    usage text, and for combinations a build validates at argv parse time. Never raises;
+    usage text. Never raises;
     False on every failure, so a flag the build may lack is never passed."""
     path = binary or llama_server_binary()
     if not path or not flag:
@@ -786,26 +800,114 @@ def llama_server_accepts(
     return accepted
 
 
+def _free_local_port() -> int:
+    """A port nothing is listening on right now, for a probe that may bind one."""
+    try:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+    except OSError:
+        return 0
+
+
 def llama_server_accepts_groups_with_drafter(
     groups: int = PIPELINE_GROUPS_DEFAULT, binary: Optional[str] = None
 ) -> bool:
     """Whether the bundle's llama-server runs ``--pipeline-groups N > 1`` TOGETHER with a
     drafter: the per-group speculative state of unslothai/llama.cpp PR #187 (a1dd7c5e8).
 
-    Neither half is in the usage text (the fork strips ``--pipeline-groups`` from argv before
-    the common parser), and the refusal is a validation, not a missing flag, so the only
-    working probe is to pass both for real ahead of ``--help``: the fork before that commit
-    exits 1 on the pair, the fork from it on strips them and prints the usage. Cached with
-    every other probe of this build; False on any doubt, which falls back to keeping the
-    speculation and dropping the groups."""
-    if int(groups or 0) <= 1:
+    This CANNOT be answered from ``--help``. ``--pipeline-groups`` is taken out of argv by
+    tools/server before the common parser and never printed, so its mere presence is the
+    ``llama_server_accepts`` probe below; but the refusal of the pair is
+    ``validate_pipeline_groups`` inside ``server_context::load_model``, which ``--help``
+    exits long before. A ``--pipeline-groups N --spec-type draft-mtp --help`` therefore
+    exits 0 on the fork that refuses the pair as well as on the fork that runs it, and a
+    probe built on it can only ever answer yes.
+
+    What does answer it: ``load_model`` validates the pair BEFORE it reads any weights, so
+    the server is run for real against a model path that cannot exist. A build that refuses
+    prints "--pipeline-groups > 1 is not supported together with speculative decoding" and
+    stops there; a build that takes the pair gets past the check and stops at the missing
+    file instead, naming it. Both exit non-zero, so the discriminator is the output, not the
+    status. Nothing is loaded, no GPU is touched and no socket is left bound (the check runs
+    before the listener); it costs a fraction of a second, once per build.
+
+    Cached with every other probe of this build; False on any doubt, which falls back to
+    keeping the speculation and dropping the groups."""
+    groups = int(groups or 0)
+    if groups <= 1:
         return False
-    return llama_server_accepts(
+    # A build without the flag at all is rejected at argv parse time, and that probe is
+    # cheap and already cached; only ask the expensive question of a build that has it.
+    if not (
+        llama_server_supports(PIPELINE_GROUPS_FLAG, binary)
+        or llama_server_accepts(PIPELINE_GROUPS_FLAG, str(groups), binary)
+    ):
+        return False
+    if not llama_server_supports(SPEC_TYPE_FLAG, binary):
+        return False
+    path = binary or llama_server_binary()
+    if not path:
+        return False
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return False
+    probe = [
         PIPELINE_GROUPS_FLAG,
-        str(int(groups)),
-        binary,
-        extra = (SPEC_TYPE_FLAG, MTP_SPEC_TYPE),
+        str(groups),
+        SPEC_TYPE_FLAG,
+        MTP_SPEC_TYPE,
+        "--parallel",
+        str(groups),
+        "-c",
+        str(groups * 512),
+        "-m",
+        _PROBE_MODEL_NAME,
+    ]
+    key = (str(path), mtime, tuple(probe))
+    cached = _ACCEPTS.get(key)
+    if cached is not None:
+        return cached
+    accepted = False
+    port = _free_local_port()
+    argv = [str(path), *probe, "--host", "127.0.0.1", "--port", str(port or 1)]
+    try:
+        # An empty directory as the working directory, so the relative model name above
+        # names a file that certainly does not exist and the probe cannot be fooled by
+        # something of that name in the caller's cwd.
+        with tempfile.TemporaryDirectory(prefix = "unsloth-spark-probe-") as workdir:
+            done = subprocess.run(
+                argv,
+                cwd = workdir,
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                timeout = GROUPS_DRAFTER_PROBE_TIMEOUT_S,
+            )
+        text = (done.stdout or b"").decode("utf-8", "replace")
+        # Positive evidence, not merely the absence of the refusal: the run has to have
+        # reached the model, which is the step straight after the check.
+        accepted = _GROUPS_REFUSAL_TEXT not in text and _PROBE_MODEL_NAME in text
+    except Exception as exc:
+        logger.info(
+            "spark serving: %s %d with a drafter probe failed for %s: %s",
+            PIPELINE_GROUPS_FLAG,
+            groups,
+            path,
+            exc,
+        )
+        accepted = False
+    _ACCEPTS[key] = accepted
+    logger.info(
+        "spark serving: %s %d together with %s %s: %s",
+        PIPELINE_GROUPS_FLAG,
+        groups,
+        SPEC_TYPE_FLAG,
+        MTP_SPEC_TYPE,
+        "accepted" if accepted else "refused",
     )
+    return accepted
 
 
 def _first_shard(path: str) -> str:
@@ -1174,8 +1276,20 @@ def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> 
     ):
         out["reason"] = f"bundle llama-server lacks {PIPELINE_GROUPS_FLAG}"
         return out
+    slots = max(groups, -(-base // groups) * groups)
+    if slots > PARALLEL_MAX:
+        # The slot count is a LoadRequest field with a range, not free-form argv: rounding
+        # UP past the maximum would be refused by the request model, so round down to the
+        # last multiple that fits and drop the groups when even one slot each does not.
+        slots = (PARALLEL_MAX // groups) * groups
+        if slots < groups:
+            out["reason"] = (
+                f"{PIPELINE_GROUPS_FLAG} not added: {groups} groups do not fit in the "
+                f"{PARALLEL_MAX}-slot maximum"
+            )
+            return out
     out["pipeline_groups"] = groups
-    out["slots"] = max(groups, -(-base // groups) * groups)
+    out["slots"] = slots
     return out
 
 
@@ -1184,14 +1298,18 @@ def layer_split_extra_args(
     port: int,
     *,
     pipeline_groups: int = 0,
-    slots: Optional[int] = None,
 ) -> List[str]:
     """What the local llama-server needs to use the peer's rpc-server. No pipeline
     flag by default: llama.cpp turns pipelining on by itself once the RPC backend
     advertises async and events, which b10796 does. ``pipeline_groups`` above 1 adds
-    the fork's ``--pipeline-groups N`` and, with ``slots``, a ``--parallel`` that
-    overrides the emitted one (extras come last and llama.cpp is last-wins, and the
-    backend reads the override back for its own slot accounting)."""
+    the fork's ``--pipeline-groups N``.
+
+    The slot count the groups need is NOT emitted here. ``-np`` / ``--parallel`` is one
+    of the flags Studio denies in a pass-through (llama_server_args._DENYLIST_GROUPS:
+    the launch owns it through LoadRequest.n_parallel, and a second one would desync the
+    slot bookkeeping), so a ``--parallel`` in these extras made the load fail with
+    HTTP 400 before llama-server was ever started. The rounded count travels as the
+    request's ``n_parallel`` instead; see ``_start_layer_split``."""
     # RPC device FIRST, local CUDA device LAST. llama.cpp assigns the output layer to the last
     # device in the list, so this order keeps the last layers, the output projection and the
     # logits on the local GPU: the wire carries only the hidden state (20 KB per row each way)
@@ -1209,8 +1327,6 @@ def layer_split_extra_args(
     out = ["--rpc", f"{peer}:{port}", "--device", "RPC0,CUDA0", "-sm", "layer", "--cache-ram", "0"]
     if pipeline_groups and int(pipeline_groups) > 1:
         out += [PIPELINE_GROUPS_FLAG, str(int(pipeline_groups))]
-        if slots is not None:
-            out += ["--parallel", str(max(1, int(slots)))]
     return out
 
 
@@ -1551,11 +1667,14 @@ class SparkServing:
         def _with_rpc_args(req: Any) -> Any:
             extra = list(getattr(req, "llama_extra_args", None) or [])
             extra += layer_split_extra_args(
-                peer,
-                port,
-                pipeline_groups = int(groups["pipeline_groups"]),
-                slots = int(groups["slots"]),
+                peer, port, pipeline_groups = int(groups["pipeline_groups"])
             )
+            updates: Dict[str, Any] = {"llama_extra_args": extra}
+            if int(groups["pipeline_groups"]) > 1:
+                # The server refuses --pipeline-groups N unless --parallel is a positive
+                # multiple of N, and the slot count is the request's field, not argv: the
+                # route resolved it into ``slots`` and the launch reads it back from here.
+                updates["n_parallel"] = max(PARALLEL_MIN, int(groups["slots"]))
             self.pipeline_groups = int(groups["pipeline_groups"])
             self.pipeline_groups_reason = groups.get("reason")
             self.split_config = groups.get("split_config")
@@ -1576,7 +1695,7 @@ class SparkServing:
                 )
             else:
                 logger.info("spark serving: no pipeline groups: %s", self.pipeline_groups_reason)
-            return self._request_with(req, {"llama_extra_args": extra})
+            return self._request_with(req, updates)
 
         def _fall_back(reason: str) -> Any:
             self.topology, self.reason = "single", reason

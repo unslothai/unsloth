@@ -144,13 +144,18 @@ def write_fake_llama_server(
     hidden_flags: tuple = (),
     refuses_groups_with_drafter: bool = False,
 ) -> Path:
-    """A stand-in for the real parser: any ``--pipeline-groups`` argument its usage does not
-    name is rejected with llama.cpp's "invalid argument" and exit 1, unless the flag is in
-    ``hidden_flags``, which is how the fork behaves (it takes the flag out of argv before
-    the common parser and never prints it).
+    """A stand-in for the real parser and the real load path.
 
-    ``refuses_groups_with_drafter`` is the fork before PR #187: it takes the flag, and takes
-    a drafter, but stops at argv parse time when it is given both."""
+    Any ``--pipeline-groups`` argument its usage does not name is rejected with llama.cpp's
+    "invalid argument" and exit 1, unless the flag is in ``hidden_flags``, which is how the
+    fork behaves (it takes the flag out of argv before the common parser and never prints it).
+
+    With ``-m`` it behaves like a launch rather than like ``--help``: it validates the groups
+    the way tools/server does inside ``load_model`` and then fails on the model file, naming
+    it. ``refuses_groups_with_drafter`` is the fork before PR #187, which stops at that
+    validation when it is given the groups and a drafter together -- and, exactly like the
+    real one, does NOT stop at ``--help``, which is why the capability cannot be probed from
+    the usage text."""
     directory.mkdir(parents = True, exist_ok = True)
     script = directory / "llama-server"
     reject = "--pipeline-groups" not in help_text and "--pipeline-groups" not in hidden_flags
@@ -160,16 +165,33 @@ def write_fake_llama_server(
         if reject
         else ""
     )
+    spec_known = "--spec-type" in help_text or "--spec-type" in hidden_flags
+    # The load path: only reached when a model is named, i.e. never by a --help probe.
+    load = (
+        'g=; s=; m=; n=; for a in "$@"; do\n'
+        '  if [ -n "$n" ]; then m="$a"; n=; continue; fi\n'
+        '  case "$a" in --pipeline-groups*) g=1;; --spec-type*|--model-draft*|-md) s=1;; '
+        "-m|--model) n=1;; esac\n"
+        "done\n"
+        'if [ -n "$m" ]; then\n'
+    )
     if refuses_groups_with_drafter:
-        check += (
-            'g=; s=; for a in "$@"; do case "$a" in --pipeline-groups*) g=1;; '
-            "--spec-type*|--model-draft*|-md) s=1;; esac; done\n"
-            'if [ -n "$g" ] && [ -n "$s" ]; then echo "error: --pipeline-groups > 1 is not '
-            'supported together with speculative decoding" >&2; exit 1; fi\n'
+        load += (
+            '  if [ -n "$g" ] && [ -n "$s" ]; then echo "error: --pipeline-groups > 1 is not '
+            'supported together with speculative decoding (--model-draft / MTP)" >&2; exit 1; fi\n'
         )
+    load += (
+        '  echo "error: llama_model_loader: failed to load model from $m" >&2\n' "  exit 1\n" "fi\n"
+    )
+    if not spec_known:
+        # A build with no --spec-type at all stops at the common parser, as llama.cpp does.
+        load = (
+            'for a in "$@"; do case "$a" in --spec-type|--spec-type=*) '
+            'echo "error: invalid argument: $a" >&2; exit 1;; esac; done\n'
+        ) + load
     script.write_text(
         "#!/bin/sh\n"
-        'echo run >> "$0.calls"\n' + check + body + "cat <<'EOF'\n" + help_text + "EOF\n",
+        'echo run >> "$0.calls"\n' + check + load + body + "cat <<'EOF'\n" + help_text + "EOF\n",
         encoding = "utf-8",
     )
     script.chmod(0o755)
@@ -377,9 +399,10 @@ def test_rpc_server_and_layer_split_arguments():
         "0",
     ]
     assert not any("pipeline" in a for a in extra), "no groups asked for: today's launch"
-    # Pipeline groups ride on the same launch, with a slot count that gives every
-    # group a slot; the --parallel here overrides the emitted one (last wins).
-    grouped = ss.layer_split_extra_args("192.168.200.13", 50052, pipeline_groups = 2, slots = 4)
+    # Pipeline groups ride on the same launch. The slot count that gives every group a
+    # slot does NOT: -np / --parallel is denied in a pass-through, so it travels as the
+    # request's n_parallel instead (see _start_layer_split).
+    grouped = ss.layer_split_extra_args("192.168.200.13", 50052, pipeline_groups = 2)
     assert grouped == [
         "--rpc",
         "192.168.200.13:50052",
@@ -391,10 +414,11 @@ def test_rpc_server_and_layer_split_arguments():
         "0",
         "--pipeline-groups",
         "2",
-        "--parallel",
-        "4",
     ]
-    assert ss.layer_split_extra_args("p", 1, pipeline_groups = 1, slots = 4) == extra[:0] + [
+    assert not any(
+        a in ("-np", "--parallel") for a in grouped
+    ), "--parallel in the pass-through is refused by llama_server_args and fails the load"
+    assert ss.layer_split_extra_args("p", 1, pipeline_groups = 1) == extra[:0] + [
         "--rpc",
         "p:1",
         "--device",
@@ -440,6 +464,9 @@ class _FakeRequest:
         self.llama_extra_args = kw.get("llama_extra_args")
         self.speculative_type = kw.get("speculative_type")
         self.spec_draft_n_max = kw.get("spec_draft_n_max")
+        # The real LoadRequest field the split's slot count travels in; a pass-through
+        # -np / --parallel is refused by llama_server_args, so this is the only route.
+        self.n_parallel = kw.get("n_parallel")
 
     def model_copy(self, update):
         clone = _FakeRequest(
@@ -450,6 +477,7 @@ class _FakeRequest:
             llama_extra_args = self.llama_extra_args,
             speculative_type = self.speculative_type,
             spec_draft_n_max = self.spec_draft_n_max,
+            n_parallel = self.n_parallel,
         )
         for k, v in update.items():
             setattr(clone, k, v)
@@ -943,16 +971,16 @@ def test_before_load_adds_pipeline_groups_when_the_bundle_has_the_flag(
         "0",
         "--pipeline-groups",
         "2",
-        "--parallel",
-        "4",
     ], "three slots asked for; two groups need an even count"
+    assert out.n_parallel == 4, "two groups need an even slot count, on the request field"
     assert started and started[0].name == "ggml-rpc-server"
     status = ss.status()
     assert status["topology"] == "layer_split"
     assert status["pipeline_groups"] == 2 and status["pipeline_groups_reason"] is None
     # A second load reuses the rpc-server and the cached probe: still two groups.
     out = run(ss.before_load(_FakeRequest(str(model)), 4))
-    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "4"]
+    assert out.llama_extra_args[-2:] == ["--pipeline-groups", "2"]
+    assert out.n_parallel == 4, "the slot count travels as the request field, not as argv"
     assert probe_runs(script) == 1
     run(ss.shutdown())
     status = ss.status()
@@ -1001,7 +1029,8 @@ def test_pipeline_groups_env_override_disables_or_sets_n(cluster, monkeypatch, t
     run(ss.shutdown())
     monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "3")
     out = run(ss.before_load(_FakeRequest(str(model)), 4))
-    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "3", "--parallel", "6"]
+    assert out.llama_extra_args[-2:] == ["--pipeline-groups", "3"]
+    assert out.n_parallel == 6, "the slot count travels as the request field, not as argv"
     assert ss.status()["pipeline_groups"] == 3
     run(ss.shutdown())
 
@@ -1207,10 +1236,11 @@ def test_layer_split_with_no_head_keeps_its_groups_and_launches_without_speculat
     plain = write_gguf(tmp_path / "plain.gguf", "qwen35moe")
     _patch_remote(monkeypatch)
     cluster.topology = "layer_split"
-    grouped = ["--pipeline-groups", "2", "--parallel", "4"]
+    grouped = ["--pipeline-groups", "2"]
     # No head: two groups, and the launch says off so no sidecar can make the server refuse.
     out = run(ss.before_load(_FakeRequest(str(plain)), 3))
-    assert out.llama_extra_args[-4:] == grouped and out.speculative_type == "off"
+    assert out.llama_extra_args[-2:] == grouped and out.speculative_type == "off"
+    assert out.n_parallel == 4
     assert out.spec_draft_n_max is None
     status = ss.status()
     assert status["pipeline_groups"] == 2 and status["mtp"] == "no head"
@@ -1221,7 +1251,7 @@ def test_layer_split_with_no_head_keeps_its_groups_and_launches_without_speculat
     # The env opt-out: same launch, its own reason.
     monkeypatch.setenv(ss.ENV_MTP, "0")
     out = run(ss.before_load(_FakeRequest(str(head)), 3))
-    assert out.llama_extra_args[-4:] == grouped and out.speculative_type == "off"
+    assert out.llama_extra_args[-2:] == grouped and out.speculative_type == "off"
     assert ss.status()["pipeline_groups"] == 2 and ss.status()["mtp"] == "disabled by env"
     run(ss.shutdown())
     monkeypatch.delenv(ss.ENV_MTP)
@@ -1249,7 +1279,7 @@ def test_layer_split_with_no_head_keeps_its_groups_and_launches_without_speculat
         _FakeRequest(str(head), llama_extra_args = ["--spec-type", "none"]),
     ):
         out = run(ss.before_load(request, 3))
-        assert out.llama_extra_args[-4:] == grouped, out.llama_extra_args
+        assert out.llama_extra_args[-2:] == grouped, out.llama_extra_args
         assert out.spec_draft_n_max is None
         assert ss.status()["pipeline_groups"] == 2 and ss.status()["mtp"] == "user override"
         run(ss.shutdown())
@@ -1275,7 +1305,8 @@ def test_split_takes_groups_and_speculation_above_the_crossover(cluster, monkeyp
     _patch_remote(monkeypatch)
     cluster.topology = "layer_split"
     out = run(ss.before_load(_FakeRequest(str(head)), 32))
-    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "32"]
+    assert out.llama_extra_args[-2:] == ["--pipeline-groups", "2"]
+    assert out.n_parallel == 32, "the slot count travels as the request field, not as argv"
     assert out.spec_draft_n_max == 3 and out.speculative_type is None
     status = ss.status()
     assert status["pipeline_groups"] == 2 and status["mtp"] == "enabled"
@@ -1308,7 +1339,8 @@ def test_split_crossover_sits_at_the_measured_row_count(cluster, monkeypatch, tm
         assert out.spec_draft_n_max == 3, rows
         if config == ss.SPLIT_CONFIG_BOTH:
             assert status["pipeline_groups"] == 2, rows
-            assert out.llama_extra_args[-2:] == ["--parallel", str(rows)], rows
+            assert out.llama_extra_args[-2:] == ["--pipeline-groups", "2"], rows
+            assert out.n_parallel == rows, rows
         else:
             assert status["pipeline_groups"] == 0, rows
             assert "--pipeline-groups" not in out.llama_extra_args, rows
@@ -1344,7 +1376,8 @@ def test_split_keeps_todays_behaviour_when_the_server_refuses_the_pair(
     run(ss.shutdown())
     # The same build still gets its groups for a GGUF with nothing to speculate with.
     out = run(ss.before_load(_FakeRequest(str(plain)), 32))
-    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "32"]
+    assert out.llama_extra_args[-2:] == ["--pipeline-groups", "2"]
+    assert out.n_parallel == 32, "the slot count travels as the request field, not as argv"
     assert ss.status()["split_config"] == ss.SPLIT_CONFIG_GROUPS
     assert probe_runs(script) >= 2
 
@@ -1360,8 +1393,9 @@ def test_groups_keep_parallel_a_multiple_of_the_group_count(cluster, monkeypatch
     # A pass-through --parallel wins over the load's slot count, here and in the launch.
     request = _FakeRequest(str(head), llama_extra_args = ["--parallel", "32"])
     out = run(ss.before_load(request, 4))
-    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "3", "--parallel", "33"]
-    assert int(out.llama_extra_args[-1]) % 3 == 0
+    assert out.llama_extra_args[-2:] == ["--pipeline-groups", "3"]
+    assert out.n_parallel == 33, "the slot count travels as the request field, not as argv"
+    assert out.n_parallel % 3 == 0
     assert out.spec_draft_n_max == 3
     assert ss.status()["split_config"] == ss.SPLIT_CONFIG_BOTH
     run(ss.shutdown())
@@ -1426,7 +1460,8 @@ def test_a_users_override_of_either_flag_wins_over_the_crossover(cluster, monkey
     monkeypatch.delenv(ss.ENV_PIPELINE_GROUPS)
     monkeypatch.setenv(ss.ENV_MTP, "0")
     out = run(ss.before_load(_FakeRequest(str(head)), 32))
-    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "32"]
+    assert out.llama_extra_args[-2:] == ["--pipeline-groups", "2"]
+    assert out.n_parallel == 32, "the slot count travels as the request field, not as argv"
     assert out.speculative_type == "off" and out.spec_draft_n_max is None
     status = ss.status()
     assert status["split_config"] == ss.SPLIT_CONFIG_GROUPS and status["mtp"] == "disabled by env"
@@ -1436,7 +1471,8 @@ def test_a_users_override_of_either_flag_wins_over_the_crossover(cluster, monkey
     request = _FakeRequest(str(head), llama_extra_args = ["--model-draft", "/models/draft.gguf"])
     out = run(ss.before_load(request, 32))
     assert out.llama_extra_args[:2] == ["--model-draft", "/models/draft.gguf"]
-    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "32"]
+    assert out.llama_extra_args[-2:] == ["--pipeline-groups", "2"]
+    assert out.n_parallel == 32, "the slot count travels as the request field, not as argv"
     assert out.speculative_type is None and out.spec_draft_n_max is None
     status = ss.status()
     assert status["split_config"] == ss.SPLIT_CONFIG_BOTH and status["mtp"] == "user override"
@@ -1444,7 +1480,8 @@ def test_a_users_override_of_either_flag_wins_over_the_crossover(cluster, monkey
     # Their "off", above the crossover: the groups stay, the request is left alone.
     request = _FakeRequest(str(head), speculative_type = "off")
     out = run(ss.before_load(request, 32))
-    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "32"]
+    assert out.llama_extra_args[-2:] == ["--pipeline-groups", "2"]
+    assert out.n_parallel == 32, "the slot count travels as the request field, not as argv"
     assert out.speculative_type == "off"
     assert ss.status()["split_config"] == ss.SPLIT_CONFIG_GROUPS
 
@@ -1571,3 +1608,91 @@ def test_after_load_reports_the_spec_type_that_launched(cluster, monkeypatch, tm
         "draft-mtp",
         None,
     )
+
+
+def test_the_split_never_puts_parallel_in_the_pass_through(cluster, monkeypatch, tmp_path):
+    """Regression, found on the live product path: the groups' slot count used to be
+    appended to ``llama_extra_args`` as ``--parallel N``. ``-np`` / ``--parallel`` is one of
+    the flags Studio hard-denies in a pass-through (llama_server_args._DENYLIST_GROUPS: the
+    launch owns it through LoadRequest.n_parallel), so ``POST /api/inference/load`` answered
+    400 "llama-server flag '--parallel' is managed by Unsloth Studio" and EVERY layer split
+    that asked for pipeline groups failed before llama-server was started. The count travels
+    as the request field now, and nothing the module emits may be on the denylist."""
+    from core.inference import llama_server_args
+
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    out = run(ss.before_load(_FakeRequest(str(head)), 32))
+    assert ss.status()["split_config"] == ss.SPLIT_CONFIG_BOTH
+    assert out.n_parallel == 32
+    denied = set()
+    for group in llama_server_args._DENYLIST_GROUPS:
+        denied |= set(group)
+    emitted = {a for a in out.llama_extra_args if str(a).startswith("-")}
+    assert not (emitted & denied), (emitted & denied, "the load route refuses these with 400")
+    # And the same is true of the bare emitter, whatever the group count.
+    for groups in (2, 3, 4):
+        extras = ss.layer_split_extra_args("192.168.200.13", 50052, pipeline_groups = groups)
+        assert not ({a for a in extras if a.startswith("-")} & denied)
+
+
+def test_the_slot_count_stays_inside_the_request_field_range(cluster, monkeypatch):
+    """n_parallel is a LoadRequest field with a range (PARALLEL_MIN..PARALLEL_MAX), not free
+    argv, so rounding a full server up past the maximum would be refused by the request model.
+    It rounds down to the last multiple that fits, and drops the groups when none does."""
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "3")
+    plan = ss.pipeline_groups_plan(ss.PARALLEL_MAX)
+    assert plan["pipeline_groups"] == 3 and plan["slots"] == 63 <= ss.PARALLEL_MAX
+    assert plan["requested_slots"] == ss.PARALLEL_MAX
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
+    assert ss.pipeline_groups_plan(ss.PARALLEL_MAX)["slots"] == ss.PARALLEL_MAX
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, str(ss.PARALLEL_MAX + 1))
+    plan = ss.pipeline_groups_plan(ss.PARALLEL_MAX)
+    assert plan["pipeline_groups"] == 0
+    assert "do not fit in the 64-slot maximum" in plan["reason"]
+
+
+def test_the_drafter_probe_is_a_load_not_a_help(cluster, tmp_path):
+    """Regression: the pair used to be probed with ``--pipeline-groups N --spec-type draft-mtp
+    --help``. tools/server validates that pair in ``load_model``, which ``--help`` exits long
+    before, so the probe answered yes on the fork that refuses it as well as on the fork that
+    runs it and could never have fallen back. The probe runs the server against a model that
+    cannot exist instead: the refusing build stops at the validation, the accepting build gets
+    past it and stops at the missing file."""
+    refusing = write_fake_llama_server(
+        tmp_path / "old" / "build" / "bin",
+        _FAKE_HELP_WITH_FLAG,
+        refuses_groups_with_drafter = True,
+    )
+    taking = write_fake_llama_server(tmp_path / "new" / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    # The old --help probe cannot tell them apart: both exit 0 and print the usage.
+    assert (
+        ss.llama_server_accepts(
+            "--pipeline-groups", "2", str(refusing), extra = ("--spec-type", "draft-mtp")
+        )
+        is True
+    )
+    assert (
+        ss.llama_server_accepts(
+            "--pipeline-groups", "2", str(taking), extra = ("--spec-type", "draft-mtp")
+        )
+        is True
+    )
+    # The load-time probe does.
+    assert ss.llama_server_accepts_groups_with_drafter(2, str(refusing)) is False
+    assert ss.llama_server_accepts_groups_with_drafter(2, str(taking)) is True
+    # Cached per binary, and one group is never the pair.
+    calls = probe_runs(taking)
+    assert ss.llama_server_accepts_groups_with_drafter(2, str(taking)) is True
+    assert probe_runs(taking) == calls
+    assert ss.llama_server_accepts_groups_with_drafter(1, str(taking)) is False
+    # A build with the groups but no speculation at all is not the pair either.
+    no_spec = write_fake_llama_server(
+        tmp_path / "nospec" / "build" / "bin",
+        _FAKE_HELP_WITHOUT_FLAG,
+        hidden_flags = ("--pipeline-groups",),
+    )
+    assert ss.llama_server_accepts_groups_with_drafter(2, str(no_spec)) is False
