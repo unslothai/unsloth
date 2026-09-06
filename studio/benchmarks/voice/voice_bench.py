@@ -168,10 +168,21 @@ def _fmt(x: Optional[float], unit: str = "s", nd: int = 3) -> str:
 
 
 class StudioClient:
-    def __init__(self, base_url: str, token: str, seed: int, timeout: float = 180.0):
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        seed: int,
+        timeout: float = 180.0,
+        tts_provider: Optional[dict] = None,
+    ):
+        """``tts_provider`` = {"provider_id", "model", "voice"} routes every
+        /v1/audio/speech call to that saved external TTS connection instead of the
+        model Studio has loaded (the [x-unsloth] provider_id extension)."""
         self.base = base_url.rstrip("/")
         self.seed = seed
         self.timeout = timeout
+        self.tts_provider = tts_provider
         self.s = requests.Session()
         self.s.headers["Authorization"] = f"Bearer {token}"
 
@@ -206,10 +217,13 @@ class StudioClient:
     def speak(self, text: str) -> tuple[bytes, float]:
         """Synthesize ``text`` with the benchmark seed (AudioSpeechRequest.seed is
         best-effort: honoured where the loaded TTS backend takes a seed)."""
+        body: dict = {"input": text, "seed": self.seed}
+        if self.tts_provider:
+            body.update(self.tts_provider)
         t0 = time.perf_counter()
         r = self.s.post(
             f"{self.base}/v1/audio/speech",
-            json = {"input": text, "seed": self.seed},
+            json = body,
             timeout = self.timeout,
         )
         elapsed = time.perf_counter() - t0
@@ -765,6 +779,49 @@ def diff_baseline(summary: dict, baseline_path: Path) -> None:
 # ─────────────────────────────────────────── main ─────────────────────────
 
 
+def resolve_tts_route(args, status: dict, voice_status: dict) -> tuple[Optional[dict], str, str]:
+    """Decide where /v1/audio/speech will land: (provider fields or None, voice
+    label, error). A non-empty error means the run cannot produce valid numbers.
+
+    Studio serves one resident model per slot. On main that slot is the only one:
+    /v1/audio/speech is reload-only and returns 400 unless the resident model is a
+    TTS model, while /v1/chat/completions against a resident TTS model returns
+    speech, not text. A chat model and a local voice therefore coexist only on a
+    backend with a separate voice slot (PR #10373's /api/inference/voice/*), which
+    voice_status reports as ``loaded``. Otherwise TTS needs a saved external
+    connection (--tts-provider-id), which the speech route proxies without
+    touching the resident model."""
+    if status.get("is_audio"):
+        return (
+            None,
+            "",
+            f"The resident model {status.get('active_model')!r} is a TTS model, so "
+            "/v1/chat/completions would return speech instead of text. Load the chat "
+            "model in the main slot (and the voice beside it, or use --tts-provider-id).",
+        )
+    if args.tts_provider_id:
+        if not (args.tts_model and args.tts_voice):
+            return None, "", "--tts-provider-id needs --tts-model and --tts-voice as well."
+        provider = {
+            "provider_id": args.tts_provider_id,
+            "model": args.tts_model,
+            "voice": args.tts_voice,
+        }
+        label = f"{args.tts_model}/{args.tts_voice} via connection {args.tts_provider_id}"
+        return provider, label, ""
+    if voice_status.get("loaded"):
+        return None, str(voice_status.get("model") or "(voice slot)"), ""
+    return (
+        None,
+        "",
+        "No TTS voice is loaded beside the chat model, so every /v1/audio/speech call "
+        "would return 400 (this Studio serves one resident model, and the speech route "
+        "never switches it). Either load a voice in the voice slot (Speak-with picker; "
+        "needs the conversation-mode backend, PR #10373) or route TTS to a saved "
+        "connection with --tts-provider-id/--tts-model/--tts-voice.",
+    )
+
+
 def positive_int(value: str) -> int:
     """argparse type: a count that must be >= 1 (``--repeats 0`` would measure nothing)."""
     n = int(value)
@@ -792,6 +849,15 @@ def main() -> int:
     ap.add_argument("--conversation", default = str(HERE / "conversation.json"))
     ap.add_argument("--model", default = None, help = "chat model id (default: server's active model)")
     ap.add_argument("--stt-model", default = None, help = "Whisper model id (default: server default)")
+    ap.add_argument(
+        "--tts-provider-id",
+        default = None,
+        help = "Saved external TTS connection id: route every /v1/audio/speech call there "
+        "instead of Studio's loaded model (needs --tts-model and --tts-voice). Measures a "
+        "remote round trip, but works on a Studio that serves one resident model.",
+    )
+    ap.add_argument("--tts-model", default = None, help = "model id for --tts-provider-id")
+    ap.add_argument("--tts-voice", default = None, help = "voice name for --tts-provider-id")
     ap.add_argument("--seed", type = int, default = 42)
     ap.add_argument("--temperature", type = float, default = 0.0)
     ap.add_argument("--max-tokens", type = int, default = 200)
@@ -833,12 +899,13 @@ def main() -> int:
     if not args.model:
         print("No chat model loaded. Load one in the Studio UI, then re-run.")
         return 2
-    vst = client.voice_status()
-    tts_voice = (
-        vst.get("model")
-        or vst.get("active_model")
-        or ("model-owned" if st.get("is_audio") else "(loaded voice)")
+    # Refuse up front rather than 400 on every speak(): see resolve_tts_route.
+    client.tts_provider, tts_voice, route_error = resolve_tts_route(
+        args, st, client.voice_status()
     )
+    if route_error:
+        print(route_error)
+        return 2
 
     print(f"Studio {args.base_url}  |  chat={args.model}  |  voice={tts_voice}")
 
@@ -867,6 +934,7 @@ def main() -> int:
         "model": args.model,
         "stt_model": args.stt_model,
         "tts_voice": tts_voice,
+        "tts_provider_id": args.tts_provider_id,
         "seed": args.seed,
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,

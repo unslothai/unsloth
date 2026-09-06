@@ -110,8 +110,20 @@ TTS wall-clock also drifts a little with GPU load. So TTS is judged by *latency*
 ## Running it
 
 Prereqs: Studio running (default port 8888), a **chat model** loaded, and a
-**TTS voice** loaded (Speak-with picker). Use the Studio venv python so the
-token bootstrap can import `auth.storage`:
+**TTS route**. Studio serves one resident model per slot, and on current `main`
+that slot is the only one: `/v1/audio/speech` is reload-only and returns 400
+unless the resident model *is* a TTS model, while `/v1/chat/completions` against
+a resident TTS model returns speech, not text. So a chat model and a local voice
+can only coexist on a backend with a separate **voice slot**
+(`/api/inference/voice/*`, loaded from the Speak-with picker), which is part of
+the conversation-mode backend in **PR #10373**; that PR is a prerequisite for the
+local-TTS path. On `main` alone, route TTS to a saved external connection
+instead: `--tts-provider-id <id> --tts-model <model> --tts-voice <voice>` (the
+speech route proxies it without touching the resident model; the TTS numbers
+then include a remote round trip). The harness checks which route it has at
+startup and exits 2 with the reason rather than 400-ing on every synthesis.
+
+Use the Studio venv python so the token bootstrap can import `auth.storage`:
 
 ```bash
 PY="$HOME/.unsloth/studio/unsloth_studio/Scripts/python.exe"
@@ -138,7 +150,20 @@ Useful flags: `--think` (let the chat model reason before replying — OFF by
 default, because for voice the chain-of-thought is pure first-audio latency you
 wait through before hearing a word), `--model <id>` (default = server's active
 model), `--stt-model`, `--max-tokens`, `--no-warmup`, `--no-determinism`,
-`--out <path>`.
+`--tts-provider-id` / `--tts-model` / `--tts-voice` (external TTS route, see
+above), `--out <path>`.
+
+**Gallery side effect (known, not yet suppressible):** the local
+`/v1/audio/speech` route persists every generated clip into the Studio Audio
+gallery, and the request has no opt-out, so each run adds clips: 1 warmup, one
+per turn when fixtures are first synthesized, and 2 per turn per measured pass
+(opening chunk + full reply), i.e. 9 for a default run and 25 for `--repeats 3`.
+The gallery prunes its oldest Unsloth-owned, unarchived clips beyond
+`UNSLOTH_AUDIO_GALLERY_MAX_CLIPS` (default 2000) or
+`UNSLOTH_AUDIO_GALLERY_MAX_BYTES` (default 5 GB), so heavy benchmarking can evict
+older unarchived user clips; archive anything you want to keep. A non-persisting
+option on the speech route is a backend follow-up. The external-connection path
+(`--tts-provider-id`) does not persist.
 
 ## Optimization workflow
 
@@ -178,9 +203,11 @@ not a forced product behaviour: reasoning stays **user-controlled in the UI**. I
 here so you can quantify what the model's chain-of-thought costs the first-audio
 feel and decide per use case.
 
-Landed alongside: **leading-silence trim** on TTS output and a **fixed TTS seed**
-(reproducible output on CPU; best-effort on GPU). `tts_first_s` measures the
-opening clause as a projection of a future clause-first streaming TTS.
+Measured alongside the conversation-mode backend (PR #10373), which carries the
+**leading-silence trim** on TTS output and a **fixed default TTS seed** for GGUF
+voices (reproducible output on CPU; best-effort on GPU); neither is on `main`
+yet. `tts_first_s` measures the opening clause as a projection of a future
+clause-first streaming TTS.
 
 ### Next optimizations to try (biggest lever first)
 
