@@ -570,14 +570,6 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
 # reason is stated once; see _amd_arch_index_url and install.sh's matching gate.
 _ROCM_MISCOMPUTING_GFX: "frozenset[str]" = frozenset({"gfx1033"})  # Van Gogh (Steam Deck)
 
-# Set by _ensure_rocm_torch when it declines ROCm because the SELECTED target is a
-# miscomputing arch, and read by _ensure_cpu_torch, which runs straight after it.
-# _rocm_miscomputing_host() cannot carry this case: it requires EVERY physical AMD arch to
-# be miscomputing, which is false on the mixed host (bad APU + healthy dGPU) where a device
-# mask selects the APU. Without it that host declined to INSTALL ROCm while any ROCm build
-# already in the venv stayed, under a message saying CPU torch was being kept.
-_ROCM_DECLINED_FOR_TARGET: str = ""
-
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
 # (bnb #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every AMD GPU;
 # PyPI 0.50.0 is the first release with the fix, so the fallback below is safe.
@@ -3507,15 +3499,6 @@ def _ensure_cpu_torch() -> None:
     if pin is None and _rocm_miscomputing_host():
         pin = f"{_PYTORCH_WHL_BASE}/cpu"
         _reason = "this AMD arch computes incorrectly under ROCm (studio/ROCM_RDNA2_APU.md)"
-    if pin is None and _ROCM_DECLINED_FOR_TARGET:
-        # The mixed host: _rocm_miscomputing_host() is False because a healthy dGPU is
-        # present, but the selected target is the miscomputing one, so ROCm wheels must not
-        # stay in the venv even though the inventory alone would allow them.
-        pin = f"{_PYTORCH_WHL_BASE}/cpu"
-        _reason = (
-            f"the selected target {_ROCM_DECLINED_FOR_TARGET} computes incorrectly under "
-            "ROCm (studio/ROCM_RDNA2_APU.md)"
-        )
     if pin is None:
         return
 
@@ -4675,12 +4658,6 @@ def _ensure_rocm_torch() -> None:
         # that selected the APU is declined, which install.sh's gate cannot see. The
         # documented UNSLOTH_TORCH_INDEX_URL pin returns above this block.
         if _runtime_gfx in _ROCM_MISCOMPUTING_GFX:
-            # Declining to install is not enough when the venv already holds ROCm wheels:
-            # the message below would claim CPU torch while the selected APU kept running
-            # the build this gate exists to remove. _ensure_cpu_torch() runs straight after
-            # this function and does the demotion; hand it the verdict.
-            global _ROCM_DECLINED_FOR_TARGET
-            _ROCM_DECLINED_FOR_TARGET = _runtime_gfx
             _safe_print(
                 f"   {_runtime_gfx} computes incorrect results under ROCm "
                 f"(studio/ROCM_RDNA2_APU.md) -- keeping CPU torch.\n"
