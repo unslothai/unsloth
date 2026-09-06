@@ -2774,4 +2774,6 @@ class TestTheServerIsStoppedBeforeTheCliBaselineRegardlessOfSkipUi:
         stop = between.rindex("self.stop_server()")
         # At the method's own indentation, i.e. not inside the skip_ui branch.
         line_start = between.rfind("\n", 0, stop) + 1
-        assert between[line_start:stop] == "        ", "stop_server must not sit inside the skip_ui guard"
+        assert (
+            between[line_start:stop] == "        "
+        ), "stop_server must not sit inside the skip_ui guard"

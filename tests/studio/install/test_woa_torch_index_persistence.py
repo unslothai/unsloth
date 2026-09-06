@@ -4136,7 +4136,12 @@ class TestTheCompanionWheelsArePairedWithTorch:
             ("2.15.0.dev20260101+cu134", "0.26.0.dev20260102+cu134", False, "staggered nightly"),
             ("2.15.0.dev20260101+cu134", "0.26.0+cu134", False, "a release is not that build"),
             ("2.14.0+cu134", "0.29.0+cu134", True, "GA: torchvision 0.(M+15) pairs with torch 2.M"),
-            ("2.14.0+cu134", "0.25.0+cu134", False, "GA, same tag, another release line: not a pair"),
+            (
+                "2.14.0+cu134",
+                "0.25.0+cu134",
+                False,
+                "GA, same tag, another release line: not a pair",
+            ),
             ("2.14.0+cu134", "0.29.0+cu130", False, "a different CUDA build"),
             ("2.14.0+cu134", "", False, "nothing to pair with"),
         ],
@@ -4395,11 +4400,29 @@ class TestStableCompanionsPairByReleaseLine:
         [
             ("torchvision", "2.10.0+cu134", "0.25.0+cu134", True, "the PyPI-documented pair"),
             ("torchvision", "2.10.0+cu134", "0.26.0+cu134", False, "the next GA, published early"),
-            ("torchvision", "2.10.0+cu134", "0.24.0+cu134", False, "the previous one, still served"),
+            (
+                "torchvision",
+                "2.10.0+cu134",
+                "0.24.0+cu134",
+                False,
+                "the previous one, still served",
+            ),
             ("torchaudio", "2.10.0+cu134", "2.10.1+cu134", True, "audio: major.minor"),
             ("torchaudio", "2.14.0+cu134", "2.11.0+cu134", False, "the GA mismatch round 9 found"),
-            ("torchvision", "2.15.0.dev20260101+cu134", "0.30.0.dev20260101+cu134", True, "nightly: the stamp still decides"),
-            ("torchvision", "2.15.0.dev20260101+cu134", "0.26.0.dev20260101+cu134", True, "nightly: the release offset is NOT applied to a stamped build"),
+            (
+                "torchvision",
+                "2.15.0.dev20260101+cu134",
+                "0.30.0.dev20260101+cu134",
+                True,
+                "nightly: the stamp still decides",
+            ),
+            (
+                "torchvision",
+                "2.15.0.dev20260101+cu134",
+                "0.26.0.dev20260101+cu134",
+                True,
+                "nightly: the release offset is NOT applied to a stamped build",
+            ),
         ],
     )
     def test_the_pairing(self, project, torch_v, other_v, pairs, why):
@@ -4410,15 +4433,24 @@ class TestStableCompanionsPairByReleaseLine:
                 f" -OtherVersion '{other_v}' -Project '{project}')",
             ]
         )
-        done = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-                              capture_output = True, text = True, timeout = 120)
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
         assert done.returncode == 0, done.stderr
         assert (done.stdout.strip().splitlines()[-1] == "True") is pairs, why
 
     def test_the_probe_passes_the_project_through(self):
-        for path, fn in ((INSTALL_PS1, "Test-WoaWheelPairsWithTorch"), (SETUP_PS1, "Test-WoaPairsWithTorchParity")):
+        for path, fn in (
+            (INSTALL_PS1, "Test-WoaWheelPairsWithTorch"),
+            (SETUP_PS1, "Test-WoaPairsWithTorchParity"),
+        ):
             text = path.read_text(encoding = "utf-8")
-            assert f"{fn} -TorchVersion $PairWith -OtherVersion $version -Project $Project" in text, path.name
+            assert (
+                f"{fn} -TorchVersion $PairWith -OtherVersion $version -Project $Project" in text
+            ), path.name
 
 
 class TestTheFilteredOverrideIsUvSafeAndShortLived:
@@ -4431,8 +4463,9 @@ class TestTheFilteredOverrideIsUvSafeAndShortLived:
     @requires_pwsh
     def test_the_copy_lands_in_the_given_directory_and_is_reported(self, tmp_path):
         src = tmp_path / "ovr.txt"
-        src.write_text("torch>=2.4\nhf-transfer ; platform_machine == \"AMD64\"\n", encoding = "utf-8")
-        woa = tmp_path / "woa"; woa.mkdir()
+        src.write_text('torch>=2.4\nhf-transfer ; platform_machine == "AMD64"\n', encoding = "utf-8")
+        woa = tmp_path / "woa"
+        woa.mkdir()
         script = "\n".join(
             [
                 "function Get-UvSafePath { param([string]$Path) return $Path }",
@@ -4444,8 +4477,12 @@ class TestTheFilteredOverrideIsUvSafeAndShortLived:
                 "Write-Output ('TEMPS=' + ($r.Temps -join ';'))",
             ]
         )
-        done = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-                              capture_output = True, text = True, timeout = 120)
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
         assert done.returncode == 0, done.stderr
         out = dict(l.split("=", 1) for l in done.stdout.strip().splitlines() if "=" in l)
         assert out["TEMPS"], "the created copy is not reported, so nothing can delete it"
@@ -4458,10 +4495,15 @@ class TestTheFilteredOverrideIsUvSafeAndShortLived:
 
     def test_the_caller_deletes_the_copies_on_every_exit(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        swap = text.index("New-WoaTorchStepOverrideValue -Value $_woaOverrideSaved -Dir $script:WoaDir")
+        swap = text.index(
+            "New-WoaTorchStepOverrideValue -Value $_woaOverrideSaved -Dir $script:WoaDir"
+        )
         tail = text[swap : swap + 1200]
         fin = tail.index("} finally {")
-        assert "foreach ($_woaTmp in $_woaOverrideTemps) { Remove-Item -LiteralPath $_woaTmp" in tail[fin:]
+        assert (
+            "foreach ($_woaTmp in $_woaOverrideTemps) { Remove-Item -LiteralPath $_woaTmp"
+            in tail[fin:]
+        )
 
     def test_the_woa_directory_is_published_to_script_scope(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -4476,12 +4518,16 @@ class TestSetupSwapsTheOverrideAroundItsOwnTorchInstall:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         restore = text.index("\nRestore-WoaResolverEnvironment")
         swap = text.index("New-WoaTorchStepOverrideValueParity -Value $_woaStepSaved")
-        assert restore < swap, "the swap must come after the overrides are restored, or it swaps nothing"
+        assert (
+            restore < swap
+        ), "the swap must come after the overrides are restored, or it swaps nothing"
         tail = text[swap : swap + 1600]
         assert "Fast-Install @_cudaTrio" in tail
         fin = tail.index("} finally {")
         assert "if ($_woaStepSwapped) { $env:UV_OVERRIDE = $_woaStepSaved }" in tail[fin:]
-        assert "foreach ($_woaTmp in $_woaStepTemps) { Remove-Item -LiteralPath $_woaTmp" in tail[fin:]
+        assert (
+            "foreach ($_woaTmp in $_woaStepTemps) { Remove-Item -LiteralPath $_woaTmp" in tail[fin:]
+        )
 
     def test_only_a_native_venv_swaps(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
@@ -4502,8 +4548,12 @@ class TestSetupSwapsTheOverrideAroundItsOwnTorchInstall:
                 "Get-Content -LiteralPath $r.Value | ForEach-Object { Write-Output $_ }",
             ]
         )
-        done = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-                              capture_output = True, text = True, timeout = 120)
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
         assert done.returncode == 0, done.stderr
         lines = [l for l in done.stdout.splitlines() if l.strip()]
         assert lines == ["pyarrow==21.0.0"], lines
@@ -4521,7 +4571,11 @@ class TestNvidiaEvidenceSurvivesTheFastPath:
         assert "Get-PinnedTorchIndexUrl" in block
         assert "Get-PersistedWoaTorchIndex -VenvPath $VenvDir" in block
         assert "Get-WoaTorchIndexMarker" in block
-        assert block.index("Get-PinnedTorchIndexUrl") < block.index("Get-PersistedWoaTorchIndex") < block.index("Get-WoaTorchIndexMarker"), "same order as the dependency pass"
+        assert (
+            block.index("Get-PinnedTorchIndexUrl")
+            < block.index("Get-PersistedWoaTorchIndex")
+            < block.index("Get-WoaTorchIndexMarker")
+        ), "same order as the dependency pass"
 
     def test_the_evidence_uses_that_index(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
@@ -4571,8 +4625,12 @@ class TestThePyPIProbeHonoursUvConfiguration:
             ]
         )
         (tmp_path / "proj").mkdir(exist_ok = True)
-        done = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
-                              capture_output = True, text = True, timeout = 120)
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
         assert done.returncode == 0, done.stderr
         return done.stdout.strip().splitlines()[-1]
 
@@ -4582,20 +4640,84 @@ class TestThePyPIProbeHonoursUvConfiguration:
         [
             ({}, {}, "True", "nothing configured: PyPI"),
             ({"proj/uv.toml": "no-index = true\n"}, {}, "False", "project uv.toml no-index"),
-            ({"proj/uv.toml": 'default-index = "https://pypi.corp.test/simple"\n'}, {}, "False", "exclusive default-index"),
-            ({"proj/uv.toml": 'index-url = "https://pypi.corp.test/simple"\n'}, {}, "False", "the older spelling"),
-            ({"proj/uv.toml": '[pip]\nno-index = true\n'}, {}, "False", "under [pip], which uv pip reads"),
-            ({"proj/uv.toml": '[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n'}, {}, "False", "an [[index]] with default = true replaces PyPI"),
-            ({"proj/uv.toml": '[[index]]\nurl = "https://pypi.corp.test/simple"\n'}, {}, "True", "an extra index leaves PyPI in play"),
-            ({"proj/pyproject.toml": '[tool.uv]\nno-index = true\n'}, {}, "False", "pyproject [tool.uv]"),
-            ({"proj/pyproject.toml": '[project]\nname = "x"\n'}, {}, "True", "a pyproject without [tool.uv] is ignored"),
+            (
+                {"proj/uv.toml": 'default-index = "https://pypi.corp.test/simple"\n'},
+                {},
+                "False",
+                "exclusive default-index",
+            ),
+            (
+                {"proj/uv.toml": 'index-url = "https://pypi.corp.test/simple"\n'},
+                {},
+                "False",
+                "the older spelling",
+            ),
+            (
+                {"proj/uv.toml": "[pip]\nno-index = true\n"},
+                {},
+                "False",
+                "under [pip], which uv pip reads",
+            ),
+            (
+                {
+                    "proj/uv.toml": '[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n'
+                },
+                {},
+                "False",
+                "an [[index]] with default = true replaces PyPI",
+            ),
+            (
+                {"proj/uv.toml": '[[index]]\nurl = "https://pypi.corp.test/simple"\n'},
+                {},
+                "True",
+                "an extra index leaves PyPI in play",
+            ),
+            (
+                {"proj/pyproject.toml": "[tool.uv]\nno-index = true\n"},
+                {},
+                "False",
+                "pyproject [tool.uv]",
+            ),
+            (
+                {"proj/pyproject.toml": '[project]\nname = "x"\n'},
+                {},
+                "True",
+                "a pyproject without [tool.uv] is ignored",
+            ),
             ({"uv.toml": "no-index = true\n"}, {}, "False", "found in a parent directory"),
             ({"appdata/uv/uv.toml": "no-index = true\n"}, {}, "False", "the user file"),
-            ({"proj/uv.toml": "no-index = false\n", "appdata/uv/uv.toml": "no-index = true\n"}, {}, "True", "project outranks user for a scalar"),
-            ({"proj/uv.toml": "no-index = true\n"}, {"UV_NO_CONFIG": "1"}, "True", "UV_NO_CONFIG discovers nothing"),
-            ({"proj/uv.toml": "no-index = true\n"}, {"UV_DEFAULT_INDEX": "https://pypi.org/simple"}, "True", "an index in the environment outranks every file"),
-            ({"other.toml": "no-index = true\n"}, {"UV_CONFIG_FILE": "__TMP__/other.toml"}, "False", "UV_CONFIG_FILE names the one file read"),
-            ({"proj/uv.toml": 'index = [{ url = "https://pypi.corp.test/simple", default = true }]\n'}, {}, "False", "an inline table this parser does not model is not guessed at"),
+            (
+                {"proj/uv.toml": "no-index = false\n", "appdata/uv/uv.toml": "no-index = true\n"},
+                {},
+                "True",
+                "project outranks user for a scalar",
+            ),
+            (
+                {"proj/uv.toml": "no-index = true\n"},
+                {"UV_NO_CONFIG": "1"},
+                "True",
+                "UV_NO_CONFIG discovers nothing",
+            ),
+            (
+                {"proj/uv.toml": "no-index = true\n"},
+                {"UV_DEFAULT_INDEX": "https://pypi.org/simple"},
+                "True",
+                "an index in the environment outranks every file",
+            ),
+            (
+                {"other.toml": "no-index = true\n"},
+                {"UV_CONFIG_FILE": "__TMP__/other.toml"},
+                "False",
+                "UV_CONFIG_FILE names the one file read",
+            ),
+            (
+                {
+                    "proj/uv.toml": 'index = [{ url = "https://pypi.corp.test/simple", default = true }]\n'
+                },
+                {},
+                "False",
+                "an inline table this parser does not model is not guessed at",
+            ),
         ],
     )
     def test_where_the_resolve_will_look(self, tmp_path, files, env, expected, why):

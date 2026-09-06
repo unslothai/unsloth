@@ -1014,8 +1014,17 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
 
     @pytest.fixture(autouse = True)
     def _clean(self, monkeypatch, tmp_path):
-        for var in ("UV_OFFLINE", "PIP_NO_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL",
-                    "UV_NO_CONFIG", "UV_CONFIG_FILE", "APPDATA", "PROGRAMDATA"):
+        for var in (
+            "UV_OFFLINE",
+            "PIP_NO_INDEX",
+            "UV_DEFAULT_INDEX",
+            "UV_INDEX_URL",
+            "PIP_INDEX_URL",
+            "UV_NO_CONFIG",
+            "UV_CONFIG_FILE",
+            "APPDATA",
+            "PROGRAMDATA",
+        ):
             monkeypatch.delenv(var, raising = False)
         (tmp_path / "proj").mkdir()
         (tmp_path / "xdg").mkdir()
@@ -1035,13 +1044,29 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
         "rel, body, why",
         [
             ("proj/uv.toml", "no-index = true\n", "no-index"),
-            ("proj/uv.toml", 'default-index = "https://pypi.corp.test/simple"\n', "exclusive default-index"),
+            (
+                "proj/uv.toml",
+                'default-index = "https://pypi.corp.test/simple"\n',
+                "exclusive default-index",
+            ),
             ("proj/uv.toml", 'index-url = "https://pypi.corp.test/simple"\n', "the older spelling"),
             ("proj/uv.toml", "[pip]\nno-index = true\n", "under [pip]"),
-            ("proj/uv.toml", '[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n', "[[index]] default = true"),
-            ("proj/uv.toml", 'index = [{ url = "https://pypi.corp.test/simple", default = true }]\n', "inline table"),
+            (
+                "proj/uv.toml",
+                '[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n',
+                "[[index]] default = true",
+            ),
+            (
+                "proj/uv.toml",
+                'index = [{ url = "https://pypi.corp.test/simple", default = true }]\n',
+                "inline table",
+            ),
             ("proj/pyproject.toml", "[tool.uv]\nno-index = true\n", "pyproject [tool.uv]"),
-            ("proj/pyproject.toml", '[tool.uv.pip]\nindex-url = "https://pypi.corp.test/simple"\n', "pyproject [tool.uv.pip]"),
+            (
+                "proj/pyproject.toml",
+                '[tool.uv.pip]\nindex-url = "https://pypi.corp.test/simple"\n',
+                "pyproject [tool.uv.pip]",
+            ),
             ("uv.toml", "no-index = true\n", "a parent directory"),
             ("xdg/uv/uv.toml", "no-index = true\n", "the user file"),
         ],
@@ -1101,5 +1126,7 @@ class TestSqliteVecIsAnExplicitOptionalToo:
         """The premise: without an explicit install nothing asks for it."""
         for name in ("pyproject.toml", "studio/backend/requirements/studio.txt"):
             text = (REPO_ROOT / name).read_text(encoding = "utf-8")
-            rows = [l for l in text.splitlines() if "sqlite-vec" in l and not l.strip().startswith("#")]
+            rows = [
+                l for l in text.splitlines() if "sqlite-vec" in l and not l.strip().startswith("#")
+            ]
             assert rows and all("ARM64" in r for r in rows), name
