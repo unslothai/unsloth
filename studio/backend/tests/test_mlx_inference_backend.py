@@ -4094,3 +4094,45 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     guard = body.index("async with mcp_server_snapshot_guard():")
     snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
+
+
+# --- VLM prompt snapshots -------------------------------------------------------
+
+
+def _fake_image(
+    pixels,
+    raw = None,
+    orientation = None,
+):
+    """A PIL-like image whose RGB conversion holds ``pixels``; a palette image's own
+    bytes are indices (``raw``) saying nothing about its colors."""
+    rgb = SimpleNamespace(mode = "RGB", size = (2, 2), tobytes = lambda: pixels)
+    return SimpleNamespace(
+        mode = "P" if raw else "RGB",
+        size = (2, 2),
+        tobytes = lambda: raw or pixels,
+        convert = lambda _mode: rgb,
+        getexif = lambda: {0x0112: orientation} if orientation else {},
+    )
+
+
+def test_mlx_vlm_snapshots_are_keyed_by_what_the_vision_tower_sees():
+    from core.inference.mlx_inference import MLXInferenceBackend as backend
+
+    digest = backend._vlm_image_digest
+    assert digest([_fake_image(b"aaaa")]) == digest([_fake_image(b"aaaa")])
+    assert digest([_fake_image(b"aaaa")]) != digest([_fake_image(b"bbbb")])
+    assert digest([_fake_image(b"red!", raw = b"idx")]) != digest([_fake_image(b"blue", raw = b"idx")])
+    assert digest([_fake_image(b"aaaa")]) != digest([_fake_image(b"aaaa", orientation = 6)])
+    assert digest([_fake_image(b"aaaa")]) != digest([_fake_image(b"aaaa"), _fake_image(b"bbbb")])
+
+
+def test_vlm_add_special_tokens_falls_back_to_the_inline_rule(monkeypatch):
+    from core.inference.mlx_inference import _vlm_add_special_tokens as rule
+
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", types.ModuleType("mlx_vlm.utils"))
+    template = SimpleNamespace(chat_template = "t")
+    assert rule("gemma4", template) is False and rule("gemma4", SimpleNamespace()) is True
+    assert rule("qwen2_vl", template) is True
+    sys.modules["mlx_vlm.utils"].should_add_special_tokens = lambda *_: "mlx-vlm's answer"
+    assert rule("gemma4", template) == "mlx-vlm's answer"
