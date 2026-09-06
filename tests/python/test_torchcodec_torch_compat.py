@@ -387,3 +387,30 @@ def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
                 assert not marker.evaluate(
                     {**env, **case}
                 ), f"{name} has no wheel for {case} and must not be resolved there"
+
+
+def test_the_2_11_row_does_not_flag_an_abi_stable_codec():
+    """Adding the 2.11 row without the ABI-stable short-circuit is a false positive.
+
+    torchcodec 0.12+ is built against torch >=2.11 and upstream supports the pairing, but a
+    bare `"2.11": {"0.11"}` row makes rule_inst_004 report every 0.12..0.15 against torch
+    2.11 -- and that rule is error severity. Before the 2.11 row existed the lookup simply
+    missed and stayed silent, so the row and this exemption have to land together.
+    """
+    from scripts import notebook_validator as nv
+
+    for codec in ("0.12.0", "0.15.0"):
+        colab = {"torch": "2.11.0+cu128", "torchcodec": codec}
+        assert nv.rule_inst_004_torchcodec_torch("", colab, "nb.ipynb", 0) == [], codec
+
+    # Still lockstep below the ABI floor: 2.11 with 0.10 is the mismatch this PR exists for.
+    mismatched = nv.rule_inst_004_torchcodec_torch(
+        "", {"torch": "2.11.0+cu128", "torchcodec": "0.10.0+cu128"}, "nb.ipynb", 0
+    )
+    assert [f.rule for f in mismatched] == ["R-INST-004"]
+
+    # And torch 2.10 is not covered by the exemption, so a 0.12 codec there still reports.
+    old_torch = nv.rule_inst_004_torchcodec_torch(
+        "", {"torch": "2.10.0+cu128", "torchcodec": "0.12.0"}, "nb.ipynb", 0
+    )
+    assert [f.rule for f in old_torch] == ["R-INST-004"]

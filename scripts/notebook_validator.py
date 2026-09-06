@@ -97,6 +97,11 @@ COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-i
 # torch.minor -> compatible torchcodec.minor strings. Source: pytorch/torchcodec README compatibility matrix.
 # ----- Compat tables. PRs add rows as new releases land. ----- #
 
+# Lockstep rows only: torchcodec 0.12+ is ABI-stable against torch >=2.11 and is handled by
+# the short-circuit in rule_inst_004_torchcodec_torch rather than by a row here.
+TORCHCODEC_ABI_STABLE_TORCH = "2.11"
+TORCHCODEC_ABI_STABLE_CODEC = "0.12"
+
 TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.11": {"0.11"},
     "2.10": {"0.10"},
@@ -608,6 +613,15 @@ def rule_inst_004_torchcodec_torch(
     torch_v = res.get("torch")
     codec_v = res.get("torchcodec")
     if not torch_v or not codec_v:
+        return findings
+    # torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION
+    # to 2.11), so that half of the matrix is open-ended and cannot be a finite set of minors.
+    # Without this, adding the 2.11 row below would flag torch 2.11 with torchcodec 0.12
+    # through 0.15, all of which upstream supports, and R-INST-004 is an error.
+    if (
+        cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) >= 0
+        and cmp_versions(codec_v, TORCHCODEC_ABI_STABLE_CODEC) >= 0
+    ):
         return findings
     t_minor = version_minor(torch_v)
     c_minor = version_minor(codec_v)
