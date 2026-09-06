@@ -754,7 +754,9 @@ export function ApiMonitorPage(): ReactElement {
               size="sm"
               placeholder="Load"
               disabled={loadingModel !== null}
-              className="h-9 gap-1.5 rounded-full"
+              hideChevron
+              triggerLabelClassName="font-sans text-sm text-foreground dark:text-foreground"
+              className="h-9 gap-1.5 rounded-full px-3 disabled:opacity-50 bg-background dark:border-transparent dark:bg-white/[0.06] hover:bg-accent/50 dark:hover:bg-white/10"
             />
           </span>
           <Button
