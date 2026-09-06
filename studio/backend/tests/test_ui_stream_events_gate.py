@@ -407,9 +407,10 @@ def test_the_launcher_default_does_not_claim_a_stream_it_cannot_prompt(monkeypat
     asked = _gate_payload(enable_tools = True, enabled_tools = None)
     assert _launcher_tool_default_applies(asked, False) is True
     assert _confirm_gate_has_no_channel(asked, False) is True
-    assert _launcher_tool_default_applies(
-        _gate_payload(enable_tools = None, tool_choice = "none"), False
-    ) is False
+    assert (
+        _launcher_tool_default_applies(_gate_payload(enable_tools = None, tool_choice = "none"), False)
+        is False
+    )
 
 
 def test_both_local_branches_consult_the_launcher_default_rule():

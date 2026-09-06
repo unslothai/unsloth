@@ -3980,7 +3980,11 @@ def _tool_calls_are_disabled(payload) -> bool:
     return getattr(payload, "max_tool_calls_per_message", None) == 0
 
 
-def _confirm_gate_has_no_channel(payload, ui_events: bool, selected_names = None) -> bool:
+def _confirm_gate_has_no_channel(
+    payload,
+    ui_events: bool,
+    selected_names = None,
+) -> bool:
     """Whether a confirm gate that will prompt has no way to ask this caller.
 
     Two ways to have nowhere to ask. The gate writes its prompt to the stream, so a
