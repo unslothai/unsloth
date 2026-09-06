@@ -600,7 +600,11 @@ def test_the_reporters_wait_for_an_EXECUTED_NOTEBOOK_not_just_a_directory():
             )
 
 
-def _fake_gh(monkeypatch, resolve_to = None, post_ok = True):
+def _fake_gh(
+    monkeypatch,
+    resolve_to = None,
+    post_ok = True,
+):
     """Stand in for `gh`, recording every call. `resolve_to` is what
     `repos/../commits/<sha>` answers; None means the commit is gone."""
     calls: list[list[str]] = []
@@ -670,7 +674,9 @@ def test_every_workflow_posts_through_the_shared_poster_and_none_keeps_a_shell_l
 # ---------------------------------------------- post, then delete; never the reverse
 
 
-@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF), ids = ("notebook", "studio", "collect"))
+@pytest.mark.parametrize(
+    "path", (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF), ids = ("notebook", "studio", "collect")
+)
 def test_collection_never_deletes_and_the_release_step_comes_after_posting(path):
     """A verdict that does not reach GitHub must leave its kernel on Kaggle
     for the next pass. So the collect step runs --no-delete, the poster runs,
@@ -678,15 +684,24 @@ def test_collection_never_deletes_and_the_release_step_comes_after_posting(path)
     body = path.read_text(encoding = "utf-8")
     steps = [(name, step) for _job, name, step in _steps(_wf(path))]
     collect_steps = [
-        s for _n, s in steps if "kaggle_t4_ci/collect.py" in (s.get("run") or "") and "--delete-collected" not in s["run"]
+        s
+        for _n, s in steps
+        if "kaggle_t4_ci/collect.py" in (s.get("run") or "")
+        and "--delete-collected" not in s["run"]
     ]
     assert collect_steps, f"{path.name} never collects"
     for step in collect_steps:
-        assert "--no-delete" in step["run"], f"{path.name} collects with deletion on:\n{step['run']}"
+        assert (
+            "--no-delete" in step["run"]
+        ), f"{path.name} collects with deletion on:\n{step['run']}"
     names = [n for n, _s in steps]
     post = next(i for i, (n, s) in enumerate(steps) if "post_statuses.py" in (s.get("run") or ""))
-    release = next(i for i, (n, s) in enumerate(steps) if "--delete-collected" in (s.get("run") or ""))
-    assert release > post, f"{path.name} releases kernels before posting: {names[release]!r} before {names[post]!r}"
+    release = next(
+        i for i, (n, s) in enumerate(steps) if "--delete-collected" in (s.get("run") or "")
+    )
+    assert (
+        release > post
+    ), f"{path.name} releases kernels before posting: {names[release]!r} before {names[post]!r}"
     assert "--posted kaggle_collected/posted.json" in steps[release][1]["run"]
 
 
@@ -715,7 +730,9 @@ def test_a_kernel_whose_status_did_not_post_is_KEPT_for_the_next_pass(tmp_path, 
     assert outcome["kept"] == ["me/refused"]
 
 
-def test_no_delivery_record_at_all_keeps_every_kernel_that_had_something_to_post(tmp_path, monkeypatch):
+def test_no_delivery_record_at_all_keeps_every_kernel_that_had_something_to_post(
+    tmp_path, monkeypatch
+):
     """The poster never ran (the job died between the two steps). Deleting
     then would lose every verdict of the pass."""
     deleted: list[str] = []
@@ -742,7 +759,19 @@ def test_a_refused_post_is_red_and_recorded(monkeypatch, tmp_path):
     assert outcome["failed"] == [_STATUS["slug"]]
     result = tmp_path / "r.json"
     result.write_text(json.dumps({"statuses": [dict(_STATUS)]}))
-    monkeypatch.setattr(sys, "argv", ["post_statuses", "--result", str(result), "--out", str(tmp_path / "p.json"), "--repo", "o/r"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "post_statuses",
+            "--result",
+            str(result),
+            "--out",
+            str(tmp_path / "p.json"),
+            "--repo",
+            "o/r",
+        ],
+    )
     assert post_statuses.main() == 1
     assert json.loads((tmp_path / "p.json").read_text())["failed"] == [_STATUS["slug"]]
 
@@ -763,9 +792,27 @@ def test_two_kernels_for_one_commit_and_context_post_ONE_status_and_a_failure_wi
     """Notebook slot 1 and slot 2 on one sha: two kernels, one context. Two
     statuses would race, and the last posted would be the visible verdict."""
     records = [
-        {"slug": "me/one", "sha": "abcdef01", "kind": "notebook", "verdict": "pass", "reason": "all passed"},
-        {"slug": "me/two", "sha": "abcdef01", "kind": "notebook", "verdict": "fail", "reason": "1 of 5 failed"},
-        {"slug": "me/other", "sha": "abcdef02", "kind": "notebook", "verdict": "pass", "reason": "all passed"},
+        {
+            "slug": "me/one",
+            "sha": "abcdef01",
+            "kind": "notebook",
+            "verdict": "pass",
+            "reason": "all passed",
+        },
+        {
+            "slug": "me/two",
+            "sha": "abcdef01",
+            "kind": "notebook",
+            "verdict": "fail",
+            "reason": "1 of 5 failed",
+        },
+        {
+            "slug": "me/other",
+            "sha": "abcdef02",
+            "kind": "notebook",
+            "verdict": "pass",
+            "reason": "all passed",
+        },
     ]
     statuses = collect.statuses_from(records)
     assert len(statuses) == 2
@@ -777,7 +824,13 @@ def test_two_kernels_for_one_commit_and_context_post_ONE_status_and_a_failure_wi
 
 
 def test_a_description_is_one_line():
-    record = {"slug": "me/k", "sha": "abcdef01", "kind": "notebook", "verdict": "fail", "reason": "a\nb\tc"}
+    record = {
+        "slug": "me/k",
+        "sha": "abcdef01",
+        "kind": "notebook",
+        "verdict": "fail",
+        "reason": "a\nb\tc",
+    }
     assert collect.statuses_from([record])[0]["description"] == "fail: a b c"
 
 
@@ -800,7 +853,11 @@ def test_an_incomplete_download_judges_nothing_and_keeps_the_kernel(tmp_path, mo
     notebooks as whatever the surviving half says, and deleting would make
     that permanent."""
     deleted: list[str] = []
-    monkeypatch.setattr(launch, "fetch_evidence", lambda slug, dest, deadline = None: {"notebooks": ["a"], "truncated": True})
+    monkeypatch.setattr(
+        launch,
+        "fetch_evidence",
+        lambda slug, dest, deadline = None: {"notebooks": ["a"], "truncated": True},
+    )
     monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
     monkeypatch.setattr(launch, "delete_kernel", lambda slug: deleted.append(slug) or True)
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
@@ -815,8 +872,14 @@ def test_a_kernel_another_collector_finished_first_posts_nothing(tmp_path, monke
     The loser of that race must not post an `infra` on top of the winner's
     real verdict."""
 
-    def _gone(slug, dest, deadline = None):
-        raise RuntimeError("404 Client Error: Not Found for url: https://www.kaggle.com/api/v1/kernels/output")
+    def _gone(
+        slug,
+        dest,
+        deadline = None,
+    ):
+        raise RuntimeError(
+            "404 Client Error: Not Found for url: https://www.kaggle.com/api/v1/kernels/output"
+        )
 
     deleted: list[str] = []
     monkeypatch.setattr(launch, "fetch_evidence", _gone)
@@ -835,7 +898,11 @@ def test_an_unreadable_report_is_infra_not_a_crash(tmp_path, monkeypatch):
     def _boom(dest):
         raise AttributeError("'list' object has no attribute 'get'")
 
-    monkeypatch.setattr(launch, "fetch_evidence", lambda slug, dest, deadline = None: {"notebooks": ["a"], "truncated": False})
+    monkeypatch.setattr(
+        launch,
+        "fetch_evidence",
+        lambda slug, dest, deadline = None: {"notebooks": ["a"], "truncated": False},
+    )
     monkeypatch.setattr(launch, "extract_reports", _boom)
     monkeypatch.setattr(launch, "delete_kernel", lambda slug: True)
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
@@ -857,7 +924,11 @@ def test_the_expected_report_count_travels_inside_the_kernel(tmp_path, monkeypat
     from. Judging a five-payload kernel against `--expect 1` turns a run that
     lost four of them into a pass; the driver's own sentinel is the record."""
 
-    def _fetch(slug, dest, deadline = None):
+    def _fetch(
+        slug,
+        dest,
+        deadline = None,
+    ):
         dest.mkdir(parents = True, exist_ok = True)
         (dest / "kernel.log").write_text(
             'KAGGLE_T4_CI_DRIVER_EXPECT {"reports": 5}\nT4_SMOKE_REPORT {"label": "a", "passed": true}\n',
@@ -880,7 +951,12 @@ def test_the_built_driver_records_its_own_expected_report_count():
     sys.path.insert(0, str(CI_DIR))
     import build_kernel
 
-    payloads = {"t4_a.ipynb": {"cells": []}, "t4_b.ipynb": {"cells": []}, "studio_install.ipynb": {"cells": []}}
+    payloads = {
+        "t4_a.ipynb": {"cells": []},
+        "t4_b.ipynb": {"cells": []},
+        "studio_install.ipynb": {"cells": []},
+    }
+
     def _source(nb):
         return "".join("".join(cell.get("source", [])) for cell in nb["cells"])
 
@@ -892,7 +968,9 @@ def test_the_built_driver_records_its_own_expected_report_count():
 
 def test_the_scheduled_collector_no_longer_guesses_the_payload_count():
     body = COLLECT_WF.read_text(encoding = "utf-8")
-    assert "--expect" not in body, "the scheduled collector still applies one flat --expect to every kernel"
+    assert (
+        "--expect" not in body
+    ), "the scheduled collector still applies one flat --expect to every kernel"
 
 
 # ------------------------------------------------------------- the reaper's reach
@@ -915,7 +993,9 @@ def test_a_kernel_far_past_the_ceiling_is_still_seen(monkeypatch):
 # ------------------------------------------------------- who is allowed to be quiet
 
 
-def test_the_scheduled_collector_fails_loudly_when_it_cannot_authenticate(tmp_path, monkeypatch, capsys):
+def test_the_scheduled_collector_fails_loudly_when_it_cannot_authenticate(
+    tmp_path, monkeypatch, capsys
+):
     """Its token is the repository's own. A green pass that collected nothing
     would hide an expired credential while every dispatched kernel bills to
     its ceiling and every commit stays pending."""
@@ -942,10 +1022,14 @@ def test_the_collector_installs_the_client_the_gpu_workflows_install():
     nobody."""
     pins = {}
     for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
-        found = re.findall(r"pip install [^\n]*'kaggle==([0-9][^']*)'", path.read_text(encoding = "utf-8"))
+        found = re.findall(
+            r"pip install [^\n]*'kaggle==([0-9][^']*)'", path.read_text(encoding = "utf-8")
+        )
         assert found, f"{path.name} pins no kaggle client"
         pins[path.name] = set(found)
-    assert len(set().union(*pins.values())) == 1, f"the workflows disagree on the kaggle client: {pins}"
+    assert (
+        len(set().union(*pins.values())) == 1
+    ), f"the workflows disagree on the kaggle client: {pins}"
 
 
 # -------------------------------------------------- what a dispatch is allowed to be
@@ -958,7 +1042,18 @@ def test_dispatch_refuses_a_ref_that_is_not_a_commit(monkeypatch, capsys):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["launch", "--notebook", "k.ipynb", "--outdir", "out", "--dispatch", "--kind", "studio", "--commit-sha", "main"],
+        [
+            "launch",
+            "--notebook",
+            "k.ipynb",
+            "--outdir",
+            "out",
+            "--dispatch",
+            "--kind",
+            "studio",
+            "--commit-sha",
+            "main",
+        ],
     )
     with pytest.raises(SystemExit) as exc:
         launch.main()
@@ -972,7 +1067,9 @@ def test_the_studio_workflow_resolves_its_ref_to_a_commit_before_dispatching():
     for path in (NOTEBOOK_WF, STUDIO_WF):
         step = next(s for _j, n, s in _steps(_wf(path)) if n == "Resolve the ref under test")
         run = step["run"]
-        assert "git ls-remote" in run and "[0-9a-f]{40}" in run, f"{path.name} does not resolve refs"
+        assert (
+            "git ls-remote" in run and "[0-9a-f]{40}" in run
+        ), f"{path.name} does not resolve refs"
         assert "exit 1" in run, f"{path.name} dispatches on an unresolved ref"
 
 
@@ -980,5 +1077,7 @@ def test_the_studio_workflow_resolves_its_ref_to_a_commit_before_dispatching():
 def test_pending_is_posted_only_for_a_kernel_that_was_actually_dispatched(path):
     """launch.py exits 0 on every infrastructure stand-down. A pending status
     for a kernel that does not exist is one no collector can ever replace."""
-    step = next(s for _j, n, s in _steps(_wf(path)) if n == "Mark the dispatch pending on this commit")
+    step = next(
+        s for _j, n, s in _steps(_wf(path)) if n == "Mark the dispatch pending on this commit"
+    )
     assert step.get("if") == "steps.launch.outputs.verdict == 'dispatched'", step.get("if")

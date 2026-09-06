@@ -404,8 +404,7 @@ def collect_one(
         # lost half its notebooks as whatever the surviving half says.
         record["verdict"] = "pending"
         record["reason"] = (
-            "the evidence download was incomplete this pass; the kernel is kept "
-            "for the next one"
+            "the evidence download was incomplete this pass; the kernel is kept for the next one"
         )
         _log(f"incomplete evidence for {slug}; left for the next pass")
         return record
@@ -425,7 +424,9 @@ def collect_one(
     record["expected"] = expect
     verdict, reason = verdict_of(reports, expect)
     if record.get("report_error") and verdict == "infra":
-        reason = f"the evidence downloaded but its report could not be read ({record['report_error']})"
+        reason = (
+            f"the evidence downloaded but its report could not be read ({record['report_error']})"
+        )
     if state in launch.TERMINAL_BAD and verdict == "infra":
         reason = (
             f"the kernel ended {state} without reporting; the session died rather than the code"
@@ -508,7 +509,11 @@ def delete_collected(result_path: Path, posted_path: Path | None) -> int:
     posted for it, and holding it only bills.
     """
     data = json.loads(result_path.read_text(encoding = "utf-8"))
-    posted = json.loads(posted_path.read_text(encoding = "utf-8")) if posted_path and posted_path.exists() else {}
+    posted = (
+        json.loads(posted_path.read_text(encoding = "utf-8"))
+        if posted_path and posted_path.exists()
+        else {}
+    )
     failed = set(posted.get("failed") or [])
     if posted_path and not posted_path.exists():
         # No record of delivery at all: the poster never ran. Keep every
@@ -533,7 +538,9 @@ def delete_collected(result_path: Path, posted_path: Path | None) -> int:
         else:
             outcome["failed_delete"].append(slug)
             print(f"::warning title=Kaggle kernel not deleted::{slug} may keep billing")
-    result_path.with_name("delete_result.json").write_text(json.dumps(outcome, indent = 2), encoding = "utf-8")
+    result_path.with_name("delete_result.json").write_text(
+        json.dumps(outcome, indent = 2), encoding = "utf-8"
+    )
     return 0
 
 
@@ -590,7 +597,9 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.delete_collected:
-        return delete_collected(Path(args.delete_collected), Path(args.posted) if args.posted else None)
+        return delete_collected(
+            Path(args.delete_collected), Path(args.posted) if args.posted else None
+        )
 
     socket.setdefaulttimeout(SOCKET_TIMEOUT_SEC)
     outdir = Path(args.outdir)
