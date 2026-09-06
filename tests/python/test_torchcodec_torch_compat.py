@@ -1284,9 +1284,9 @@ def test_an_equal_strict_bound_upgrades_the_floor():
 
     colab = {"torch": "2.10.0+cu128", "torchcodec": "0.10.0+cu128"}
     assert nv._effective_version(combined, "torchcodec", "0.10.0") == ("0.11", True)
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(combined, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(combined, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
 
     # Order does not matter, and a plain `>=` is still inclusive.
     assert nv._spec_window([(">", "0.10"), (">=", "0.10"), ("<", "0.12")])[5] is True
@@ -1378,9 +1378,7 @@ def test_the_printed_codec_index_is_redacted(monkeypatch):
     assert "secret" not in shown
 
     monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/simple?token=abc")
-    assert "abc" not in ips._strip_index_url_credentials(
-        ips._torchcodec_index_url("2.11.0+cu128")
-    )
+    assert "abc" not in ips._strip_index_url_credentials(ips._torchcodec_index_url("2.11.0+cu128"))
 
     # The status line itself uses the redacting call, not the raw variable.
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
