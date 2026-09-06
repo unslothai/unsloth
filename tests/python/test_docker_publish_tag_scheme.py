@@ -83,8 +83,10 @@ def _run_pin(step: dict, tmp_path: Path, *, gh: str) -> tuple[subprocess.Complet
     (bin_dir / "gh").chmod(0o755)
     out = tmp_path / "output"
     out.write_text("", encoding = "utf-8")
-    script = step["run"].replace("${{ github.repository }}", "unslothai/unsloth").replace(
-        "${{ github.run_id }}", "424242"
+    script = (
+        step["run"]
+        .replace("${{ github.repository }}", "unslothai/unsloth")
+        .replace("${{ github.run_id }}", "424242")
     )
     assert "${{" not in script
     env = dict(os.environ)
@@ -108,7 +110,7 @@ def test_the_pin_date_is_the_run_creation_date(doc: dict, tmp_path: Path):
     res, out = _run_pin(
         step,
         tmp_path,
-        gh = 'echo "$*" >&2; printf \'2026-09-05T18:17:03Z\\n\'',
+        gh = "echo \"$*\" >&2; printf '2026-09-05T18:17:03Z\\n'",
     )
     assert res.returncode == 0, res.stdout + res.stderr
     assert out == "date=2026.09.05\n"
@@ -161,7 +163,12 @@ def _manifest_step(doc: dict, job: str) -> str:
 
 
 def _run_manifest(
-    step: str, tmp_path: Path, *, existing: list[str], tags: list[str], probe_code: str = "404"
+    step: str,
+    tmp_path: Path,
+    *,
+    existing: list[str],
+    tags: list[str],
+    probe_code: str = "404",
 ) -> tuple[subprocess.CompletedProcess, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -179,7 +186,11 @@ def _run_manifest(
         'case "$*" in\n'
         + "".join(f"  */tags/{e}) printf '200' ;;\n" for e in existing)
         # curl prints 000 and exits 7 when the connection fails
-        + ("  *) printf '000'; exit 7 ;;\n" if probe_code == "000" else f"  *) printf '{probe_code}' ;;\n")
+        + (
+            "  *) printf '000'; exit 7 ;;\n"
+            if probe_code == "000"
+            else f"  *) printf '{probe_code}' ;;\n"
+        )
         + "esac\n",
         encoding = "utf-8",
     )
