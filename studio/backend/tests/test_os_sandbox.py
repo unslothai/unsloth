@@ -3101,3 +3101,33 @@ def test_sbpl_spellings_alias_the_private_symlinks():
     assert "/etc" in os_sandbox._sbpl_path_spellings("/private/etc")
     assert "/var/db" in os_sandbox._sbpl_path_spellings("/private/var/db")
     assert "/tmp" in os_sandbox._sbpl_path_spellings("/private/tmp")
+
+
+def test_editable_install_source_trees_are_readable(monkeypatch, tmp_path):
+    """A pip install -e checkout is bound, so the tool can import Studio itself."""
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    checkout = tmp_path / "checkout" / "src"
+    checkout.mkdir(parents = True)
+    (site / "__editable__.unsloth.pth").write_text(f"{checkout}\n")
+    (site / "distutils-precedence.pth").write_text("import os; os.environ\n")
+    (site / "relative.pth").write_text("../relative-tree\n")
+    (tmp_path / "relative-tree").mkdir()
+    monkeypatch.setattr(
+        os_sandbox.sysconfig,
+        "get_paths",
+        lambda: {"purelib": str(site), "platlib": str(site)},
+    )
+    found = os_sandbox._editable_install_paths()
+    assert str(checkout) in found
+    assert str(tmp_path / "relative-tree") in found
+    # The import line is code for the site module, not a path to bind.
+    assert not any("os.environ" in path for path in found)
+    # Every entry is a real directory and each appears once.
+    assert all(os.path.isdir(path) for path in found)
+    assert len(found) == len(set(found))
+
+
+def test_linux_system_roots_cover_libexec_and_usr_local():
+    for root in ("/usr/libexec", "/usr/local/bin", "/usr/local/lib"):
+        assert root in os_sandbox._LINUX_SYSTEM_ROOTS

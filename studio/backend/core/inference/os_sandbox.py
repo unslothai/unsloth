@@ -113,6 +113,16 @@ _LINUX_SYSTEM_ROOTS = (
     "/usr/sbin",
     "/usr/lib",
     "/usr/lib64",
+    # git keeps its helpers in /usr/libexec/git-core on Fedora and RHEL, and the
+    # sandbox PATH carries /usr/local/bin, so a tool installed there would be
+    # findable and then fail to execute.
+    "/usr/libexec",
+    "/usr/local/bin",
+    "/usr/local/lib",
+    "/usr/local/lib64",
+    "/usr/local/libexec",
+    "/usr/local/sbin",
+    "/usr/local/share",
     "/usr/share",
     "/bin",
     "/sbin",
@@ -675,6 +685,50 @@ def _symlink_chain(path: str) -> list[str]:
     return hops
 
 
+def _editable_install_paths() -> list[str]:
+    """Source trees an editable install points at, so `import unsloth` works inside.
+
+    `pip install -e .` writes a .pth file (or a PEP 660 __editable__ finder) into
+    site-packages naming a checkout that lives outside every path above. Studio is
+    usually installed that way, so without these the Python tool cannot import the
+    package it is part of. Only existing directories are returned, and only from
+    .pth files in the interpreter's own site directories; the file content is read
+    as plain paths, never executed.
+    """
+    found: list[str] = []
+    site_dirs: list[str] = []
+    try:
+        paths = sysconfig.get_paths()
+        site_dirs = [paths[key] for key in ("purelib", "platlib") if paths.get(key)]
+    except (KeyError, OSError):
+        return found
+    for directory in site_dirs:
+        try:
+            entries = sorted(os.listdir(directory))
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.endswith(".pth"):
+                continue
+            try:
+                with open(os.path.join(directory, entry), "r", encoding = "utf-8") as handle:
+                    lines = handle.read(65536).splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            for line in lines:
+                line = line.strip()
+                # "import ..." lines are code the site module runs; the sandbox
+                # does not follow them, it only takes plain directory entries.
+                if not line or line.startswith("#") or line.startswith("import"):
+                    continue
+                if not os.path.isabs(line):
+                    line = os.path.join(directory, line)
+                path = os.path.abspath(line)
+                if os.path.isdir(path) and path not in found:
+                    found.append(path)
+    return found
+
+
 def _runtime_read_paths() -> tuple[str, ...]:
     """Return selected interpreter/library roots, never arbitrary inherited sys.path."""
     executable = os.path.abspath(sys.executable)
@@ -703,6 +757,7 @@ def _runtime_read_paths() -> tuple[str, ...]:
         )
     except (KeyError, OSError):
         pass
+    candidates.extend(_editable_install_paths())
 
     selected: list[str] = []
     for candidate in candidates:
