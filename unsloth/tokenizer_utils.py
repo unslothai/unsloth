@@ -68,38 +68,120 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 )
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
-# Gemma 4 base (non-it) mirrors on the Hub ship without add_bos_token: true even
-# though google/gemma-4-* does. -it variants are fine: chat_template.jinja emits
-# {{- bos_token -}}. See unslothai/unsloth#7903.
-_GEMMA4_BASE_MODEL_RE = re.compile(
-    r"^gemma-4-(?:e2b|e4b|31b|26b-a4b)(?:-unsloth-bnb-4bit)?$",
-    flags = re.IGNORECASE,
-)
+# Gemma 4 base (non-it) Hub mirrors ship without add_bos_token: true even though
+# google/gemma-4-* includes it. Detect from the loaded tokenizer / model config,
+# not the repo name: local folders and extra quant suffixes (bnb-4bit, GGUF, …)
+# do not match a Hub-id regex. -it is fine: chat_template.jinja emits bos_token.
+# See unslothai/unsloth#7903.
+_GEMMA4_INSTRUCT_EOS = "<turn|>"
 
 
-def _model_basename(model_name):
-    return model_name.rstrip("/\\").replace("\\", "/").split("/")[-1]
+def _tokenizer_objects(tokenizer):
+    """Yield the processor and its inner tokenizer once each."""
+    seen = []
+    for obj in (tokenizer, getattr(tokenizer, "tokenizer", None)):
+        if obj is None or obj in seen:
+            continue
+        seen.append(obj)
+        yield obj
 
 
-def _is_gemma4_base_model_name(model_name):
-    base = _model_basename(model_name).lower()
-    if "-it" in base:
+def _tokenizer_stored(obj, name):
+    value = getattr(obj, name, None)
+    if value is not None:
+        return value
+    init_kwargs = getattr(obj, "init_kwargs", None) or {}
+    return init_kwargs.get(name)
+
+
+def _normalize_type_name(value):
+    if value is None:
+        return ""
+    return str(value).replace("_", "").replace("-", "").lower()
+
+
+def _is_gemma4_config(config):
+    if config is None:
         return False
-    return _GEMMA4_BASE_MODEL_RE.match(base) is not None
+    candidates = [config, getattr(config, "text_config", None)]
+    for cfg in candidates:
+        if cfg is None:
+            continue
+        model_type = _normalize_type_name(getattr(cfg, "model_type", None))
+        if model_type.startswith("gemma4"):
+            return True
+        architectures = getattr(cfg, "architectures", None) or []
+        if any("gemma4" in _normalize_type_name(item) for item in architectures):
+            return True
+    return False
 
 
-def _fix_gemma4_base_bos_token(tokenizer, model_name):
-    if tokenizer is None or not _is_gemma4_base_model_name(model_name):
+def _is_gemma4_tokenizer(tokenizer):
+    if tokenizer is None:
+        return False
+    for obj in _tokenizer_objects(tokenizer):
+        if "gemma4" in _normalize_type_name(type(obj).__name__):
+            return True
+        processor_class = _normalize_type_name(_tokenizer_stored(obj, "processor_class"))
+        if processor_class == "gemma4processor":
+            return True
+        # Gemma 4 tokenizer_config always pairs these; Gemma 3 / 3n do not.
+        if _tokenizer_stored(obj, "think_token") and _tokenizer_stored(obj, "boa_token"):
+            return True
+    return False
+
+
+def _chat_template_emits_bos(tokenizer):
+    for obj in _tokenizer_objects(tokenizer):
+        template = getattr(obj, "chat_template", None)
+        if not template:
+            continue
+        chunks = template.values() if isinstance(template, dict) else (template,)
+        for chunk in chunks:
+            text = chunk if isinstance(chunk, str) else str(chunk)
+            if "bos_token" in text or "<bos>" in text:
+                return True
+    return False
+
+
+def _is_gemma4_instruct_tokenizer(tokenizer):
+    if tokenizer is None:
+        return False
+    if _chat_template_emits_bos(tokenizer):
+        return True
+    for obj in _tokenizer_objects(tokenizer):
+        if getattr(obj, "eos_token", None) == _GEMMA4_INSTRUCT_EOS:
+            return True
+    return False
+
+
+def _needs_gemma4_base_bos(tokenizer, config = None):
+    if _is_gemma4_instruct_tokenizer(tokenizer):
+        return False
+    return _is_gemma4_tokenizer(tokenizer) or _is_gemma4_config(config)
+
+
+def _enable_add_bos_token(tokenizer):
+    for obj in _tokenizer_objects(tokenizer):
+        if getattr(obj, "add_bos_token", False):
+            continue
+        try:
+            obj.add_bos_token = True
+        except Exception:
+            pass
+
+
+def _fix_gemma4_base_bos_token(tokenizer, config = None):
+    if tokenizer is None or not _needs_gemma4_base_bos(tokenizer, config = config):
         return tokenizer
-    if hasattr(tokenizer, "add_bos_token") and not tokenizer.add_bos_token:
-        tokenizer.add_bos_token = True
+    _enable_add_bos_token(tokenizer)
     return tokenizer
 
 
-def _apply_post_load_tokenizer_fixes(tokenizer, model_name, fix_tokenizer):
+def _apply_post_load_tokenizer_fixes(tokenizer, fix_tokenizer = True, config = None):
     if not fix_tokenizer:
         return tokenizer
-    return _fix_gemma4_base_bos_token(tokenizer, model_name)
+    return _fix_gemma4_base_bos_token(tokenizer, config = config)
 
 
 # A KAGGLE_* variable is not a Kaggle kernel: the Kaggle CLI reads KAGGLE_USERNAME / KAGGLE_KEY on
@@ -629,13 +711,13 @@ def _load_correct_tokenizer(
     )
 
     if not fix_tokenizer or tokenizer_name.lower() in IGNORED_TOKENIZER_NAMES:
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, tokenizer_name, fix_tokenizer)
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer)
     # Ignore Mistral ones - they're a bit weird to handle!
     elif "mistral" in tokenizer_name.lower():
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, tokenizer_name, fix_tokenizer)
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer)
     # Ignore Phi-4 ones as well
     elif "phi-4" in tokenizer_name.lower():
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, tokenizer_name, fix_tokenizer)
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer)
     elif slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
@@ -644,17 +726,16 @@ def _load_correct_tokenizer(
 
         # Confirm whether slow and fast are equivalent.
         if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-            return _apply_post_load_tokenizer_fixes(fast_tokenizer, tokenizer_name, fix_tokenizer)
+            return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer)
         else:
             logger.warning(f"Unsloth: Will load {tokenizer_name} as a legacy tokenizer.")
             return _apply_post_load_tokenizer_fixes(
                 convert_to_fast_tokenizer(slow_tokenizer),
-                tokenizer_name,
                 fix_tokenizer,
             )
         pass
     else:
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, tokenizer_name, fix_tokenizer)
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer)
 
 
 def _fix_pad_token(tokenizer):

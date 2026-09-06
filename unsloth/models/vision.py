@@ -1944,6 +1944,21 @@ class FastBaseModel:
         ):
             tokenizer.chat_template = tokenizer.tokenizer.chat_template
 
+        # FastModel never calls load_correct_tokenizer; heal Gemma 4 base BOS here
+        # from the loaded processor / config (unslothai/unsloth#7903).
+        def _heal_gemma4_bos(tok):
+            try:
+                from ..tokenizer_utils import _apply_post_load_tokenizer_fixes
+                return _apply_post_load_tokenizer_fixes(
+                    tok,
+                    fix_tokenizer = True,
+                    config = auto_config,
+                )
+            except Exception:
+                return tok
+
+        tokenizer = _heal_gemma4_bos(tokenizer)
+
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
             __tokenizer.padding_side = "left"
@@ -1986,8 +2001,9 @@ class FastBaseModel:
                 # Re-attach as a processor wrapper if the original was a processor.
                 if hasattr(tokenizer, "image_processor"):
                     tokenizer.tokenizer = _fallback_tok
+                    tokenizer = _heal_gemma4_bos(tokenizer)
                 else:
-                    tokenizer = _fallback_tok
+                    tokenizer = _heal_gemma4_bos(_fallback_tok)
             except Exception as _fb_err:
                 # Online network failure: propagate for the offline retry, else raise the patch error.
                 if not local_files_only and _is_offline_related_error(_fb_err):
@@ -2048,6 +2064,7 @@ class FastBaseModel:
                     "or set HF_HUB_OFFLINE=1 to force local loading. "
                     "Otherwise please check that the model has a tokenizer."
                 ) from _last_resort_err
+            tokenizer = _heal_gemma4_bos(tokenizer)
         patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation; see #4982.

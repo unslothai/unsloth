@@ -17,6 +17,9 @@
 unsloth/gemma-4-* base mirrors ship without add_bos_token: true while
 google/gemma-4-* includes it. Without the runtime fix, generation repeats
 degenerate text. See unslothai/unsloth#7903.
+
+Detection keys off the loaded tokenizer / config, not the Hub repo name, so
+local folders and extra quant suffixes still get the fix.
 """
 
 import types
@@ -32,52 +35,151 @@ class _Tok:
         self,
         add_bos_token = False,
         bos_token_id = 2,
+        processor_class = None,
+        think_token = None,
+        boa_token = None,
+        chat_template = None,
+        eos_token = "<eos>",
+        init_kwargs = None,
     ):
         self.add_bos_token = add_bos_token
         self.bos_token_id = bos_token_id
+        self.processor_class = processor_class
+        self.think_token = think_token
+        self.boa_token = boa_token
+        self.chat_template = chat_template
+        self.eos_token = eos_token
+        if init_kwargs is not None:
+            self.init_kwargs = init_kwargs
 
 
-@pytest.mark.parametrize(
-    "model_name,expected",
-    [
-        ("unsloth/gemma-4-E2B", True),
-        ("unsloth/gemma-4-E4B", True),
-        ("unsloth/gemma-4-31B", True),
-        ("unsloth/gemma-4-26B-A4B", True),
-        ("unsloth/gemma-4-E2B-unsloth-bnb-4bit", True),
-        ("unsloth/gemma-4-E2B-it", False),
-        ("unsloth/gemma-4-E2B-it-unsloth-bnb-4bit", False),
-        ("google/gemma-4-E2B-it", False),
-        ("unsloth/gemma-3-4b", False),
-        ("unsloth/Qwen2.5-7B-Instruct", False),
-    ],
-)
-def test_is_gemma4_base_model_name(model_name, expected):
-    assert tu._is_gemma4_base_model_name(model_name) is expected
+class _Proc:
+    def __init__(self, tokenizer, processor_class = "Gemma4Processor", chat_template = None):
+        self.tokenizer = tokenizer
+        self.processor_class = processor_class
+        self.chat_template = chat_template
 
 
-def test_fix_gemma4_base_bos_token_sets_flag():
-    tok = _Tok(add_bos_token = False)
-    fixed = tu._fix_gemma4_base_bos_token(tok, "unsloth/gemma-4-E2B")
+class _Gemma4Processor:
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+
+def _gemma4_base(**kwargs):
+    kwargs.setdefault("processor_class", "Gemma4Processor")
+    return _Tok(**kwargs)
+
+
+def test_gemma4_from_processor_class():
+    assert tu._is_gemma4_tokenizer(_gemma4_base()) is True
+
+
+def test_gemma4_from_think_and_boa_tokens():
+    tok = _Tok(processor_class = None, think_token = "<think>", boa_token = "<boa>")
+    assert tu._is_gemma4_tokenizer(tok) is True
+
+
+def test_gemma4_from_init_kwargs():
+    tok = _Tok(init_kwargs = {"processor_class": "Gemma4Processor"})
+    assert tu._is_gemma4_tokenizer(tok) is True
+
+
+def test_gemma4_from_processor_wrapper():
+    proc = _Proc(_Tok())
+    assert tu._is_gemma4_tokenizer(proc) is True
+
+
+def test_gemma4_from_class_name():
+    assert tu._is_gemma4_tokenizer(_Gemma4Processor(_Tok())) is True
+
+
+def test_gemma3_processor_is_not_gemma4():
+    tok = _Tok(processor_class = "Gemma3Processor")
+    assert tu._is_gemma4_tokenizer(tok) is False
+    assert tu._needs_gemma4_base_bos(tok) is False
+
+
+def test_plain_tokenizer_is_not_gemma4():
+    assert tu._is_gemma4_tokenizer(_Tok()) is False
+
+
+def test_gemma4_config_model_type():
+    config = types.SimpleNamespace(model_type = "gemma4", text_config = None)
+    assert tu._is_gemma4_config(config) is True
+    assert tu._needs_gemma4_base_bos(_Tok(), config = config) is True
+
+
+def test_gemma4_config_nested_text_config():
+    config = types.SimpleNamespace(
+        model_type = "gemma4",
+        text_config = types.SimpleNamespace(model_type = "gemma4_text"),
+    )
+    assert tu._is_gemma4_config(config) is True
+
+
+def test_name_alone_does_not_trigger_fix():
+    tok = _Tok()
+    # Repo / folder names are ignored: a generic tokenizer must not flip BOS.
+    fixed = tu._fix_gemma4_base_bos_token(tok)
+    assert fixed.add_bos_token is False
+
+
+def test_fix_sets_flag_for_quant_and_local_shapes():
+    tok = _gemma4_base(add_bos_token = False)
+    fixed = tu._fix_gemma4_base_bos_token(tok)
     assert fixed.add_bos_token is True
 
 
-def test_fix_gemma4_base_bos_token_skips_it_variants():
-    tok = _Tok(add_bos_token = False)
-    fixed = tu._fix_gemma4_base_bos_token(tok, "unsloth/gemma-4-E2B-it")
+def test_fix_sets_flag_on_wrapped_processor():
+    inner = _Tok(add_bos_token = False)
+    proc = _Proc(inner)
+    tu._fix_gemma4_base_bos_token(proc)
+    assert inner.add_bos_token is True
+
+
+def test_fix_skips_chat_template_that_emits_bos():
+    tok = _gemma4_base(
+        add_bos_token = False,
+        chat_template = "{{- bos_token -}}{{ messages }}",
+    )
+    fixed = tu._fix_gemma4_base_bos_token(tok)
+    assert fixed.add_bos_token is False
+
+
+def test_fix_skips_turn_eos_instruct():
+    tok = _gemma4_base(add_bos_token = False, eos_token = "<turn|>")
+    fixed = tu._fix_gemma4_base_bos_token(tok)
+    assert fixed.add_bos_token is False
+
+
+def test_fix_honors_fix_tokenizer_false():
+    tok = _gemma4_base(add_bos_token = False)
+    fixed = tu._apply_post_load_tokenizer_fixes(tok, fix_tokenizer = False)
     assert fixed.add_bos_token is False
 
 
 def test_load_correct_tokenizer_enables_bos_for_gemma4_base():
-    name = "unsloth/gemma-4-E2B"
-
     def from_pretrained(model_name, **kwargs):
-        return _Tok(add_bos_token = False)
+        return _gemma4_base(add_bos_token = False)
 
     with patch.object(tu, "AutoTokenizer", types.SimpleNamespace(from_pretrained = from_pretrained)):
-        result = tu._load_correct_tokenizer(name, fix_tokenizer = True)
+        result = tu._load_correct_tokenizer("/models/gemma-4-31B-bnb-4bit", fix_tokenizer = True)
 
     assert result.add_bos_token is True
+
+
+def test_load_correct_tokenizer_skips_instruct():
+    def from_pretrained(model_name, **kwargs):
+        return _gemma4_base(
+            add_bos_token = False,
+            chat_template = "{{- bos_token -}}",
+            eos_token = "<turn|>",
+        )
+
+    with patch.object(tu, "AutoTokenizer", types.SimpleNamespace(from_pretrained = from_pretrained)):
+        result = tu._load_correct_tokenizer("unsloth/gemma-4-E2B-it", fix_tokenizer = True)
+
+    assert result.add_bos_token is False
 
 
 @pytest.mark.e2e
