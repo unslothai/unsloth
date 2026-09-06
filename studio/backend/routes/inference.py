@@ -25818,16 +25818,32 @@ def _public_embedding_name(model_name: str) -> str:
 
 
 def _public_embedding_identity(identity: str, model_name: str, label: str) -> str:
+    """Redact the model and repo segments of ``backend:model[:gguf_repo]``, nothing else.
+
+    Segment-wise, not a substring replace: a model can be a relative directory named
+    `transformers`, and replacing that everywhere also rewrites the `sentence-transformers`
+    tag, leaving an identity no backend answers to and that _names_studio_embedder cannot
+    match on the next request.
+    """
     if label == model_name:
         return identity
-    from core.rag.config import _escape_identity_segment, effective_gguf_repo_for_embedding_model
+    from core.rag.config import (
+        EMBEDDING_IDENTITY_TAGS,
+        _escape_identity_segment,
+        _unescape_identity_segment,
+        effective_gguf_repo_for_embedding_model,
+    )
 
+    tag = next((t for t in EMBEDDING_IDENTITY_TAGS if identity.startswith(f"{t}:")), None)
+    if tag is None:
+        return identity
     repo = effective_gguf_repo_for_embedding_model(model_name)
-    for private, public in ((model_name, label), (repo, _public_embedding_name(repo))):
-        identity = identity.replace(
-            _escape_identity_segment(private), _escape_identity_segment(public)
-        )
-    return identity
+    public = {model_name: label, repo: _public_embedding_name(repo)}
+    segments = [
+        _unescape_identity_segment(s) for s in identity[len(tag) + 1 :].split(":")
+    ]
+    redacted = [_escape_identity_segment(public.get(s, s)) for s in segments]
+    return ":".join([tag, *redacted])
 
 
 def _embedding_payload(vector, encoding_format: str):
@@ -26092,8 +26108,11 @@ async def _studio_embeddings(
         rag_embeddings.EmbeddingModelDownloadRequiredError,
         rag_embeddings.UnsafeEmbeddingModelError,
     ) as exc:
-        api_monitor.fail(monitor_id, str(exc))
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        # Both name the configured model, which may be a local path. Every other field this
+        # route returns puts such a model through the label, so the message does too.
+        detail = str(exc).replace(repr(model_name), repr(label))
+        api_monitor.fail(monitor_id, detail)
+        raise HTTPException(status_code = 409, detail = detail) from exc
     except Exception as exc:
         api_monitor.fail(monitor_id, _friendly_error(exc))
         raise HTTPException(

@@ -196,6 +196,50 @@ def test_embedder_failure_is_502(studio_embedder):
     assert _http_error({"input": "alpha"}).status_code == 502
 
 
+def test_identity_redaction_leaves_the_backend_tag_alone(tmp_path, monkeypatch):
+    """A local model whose name occurs inside the backend tag.
+
+    `transformers` is a real directory people have lying around, and is_local_path accepts a
+    bare relative name that exists. A substring replace then rewrites the
+    `sentence-transformers` tag too, and the identity we advertise is one no backend claims
+    and _names_studio_embedder cannot match on the next request.
+    """
+    from core.rag import config as rag_config
+
+    (tmp_path / "transformers").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        inference_route, "_public_embedding_name", lambda name: "transformers-deadbeef"
+        if name == "transformers" else name
+    )
+    monkeypatch.setattr(
+        rag_config, "effective_gguf_repo_for_embedding_model", lambda model: "transformers-GGUF"
+    )
+    public = inference_route._public_embedding_identity(
+        "sentence-transformers:transformers", "transformers", "transformers-deadbeef"
+    )
+    assert public == "sentence-transformers:transformers-deadbeef"
+    assert rag_config.embedding_identity_model(public) == "transformers-deadbeef"
+
+
+def test_identity_redaction_covers_the_gguf_repo_segment(monkeypatch):
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(
+        rag_config, "effective_gguf_repo_for_embedding_model", lambda model: "/models/bge-GGUF"
+    )
+    monkeypatch.setattr(
+        inference_route, "_public_embedding_name",
+        lambda name: {"/models/bge": "bge-1111", "/models/bge-GGUF": "bge-GGUF-2222"}.get(name, name),
+    )
+    public = inference_route._public_embedding_identity(
+        "llama-server:%2Fmodels%2Fbge:%2Fmodels%2Fbge-GGUF".replace("%2F", "/"),
+        "/models/bge",
+        "bge-1111",
+    )
+    assert public == "llama-server:bge-1111:bge-GGUF-2222"
+
+
 @pytest.mark.parametrize(
     "exc,fragment",
     [
@@ -236,6 +280,56 @@ def test_actionable_embedder_errors_keep_their_message(studio_embedder, exc, fra
     assert error.status_code == 409
     assert fragment in error.detail
     assert "An internal error occurred" not in error.detail
+
+
+def test_actionable_errors_do_not_leak_a_local_path(studio_embedder, monkeypatch):
+    """Passing the message through must not undo the redaction the rest of the route does.
+
+    _get resolves a cached model to its absolute snapshot directory and hands that to
+    _guard_model_security, so the raised text can carry the server's HF cache layout, and a
+    configured model can be a local path in its own right. Both go out over /v1/embeddings,
+    where the identity and the limit errors already report the hashed label instead.
+    """
+    studio_embedder.setattr(
+        rag_config, "effective_embedding_model", lambda: "/srv/models/bge-small"
+    )
+
+    def boom(*_args, **_kwargs):
+        raise rag_embeddings.UnsafeEmbeddingModelError(
+            "Embedding model '/srv/models/bge-small' is flagged as unsafe by Hugging Face's "
+            "security scan; refusing to load. Set a different RAG embedding model."
+        )
+
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "encode", boom)
+    error = _http_error({"input": "alpha"})
+    assert error.status_code == 409
+    assert "/srv/models" not in error.detail
+    assert "flagged as unsafe" in error.detail
+    assert "bge-small-" in error.detail  # the hashed public label, not the path
+
+
+def test_guard_model_security_names_the_configured_model_not_the_snapshot(monkeypatch):
+    """The scan needs the snapshot path; the message must not carry it."""
+    monkeypatch.setattr(
+        rag_embeddings, "_ambient_hf_token", lambda: None
+    )
+    import utils.security as security
+    monkeypatch.setattr(
+        security, "evaluate_file_security",
+        lambda *a, **k: SimpleNamespace(blocked = True),
+    )
+    monkeypatch.setattr(security, "security_load_subdirs", lambda *a, **k: ())
+    monkeypatch.setattr(rag_embeddings, "_st_module_subdirs", lambda *a, **k: ())
+    with pytest.raises(rag_embeddings.UnsafeEmbeddingModelError) as excinfo:
+        rag_embeddings._guard_model_security(
+            "/home/me/.cache/huggingface/hub/models--org--bge/snapshots/abc123",
+            display = "org/bge",
+        )
+    assert "org/bge" in str(excinfo.value)
+    assert ".cache/huggingface" not in str(excinfo.value)
 
 
 def test_studio_embedder_requests_are_admission_limited(studio_embedder):
@@ -647,6 +741,44 @@ def test_llama_max_tokens_comes_from_the_gguf_minus_its_special_tokens(tmp_path,
     assert posts == [("/tokenize", {"content": "", "add_special": True})]
     backend._adopt_model_path(backend._model_path, "unsloth/other-GGUF")
     assert backend._max_tokens is None
+
+
+def test_llama_max_tokens_is_dropped_when_the_binary_is_swapped(tmp_path, monkeypatch):
+    """Changing the custom llama.cpp path respawns onto the same GGUF.
+
+    _current() goes stale on the binary revision, so _ensure_ready kills and respawns, but
+    _resolve_model_path takes its same-repo fast path and never reaches _adopt_model_path.
+    The limit is not a pure model fact -- it clamps the GGUF context by the server's n_ctx
+    and n_ubatch, whose defaults differ between builds -- so it has to go with the binary.
+    """
+    from core.rag import embed_llama_server
+
+    backend = embed_llama_server.LlamaServerBackend()
+    backend._model_path = _gguf(
+        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 512)]
+    )
+    backend._model_repo = "unsloth/bge-small-en-v1.5-GGUF"
+    backend._max_tokens = 510
+    backend._binary = "/opt/old/llama-server"
+    backend._binary_path_revision = 1
+    monkeypatch.setattr(backend, "_process_alive", lambda: True)
+    monkeypatch.setattr(backend, "_kill_process", lambda: None)
+    monkeypatch.setattr(backend, "_spawn", lambda model_name = None: None)
+    monkeypatch.setattr(
+        embed_llama_server.config, "effective_gguf_repo_for_embedding_model",
+        lambda model: "unsloth/bge-small-en-v1.5-GGUF",
+    )
+    monkeypatch.setattr(
+        embed_llama_server.config, "effective_embedding_model",
+        lambda: "unsloth/bge-small-en-v1.5",
+    )
+    import utils.llama_cpp_path_settings as path_settings
+    monkeypatch.setattr(path_settings, "custom_llama_cpp_path_revision", lambda: 2)
+
+    backend._ensure_ready()
+
+    assert backend._max_tokens is None
+    assert backend._model_path is not None  # the GGUF itself did not change
 
 
 def test_st_max_tokens_reserves_the_default_prompt(monkeypatch):

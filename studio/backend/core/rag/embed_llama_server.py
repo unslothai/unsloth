@@ -930,6 +930,11 @@ class LlamaServerBackend:
             if self._binary_path_revision != custom_llama_cpp_path_revision():
                 self._binary = None
                 self._binary_path_revision = None
+                # The limit is half a server fact: it clamps the GGUF's context by this
+                # server's n_ctx and n_ubatch, whose defaults differ between llama.cpp
+                # builds. _resolve_model_path fast-paths on an unchanged repo, so nothing
+                # else clears it when only the binary is swapped underneath.
+                self._max_tokens = None
             self._spawn(model_name)
 
     def _restart(self, model_name: str | None = None) -> None:

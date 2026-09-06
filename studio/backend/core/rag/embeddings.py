@@ -199,7 +199,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         return ()
 
 
-def _guard_model_security(name: str, local_only: bool = False) -> None:
+def _guard_model_security(name: str, local_only: bool = False, display: str | None = None) -> None:
     """Refuse to load a repo HF flagged as unsafe: a poisoned pickle deserializes inside
     SentenceTransformer regardless of trust_remote_code. Defense in depth behind the
     /settings gate (a name can also arrive via env/default); local paths and unreachable
@@ -207,6 +207,11 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
 
     ``local_only`` (offline) inspects the local cache; subdir probes are skipped (they'd hit the
     network and hang, and the offline gate walks the whole snapshot anyway).
+
+    ``display`` names the model in the error. The scan runs on ``name``, which the caller has
+    already resolved to an absolute snapshot directory, and that path reaches a user through
+    /v1/embeddings; the configured model is what they can act on and what the rest of that
+    route reports.
     """
     try:
         from utils.security import evaluate_file_security, security_load_subdirs
@@ -235,7 +240,7 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
             else "is flagged as unsafe by Hugging Face's security scan"
         )
         raise UnsafeEmbeddingModelError(
-            f"Embedding model {name!r} {reason}; refusing to load. "
+            f"Embedding model {(display or name)!r} {reason}; refusing to load. "
             "Set a different RAG embedding model."
         )
 
@@ -470,7 +475,7 @@ def _get(model_name: str | None = None):
             # Scan after load_target is settled: on the repo id it checked the Hub's current commit while the
             # load opened an older cached one. evaluate_file_security recovers the repo and exact commit from
             # a snapshot path.
-            _guard_model_security(load_target, offline)
+            _guard_model_security(load_target, offline, display = name)
             with _quiet_transformers_load() as report:
                 # Re-emit in finally: a load that raises after transformers wrote its report is exactly when a
                 # MISSING or MISMATCH line matters.
