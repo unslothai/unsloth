@@ -428,8 +428,10 @@ _INTERPRETER_RE = r"""(?:
       | '(?:[^']*[/\\])python[0-9.]*(?:\.exe)?'
       | \S*[/\\]python[0-9.]*(?:\.exe)?
     )"""
+# `-m uv pip` as well as `-m pip`: unsloth_nb_pip_magic rewrites `(pip|uv)` after the
+# module flag, and uv's pip-compatible interface really is spelled `uv pip <action>`.
 PIP_LINE_RE = re.compile(
-    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip|" + _INTERPRETER_RE + r"\s+-m\s+pip)\s+"
+    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip|" + _INTERPRETER_RE + r"\s+-m\s+(?:uv\s+)?pip)\s+"
     r"(?P<action>install|uninstall)\b(?P<rest>.*)$",
     re.IGNORECASE | re.VERBOSE,
 )
@@ -453,9 +455,9 @@ def parse_pip_line(line: str, line_no: int = 0) -> PipInvocation | None:
     m = PIP_LINE_RE.match(line)
     if not m:
         return None
-    # startswith, not `in`: `python3 -m pip` must not be read as uv because of a stray
-    # substring, and only the uv form can begin with it.
-    tool = "uv-pip" if m.group("tool").lower().startswith("uv") else "pip"
+    # `uv pip` and `python -m uv pip` are both uv; a plain `python3 -m pip` is not, and
+    # must not be read as uv because "uv" appears somewhere in the interpreter path.
+    tool = "uv-pip" if re.search(r"(?:^|\s)uv\s+pip\b", m.group("tool"), re.IGNORECASE) else "pip"
     rest = m.group("rest")
     # Strip trailing comment.
     rest = re.split(r"(?<!\S)#", rest, maxsplit = 1)[0]

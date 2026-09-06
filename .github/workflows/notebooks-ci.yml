@@ -237,7 +237,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with: { python-version: '3.12' }
       - name: Install
-        run: pip install -U pip
+        # packaging is not in a bare setup-python environment, and _requirement_applies
+        # falls back to "applies" when it cannot import Marker. Without it this job
+        # replays every environment-marked requirement, including the ones Colab's pip
+        # skips, which is exactly what the Python-version oracle exists to decide.
+        run: pip install -U pip packaging
       - name: Diff Colab oracle vs committed snapshots (--strict on cron)
         # Cron-only escalation of the advisory PR-time check. Fails if
         # pip-freeze.gpu.txt has drifted from scripts/data/colab_*.txt --

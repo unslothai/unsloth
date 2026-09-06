@@ -2070,3 +2070,45 @@ def test_exception_coverage_skips_cells_that_run_no_pip(tmp_path):
 
     write('!pip install peft "torchao>=0.16.0"\n')
     assert nv.rule_l12_exceptions_coverage(tmp_path) == []
+
+
+def test_python_dash_m_uv_pip_is_a_uv_invocation():
+    """unsloth_nb_pip_magic rewrites `(pip|uv)` after the module flag, and uv's
+    pip-compatible interface is spelled `uv pip <action>`. Accepting only `-m pip` left
+    `!python -m uv pip install ...` matching _PIP_CELL_RE while yielding no invocation, so
+    R-INST-001 missed a prohibited git+ source the notebook really runs."""
+    nv = _load_notebook_validator_module()
+
+    for line in (
+        "!python -m uv pip install git+https://example.com/pkg.git",
+        "!{sys.executable} -m uv pip install git+https://example.com/pkg.git",
+        "!/usr/bin/python3 -m uv pip install git+https://example.com/pkg.git",
+    ):
+        invocations = list(nv.iter_pip_invocations(line))
+        assert len(invocations) == 1, line
+        assert invocations[0].tool == "uv-pip", line
+        assert invocations[0].packages == ["git+https://example.com/pkg.git"], line
+        assert nv.rule_inst_001_git_plus(line, "nb/T.ipynb", 0), line
+
+    # A plain `-m pip` stays pip, even under an interpreter path containing "uv".
+    assert next(nv.iter_pip_invocations("!python -m pip install foo")).tool == "pip"
+    assert next(nv.iter_pip_invocations("!/opt/uv-tools/python3 -m pip install foo")).tool == "pip"
+    # And another module is still not pip.
+    assert not list(nv.iter_pip_invocations("!python -m uvloop install foo"))
+
+
+def test_the_cron_lint_job_installs_packaging():
+    """_requirement_applies falls back to "applies" when it cannot import Marker, so a job
+    without packaging silently replays every environment-marked requirement -- including the
+    ones Colab's pip skips, which is the question the Python-version oracle exists to answer.
+    A bare setup-python environment does not provide it."""
+    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text()
+
+    install_steps = [
+        line.strip()
+        for line in workflow.splitlines()
+        if line.strip().startswith("run: pip install -U pip")
+    ]
+    assert install_steps, "the cron lint job's install step moved; update this test"
+    for step in install_steps:
+        assert "packaging" in step, step

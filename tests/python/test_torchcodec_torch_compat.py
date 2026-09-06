@@ -1458,3 +1458,74 @@ def test_the_runtime_remedy_follows_a_configured_pytorch_mirror(monkeypatch):
     assert "--index-url https://download.pytorch.org/whl/cu126" in (
         fixes._torchcodec_version_mismatch_hint() or ""
     )
+
+
+def test_the_provenance_hint_does_not_assert_a_cause_it_has_not_established(monkeypatch):
+    """Differing local tags show the two wheels came from different indexes, nothing more.
+    torchcodec is published per accelerator on every line, 0.12+ included, so the mismatch
+    stays possible there, but the load can equally have failed on a missing libavutil that no
+    reinstall repairs. The hint has to name both."""
+    import sys
+    import types
+
+    fixes = _load_import_fixes_module()
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
+    _stub_torch(monkeypatch, "2.12.0+cu128")
+
+    codec = types.ModuleType("torchcodec")
+    codec.__version__ = "0.12.0"
+    monkeypatch.setitem(sys.modules, "torchcodec", codec)
+    hint = fixes._torchcodec_provenance_hint()
+    assert hint is not None  # 0.12+ is ABI-stable against torch, not accelerator-agnostic
+    assert "may be built for a different accelerator" in hint
+    assert "cannot load" not in hint
+    assert "FFmpeg" in hint
+
+def test_the_remedy_uses_the_shell_of_the_host_it_prints_on(monkeypatch):
+    """PowerShell is Studio's supported Windows shell and does not expand `$NAME`, so the
+    POSIX spelling pasted there produced an empty `--index-url`."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.11.0")
+    _stub_torch(monkeypatch, "2.10.0+cu128")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://user:secret@mirror.corp.example/cu128")
+
+    monkeypatch.setattr(fixes.sys, "platform", "linux")
+    assert '--index-url "$UNSLOTH_TORCH_INDEX_URL"' in (
+        fixes._torchcodec_version_mismatch_hint() or ""
+    )
+
+    monkeypatch.setattr(fixes.sys, "platform", "win32")
+    windows = fixes._torchcodec_version_mismatch_hint() or ""
+    assert "--index-url $env:UNSLOTH_TORCH_INDEX_URL" in windows
+    assert "secret" not in windows
+
+    # The mirror branch follows the same rule.
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL")
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.corp.example/whl")
+    assert "--index-url $env:UNSLOTH_PYTORCH_MIRROR/cu128" in (
+        fixes._torchcodec_version_mismatch_hint() or ""
+    )
+
+
+
+def test_a_torch_range_is_replayed_before_the_pair_is_judged():
+    """`pip install "torch>=2.12.0"` does not satisfy the image's 2.11, so pip upgrades torch
+    while the codec stays on 0.11. Both sides have to be replayed, not just the codec."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch>=2.12.0"', colab, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]
+    # A floor the image already satisfies moves nothing, and a removal leaves nothing to judge.
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch>=2.11.0"', colab, "nb.ipynb", 0
+    ) == []
+    assert nv.rule_inst_004_torchcodec_torch("!pip uninstall -y torch", colab, "nb.ipynb", 0) == []
