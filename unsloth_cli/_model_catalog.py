@@ -366,8 +366,8 @@ def _gguf_load_target(target: str) -> str:
 
     A row naming a ``.gguf`` loads that file: resolving it through its folder returned the best
     quant across every unrelated single-file GGUF beside it (#10352). A later shard redirects to
-    shard 1, which the scan also lists as a row and which is the only one llama.cpp accepts
-    ("model must be loaded with the first split", llama-model-loader.cpp).
+    shard 1, matching what detect_gguf_model does at load time, so _dedup_key sees one inode and
+    a split family is offered once instead of once per shard.
 
     A FOLDER still resolves: detect_gguf_model takes the largest complete file, commonly the
     F16, while cached and exported rows resolve a Q4-class quant, so the same folder loads

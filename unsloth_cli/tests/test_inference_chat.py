@@ -2494,7 +2494,11 @@ def test_catalog_loose_gguf_file_rows_load_their_own_file(monkeypatch, tmp_path)
 
 
 def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_path):
-    """The scan lists every loose shard as its own row, and llama.cpp refuses a later one."""
+    """The scan lists every loose shard as its own row, and they are one model.
+
+    Every shard resolving to the first is what lets _dedup_key collapse them: it keys on the
+    inode, so three distinct shard paths would be offered as three identical picks.
+    """
     from unsloth_cli._inference import ensure_studio_backend_path
     from unsloth_cli import _model_catalog as cat
 
@@ -2529,6 +2533,10 @@ def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_pat
         **{shard.stem: str(shards[0]) for shard in shards},
         loose.stem: str(loose),
     }
+
+    for source in ("trained_entries", "exported_entries", "cached_entries"):
+        monkeypatch.setattr(cat, source, list)
+    assert sorted(e.model for e in cat.list_chat_models()) == [str(shards[0]), str(loose)]
 
 
 def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
