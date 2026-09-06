@@ -272,7 +272,7 @@ def test_notebook_validator_respects_escaped_separators():
     parse_pip_line. Split on it and the fragment ends in a backslash and parses as nothing."""
     nv = _load_notebook_validator_module()
 
-    escaped = "!pip install torch==2.12.0\;\\ python_version\\ \\>\\=\\ \\'3.10\\'"
+    escaped = "!pip install torch==2.12.0\\;\\ python_version\\ \\>\\=\\ \\'3.10\\'"
     assert nv._split_chained(escaped) == [(escaped, False)]
     assert [inv.packages for inv in nv.iter_pip_invocations(escaped)] == [
         ["torch==2.12.0; python_version >= '3.10'"]

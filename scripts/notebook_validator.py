@@ -208,10 +208,6 @@ TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.5": {"0.1"},
 }
 
-# torchcodec 0.12+ is ABI-stable against torch >=2.11, so that half is open-ended.
-TORCHCODEC_ABI_STABLE_TORCH = "2.11"
-TORCHCODEC_ABI_STABLE_CODEC = "0.12"
-
 # When peft >= trigger is on the resolved set, torchao >= floor must also be.
 PEFT_TORCHAO_FLOOR: list[dict[str, str]] = [
     {"trigger_peft": "0.19", "torchao_floor": "0.16.0"},
