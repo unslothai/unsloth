@@ -122,9 +122,11 @@ if sys.platform != "win32":
     except ImportError:
         pass
 
-# Raster-image allowlist for sandbox file serving.
+# Raster-image allowlist for sandbox file serving; what a tool call reports inline (`__IMAGES__`)
+# and what the route serves inline (_SANDBOX_MEDIA_TYPES in routes/inference.py) are one set, pinned
+# equal by test_sandbox_files_and_storage_roots -- drift means a model's photo previews on one path only.
 # No .svg (XSS via embedded scripts), no .html, no .pdf.
-_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"})
 
 
 def _env_int(name: str, default: int) -> int:
@@ -11239,6 +11241,37 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         _opt_int(rag_scope.get("context_length") or rag_scope.get("max_context_tokens")) or 0
     )
 
+    def _fits(candidate_text, max_tokens) -> bool:
+        # None means the estimate itself failed; zero is a measured "no room left".
+        if max_tokens is None:
+            return True
+        if max_tokens <= 0:
+            return False
+        # Priced by the serving GGUF when it can, doubled when it cannot, so dense
+        # ASCII is not charged the English four characters per token.
+        return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
+
+    def _trim(
+        hit_text,
+        hit_sources,
+        max_tokens,
+        keep_first = 1,
+    ):
+        """Drop passages from the tail until the rendered block fits, else None.
+
+        Re-renders only when something is dropped. None when not even the first
+        ``keep_first`` passages fit: the block joins the current turn, which the
+        window may not evict, so it fails the request rather than degrading it.
+        ``keep_first`` is the floor of the tail: one for ranked retrieval, but a
+        whole document must never be eaten into.
+        """
+        floor = max(1, keep_first)
+        kept, rendered = list(hit_sources), hit_text
+        while len(kept) > floor and not _fits(rendered, max_tokens):
+            kept = kept[:-1]
+            rendered = render_sources(kept)
+        return (rendered, kept) if _fits(rendered, max_tokens) else None
+
     # Whole-document mode: a thread-attached file under budget is injected in
     # full. A KB selection is exclusive so whole-doc never preempts it; project
     # sources are still retrieved top-K and appended under one citation
@@ -11266,42 +11299,14 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     logger.warning("RAG project retrieval (whole-doc companion) failed: %s", exc)
                     proj = None
                 if proj is not None:
+                    # Trim into the project tail only: the document was admitted whole
+                    # and stays whole, so a combination that will not fit falls back
+                    # to the document alone.
                     merged = sources + proj[1]
-                    merged_text = render_sources(merged)
-                    if max(1, len(merged_text) // 4) <= budget:
-                        sources = merged
-                        text = merged_text
+                    trimmed = _trim(render_sources(merged), merged, budget, keep_first = len(sources))
+                    if trimmed is not None:
+                        text, sources = trimmed
             logger.info("RAG auto-inject: whole-document context (%d chunk(s))", len(sources))
-
-    def _fits(candidate_text, max_tokens) -> bool:
-        # None means the estimate itself failed, so there is nothing to enforce.
-        # Zero is the opposite: a measured "no room left".
-        if max_tokens is None:
-            return True
-        if max_tokens <= 0:
-            return False
-        # Priced by the serving GGUF when it can, doubled when it cannot. The
-        # doubling is what stops dense ASCII (source, minified JSON, hashes, all
-        # nearer two characters per token) being charged the English four.
-        return _text_token_cost(candidate_text, ctx_tokens) <= max_tokens
-
-    def _trim(hit_text, hit_sources, max_tokens):
-        """Drop passages from the tail until the rendered block fits, else None.
-
-        Re-renders only when something is dropped, so an untrimmed result comes
-        back exactly as retrieval built it.
-
-        None when not even the top passage fits: the block joins the current
-        turn, which the window may not evict, so an overflowing injection fails
-        the request rather than degrading the answer. Losing the attachment is
-        what this branch exists to prevent, but main already loses it here, and
-        that beats an error instead of an answer.
-        """
-        kept, rendered = list(hit_sources), hit_text
-        while len(kept) > 1 and not _fits(rendered, max_tokens):
-            kept = kept[:-1]
-            rendered = render_sources(kept)
-        return (rendered, kept) if _fits(rendered, max_tokens) else None
 
     def retrieve(*, max_tokens = None, **scope):
         found = search_for_autoinject(query = query, top_k = top_k, **scope)

@@ -9,21 +9,27 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 PYTHON_TOOL_UI = REPO / "studio/frontend/src/components/assistant-ui/tool-ui-python.tsx"
+SANDBOX_IMAGE_HOOK = REPO / "studio/frontend/src/components/assistant-ui/use-sandbox-image.ts"
 TAURI_CONFIG = REPO / "studio/src-tauri/tauri.conf.json"
 PLAYWRIGHT_TEST = REPO / "tests/studio/playwright_tauri_python_tool_images.py"
 
 
 def test_python_tool_images_use_authenticated_blob_urls() -> None:
+    # The card now delegates the authed fetch to the shared hook markdown images also use, so the
+    # machinery pins read the hook and the card itself is pinned to exactly one thing: the delegation.
     source = PYTHON_TOOL_UI.read_text(encoding = "utf-8")
+    hook = SANDBOX_IMAGE_HOOK.read_text(encoding = "utf-8")
 
-    assert 'import { authFetch } from "@/features/auth";' in source
-    assert "authFetch(" in source
-    assert "pythonToolImagePath(sessionId, filename)" in source
-    assert "new AbortController()" in source
-    assert "new IntersectionObserver(" in source
-    assert "URL.createObjectURL(blob)" in source
-    assert "URL.revokeObjectURL(objectUrl)" in source
-    assert "controller.abort()" in source
+    assert "useSandboxImage(pythonToolImagePath(sessionId, filename))" in source
+    assert 'import { authFetch } from "@/features/auth";' in hook
+    assert "authFetch(url, { signal: controller.signal })" in hook
+    assert "new AbortController()" in hook
+    assert "new IntersectionObserver(" in hook
+    assert "URL.createObjectURL(blob)" in hook
+    assert "URL.revokeObjectURL(objectUrl)" in hook
+    assert "controller.abort()" in hook
+    # One hook, not two copies: the card must not re-inline the fetch it delegates.
+    assert "createObjectURL" not in source
     assert "apiUrl(`/api/inference/sandbox/" not in source
 
 
