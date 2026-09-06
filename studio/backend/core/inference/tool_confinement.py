@@ -59,6 +59,7 @@ _FS_MAKE_SYM = 1 << 12
 _FS_REFER = 1 << 13  # ABI 2
 _FS_TRUNCATE = 1 << 14  # ABI 3
 _FS_IOCTL_DEV = 1 << 15  # ABI 5
+_SCOPE_SIGNAL = 1 << 1  # ABI 6: signals reach only processes inside the same domain
 _FS_ABI1_MASK = (1 << 13) - 1
 
 # Read and execute only. /proc and /sys are readable as they are for the
@@ -76,8 +77,23 @@ _SYSTEM_READ_ROOTS = (
     "/snap",
     "/nix",
     "/var/lib",
-    "/proc",
     "/sys",
+)
+# procfs is opened per entry, not as a whole: the child sees its own process
+# and the machine-wide read-only facts, not another account's command lines.
+# ``/proc/self`` is opened in the child, so it names the child's own entry.
+_PROC_READ_PATHS = (
+    "/proc/self",
+    "/proc/thread-self",
+    "/proc/cpuinfo",
+    "/proc/meminfo",
+    "/proc/stat",
+    "/proc/uptime",
+    "/proc/loadavg",
+    "/proc/version",
+    "/proc/filesystems",
+    "/proc/devices",
+    "/proc/sys",
 )
 _DEVICE_ROOT = "/dev"
 
@@ -167,6 +183,15 @@ class _RulesetAttr(ctypes.Structure):
     _fields_ = [("handled_access_fs", ctypes.c_uint64)]
 
 
+class _ScopedRulesetAttr(ctypes.Structure):
+    # ABI 6 layout, used only on a kernel that offers it.
+    _fields_ = [
+        ("handled_access_fs", ctypes.c_uint64),
+        ("handled_access_net", ctypes.c_uint64),
+        ("scoped", ctypes.c_uint64),
+    ]
+
+
 class _PathBeneathAttr(ctypes.Structure):
     _pack_ = 1
     _fields_ = [("allowed_access", ctypes.c_uint64), ("parent_fd", ctypes.c_int32)]
@@ -220,6 +245,9 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
     rules: list[tuple[str, int]] = []
     for path in _existing(_SYSTEM_READ_ROOTS):
         rules.append((path, read))
+    for path in _existing(_PROC_READ_PATHS):
+        # A rule on a plain file may not carry directory rights.
+        rules.append((path, read if os.path.isdir(path) else read & ~_FS_READ_DIR))
     for path in _interpreter_roots():
         rules.append((path, read))
     for path in _existing((sandbox_site_dir,)):
@@ -235,10 +263,10 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
     return rules
 
 
-def _landlock_preexec(handled: int, rules: list[tuple[str, int]]) -> None:
+def _landlock_preexec(handled: int, rules: list[tuple[str, int]], scoped: int = 0) -> None:
     """Runs in the forked child: no imports, no allocation beyond ctypes."""
     libc = _libc
-    attr = _RulesetAttr(handled)
+    attr = _ScopedRulesetAttr(handled, 0, scoped) if scoped else _RulesetAttr(handled)
     ruleset_fd = libc.syscall(
         _SYS_LANDLOCK_CREATE_RULESET, ctypes.byref(attr), ctypes.sizeof(attr), 0
     )
@@ -276,7 +304,10 @@ def _linux_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
     rules = _landlock_rules(abi, sandbox_site_dir)
     return Confinement(
         mechanism = f"landlock-abi{abi}",
-        preexec = partial(_landlock_preexec, handled, rules),
+        # Signals stay inside the child's own domain (ABI 6), so a tool cannot
+        # stop another account's tool process; the file rules already keep it
+        # from reading that process's entry under /proc.
+        preexec = partial(_landlock_preexec, handled, rules, _SCOPE_SIGNAL if abi >= 6 else 0),
     )
 
 
