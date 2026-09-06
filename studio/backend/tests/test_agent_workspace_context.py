@@ -490,3 +490,32 @@ def test_agents_loader_rejects_persisted_root_identity_replacement(tmp_path, mon
 
     with pytest.raises(AgentWorkspaceError, match = "identity changed"):
         resolve_agents_instructions(root, expected_identity = expected_identity)
+
+
+@pytest.mark.parametrize("thread_project_id", [None, "other-project", "folder-project"])
+def test_project_context_rejects_persisted_chat_session_collision(tmp_path, thread_project_id):
+    from core.agent_workspace.project_context import (
+        project_id_from_persisted_session,
+        resolve_project_context,
+    )
+
+    _folder_project(tmp_path)
+    if thread_project_id == "other-project":
+        other = tmp_path / "other"
+        other.mkdir()
+        _folder_project(other, "other-project")
+    session_id = "project-folder-project"
+    assert project_id_from_persisted_session(session_id) == "folder-project"
+    studio_db.upsert_chat_thread(
+        {
+            "id": session_id,
+            "title": "Imported chat",
+            "modelType": "local",
+            "modelId": "test-model",
+            "projectId": thread_project_id,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    assert project_id_from_persisted_session(session_id) is None
+    assert resolve_project_context(session_id) is None

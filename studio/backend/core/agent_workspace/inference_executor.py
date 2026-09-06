@@ -464,6 +464,8 @@ async def _run_local(
             cancel_event = cancel_event,
             reasoning_effort = snapshot.get("reasoningEffort"),
             max_tool_iterations = max_tool_calls,
+            # The GGUF counter advances per turn; admit at most one call per turn.
+            disable_parallel_tool_use = True,
             tool_call_timeout = tool_timeout,
             session_id = session_id,
             thread_id = session_id,

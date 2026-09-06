@@ -2520,12 +2520,10 @@ class GraphLoopAdapter:
                     )
                 return result
             if task and task["status"] in {"failed", "cancelled", "interrupted"}:
-                if (runtime or {}).get("permissionMode") != "off":
-                    raise _GraphLoopEffectUncertain(
-                        "The prior Loop task stopped after it may have changed the workspace. Inspect the project before starting a new run."
-                    )
-                task = None
-                checkpoint_task_id = ""
+                # "off" disables approval prompts, not workspace mutations.
+                raise _GraphLoopEffectUncertain(
+                    "The prior Loop task stopped after it may have changed the workspace. Inspect the project before starting a new run."
+                )
             elif task and task["status"] == "queued":
                 needs_start = True
         if task is None:
@@ -2671,7 +2669,7 @@ class GraphRunManager:
                     "The graph coordinator could not start this run."
                 ) from exc
             self._futures[run_id] = future
-        future.add_done_callback(lambda _future: self._forget(run_id))
+        future.add_done_callback(lambda completed: self._forget(run_id, completed))
         return claimed
 
     def _get_any(self, run_id: str) -> Optional[dict]:
@@ -2725,9 +2723,7 @@ class GraphRunManager:
         unsafe_replays = [
             node["id"]
             for node in graph["nodes"]
-            if node["id"] in executed_nodes
-            and node["type"] in {"loop", "model"}
-            and (node["config"].get("runtime") or {}).get("permissionMode") != "off"
+            if node["id"] in executed_nodes and node["type"] in {"loop", "model"}
         ]
         if unsafe_replays:
             raise AgentWorkspaceError(
@@ -2749,8 +2745,11 @@ class GraphRunManager:
                 raise AgentWorkspaceError("Graph retry idempotency key collision.")
         return self.start(run["id"]) if start and run["status"] == "queued" else run
 
-    def _forget(self, run_id: str) -> None:
+    def _forget(self, run_id: str, completed: Future) -> None:
         with self._lock:
+            # A resumed run may already own a new worker under the same run id.
+            if self._futures.get(run_id) is not completed:
+                return
             self._futures.pop(run_id, None)
             self._cancellations.pop(run_id, None)
 
@@ -3104,7 +3103,10 @@ class GraphRunManager:
                         retryable = (
                             failed_attempt_count < retry_policy["maxAttempts"]
                             and retry_kind in retry_policy["retryOn"]
-                            and not isinstance(effective_exc, _GraphToolEffectUncertain)
+                            and not isinstance(
+                                effective_exc,
+                                (_GraphToolEffectUncertain, _GraphLoopEffectUncertain),
+                            )
                             and "budget exhausted" not in str(effective_exc).lower()
                         )
                         if not retryable:

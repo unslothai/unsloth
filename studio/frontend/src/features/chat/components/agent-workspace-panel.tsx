@@ -104,6 +104,7 @@ import {
   BACKGROUND_AGENT_PERMISSION_POLICY,
   agentBackgroundActions,
   agentBackgroundSnapshot,
+  agentCommitOwnedPaths,
   agentPlanProgress,
   agentRepositoryMapSummary,
   agentStatusLabel,
@@ -708,7 +709,13 @@ export function AgentWorkspacePanel({
   }
 
   async function prepareCommitPreview(): Promise<void> {
-    const ownedPaths = [...selectedCommitPaths];
+    let ownedPaths: string[];
+    try {
+      ownedPaths = agentCommitOwnedPaths(gitStatus?.files ?? [], selectedCommitPaths);
+    } catch (error) {
+      toast.error(safeAgentWorkspaceError(error));
+      return;
+    }
     const message = commitMessage.trim();
     if (!ownedPaths.length || !message) {
       toast.error("Select changed paths and enter a commit message");

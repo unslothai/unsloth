@@ -337,6 +337,8 @@ def set_verification_config(
         normalized["name"] = name
         normalized["command"] = command
         normalized_checks.append(normalized)
+    if require_for_goal_completion and not normalized_checks:
+        raise AgentWorkspaceError("Goal completion verification requires at least one check.")
     checks = normalized_checks
     current = now_ms()
     encoded = json.dumps(checks, separators = (",", ":"))
@@ -813,9 +815,7 @@ def update_plan_task(
         return None
     project_id = str(initial["project_id"])
     effective_verification = (
-        verification
-        if verification is not None
-        else _loads(initial["verification_json"], [])
+        verification if verification is not None else _loads(initial["verification_json"], [])
     )
     with _plan_task_workspace_slots(
         project_id,

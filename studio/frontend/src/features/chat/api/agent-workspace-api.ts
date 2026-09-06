@@ -174,7 +174,7 @@ export interface AgentGitStatus {
     untracked: number;
     conflicted: number;
   };
-  files: Array<{ code: string; path: string }>;
+  files: Array<{ code: string; path: string; oldPath?: string }>;
   truncated: boolean;
 }
 

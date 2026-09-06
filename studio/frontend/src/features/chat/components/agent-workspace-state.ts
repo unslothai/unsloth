@@ -302,3 +302,22 @@ export function safeAgentWorkspaceError(error: unknown): string {
       "$1<local path>",
     );
 }
+
+/** Expand selected rename destinations to the exact paths needed by Git add -A. */
+export function agentCommitOwnedPaths(
+  files: AgentGitStatus["files"],
+  selectedPaths: ReadonlySet<string>,
+): string[] {
+  const paths = new Set<string>();
+  for (const file of files) {
+    if (!selectedPaths.has(file.path)) continue;
+    paths.add(file.path);
+    if (file.code.includes("R")) {
+      if (!file.oldPath) {
+        throw new Error("Rename source is unavailable. Refresh Git status and retry.");
+      }
+      paths.add(file.oldPath);
+    }
+  }
+  return [...paths].sort();
+}

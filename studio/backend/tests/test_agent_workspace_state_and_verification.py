@@ -515,7 +515,7 @@ def test_goal_completion_gate_is_optional(tmp_path):
     require_goal_completion_verification("project")
 
 
-def test_goal_completion_gate_rejects_config_changes_and_no_checks(tmp_path):
+def test_goal_completion_gate_rejects_config_changes_and_no_checks(tmp_path, monkeypatch):
     _folder_project(tmp_path)
     checks = [_required_check()]
     initial = set_verification_config("project", checks, require_for_goal_completion = True)
@@ -526,8 +526,15 @@ def test_goal_completion_gate_rejects_config_changes_and_no_checks(tmp_path):
     with pytest.raises(AgentWorkspaceError, match = "verification-setting change"):
         require_goal_completion_verification("project")
 
-    empty = set_verification_config("project", [], require_for_goal_completion = True)
-    assert empty["revision"] > changed["revision"]
+    with pytest.raises(AgentWorkspaceError, match = "at least one check"):
+        set_verification_config("project", [], require_for_goal_completion = True)
+    assert get_verification_config("project") == changed
+    # Older persisted empty policies must still fail closed when read.
+    monkeypatch.setattr(
+        verification_module,
+        "get_verification_config",
+        lambda project_id: {**changed, "checks": []},
+    )
     with pytest.raises(AgentWorkspaceError, match = "fresh passing verification run"):
         require_goal_completion_verification("project")
 
@@ -1220,6 +1227,7 @@ def test_update_plan_task_completed_holds_workspace_slot(tmp_path, monkeypatch):
     from core.agent_workspace import worktrees
 
     orig_acquire = worktrees.acquire_workspace_execution_slot
+
     def tracking_acquire(identity, *args, **kwargs):
         slot = orig_acquire(identity, *args, **kwargs)
         slot_held_during_check.append(("acquired", identity))
@@ -1256,3 +1264,23 @@ def test_update_plan_task_completed_holds_workspace_slot(tmp_path, monkeypatch):
     stored_plan = get_plan(plan2["id"])
     assert stored_plan["tasks"][0]["status"] == "running"
 
+
+def test_empty_mandatory_verification_policy_is_rejected_without_mutation(tmp_path):
+    _folder_project(tmp_path)
+    before = set_verification_config("project", [_required_check()], expected_revision = 0)
+    with pytest.raises(AgentWorkspaceError, match = "at least one check"):
+        set_verification_config(
+            "project",
+            [],
+            require_for_goal_completion = True,
+            expected_revision = before["revision"],
+        )
+    assert get_verification_config("project") == before
+    optional = set_verification_config(
+        "project",
+        [],
+        require_for_goal_completion = False,
+        expected_revision = before["revision"],
+    )
+    assert optional["checks"] == []
+    assert optional["revision"] == before["revision"] + 1

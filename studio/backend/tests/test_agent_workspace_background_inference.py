@@ -593,6 +593,8 @@ def test_production_executor_dispatches_loaded_llama_backend(tmp_path, monkeypat
     assert observed["cancel_event"] is not None
     assert observed["permission_mode"] == "full"
     assert observed["bypass_permissions"] is True
+    assert observed["disable_parallel_tool_use"] is True
+    assert observed["max_tool_iterations"] > 0
 
 
 def test_production_executor_dispatches_external_provider_tool_loop(tmp_path, monkeypatch):

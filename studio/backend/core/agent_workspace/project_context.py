@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from storage.studio_db import get_chat_project
+from storage.studio_db import get_chat_project, get_chat_thread
 
 from .common import AgentWorkspaceError, project_workspace
 from .discovery import (
@@ -399,6 +399,9 @@ def project_query_from_messages(messages: Iterable[object]) -> str:
 def project_id_from_persisted_session(session_id: Optional[str]) -> Optional[str]:
     """Return a project id only when ``session_id`` names an existing project."""
     if not isinstance(session_id, str) or not session_id.startswith(PROJECT_SESSION_PREFIX):
+        return None
+    # A persisted chat takes precedence over the synthetic project-session form.
+    if get_chat_thread(session_id) is not None:
         return None
     project_id = session_id[len(PROJECT_SESSION_PREFIX) :]
     if not project_id or get_chat_project(project_id) is None:

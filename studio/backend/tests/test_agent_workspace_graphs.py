@@ -1351,56 +1351,33 @@ def test_loop_adapter_persists_task_id_before_durable_enqueue(monkeypatch):
     assert order[-1][1:] == ("completed", task["id"])
 
 
-def test_loop_adapter_rotates_terminal_checkpoint_task_id(monkeypatch):
+@pytest.mark.parametrize("permission_mode", ["off", "full"])
+@pytest.mark.parametrize("status", ["failed", "cancelled", "interrupted"])
+def test_loop_adapter_rejects_terminal_checkpoint_replay(monkeypatch, permission_mode, status):
     old_task_id = "00000000-0000-4000-8000-000000000001"
-    tasks = {
-        old_task_id: {
-            "id": old_task_id,
-            "projectId": "project",
-            "status": "cancelled",
-            "result": None,
-        }
-    }
-    enqueued_ids = []
+    task = {"id": old_task_id, "projectId": "project", "status": status, "result": None}
 
-    def enqueue(project_id, instruction, **kwargs):
-        task_id = kwargs["task_id"]
-        assert task_id != old_task_id
-        enqueued_ids.append(task_id)
-        tasks[task_id] = {
-            "id": task_id,
-            "projectId": project_id,
-            "status": "queued",
-            "result": None,
-        }
-        return dict(tasks[task_id])
+    def unexpected_dispatch(*args, **kwargs):
+        raise AssertionError("A stopped task must not be replayed")
 
-    def start(task_id):
-        tasks[task_id]["status"] = "completed"
-        tasks[task_id]["result"] = {"output": "resumed", "toolEvents": 0}
-        return dict(tasks[task_id])
-
-    monkeypatch.setattr("core.agent_workspace.background.manager.enqueue_agent", enqueue)
-    monkeypatch.setattr("core.agent_workspace.background.manager.start", start)
     monkeypatch.setattr(
-        "core.agent_workspace.graphs.background_manager_task",
-        lambda task_id: dict(tasks[task_id]) if task_id in tasks else None,
+        "core.agent_workspace.background.manager.enqueue_agent", unexpected_dispatch
     )
-
+    monkeypatch.setattr("core.agent_workspace.background.manager.start", unexpected_dispatch)
+    monkeypatch.setattr(
+        "core.agent_workspace.graphs.background_manager_task", lambda task_id: dict(task)
+    )
     checkpoints = []
-    result = GraphLoopAdapter().run(
-        "project",
-        "resume",
-        {"permissionMode": "off"},
-        threading.Event(),
-        checkpoint = {"backgroundTaskId": old_task_id, "status": "cancelled"},
-        checkpoint_callback = checkpoints.append,
-    )
-
-    assert result["output"] == "resumed"
-    assert len(enqueued_ids) == 1
-    assert checkpoints[0]["backgroundTaskId"] == enqueued_ids[0]
-    assert checkpoints[-1]["status"] == "completed"
+    with pytest.raises(AgentWorkspaceError, match = "Inspect the project"):
+        GraphLoopAdapter().run(
+            "project",
+            "resume",
+            {"permissionMode": permission_mode},
+            threading.Event(),
+            checkpoint = {"backgroundTaskId": old_task_id, "status": status},
+            checkpoint_callback = checkpoints.append,
+        )
+    assert checkpoints == []
 
 
 def test_loop_enqueue_failure_reuses_atomic_token_reservation(tmp_path, monkeypatch):
@@ -2325,7 +2302,9 @@ def test_retry_route_rechecks_the_execution_boundary(tmp_path, monkeypatch):
     assert len(list_graph_runs("project", graph["id"])) == 1
 
 
-def test_stopped_side_effect_capable_loop_fails_closed(tmp_path):
+@pytest.mark.parametrize("permission_mode", ["off", "full"])
+@pytest.mark.parametrize("node_type", ["loop", "model"])
+def test_stopped_side_effect_capable_loop_fails_closed(tmp_path, permission_mode, node_type):
     _folder_project(tmp_path)
 
     class _Fails(GraphLoopAdapter):
@@ -2335,14 +2314,18 @@ def test_stopped_side_effect_capable_loop_fails_closed(tmp_path):
     runtime = {
         "kind": "local",
         "model": "test-model",
-        "permissionMode": "full",
+        "permissionMode": permission_mode,
         "maxOutputTokens": 1,
     }
     graph = create_graph(
         "project",
         _spec(
             _node("input", "input"),
-            _node("loop", "loop", {"instruction": "edit", "runtime": runtime}),
+            _node(
+                "loop",
+                node_type,
+                {("prompt" if node_type == "model" else "instruction"): "edit", "runtime": runtime},
+            ),
             _node("output", "output"),
             edges = [
                 {"from": "input", "to": "loop"},
@@ -2949,6 +2932,70 @@ def test_runtime_budget_expiry_during_retry_backoff_is_failed(tmp_path):
         assert finished["error"] == "Graph run budget exhausted."
         assert any(
             event["type"] == "run.failed" for event in list_graph_events("project", run["id"])
+        )
+    finally:
+        manager._executor.shutdown(wait = True)
+
+
+def test_stale_graph_worker_callback_preserves_resumed_worker(monkeypatch):
+    from concurrent.futures import Future
+    from core.agent_workspace import graphs
+
+    old_future, resumed_future = Future(), Future()
+    futures = iter([old_future, resumed_future])
+    manager = GraphRunManager(max_workers = 1)
+    run = {"id": "run", "projectId": "project", "status": "running"}
+    monkeypatch.setattr(manager, "_get_any", lambda run_id: dict(run))
+    monkeypatch.setattr(graphs, "claim_graph_run", lambda run_id: dict(run))
+    monkeypatch.setattr(manager._executor, "submit", lambda *args: next(futures))
+    try:
+        manager.start("run")
+        old_control = manager._cancellations["run"]
+        manager.start("run")
+        resumed_control = manager._cancellations["run"]
+        assert resumed_control is not old_control
+        old_future.set_result(None)
+        assert manager._futures["run"] is resumed_future
+        assert manager._cancellations["run"] is resumed_control
+        resumed_future.set_result(None)
+        assert "run" not in manager._futures
+        assert "run" not in manager._cancellations
+    finally:
+        manager._executor.shutdown(wait = True)
+
+
+def test_effect_uncertain_loop_does_not_retry_automatically(tmp_path):
+    from core.agent_workspace.graphs import _GraphLoopEffectUncertain
+
+    _folder_project(tmp_path)
+    calls = []
+
+    class UncertainLoop(GraphLoopAdapter):
+        def run(self, project_id, instruction, runtime, cancel_event):
+            calls.append(instruction)
+            raise _GraphLoopEffectUncertain("Inspect the project before replay")
+
+    graph = create_graph(
+        "project",
+        _spec(
+            _node("input", "input"),
+            _node(
+                "loop",
+                "loop",
+                {"instruction": "edit"},
+                retry_policy = {"maxAttempts": 3, "backoffMs": 0},
+            ),
+            _node("output", "output"),
+            edges = [{"from": "input", "to": "loop"}, {"from": "loop", "to": "output"}],
+        ),
+    )
+    manager = GraphRunManager(max_workers = 1, loop_adapter = UncertainLoop())
+    try:
+        run = manager.enqueue("project", graph["id"], {})
+        assert _wait(run["id"])["status"] == "failed"
+        assert len(calls) == 1
+        assert not any(
+            event["type"] == "node.retrying" for event in list_graph_events("project", run["id"])
         )
     finally:
         manager._executor.shutdown(wait = True)
