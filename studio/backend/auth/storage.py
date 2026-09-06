@@ -203,6 +203,99 @@ def clear_bootstrap_password() -> None:
             print(message, file = sys.stderr, flush = True)
 
 
+def _undelivered_credential_path() -> "os.PathLike[str]":
+    """Path of the undelivered-credential sentinel, resolved from DB_PATH.
+
+    Computed per call rather than cached at import so it follows a relocated
+    DB_PATH (tests, UNSLOTH_STUDIO_HOME) exactly as the auth DB does.
+    """
+    return DB_PATH.parent / ".credential_undelivered"
+
+
+def mark_credential_undelivered(username: str) -> None:
+    """Record that the live admin password was committed but never shown.
+
+    Auto-generation commits the new password BEFORE writing it to a console, so a
+    terminal that dies in between leaves a live credential nobody has ever seen.
+    The launch then fails closed -- but on the NEXT launch must_change_password is
+    already 0, so the gate would sail past its checks and publish a Studio that no
+    one, operator included, can log into. This sentinel is what lets the retry see
+    that state and keep failing closed.
+
+    Contents are the committed ``password_hash``: PBKDF2 of a 24-byte urlsafe
+    token, so it is not a credential and grants nothing, but it identifies WHICH
+    password went undelivered. That is what makes the sentinel self-healing --
+    ``unsloth studio reset-password`` (or any later change) rewrites the hash, so
+    the stale sentinel stops matching even if it could not be deleted. A plain
+    existence flag would instead brick every future launch on the one machine
+    where the unlink failed (Windows AV, read-only auth dir).
+
+    Best-effort: the password is already committed, so a write failure must not
+    fail the launch. It only costs the retry its guard, which is exactly today's
+    behaviour, so failing to mark is never worse than not marking at all.
+    """
+    record = None
+    try:
+        record = get_user_and_secret(username)
+    except Exception:
+        record = None
+    if record is None:
+        return
+    path = _undelivered_credential_path()
+    try:
+        ensure_dir(path.parent)
+        path.write_text(record[1], encoding = "utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def clear_credential_undelivered() -> None:
+    """Drop the sentinel once the credential has actually reached the operator.
+
+    Best-effort: a surviving file is not a lockout, because
+    ``credential_undelivered`` also requires the recorded hash to still be the
+    live one, and the operator can change the password to clear it.
+    """
+    try:
+        _undelivered_credential_path().unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
+def credential_undelivered(username: str) -> bool:
+    """True when the live admin password is one that was committed but never shown.
+
+    Requires BOTH the sentinel and a hash match, so it answers "is the CURRENT
+    password the undelivered one?" rather than "did a delivery ever fail?". Any
+    later password change makes it False. A sentinel that cannot be read, is
+    empty (a torn write), or names a superseded hash is stale: delete it and
+    report False, which restores the unguarded behaviour rather than refusing a
+    launch we cannot justify refusing.
+    """
+    path = _undelivered_credential_path()
+    try:
+        if not path.is_file():
+            return False
+        recorded = path.read_text(encoding = "utf-8").strip()
+    except OSError:
+        return False
+    if recorded:
+        try:
+            record = get_user_and_secret(username)
+        except Exception:
+            # Cannot read the admin row to compare. Do not delete the sentinel on
+            # a transient DB error, and do not refuse on an unproven match.
+            return False
+        if record is not None and hmac.compare_digest(recorded, record[1]):
+            return True
+    clear_credential_undelivered()
+    return False
+
+
 def _hash_token(token: str) -> str:
     """SHA-256 hash helper for refresh token storage.
 
@@ -327,6 +420,23 @@ def get_connection() -> sqlite3.Connection:
             value TEXT NOT NULL
         );
         """
+    )
+    # One-time, short-TTL link tokens (opt-in Colab same-tab handoff). The row is
+    # the single-use nonce: a token is exchangeable only while its jti is present,
+    # and consuming it deletes the row so a replay finds nothing.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS link_tokens (
+            jti        TEXT PRIMARY KEY,
+            username   TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        """
+    )
+    # Expiry-ordered purges (on mint and on consume) scan by expires_at; index it
+    # so reclaiming stale rows stays cheap as tokens are minted.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_link_tokens_expires_at ON link_tokens (expires_at)"
     )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in columns:
@@ -740,6 +850,7 @@ def update_password(
     *,
     revoke_refresh_tokens: bool = False,
     expect_password_hash: Optional[str] = None,
+    require_must_change: bool = False,
     preserve_desktop_secret: bool = False,
 ) -> Optional[str]:
     """Update password, clear first-login requirement, rotate JWT secret.
@@ -755,46 +866,82 @@ def update_password(
     ``expect_password_hash`` makes the write conditional on the credential the
     caller verified still being current, so a request that checked the old
     password cannot overwrite a reset that landed while it was in flight.
-    Returns False when the credential moved underneath it.
+    Returns None when the credential moved underneath it.
+
+    ``require_must_change`` makes it conditional on the account still holding a
+    seeded credential. Auto-generated launch credentials use it so a user who
+    completes /change-password in another tab between a
+    ``requires_password_change()`` read and this call is not silently overwritten
+    (and no already-replaced generated password is displayed).
+
+    Both guards ride the SAME statement rather than branching per guard: SQLite
+    applies the whole WHERE atomically, so exactly one of two racing writers sees
+    rowcount > 0 no matter which guard the loser tripped. A guard that rejects the
+    write commits NOTHING -- no revocation, no rotation -- because the credential
+    a rejected caller would be revoking belongs to the writer that won.
+
+    (``expect_password_hash`` strictly subsumes ``require_must_change``: every
+    write rehashes with a fresh salt, so any concurrent change trips it too. The
+    two are kept separate because they state different policies -- "the credential
+    I verified is still current" versus "only ever replace a never-set credential"
+    -- and the auto-generate callers hold no credential to pass. Collapsing them
+    is a follow-up, not a rebase.)
 
     ``preserve_desktop_secret`` keeps the local desktop credential valid. It is
     for a caller that already authenticated as the desktop app: revoking the
     secret it is currently using would break desktop auto-auth for a change the
     desktop itself made.
+
+    Outstanding one-time link tokens are deleted here unconditionally, and the
+    desktop secret (unless preserved) is revoked in this same transaction. Both
+    authenticate as this user without the password, and both are keyed off the
+    JWT secret rotated below. A post-commit ``clear_desktop_secret()`` opens a
+    SECOND connection and can raise ``sqlite3.OperationalError`` on a busy
+    database, leaving a pre-change desktop credential live against the new
+    password, and would propagate that error to a caller whose new password is
+    already committed. The only remaining post-commit step is the best-effort
+    bootstrap FILE removal, which cannot join a SQL transaction and never fails
+    the change.
     """
     from .hashing import hash_password
 
     salt, pwd_hash = hash_password(new_password)
     jwt_secret = secrets.token_urlsafe(64)
+
+    # Only literal fragments are interpolated below; every value stays a bound
+    # parameter, so this is not string-built SQL in the injectable sense. Order is
+    # load-bearing: the SET params, then username, then the optional hash guard.
+    guards = ""
+    params = [salt, pwd_hash, jwt_secret, username]
+    if require_must_change:
+        guards += " AND must_change_password = 1"
+    if expect_password_hash is not None:
+        guards += " AND password_hash = ?"
+        params.append(expect_password_hash)
+
     conn = get_connection()
     try:
-        if expect_password_hash is None:
-            cursor = conn.execute(
-                """
-                UPDATE auth_user
-                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-                WHERE username = ?
-                """,
-                (salt, pwd_hash, jwt_secret, username),
-            )
-        else:
-            cursor = conn.execute(
-                """
-                UPDATE auth_user
-                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-                WHERE username = ? AND password_hash = ?
-                """,
-                (salt, pwd_hash, jwt_secret, username, expect_password_hash),
-            )
-        if revoke_refresh_tokens and cursor.rowcount > 0:
+        cursor = conn.execute(
+            f"""
+            UPDATE auth_user
+            SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+            WHERE username = ?{guards}
+            """,
+            tuple(params),
+        )
+        if cursor.rowcount == 0:
+            # Unknown user, or a guard rejected the write. Nothing rotated, so
+            # nothing may be revoked: roll back before any DELETE can run.
+            conn.rollback()
+            return None
+        conn.execute("DELETE FROM link_tokens WHERE username = ?", (username,))
+        if not preserve_desktop_secret:
+            clear_desktop_secret(conn)
+        if revoke_refresh_tokens:
             conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
         conn.commit()
-        if cursor.rowcount > 0:
-            clear_bootstrap_password()
-            if not preserve_desktop_secret:
-                clear_desktop_secret()
-            return jwt_secret
-        return None
+        clear_bootstrap_password()
+        return jwt_secret
     finally:
         conn.close()
 
@@ -929,6 +1076,70 @@ def revoke_user_refresh_tokens(username: str) -> None:
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# One-time link tokens (opt-in Colab same-tab handoff)
+# ---------------------------------------------------------------------------
+
+# Short window: the token only has to survive the same-tab redirect into the UI.
+LINK_TOKEN_EXPIRE_SECONDS = 600  # 10 minutes
+
+
+def save_link_token(jti: str, username: str, expires_at: str) -> None:
+    """Record a minted one-time link token so it can be consumed exactly once.
+
+    Only the opaque jti (a random id) is stored; the token signature never
+    touches disk.
+
+    Purges expired rows in the same transaction as the insert. The frontend is
+    not yet wired to exchange these tokens, so consume_link_token (the other purge
+    site) may never run; without a purge on mint the table would grow without
+    bound across reruns. Reclaiming stale rows here keeps it bounded regardless.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM link_tokens WHERE expires_at < ?", (now,))
+        conn.execute(
+            "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
+            (jti, username, expires_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def consume_link_token(jti: str, username: str) -> bool:
+    """Atomically validate-and-delete a one-time link token.
+
+    Returns True only when a row for (jti, username) existed and had not expired;
+    the matching row is deleted in the same conditional DELETE. SQLite serializes
+    writers (a single database-level write lock, bounded by busy_timeout), so of
+    two concurrent exchanges only one DELETE removes the row (rowcount == 1) and
+    the other matches nothing (rowcount == 0); the token cannot be consumed twice.
+    A WHERE-qualified DELETE reports an exact rowcount, so this avoids the
+    DELETE ... RETURNING syntax that needs SQLite >= 3.35 while keeping the same
+    single-use guarantee. ISO-8601 timestamps compare lexicographically, matching
+    refresh_tokens.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        # Opportunistically reclaim expired rows so the table can't grow unbounded.
+        conn.execute("DELETE FROM link_tokens WHERE expires_at < ?", (now,))
+        cur = conn.execute(
+            """
+            DELETE FROM link_tokens
+            WHERE jti = ? AND username = ? AND expires_at >= ?
+            """,
+            (jti, username, now),
+        )
+        consumed = cur.rowcount == 1
+        conn.commit()
+        return consumed
+    finally:
+        conn.close()
+
+
 def create_desktop_secret() -> str:
     """Create/rotate the local desktop credential and return it once."""
     ensure_default_admin()
@@ -986,8 +1197,21 @@ def validate_desktop_secret(raw_secret: str) -> Optional[str]:
     return verified[0] if verified else None
 
 
-def clear_desktop_secret() -> None:
-    """Remove backend-side desktop auth state."""
+def clear_desktop_secret(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Remove backend-side desktop auth state.
+
+    Given an open *conn*, the delete joins the CALLER's transaction and the caller
+    commits it (``update_password`` revokes the desktop secret in the same atomic
+    write as the password rotation, so a failure cannot leave a pre-change desktop
+    credential able to authenticate without the password). Otherwise it runs
+    standalone on its own connection.
+    """
+    if conn is not None:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key IN (?, ?)",
+            (_DESKTOP_SECRET_HASH_KEY, _DESKTOP_SECRET_CREATED_AT_KEY),
+        )
+        return
     conn = get_connection()
     try:
         conn.execute(

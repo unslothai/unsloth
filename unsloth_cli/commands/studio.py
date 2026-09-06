@@ -148,6 +148,8 @@ def _ensure_studio_env_exported() -> None:
 
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
+# Mirrors studio/backend/auth/storage.py's sentinel; see the helpers below.
+UNDELIVERED_CREDENTIAL_FILE = ".credential_undelivered"
 DEFAULT_ADMIN_USERNAME = "unsloth"
 DESKTOP_SECRET_PREFIX = "desktop-"
 API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
@@ -1067,6 +1069,19 @@ def _connect_auth_db() -> sqlite3.Connection:
         );
         """
     )
+    # Mirror backend storage.get_connection: one-time link tokens live in the SAME
+    # auth.db. The CLI never mints them, but _cli_update_password revokes any
+    # outstanding rows in its password transaction (as the backend does), so the
+    # table must exist here even on a DB the CLI created before the backend ran.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS link_tokens (
+            jti        TEXT PRIMARY KEY,
+            username   TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        """
+    )
     auth_columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
     if "must_change_password" not in auth_columns:
         conn.execute(
@@ -1196,20 +1211,98 @@ def _prompt_streams_interactive() -> bool:
         return False
 
 
-def _bootstrap_deadline_active() -> bool:
-    """Whether the backend's bootstrap shutdown deadline will arm.
+def _undelivered_credential_path():
+    """Sentinel marking an admin password committed but never shown to anyone.
 
-    Mirror of studio/backend/auth/bootstrap_timeout.py bootstrap_timeout_seconds:
-    unset/blank/malformed UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT falls back to the 1h
-    default (a typo must not remove protection); 0 or negative disables it.
+    CLI mirror of storage.mark_credential_undelivered / credential_undelivered;
+    the two must agree on the filename and on storing the committed
+    password_hash, because either side may write it and the other may read it
+    (the CLI rotates before re-exec'ing the backend).
     """
-    raw = os.environ.get("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "").strip()
-    if not raw:
-        return True
+    return STUDIO_HOME / "auth" / UNDELIVERED_CREDENTIAL_FILE
+
+
+def _mark_credential_undelivered(password_hash: str) -> None:
+    """Best-effort: a failure only costs the retry its guard, never the launch."""
+    path = _undelivered_credential_path()
     try:
-        return int(raw) > 0
-    except ValueError:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(password_hash, encoding = "utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def _clear_credential_undelivered() -> None:
+    try:
+        _undelivered_credential_path().unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
+def _credential_undelivered(password_hash: str) -> bool:
+    """True when *password_hash* is the hash of a password that was never shown.
+
+    Matching on the hash (not mere existence) is what makes this self-healing:
+    `unsloth studio reset-password` rewrites the row, so the sentinel stops
+    matching even on a machine where the unlink failed. Stale or torn sentinels
+    are removed and reported False rather than refusing a launch unprovably.
+    """
+    path = _undelivered_credential_path()
+    try:
+        if not path.is_file():
+            return False
+        recorded = path.read_text(encoding = "utf-8").strip()
+    except OSError:
+        return False
+    if recorded and hmac.compare_digest(recorded, password_hash):
         return True
+    _clear_credential_undelivered()
+    return False
+
+
+def _one_time_secret_console_stream(*, skip = None):
+    """Return an interactive-terminal stream to surface a one-time secret, or None.
+
+    Mirrors run.py's ``_one_time_secret_stream`` fail-closed contract for the CLI
+    parent: the auto-generated admin password must reach the operator's terminal
+    BEFORE we rotate away the seeded bootstrap credential. Prefers stderr, then
+    stdout, and requires a real TTY. A writable non-tty stream -- a ``> file``
+    redirect, nohup.out, a systemd-journald pipe -- is NOT an ephemeral console:
+    surfacing the credential there PERSISTS the plaintext where log consumers can
+    read it (CWE-532), so it is skipped. Returns None when neither stream is a
+    usable TTY -- a Windows pythonw/service wrapper (both absent), a closed stream,
+    or a headless (nohup/systemd) launch with redirected output -- in which case
+    the caller fails closed rather than rotate away and lose (or leak) the only
+    credential. The CLI parent has no session-log tee, so no _TeeStream unwrapping
+    is needed here.
+
+    *skip* excludes an already-resolved console so a delivery that RAISED on it can
+    retry the other one (see _deliver_auto_generated_credentials). The remaining
+    candidate still has to pass every check above, so the retry cannot downgrade to
+    a redirected, non-tty surface.
+    """
+    for candidate in (sys.stderr, sys.stdout):
+        try:
+            if candidate is None or getattr(candidate, "closed", False):
+                continue
+            if skip is not None and candidate is skip:
+                continue
+            if not callable(getattr(candidate, "write", None)):
+                continue
+            # A writable non-tty stream is a redirected file/journal/pipe that would
+            # persist the one-time credential (CWE-532); only a real terminal is an
+            # ephemeral surface. isatty() may be absent/raise on a wrapper stream ->
+            # treated as non-interactive by the except below.
+            if not candidate.isatty():
+                continue
+        except (AttributeError, ValueError):
+            continue
+        return candidate
+    return None
 
 
 def _generate_reset_password() -> str:
@@ -1229,25 +1322,52 @@ def _cli_update_password(
     new_password: str,
     *,
     revoke_api_keys: bool = False,
-) -> None:
+    require_must_change: bool = False,
+) -> bool:
     """CLI mirror of backend update_password + change-password route effects.
 
     One transaction: rehash, rotate the JWT secret, clear must_change_password,
-    revoke refresh tokens (PR #6651 finding), drop the desktop secret, and (for a
-    reset) the API keys the old credential could have minted. File cleanup happens
-    after commit; a failed unlink must not roll the change back.
+    revoke refresh tokens (PR #6651 finding), revoke outstanding one-time link
+    tokens, drop the desktop secret, and (for a reset) the API keys the old
+    credential could have minted. File cleanup happens after commit; a failed
+    unlink must not roll the change back. Returns whether the row was written.
+
+    ``require_must_change`` makes it a compare-and-set on must_change_password,
+    mirroring backend storage.update_password: an auto-generated launch credential
+    must not overwrite a password a user chose in a Studio tab between the
+    must_change read and this write. Returns False when that guard rejects the
+    update, and then NOTHING else is revoked -- the password that won the race
+    belongs to another writer, and its sessions, link tokens, desktop secret and
+    API keys are not ours to destroy. That is why the early return sits above
+    ``if revoke_api_keys:`` in particular: that DELETE has no WHERE clause and
+    would wipe every key for every user while leaving the password as the winner
+    set it. The guard stays spelled ``require_must_change and rowcount == 0``
+    rather than a bare rowcount check, because the unguarded callers
+    (``reset_password``, ``_apply_supplied_password_before_launch``) rely on the
+    revocations running even when the UPDATE matches nothing, e.g. a renamed
+    admin row.
+
+    Revoking link_tokens here mirrors backend storage.update_password: a link
+    token is signed with a key derived from the JWT secret rotated in this same
+    statement, so a leftover row would let a concurrent exchange that read the old
+    key before the rotation still consume its jti and mint a session. Deleting the
+    rows in the SAME transaction as the rotation closes that race.
     """
     password_salt, password_hash = _hash_password(new_password)
+    guard = " AND must_change_password = 1" if require_must_change else ""
     with conn:
-        conn.execute(
-            """
+        cursor = conn.execute(
+            f"""
             UPDATE auth_user
             SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-            WHERE username = ?
+            WHERE username = ?{guard}
             """,
             (password_salt, password_hash, secrets.token_urlsafe(64), username),
         )
+        if require_must_change and cursor.rowcount == 0:
+            return False
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        conn.execute("DELETE FROM link_tokens WHERE username = ?", (username,))
         conn.execute(
             "DELETE FROM app_secrets WHERE key IN (?, ?)",
             (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
@@ -1283,6 +1403,84 @@ def _cli_update_password(
                     "after a reset.",
                     err = True,
                 )
+    return True
+
+
+def _echo_auto_generated_credentials(
+    username: str,
+    password: str,
+    *,
+    out = None,
+) -> None:
+    """Surface an auto-generated admin credential once, on the parent's console.
+
+    Writes to the pre-resolved *out* stream (the one the caller verified was usable
+    before it rotated the seeded recovery password) so the credential lands on the
+    exact console the fail-closed preflight checked; falls back to ``typer.echo`` on
+    stderr for callers that do not resolve one. Mirrors run.py's
+    ``_print_auto_generated_credentials``. Never logged elsewhere and never
+    persisted; the re-exec'd child then sees must_change=0 and no-ops.
+    """
+    line = "=" * 70
+    banner = (
+        f"\n{line}\n"
+        "  Unsloth Studio admin login (auto-generated for this public launch)\n"
+        f"    Username: {username}\n"
+        f"    Password: {password}\n"
+        "  Save this now: it is shown once, not written to disk, and not in the\n"
+        "  process list. Rotate later with `unsloth studio reset-password`.\n"
+        f"{line}"
+    )
+    if out is None:
+        typer.echo(banner, err = True)
+    else:
+        print(banner, file = out, flush = True)
+
+
+def _deliver_auto_generated_credentials(username: str, password: str, *, out) -> bool:
+    """Echo the one-time credential to *out*, retrying once on the other console.
+
+    Mirrors run.py's ``_deliver_one_time_credential``. The console preflight runs
+    before the rotation, but this write happens after ``_cli_update_password`` has
+    committed the generated password and removed the seeded bootstrap credential.
+    A terminal that disappears in between (a dropped SSH session; writes to the
+    orphaned pty raise OSError EIO) would make the echo raise, aborting the launch
+    with a live password nobody has ever seen. Retry once on the other console
+    (re-resolved through the same tty/closed/writable preflight, so the retry can
+    never land the credential in a redirected file or journal), and report whether
+    it reached a console at all so the caller can fail closed instead of crashing.
+    """
+    fallback = _one_time_secret_console_stream(skip = out)
+    # Never retry the stream that just failed (a stubbed resolver could return it).
+    for stream in (out, fallback if fallback is not out else None):
+        if stream is None:
+            continue
+        try:
+            _echo_auto_generated_credentials(username, password, out = stream)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _log_secret_free_delivery_failure() -> None:
+    """Explain an undeliverable one-time credential, WITHOUT echoing the secret.
+
+    Reached only when every console refused the banner, so this message may itself
+    fail to land; it is best-effort and deliberately carries no password (writing
+    the value anywhere else would persist it, CWE-532). The non-zero exit is the
+    part the caller can always rely on.
+    """
+    try:
+        typer.echo(
+            "Error: the auto-generated Unsloth admin password could not be shown: "
+            "the console went away after the pre-rotation check. It is now the live "
+            "password but was never displayed, so nothing can recover it. Reset the "
+            "credential with `unsloth studio reset-password`, then relaunch.",
+            err = True,
+        )
+    except Exception:
+        pass
 
 
 def _apply_supplied_password_before_launch(supplied_password: "str | None") -> None:
@@ -1613,49 +1811,30 @@ def _enforce_password_change_before_exposure(
             )
             _strip_seeded_bootstrap_password_or_exit(context = "auth DB row unreadable")
             return
+        if row and _credential_undelivered(row[1]):
+            # An earlier launch committed an auto-generated password and could not
+            # print it, so it refused. must_change_password is 0 now, so the check
+            # below would return and let the public child start under a credential
+            # nobody has. Keep failing closed until the password is reset.
+            typer.echo(
+                "Error: refusing to publish Unsloth on a public Cloudflare URL: the "
+                "admin password auto-generated by an earlier launch was committed but "
+                "never displayed, so no one can log in. Reset it with `unsloth studio "
+                "reset-password`, then relaunch.",
+                err = True,
+            )
+            raise typer.Exit(1)
         if not row or not row[2]:
             return
         if not _prompt_streams_interactive():
-            # Only proceed headless if the bootstrap shutdown deadline will protect
-            # the launch: it never arms for api-only, and TIMEOUT=0 disables it.
-            if api_only or not _bootstrap_deadline_active():
-                typer.echo(
-                    "Error: refusing to publish Unsloth on a public Cloudflare "
-                    "URL: the default admin password was never changed, no "
-                    "terminal is attached to change it here, and the bootstrap "
-                    "shutdown deadline does not apply to this launch (api-only, "
-                    "or UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0). Change the "
-                    "password first (run `unsloth studio` locally and log in, "
-                    "or re-run with a terminal attached), then retry.",
-                    err = True,
-                )
-                raise typer.Exit(1)
-            if child_self_suppresses:
-                # The child is this install's own backend, whose pre-bind gate sets
-                # app.state.suppress_bootstrap_injection, so the seeded credential
-                # is never served publicly even with the file on disk. Skip the
-                # strip: unnecessary here, and it would lock the user out if the
-                # tunnel never comes up (e.g. a --secure loopback whose tunnel
-                # fails). Keep the file for LOCAL recovery; must_change stays set
-                # and the deadline arms.
-                typer.echo(
-                    "Warning: Unsloth is being exposed publicly while the admin "
-                    "account still uses its auto-generated bootstrap password. The "
-                    "login page forces a change and the credential is never served "
-                    "on the public page. Set a new password by running `unsloth "
-                    "studio` locally with a terminal attached, or `unsloth studio "
-                    "reset-password`; Unsloth shuts down after ~1h if the password "
-                    "stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
-                    err = True,
-                )
-                return
-            # The strip permanently removes the only plaintext recovery credential.
-            # On --secure the bind is loopback, so the tunnel is the ONLY public
+            # No terminal for the interactive change and no --password supplied
+            # (that path clears must_change and returns above).
+            #
+            # On --secure the loopback bind means the tunnel is the ONLY public
             # exposure: if cloudflared is provably unavailable no public URL can
-            # start, so stripping would just lock the user out. Refuse with the
-            # credential preserved. (A wildcard --cloudflare bind is public
-            # regardless of the tunnel, so it still strips below, as does any
-            # uncertainty.)
+            # ever come up, so refuse rather than rotate the recovery credential
+            # for a launch that will not start. (A wildcard --cloudflare bind is
+            # public regardless of the tunnel, so it still proceeds below.)
             if secure and _tunnel_binary_confirmed_unavailable():
                 typer.echo(
                     "Error: refusing to expose Unsloth: the Cloudflare tunnel binary "
@@ -1667,22 +1846,65 @@ def _enforce_password_change_before_exposure(
                     err = True,
                 )
                 raise typer.Exit(1)
-            # Mixed-version safety: an OLD studio-venv child (predating this gate)
-            # has no pre-bind suppression and would read the seeded credential back
-            # from disk and inject it into the public HTML until the deadline.
-            # Delete the file here, in the parent, so a fresh child of ANY version
-            # reads None. must_change_password stays set, so the login page still
-            # forces a change and the timer still arms; only the on-disk copy goes.
-            _strip_seeded_bootstrap_password_or_exit(context = "no terminal to change it")
-            typer.echo(
-                "Warning: Unsloth is being exposed publicly while the admin account "
-                "still uses its auto-generated bootstrap password. The seeded password "
-                "file has been removed so it is not served on the public page. Set a new "
-                "password by running `unsloth studio` locally with a terminal attached, "
-                "or `unsloth studio reset-password`; Unsloth shuts down after ~1h if the "
-                "password stays unchanged (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT).",
-                err = True,
-            )
+            # Auto-generate a strong admin password and commit it via the normal
+            # update path (clears must_change_password so the public child launches
+            # cleanly, rotates the JWT secret, revokes refresh tokens, and deletes
+            # the seeded bootstrap file). Mirrors run.py's headless gate. A child of
+            # ANY version then reads must_change=0 with no seeded file, so it serves
+            # a normal login page requiring the new password and never injects a
+            # default credential. Surface it once here, before any re-exec, so the
+            # secret never crosses to the child argv. child_self_suppresses is no
+            # longer consulted here: rotating a real password protects every child.
+            # Resolve the console stream that will surface the one-time credential
+            # BEFORE rotating the seeded recovery password. On a non-interactive
+            # launch stderr/stdout can be absent (a Windows pythonw/service wrapper)
+            # or closed, in which case typer.echo(err=True) silently no-ops and the
+            # only new credential is lost after the bootstrap password was deleted,
+            # locking the operator out. Mirror run.py's _one_time_secret_stream
+            # fail-closed preflight: with no usable console, refuse WITHOUT rotating
+            # so the seeded bootstrap password stays intact for local recovery.
+            out = _one_time_secret_console_stream()
+            if out is None:
+                typer.echo(
+                    "Error: refusing to rotate the Unsloth admin password: no usable "
+                    "console (stderr/stdout) to show the auto-generated credential, so "
+                    "it would be lost. The seeded bootstrap password is preserved; "
+                    "change the password first (`unsloth studio` locally with a "
+                    "terminal attached, or `unsloth studio reset-password`).",
+                    err = True,
+                )
+                raise typer.Exit(1)
+            generated = secrets.token_urlsafe(24)
+            if not _cli_update_password(
+                conn, DEFAULT_ADMIN_USERNAME, generated, require_must_change = True
+            ):
+                # Lost the compare-and-set: a password was set (another Studio tab
+                # finishing /change-password, a concurrent launch) between the
+                # must_change read above and this write, so ours was never stored.
+                # The account is off the seeded default, so launch with theirs and
+                # never show a credential that would not authenticate.
+                return
+            # Delivery is post-commit: the seeded recovery password is already gone,
+            # so a console that died since the preflight must not propagate its
+            # write error. Retry the other console, and fail closed with a
+            # secret-free message when neither accepts the banner.
+            # Mark BEFORE the banner: between the commit above and a confirmed
+            # write, this password lives only in memory, and the seeded recovery
+            # credential is already gone. Read the committed hash back rather than
+            # recomputing it, so the sentinel matches whatever actually landed.
+            try:
+                committed_row = conn.execute(
+                    "SELECT password_hash FROM auth_user WHERE username = ?",
+                    (DEFAULT_ADMIN_USERNAME,),
+                ).fetchone()
+                if committed_row:
+                    _mark_credential_undelivered(committed_row[0])
+            except (OSError, sqlite3.Error):
+                pass
+            if not _deliver_auto_generated_credentials(DEFAULT_ADMIN_USERNAME, generated, out = out):
+                _log_secret_free_delivery_failure()
+                raise typer.Exit(1)
+            _clear_credential_undelivered()
             return
         password_salt, password_hash = row[0], row[1]
 
