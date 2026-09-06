@@ -29083,10 +29083,13 @@ async def anthropic_messages(
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
     server_tools = _selects_server_tools and llama_backend.supports_tools and not _has_image
-    supports_tool_passthrough = getattr(
-        llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
+    # Left as one short-circuiting chain: a backend whose supports_tools raises (the
+    # folding gate has a test for it) must not turn a plain no-tools turn into a 500.
+    client_tools = (
+        not server_tools
+        and len(openai_client_tools) > 0
+        and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
-    client_tools = not server_tools and len(openai_client_tools) > 0 and supports_tool_passthrough
 
     _guard_anthropic_client_tool_catalog(
         openai_client_tools, openai_tool_choice, server_tools, llama_backend

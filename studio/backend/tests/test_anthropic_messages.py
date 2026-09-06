@@ -2664,6 +2664,53 @@ class TestAnthropicMessagesToolRouting:
         [(path, _kwargs)] = backend.calls
         assert path == "plain"
 
+    def test_a_plain_turn_survives_a_backend_whose_supports_tools_raises(self, monkeypatch):
+        # The gate must stay inside the short-circuit: reading the passthrough flag on a
+        # turn that sent no tools would 500 the half-ready backend the folding gate
+        # already tolerates (test_folding_gate_prefers_passthrough_even_when_supports_tools_raises).
+        from routes.inference import anthropic_count_tokens
+
+        import routes.inference as inf_mod
+
+        class _Raising:
+            is_loaded = True
+            is_vision = False
+            model_identifier = "half-ready"
+            context_length = 4096
+
+            @property
+            def supports_tools(self):
+                raise RuntimeError("not ready")
+
+            def count_chat_tokens(self, *args, **kwargs):
+                return 2
+
+            def generate_chat_completion(self, **kwargs):
+                yield "ok"
+
+            def generate_chat_completion_with_tools(self, **kwargs):
+                yield {"type": "content", "text": "ok"}
+
+        monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: _Raising())
+
+        assert (
+            _drive(
+                anthropic_messages(
+                    _basic_payload(), request = self._Request(), current_subject = "t"
+                )
+            ).status_code
+            == 200
+        )
+        assert (
+            _drive(
+                anthropic_count_tokens(
+                    _basic_payload(), request = self._Request(), current_subject = "t"
+                )
+            ).status_code
+            == 200
+        )
+
     def test_count_tokens_rejects_the_catalog_messages_rejects(self, monkeypatch):
         # The template renders no schemas, so the count matched with and without them
         # (27 either way on a real gemma-3-270m) and handed an SDK a budget /messages 400s.
