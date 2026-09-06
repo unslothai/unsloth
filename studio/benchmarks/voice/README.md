@@ -30,6 +30,7 @@ rate, so a longer utterance isn't unfairly counted as slower:
 | --- | --- | --- |
 | `stt_s` / `stt_rtf` | Whisper transcribe time / `input_audio_s ÷ stt_s` | lower / higher |
 | `llm_ttft_s` | LLM time-to-first-token | lower |
+| `llm_first_chunk_s` | LLM time until the first synthesizable chunk (opening clause / short sentence, plus its closing boundary) has streamed in | lower |
 | `llm_total_s` / `llm_tok_s` | full generation / `tokens ÷ time` | lower / higher |
 | `tts_first_s` | synth time for the first CLAUSE (the opening chunk you hear first) | lower |
 | `tts_full_s` / `tts_rtf` | synth time for the whole reply / `output_audio_s ÷ tts_s` | lower / higher |
@@ -41,14 +42,21 @@ sentence. `reason_chunks` / `think_s` record whether the chat model reasoned bef
 speaking (see `--think`).
 
 **Headline number — `first_audio_latency`:** the time from the end of your
-speech to the first audio coming back:
+speech to the first audio coming back, as a clause-first *streaming* pipeline
+would deliver it:
 
 ```
-first_audio_latency = stt_s + llm_ttft_s + tts_first_s
+first_audio_latency = stt_s + llm_first_chunk_s + tts_first_s
 ```
 
-That's the realtime "feel". The summary prints the total across all turns; that
-total is the thing to drive down.
+The LLM is charged until its first synthesizable chunk is complete, not just its
+first token: speech cannot start on a token, and the tokens between the first one
+and the end of the opening clause are real waiting. (The harness itself still
+calls TTS after the whole reply has streamed, so `turn_wall_s` =
+`stt_s + llm_total_s + tts_full_s` is the latency of the pipeline as implemented
+today; `first_audio_latency` is the projection of what a streaming TTS would
+achieve.) That's the realtime "feel". The summary prints the total across all
+turns; that total is the thing to drive down.
 
 ## Accuracy / correctness
 
@@ -118,6 +126,13 @@ First run auto-mints an internal API key into `.bench_token` (gitignored). The
 first call to each stage pays a cold-start cost (Whisper load, MIOpen kernel
 tuning, model warmup); that's shown separately as `cold-start` and kept out of
 the steady-state means via a warmup pass.
+
+A run proceeds in this order: warmup (unless `--no-warmup`), input-fixture
+preparation (a first run synthesizes the four utterances here, before anything
+is timed), the measured passes, then the determinism check (its two extra LLM
+generations run *after* the passes so they cannot pre-warm pass 1). For a
+genuinely cold first pass you therefore need pre-existing fixtures (any earlier
+run leaves them in `audio_fixtures/`) plus `--no-warmup --no-determinism`.
 
 Useful flags: `--think` (let the chat model reason before replying — OFF by
 default, because for voice the chain-of-thought is pure first-audio latency you

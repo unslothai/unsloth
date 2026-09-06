@@ -20,13 +20,22 @@ counted as "slower":
     LLM throughput        = completion_tokens     / llm_seconds     (tokens/sec)
 
 The headline number to drive down is `first_audio_latency` = the time from the
-end of your speech to the first audio coming back:
+end of your speech to the first audio coming back, as a clause-first streaming
+pipeline would deliver it:
 
-    first_audio_latency = stt_seconds + llm_time_to_first_token + tts_first_sentence_seconds
+    first_audio_latency = stt_seconds + llm_first_chunk_seconds + tts_first_chunk_seconds
+
+where `llm_first_chunk_seconds` is when the first synthesizable chunk (opening
+clause or short sentence, plus its closing boundary) had streamed in, not the
+first token: speech cannot start on a token. `llm_ttft` is still reported.
 
 Everything is deterministic: fixed seed, temperature 0 (greedy), and the input
 audio is cached to disk on first run so every later run feeds identical bytes.
-A determinism check re-runs the first turn's LLM and asserts an identical reply.
+A determinism check re-runs the first turn's LLM (after the measured passes, so
+it cannot pre-warm them) and asserts an identical reply.
+
+Exit status: 0 valid run; 1 measured but invalid (a turn failed a stage, or the
+determinism check failed); 2 could not run.
 
 Usage (from this folder, with Studio already running and a chat model + a TTS
 voice loaded in the UI):
@@ -119,11 +128,39 @@ def first_chunk(text: str) -> str:
     return sent
 
 
-def _fmt(
-    x: Optional[float],
-    unit: str = "s",
-    nd: int = 3,
-) -> str:
+def first_chunk_span(text: str) -> int:
+    """How many characters of the raw streamed reply must have arrived before
+    first_chunk(text) is known to be complete.
+
+    That is the chunk plus the boundary that closes it: the terminator and the
+    whitespace after it for a sentence (a "." followed by "5" is a decimal, not an
+    end), or the comma/semicolon/colon and its trailing space for a clause cut. A
+    reply with no boundary at all needs every character."""
+    lead = len(text) - len(text.lstrip())
+    body = text.strip()
+    m = re.search(r".+?[.!?](\s|$)", body, flags = re.DOTALL)
+    if not m:
+        return len(text)
+    sent = m.group(0).strip()
+    if len(sent.split()) > 6:
+        mc = re.search(r".+?[,;:](\s|$)", sent, flags = re.DOTALL)
+        if mc and len(mc.group(0).strip().rstrip(",;:").split()) >= 2:
+            return lead + mc.end()
+    return lead + m.end()
+
+
+def first_chunk_arrival(arrivals: list[tuple[int, float]], span: int) -> Optional[float]:
+    """The stream time at which ``span`` characters had arrived: the earliest
+    (cumulative_chars, seconds) sample at or past it, else the last sample."""
+    if not arrivals:
+        return None
+    for cum_len, t in arrivals:
+        if cum_len >= span:
+            return t
+    return arrivals[-1][1]
+
+
+def _fmt(x: Optional[float], unit: str = "s", nd: int = 3) -> str:
     return "  n/a " if x is None else f"{x:.{nd}f}{unit}"
 
 
@@ -215,6 +252,8 @@ class StudioClient:
         reason_chunks = 0
         completion_tokens: Optional[int] = None
         parts: list[str] = []
+        arrivals: list[tuple[int, float]] = []  # (cumulative content chars, seconds)
+        cum_len = 0
         with self.s.post(
             f"{self.base}/v1/chat/completions",
             json = payload,
@@ -245,16 +284,25 @@ class StudioClient:
                         reason_chunks += 1
                     piece = delta.get("content")
                     if piece:
+                        now = time.perf_counter() - t0
                         if ttft is None:
-                            ttft = time.perf_counter() - t0
+                            ttft = now
                         chunks += 1
                         parts.append(piece)
+                        cum_len += len(piece)
+                        arrivals.append((cum_len, now))
         total = time.perf_counter() - t0
         # Dead time spent reasoning before the first spoken token.
         think_s = (think_last or 0.0) if reason_chunks else 0.0
+        raw = "".join(parts)
+        # When a clause-first streaming TTS could have started: the first chunk and
+        # its closing boundary have arrived. Computed on the raw stream, since the
+        # chunk's position is measured in streamed characters.
+        first_chunk_s = first_chunk_arrival(arrivals, first_chunk_span(raw))
         return {
-            "text": "".join(parts).strip(),
+            "text": raw.strip(),
             "ttft": ttft,
+            "first_chunk_s": first_chunk_s,
             "total": total,
             "chunks": chunks,
             "completion_tokens": completion_tokens or chunks,
@@ -276,6 +324,7 @@ class TurnResult:
     output_audio_s: float = 0.0
     stt_s: Optional[float] = None
     llm_ttft_s: Optional[float] = None
+    llm_first_chunk_s: Optional[float] = None
     llm_total_s: Optional[float] = None
     tts_first_s: Optional[float] = None
     tts_full_s: Optional[float] = None
@@ -390,6 +439,7 @@ def run_turn(client: StudioClient, turn: dict, messages: list[dict], args) -> Tu
         )
         res.reply = out["text"]
         res.llm_ttft_s = out["ttft"]
+        res.llm_first_chunk_s = out["first_chunk_s"]
         res.llm_total_s = out["total"]
         res.completion_tokens = out["completion_tokens"]
         res.reason_chunks = out.get("reason_chunks", 0)
@@ -417,9 +467,11 @@ def run_turn(client: StudioClient, turn: dict, messages: list[dict], args) -> Tu
         except Exception as e:  # noqa: BLE001
             res.errors.append(f"tts_full: {e}")
 
-    # Derived latencies
-    if None not in (res.stt_s, res.llm_ttft_s, res.tts_first_s):
-        res.first_audio_latency_s = res.stt_s + res.llm_ttft_s + res.tts_first_s
+    # Derived latencies. First audio is charged for the LLM until the first
+    # synthesizable chunk is complete, not just its first token: speak() cannot
+    # start on a token, and the tokens between the two are real waiting.
+    if None not in (res.stt_s, res.llm_first_chunk_s, res.tts_first_s):
+        res.first_audio_latency_s = res.stt_s + res.llm_first_chunk_s + res.tts_first_s
     if None not in (res.stt_s, res.llm_total_s, res.tts_full_s):
         res.turn_wall_s = res.stt_s + res.llm_total_s + res.tts_full_s
     return res
@@ -479,6 +531,15 @@ def determinism_check(client: StudioClient, convo: dict, args) -> dict:
     return {"ran": True, "identical": identical, "sample": a["text"][:160]}
 
 
+def prepare_fixtures(client: StudioClient, convo: dict) -> None:
+    """Materialize every turn's input wav before any measured pass, so a first run
+    does not synthesize (and thereby warm) TTS in the middle of a timed turn."""
+    for turn in convo["turns"]:
+        _, _, generated = ensure_fixture(client, turn)
+        if generated:
+            print(f"  synthesized input fixture for turn {turn['id']}")
+
+
 def run_once(client: StudioClient, convo: dict, args) -> list[TurnResult]:
     system = convo.get("system")
     messages: list[dict] = [{"role": "system", "content": system}] if system else []
@@ -489,8 +550,8 @@ def run_once(client: StudioClient, convo: dict, args) -> list[TurnResult]:
         results.append(res)
         print(
             f"    stt {_fmt(res.stt_s)} (rtf {_fmt(res.stt_rtf, 'x', 2)})  "
-            f"llm ttft {_fmt(res.llm_ttft_s)} tot {_fmt(res.llm_total_s)} "
-            f"({_fmt(res.llm_tok_s, ' t/s', 1)})  "
+            f"llm ttft {_fmt(res.llm_ttft_s)} chunk {_fmt(res.llm_first_chunk_s)} "
+            f"tot {_fmt(res.llm_total_s)} ({_fmt(res.llm_tok_s, ' t/s', 1)})  "
             f"tts1 {_fmt(res.tts_first_s)} full {_fmt(res.tts_full_s)} "
             f"(rtf {_fmt(res.tts_rtf, 'x', 2)})  "
             f"=> first-audio {_fmt(res.first_audio_latency_s)}"
@@ -518,7 +579,9 @@ def _median(vals: list[Optional[float]]) -> Optional[float]:
     return statistics.median(xs) if xs else None
 
 
-_REQUIRED_METRICS = ("stt_s", "llm_ttft_s", "llm_total_s", "tts_first_s", "tts_full_s")
+_REQUIRED_METRICS = (
+    "stt_s", "llm_ttft_s", "llm_first_chunk_s", "llm_total_s", "tts_first_s", "tts_full_s"
+)
 
 
 def incomplete_turns(passes: list[list[TurnResult]]) -> list[dict]:
@@ -554,6 +617,7 @@ def summarize(passes: list[list[TurnResult]]) -> dict:
                 "id": rs[0].id,
                 "stt_s": _median([r.stt_s for r in rs]),
                 "llm_ttft_s": _median([r.llm_ttft_s for r in rs]),
+                "llm_first_chunk_s": _median([r.llm_first_chunk_s for r in rs]),
                 "llm_total_s": _median([r.llm_total_s for r in rs]),
                 "tts_first_s": _median([r.tts_first_s for r in rs]),
                 "tts_full_s": _median([r.tts_full_s for r in rs]),
@@ -594,6 +658,7 @@ def summarize(passes: list[list[TurnResult]]) -> dict:
             "tts_rtf": mean("tts_rtf"),
             "llm_tok_s": mean("llm_tok_s"),
             "llm_ttft_s": mean("llm_ttft_s"),
+            "llm_first_chunk_s": mean("llm_first_chunk_s"),
             "wer": mean("wer"),
         },
     }
@@ -612,15 +677,15 @@ def print_report(summary: dict, meta: dict) -> None:
     )
     print("-" * 78)
     hdr = (
-        f"{'turn':>4}  {'stt':>7} {'sttRTF':>6}  {'ttft':>7} {'llm':>7} {'tok/s':>6}  "
+        f"{'turn':>4}  {'stt':>7} {'sttRTF':>6}  {'ttft':>7} {'chunk':>7} {'llm':>7} {'tok/s':>6}  "
         f"{'tts1':>7} {'ttsRTF':>6}  {'1st-audio':>9}  wer"
     )
     print(hdr)
     for t in summary["per_turn"]:
         print(
             f"{t['id']:>4}  {_fmt(t['stt_s']):>7} {_fmt(t['stt_rtf'],'',2):>6}  "
-            f"{_fmt(t['llm_ttft_s']):>7} {_fmt(t['llm_total_s']):>7} "
-            f"{_fmt(t['llm_tok_s'],'',1):>6}  "
+            f"{_fmt(t['llm_ttft_s']):>7} {_fmt(t['llm_first_chunk_s']):>7} "
+            f"{_fmt(t['llm_total_s']):>7} {_fmt(t['llm_tok_s'],'',1):>6}  "
             f"{_fmt(t['tts_first_s']):>7} {_fmt(t['tts_rtf'],'',2):>6}  "
             f"{_fmt(t['first_audio_latency_s']):>9}  {_fmt(t['wer'],'',3)}"
         )
@@ -672,6 +737,7 @@ def diff_baseline(summary: dict, baseline_path: Path) -> None:
         ("totals", "pipeline_wall_s", "total pipeline wall"),
         ("means", "first_audio_latency_s", "mean first-audio/turn"),
         ("means", "llm_ttft_s", "mean LLM ttft"),
+        ("means", "llm_first_chunk_s", "mean LLM first chunk"),
     ]
     for grp, key, label in pairs:
         now = summary[grp].get(key)
@@ -776,13 +842,23 @@ def main() -> int:
 
     print(f"Studio {args.base_url}  |  chat={args.model}  |  voice={tts_voice}")
 
+    # Order matters for what "cold" means: warmup (optional) first, then the input
+    # fixtures (a first run synthesizes them, which warms TTS), then the measured
+    # passes, and only then the determinism check, whose two extra LLM generations
+    # would otherwise pre-warm pass 1 even under --no-warmup.
     cold = warmup(client, args) if not args.no_warmup else {}
-    det = {} if args.no_determinism else determinism_check(client, convo, args)
+    try:
+        prepare_fixtures(client, convo)
+    except Exception as e:  # noqa: BLE001 - nothing measured yet; refuse to start
+        print(f"Cannot prepare input fixtures: {e}")
+        return 2
 
     passes = []
     for p in range(args.repeats):
         print(f"\n-- pass {p + 1}/{args.repeats} --")
         passes.append(run_once(client, convo, args))
+
+    det = {} if args.no_determinism else determinism_check(client, convo, args)
 
     summary = summarize(passes)
     meta = {
