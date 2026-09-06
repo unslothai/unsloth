@@ -1856,9 +1856,15 @@ def test_training_planner_splits_a_model_that_does_not_fit() -> None:
     # No speedup may be claimed for the capacity case: it was never measured against a
     # single Spark, because at this size a single Spark cannot run the job at all.
     assert out["speedup"] is None and out["measured"] is False
-    # The schedule lead is inside the noise, so the text must send a memory-tight user to
-    # 1f1b rather than presenting dualpipev as a settled winner.
+    # The branch only fires for models too big for one Spark, and at that size the schedule
+    # choice is not a preference: dualpipev could not train a 70B on the pair at any batch
+    # tried. So the recommendation must name 1f1b AND warn against substituting dualpipev,
+    # which is the substitution a reader of the 2B/9B tie would otherwise make.
+    assert out["schedule"] == "1f1b"
     assert "1f1b" in out["recommendation"]
+    assert "Do NOT substitute dualpipev" in out["recommendation"]
+    assert out["schedule_measured"] is True
+    assert out["schedule_evidence"] is sc.TRAIN_PP_70B
     # Boundary: exactly the budget still fits.
     assert sc.plan_training(budget, n_nodes = 2)["axis"] == "data-parallel"
 
@@ -1894,9 +1900,35 @@ def test_training_planner_constants_are_measured_and_consistent() -> None:
         max(sc.TRAIN_PP_SPEEDUP.values()),
     )
     assert sc.TRAIN_PP_SCHEDULE in ("dualpipev", "1f1b")
-    # The schedule is a tie-break, not a result; if the margin ever grows past a percent
+    # The margin is a SPEED tie-break on models that fit; if it ever grows past a percent
     # that claim has to be rewritten rather than silently strengthened.
     assert 0 < sc.TRAIN_PP_SCHEDULE_MARGIN <= 0.01
+
+
+def test_capacity_schedule_is_the_one_that_actually_ran_a_70b() -> None:
+    """The split is recommended ONLY for models that do not fit, so its default schedule has
+    to be justified at that size and not at 2B. dualpipev leads on speed at 2B and 9B and
+    still must not be the default, because it cannot run the case the branch exists for."""
+    sc = _load("studio/spark_cluster.py")
+    ev = sc.TRAIN_PP_70B
+    assert sc.TRAIN_PP_SCHEDULE == "1f1b"
+    # dualpipev is faster on both models that FIT, which is exactly why the default cannot
+    # be derived from those two rows alone.
+    for name, arms in sc.TRAIN_DP_VS_PP_TOKS.items():
+        assert arms["dualpipev"] >= arms["1f1b"], name
+    # ... and it has no 70B number at all, because it never completed a step. A peak
+    # recorded for an arm that died would read as though it ran.
+    assert ev["dualpipev_toks"] is None and ev["dualpipev_peak_gib"] is None
+    assert "out of memory" in ev["dualpipev_outcome"]
+    assert ev["1f1b_toks"] > 0 and ev["1f1b_s_per_step"] > 0
+    lo, hi = ev["1f1b_peak_gib"]
+    # Both ranks must be under the node budget with real headroom, or the arm that "ran"
+    # was only one bad allocation from the same fate.
+    assert 0 < lo <= hi < sc.SPARK_USABLE_GIB
+    # The V layout's selling point is a co-located hop that saves bandwidth. The link was
+    # nowhere near its limit, so that saving cannot pay for the memory it costs.
+    used_gbs = ev["link_mb_moved"] / 1000.0 / (ev["1f1b_s_per_step"] * 10)
+    assert used_gbs < ev["link_busbw_gbs"] / 100
 
 
 def test_training_planner_refuses_to_guess_and_handles_one_node() -> None:

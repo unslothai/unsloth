@@ -958,13 +958,17 @@ def train(
     schedule: str = typer.Option(
         "1f1b",
         "--schedule",
-        help = "On --pp-backend torch, measured on two Sparks vs one: "
-        "1f1b 1.94x (default), dualpipev 1.96x, zbv 1.94x, "
-        "interleaved 1.93x, gpipe 1.86x, zerobubble 1.72x. "
-        "1f1b is the default over dualpipev because the 0.7% "
-        "gap is within noise while 1f1b's peak memory is lower "
-        "(7.34 vs 9.58 GiB). Avoid gpipe: it peaked at 99.92 "
-        "GiB for the same work, against a 121.69 GiB node.",
+        help = "On --pp-backend torch. Against a healthy single-Spark "
+        "control: 1f1b 1.57x at 2B and 1.77x at 9B, dualpipev "
+        "1.58x and 1.79x -- a tie. 1f1b is the default on memory "
+        "(5.52 vs 9.58 GiB at 2B, 16.86 vs 24.13 at 9B), and at "
+        "capacity sizes it is not a preference but a requirement: "
+        "dualpipev ran out of memory training a 70B on the pair "
+        "at global batch 16 and again at 8, where 1f1b held "
+        "69.5/69.8 GiB and reached 148 tok/s. Its V layout puts "
+        "the embedding, the LM head and the loss on one rank. "
+        "Avoid gpipe: it peaked at 99.92 GiB for the same work, "
+        "against a 121.69 GiB node.",
     ),
     steps: int = typer.Option(20, "--steps"),
     batch: int = typer.Option(8, "--batch", help = "Global batch per step."),

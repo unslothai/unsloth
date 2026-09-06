@@ -3416,12 +3416,51 @@ TRAIN_PEAK_GIB = {"unsloth/Qwen3.5-2B": (10.16, 9.58), "unsloth/Qwen3.5-9B": (28
 # (9.21 against 10.16 GiB at 2B), but it gathers every layer on every microbatch and lands
 # BELOW both DDP and the pipeline schedules. It is not a recommended axis on this pair.
 TRAIN_FSDP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.25, "unsloth/Qwen3.5-9B": 1.09}
-# Which schedule when a split is forced. dualpipev edges 1f1b on both models, but by well
-# under a percent (4128 vs 4106, and 1525 vs 1505), so this is a tie-break and not a result.
-# 1f1b is much the cheaper in memory on the fuller rank (5.52 vs 9.58 GiB at 2B, 16.86 vs
-# 24.13 at 9B), which is what actually decides a model that only just fits.
-TRAIN_PP_SCHEDULE = "dualpipev"
-TRAIN_PP_SCHEDULE_MARGIN = 0.005  # dualpipev over 1f1b; below noise, prefer 1f1b for memory
+# Which schedule when a split is forced. On models that FIT, dualpipev edges 1f1b by well
+# under a percent (4128 vs 4106 at 2B, 1525 vs 1505 at 9B) -- a tie-break, not a result --
+# while 1f1b is much the cheaper in memory on the fuller rank (5.52 vs 9.58 GiB at 2B, 16.86
+# vs 24.13 at 9B).
+#
+# But the split is only ever RECOMMENDED for a model that does NOT fit, and there the tie
+# breaks hard. Llama-3.3-70B on the pair, 2026-09-06, LoRA r=16, seq 512, global batch 16,
+# M=8, 10 steps, --shard-load --grad-checkpoint, both nodes pinned at 1690 MHz so neither
+# arm straddled a thermal cap:
+#
+#   1f1b       10 steps in 554.3 s, 55.43 s/step, 148 tok/s, peak 69.46 / 69.80 GiB
+#   dualpipev  did not complete: NVRM NV_ERR_NO_MEMORY on rank 0, the peer's collective
+#              timed out after 600 s, and the kernel OOM killer took rank 0
+#
+# Repeated at half the in-flight tokens (batch 8, same M) dualpipev still died, on step 1,
+# with rank 0 down to 3 GiB available while rank 1 sat at 45. The cause is structural, not a
+# bug: the V layout co-locates the FIRST and LAST stages on one rank, so rank 0 carries the
+# embedding, the LM head, the loss, two layer chunks (68.06 GiB resident against rank 1's
+# 64.14) and the deepest in-flight microbatch set all at once. At 2B and 9B that costs a few
+# GiB and is invisible; at 70B it does not fit on a 121.69 GiB node. 1f1b splits evenly
+# (66.10 GiB on both ranks) and lands the loss on the rank without the embedding.
+#
+# So the schedule default is 1f1b, and dualpipev is NOT a safe fallback at capacity sizes.
+# The co-located hop it trades that memory for buys nothing here either: the 1f1b cell moved
+# 1386 MB over 1079 s, about 2.5 MB/s, against a link that does 20.31 GB/s of NCCL busbw.
+# With grad checkpointing at seq 512 the stages are compute-bound by three orders of
+# magnitude and the interconnect is idle.
+TRAIN_PP_SCHEDULE = "1f1b"
+TRAIN_PP_SCHEDULE_MARGIN = 0.005  # dualpipev over 1f1b ON MODELS THAT FIT; below noise
+# The capacity case, measured. `dualpipev_gib` is None because the arm never reached a step
+# it could report a peak for -- recording the number it died at would imply it ran.
+TRAIN_PP_70B = {
+    "model": "unsloth/Llama-3.3-70B-Instruct",
+    "settings": "seq 512, global batch 16, M=8, LoRA r=16, 10 steps, "
+    "--shard-load --grad-checkpoint, both Sparks pinned at 1690 MHz",
+    "1f1b_toks": 148,
+    "1f1b_s_per_step": 55.43,
+    "1f1b_loss_at_10": 11.9877,
+    "1f1b_peak_gib": (69.46, 69.80),
+    "dualpipev_toks": None,
+    "dualpipev_peak_gib": None,
+    "dualpipev_outcome": "out of memory on rank 0 at batch 16 and again at batch 8",
+    "link_mb_moved": 1386,
+    "link_busbw_gbs": 20.31,
+}
 
 
 def plan_training(
@@ -3441,7 +3480,9 @@ def plan_training(
     * A model that does not fit trains layer split (`--layer-split --shard-load
       --grad-checkpoint`), with TRAIN_PP_SCHEDULE. There is no other option; DP would
       need the whole model on each node. No speedup is claimed for that case: it is a
-      capacity feature, and the schedule choice is a near-tie decided on memory.
+      capacity feature. The schedule is a near-tie on models that fit, but at the sizes
+      this branch actually fires for it is not a tie at all -- dualpipev could not train
+      a 70B on the pair at any batch tried, so TRAIN_PP_SCHEDULE is 1f1b (TRAIN_PP_70B).
 
     ``fits`` uses the serving budget (SPARK_USABLE_GIB minus SERVE_OVERHEAD_GIB), which
     is deliberately looser than `training_memory_estimate`; that function is the one to
@@ -3512,7 +3553,12 @@ def plan_training(
         axis = "pipeline-parallel",
         schedule = TRAIN_PP_SCHEDULE,
         speedup = None,
+        # `measured` is about the SPEEDUP, and it stays False: a model that does not fit on
+        # one Spark has no single-Spark control to divide by, so there is no honest ratio to
+        # report. The schedule CHOICE, separately, is now measured at this size.
         measured = False,
+        schedule_measured = True,
+        schedule_evidence = TRAIN_PP_70B,
         commands = [
             env,
             f"unsloth spark train --layer-split {model} --shard-load --grad-checkpoint "
@@ -3523,11 +3569,14 @@ def plan_training(
             f"layer-split it with --shard-load --grad-checkpoint, schedule "
             f"{TRAIN_PP_SCHEDULE}. A whole-model replica per node is impossible at this "
             f"size, so this is the only two-Spark axis -- it buys capacity, not speed. "
-            f"{TRAIN_PP_SCHEDULE} led 1f1b by under "
-            f"{TRAIN_PP_SCHEDULE_MARGIN * 100:.1f} percent, which is inside the noise, so "
-            f"switch to --schedule 1f1b if the fuller rank is close to its memory limit: "
-            f"1f1b peaked at 5.52 GiB where dualpipev peaked at 9.58 on the same 2B run. "
-            f"Run `unsloth spark estimate` first."
+            f"Do NOT substitute dualpipev here: at {TRAIN_PP_70B['model']} it ran out of "
+            f"memory on rank 0 at global batch 16 and again at batch 8, while "
+            f"{TRAIN_PP_SCHEDULE} completed the same work at "
+            f"{TRAIN_PP_70B['1f1b_peak_gib'][0]:.1f}/{TRAIN_PP_70B['1f1b_peak_gib'][1]:.1f} "
+            f"GiB per rank and {TRAIN_PP_70B['1f1b_toks']} tok/s. The V layout co-locates the "
+            f"first and last stages on one rank, so that rank carries the embedding, the LM "
+            f"head, the loss and the deepest in-flight set together, which is affordable at "
+            f"2B and 9B and is not at 70B. Run `unsloth spark estimate` first."
         ),
     )
     return out
