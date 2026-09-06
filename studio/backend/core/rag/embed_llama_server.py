@@ -512,7 +512,13 @@ class LlamaServerBackend:
                 # Serve a stand-in rather than fail the index, but leave the marker: retiring on it would pin this
                 # model to the wrong quant.
                 return self._adopt_model_path(cached, desired)
-            raise RuntimeError(
+            # Typed, not a bare RuntimeError: this is the same user-fixable condition the
+            # sentence-transformers path raises, and /v1/embeddings answers it with a 409 and
+            # the message. Untyped it fell into the catch-all and came back as a 502 "An
+            # internal error occurred", which names neither the cause nor the fix.
+            from .embeddings import EmbeddingModelDownloadRequiredError
+
+            raise EmbeddingModelDownloadRequiredError(
                 f"Embedding model {model!r} is not downloaded yet. "
                 "Finish its Settings download before indexing documents."
             )

@@ -286,6 +286,31 @@ def test_actionable_embedder_errors_keep_their_message(studio_embedder, exc, fra
     assert "An internal error occurred" not in error.detail
 
 
+def test_pending_gguf_download_is_classified_like_the_st_one(tmp_path, monkeypatch):
+    """The GGUF backend hits the same condition and used to raise a bare RuntimeError.
+
+    Both backends refuse the same way when the picker's download has not finished, so both
+    have to reach the 409; untyped, this one fell into the catch-all and came back as a 502
+    saying only that an internal error occurred.
+    """
+    from core.rag import embed_llama_server
+
+    backend = embed_llama_server.LlamaServerBackend()
+    monkeypatch.setattr(
+        embed_llama_server.config, "effective_gguf_repo_for_embedding_model",
+        lambda model: "unsloth/bge-small-en-v1.5-GGUF",
+    )
+    monkeypatch.setattr(backend, "_resolve_local_gguf", lambda model: None)
+    monkeypatch.setattr(backend, "_planned_family_path", lambda model, repo: None)
+    monkeypatch.setattr(backend, "_resolve_cached_gguf", lambda *a, **k: None)
+    import utils.embedding_model_settings as ems
+    monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
+
+    with pytest.raises(rag_embeddings.EmbeddingModelDownloadRequiredError) as excinfo:
+        backend._resolve_model_path("unsloth/bge-small-en-v1.5")
+    assert "not downloaded yet" in str(excinfo.value)
+
+
 def test_actionable_errors_do_not_leak_a_local_path(studio_embedder, monkeypatch):
     """Passing the message through must not undo the redaction the rest of the route does.
 
