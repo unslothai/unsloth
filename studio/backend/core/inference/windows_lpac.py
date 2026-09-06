@@ -2977,8 +2977,13 @@ def _initial_appcontainer_environment(
     return initial
 
 
-def _job_object_with_limits() -> _WindowsJob:
-    """A kill-on-close Job Object carrying Studio's resource limits, with no process yet."""
+def _job_object_with_limits(*, active_process_limit: int | None = None) -> _WindowsJob:
+    """A kill-on-close Job Object carrying Studio's resource limits, with no process yet.
+
+    Split from _create_job so the job can be attached at creation through
+    PROC_THREAD_ATTRIBUTE_JOB_LIST, which leaves no window in which the child
+    runs outside it.
+    """
     api = _api()
     handle = api.kernel32.CreateJobObjectW(None, None)
     if not handle:
@@ -2993,9 +2998,15 @@ def _job_object_with_limits() -> _WindowsJob:
             | _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         )
         try:
-            info.BasicLimitInformation.ActiveProcessLimit = max(
-                1, int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
-            )
+            # The Python bootstrap profile supplies 1 from trusted backend policy.
+            # Environment settings must not enlarge that profile's process limit.
+            if active_process_limit is None:
+                active_process_limit = max(
+                    1, int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+                )
+            if type(active_process_limit) is not int or not 1 <= active_process_limit <= 0xFFFFFFFF:
+                raise ValueError("invalid active process limit")
+            info.BasicLimitInformation.ActiveProcessLimit = active_process_limit
             memory = (
                 max(1, int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")))
                 * 1024
@@ -3022,8 +3033,10 @@ def _job_object_with_limits() -> _WindowsJob:
         raise
 
 
-def _create_job(process_handle: wintypes.HANDLE) -> _WindowsJob:
-    job = _job_object_with_limits()
+def _create_job(
+    process_handle: wintypes.HANDLE, *, active_process_limit: int | None = None
+) -> _WindowsJob:
+    job = _job_object_with_limits(active_process_limit = active_process_limit)
     if not _api().kernel32.AssignProcessToJobObject(job._handle, process_handle):
         error = _winerror("AssignProcessToJobObject")
         job.close()

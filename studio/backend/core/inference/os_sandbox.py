@@ -258,6 +258,9 @@ class ToolLaunchPlan:
     # "deny" (default) or "allowlist". Only honored for os_isolation_required;
     # Full has the host network anyway and Limited cannot enforce a proxy.
     network_policy: str = "deny"
+    # Set by the trusted tool owner, not inferred from a shell command or model args.
+    # None preserves older direct backend callers until they adopt an explicit kind.
+    execution_kind: Literal["python", "terminal"] | None = None
 
 
 NETWORK_POLICIES = ("deny", "allowlist")

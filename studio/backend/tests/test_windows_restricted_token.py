@@ -3073,7 +3073,10 @@ def test_tools_treats_both_job_owning_backends_alike():
 
 def test_windows_lpac_exposes_the_shared_job_factory():
     lpac_source = Path(windows_lpac.__file__).read_text(encoding = "utf-8")
-    assert "def _job_object_with_limits()" in lpac_source
+    # Keyword-only from here: the PR's own commit added a per-profile process
+    # limit, and the split factory carries it through both halves.
+    assert "def _job_object_with_limits(" in lpac_source
+    assert "active_process_limit" in lpac_source
     assert "_PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D" in lpac_source
     for name in ("OpenProcessToken", "CreateRestrictedToken", "SetTokenInformation",
                  "CreateProcessAsUserW", "IsTokenRestricted", "IsProcessInJob"):

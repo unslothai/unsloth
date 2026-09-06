@@ -1092,6 +1092,7 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
     )
     assert len(specs) == 1
     assert len(popen_calls) == 1
+    assert specs[0].execution_kind == kind
     launched_argv, launched_kwargs = popen_calls[0]
     assert launched_argv == prepared.argv
     assert launched_argv != specs[0].argv

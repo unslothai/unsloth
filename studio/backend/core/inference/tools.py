@@ -16864,6 +16864,7 @@ def _python_exec(
                 limited_grant = limited_grant,
                 timeout_seconds = timeout,
                 network_policy = _requested_network_policy(network_policy, full_access),
+                execution_kind = "python",
             )
         )
         launch_argv = prepared_launch.argv
@@ -17180,6 +17181,7 @@ def _bash_exec(
                 limited_grant = limited_grant,
                 timeout_seconds = timeout,
                 network_policy = _requested_network_policy(network_policy, full_access),
+                execution_kind = "terminal",
             )
         )
         launch_argv = prepared_launch.argv
