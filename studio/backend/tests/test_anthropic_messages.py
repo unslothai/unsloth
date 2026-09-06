@@ -2691,7 +2691,9 @@ class TestAnthropicMessagesToolRouting:
                     {"role": "user", "content": "hi"},
                     {
                         "role": "assistant",
-                        "content": [{"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}],
+                        "content": [
+                            {"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}
+                        ],
                     },
                     {
                         "role": "user",
