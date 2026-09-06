@@ -7006,11 +7006,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _drop_exact_after_refusal(
-        env: dict,
-        *,
-        setting: str,
-        crashed: bool,
-        output: Optional[str],
+        env: dict, *, setting: str, crashed: bool, output: Optional[str]
     ) -> bool:
         """Take the mode off ``env`` when THIS crash was the server refusing it.
 
@@ -7028,10 +7024,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _exact_state_after_launch(
-        *,
-        setting: str,
-        env: Mapping[str, str],
-        args: Optional[Sequence[str]],
+        *, setting: str, env: Mapping[str, str], args: Optional[Sequence[str]]
     ) -> str:
         """What to report for a child that has just come up healthy.
 
@@ -7533,8 +7526,10 @@ class LlamaCppBackend:
         # every call. Under `auto` two loads match even when one of them came up
         # `unavailable`, because retrying an auto that already fell back is what the
         # fallback exists to avoid doing twice.
-        if not self._is_diffusion and self.requested_exact_concurrency != _exact.resolve_exact_setting(
-            intent.exact_concurrency
+        if (
+            not self._is_diffusion
+            and self.requested_exact_concurrency
+            != _exact.resolve_exact_setting(intent.exact_concurrency)
         ):
             return False
 
@@ -16324,7 +16319,8 @@ class LlamaCppBackend:
             )
             return (
                 "llama-server refused to start in exact concurrency, which is set to "
-                "'on'. " + (_exact_line + " " if _exact_line else "")
+                "'on'. "
+                + (_exact_line + " " if _exact_line else "")
                 + "Exact concurrency needs a unified KV cache, every layer offloaded to "
                 "CUDA, flash attention, an f16 KV cache and no context shift or cache "
                 "reuse. Set it to 'auto' to load without it when the server refuses, or "
@@ -23560,6 +23556,7 @@ class LlamaCppBackend:
                         _exact.CHILD_ENV,
                         env.get(_exact.CHILD_ENV, "<unset>"),
                     )
+
                 def _drop_fit_load_mode_for_no_flash(fa_cmd: list) -> list:
                     """The fit's ``--load-mode none`` off a --flash-attn off respawn.
 

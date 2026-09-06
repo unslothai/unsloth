@@ -1284,7 +1284,6 @@ def _exact_concurrency_active() -> str:
     """What the running child does, or `off` when nothing is loaded."""
     try:
         from routes.inference import get_llama_cpp_backend
-
         backend = get_llama_cpp_backend()
     except Exception:
         return EXACT_STATE_OFF
@@ -1302,7 +1301,6 @@ def _exact_concurrency_reload_required(effective: str) -> bool:
     """
     try:
         from routes.inference import get_llama_cpp_backend
-
         backend = get_llama_cpp_backend()
     except Exception:
         return False
