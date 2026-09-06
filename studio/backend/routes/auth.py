@@ -732,6 +732,21 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
     )
 
 
+def _key_account_scope() -> "str | None":
+    """The immutable account a managed request's keys belong to.
+
+    The request bound its account when its credential was validated. A namesake
+    created after that (delete the account, create the name again) has another
+    id, so the keys this request lists, mints or revokes stay the old account's.
+    None for the owner, whose keys keep the username query they always had.
+    """
+    from utils.account_context import current_account, is_owner_context
+
+    if is_owner_context():
+        return None
+    return current_account().account_id
+
+
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
     payload: CreateApiKeyRequest,
@@ -752,6 +767,7 @@ async def create_api_key(
             name = payload.name,
             expires_at = expires_at,
             expect_gen = generation,
+            account_id = _key_account_scope(),
         )
     except storage.CredentialRotated:
         raise HTTPException(
@@ -770,7 +786,7 @@ def list_api_keys(
     _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
 ) -> ApiKeyListResponse:
     """List all API keys for the authenticated user (raw keys are never exposed)."""
-    rows = storage.list_api_keys(current_subject)
+    rows = storage.list_api_keys(current_subject, account_id = _key_account_scope())
     return ApiKeyListResponse(
         api_keys = [_row_to_api_key_response(r) for r in rows],
     )
@@ -783,7 +799,7 @@ async def revoke_api_key(
     _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
 ) -> dict:
     """Revoke (soft-delete) an API key."""
-    if not storage.revoke_api_key(current_subject, key_id):
+    if not storage.revoke_api_key(current_subject, key_id, account_id = _key_account_scope()):
         raise HTTPException(
             status_code = status.HTTP_404_NOT_FOUND,
             detail = "API key not found",

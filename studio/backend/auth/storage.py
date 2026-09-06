@@ -373,6 +373,7 @@ def get_connection() -> sqlite3.Connection:
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
     _ensure_account_columns(conn, columns)
+    _ensure_api_key_account_column(conn, api_key_columns)
     refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     if "is_desktop" not in refresh_columns:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
@@ -436,6 +437,31 @@ def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
     except BaseException:
         conn.rollback()
         raise
+
+
+def _ensure_api_key_account_column(conn: sqlite3.Connection, existing: set) -> None:
+    """Pin every managed account's API keys to its immutable id.
+
+    The key table names its account by username, and a username can be deleted
+    and created again. A request that authenticated with a key of the old
+    account must keep addressing the old account's keys, never the namesake's,
+    so listing and revoking scope on this column. The owner's rows keep NULL and
+    the username query they always had; an older build ignores the column.
+    """
+    if "account_id" in existing:
+        return
+    try:
+        conn.execute("ALTER TABLE api_keys ADD COLUMN account_id TEXT")
+    except sqlite3.OperationalError as exc:
+        if "duplicate column" not in str(exc).lower():
+            raise
+    conn.execute(
+        """UPDATE api_keys SET account_id = (
+               SELECT account_id FROM auth_user
+               WHERE auth_user.username = api_keys.username AND auth_user.role != 'owner'
+           ) WHERE account_id IS NULL"""
+    )
+    conn.commit()
 
 
 def _backfill_account_columns(conn: sqlite3.Connection, fence_added: bool) -> None:
@@ -1507,8 +1533,12 @@ def create_api_key(
     expires_at: Optional[str] = None,
     internal: bool = False,
     expect_gen: Optional[str] = None,
+    account_id: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """Create a new API key for *username*.
+
+    ``account_id`` pins a managed account's key to its immutable id (see
+    :func:`_ensure_api_key_account_column`); the owner's keys leave it unset.
 
     Returns ``(raw_key, row_dict)`` where *raw_key* is shown to the user
     exactly once.  The database only stores the PBKDF2 hash.
@@ -1535,8 +1565,8 @@ def create_api_key(
                 )
         conn.execute(
             """
-            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal, account_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 username,
@@ -1546,6 +1576,7 @@ def create_api_key(
                 now,
                 expires_at,
                 1 if internal else 0,
+                account_id,
             ),
         )
         conn.commit()
@@ -1556,45 +1587,47 @@ def create_api_key(
         conn.close()
 
 
-def list_api_keys(username: str, include_internal: bool = False) -> list:
+def list_api_keys(
+    username: str, include_internal: bool = False, account_id: Optional[str] = None
+) -> list:
     """Return API keys for *username*. Internal workflow keys are hidden
-    by default so they do not clutter user-facing UIs."""
+    by default so they do not clutter user-facing UIs. ``account_id`` narrows a
+    managed account's listing to keys of that exact account."""
     conn = get_connection()
     try:
-        if include_internal:
-            cur = conn.execute(
-                """
-                SELECT id, username, key_prefix, name, created_at, last_used_at,
-                       expires_at, is_active, is_internal
-                FROM api_keys
-                WHERE username = ?
-                ORDER BY created_at DESC
-                """,
-                (username,),
-            )
-        else:
-            cur = conn.execute(
-                """
-                SELECT id, username, key_prefix, name, created_at, last_used_at,
-                       expires_at, is_active, is_internal
-                FROM api_keys
-                WHERE username = ? AND is_internal = 0
-                ORDER BY created_at DESC
-                """,
-                (username,),
-            )
+        scope, params = _key_scope(username, account_id)
+        internal = "" if include_internal else " AND is_internal = 0"
+        cur = conn.execute(
+            f"""
+            SELECT id, username, key_prefix, name, created_at, last_used_at,
+                   expires_at, is_active, is_internal
+            FROM api_keys
+            WHERE {scope}{internal}
+            ORDER BY created_at DESC
+            """,
+            params,
+        )
         return [dict(row) for row in cur.fetchall()]
     finally:
         conn.close()
 
 
-def revoke_api_key(username: str, key_id: int) -> bool:
+def _key_scope(username: str, account_id: Optional[str]) -> Tuple[str, tuple]:
+    """WHERE clause selecting one account's keys: by name for the owner, by
+    immutable id as well for a managed account."""
+    if account_id is None:
+        return "username = ?", (username,)
+    return "username = ? AND account_id = ?", (username, account_id)
+
+
+def revoke_api_key(username: str, key_id: int, account_id: Optional[str] = None) -> bool:
     """Soft-delete an API key.  Returns True if a matching row was found."""
     conn = get_connection()
     try:
+        scope, params = _key_scope(username, account_id)
         cursor = conn.execute(
-            "UPDATE api_keys SET is_active = 0 WHERE id = ? AND username = ?",
-            (key_id, username),
+            f"UPDATE api_keys SET is_active = 0 WHERE id = ? AND {scope}",
+            (key_id, *params),
         )
         conn.commit()
         return cursor.rowcount > 0
