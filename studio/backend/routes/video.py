@@ -37,6 +37,7 @@ from starlette.datastructures import UploadFile
 from auth.authentication import get_current_subject, request_admitted_without_credential
 from core.inference.model_ids import public_model_id
 from hub.dependencies import get_hf_token
+from hub.services.models import account_access
 from hub.services.models.account_access import media_link_account, media_link_target
 from utils.account_context import run_as
 from loggers import get_logger
@@ -132,6 +133,15 @@ async def video_download_plan(
 ):
     """The repos + files this pick needs, so the frontend stages them through the Hub
     download manager instead of the load downloading inline. Mirrors /images/download-plan."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_media_references, request)
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    if request.base_repo:
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+    if account_access.managed_account():
+        request = request.model_copy(update = {"hf_token": account_access.account_hf_token(request.hf_token)})
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.video import (
         assert_video_precision_available,
@@ -213,6 +223,7 @@ async def video_download_plan(
 
 
 @router.post("/video/load", response_model = VideoStatusResponse)
+@account_access.gpu_busy_route
 async def load_video_model(
     request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
@@ -230,6 +241,16 @@ async def load_video_model_gated(
     Media auto-switch awaits this rather than the route so the idle unload can tell an
     API-loaded pipeline from one the user picked on the Video page.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_media_references, request)
+    account_access.require_idle_other_accounts()
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    if request.base_repo:
+        if account_access.managed_account():
+            await asyncio.to_thread(account_access.require_model_access, request.base_repo)
+    if account_access.managed_account():
+        request = request.model_copy(update = {"hf_token": account_access.account_hf_token(request.hf_token)})
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
@@ -354,9 +375,12 @@ async def load_video_model_gated(
             request.h3_task or _derived_h3_task(request.gguf_filename, kind),
             user_action = user_initiated,
         )
+        account_access.note_resident_account("video", request.model_path)
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except account_access.GpuBusyForAnotherAccountError as exc:
+        raise account_access.gpu_busy_error() from exc
     except RuntimeError as exc:
         # A video load is already in progress.
         raise HTTPException(status_code = 409, detail = str(exc))
@@ -364,11 +388,16 @@ async def load_video_model_gated(
 
 @router.get("/video/load-progress", response_model = VideoLoadProgressResponse)
 async def video_load_progress(current_subject: str = Depends(get_current_subject)):
+    if account_access.resident_hidden("video"):
+        return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
+    if account_access.managed_account() and account_access.resident_hidden("video", get_video_backend().status().get("repo_id")):
+        return account_access.hidden_resident_response()
     return VideoLoadProgressResponse(**get_video_backend().load_progress())
 
 
 @router.post("/video/generate", response_model = VideoGenerateResponse)
+@account_access.gpu_busy_route
 async def generate_video(
     request: VideoGenerateRequest,
     current_subject: str = Depends(get_current_subject),
@@ -450,6 +479,8 @@ async def generate_video(
         raise HTTPException(status_code = 400, detail = str(exc))
 
     backend = get_video_backend()
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_media_generation_access, backend.status())
     # The real rule is the LOADED family's, applied by begin_generate under the same lock that reserves the state, so a
     # concurrent load cannot leave the shape judged against one family and denoised by another.
     # Unloaded still falls through to the not-loaded 409, and a family with no declared presets keeps the old SIZE
@@ -496,29 +527,46 @@ async def generate_video(
 
 @router.get("/video/generate-progress", response_model = VideoGenerateProgressResponse)
 async def video_generate_progress(current_subject: str = Depends(get_current_subject)):
+    if account_access.resident_hidden("video"):
+        return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
+    if account_access.managed_account() and account_access.resident_hidden("video", get_video_backend().status().get("repo_id")):
+        return account_access.hidden_resident_response()
     return VideoGenerateProgressResponse(**get_video_backend().generate_progress())
 
 
 @router.post("/video/generate/cancel")
 async def cancel_video_generation(current_subject: str = Depends(get_current_subject)):
+    if account_access.foreign_work_active() or account_access.resident_hidden("video"):
+        return {"cancelled": False}
     from core.inference.video import get_video_backend
+    if account_access.managed_account() and account_access.resident_hidden("video", get_video_backend().status().get("repo_id")):
+        return {"cancelled": False}
     cancelled = await asyncio.to_thread(get_video_backend().cancel_generate)
     return {"cancelled": cancelled}
 
 
 @router.get("/video/status", response_model = VideoStatusResponse)
 async def video_status(current_subject: str = Depends(get_current_subject)):
+    if account_access.resident_hidden("video"):
+        return account_access.hidden_resident_response()
     from core.inference.video import get_video_backend
-    return VideoStatusResponse(**get_video_backend().status())
+    status_dict = get_video_backend().status()
+    if account_access.resident_hidden("video", status_dict.get("repo_id")):
+        return account_access.hidden_resident_response()
+    return VideoStatusResponse(**status_dict)
 
 
 @router.post("/video/unload", response_model = VideoStatusResponse)
+@account_access.gpu_busy_route
 async def unload_video_model(current_subject: str = Depends(get_current_subject)):
+    account_access.require_resident_control("video")
     from core.inference.gpu_arbiter import VIDEO, release_if
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
+    if account_access.managed_account():
+        account_access.require_resident_control("video", backend.status().get("repo_id"))
     status_dict = await asyncio.to_thread(backend.unload)
     # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC
     # (release_if). Mirrors images.
@@ -1262,6 +1310,7 @@ async def _reference_to_data_url(reference: Any) -> Optional[str]:
 
 
 @openai_router.post("/videos", response_model = VideoJob)
+@account_access.gpu_busy_route
 async def openai_create_video(
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -1415,6 +1464,8 @@ async def _create_openai_video(
         status = await asyncio.to_thread(backend.status)
     if not status.get("loaded"):
         raise HTTPException(status_code = 503, detail = _NO_VIDEO_MODEL_MSG)
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_media_generation_access, status)
     defaults = status.get("defaults") or {}
     num_frames = _frames_for_seconds(seconds, defaults) if seconds is not None else None
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
