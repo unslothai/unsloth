@@ -1808,6 +1808,19 @@ class SparkServing:
             and running.peer == peer
             and running.alive
         )
+        if reusable and bool(getattr(request, "force_reload", False)):
+            # The peer's ggml-rpc-server serves ONE client at a time (unslothai/llama.cpp
+            # serialises the client connection), and a reload starts the replacement
+            # llama-server while the outgoing one still holds that connection: measured on
+            # the pair, every forced reload of a split failed with "Failed to connect to
+            # <peer>:<port>" and then "invalid device: RPC0", four launch attempts each, and
+            # only recovered because the failure detached the peer. A forced reload always
+            # starts a new server, so the peer is retired with the old one.
+            logger.info(
+                "spark serving: forced reload of a layer split; restarting the peer "
+                "rpc-server so the new llama-server can take the connection"
+            )
+            reusable = False
         if reusable and not await wait_for_port(peer, port, PEER_REUSE_TIMEOUT_S):
             # ``alive`` is the ssh session, not the server behind it: the session can
             # outlive the process it carries. Reusing a peer that no longer answers made

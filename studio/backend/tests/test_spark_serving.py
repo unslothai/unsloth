@@ -468,6 +468,7 @@ class _FakeRequest:
         # -np / --parallel is refused by llama_server_args, so this is the only route.
         self.n_parallel = kw.get("n_parallel")
         self.disable_vision = bool(kw.get("disable_vision", False))
+        self.force_reload = bool(kw.get("force_reload", False))
 
     def model_copy(self, update):
         clone = _FakeRequest(
@@ -480,6 +481,7 @@ class _FakeRequest:
             spec_draft_n_max = self.spec_draft_n_max,
             n_parallel = self.n_parallel,
             disable_vision = self.disable_vision,
+            force_reload = self.force_reload,
         )
         for k, v in update.items():
             setattr(clone, k, v)
@@ -1771,10 +1773,14 @@ def test_a_peer_that_stopped_answering_is_restarted_not_reused(cluster, monkeypa
     # A second load with the peer still answering keeps it.
     run(ss.before_load(_FakeRequest(str(model)), 4))
     assert len(started) == 1 and ss.state().peer_process is first
+    # A forced reload retires it: the peer serves one client at a time, and the outgoing
+    # llama-server still holds the connection while the replacement starts.
+    run(ss.before_load(_FakeRequest(str(model), force_reload = True), 4))
+    assert len(started) == 2, "a forced reload reused the peer the old server still holds"
     # A second load with the port dead starts a new one instead of launching against nothing.
     monkeypatch.setattr(ss, "wait_for_port", _port_answers(False, then = True))
     run(ss.before_load(_FakeRequest(str(model)), 4))
-    assert len(started) == 2, "the dead peer was reused instead of restarted"
+    assert len(started) == 3, "the dead peer was reused instead of restarted"
     assert ss.status()["topology"] == "layer_split"
     run(ss.shutdown())
 
