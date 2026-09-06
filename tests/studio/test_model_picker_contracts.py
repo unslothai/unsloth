@@ -2876,13 +2876,8 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
 def test_the_chat_picker_marks_ollama_targets_unloadable_by_the_api():
     """A settings target opened from the Chat model picker carried no apiLoadable, so the
     `??"""
-    handoff = " ".join(
-        _read("features/model-picker/model-config/model-config-handoff.ts").split()
-    )
-    assert (
-        "apiLoadable: isGguf && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId),"
-        in handoff
-    )
+    handoff = " ".join(_read("features/model-picker/model-config/model-config-handoff.ts").split())
+    assert "apiLoadable: isGguf && !isOllamaLinkPath(id) && !isOllamaLinkPath(loadId)," in handoff
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     assert "apiLoadable: isGguf && !isOllamaLinkPath(modelId)," in sidebar
     # The same classification gates the backfill, or an older config still reaches the server.
