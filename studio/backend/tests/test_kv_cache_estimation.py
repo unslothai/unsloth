@@ -1405,8 +1405,7 @@ class TestEdgeCases:
         assert result == expected
 
 
-# J2. Server-flag knobs (--swa-full, --kv-unified/--parallel,
-#     --ctx-checkpoints, --kv-offload)
+# J2. Server-flag knobs (--swa-full, --kv-unified/--parallel, --kv-offload)
 
 
 class TestServerFlags:
@@ -1473,15 +1472,6 @@ class TestServerFlags:
         baseline = b._estimate_kv_cache_bytes(8192, "f16")
         flagged = b._estimate_kv_cache_bytes(8192, "f16", swa_full = True)
         assert flagged == baseline
-
-    def test_swa_full_suppresses_checkpoint_term(self):
-        b = self._swa_backend()
-        with_cp = b._estimate_kv_cache_bytes(8192, "f16", ctx_checkpoints = 8)
-        with_cp_full = b._estimate_kv_cache_bytes(8192, "f16", ctx_checkpoints = 8, swa_full = True)
-        no_cp_full = b._estimate_kv_cache_bytes(8192, "f16", swa_full = True)
-        # Checkpoints only matter when SWA layers don't already keep n_ctx.
-        assert with_cp_full == no_cp_full
-        assert with_cp > b._estimate_kv_cache_bytes(8192, "f16")
 
     def test_compact_swa_includes_ubatch_headroom_and_padding(self):
         b = self._swa_backend(_sliding_window = 128)
@@ -1561,57 +1551,19 @@ class TestServerFlags:
                     == baseline
                 )
 
-    # ── --ctx-checkpoints ──────────────────────────────────────────
-
-    def test_ctx_checkpoints_zero_is_no_op(self):
+    def test_ctx_checkpoints_is_not_a_vram_knob(self):
+        # Checkpoints are host RAM. Pricing them in the VRAM estimator would
+        # shrink context for memory the GPU never holds (#8988).
         b = self._swa_backend()
-        baseline = b._estimate_kv_cache_bytes(8192, "f16")
-        assert b._estimate_kv_cache_bytes(8192, "f16", ctx_checkpoints = 0) == baseline
-
-    def test_ctx_checkpoints_no_op_for_non_swa(self):
-        b = self._gqa_backend()
-        baseline = b._estimate_kv_cache_bytes(8192, "f16")
-        assert b._estimate_kv_cache_bytes(8192, "f16", ctx_checkpoints = 32) == baseline
-
-    def test_ctx_checkpoints_pattern_path_adds_known_bytes(self):
-        b = self._swa_backend()
-        ctx = 8192
-        baseline = b._estimate_kv_cache_bytes(ctx, "f16")
-        flagged = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 4)
-        # 22 SWA layers * 4 cps * 512 cells * 4 heads * (256+256) * 2 bytes
-        n_swa_layers = sum(1 for f in [True, True, True, True, True, False] * 4 + [True, True] if f)
-        per_layer = 4 * 512 * 4 * (256 + 256) * 2
-        assert flagged == baseline + n_swa_layers * per_layer
-
-    def test_ctx_checkpoints_legacy_path_adds_known_bytes(self):
-        b = self._swa_backend(_sliding_window_pattern = None)
-        ctx = 8192
-        baseline = b._estimate_kv_cache_bytes(ctx, "f16")
-        flagged = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 4)
-        n_global = max(1, 26 // 4)
-        n_swa = 26 - n_global
-        kv_per = 4 * (256 + 256) * 2
-        extra = 4 * n_swa * 512 * kv_per  # ctx_checkpoints * n_swa * sliding * kv_per
-        assert flagged == baseline + extra
-
-    def test_ctx_checkpoints_compose_with_n_parallel(self):
-        # Only the SWA + checkpoint portion scales by n_parallel; the
-        # global-layer portion is constant.
-        b = self._swa_backend()
-        ctx = 8192
-        swa = b._sliding_window
-        per_token = 4 * (256 + 256) * 2
-        n_swa_layers = sum(1 for f in b._sliding_window_pattern[: b._n_layers] if f)
-        slots = 3
-        base_cells, swa_cells = _runtime_swa_cells(ctx, swa, slots = slots, unified = False)
-        n_global_layers = b._n_layers - n_swa_layers
-        global_bytes = n_global_layers * base_cells * per_token
-        swa_bytes = n_swa_layers * swa_cells * per_token
-        cp_extra_per_slot = n_swa_layers * 4 * swa * per_token  # 4 checkpoints
-        flagged = b._estimate_kv_cache_bytes(
-            ctx, "f16", ctx_checkpoints = 4, n_parallel = slots, kv_unified = False
-        )
-        assert flagged == global_bytes + swa_bytes + slots * cp_extra_per_slot
+        with pytest.raises(TypeError):
+            b._estimate_kv_cache_bytes(8192, "f16", ctx_checkpoints = 4)
+        with pytest.raises(TypeError):
+            b._fit_context_to_vram(
+                requested_ctx = 8192,
+                available_mib = 8192,
+                model_size_bytes = 100,
+                ctx_checkpoints = 4,
+            )
 
     # ── --kv-offload (kv_on_gpu) ───────────────────────────────────
 
@@ -2112,16 +2064,6 @@ class TestSharedKVLayers:
         swa_bytes = sliding_in_unshared * swa_cells * per_token
         flagged = b._estimate_kv_cache_bytes(ctx, "f16", n_parallel = slots, kv_unified = False)
         assert flagged == global_bytes + swa_bytes
-
-    def test_composes_with_ctx_checkpoints(self):
-        b = self._gemma3n_backend()
-        ctx = 8192
-        baseline = b._estimate_kv_cache_bytes(ctx, "f16")
-        with_cp = b._estimate_kv_cache_bytes(ctx, "f16", ctx_checkpoints = 4)
-        # Checkpoints count only over UNSHARED SWA layers (16 of them).
-        sliding_in_unshared = sum(b._sliding_window_pattern[:20])
-        per_cp_layer = 4 * 1024 * 4 * (256 + 256) * 2  # cps * swa * heads * (k+v) * bpe
-        assert with_cp == baseline + sliding_in_unshared * per_cp_layer
 
     def test_unload_resets_shared_kv_layers(self):
         b = LlamaCppBackend()
