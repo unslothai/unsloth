@@ -2536,7 +2536,11 @@ def _torchcodec_version_mismatch_hint() -> str | None:
         upper = _torchcodec_exclusive_upper(pin)
         install_hint = f"`pip install {_index_flag(tuple(int(x) for x in pin.split('.')))}'torchcodec>={pin},{upper}'`"
         extra = _TORCH_TORCHCODEC_EXTRAS.get(torch_minor)
-        if extra is not None:
+        # Only offer the extra when no index pin is needed. An extra cannot carry one: the
+        # marker picks the version, not the index, and putting --index-url on the whole
+        # command would resolve unsloth itself from the torch index too. On a +cuNNN or +cpu
+        # venv it would hand back the same unloadable wheel this warning is about.
+        if extra is not None and not _index_flag(tuple(int(x) for x in pin.split("."))):
             install_hint += f" or `pip install 'unsloth[{extra}]'`"
     return (
         f"torchcodec {torchcodec_version} is incompatible with torch {torch.__version__}; "

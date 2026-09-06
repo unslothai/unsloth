@@ -605,8 +605,23 @@ def rule_inst_003_peft_torchao(
     return findings
 
 
-def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, bool]:
-    """Floor, ceiling and removed-flag from the LAST invocation naming `package`.
+def _compatible_release_ceiling(version: str) -> str:
+    """The exclusive upper bound `~=version` implies: `~=0.12.0` -> `0.13`, `~=0.12` -> `1`.
+
+    PEP 440 drops the last component and increments the one before it. A single component
+    (`~=1`) is invalid, so it names no ceiling.
+    """
+    parts = [p for p in re.split(r"[.]", version.strip()) if p.isdigit()]
+    if len(parts) < 2:
+        return ""
+    head = [int(p) for p in parts[:-1]]
+    head[-1] += 1
+    return ".".join(str(p) for p in head)
+
+
+def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, str, bool]:
+    """Floor, exclusive ceiling, inclusive cap and removed-flag from the LAST invocation
+    naming `package`.
 
     Order matters and intersecting does not: pip runs the commands in sequence, so
     `torchcodec>=0.12.0` followed by `torchcodec<0.12.0` ends on a pre-0.12 codec, while
@@ -623,11 +638,11 @@ def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, bool]:
     move the answer between machines. Skipping leaves such a cell judged on the preinstalled
     version, which is what it was judged on before this function existed.
     """
-    floor = ceiling = ""
+    floor = ceiling = cap = ""
     removed = False
     for invocation in iter_pip_invocations(install_cell):
         uninstall = re.search(r"\bpip\s+uninstall\b", invocation.raw, re.IGNORECASE) is not None
-        current_floor = current_ceiling = ""
+        current_floor = current_ceiling = current_cap = ""
         named = False
         for requirement in invocation.packages:
             if ";" in requirement:
@@ -637,7 +652,18 @@ def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, bool]:
                 continue
             named = True
             for operator, version in spec.pins:
-                if operator == ">=" and (
+                if operator == "~=":
+                    # PEP 440 compatible release: `~=0.12.0` is `>=0.12.0,<0.13.0`, and
+                    # `~=0.12` is `>=0.12,<1`. The last component is dropped and the one
+                    # before it incremented.
+                    lower, upper = version, _compatible_release_ceiling(version)
+                    if not current_floor or cmp_versions(lower, current_floor) > 0:
+                        current_floor = lower
+                    if upper and (
+                        not current_ceiling or cmp_versions(upper, current_ceiling) < 0
+                    ):
+                        current_ceiling = upper
+                elif operator == ">=" and (
                     not current_floor or cmp_versions(version, current_floor) > 0
                 ):
                     current_floor = version
@@ -645,9 +671,20 @@ def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, bool]:
                     not current_ceiling or cmp_versions(version, current_ceiling) < 0
                 ):
                     current_ceiling = version
+                elif operator == "<=" and (
+                    not current_cap or cmp_versions(version, current_cap) < 0
+                ):
+                    # `<=V` allows V, so V is the version pip lands on when the installed
+                    # one is above it. Unlike an exclusive ceiling this NAMES the landing.
+                    current_cap = version
         if named:
-            floor, ceiling, removed = current_floor, current_ceiling, uninstall
-    return floor, ceiling, removed
+            floor, ceiling, cap, removed = (
+                current_floor,
+                current_ceiling,
+                current_cap,
+                uninstall,
+            )
+    return floor, ceiling, cap, removed
 
 
 def _effective_requested_version(install_cell: str, package: str, oracle: str) -> str:
@@ -658,13 +695,15 @@ def _effective_requested_version(install_cell: str, package: str, oracle: str) -
     oracle satisfies the range it does survive; otherwise pip must move, and the floor is
     the version it moves to for the one-minor-wide ranges these rules care about.
     """
-    floor, ceiling, removed = _requested_bounds(install_cell, package)
+    floor, ceiling, cap, removed = _requested_bounds(install_cell, package)
     if removed:
         # Uninstalled and not put back, so there is nothing left to judge. Reporting the
         # oracle here flagged a package the cell had just deleted.
         return ""
-    if not floor and not ceiling:
+    if not floor and not ceiling and not cap:
         return oracle
+    if cap and cmp_versions(oracle, cap) > 0:
+        return cap  # `<=V` allows V, so V is what pip picks
     if floor and cmp_versions(oracle, floor) < 0:
         return floor
     if ceiling and cmp_versions(oracle, ceiling) >= 0:

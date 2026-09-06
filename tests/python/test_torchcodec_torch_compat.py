@@ -103,19 +103,27 @@ def test_torch210_rejects_torchcodec_011(monkeypatch):
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.10.0+cu128")
     monkeypatch.setattr(
         importlib.metadata,
         "version",
         lambda _name: "0.11.0",
     )
 
+    # Untagged torch: no index pin is needed, so the extra stays on offer.
+    _stub_torch(monkeypatch, "2.10.0")
     hint = fixes._torchcodec_version_mismatch_hint()
     assert hint is not None
     assert "torchcodec 0.11.0" in hint
     assert "audio-torch210" in hint
     assert "<0.11.0" in hint
     assert "<11.0" not in hint
+
+    # Tagged torch: the extra cannot carry an index, so the pinned command is offered alone.
+    _stub_torch(monkeypatch, "2.10.0+cu128")
+    tagged = fixes._torchcodec_version_mismatch_hint()
+    assert "--index-url https://download.pytorch.org/whl/cu128" in tagged
+    assert "audio-torch210" not in tagged
+    assert "<0.11.0" in tagged
 
 
 def test_torch210_accepts_torchcodec_010(monkeypatch):
@@ -152,12 +160,13 @@ def test_torch211_rejects_torchcodec_010(monkeypatch):
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.11.0+cu128")
     monkeypatch.setattr(
         importlib.metadata,
         "version",
         lambda _name: "0.10.0+cu128",
     )
+    # Untagged, so the extra is offered; the tagged case is covered below.
+    _stub_torch(monkeypatch, "2.11.0")
 
     hint = fixes._torchcodec_version_mismatch_hint()
     assert hint is not None, "torch 2.11 + torchcodec 0.10 must not go unreported"
@@ -201,7 +210,7 @@ def test_torch210_still_rejects_abi_stable_torchcodec(monkeypatch):
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.10.0+cu128")
+    _stub_torch(monkeypatch, "2.10.0")
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.15.0")
 
     hint = fixes._torchcodec_version_mismatch_hint()
@@ -1034,3 +1043,56 @@ def test_the_codec_reader_matches_pip_on_names_and_uninstalls():
     assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(restored, colab, "nb.ipynb", 0)] == [
         "R-INST-004"
     ]
+
+
+def test_compatible_release_and_inclusive_caps_are_read():
+    """`~=` is a two-sided bound (PEP 440: `~=0.12.0` is `>=0.12.0,<0.13.0`) and `<=V`
+    names its own landing version. Reading neither meant the oracle survived a request that
+    had already moved it, and R-INST-004 reported the version pip replaced."""
+    from scripts import notebook_validator as nv
+
+    assert nv._compatible_release_ceiling("0.12.0") == "0.13"
+    assert nv._compatible_release_ceiling("0.12") == "1"
+    assert nv._compatible_release_ceiling("1") == ""  # `~=1` is invalid, so it bounds nothing
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install torch==2.12.0 "torchcodec~=0.12.0"', colab, "nb.ipynb", 0
+        )
+        == []
+    )
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install torch==2.9.0 "torchcodec<=0.9"', colab, "nb.ipynb", 0
+        )
+        == []
+    )
+    # `~=` still lands somewhere, so a window on the wrong line is still reported.
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            '!pip install torch==2.10.0 "torchcodec~=0.12.0"', colab, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]
+
+
+def test_the_remedy_drops_the_extra_when_an_index_pin_is_needed(monkeypatch):
+    """An extra cannot carry an index: the marker picks the version, and putting
+    --index-url on the whole command would resolve unsloth itself from the torch index. On a
+    tagged venv the extra would hand back the same unloadable wheel the warning is about."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.10.0")
+
+    _stub_torch(monkeypatch, "2.11.0+cu128")
+    pinned = fixes._torchcodec_version_mismatch_hint()
+    assert "--index-url" in pinned
+    assert "unsloth[audio-torch211]" not in pinned
+
+    # Untagged torch needs no pin, so the convenient alternative stays on offer.
+    _stub_torch(monkeypatch, "2.11.0")
+    unpinned = fixes._torchcodec_version_mismatch_hint()
+    assert "--index-url" not in unpinned
+    assert "unsloth[audio-torch211]" in unpinned

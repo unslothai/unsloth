@@ -7633,11 +7633,23 @@ def install_python_stack() -> int:
         # wrong index is a codec that cannot load.
         _codec_index = _torchcodec_index_url(_codec_torch_ver, _codec_spec)
         _codec_args = ("--no-deps", "--no-cache-dir")
+        _codec_rebuild = False
         if _codec_index:
             _codec_args += ("--index-url", _codec_index)
+            # A codec already inside the window satisfies the requirement, so pip and uv
+            # skip it and the pin never fetches anything -- leaving in place exactly the
+            # wrong-accelerator wheel this pin exists to replace. Provenance is readable
+            # from the version: the torch indexes carry a +cuNNN / +cpu local tag and PyPI
+            # forbids one, so a local tag that is missing or different means another build.
+            _codec_have = _installed_distribution_version("torchcodec") or ""
+            _codec_want = str(_codec_torch_ver).partition("+")[2].strip().lower()
+            if _codec_have and _codec_have.partition("+")[2].strip().lower() != _codec_want:
+                _codec_args += ("--force-reinstall",)
+                _codec_rebuild = True
         _safe_print(
             f"   torch {_codec_torch_ver} detected -- installing {_codec_spec}"
             + (f" from {_codec_index}" if _codec_index else "")
+            + (" (replacing a build from another index)" if _codec_rebuild else "")
         )
         # pip_install_try, not pip_install: audio is an optional extra, and pip_install's
         # failure path is run(check=True), i.e. exit. Letting an audio wheel end a Studio
