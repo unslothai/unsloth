@@ -181,6 +181,8 @@ def _gate_payload(**kwargs):
         "permission_mode": None,
         "mcp_enabled": False,
         "enabled_tools": None,
+        "tool_choice": None,
+        "max_tool_calls_per_message": None,
     }
     fields.update(kwargs)
     return SimpleNamespace(**fields)
@@ -216,6 +218,24 @@ def test_a_streaming_request_that_can_never_prompt_is_not_refused():
         _confirm_gate_has_no_channel(_gate_payload(permission_mode = "ask", enabled_tools = []), False)
         is True
     )
+
+
+def test_a_request_that_can_run_no_tool_is_not_refused():
+    # stream_with_studio_tools withdraws the catalogue unless tool_choice is not "none"
+    # and the budget is unspent, so neither shape can reach a prompt. The selector reads
+    # neither field, so the catalogue alone cannot answer this.
+    assert _confirm_gate_has_no_channel(_gate_payload(tool_choice = "none"), False) is False
+    assert _confirm_gate_has_no_channel(
+        _gate_payload(max_tool_calls_per_message = 0), False
+    ) is False
+    # An unspent budget is not a disabled one.
+    assert _confirm_gate_has_no_channel(
+        _gate_payload(max_tool_calls_per_message = 1), False
+    ) is True
+    # Non-streaming keeps its own reading; this only narrows the stream refusal.
+    assert _confirm_gate_has_no_channel(
+        _gate_payload(stream = False, permission_mode = "ask", tool_choice = "none"), True
+    ) is True
 
 
 def test_external_provider_relay_drops_control_frames_too():

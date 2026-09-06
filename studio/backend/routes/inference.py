@@ -3944,6 +3944,19 @@ class _AutoPermissionMode:
         return getattr(self._payload, name)
 
 
+def _tool_calls_are_disabled(payload) -> bool:
+    """True when no tool call can happen, so no confirm prompt can either.
+
+    stream_with_studio_tools withdraws the catalogue for a turn unless tool_choice is not
+    "none" and the per-message budget is unspent, and discards a call a provider emits
+    under "none" anyway. The selector does not read either field, so a catalogue can be
+    non-empty while nothing in it is reachable.
+    """
+    if getattr(payload, "tool_choice", None) == "none":
+        return True
+    return getattr(payload, "max_tool_calls_per_message", None) == 0
+
+
 def _confirm_gate_has_no_channel(payload, ui_events: bool) -> bool:
     """Whether a confirm gate that will prompt has no way to ask this caller.
 
@@ -3954,16 +3967,18 @@ def _confirm_gate_has_no_channel(payload, ui_events: bool) -> bool:
     cannot be asked either: it would park in wait_tool_decision for the full decision
     timeout on a prompt nobody was shown, holding the decode slot the whole hour.
 
-    A streaming request is judged with an unset permission_mode read as "auto", the way
-    the loop itself defaults it. auto only prompts for a classifier-flagged call, so an
-    always-safe selection (deep research sends enabled_tools: []) is not refused over a
-    prompt that can never fire. Non-streaming keeps the stricter reading it has always had.
+    A streaming request is only ever refused over a prompt that can actually fire: tool
+    calls must be reachable at all, and an unset permission_mode is read as "auto", the
+    way the loop itself defaults it, so an always-safe selection (deep research sends
+    enabled_tools: []) passes. Non-streaming keeps the reading it has always had.
     """
     if getattr(payload, "bypass_permissions", False):
         return False
     if not getattr(payload, "stream", False):
         return _confirm_gate_needs_stream(payload)
     if ui_events:
+        return False
+    if _tool_calls_are_disabled(payload):
         return False
     if getattr(payload, "permission_mode", None) is None:
         payload = _AutoPermissionMode(payload)

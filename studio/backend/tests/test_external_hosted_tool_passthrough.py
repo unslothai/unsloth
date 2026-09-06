@@ -363,6 +363,32 @@ def test_mcp_intent_with_no_tools_is_not_refused_for_a_prompt_it_can_never_show(
     assert _drive(go())
 
 
+def test_tool_choice_none_is_not_refused_for_a_prompt_it_can_never_show(monkeypatch):
+    """The catalogue is non-empty here, but stream_with_studio_tools withdraws it every
+    turn under tool_choice "none", so no call and no approval prompt can happen. A
+    headerless stream must still get its clean text answer."""
+    inf = _install(monkeypatch, "openai")
+    payload = _payload(enable_tools = True, enabled_tools = ["python"], tool_choice = "none")
+
+    async def is_disconnected():
+        return False
+
+    headerless = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(skip_api_monitor = True),
+        is_disconnected = is_disconnected,
+    )
+
+    async def go():
+        resp = await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
+        return [chunk async for chunk in resp.body_iterator]
+
+    # Reaches the loop rather than being refused; the loop then withdraws the catalogue
+    # per turn (tools_available), so the request answers as plain text.
+    with pytest.raises(LoopEntered):
+        _drive(go())
+
+
 def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):
     """`permission_mode` unset on a streaming request resolves to "auto" with
     the confirm gate ON, so high-risk calls still prompt."""
