@@ -1998,7 +1998,12 @@ def test_batched_generation_records_a_row_that_is_empty_only_inside_the_batch():
         eos_token = "<eos>"
         pad_token_id = 0
 
-        def __call__(self, text, return_tensors = None, padding = False):
+        def __call__(
+            self,
+            text,
+            return_tensors = None,
+            padding = False,
+        ):
             texts = [text] if isinstance(text, str) else list(text)
             ids = [[ord(c) % 100 + 1 for c in t] for t in texts]
             if return_tensors is None:
@@ -2010,13 +2015,23 @@ def test_batched_generation_records_a_row_that_is_empty_only_inside_the_batch():
                 attention_mask = torch.tensor([[0] * (width - len(i)) + [1] * len(i) for i in ids]),
             )
 
-        def decode(self, row, skip_special_tokens = False):
+        def decode(
+            self,
+            row,
+            skip_special_tokens = False,
+        ):
             return "".join(chr(int(v)) for v in row if int(v) != 0)
 
     class _EmptyRowInsideBatch8:
         device = "cpu"
 
-        def generate(self, input_ids = None, attention_mask = None, max_new_tokens = 8, **_kw):
+        def generate(
+            self,
+            input_ids = None,
+            attention_mask = None,
+            max_new_tokens = 8,
+            **_kw,
+        ):
             outs = []
             for index, row in enumerate(input_ids):
                 real = [int(v) for v in row if int(v) != 0]
