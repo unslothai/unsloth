@@ -2475,6 +2475,17 @@ def _torchcodec_exclusive_upper(pin: str) -> str:
     return f"<{major}.{int(minor) + 1}.0"
 
 
+def _shell_env_ref(name: str) -> str:
+    """How to reference an environment variable in the shell this host pastes into.
+
+    PowerShell is Studio's supported Windows shell and does not expand `$NAME`; it needs
+    `$env:NAME`, so the POSIX spelling silently produced an empty `--index-url`.
+    """
+    if sys.platform.startswith("win"):
+        return f"$env:{name}"
+    return f'"${name}"'
+
+
 def _torch_index_url_for_remedy(local_tag: str) -> str:
     """The index a torchcodec remedy should name for a `+local_tag` torch.
 
@@ -2489,13 +2500,13 @@ def _torch_index_url_for_remedy(local_tag: str) -> str:
         # its userinfo or a query token, and this string goes into a warning that lands in
         # terminals and CI logs. The shell expands it, so the command still works verbatim
         # for the person who configured it, and nothing is written down.
-        return '"$UNSLOTH_TORCH_INDEX_URL"'
+        return _shell_env_ref("UNSLOTH_TORCH_INDEX_URL")
     leaf = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/") or local_tag
     if os.environ.get("UNSLOTH_PYTORCH_MIRROR", "").strip():
         # UNSLOTH_PYTORCH_MIRROR replaces the base every index in install_python_stack is
         # built from, so a remedy naming the public site cannot be reached on an air-gapped
         # host. Same treatment as the URL above: expand the variable, disclose nothing.
-        return f'"$UNSLOTH_PYTORCH_MIRROR"/{leaf}'
+        return f"{_shell_env_ref('UNSLOTH_PYTORCH_MIRROR')}/{leaf}"
     return f"https://download.pytorch.org/whl/{leaf}"
 
 
@@ -2596,11 +2607,17 @@ def _torchcodec_provenance_hint() -> "str | None":
         return None  # rocm and xpu publish no torchcodec under this name
     index = _torch_index_url_for_remedy(torch_local)
     codec_from = codec_local or "the default index"
+    # "may be", not "is": all this establishes is that the two came from different indexes.
+    # torchcodec is published per accelerator on every line, 0.12+ included, so a mismatch
+    # stays possible there -- but the load can also have failed for an unrelated reason such
+    # as a missing libavutil, which no reinstall from any index repairs. Name both.
     return (
-        f"torchcodec {getattr(torchcodec, '__version__', '?')} was built for {codec_from} "
-        f"but torch {getattr(torch, '__version__', '?')} is a {torch_local} build, so the "
-        f"codec cannot load; audio is disabled. Reinstall the matching build with "
-        f"`pip install --force-reinstall --no-deps --index-url {index} torchcodec`."
+        f"torchcodec {getattr(torchcodec, '__version__', '?')} came from {codec_from} while "
+        f"torch {getattr(torch, '__version__', '?')} is a {torch_local} build, so the codec "
+        f"may be built for a different accelerator; audio is disabled. Try "
+        f"`pip install --force-reinstall --no-deps --index-url {index} torchcodec`. "
+        f"If that does not help, the failure is likely FFmpeg rather than the wheel: "
+        f"torchcodec needs libavutil / libavcodec from FFmpeg 4 through 8."
     )
 
 

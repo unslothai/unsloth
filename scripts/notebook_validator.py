@@ -877,9 +877,13 @@ def rule_inst_004_torchcodec_torch(
     # resolved_set keeps the oracle's preinstalled version for anything the cell does not pin
     # exactly, so a cell asking for `torchcodec>=0.12.0` still reads as Colab's 0.11 and the
     # branches below report a mismatch pip would never produce. Judge what pip installs.
+    # Both sides, not just the codec: `pip install "torch>=2.12.0"` does not satisfy the
+    # image's 2.11, so pip upgrades torch while the codec stays on the incompatible line,
+    # and judging the pair against the oracle's torch missed it.
+    torch_v, torch_exact = _effective_requested_version(install_cell, "torch", torch_v)
     codec_v, codec_exact = _effective_requested_version(install_cell, "torchcodec", codec_v)
-    if not codec_v:
-        return findings  # the cell moved it somewhere only the index names
+    if not torch_v or not codec_v:
+        return findings  # the cell moved one of them somewhere only the index names
     # torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION
     # to 2.11), so that half of the matrix is open-ended and cannot be a finite set of minors.
     # Without this, adding the 2.11 row below would flag torch 2.11 with torchcodec 0.12
@@ -913,6 +917,9 @@ def rule_inst_004_torchcodec_torch(
                 hint = f"pin `torchcodec>={TORCHCODEC_ABI_STABLE_CODEC}.0` (the ABI-stable line, which targets torch >={TORCHCODEC_ABI_STABLE_TORCH})",
             )
         )
+        return findings
+    if not torch_exact:
+        # Which row applies depends on the torch this floor resolves to.
         return findings
     if not codec_exact and cmp_versions(c_minor, sorted(allowed)[-1]) <= 0:
         # Some release at or above the floor sits in this row, so nothing is proven.
