@@ -24352,10 +24352,23 @@ def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
     ``create=False`` resolves the path without materialising it, so a read-only
     request cannot leave a directory behind for every id it is asked about.
     """
-    from core.inference.tools import get_sandbox_workdir, resolve_sandbox_workdir
+    from core.inference.tools import (
+        ProjectWorkspaceSessionUnavailableError,
+        get_sandbox_workdir,
+        resolve_sandbox_workdir,
+    )
+    from storage.studio_db import ProjectWorkspaceUnavailableError
 
     resolver = get_sandbox_workdir if create else resolve_sandbox_workdir
-    return os.path.realpath(resolver(session_id))
+    try:
+        return os.path.realpath(resolver(session_id))
+    except ProjectWorkspaceSessionUnavailableError as exc:
+        raise HTTPException(status_code = 410, detail = str(exc)) from exc
+    except ProjectWorkspaceUnavailableError as exc:
+        raise HTTPException(
+            status_code = 410,
+            detail = f"Project workspace is unavailable: {exc.path}",
+        ) from exc
 
 
 # A tool may write into a subdirectory, so a single segment is not enough. Taken

@@ -174,6 +174,59 @@ def test_document_folder_grant_binds_identity_but_allows_content_changes(tmp_pat
         )
 
 
+def test_project_workspace_grant_is_scoped_and_binds_folder_identity(tmp_path):
+    folder = tmp_path / "project"
+    folder.mkdir()
+    lease = _sign(
+        folder,
+        operation = "set-project-workspace",
+        path_kind = "project-workspace",
+    )
+    original = folder.stat()
+    (folder / "created-after-selection.txt").write_text("ok", encoding = "utf-8")
+    os.utime(
+        folder,
+        ns = (original.st_atime_ns, original.st_mtime_ns + 1_000_000_000),
+    )
+
+    grant = leases.verify_native_path_lease(
+        lease,
+        operation = "set-project-workspace",
+        expected_kind = "project-workspace",
+        expected_path_type = "directory",
+    )
+
+    assert grant.canonical_path == folder
+
+    wrong_operation = _sign(
+        folder,
+        operation = "set-project-workspace",
+        path_kind = "project-workspace",
+    )
+    with pytest.raises(leases.NativePathLeaseError, match = "operation"):
+        leases.verify_native_path_lease(
+            wrong_operation,
+            operation = "link-documents",
+            expected_kind = "project-workspace",
+            expected_path_type = "directory",
+        )
+
+    replaced = _sign(
+        folder,
+        operation = "set-project-workspace",
+        path_kind = "project-workspace",
+    )
+    folder.rename(tmp_path / "old-project")
+    folder.mkdir()
+    with pytest.raises(leases.NativePathLeaseError, match = "changed"):
+        leases.verify_native_path_lease(
+            replaced,
+            operation = "set-project-workspace",
+            expected_kind = "project-workspace",
+            expected_path_type = "directory",
+        )
+
+
 @pytest.mark.parametrize(("uses_extended_identity", "matching_index"), [(False, 0), (True, 1)])
 def test_grant_uses_the_identity_exposed_by_its_python_runtime(
     tmp_path, monkeypatch, uses_extended_identity, matching_index

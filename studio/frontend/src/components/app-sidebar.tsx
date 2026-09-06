@@ -139,9 +139,11 @@ import {
   clearNewChatDraft,
   deleteChatProject,
   deleteChatItem,
+  getStoredChatProject,
   listStoredChatMessages,
   listStoredChatThreads,
   moveChatItemToProject,
+  NewProjectDialog,
   allRecordedSandboxSessionIds,
   notifyChatHistoryUpdated,
   renameChatItem,
@@ -185,7 +187,6 @@ import {
   revealSandbox,
   sandboxHasFiles,
 } from "@/components/assistant-ui/sandbox-reveal";
-import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
@@ -1975,6 +1976,10 @@ export function AppSidebar() {
   // whether the unrelated recent-chat list currently has a scrollbar.
   const unrailedRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
 
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
+    useState<SidebarItem | null>(null);
+
   // Header actions end where a hovered row's "…" does: unrailedRowPadding + the
   // action's own pr-1.5. 12px normally (the pr-3 class default), 11px here.
   const headerRightPadding = usesDesktopTitlebar
@@ -2281,9 +2286,6 @@ export function AppSidebar() {
       );
     });
   }, [allChatItems, pendingRename]);
-  const [creatingProject, setCreatingProject] = useState(false);
-  const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
-    useState<SidebarItem | null>(null);
   const renameTrimmed = renameDraft.trim();
   const nextRunDisplayName = renameTrimmed.length > 0 ? renameTrimmed : null;
   const renameDirty =
@@ -2655,11 +2657,32 @@ export function AppSidebar() {
         throw error;
       }
       // Nothing recorded means no tool has run yet, so the id it would get is
-      // the one current membership gives it.
-      sessionId ??=
-        item.type === "single" || item.projectId
-          ? sandboxSessionIdFor(ids[0], item.projectId)
-          : undefined;
+      // the one current membership gives it. Read the project rather than the
+      // cached list: changing a project's folder rotates its session, and a list
+      // that has not caught up yet would hand out the id from before the change.
+      if (sessionId === undefined && (item.type === "single" || item.projectId)) {
+        let workspaceSessionId: string | undefined;
+        if (item.projectId) {
+          try {
+            workspaceSessionId = (await getStoredChatProject(item.projectId))
+              ?.workspaceSessionId;
+          } catch {
+            workspaceSessionId = undefined;
+          }
+          if (!workspaceSessionId) {
+            refusal.value = {
+              title: "Could not read this project's folder.",
+              description: "Try again once the project list has loaded.",
+            };
+            throw new Error("no project workspace session");
+          }
+        }
+        sessionId = sandboxSessionIdFor(
+          ids[0],
+          item.projectId,
+          workspaceSessionId,
+        );
+      }
       if (!sessionId) {
         refusal.value = { title: "This chat has no single session id" };
         throw new Error("no session id");
@@ -3063,9 +3086,20 @@ export function AppSidebar() {
     const isPinned = pinnedIdSet.has(item.id);
     // A compare row outside a project spans two sandboxes, and there is no
     // honest single folder to offer for it.
+    const itemProject = item.projectId
+      ? projects.find((project) => project.id === item.projectId)
+      : undefined;
+    // A project whose row has not loaded yet is the same case: guessing
+    // `project-<id>` here would open the folder from before its last working
+    // directory change, which the backend answers with a 410. The action is
+    // hidden on an undefined id, so withholding it is the honest answer.
     const sandboxSessionId =
-      item.type === "single" || item.projectId
-        ? sandboxSessionIdFor(threadIds[0] ?? item.id, item.projectId)
+      (item.type === "single" && !item.projectId) || itemProject
+        ? sandboxSessionIdFor(
+            threadIds[0] ?? item.id,
+            item.projectId,
+            itemProject?.workspaceSessionId,
+          )
         : undefined;
     // A compare row's id is the pair id while runningByThreadId is per pane thread; aggregate.
     const isGenerating =
@@ -4635,10 +4669,16 @@ export function AppSidebar() {
               </span>
               <span className="block break-words text-xs leading-5 text-muted-foreground">
                 {confirmingDelete?.kind === "project"
-                  ? (confirmingDelete.project.rootPath ??
-                    "The project workspace folder will be removed from disk.")
+                  ? confirmingDelete.project.workspaceKind === "external"
+                    ? `The Unsloth-managed folder${confirmingDelete.project.rootPath ? ` at ${confirmingDelete.project.rootPath}` : ""} will be removed. The selected folder will be kept.`
+                    : (confirmingDelete.project.rootPath ??
+                      "The project workspace folder will be removed from disk.")
                   : confirmingDelete?.kind === "projects"
-                    ? t("shell.selection.deleteProjectsFilesDescription")
+                    ? confirmingDelete.projects.some(
+                        (project) => project.workspaceKind === "external",
+                      )
+                      ? "Unsloth-managed workspace folders will be removed. Selected folders will be kept."
+                      : t("shell.selection.deleteProjectsFilesDescription")
                     : confirmingDelete?.kind === "chats"
                       ? t("shell.selection.deleteFilesDescription")
                     : t("shell.selection.deleteChatFilesDescription")}

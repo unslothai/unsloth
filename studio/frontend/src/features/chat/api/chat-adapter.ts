@@ -2052,7 +2052,11 @@ async function resolveSandboxSessionId(
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string | undefined> {
   const projectId = await resolveProjectId(threadId, readThreadRecord);
-  return sandboxSessionIdFor(threadId, projectId);
+  if (!projectId) {
+    return threadId;
+  }
+  const project = await getStoredChatProject(projectId);
+  return sandboxSessionIdFor(threadId, projectId, project?.workspaceSessionId);
 }
 
 /** Wait for an in-progress model load to finish (polls store every 500ms). */

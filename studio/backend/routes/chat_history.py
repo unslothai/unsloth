@@ -9,6 +9,7 @@ mixed handlers explicitly send their database transaction through Starlette's th
 """
 
 import asyncio
+import os
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
 
@@ -41,7 +42,9 @@ from storage.studio_db import (
     ChatThreadDeletedError,
     ChatThreadPreconditionFailed,
     CorruptSettingsError,
+    ProjectWorkspaceConflictError,
     ProjectWorkspaceError,
+    ProjectWorkspaceUnavailableError,
     build_chat_history_export,
     clear_chat_history,
     clear_chat_history_with_replay_status,
@@ -67,6 +70,8 @@ from storage.studio_db import (
     list_chat_messages,
     list_chat_messages_for_threads,
     list_chat_threads,
+    set_chat_project_workspace,
+    project_workspace_overlaps_managed_root,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -326,10 +331,18 @@ class ChatProject(BaseModel):
     name: str
     instructions: str = ""
     rootPath: Optional[str] = None
+    workspacePath: Optional[str] = None
+    workspaceSessionId: str = ""
+    workspaceKind: Literal["managed", "external"] = "managed"
+    workspaceAvailable: bool = True
     sandboxPath: Optional[str] = None
     archived: bool = False
     createdAt: int
     updatedAt: int
+
+
+class ChatProjectCreate(ChatProject):
+    nativePathLease: Optional[str] = None
 
 
 class ChatProjectDeleted(ChatProject):
@@ -344,6 +357,8 @@ class ChatProjectPatch(BaseModel):
     archived: Optional[bool] = None
     createdAt: Optional[int] = None
     updatedAt: Optional[int] = None
+    workspaceKind: Optional[Literal["managed", "external"]] = None
+    nativePathLease: Optional[str] = None
 
 
 class ChatThreadListResponse(BaseModel):
@@ -1078,16 +1093,60 @@ def list_projects(
 ):
     return ChatProjectListResponse(
         projects = [
-            ChatProject(**(ensure_chat_project_workspace(project["id"]) or project))
+            _chat_project_response(project)
             for project in list_chat_projects(include_archived = include_archived)
         ]
     )
 
 
-@router.post("/projects", response_model = ChatProject)
-def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
+def _chat_project_response(project: dict) -> ChatProject:
+    if project.get("workspaceKind") != "external":
+        project = ensure_chat_project_workspace(project["id"]) or project
+    return ChatProject(**project)
+
+
+def _resolve_project_workspace_path(native_path_lease: str) -> tuple[str, tuple[str, str]]:
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
     try:
-        return ChatProject(**upsert_chat_project(payload.model_dump()))
+        grant = verify_native_path_lease(
+            native_path_lease,
+            operation = "set-project-workspace",
+            expected_kind = "project-workspace",
+            expected_path_type = "directory",
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    if grant.device_id is None or grant.file_id is None:
+        raise HTTPException(status_code = 400, detail = "Selected folder identity is unavailable")
+    return str(grant.canonical_path), (f"{grant.device_id:x}", f"{grant.file_id:x}")
+
+
+@router.post("/projects", response_model = ChatProject)
+def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_current_subject)):
+    external_workspace_path = None
+    external_workspace_identity = None
+    if payload.workspaceKind == "external":
+        if get_chat_project(payload.id) is not None:
+            raise HTTPException(
+                status_code = 409,
+                detail = "Use the project update endpoint to change its working directory",
+            )
+        if not payload.nativePathLease:
+            raise HTTPException(status_code = 400, detail = "A selected workspace folder is required")
+        external_workspace_path, external_workspace_identity = _resolve_project_workspace_path(
+            payload.nativePathLease
+        )
+    elif payload.nativePathLease:
+        raise HTTPException(status_code = 400, detail = "Managed workspaces do not accept a folder")
+    try:
+        return ChatProject(
+            **upsert_chat_project(
+                payload.model_dump(exclude = {"nativePathLease"}),
+                external_workspace_path = external_workspace_path,
+                external_workspace_identity = external_workspace_identity,
+            )
+        )
     except ProjectWorkspaceError as exc:
         # A project is the only thing Unsloth writes to Documents, so only this error and only its own path: the same
         # upsert also opens the database, which lives elsewhere.
@@ -1100,17 +1159,28 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
             event = "chat_history.create_project_workspace_failed",
             log = logger,
         ) from exc
+    except ProjectWorkspaceUnavailableError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            f"Could not use the selected project folder {exc.path}. Check that it still exists "
+            "and is readable and writable.",
+            event = "chat_history.create_external_workspace_failed",
+            log = logger,
+        ) from exc
+    except ProjectWorkspaceConflictError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
 def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
-    project = ensure_chat_project_workspace(project_id)
+    project = get_chat_project(project_id)
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    return ChatProject(**project)
+    return _chat_project_response(project)
 
 
 @router.patch("/projects/{project_id}", response_model = ChatProject)
@@ -1123,15 +1193,80 @@ def patch_project(
     for field in ("name", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
-    project = update_chat_project(project_id, patch)
-    if project is not None:
-        project = ensure_chat_project_workspace(project_id)
+    workspace_kind = patch.pop("workspaceKind", None)
+    native_path_lease = patch.pop("nativePathLease", None)
+    if native_path_lease and workspace_kind != "external":
+        raise HTTPException(status_code = 400, detail = "A folder can only set an external workspace")
+    if workspace_kind == "external" and not native_path_lease:
+        raise HTTPException(status_code = 400, detail = "A selected workspace folder is required")
+
+    if workspace_kind is None:
+        project = update_chat_project(project_id, patch)
+    else:
+        from core.inference.tools import update_project_workspace_when_idle
+
+        def update_workspace():
+            external_workspace_selection = (
+                _resolve_project_workspace_path(native_path_lease)
+                if workspace_kind == "external" and native_path_lease
+                else None
+            )
+            external_workspace_path = (
+                external_workspace_selection[0] if external_workspace_selection else None
+            )
+            external_workspace_identity = (
+                external_workspace_selection[1] if external_workspace_selection else None
+            )
+            project = set_chat_project_workspace(
+                project_id,
+                external_workspace_path,
+                external_workspace_identity,
+            )
+            if project is not None and patch:
+                project = update_chat_project(project_id, patch)
+            return project
+
+        try:
+            changed, project = update_project_workspace_when_idle(project_id, update_workspace)
+        except ProjectWorkspaceError as exc:
+            raise log_and_http_error(
+                exc,
+                500,
+                f"Could not create the project folder {exc.path}. Check that the folder is "
+                "writable, or set UNSLOTH_STUDIO_PROJECTS_HOME to another location.",
+                event = "chat_history.update_managed_workspace_failed",
+                log = logger,
+            ) from exc
+        except ProjectWorkspaceUnavailableError as exc:
+            raise log_and_http_error(
+                exc,
+                400,
+                f"Could not use the selected project folder {exc.path}. Check that it still "
+                "exists and is readable and writable.",
+                event = "chat_history.update_external_workspace_failed",
+                log = logger,
+            ) from exc
+        except ProjectWorkspaceConflictError as exc:
+            raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        if not changed:
+            raise HTTPException(
+                status_code = 409,
+                detail = "Wait for the project's active tool calls to finish before changing its workspace.",
+            )
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    return ChatProject(**project)
+    return _chat_project_response(project)
+
+
+def _managed_workspace_remains(sandbox_path: str, root_path: "str | None") -> bool:
+    """Whether a project's managed folder is still worth a kept-folder record."""
+    for path in (sandbox_path, root_path):
+        if path and os.path.isdir(path) and not os.path.islink(path):
+            return True
+    return False
 
 
 def _delete_project_rag_sources(project_id: str) -> None:
@@ -1198,25 +1333,101 @@ async def delete_project(
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     # The project's chats go with it, so their archives have to as well.
     await run_in_threadpool(_remove_conversation_archives, member_ids, cutoff = cutoff)
-    if project.get("sandboxPath"):
+    managed_root_path = project.get("rootPath")
+    managed_sandbox_path = os.path.join(managed_root_path, "sandbox") if managed_root_path else None
+    if (
+        managed_root_path
+        and project.get("workspaceKind") == "external"
+        and project.get("workspacePath")
+        and project_workspace_overlaps_managed_root(
+            project["workspacePath"], managed_root_path, check_descendants = True
+        )
+    ):
+        logger.warning(
+            "Kept managed project workspace %s because it overlaps the external workspace",
+            project_id,
+        )
+        managed_sandbox_path = None
+    managed_project = {
+        **project,
+        "workspaceKind": "managed",
+        "workspacePath": managed_sandbox_path,
+        "sandboxPath": managed_sandbox_path,
+    }
+    if project.get("workspaceKind") == "external" and project.get("workspacePath"):
+        from core.inference.tools import (
+            forget_orphaned_project_if_gone,
+            live_project_ownership,
+        )
+        from storage.studio_db import (
+            delete_chat_project_workspace,
+            record_orphaned_project_if_unowned,
+        )
+
+        shared = project.get("workspaceSessionId") or f"project-{project_id}"
+        await run_in_threadpool(
+            record_orphaned_project_if_unowned,
+            project_id,
+            project["workspacePath"],
+            False,
+            None,
+            shared,
+        )
+        ownership = await run_in_threadpool(
+            live_project_ownership,
+            project_id,
+            managed_sandbox_path,
+            managed_root_path,
+        )
+        managed_remains = managed_sandbox_path is not None and await run_in_threadpool(
+            _managed_workspace_remains, managed_sandbox_path, managed_root_path
+        )
+        # A project that started managed and switched later left the folder it
+        # filled before the switch on disk, and the row that knew where it was has
+        # gone. Recorded whichever way the delete went, so it stays reachable and
+        # can still be collected; pending only when the files were to go.
+        if managed_remains and ownership is not True:
+            import uuid
+
+            cleanup_session = f"workspace-cleanup-{uuid.uuid4().hex}"
+            await run_in_threadpool(
+                record_orphaned_project_if_unowned,
+                project_id,
+                managed_sandbox_path,
+                delete_files,
+                managed_root_path,
+                cleanup_session,
+            )
+            if delete_files and ownership is False:
+                await run_in_threadpool(delete_chat_project_workspace, managed_project)
+                await run_in_threadpool(
+                    forget_orphaned_project_if_gone,
+                    project_id,
+                    managed_sandbox_path,
+                    managed_root_path,
+                    False,
+                    cleanup_session,
+                )
+    elif managed_sandbox_path and await run_in_threadpool(os.path.isdir, managed_root_path):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
-            forget_orphaned_project,
             forget_orphaned_project_if_gone,
-            live_project_owns,
+            forget_orphaned_project_session,
+            live_project_ownership,
             project_session_id,
-            record_orphaned_project,
+            run_when_sessions_idle,
             wait_for_sessions_idle,
         )
         from storage.studio_db import (
             delete_project_workspace,
+            record_orphaned_project_if_unowned,
             sandbox_is_referenced_elsewhere,
         )
 
         # Cancelling only asks: a call already in the executor still has its
         # cwd in there, and removing it strands what it writes next. The shared
-        # id first, since a call in a project runs as `project-<id>`.
-        shared = project_session_id(project_id)
+        # id first, since project calls run under the recorded workspace session.
+        shared = project.get("workspaceSessionId") or project_session_id(project_id)
         idle = (
             await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
             if delete_files
@@ -1228,19 +1439,27 @@ async def delete_project(
         # The row went first, so another client can create a project with this
         # id in the window. It resolves to the same default path, and a tool
         # call of its own may be writing in there right now.
-        recreated = await run_in_threadpool(get_chat_project, project_id) is not None
+        ownership = await run_in_threadpool(
+            live_project_ownership,
+            project_id,
+            managed_project["sandboxPath"],
+            managed_project.get("rootPath"),
+        )
+        recreated_owns = ownership is True
+        ownership_unknown = ownership is None
         if not delete_files:
             # The files stay, so the only job here is making them reachable: the
             # row that held a custom path is gone, and a fork's cards still name
             # this session.
             await run_in_threadpool(
-                record_orphaned_project,
+                record_orphaned_project_if_unowned,
                 project_id,
-                project["sandboxPath"],
+                managed_project["sandboxPath"],
                 False,
-                project.get("rootPath"),
+                managed_project.get("rootPath"),
+                shared,
             )
-        elif recreated:
+        elif recreated_owns:
             logger.warning(
                 "Kept project workspace %s: a project was created with that id",
                 project_id,
@@ -1258,58 +1477,80 @@ async def delete_project(
                 "Kept project workspace %s: a surviving chat still shows its files",
                 project_id,
             )
-        if delete_files and idle and not referenced and not recreated:
-            # Written down first: the delete can decline an unexpected path or
-            # stop at a locked file, and the row that knew where this workspace
-            # lives has already gone. The record is the only way back to it.
-            await run_in_threadpool(
-                record_orphaned_project,
-                project_id,
-                project["sandboxPath"],
-                True,
-                project.get("rootPath"),
+        if (
+            delete_files
+            and idle
+            and not referenced
+            and not recreated_owns
+            and not ownership_unknown
+        ):
+
+            def delete_workspace_if_unowned():
+                record_orphaned_project_if_unowned(
+                    project_id,
+                    managed_project["sandboxPath"],
+                    True,
+                    managed_project.get("rootPath"),
+                    shared,
+                )
+                latest_ownership = live_project_ownership(
+                    project_id,
+                    managed_project["sandboxPath"],
+                    managed_project.get("rootPath"),
+                )
+                if latest_ownership is True:
+                    logger.warning(
+                        "Kept project workspace %s: a project was created with that id",
+                        project_id,
+                    )
+                    forget_orphaned_project_session(project_id, shared)
+                elif latest_ownership is False:
+                    delete_project_workspace(managed_project)
+                    forget_orphaned_project_if_gone(
+                        project_id,
+                        managed_project["sandboxPath"],
+                        managed_project.get("rootPath"),
+                        False,
+                        shared,
+                    )
+                else:
+                    logger.warning(
+                        "Kept project workspace %s: ownership could not be checked",
+                        project_id,
+                    )
+
+            fenced, _ = await run_in_threadpool(
+                run_when_sessions_idle,
+                [shared, *member_ids],
+                delete_workspace_if_unowned,
+                0.0,
             )
-            # Once more, next to the delete itself: the record write above is
-            # an await, and a project created in that window resolves to this
-            # same path.
-            if await run_in_threadpool(get_chat_project, project_id) is not None:
-                logger.warning(
-                    "Kept project workspace %s: a project was created with that id",
-                    project_id,
-                )
-                # Only when the new row is about these folders: the default
-                # root carries the project's name, so a project remade under
-                # this id can sit elsewhere and the old one would be stranded.
-                if await run_in_threadpool(
-                    live_project_owns,
-                    project_id,
-                    project["sandboxPath"],
-                    project.get("rootPath"),
-                ):
-                    await run_in_threadpool(forget_orphaned_project, project_id)
-            else:
-                await run_in_threadpool(delete_project_workspace, project)
+            if not fenced:
                 await run_in_threadpool(
-                    forget_orphaned_project_if_gone,
+                    record_orphaned_project_if_unowned,
                     project_id,
-                    project["sandboxPath"],
-                    project.get("rootPath"),
+                    managed_project["sandboxPath"],
+                    True,
+                    managed_project.get("rootPath"),
+                    shared,
                 )
-        elif delete_files and not recreated:
+                finish_workspace_delete_when_idle(project_id, session_id = shared)
+        elif delete_files and not recreated_owns:
             # Written down so it can be resolved and later collected: the row
             # that knew where it lives is gone. The root too, since the deferred
             # delete removes what the immediate one would; not for a live id.
             await run_in_threadpool(
-                record_orphaned_project,
+                record_orphaned_project_if_unowned,
                 project_id,
-                project["sandboxPath"],
+                managed_project["sandboxPath"],
                 True,
-                project.get("rootPath"),
+                managed_project.get("rootPath"),
+                shared,
             )
             if not idle:
                 # Nothing else comes back to it: the collection would otherwise wait for a later delete
                 # that may never happen.
-                finish_workspace_delete_when_idle(project_id)
+                finish_workspace_delete_when_idle(project_id, session_id = shared)
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)

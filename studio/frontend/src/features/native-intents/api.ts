@@ -24,6 +24,12 @@ export interface NativeDocumentFolderSelection {
   displayName: string;
 }
 
+export interface NativeProjectWorkspaceSelection {
+  token: string;
+  displayName: string;
+  path: string;
+}
+
 export async function pickNativeDocumentFolder(): Promise<NativeDocumentFolderSelection | null> {
   if (!isTauri) {
     throw new Error(
@@ -32,6 +38,17 @@ export async function pickNativeDocumentFolder(): Promise<NativeDocumentFolderSe
   }
   return invokeNative<NativeDocumentFolderSelection | null>(
     "pick_native_document_folder",
+  );
+}
+
+export async function pickNativeProjectWorkspace(): Promise<NativeProjectWorkspaceSelection | null> {
+  if (!isTauri) {
+    throw new Error(
+      "Local project workspaces are only available in the desktop app.",
+    );
+  }
+  return invokeNative<NativeProjectWorkspaceSelection | null>(
+    "pick_native_project_workspace",
   );
 }
 

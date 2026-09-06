@@ -633,6 +633,24 @@ pub fn classify_native_document_folder(path: &Path) -> Result<ClassifiedPath, St
     })
 }
 
+pub fn classify_native_project_workspace(path: &Path) -> Result<ClassifiedPath, String> {
+    let classified = classify_existing_path(path)?;
+    if classified.path_type != NativePathType::Directory {
+        return Err("Only folders can be used as project workspaces.".to_string());
+    }
+    if classified.canonical_path.parent().is_none() {
+        return Err("A filesystem root cannot be used as a project workspace.".to_string());
+    }
+    reject_sensitive_document_folder(&classified.canonical_path).map_err(|_| {
+        "Sensitive system or application folders cannot be used as project workspaces.".to_string()
+    })?;
+    Ok(ClassifiedPath {
+        path_kind: NativePathKind::ProjectWorkspace,
+        allowed_operations: vec![NativePathOperation::SetProjectWorkspace],
+        ..classified
+    })
+}
+
 pub fn classify_native_dataset_path(path: &Path) -> Result<ClassifiedPath, String> {
     let classified = classify_existing_path(path)?;
     if classified.path_type != NativePathType::File {
@@ -1003,13 +1021,32 @@ fn is_linux_removable_media_path(_path: &Path) -> bool {
     false
 }
 
+/// One spelling for both sides of a Windows path comparison.
+///
+/// `Path::canonicalize` returns a verbatim `\\?\C:\...` path, while `dirs::home_dir` and
+/// `%WINDIR%` come back plain. Every caller here classifies a path first, so the guard was
+/// comparing `\\?\C:\Users\me` against `C:\Users\me` and missing on all of them: the whole
+/// sensitive-folder check was inert. Strip the prefix instead of fixing it per call site,
+/// because the callers keep multiplying.
+///
+/// The trailing separator has to go too, or a drive root stored as `C:\` fails the descendant
+/// test against `C:\Users` for want of a doubled backslash.
+#[cfg(windows)]
+fn comparable_native_path(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('/', "\\");
+    // `\\?\UNC\server\share` is the verbatim spelling of `\\server\share`.
+    let stripped = match text.strip_prefix("\\\\?\\UNC\\") {
+        Some(rest) => format!("\\\\{rest}"),
+        None => text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string(),
+    };
+    let trimmed = stripped.trim_end_matches('\\');
+    if trimmed.is_empty() { stripped } else { trimmed.to_ascii_lowercase() }
+}
+
 fn same_native_path(left: &Path, right: &Path) -> bool {
     #[cfg(windows)]
     {
-        return left
-            .to_string_lossy()
-            .replace('/', "\\")
-            .eq_ignore_ascii_case(&right.to_string_lossy().replace('/', "\\"));
+        return comparable_native_path(left) == comparable_native_path(right);
     }
     #[cfg(not(windows))]
     {
@@ -1020,14 +1057,8 @@ fn same_native_path(left: &Path, right: &Path) -> bool {
 fn same_path_or_descendant(path: &Path, root: &Path) -> bool {
     #[cfg(windows)]
     {
-        let path = path
-            .to_string_lossy()
-            .replace('/', "\\")
-            .to_ascii_lowercase();
-        let root = root
-            .to_string_lossy()
-            .replace('/', "\\")
-            .to_ascii_lowercase();
+        let path = comparable_native_path(path);
+        let root = comparable_native_path(root);
         return path == root
             || path
                 .strip_prefix(&root)
@@ -1389,6 +1420,86 @@ mod tests {
         assert!(classify_native_document_folder(&file).is_err());
         assert!(classify_native_document_folder(Path::new(std::path::MAIN_SEPARATOR_STR)).is_err());
         let _ = fs::remove_file(file);
+    }
+
+    #[test]
+    fn project_workspace_is_directory_with_workspace_only_capability() {
+        let path = temp_path("project-workspace");
+        fs::create_dir(&path).unwrap();
+        let classified = classify_native_project_workspace(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::ProjectWorkspace);
+        assert_eq!(classified.path_type, NativePathType::Directory);
+        assert_eq!(
+            classified.allowed_operations,
+            vec![NativePathOperation::SetProjectWorkspace]
+        );
+        let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn project_workspace_rejects_files_and_sensitive_folders() {
+        let file = temp_path("project-workspace-file");
+        fs::write(&file, b"not a folder").unwrap();
+        assert!(classify_native_project_workspace(&file).is_err());
+        assert!(
+            classify_native_project_workspace(Path::new(std::path::MAIN_SEPARATOR_STR)).is_err()
+        );
+        if let Some(home) = dirs::home_dir() {
+            assert!(classify_native_project_workspace(&home).is_err());
+        }
+        let _ = fs::remove_file(file);
+    }
+
+    /// The guard sees whatever `classify_existing_path` canonicalized, so it has to match a
+    /// verbatim path against the plain one every source of a sensitive root hands back. On
+    /// Windows those two spellings are different strings and the comparison used to miss,
+    /// which let the entire home folder through as a workspace.
+    #[test]
+    fn sensitive_roots_match_across_path_spellings() {
+        let Some(home) = dirs::home_dir() else { return };
+        assert!(reject_sensitive_document_folder(&home).is_err());
+        let canonical = home.canonicalize().expect("home resolves");
+        assert!(
+            reject_sensitive_document_folder(&canonical).is_err(),
+            "canonical {} slipped past the guard that rejects {}",
+            canonical.display(),
+            home.display(),
+        );
+        assert!(same_native_path(&canonical, &home));
+        assert!(same_path_or_descendant(&canonical.join("Documents"), &home));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_system_roots_are_rejected_after_canonicalizing() {
+        for variable in ["WINDIR", "ProgramFiles", "ProgramData"] {
+            let Some(value) = std::env::var_os(variable) else {
+                continue;
+            };
+            let plain = PathBuf::from(value);
+            let Ok(canonical) = plain.canonicalize() else {
+                continue;
+            };
+            assert!(
+                reject_sensitive_document_folder(&canonical).is_err(),
+                "%{variable}% as {} was accepted",
+                canonical.display(),
+            );
+            assert!(classify_native_project_workspace(&plain).is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_root_still_contains_its_children() {
+        assert!(same_path_or_descendant(
+            Path::new("C:\\Users"),
+            Path::new("C:\\"),
+        ));
+        assert!(!same_path_or_descendant(
+            Path::new("C:\\Users"),
+            Path::new("D:\\"),
+        ));
     }
 
     #[test]
