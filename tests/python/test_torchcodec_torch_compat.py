@@ -352,10 +352,15 @@ def test_select_torchcodec_spec_matches_compat_matrix():
 
 
 def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
-    """torchcodec publishes no sdist and no wheel for Linux aarch64, Windows ARM64 or
-    Intel Mac, so an ungated pin makes pip fail the whole install on those hosts instead
-    of just skipping audio -- and the cu*/rocm*/intel torch 2.10 extras pull it in.
-    The marker must match PLATFORM_LACKS_TORCHCODEC_WHEEL in install_python_stack.py.
+    """torchcodec publishes no sdist, so an ungated pin makes pip fail the whole install on
+    a host with no wheel instead of just skipping audio -- and the cu*/rocm*/intel torch
+    2.10 extras pull it in. The marker must match install_python_stack.py.
+
+    Linux aarch64 is per-extra rather than blanket: torchcodec had no aarch64 wheel when
+    this test was written, but 0.11.0 added manylinux_2_28_aarch64 and every release since
+    has kept it. So audio-torch211, whose line is >=0.11,<0.12, must ALLOW aarch64, while
+    the older extras, which top out at 0.10, must still exclude it. Windows ARM64 and Intel
+    Mac have no wheel at any version and stay excluded everywhere.
     """
     markers = pytest.importorskip("packaging.markers")
     tomllib = _tomllib()
@@ -370,11 +375,15 @@ def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
         {"sys_platform": "win32", "platform_machine": "AMD64"},
         {"sys_platform": "darwin", "platform_machine": "arm64"},
     ]
-    unsupported = [
-        {"sys_platform": "linux", "platform_machine": "aarch64"},
+    # No wheel at any torchcodec version, so excluded from every extra.
+    never_supported = [
         {"sys_platform": "win32", "platform_machine": "ARM64"},
         {"sys_platform": "darwin", "platform_machine": "x86_64"},
     ]
+    linux_aarch64 = {"sys_platform": "linux", "platform_machine": "aarch64"}
+    # The extras whose window reaches 0.11.0, where the aarch64 wheel first appears.
+    aarch64_capable = {"audio-torch211"}
+
     for name, deps in audio.items():
         for dep in deps:
             _, _, marker_text = dep.partition(";")
@@ -383,10 +392,21 @@ def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
             env = {"python_version": "3.12"}
             for case in supported:
                 assert marker.evaluate({**env, **case}), f"{name} must install on {case}"
-            for case in unsupported:
+            for case in never_supported:
                 assert not marker.evaluate(
                     {**env, **case}
                 ), f"{name} has no wheel for {case} and must not be resolved there"
+            allows_aarch64 = marker.evaluate({**env, **linux_aarch64})
+            if name in aarch64_capable:
+                assert allows_aarch64, (
+                    f"{name} selects the >=0.11 line, which ships manylinux_2_28_aarch64, "
+                    "so it must not exclude Linux aarch64"
+                )
+            else:
+                assert not allows_aarch64, (
+                    f"{name} tops out below 0.11, where no aarch64 wheel exists, "
+                    "so it must not be resolved there"
+                )
 
 
 def test_the_2_11_row_does_not_flag_an_abi_stable_codec():
@@ -487,3 +507,164 @@ def test_the_installer_never_installs_what_the_guard_rejects(monkeypatch):
                 f"installer would put torchcodec {codec_v} on torch {torch_v}, "
                 f"which the runtime guard then reports as incompatible"
             )
+
+
+# ----------------------------------------------------------------------------------
+# Wheel availability. The step that installs the selected spec is fatal on failure, so
+# "does this spec have a wheel here" decides whether this branch can break an install,
+# not merely whether audio works. Verified against the live PyPI index; kept as a table
+# so the suite stays deterministic and offline.
+# ----------------------------------------------------------------------------------
+
+# torchcodec version -> platforms it publishes. Read off pypi.org/pypi/torchcodec/json.
+# The three transitions that matter:
+#   win_amd64            absent before 0.7.0
+#   manylinux aarch64    absent before 0.11.0
+#   macosx arm64         minimum macOS 11.0 through 0.11.1, then 14.0 from 0.12.0
+_TORCHCODEC_WHEEL_HISTORY = {
+    "0.1.0": {"linux_x86_64", "macos_arm64_11"},
+    "0.2.0": {"linux_x86_64", "macos_arm64_11"},
+    "0.3.0": {"linux_x86_64", "macos_arm64_11"},
+    "0.4.0": {"linux_x86_64", "macos_arm64_11"},
+    "0.5": {"linux_x86_64", "macos_arm64_11"},
+    "0.6.0": {"linux_x86_64", "macos_arm64_11"},
+    "0.7.0": {"linux_x86_64", "macos_arm64_11", "win_amd64"},
+    "0.8.0": {"linux_x86_64", "macos_arm64_11", "win_amd64"},
+    "0.9.0": {"linux_x86_64", "macos_arm64_11", "win_amd64"},
+    "0.10.0": {"linux_x86_64", "macos_arm64_11", "win_amd64"},
+    "0.11.0": {"linux_x86_64", "linux_aarch64", "macos_arm64_11", "win_amd64"},
+    "0.11.1": {"linux_x86_64", "linux_aarch64", "macos_arm64_11", "win_amd64"},
+    "0.12.0": {"linux_x86_64", "linux_aarch64", "macos_arm64_14", "win_amd64"},
+    "0.15.0": {"linux_x86_64", "linux_aarch64", "macos_arm64_14", "win_amd64"},
+}
+
+# label -> (IS_LINUX, IS_WINDOWS, IS_MACOS, IS_MAC_ARM, IS_MAC_INTEL), machine, macos major
+_SIM_HOSTS = {
+    "linux-x86_64": ((True, False, False, False, False), "x86_64", None),
+    "linux-aarch64": ((True, False, False, False, False), "aarch64", None),
+    "linux-ppc64le": ((True, False, False, False, False), "ppc64le", None),
+    "windows-amd64": ((False, True, False, False, False), "AMD64", None),
+    "windows-arm64": ((False, True, False, False, False), "ARM64", None),
+    "macos-arm64-14": ((False, False, True, True, False), "arm64", 14),
+    "macos-arm64-13": ((False, False, True, True, False), "arm64", 13),
+    "macos-intel": ((False, False, True, False, True), "x86_64", None),
+}
+
+
+def _host_key(label):
+    if label.startswith("linux"):
+        machine = _SIM_HOSTS[label][1]
+        return f"linux_{machine}" if machine in ("x86_64", "aarch64") else None
+    if label == "windows-amd64":
+        return "win_amd64"
+    if label.startswith("macos-arm64"):
+        return "macos_arm64"
+    return None
+
+
+def _wheel_exists_in_window(label, floor, ceiling):
+    """Does any release the window admits publish a wheel for this host?"""
+    key = _host_key(label)
+    if key is None:
+        return False
+    macos_major = _SIM_HOSTS[label][2]
+    for ver, plats in _TORCHCODEC_WHEEL_HISTORY.items():
+        vt = tuple(int(p) for p in ver.split("."))
+        vt = vt + (0,) * (3 - len(vt))
+        if vt < floor or (ceiling is not None and vt >= ceiling):
+            continue
+        if key == "macos_arm64":
+            for p in plats:
+                if p.startswith("macos_arm64_") and macos_major >= int(p.rsplit("_", 1)[1]):
+                    return True
+        elif key in plats:
+            return True
+    return False
+
+
+def _patch_host(ips, monkeypatch, label):
+    flags, machine, macos_major = _SIM_HOSTS[label]
+    is_linux, is_windows, is_macos, is_mac_arm, is_mac_intel = flags
+    monkeypatch.setattr(ips, "IS_LINUX", is_linux)
+    monkeypatch.setattr(ips, "IS_WINDOWS", is_windows)
+    monkeypatch.setattr(ips, "IS_MACOS", is_macos)
+    monkeypatch.setattr(ips, "IS_MAC_ARM", is_mac_arm)
+    monkeypatch.setattr(ips, "IS_MAC_INTEL", is_mac_intel)
+    monkeypatch.setattr(ips.platform, "machine", lambda: machine)
+    monkeypatch.setattr(
+        ips.platform, "mac_ver",
+        lambda: (f"{macos_major}.0" if macos_major else "", ("", "", ""), ""),
+    )
+
+
+def test_the_installer_never_selects_a_spec_with_no_wheel_here(monkeypatch):
+    """The gate must not green-light a window this platform never published into.
+
+    pip_install_try keeps a miss from ending the install, but attempting one is still a
+    wasted round trip and, before that call was changed, was fatal. Two cells were real:
+    Windows on the cu118 index sits at torch 2.7 and selects `>=0.3.0,<0.6.0`, where no
+    release ships win_amd64; and a Mac below 14 selects `>=0.12.0`, which is macosx_14_0
+    only.
+    """
+    ips = _load_install_python_stack()
+    for label in _SIM_HOSTS:
+        for minor in range(4, 15):
+            _patch_host(ips, monkeypatch, label)
+            spec = ips._select_torchcodec_spec(f"2.{minor}.0")
+            floor, ceiling = ips._torchcodec_spec_bounds(spec)
+            gate_says_yes = ips._torchcodec_spec_is_installable(spec)
+            really_has = _wheel_exists_in_window(label, floor, ceiling)
+            assert gate_says_yes == really_has, (
+                f"{label} torch 2.{minor}: gate says "
+                f"{'install' if gate_says_yes else 'skip'} for {spec}, but a wheel "
+                f"{'exists' if really_has else 'does not exist'}"
+            )
+
+
+def test_linux_aarch64_is_served_from_the_011_line_onwards(monkeypatch):
+    """aarch64 got its first wheel at 0.11.0, which is the line this branch selects."""
+    ips = _load_install_python_stack()
+    _patch_host(ips, monkeypatch, "linux-aarch64")
+    assert ips._PLATFORM_HAS_TORCHCODEC_WHEEL is not None
+    # torch 2.11 -> the 0.11 line, which has aarch64.
+    assert ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.11.0"))
+    # torch 2.10 -> the 0.10 line, which does not.
+    assert not ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.10.0"))
+
+
+def test_a_mac_below_14_declines_the_abi_stable_line(monkeypatch):
+    """torchcodec 0.12+ is macosx_14_0 only, so an older Mac must not be sent to it."""
+    ips = _load_install_python_stack()
+    _patch_host(ips, monkeypatch, "macos-arm64-13")
+    assert not ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.12.0"))
+    assert ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.11.0"))
+    _patch_host(ips, monkeypatch, "macos-arm64-14")
+    assert ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.12.0"))
+
+
+def test_windows_declines_the_pre_070_lines(monkeypatch):
+    """win_amd64 starts at 0.7.0; torch 2.5-2.7 select windows below it.
+
+    Reachable rather than theoretical: the cu118 index tops out at torch 2.7.
+    """
+    ips = _load_install_python_stack()
+    _patch_host(ips, monkeypatch, "windows-amd64")
+    for minor in (5, 6, 7):
+        spec = ips._select_torchcodec_spec(f"2.{minor}.0")
+        assert not ips._torchcodec_spec_is_installable(spec), spec
+    for minor in (8, 10, 11, 12):
+        spec = ips._select_torchcodec_spec(f"2.{minor}.0")
+        assert ips._torchcodec_spec_is_installable(spec), spec
+
+
+def test_the_torchcodec_step_cannot_end_the_install():
+    """Audio is optional; pip_install exits on failure and pip_install_try does not.
+
+    Asserted on the source because the alternative is driving a whole install. The rule
+    it encodes is the one the extras-no-deps filter above it already states: the audio
+    extras step must not take down the install.
+    """
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding="utf-8")
+    step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
+    assert "pip_install_try(" in step, "the torchcodec step must use the non-fatal install"
+    assert "\n        pip_install(" not in step, "pip_install() exits on failure"

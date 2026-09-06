@@ -57,14 +57,19 @@ IS_LINUX = sys.platform.startswith("linux")
 # amd-smi auto-elevates on Windows (UAC/DiskPart); RunAsInvoker keeps probes un-elevated.
 if IS_WINDOWS:
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
-# torchcodec ships wheels only for manylinux_2_28_x86_64, macosx_12_0_arm64,
-# and win_amd64. On other hosts the audio extras must be filtered out (the
-# extras-no-deps step would otherwise fail), regardless of NO_TORCH. Named as the
-# platforms that HAVE a wheel: listing the ones that do not missed every Linux
-# architecture past Arm, ppc64le and s390x among them, and the pyproject markers
-# this mirrors are written the same way round.
+# torchcodec ships wheels for manylinux_2_28 x86_64 and aarch64, macosx arm64, and
+# win_amd64. On other hosts the audio extras must be filtered out (the extras-no-deps
+# step would otherwise fail), regardless of NO_TORCH. Named as the platforms that HAVE a
+# wheel: listing the ones that do not missed every Linux architecture past Arm, ppc64le
+# and s390x among them, and the pyproject markers this mirrors read the same way round.
+#
+# aarch64 belongs here: it has no wheel at 0.10, which is where this list was written, but
+# 0.11.0 added manylinux_2_28_aarch64 and every release since has kept it. Since the whole
+# point of this branch is to select 0.11 on torch 2.11, excluding aarch64 would have denied
+# audio to exactly the hosts the new row serves. WHICH release a platform first published is
+# _torchcodec_platform_floor's job; this only asks whether it ever did.
 _PLATFORM_HAS_TORCHCODEC_WHEEL = (
-    (IS_LINUX and platform.machine() in {"x86_64", "AMD64"})
+    (IS_LINUX and platform.machine() in {"x86_64", "AMD64", "aarch64", "arm64"})
     or (IS_WINDOWS and platform.machine().lower() in {"amd64", "x86_64"})
     or IS_MAC_ARM
 )
@@ -375,6 +380,85 @@ _TORCHCODEC_TORCH_SPECS: dict[int, str] = {
     5: "torchcodec>=0.1.0,<0.3.0",
 }
 _TORCHCODEC_MAX_KNOWN_MINOR = max(_TORCHCODEC_TORCH_SPECS)
+
+# torchcodec did not publish every platform from 0.1. Read off the live PyPI index:
+#
+#   win_amd64            first appears at 0.7.0   (0.1 .. 0.6 are Linux/macOS only)
+#   manylinux aarch64    first appears at 0.11.0
+#   manylinux x86_64     from the start
+#   macosx arm64         from the start, but the minimum macOS moves 11.0 -> 14.0 at 0.12.0
+#
+# This matters because the step that installs the spec is fatal on failure: a window whose
+# releases have no wheel here does not skip audio, it aborts the whole install. The reachable
+# case is not exotic. The cu118 index tops out at torch 2.7, so a Windows box on an older
+# driver selects `>=0.3.0,<0.6.0`, and not one release in that window ships win_amd64.
+_TORCHCODEC_MIN_WHEEL_VERSION = (0, 1, 0)
+_TORCHCODEC_MIN_WHEEL_WINDOWS = (0, 7, 0)
+_TORCHCODEC_MIN_WHEEL_LINUX_AARCH64 = (0, 11, 0)
+# 0.12.0 raised its macOS floor; a Mac below this cannot use the ABI-stable line at all.
+_TORCHCODEC_MACOS_14_ONLY_FROM = (0, 12, 0)
+
+
+def _torchcodec_platform_floor() -> "tuple[int, int, int] | None":
+    """Earliest torchcodec release with a wheel for THIS host, or None when there is none."""
+    machine = platform.machine().lower()
+    if IS_WINDOWS:
+        return _TORCHCODEC_MIN_WHEEL_WINDOWS if machine in {"amd64", "x86_64"} else None
+    if IS_LINUX:
+        if machine in {"x86_64", "amd64"}:
+            return _TORCHCODEC_MIN_WHEEL_VERSION
+        if machine in {"aarch64", "arm64"}:
+            return _TORCHCODEC_MIN_WHEEL_LINUX_AARCH64
+        return None  # ppc64le, s390x, riscv64: no wheel at any version
+    if IS_MAC_ARM:
+        return _TORCHCODEC_MIN_WHEEL_VERSION
+    return None  # Intel Mac
+
+
+def _macos_release_major() -> "int | None":
+    """Major macOS version, or None off macOS / when it cannot be read."""
+    if not IS_MACOS:
+        return None
+    try:
+        release = platform.mac_ver()[0]
+        return int(release.split(".", 1)[0]) if release else None
+    except (ValueError, IndexError):
+        return None
+
+
+def _torchcodec_spec_bounds(spec: str) -> "tuple[tuple[int, ...], tuple[int, ...] | None]":
+    """`torchcodec>=0.6.0,<0.8.0` -> ((0,6,0), (0,8,0)); an open floor gives (floor, None)."""
+    def _v(text: str) -> tuple[int, ...]:
+        return tuple(int(p) for p in re.findall(r"\d+", text)[:3])
+
+    body = spec.split("torchcodec", 1)[1]
+    floor_match = re.search(r">=\s*([0-9.]+)", body)
+    ceiling_match = re.search(r"<\s*([0-9.]+)", body)
+    floor = _v(floor_match.group(1)) if floor_match else (0,)
+    ceiling = _v(ceiling_match.group(1)) if ceiling_match else None
+    return floor, ceiling
+
+
+def _torchcodec_spec_is_installable(spec: str) -> bool:
+    """Does this host have a wheel for any release the spec admits?
+
+    Asked before the install rather than discovered by it, because the install step exits on
+    failure. Answering no means the audio extra is skipped, which is what a host with no wheel
+    got before this step existed.
+    """
+    host_floor = _torchcodec_platform_floor()
+    if host_floor is None:
+        return False
+    floor, ceiling = _torchcodec_spec_bounds(spec)
+    # The window has to reach the first release this platform actually published.
+    if ceiling is not None and host_floor >= ceiling:
+        return False
+    if IS_MAC_ARM and (_macos_release_major() or 0) < 14:
+        # 0.12+ is macosx_14_0 only. Reachable when the window starts at or above it.
+        effective_floor = max(floor, host_floor)
+        if effective_floor >= _TORCHCODEC_MACOS_14_ONLY_FROM:
+            return False
+    return True
 
 
 def _select_torchcodec_spec(torch_version: "str | None") -> str:
@@ -7454,16 +7538,33 @@ def install_python_stack() -> int:
     elif not _codec_torch_ver:
         _progress("torchcodec (skipped, torch version unknown)")
         _note("could not read the installed torch version -- leaving torchcodec alone")
+    elif not _torchcodec_spec_is_installable(_select_torchcodec_spec(_codec_torch_ver)):
+        # This platform published no wheel in the window this torch selects. Skipping is what
+        # such a host got before this step existed; attempting it would end the install.
+        _progress("torchcodec (skipped, no wheel for this torch on this platform)")
+        _note(
+            f"torch {_codec_torch_ver} wants {_select_torchcodec_spec(_codec_torch_ver)}, "
+            "which publishes no wheel here -- leaving audio decoding disabled"
+        )
     else:
         _progress("torchcodec")
         _codec_spec = _select_torchcodec_spec(_codec_torch_ver)
         _safe_print(f"   torch {_codec_torch_ver} detected -- installing {_codec_spec}")
-        pip_install(
+        # pip_install_try, not pip_install: audio is an optional extra, and pip_install's
+        # failure path is run(check=True), i.e. exit. Letting an audio wheel end a Studio
+        # install inverts the rule the extras-no-deps filter above exists to enforce, and
+        # the index can refuse for reasons no local table predicts -- a yanked release, an
+        # offline mirror, a platform tag added or dropped upstream after this shipped.
+        if not pip_install_try(
             "Installing torchcodec",
             "--no-deps",
             "--no-cache-dir",
             _codec_spec,
-        )
+        ):
+            _note(
+                f"could not install {_codec_spec} -- audio decoding stays disabled, "
+                "the rest of the install is unaffected"
+            )
 
     # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(
