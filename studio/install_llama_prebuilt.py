@@ -7750,10 +7750,25 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
         return paths
     # The loader honours these overrides ahead of the search directories, so a host that
     # points at one ICD must be judged on that ICD and not on what is installed elsewhere.
+    # Only manifests that are actually there count, for the reason the registry branch
+    # skips a disabled key: an override naming a removed driver cannot be loaded, so
+    # taking its AMD-looking basename as proof would route the host onto a bundle that
+    # enumerates no device. An override set entirely to stale paths falls through to the
+    # search directories, which is what the loader itself would then find nothing in.
     for _env in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         _value = os.environ.get(_env)
         if _value:
-            return [entry for entry in _value.split(os.pathsep) if entry]
+            _entries = []
+            for entry in _value.split(os.pathsep):
+                if not entry:
+                    continue
+                try:
+                    if os.path.isfile(entry):
+                        _entries.append(entry)
+                except OSError:
+                    continue
+            if _entries:
+                return _entries
     paths = []
     for directory in _vulkan_icd_search_dirs():
         try:

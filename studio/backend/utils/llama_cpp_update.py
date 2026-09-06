@@ -554,8 +554,17 @@ def _resolve_backends_for_host(
     *,
     force_refresh: bool = False,
     published_repo: Optional[str] = None,
+    rocm_gfx: Optional[str] = None,
 ) -> Optional[dict]:
-    """Ask the installer which backends it could install here. None on any failure."""
+    """Ask the installer which backends it could install here. None on any failure.
+
+    ``rocm_gfx`` replays the arch the marker recorded, exactly as _run_llama_phase
+    forwards it to the install itself. Windows setup infers the arch from the GPU
+    name when hipinfo and amd-smi are absent, and this subprocess re-probes from
+    scratch: without the replay such a host resolves "auto" to CPU and an install
+    that is working on ROCm reads as drifted. Passed as the REMEMBERED spelling, so
+    a live probe that does see a GPU still wins.
+    """
     args: list[str] = []
     if install_dir is not None:
         args.extend(("--install-dir", str(install_dir)))
@@ -568,6 +577,7 @@ def _resolve_backends_for_host(
         log_message = "llama backend: resolve-backends failed",
         mode = ("--resolve-backends", "latest"),
         extra_args = tuple(args),
+        extra_env = {"UNSLOTH_ROCM_GFX_REMEMBERED": rocm_gfx} if rocm_gfx else None,
     )
 
 
@@ -675,7 +685,10 @@ def _pending_backend_migration(
         return None
     repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
     resolved = _resolve_backends_for_host(
-        _install_dir_for(binary), force_refresh = force_refresh, published_repo = repo
+        _install_dir_for(binary),
+        force_refresh = force_refresh,
+        published_repo = repo,
+        rocm_gfx = marker.get("rocm_gfx"),
     )
     if not resolved:
         return None
@@ -713,7 +726,10 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         return status
     repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
     resolved = _resolve_backends_for_host(
-        _install_dir_for(binary), force_refresh = force_refresh, published_repo = repo
+        _install_dir_for(binary),
+        force_refresh = force_refresh,
+        published_repo = repo,
+        rocm_gfx = (marker or {}).get("rocm_gfx"),
     )
     if not resolved:
         # Keep showing the installed backend without guessing alternatives.

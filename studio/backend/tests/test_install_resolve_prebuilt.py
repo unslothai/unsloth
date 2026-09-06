@@ -1916,18 +1916,60 @@ def test_route_backend_request_keeps_the_arch_for_a_migrated_integrated_host(amd
     assert route.persist_rocm_gfx == "gfx1151"
 
 
+def _icd(path):
+    """Write a manifest where the loader would look, and return its path as a string."""
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text("{}", encoding = "utf-8")
+    return str(path)
+
+
 def test_amd_vulkan_icd_probe_reads_the_loader_overrides_first(monkeypatch, tmp_path):
     # The loader honours VK_DRIVER_FILES / VK_ICD_FILENAMES ahead of the search
     # directories, so a host pointed at one ICD must be judged on that ICD.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     monkeypatch.delenv("VK_DRIVER_FILES", raising = False)
-    monkeypatch.setenv("VK_ICD_FILENAMES", str(tmp_path / "intel_icd.json"))
+    monkeypatch.setenv("VK_ICD_FILENAMES", _icd(tmp_path / "intel_icd.json"))
     assert ilp._amd_vulkan_icd_present() is False
     monkeypatch.setenv(
         "VK_DRIVER_FILES",
-        os.pathsep.join([str(tmp_path / "intel_icd.json"), str(tmp_path / "radeon_icd.json")]),
+        os.pathsep.join(
+            [_icd(tmp_path / "intel_icd.json"), _icd(tmp_path / "radeon_icd.json")]
+        ),
     )
+    assert ilp._amd_vulkan_icd_present() is True
+
+
+def test_an_override_naming_a_removed_amd_manifest_does_not_answer_for_the_driver(
+    monkeypatch, tmp_path
+):
+    # The loader cannot load a manifest that is not there, so an AMD-looking name left
+    # in the override by an uninstalled driver is not evidence of an AMD ICD: taking it
+    # would route the host onto a bundle that enumerates no device.
+    monkeypatch.setattr(ilp.sys, "platform", "linux")
+    monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
+    monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
+    monkeypatch.setattr(ilp, "_vulkan_icd_search_dirs", lambda: [])
+    monkeypatch.setenv("VK_DRIVER_FILES", str(tmp_path / "gone" / "radeon_icd.x86_64.json"))
+    assert ilp._amd_vulkan_icd_present() is False
+    # The same override, once the file it names exists.
+    monkeypatch.setenv("VK_DRIVER_FILES", _icd(tmp_path / "gone" / "radeon_icd.x86_64.json"))
+    assert ilp._amd_vulkan_icd_present() is True
+
+
+def test_an_override_of_only_stale_paths_falls_through_to_the_search_directories(
+    monkeypatch, tmp_path
+):
+    # An override the loader can open nothing in leaves it looking where it looks
+    # without one, so this must judge the same directories rather than answer False.
+    monkeypatch.setattr(ilp.sys, "platform", "linux")
+    monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
+    monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
+    monkeypatch.setenv("VK_DRIVER_FILES", str(tmp_path / "gone" / "intel_icd.json"))
+    icd_dir = tmp_path / "usr/share/vulkan/icd.d"
+    icd_dir.mkdir(parents = True)
+    monkeypatch.setattr(ilp, "_vulkan_icd_search_dirs", lambda: [icd_dir])
+    _icd(icd_dir / "radeon_icd.x86_64.json")
     assert ilp._amd_vulkan_icd_present() is True
 
 
@@ -1941,7 +1983,7 @@ def test_amd_vulkan_icd_probe_recognises_every_shipped_amd_manifest(
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
-    monkeypatch.setenv("VK_DRIVER_FILES", str(tmp_path / manifest))
+    monkeypatch.setenv("VK_DRIVER_FILES", _icd(tmp_path / manifest))
     assert ilp._amd_vulkan_icd_present() is True
 
 
@@ -1952,7 +1994,8 @@ def test_amd_vulkan_icd_probe_judges_the_manifest_name_not_the_directory(monkeyp
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
-    monkeypatch.setenv("VK_DRIVER_FILES", str(tmp_path / "amd_vulkan_stuff" / "intel_icd.json"))
+    monkeypatch.setattr(ilp, "_vulkan_icd_search_dirs", lambda: [])
+    monkeypatch.setenv("VK_DRIVER_FILES", _icd(tmp_path / "amd_vulkan_stuff" / "intel_icd.json"))
     assert ilp._amd_vulkan_icd_present() is False
 
 
@@ -1965,9 +2008,9 @@ def test_amd_vulkan_icd_probe_scans_the_loader_search_directories(monkeypatch, t
     icd_dir = tmp_path / "usr/share/vulkan/icd.d"
     icd_dir.mkdir(parents = True)
     monkeypatch.setattr(ilp, "_vulkan_icd_search_dirs", lambda: [icd_dir])
-    (icd_dir / "nvidia_icd.json").write_text("{}", encoding = "utf-8")
+    _icd(icd_dir / "nvidia_icd.json")
     assert ilp._amd_vulkan_icd_present() is False
-    (icd_dir / "radeon_icd.x86_64.json").write_text("{}", encoding = "utf-8")
+    _icd(icd_dir / "radeon_icd.x86_64.json")
     assert ilp._amd_vulkan_icd_present() is True
 
 

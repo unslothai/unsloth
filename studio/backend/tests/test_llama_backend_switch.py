@@ -30,8 +30,9 @@ import utils.whisper_cpp_update as whisper_upd  # noqa: E402
 
 MARKER = "UNSLOTH_PREBUILT_INFO.json"
 
-# Captured before the autouse fixture stubs it out on the module.
+# Captured before the autouse fixture stubs them out on the module.
 _whisper_phase_plan = upd._whisper_phase_plan
+_resolve_backends_for_host = upd._resolve_backends_for_host
 
 
 class _FakeInstallerPopen:
@@ -873,6 +874,59 @@ def test_backend_resolution_failures_are_not_cached(monkeypatch, tmp_path):
     resolved = upd._flow.resolve_prebuilt_for_host(**kwargs)
     assert resolved["backends"][0]["available"] is True
     assert responses == []
+
+
+def test_the_migration_resolver_replays_the_arch_the_marker_recorded(monkeypatch, tmp_path):
+    """A Windows host whose HIP probes are absent installs on ROCm because setup.ps1
+    inferred the arch from the GPU name and forwarded it. This resolver re-probes from
+    scratch, so without the replay it sees no ROCm GPU, resolves "auto" to CPU, and a
+    working GPU install reads as drifted -- offering, in the update banner, a migration
+    that replaces GPU inference with CPU."""
+    install_dir = _install(
+        monkeypatch,
+        tmp_path,
+        backend = "rocm",
+        install_kind = "linux-rocm",
+        asset = "app-b9596-mix-abc-linux-x64-rocm-gfx1151.tar.gz",
+        rocm_gfx = "gfx1151",
+    )
+    marker = upd.read_install_marker(upd._find_binary())
+    seen: list = []
+
+    def _resolver(**kwargs):
+        seen.append(kwargs.get("extra_env"))
+        gfx = (kwargs.get("extra_env") or {}).get("UNSLOTH_ROCM_GFX_REMEMBERED")
+        # What the installer does with the replay: the arch fills the probe's gap, so
+        # "auto" resolves back onto ROCm instead of falling to CPU.
+        resolved = "rocm" if gfx else "cpu"
+        return {"backends": [{"backend": "auto", "available": True, "resolved_backend": resolved}]}
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve_backends_for_host)
+    monkeypatch.setattr(upd._flow, "resolve_prebuilt_for_host", _resolver)
+    upd._backends_memo.clear()
+
+    assert upd._pending_backend_migration(upd._find_binary(), marker) is None
+    assert seen == [{"UNSLOTH_ROCM_GFX_REMEMBERED": "gfx1151"}]
+    assert install_dir.exists()
+
+
+def test_a_marker_with_no_recorded_arch_passes_no_replay(monkeypatch, tmp_path):
+    # Negative control: the replay is evidence a previous install recorded, not a
+    # default, so a host that never had one must resolve exactly as it does today.
+    _install(monkeypatch, tmp_path)
+    marker = upd.read_install_marker(upd._find_binary())
+    seen: list = []
+
+    def _resolver(**kwargs):
+        seen.append(kwargs.get("extra_env"))
+        return {"backends": [{"backend": "auto", "available": True, "resolved_backend": "cpu"}]}
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve_backends_for_host)
+    monkeypatch.setattr(upd._flow, "resolve_prebuilt_for_host", _resolver)
+    upd._backends_memo.clear()
+
+    upd._pending_backend_migration(upd._find_binary(), marker)
+    assert seen == [None]
 
 
 def test_running_job_status_does_not_resolve_options_again(monkeypatch, tmp_path):

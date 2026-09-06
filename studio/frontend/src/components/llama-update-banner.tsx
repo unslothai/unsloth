@@ -9,6 +9,7 @@ import {
   useLlamaUpdateCheck,
 } from "@/hooks/use-llama-update-check";
 import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
+import { llamaReleaseChanged } from "@/lib/llama-job-lifecycle";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Download } from "lucide-react";
@@ -142,14 +143,16 @@ export function LlamaUpdateBanner({
   const latestTag = status?.latest_tag ?? null;
   const installedTag = status?.installed_tag ?? null;
   // A backend migration re-applies the install's own automatic choice, so it can
-  // be offered at a release the machine already has. When it is, the tags are
-  // equal and the version line has nothing to say; the backend pair replaces it.
+  // be offered at a release the machine already has. When it is, the version line
+  // has nothing to say and the backend pair replaces it.
   const backendChange =
     status?.backend_migration_available && status.to_backend
       ? `${backendLabel(status.from_backend)} \u2192 ${backendLabel(status.to_backend)}`
       : null;
-  const versionChanged = Boolean(
-    installedTag && latestTag && installedTag !== latestTag,
+  const versionChanged = llamaReleaseChanged(
+    Boolean(status?.update_available),
+    installedTag,
+    latestTag,
   );
   const changelogKey =
     component === "llama.cpp" && versionChanged

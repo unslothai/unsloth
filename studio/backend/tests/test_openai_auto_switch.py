@@ -1095,6 +1095,7 @@ def _mock_override_store(monkeypatch):
         entry_value,
         *,
         fill_absent_fields = False,
+        coupled_fields = (),
     ):
         current = dict(store.get(key) or {})
         if fill_absent_fields:
@@ -1103,7 +1104,11 @@ def _mock_override_store(monkeypatch):
                 return current
             stored = current.get(entry_key)
             if isinstance(stored, dict):
-                current[entry_key] = {**entry_value, **stored}
+                incoming = entry_value
+                for group in coupled_fields:
+                    if any(field in stored for field in group):
+                        incoming = {k: v for k, v in incoming.items() if k not in group}
+                current[entry_key] = {**incoming, **stored}
             else:
                 current[entry_key] = entry_value
         elif entry_value:
@@ -6779,6 +6784,29 @@ def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
     assert resp.overrides[_LEGACY_SNAPSHOT]["max_seq_length"] == 4096
 
 
+def test_a_fill_never_labels_the_server_s_gpu_pin_with_this_browser_s_index_space(
+    override_store,
+):
+    # Two browsers against one server: the stored pin is physical ids from a ROCm-era
+    # save, and this one's one-time backfill offers Vulkan ordinals. The ids belong to
+    # the space they were written in, so the qualifier cannot arrive without them.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", gpu_ids = [0, 1])
+
+    resp = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        gpu_ids = [2],
+        gpu_index_kind = "vulkan",
+        max_seq_length = 32768,
+        fill_absent_fields = True,
+    )
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["gpu_ids"] == [0, 1]
+    assert "gpu_index_kind" not in entry
+    assert settings.stored_gpu_index_kind(entry) == "physical"
+    # Everything outside the group still fills.
+    assert entry["max_seq_length"] == 32768
+
+
 def test_the_one_time_fill_retires_nothing(override_store):
     # fill_absent_fields only adds what is missing; the migration mirroring both spellings
     # of one row must not have its own first write deleted by its second.
@@ -7838,6 +7866,42 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     db.upsert_app_setting_map_entry(key, "a", {"v": 9})
     db.upsert_app_setting_map_entry(key, "b", None)
     assert db.get_app_setting(key) == {"a": {"v": 9}}
+
+
+def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
+    tmp_path, monkeypatch
+):
+    """A pin and the index space it is written in are one value.
+
+    The server holds physical ids with no qualifier, which is what every writer
+    before the field meant; this browser's backfill offers Vulkan ordinals. Field
+    by field the ids would stay and the qualifier would land, and the row would
+    then name devices in a space it was never written in.
+    """
+    import storage.studio_db as db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", False)
+
+    key = "test_map_entry_coupled"
+    coupled = (("gpu_ids", "gpu_index_kind"),)
+    db.upsert_app_setting_map_entry(key, "m", {"gpu_ids": [0, 1]})
+    assert db.upsert_app_setting_map_entry(
+        key,
+        "m",
+        {"gpu_ids": [2], "gpu_index_kind": "vulkan", "max_seq_length": 4096},
+        fill_absent_fields = True,
+        coupled_fields = coupled,
+    ) == {"m": {"gpu_ids": [0, 1], "max_seq_length": 4096}}
+    # An entry holding no part of the group still takes the whole of it.
+    db.upsert_app_setting_map_entry(key, "n", {"max_seq_length": 2048})
+    assert db.upsert_app_setting_map_entry(
+        key,
+        "n",
+        {"gpu_ids": [2], "gpu_index_kind": "vulkan"},
+        fill_absent_fields = True,
+        coupled_fields = coupled,
+    )["n"] == {"max_seq_length": 2048, "gpu_ids": [2], "gpu_index_kind": "vulkan"}
 
 
 def test_gpu_ids_dedupe_is_not_a_scan_of_the_list_being_built():

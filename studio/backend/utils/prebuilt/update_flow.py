@@ -264,12 +264,18 @@ def resolve_prebuilt_for_host(
     log_message: str,
     extra_args: tuple[str, ...] = (),
     mode: tuple[str, ...] = ("--resolve-prebuilt", "latest"),
+    extra_env: Optional[dict[str, str]] = None,
 ) -> Optional[dict]:
     """Run one of the installer's read-only resolvers (``--resolve-prebuilt latest``
     by default) with ``--output-format json``; return the parsed payload or None.
-    Fail-open: any error -> None so a source build never blocks the app."""
+    Fail-open: any error -> None so a source build never blocks the app.
+
+    ``extra_env`` carries what the resolver cannot re-derive: the arch a previous
+    install recorded, which setup forwarded from a probe this subprocess does not
+    have. Part of the cache key, so changing it re-resolves rather than replaying a
+    value found without it."""
     now = time.time()
-    cache_key = (*mode, *extra_args)
+    cache_key = (*mode, *extra_args, *sorted((extra_env or {}).items()))
     if not force_refresh and memo.get("key") == cache_key:
         if now - memo.get("at", 0.0) < RESOLVE_TTL_SECONDS:
             return memo.get("value")
@@ -293,6 +299,7 @@ def resolve_prebuilt_for_host(
             encoding = "utf-8",
             errors = "replace",
             timeout = 60,
+            env = {**os.environ, **extra_env} if extra_env else None,
         )
         out = (proc.stdout or "").strip()
         if proc.returncode == 0 and out:

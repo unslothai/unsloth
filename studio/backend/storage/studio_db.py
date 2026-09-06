@@ -4539,6 +4539,7 @@ def upsert_app_setting_map_entry(
     entry_value: dict[str, Any] | None,
     *,
     fill_absent_fields: bool = False,
+    coupled_fields: tuple[tuple[str, ...], ...] = (),
 ) -> dict[str, Any]:
     """Set (or delete, when entry_value is falsy) one sub-entry of a dict-valued
     app setting, atomically under BEGIN IMMEDIATE so concurrent writers to other
@@ -4552,6 +4553,12 @@ def upsert_app_setting_map_entry(
     backfill, whose contract is that the server copy is the newer authority: an
     upgraded install can hold an entry with only the fields an older release knew,
     while this browser holds the rest, and entry-level skipping would strand them.
+
+    ``coupled_fields`` names groups that only mean anything together. Field-by-field
+    filling would otherwise take a qualifier from this browser and leave the value it
+    qualifies as the server wrote it: a stored ``gpu_ids`` in one index space, relabelled
+    with the other space's ``gpu_index_kind``, points at a different GPU while looking
+    stored. A group any part of which is already held is skipped whole.
     """
     conn = get_connection()
     try:
@@ -4566,8 +4573,12 @@ def upsert_app_setting_map_entry(
                 return current
             stored = current.get(entry_key)
             if isinstance(stored, dict):
+                incoming = entry_value
+                for group in coupled_fields:
+                    if any(field in stored for field in group):
+                        incoming = {k: v for k, v in incoming.items() if k not in group}
                 # Stored values win field by field, so this only adds.
-                merged = {**entry_value, **stored}
+                merged = {**incoming, **stored}
                 if merged == stored:
                     conn.rollback()
                     return current

@@ -2,8 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  llamaReleaseChanged,
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
   ownedLlamaSwitchOutcome,
@@ -102,4 +104,36 @@ test("an apply adopts an already-running update but never a switch", () => {
     }),
     false,
   );
+});
+
+test("a backend migration at the installed release reports no version change", () => {
+  // What the server actually sends for a fork install whose release is current:
+  // the display tag is normalized to its base and the latest tag is the full
+  // release identity, so the two differ while naming the same release.
+  assert.equal(
+    llamaReleaseChanged(false, "b9596", "b9596-mix-4b653db"),
+    false,
+  );
+  // And the same shape once the release really has moved.
+  assert.equal(
+    llamaReleaseChanged(true, "b9596", "b10715-mix-86bd2d3"),
+    true,
+  );
+});
+
+test("a release change still needs both tags to name it", () => {
+  assert.equal(llamaReleaseChanged(true, null, "b10715-mix-86bd2d3"), false);
+  assert.equal(llamaReleaseChanged(true, "b9596", null), false);
+  assert.equal(llamaReleaseChanged(true, "b9596", "b9596"), false);
+});
+
+test("the banner asks the helper rather than comparing the two tags itself", () => {
+  // Read from the source: the node suite has no DOM to render the banner in, and
+  // the predicate is only worth fixing in one place if the banner uses that place.
+  const banner = readFileSync(
+    new URL("../src/components/llama-update-banner.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(banner, /const versionChanged = llamaReleaseChanged\(/);
+  assert.doesNotMatch(banner, /installedTag !== latestTag/);
 });

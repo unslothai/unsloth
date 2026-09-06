@@ -67,3 +67,24 @@ export function llamaUpdatePresentation(
     running: true,
   };
 }
+
+/**
+ * Whether the banner's version line has anything to say.
+ *
+ * `updateAvailable` is the only field that reports the release moved. The two
+ * tags cannot answer it: `installed_tag` is deliberately the normalized base tag
+ * (`b9596`) while `latest_tag` is the full release identity (`b9596-mix-<sha>`),
+ * so on a fork install they differ at the very release the machine is running.
+ * A backend migration is offered exactly there, and comparing the tags alone
+ * would announce a version update that does not exist and open a changelog
+ * between a tag and itself.
+ */
+export function llamaReleaseChanged(
+  updateAvailable: boolean,
+  installedTag: string | null,
+  latestTag: string | null,
+): boolean {
+  return Boolean(
+    updateAvailable && installedTag && latestTag && installedTag !== latestTag,
+  );
+}

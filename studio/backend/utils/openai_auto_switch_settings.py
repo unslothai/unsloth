@@ -1111,6 +1111,9 @@ def set_model_override(
         model_id.strip(),
         entry or None,
         fill_absent_fields = fill_absent_fields,
+        # The pin and the index space it is written in are one value: filling the
+        # qualifier onto ids this browser did not write relabels them.
+        coupled_fields = (("gpu_ids", "gpu_index_kind"),),
     )
     _invalidate(MODEL_OVERRIDES_SETTING_KEY)
     return entry
