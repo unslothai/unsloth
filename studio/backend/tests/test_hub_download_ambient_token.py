@@ -57,11 +57,23 @@ class _Proc:
 
 
 class _ImmediateThread:
-    def __init__(self, *, target, **_kwargs):
+    """Runs the watcher inline. The watcher is pinned to an account, so the
+    positional arguments (account, target) must reach it."""
+
+    def __init__(
+        self,
+        *,
+        target,
+        args = (),
+        kwargs = None,
+        **_kwargs,
+    ):
         self.target = target
+        self.args = args
+        self.kwargs = kwargs or {}
 
     def start(self):
-        self.target()
+        self.target(*self.args, **self.kwargs)
 
 
 def _client(via_api_key: bool) -> TestClient:

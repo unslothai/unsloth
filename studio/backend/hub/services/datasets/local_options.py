@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path
 import json
 import os
 import re
@@ -717,6 +718,7 @@ def _sorted_options(options: set[tuple[str, str]], dataset: str = "") -> list[Da
 
 
 def local_dataset_options(request: LocalDatasetOptionsRequest) -> LocalDatasetOptionsResponse:
+    account_path(request.local_path)
     repo_id = request.dataset_name.strip()
     if not is_valid_repo_id(repo_id):
         return LocalDatasetOptionsResponse(cache_available = False, splits = [])

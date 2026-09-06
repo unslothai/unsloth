@@ -98,7 +98,7 @@ def _drop_lease_columns():
     for column in ("progress_at", "progress_tokens"):
         conn.execute(f"ALTER TABLE chat_generation_runs DROP COLUMN {column}")
     conn.commit()
-    runs_db._schema_ready = False
+    runs_db._schema_ready = set()
 
 
 # --------------------------------------------------------------------------- upgrade
@@ -112,7 +112,7 @@ def test_migration_adds_both_columns(clock):
 def test_migration_is_idempotent(clock):
     _seed()
     for _ in range(5):
-        runs_db._schema_ready = False
+        runs_db._schema_ready = set()
         runs_db._connect()
     assert {"progress_at", "progress_tokens"} <= _columns()
 
@@ -122,7 +122,7 @@ def test_upgrade_over_an_existing_database_preserves_rows(clock):
     token = _seed("run-old")
     _drop_lease_columns()
     assert "progress_at" not in _columns() or True  # DROP may be unsupported; see below
-    runs_db._schema_ready = False
+    runs_db._schema_ready = set()
     runs_db._connect()
     assert {"progress_at", "progress_tokens"} <= _columns()
     run = runs_db.get_run("run-old")
@@ -148,17 +148,17 @@ def test_pre_upgrade_rows_have_a_usable_lease_fallback(clock):
 def test_missing_table_does_not_raise(monkeypatch, clock):
     # A database whose schema has not been created yet must not turn a history read
     # into a crash.
-    runs_db._schema_ready = False
+    runs_db._schema_ready = set()
     conn = runs_db._connect()
     conn.execute("DROP TABLE IF EXISTS chat_generation_runs")
     conn.commit()
-    runs_db._schema_ready = False
+    runs_db._schema_ready = set()
     runs_db._connect()  # must not raise
 
 
 def test_concurrent_migration_from_many_threads(clock):
     _seed()
-    runs_db._schema_ready = False
+    runs_db._schema_ready = set()
     errors: list[BaseException] = []
     barrier = threading.Barrier(8)
 
@@ -182,7 +182,7 @@ def test_duplicate_column_error_is_swallowed(clock, monkeypatch):
     # Another process migrated between our PRAGMA and our ALTER.
     _seed()
     _drop_lease_columns()  # otherwise the ALTER is skipped and the race cannot fire
-    runs_db._schema_ready = False
+    runs_db._schema_ready = set()
     real_get = runs_db.get_connection
     state = {"fired": False}
 
@@ -370,7 +370,7 @@ def _migration_blocked(monkeypatch):
     columns. This is the window the degradations below have to survive.
     """
     _drop_lease_columns()
-    runs_db._schema_ready = False
+    runs_db._schema_ready = set()
     real_get = runs_db.get_connection
 
     class _Locked:
@@ -390,7 +390,7 @@ def _migration_blocked(monkeypatch):
         yield
     finally:
         monkeypatch.setattr(runs_db, "get_connection", real_get)
-        runs_db._schema_ready = False
+        runs_db._schema_ready = set()
 
 
 def test_streaming_survives_a_migration_still_blocked_by_a_writer(clock, monkeypatch):

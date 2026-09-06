@@ -34,21 +34,35 @@ def _record_thread(threads: list[int], result):
     return _stub
 
 
+def _record(secret: str) -> dict:
+    return {
+        "username": SUBJECT,
+        "password_salt": "salt",
+        "password_hash": "hash",
+        "jwt_secret": secret,
+        "must_change_password": 0,
+        "account_id": "acct-test",
+        "role": "user",
+        "is_active": 1,
+    }
+
+
 def _jwt_case(monkeypatch, threads):
     monkeypatch.setattr(
         authentication,
-        "get_user_and_secret",
-        _record_thread(threads, ("salt", "hash", SECRET, False)),
+        "get_user_record",
+        _record_thread(threads, _record(SECRET)),
     )
     token = jwt.encode({"sub": SUBJECT}, SECRET, algorithm = authentication.ALGORITHM)
     return authentication.get_current_subject(_credentials(token))
 
 
 def _api_key_case(monkeypatch, threads):
+    # One read returns the key's account identity with its secret; no second lookup.
     monkeypatch.setattr(
         authentication,
-        "validate_api_key_with_credential",
-        _record_thread(threads, (SUBJECT, SECRET)),
+        "validate_api_key_account",
+        _record_thread(threads, (_record(SECRET), SECRET)),
     )
     return authentication.get_current_subject(_credentials(f"{API_KEY_PREFIX}key"))
 

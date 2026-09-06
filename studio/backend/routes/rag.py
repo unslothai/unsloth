@@ -15,6 +15,7 @@ warns about it exactly once.
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path
 import hashlib
 import hmac
 import json
@@ -176,6 +177,7 @@ def _save_native_path_upload(lease: str) -> tuple[str, str]:
     except NativePathLeaseError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
+    account_path(grant.canonical_path)
     filename = _sanitize_filename(grant.canonical_path.name)
     try:
         with open(grant.canonical_path, "rb") as source:

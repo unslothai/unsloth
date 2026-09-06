@@ -18,6 +18,8 @@ from fastapi import HTTPException
 
 
 from storage import credential_secrets
+from hub.services.models import account_access
+from utils.account_context import current_account_id
 
 logger = structlog.get_logger(__name__)
 
@@ -30,7 +32,12 @@ def provider_config_guard(provider_id: str) -> asyncio.Lock:
     """Serialize one provider's routing metadata and installation credential."""
     loop = asyncio.get_running_loop()
     locks = _provider_config_locks.setdefault(loop, {})
-    return locks.setdefault(provider_id, asyncio.Lock())
+    key = (
+        (current_account_id(), provider_id)
+        if account_access.account_scope() is not None
+        else provider_id
+    )
+    return locks.setdefault(key, asyncio.Lock())
 
 
 def serialize_provider_config(handler):
@@ -70,6 +77,7 @@ def resolve_provider_api_key_or_400(
     prefer_saved_key: bool = False,
 ) -> str:
     """Resolve an explicit key, or a saved key only for an interactive UI session."""
+    account_access.ensure_account_schema(credential_secrets)
 
     try:
         saved_provider_id = provider_id if allow_saved_key else None

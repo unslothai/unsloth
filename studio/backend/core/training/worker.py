@@ -11,6 +11,7 @@ version-switching. Pattern follows core/data_recipe/jobs/worker.py.
 
 from __future__ import annotations
 
+from utils.account_context import account_thread
 from loggers import get_logger
 import importlib
 import importlib.metadata
@@ -2650,7 +2651,7 @@ def _start_worker_stop_poller(
             except (EOFError, OSError, ValueError):
                 return
 
-    stop_thread = threading.Thread(target = poll_stop, daemon = True)
+    stop_thread = account_thread(target = poll_stop, daemon = True)
     stop_thread.start()
     return stop_thread
 
@@ -4479,7 +4480,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         pass
                 _tqdm_stop.wait(3)
 
-        _tqdm_thread = _th.Thread(target = _monitor_tqdm, daemon = True)
+        _tqdm_thread = account_thread(target = _monitor_tqdm, daemon = True)
         _tqdm_thread.start()
 
         training_type = config.get("training_type", "LoRA/QLoRA")

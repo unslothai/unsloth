@@ -7,12 +7,15 @@ import asyncio
 import atexit
 import concurrent.futures
 import hashlib
+import importlib
+import ipaddress
 import json
 import mimetypes
 import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -20,11 +23,17 @@ import time
 import uuid
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Optional
+from typing import Any, Optional, get_type_hints
 from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
 
 from loggers import get_logger
+from utils.account_context import (
+    OWNER_ACCOUNT_ID,
+    account_thread,
+    current_account_id,
+    is_owner_context,
+)
 
 logger = get_logger(__name__)
 
@@ -41,6 +50,105 @@ FAILED_PROBE_COOLOFF_SECONDS = 60.0
 OAUTH_FAILED_PROBE_COOLOFF_SECONDS = 300.0
 
 _oauth_token_store = None
+_account_oauth_token_stores: dict[str, Any] = {}
+
+
+def _managed_mcp_restricted() -> bool:
+    if is_owner_context():
+        return False
+    from auth.policy import installation_is_multi_user
+    return installation_is_multi_user()
+
+
+def _account_key(value):
+    """Keep historical owner cache keys; namespace every managed account."""
+    if is_owner_context():
+        return value
+    return current_account_id(), value
+
+
+def _public_mcp_address(url: str) -> str:
+    """Validate every resolved address and return one to pin the connection to."""
+    from fastapi import HTTPException
+
+    detail = "Managed accounts may only use public-network HTTP MCP servers."
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("HTTP URL required")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("Use MCP headers for credentials")
+        host = parsed.hostname
+        if "%" in host:
+            raise ValueError("Scoped addresses are not public")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        addresses = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)
+        if not addresses:
+            raise ValueError("No addresses")
+        for *_, sockaddr in addresses:
+            address = ipaddress.ip_address(sockaddr[0])
+            address = getattr(address, "ipv4_mapped", None) or address
+            if not address.is_global or address.is_multicast or address.is_reserved:
+                raise ValueError("Non-public address")
+        return addresses[0][4][0]
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise HTTPException(status_code = 400, detail = detail) from exc
+
+
+def validate_mcp_address(url: str) -> None:
+    """Account policy shared by registration, probes and transport creation."""
+    if not _managed_mcp_restricted():
+        return
+    if is_stdio(url):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code = 400,
+            detail = "Only the installation owner may register local-command MCP servers.",
+        )
+    _public_mcp_address(url)
+
+
+def _public_http_client_factory(**kwargs):
+    """Pin public destinations, including redirects and OAuth discovery requests.
+
+    Use the HTTP client family selected by the installed MCP SDK (httpx or
+    httpx2). Host and TLS SNI retain the original hostname. Proxy environment
+    settings are excluded so they cannot redirect traffic into the LAN.
+    """
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    client_type = get_type_hints(create_mcp_http_client)["return"]
+    http = importlib.import_module(client_type.__module__.split(".")[0])
+
+    class PublicTransport(http.AsyncBaseTransport):
+        def __init__(self):
+            # Separate pools retain TLS identity when two names resolve to one IP.
+            self.transports = {}
+
+        async def handle_async_request(self, request):
+            address = await asyncio.to_thread(_public_mcp_address, str(request.url))
+            origin = (request.url.scheme, request.url.host, request.url.port)
+            if origin not in self.transports:
+                self.transports[origin] = http.AsyncHTTPTransport(trust_env = False)
+            pinned = http.Request(
+                method = request.method,
+                url = request.url.copy_with(host = address),
+                headers = request.headers,
+                stream = request.stream,
+                extensions = {**request.extensions, "sni_hostname": request.url.host},
+            )
+            return await self.transports[origin].handle_async_request(pinned)
+
+        async def aclose(self):
+            for transport in self.transports.values():
+                await transport.aclose()
+
+    kwargs["trust_env"] = False
+    kwargs["transport"] = PublicTransport()
+    kwargs.setdefault("follow_redirects", True)
+    if kwargs.get("timeout") is None:
+        kwargs["timeout"] = http.Timeout(30.0, read = 300.0)
+    return client_type(**kwargs)
 
 
 def is_stdio(address: str) -> bool:
@@ -175,6 +283,8 @@ def stdio_mcp_enabled() -> bool:
     is server-side code execution). An explicit operator opt-in via the env var
     still wins -- including the documented `=1` network opt-in, where the process
     tool policy is False merely by the external-host default, not by choice."""
+    if _managed_mcp_restricted():
+        return False
     if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") != "1":
         return False
     from state.tool_policy import get_tool_policy
@@ -191,6 +301,8 @@ def stdio_mcp_disabled_reason() -> str:
     Telling a user whose gate is suspended by an active tunnel to set
     UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 would re-enable local command execution on
     a published API, so the suspended cases must name their actual cause."""
+    if _managed_mcp_restricted():
+        return "Only the installation owner may register local-command MCP servers."
     from state.tool_policy import get_tool_policy
     from utils.host_policy import loopback_default_active, remote_connector_active
 
@@ -243,6 +355,19 @@ def parse_server_headers(server: dict) -> Optional[dict]:
 
 def _oauth_store():
     global _oauth_token_store
+    if not is_owner_context():
+        from key_value.aio._utils.sanitization import AlwaysHashStrategy
+        from key_value.aio.stores.filetree import FileTreeStore
+        from utils.paths.storage_roots import account_path, ensure_dir
+
+        account_id = current_account_id()
+        if account_id not in _account_oauth_token_stores:
+            _account_oauth_token_stores[account_id] = FileTreeStore(
+                data_directory = ensure_dir(account_path("mcp-oauth-tokens")),
+                key_sanitization_strategy = AlwaysHashStrategy(),
+                collection_sanitization_strategy = AlwaysHashStrategy(),
+            )
+        return _account_oauth_token_stores[account_id]
     if _oauth_token_store is None:
         from key_value.aio._utils.sanitization import AlwaysHashStrategy
         from key_value.aio.stores.filetree import FileTreeStore
@@ -450,6 +575,7 @@ def _client(
     headers: Optional[dict],
     use_oauth: bool = False,
 ):
+    validate_mcp_address(url)
     from fastmcp import Client
 
     if is_stdio(url):
@@ -482,7 +608,12 @@ def _client(
     transport_cls = (
         SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
     )
-    return Client(transport_cls(url = url, headers = headers or None, auth = auth))
+    kwargs = {}
+    if _managed_mcp_restricted():
+        kwargs["httpx_client_factory"] = _public_http_client_factory
+        if auth is not None:
+            auth.httpx_client_factory = _public_http_client_factory
+    return Client(transport_cls(url = url, headers = headers or None, auth = auth, **kwargs))
 
 
 _SESSION_IDLE_TTL = 300.0
@@ -706,6 +837,7 @@ class _McpSession:
         if use_oauth and not is_stdio(url):
             raise ValueError("OAuth MCP servers cannot use a shared session")
         self.url = url
+        self.account_id = current_account_id()
         self.headers = headers
         self.client = None
         self.closed = threading.Event()
@@ -733,7 +865,7 @@ class _McpSession:
             self.loop = asyncio.ProactorEventLoop()
         else:
             self.loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target = self._run_loop, name = "mcp-session", daemon = True)
+        self._thread = account_thread(target = self._run_loop, name = "mcp-session", daemon = True)
         self._thread.start()
 
     def _run_loop(self) -> None:
@@ -888,8 +1020,9 @@ _mcp_cleanup_worker: Optional[threading.Thread] = None
 # stale. Bump a generation on every close so that connect discards its
 # session instead of publishing it. Guarded by _mcp_sessions_lock.
 _mcp_close_all_gen = 0
-_mcp_url_close_gen: dict[str, int] = {}
-_mcp_cfg_close_gen: dict[tuple, int] = {}
+_mcp_account_close_gen: dict[str, int] = {}
+_mcp_url_close_gen: dict[str | tuple[str, str], int] = {}
+_mcp_cfg_close_gen: dict[str | tuple[str, str], int] = {}
 _mcp_connects_in_flight = 0
 
 _ANY_HEADERS = object()
@@ -899,27 +1032,27 @@ def _headers_key(headers: Optional[dict]) -> tuple:
     return tuple(sorted((headers or {}).items()))
 
 
-def _url_close_key(url: str) -> str:
+def _url_close_key(url: str) -> str | tuple[str, str]:
     # Commands/URLs (token args, embedded credentials) and env values can hold
     # secrets and these maps are never pruned; key by digest so closed/edited
     # configs don't retain them in memory forever.
-    return hashlib.sha256(url.encode()).hexdigest()
+    return _account_key(hashlib.sha256(url.encode()).hexdigest())
 
 
-def _cfg_close_key(url: str, headers: Optional[dict]) -> str:
-    return hashlib.sha256(repr((url, _headers_key(headers))).encode()).hexdigest()
+def _cfg_close_key(url: str, headers: Optional[dict]) -> str | tuple[str, str]:
+    return _account_key(hashlib.sha256(repr((url, _headers_key(headers))).encode()).hexdigest())
 
 
-def _mcp_close_generation(url: str, headers: Optional[dict]) -> tuple[int, int, int]:
+def _mcp_close_generation(url: str, headers: Optional[dict]) -> tuple[tuple[int, int], int, int]:
     return (
-        _mcp_close_all_gen,
+        (_mcp_close_all_gen, _mcp_account_close_gen.get(current_account_id(), 0)),
         _mcp_url_close_gen.get(_url_close_key(url), 0),
         _mcp_cfg_close_gen.get(_cfg_close_key(url, headers), 0),
     )
 
 
 def _session_key(url: str, headers: Optional[dict], scope: Optional[str]) -> tuple:
-    return (url, _headers_key(headers), scope or "")
+    return (url, _headers_key(headers), scope or "", current_account_id())
 
 
 def _checkout_session(key: tuple) -> tuple[Optional[_McpSession], float]:
@@ -1049,7 +1182,7 @@ def _get_session(
                             threading.Thread(
                                 target = _session_reaper, name = "mcp-session-reaper", daemon = True
                             ).start()
-                            atexit.register(close_mcp_sessions)
+                            atexit.register(close_mcp_sessions, all_accounts = True)
                 for victim in evicted:
                     logger.info("Evicting LRU idle MCP session: %s", _session_log_id(victim.url))
                 if evicted:
@@ -1131,29 +1264,54 @@ def _evict_lru_locked() -> list:
     the caller can close them OUTSIDE the lock. If every session is busy the
     cache may transiently overshoot rather than kill an in-flight call."""
     victims: list = []
-    while len(_mcp_sessions) >= _MAX_SESSIONS:
-        idle = [(s.last_used, k) for k, s in _mcp_sessions.items() if s.in_flight == 0]
+    if len(_mcp_sessions) < _MAX_SESSIONS:
+        return victims
+    account_id = current_account_id()
+    candidates = {
+        key: session
+        for key, session in _mcp_sessions.items()
+        if (key[3] if len(key) > 3 else OWNER_ACCOUNT_ID) == account_id
+    }
+    while len(candidates) >= _MAX_SESSIONS:
+        idle = [(s.last_used, k) for k, s in candidates.items() if s.in_flight == 0]
         if not idle:
             break
         _, oldest = min(idle, key = lambda item: item[0])
         victims.append(_mcp_sessions.pop(oldest))
+        candidates.pop(oldest)
         _discard_key_lock(oldest)
     return victims
 
 
-def close_mcp_sessions(url: Optional[str] = None, headers = _ANY_HEADERS) -> None:
+def close_mcp_sessions(
+    url: Optional[str] = None,
+    headers = _ANY_HEADERS,
+    *,
+    all_accounts: bool = False,
+) -> None:
+    """Close the acting account's sessions; process shutdown explicitly closes all."""
     global _mcp_close_all_gen
     hk = None if headers is _ANY_HEADERS else _headers_key(headers)
+    account_id = current_account_id()
     with _mcp_sessions_lock:
         keys = [
-            k for k in _mcp_sessions if (url is None or k[0] == url) and (hk is None or k[1] == hk)
+            k
+            for k in _mcp_sessions
+            if (url is None or k[0] == url)
+            and (hk is None or k[1] == hk)
+            and (all_accounts or (k[3] if len(k) > 3 else OWNER_ACCOUNT_ID) == account_id)
         ]
         sessions = [_mcp_sessions.pop(k) for k in keys]
         for key in keys:
             _discard_key_lock(key)
         if sessions or _mcp_connects_in_flight:
             if url is None:
-                _mcp_close_all_gen += 1
+                if all_accounts:
+                    _mcp_close_all_gen += 1
+                else:
+                    _mcp_account_close_gen[account_id] = (
+                        _mcp_account_close_gen.get(account_id, 0) + 1
+                    )
             elif hk is None:
                 uk = _url_close_key(url)
                 _mcp_url_close_gen[uk] = _mcp_url_close_gen.get(uk, 0) + 1
@@ -1354,12 +1512,12 @@ async def list_tools_async(
 # on a cache miss, keeping MCP discovery off the chat send's critical path -- tool schemas are
 # stable within a session. The /refresh route warms it; a URL/header/OAuth change or a delete
 # evicts it. Successful probes are cached indefinitely.
-_tool_cache: dict[str, list[dict]] = {}
+_tool_cache: dict[str | tuple[str, str], list[dict]] = {}
 
 # server_id -> monotonic time before which a failed server must not be
 # re-probed (see record_probe_failure). Cleared on a successful probe or
 # eviction.
-_probe_cooloff_until: dict[str, float] = {}
+_probe_cooloff_until: dict[str | tuple[str, str], float] = {}
 
 # Coordinate off-loop token-count snapshots with row and schema-cache mutations.
 _mcp_server_snapshot_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
@@ -1391,31 +1549,35 @@ TOOL_CACHE_INVALIDATING_FIELDS = frozenset({"url", "headers_json", "use_oauth", 
 
 
 def get_cached_tools(server_id: str) -> Optional[list[dict]]:
-    return _tool_cache.get(server_id)
+    return _tool_cache.get(_account_key(server_id))
 
 
 def cache_tools(server_id: str, tools: list[dict]) -> None:
-    _tool_cache[server_id] = tools
-    _probe_cooloff_until.pop(server_id, None)
+    _tool_cache[_account_key(server_id)] = tools
+    _probe_cooloff_until.pop(_account_key(server_id), None)
 
 
 def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
     cooloff = OAUTH_FAILED_PROBE_COOLOFF_SECONDS if use_oauth else FAILED_PROBE_COOLOFF_SECONDS
-    _probe_cooloff_until[server_id] = time.monotonic() + cooloff
+    _probe_cooloff_until[_account_key(server_id)] = time.monotonic() + cooloff
 
 
 def in_failure_cooloff(server_id: str) -> bool:
-    return _probe_cooloff_until.get(server_id, 0.0) > time.monotonic()
+    return _probe_cooloff_until.get(_account_key(server_id), 0.0) > time.monotonic()
 
 
 def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
     """Evict one server's cached tools, or every entry when server_id is None."""
     if server_id is None:
-        _tool_cache.clear()
-        _probe_cooloff_until.clear()
+        account_id = current_account_id()
+        for cache in (_tool_cache, _probe_cooloff_until):
+            for key in list(cache):
+                owner = key[0] if isinstance(key, tuple) else OWNER_ACCOUNT_ID
+                if owner == account_id:
+                    cache.pop(key, None)
     else:
-        _tool_cache.pop(server_id, None)
-        _probe_cooloff_until.pop(server_id, None)
+        _tool_cache.pop(_account_key(server_id), None)
+        _probe_cooloff_until.pop(_account_key(server_id), None)
 
 
 MCP_IMAGES_SENTINEL = "__MCP_IMAGES__:"

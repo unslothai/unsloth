@@ -32,7 +32,7 @@ FULL, NORMAL = 2, 1
 def db(tmp_path, monkeypatch):
     """A studio.db in a temp dir, with the per-process schema latch reset."""
     monkeypatch.setattr(studio_db, "studio_db_path", lambda: tmp_path / "studio.db")
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     conn = studio_db.get_connection()
     conn.close()
     yield tmp_path / "studio.db"
@@ -115,7 +115,7 @@ def test_non_wal_journal_keeps_full(db, monkeypatch, mode):
         setup.close()
     assert _journal_mode(db) != "wal"
 
-    monkeypatch.setattr(studio_db, "_schema_ready", True)
+    monkeypatch.setattr(studio_db, "_schema_ready", {db.resolve()})
     conn = studio_db.get_connection()
     try:
         assert _synchronous(conn) == FULL, f"{mode} must not lose its commit fsync"
@@ -245,7 +245,7 @@ def test_upgrade_replaces_the_unscoped_trigger(tmp_path, monkeypatch):
     """
     path = tmp_path / "studio.db"
     monkeypatch.setattr(studio_db, "studio_db_path", lambda: path)
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     conn = studio_db.get_connection()
     try:
@@ -272,7 +272,7 @@ def test_upgrade_replaces_the_unscoped_trigger(tmp_path, monkeypatch):
     finally:
         conn.close()
 
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     conn = studio_db.get_connection()
     try:
         assert (
@@ -783,24 +783,24 @@ def test_wal_keeper_keeps_short_lived_writers_out_of_the_main_database(db):
     assert _digest(db) != unkept
 
 
-def test_a_second_open_replaces_the_keeper_instead_of_inheriting_it(db, tmp_path, monkeypatch):
-    """Inheriting a keeper left by an earlier lifespan holds a database this process has
-    stopped using, reporting success while keeping nothing for the current one."""
+def test_a_second_database_gets_its_own_keeper(db, tmp_path, monkeypatch):
+    """Opening another database keeps both WALs alive until shutdown."""
     assert studio_db.open_wal_keeper() is True
-    stale = studio_db._wal_keeper
+    stale = studio_db._wal_keepers[studio_db.studio_db_path().resolve()]
 
     second = tmp_path / "second" / "studio.db"
     second.parent.mkdir()
     monkeypatch.setattr(studio_db, "studio_db_path", lambda: second)
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     assert studio_db.open_wal_keeper() is True
-    assert studio_db._wal_keeper is not stale
+    assert studio_db._wal_keepers[studio_db.studio_db_path().resolve()] is not stale
+    assert stale.execute("SELECT 1").fetchone()[0] == 1
     _short_lived_write(second, "kept")
     assert Path(f"{second}-wal").is_file()
 
     studio_db.close_wal_keeper()
-    assert studio_db._wal_keeper is None
+    assert not studio_db._wal_keepers
     assert not Path(f"{second}-wal").exists()
     studio_db.close_wal_keeper()
 
@@ -808,7 +808,7 @@ def test_a_second_open_replaces_the_keeper_instead_of_inheriting_it(db, tmp_path
 def test_the_replaced_keeper_is_not_left_open(db):
     """Replacing must release the old connection, not merely drop the reference."""
     assert studio_db.open_wal_keeper() is True
-    stale = studio_db._wal_keeper
+    stale = studio_db._wal_keepers[studio_db.studio_db_path().resolve()]
     assert studio_db.open_wal_keeper() is True
 
     with pytest.raises(sqlite3.ProgrammingError, match = "closed database"):
@@ -821,11 +821,11 @@ def test_a_keeper_left_by_a_dead_thread_is_replaced(db):
     opened = threading.Thread(target = studio_db.open_wal_keeper)
     opened.start()
     opened.join()
-    stale = studio_db._wal_keeper
+    stale = studio_db._wal_keepers[studio_db.studio_db_path().resolve()]
     assert stale is not None
 
     assert studio_db.open_wal_keeper() is True
-    assert studio_db._wal_keeper is not stale
+    assert studio_db._wal_keepers[studio_db.studio_db_path().resolve()] is not stale
     _short_lived_write(db, "kept")
     assert Path(f"{db}-wal").is_file()
 
@@ -842,7 +842,7 @@ def test_wal_keeper_declines_when_the_filesystem_refused_wal(db, caplog):
 
     with caplog.at_level(logging.INFO, logger = studio_db.logger.name):
         assert studio_db.open_wal_keeper() is False
-    assert studio_db._wal_keeper is None
+    assert not studio_db._wal_keepers
     assert "not WAL" in caplog.text
 
 

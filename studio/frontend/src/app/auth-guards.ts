@@ -3,6 +3,7 @@
 
 import { redirect } from "@tanstack/react-router";
 import { apiUrl, isTauri } from "@/lib/api-base";
+import { isTauriLoginRequired } from "@/features/auth/tauri-auto-auth";
 import {
   getPostAuthRoute,
   hasAuthToken,
@@ -21,6 +22,7 @@ async function hasActiveSession(): Promise<boolean> {
 interface AuthStatus {
   initialized: boolean;
   requires_password_change: boolean;
+  login_mode?: "single" | "multi";
 }
 
 const AUTH_STATUS_TTL_MS = 30_000;
@@ -48,6 +50,11 @@ async function fetchAuthStatus(): Promise<AuthStatus> {
       }
       const status = (await res.json()) as AuthStatus;
       authStatusCheckedAt = Date.now();
+      // Public status describes the owner bootstrap, not the signed-in account.
+      // Multi-account login/refresh supplies the session's password-change flag.
+      if (status.login_mode === "multi") {
+        return { ...status, requires_password_change: mustChangePassword() };
+      }
       // Server truth wins; keep localStorage in sync both ways.
       if (status.requires_password_change !== mustChangePassword()) {
         setMustChangePassword(status.requires_password_change);
@@ -71,7 +78,7 @@ function authRedirect(to: "/login" | "/change-password"): never {
 }
 
 export async function requireAuth(): Promise<void> {
-  if (isTauri) {
+  if (isTauri && !isTauriLoginRequired()) {
     // AppProvider owns backend startup + desktop auth; route guards run before it mounts.
     return;
   }
@@ -96,7 +103,7 @@ export async function requireAuth(): Promise<void> {
 }
 
 export async function requireGuest(): Promise<void> {
-  if (isTauri) {
+  if (isTauri && !isTauriLoginRequired()) {
     throw redirect({ to: "/chat" });
   }
   if (!(await hasActiveSession())) return;
@@ -106,7 +113,7 @@ export async function requireGuest(): Promise<void> {
 }
 
 export async function requirePasswordChangeFlow(): Promise<void> {
-  if (isTauri) {
+  if (isTauri && !isTauriLoginRequired()) {
     throw redirect({ to: "/chat" });
   }
 

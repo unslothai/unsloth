@@ -7,6 +7,9 @@ The helpers in this module deliberately know nothing about FastAPI, SSE, or the
 OpenAI-compatible route shape. They only coordinate how many upstream generation
 requests may be active for one llama-server backend and provide a cancellable
 FIFO queue for excess requests.
+
+Queues are keyed by the resident llama-server, never by account. All accounts
+share its slots and KV budget; cancelling a reservation releases only its lease.
 """
 
 from __future__ import annotations
@@ -1116,6 +1119,23 @@ def peek_llama_admission_snapshot(key: str) -> Optional[LlamaAdmissionSnapshot]:
     with _QUEUES_LOCK:
         queue = _QUEUES.get(key)
     return queue.snapshot() if queue is not None else None
+
+
+def estimate_gpu_retry_after() -> int:
+    """Coarse retry hint from queued waves, without probing a backend or creating a queue.
+
+    We do not predict token runtimes. Allow 15 seconds per wave of occupied or
+    queued slots, bounded to 120 seconds. This is only read on a busy refusal,
+    so ordinary admission and single-account traffic pay no extra bookkeeping.
+    """
+    with _QUEUES_LOCK:
+        queues = tuple(_QUEUES.values())
+    waves = 1
+    for queue in queues:
+        snapshot = queue.snapshot()
+        capacity = max(1, snapshot.capacity)
+        waves = max(waves, (snapshot.active + snapshot.queued + capacity - 1) // capacity)
+    return min(120, 15 * waves)
 
 
 def reset_llama_admission_queues() -> None:

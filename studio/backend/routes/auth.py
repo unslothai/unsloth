@@ -30,7 +30,7 @@ from models.auth import (
     RefreshTokenRequest,
 )
 from models.users import Token
-from auth import storage, hashing
+from auth import storage, hashing, policy
 from auth.authentication import (
     authenticated_via_desktop_jwt,
     authenticated_without_credential,
@@ -429,9 +429,13 @@ def auth_status() -> AuthStatusResponse:
         else True
     )
     # Only while the default password stands: that is what the deadline fires on.
+    from auth.policy import full_access_permitted, login_mode
+
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
+        login_mode = login_mode(),
+        full_access = full_access_permitted(),
         requires_password_change = requires_change,
         bootstrap_deadline_seconds = (
             bootstrap_deadline_remaining_seconds() if requires_change else None
@@ -442,7 +446,10 @@ def auth_status() -> AuthStatusResponse:
 @router.post("/login", response_model = Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
-    key = _bucket_key(request, payload.username)
+    username = (
+        payload.username.casefold() if policy.installation_is_multi_user() else payload.username
+    )
+    key = _bucket_key(request, username)
     unknown_key = _unknown_user_key(request)
     blocked_for = max(_login_blocked(key), _login_blocked(unknown_key))
     if blocked_for > 0:
@@ -453,7 +460,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             headers = {"Retry-After": str(blocked_for)},
         )
 
-    record = storage.get_user_and_secret(payload.username)
+    record = storage.get_user_and_secret(username)
     if record is None:
         # Record under one sentinel key per IP so attacker-controlled username
         # cardinality can't allocate unbounded buckets.
@@ -463,8 +470,15 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
-    salt, pwd_hash, jwt_secret, must_change_password = record
-    if not hashing.verify_password(payload.password, salt, pwd_hash):
+    if username == storage.DEFAULT_ADMIN_USERNAME:
+        salt, pwd_hash, jwt_secret, must_change_password = record
+        verified = hashing.verify_password(payload.password, salt, pwd_hash)
+    else:
+        record = storage.authenticate_account_login(username, payload.password)
+        verified = record is not None
+        if record is not None:
+            salt, pwd_hash, jwt_secret, must_change_password = record
+    if not verified:
         _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
@@ -474,8 +488,8 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
     # Issue against the credential version just verified.
-    access_token = create_access_token(subject = payload.username, secret = jwt_secret)
-    refresh_token = create_refresh_token(subject = payload.username, secret = jwt_secret)
+    access_token = create_access_token(subject = username, secret = jwt_secret)
+    refresh_token = create_refresh_token(subject = username, secret = jwt_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
@@ -495,15 +509,16 @@ async def logout(
         storage.revoke_user_refresh_tokens(current_subject)
     except Exception:
         pass
-    try:
-        request.app.state.bootstrap_password = None
-    except AttributeError:
-        pass
+    if current_subject == storage.DEFAULT_ADMIN_USERNAME:
+        try:
+            request.app.state.bootstrap_password = None
+        except AttributeError:
+            pass
     return Response(status_code = status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/desktop-login", response_model = Token)
-async def desktop_login(payload: DesktopLoginRequest) -> Token:
+async def desktop_login(payload: DesktopLoginRequest) -> Token | Response:
     """Exchange a local desktop secret for normal admin-subject tokens."""
     verified = storage.validate_desktop_secret_with_credential(payload.secret)
     if verified is None:
@@ -512,6 +527,16 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
             detail = "Desktop authentication failed",
         )
     username, jwt_secret = verified
+
+    from auth.policy import installation_is_multi_user
+
+    if installation_is_multi_user():
+        # The secret still proves the shell owns the backend. It cannot choose
+        # which account is using the desktop once login is required.
+        return Response(
+            content = '{"login_required":true,"login_mode":"multi"}',
+            media_type = "application/json",
+        )
 
     return Token(
         access_token = create_access_token(subject = username, desktop = True, secret = jwt_secret),
@@ -531,6 +556,10 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
             detail = "Invalid or expired refresh token",
         )
     username, is_desktop, jwt_secret = consumed
+    if is_desktop:
+        # Only the installation owner runs inside the desktop shell.
+        account = storage.get_account(username)
+        is_desktop = account is not None and account.is_owner
     new_access_token = create_access_token(subject = username, desktop = is_desktop, secret = jwt_secret)
     new_refresh_token = create_refresh_token(
         subject = username, desktop = is_desktop, secret = jwt_secret
@@ -559,7 +588,7 @@ async def set_desktop_initial_password(
     already-authenticated desktop session may set it while the seeded credential
     is still in place. Once set, change-password owns every later change.
     """
-    if not is_desktop:
+    if not is_desktop or current_subject != storage.DEFAULT_ADMIN_USERNAME:
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
             detail = "This action requires the Unsloth desktop app.",
@@ -648,22 +677,31 @@ async def change_password(
     # Single transaction: a separate refresh-token purge could fail after the password commit,
     # leaving pre-change tokens able to mint access tokens. Conditional on the hash just
     # verified, so a concurrent reset-password cannot be overwritten by it.
-    new_secret = storage.update_password(
-        current_subject,
-        payload.new_password,
-        revoke_refresh_tokens = True,
-        expect_password_hash = pwd_hash,
-        preserve_desktop_secret = is_desktop,
-    )
+    if current_subject == storage.DEFAULT_ADMIN_USERNAME:
+        new_secret = storage.update_password(
+            current_subject,
+            payload.new_password,
+            revoke_refresh_tokens = True,
+            expect_password_hash = pwd_hash,
+            preserve_desktop_secret = is_desktop,
+        )
+    else:
+        new_secret = storage.update_account_password(
+            current_subject,
+            payload.new_password,
+            expect_password_hash = pwd_hash,
+            expect_secret = _jwt_secret,
+        )
     if new_secret is None:
         raise HTTPException(
             status_code = status.HTTP_409_CONFLICT,
             detail = "The password changed while this request was in flight. Sign in again.",
         )
-    try:
-        request.app.state.bootstrap_password = None
-    except AttributeError:
-        pass
+    if current_subject == storage.DEFAULT_ADMIN_USERNAME:
+        try:
+            request.app.state.bootstrap_password = None
+        except AttributeError:
+            pass
     access_token = create_access_token(
         subject = current_subject, desktop = is_desktop, secret = new_secret
     )
@@ -694,6 +732,21 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
     )
 
 
+def _key_account_scope() -> "str | None":
+    """The immutable account a managed request's keys belong to.
+
+    The request bound its account when its credential was validated. A namesake
+    created after that (delete the account, create the name again) has another
+    id, so the keys this request lists, mints or revokes stay the old account's.
+    None for the owner, whose keys keep the username query they always had.
+    """
+    from utils.account_context import current_account, is_owner_context
+
+    if is_owner_context():
+        return None
+    return current_account().account_id
+
+
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
     payload: CreateApiKeyRequest,
@@ -714,6 +767,7 @@ async def create_api_key(
             name = payload.name,
             expires_at = expires_at,
             expect_gen = generation,
+            account_id = _key_account_scope(),
         )
     except storage.CredentialRotated:
         raise HTTPException(
@@ -732,7 +786,7 @@ def list_api_keys(
     _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
 ) -> ApiKeyListResponse:
     """List all API keys for the authenticated user (raw keys are never exposed)."""
-    rows = storage.list_api_keys(current_subject)
+    rows = storage.list_api_keys(current_subject, account_id = _key_account_scope())
     return ApiKeyListResponse(
         api_keys = [_row_to_api_key_response(r) for r in rows],
     )
@@ -745,7 +799,7 @@ async def revoke_api_key(
     _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
 ) -> dict:
     """Revoke (soft-delete) an API key."""
-    if not storage.revoke_api_key(current_subject, key_id):
+    if not storage.revoke_api_key(current_subject, key_id, account_id = _key_account_scope()):
         raise HTTPException(
             status_code = status.HTTP_404_NOT_FOUND,
             detail = "API key not found",

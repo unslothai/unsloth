@@ -384,6 +384,10 @@ def test_active_backend_is_llama_reflects_cache_and_resolver(monkeypatch):
 def test_settings_scan_scopes_module_subdirs(monkeypatch):
     # The settings scan must pass the ST module dirs (0_Transformer/) as load roots so a
     # pickle directly under one blocks; assert those subdirs reach evaluate_file_security.
+    from utils import utils as studio_utils
+
+    # This test simulates online discovery with stubs; the suite may run offline.
+    monkeypatch.setattr(studio_utils, "hf_env_offline", lambda: False)
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
@@ -638,6 +642,10 @@ def test_the_resolved_repo_is_what_gets_verified_and_scanned(client, monkeypatch
     is_embedding_model and the malware scan against the literal name: a repo that
     usually does not exist (fail-open, or a forceable 409) or, worse, a different
     top-level repo that does."""
+    from utils import utils as studio_utils
+
+    # This test simulates online discovery with stubs; the suite may run offline.
+    monkeypatch.setattr(studio_utils, "hf_env_offline", lambda: False)
     c, saved = client
     seen = {}
 

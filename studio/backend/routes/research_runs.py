@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from utils.account_context import current_account, run_as
 import asyncio
 import json
 import re
@@ -545,6 +546,8 @@ async def research_events(
             # off the default executor: parked followers there starved the run's own db writes.
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
+                run_as,
+                current_account(),
                 db.wait_for_events,
                 run_id,
                 cursor,

@@ -17,6 +17,8 @@ from typing import Any, AsyncIterator
 from starlette.requests import Request
 
 from core.inference.llama_keepwarm import InferenceActivityReservation
+from core.training.account_jobs import job_accounts
+from utils.account_context import run_as
 from loggers import get_logger
 from models.inference import ChatCompletionRequest
 from state import active_generations
@@ -260,11 +262,18 @@ class ChatGenerationLeaseSweeper:
     async def sweep_once(self) -> list[str]:
         if not self.enabled:
             return []
-        settled = await _sweep_in_daemon_thread(
-            db.reconcile_runs,
-            error = _LEASE_ERROR,
-            stale_after_ms = int(self._timeout * 1000),
-        )
+        # One database per account: sweep each, as the other supervisors do.
+        settled: list[str] = []
+        for account in job_accounts():
+            settled.extend(
+                await _sweep_in_daemon_thread(
+                    run_as,
+                    account,
+                    db.reconcile_runs,
+                    error = _LEASE_ERROR,
+                    stale_after_ms = int(self._timeout * 1000),
+                )
+            )
         if not settled:
             return []
         supervisor = getattr(getattr(self.app, "state", None), "chat_generation_supervisor", None)

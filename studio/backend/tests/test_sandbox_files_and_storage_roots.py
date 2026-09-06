@@ -4354,7 +4354,7 @@ def test_the_supervisor_is_told_even_with_no_row_left():
     from routes import chat_history
 
     source = inspect.getsource(chat_history._cancel_research_runs)
-    assert source.index("supervisor.cancel(run_id)") < source.index(
+    assert source.index("cancel_account_run(request, run_id,") < source.index(
         "research_runs_db.request_cancel(run_id)"
     )
 

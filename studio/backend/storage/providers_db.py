@@ -17,6 +17,7 @@ import json
 import logging
 import sqlite3
 import threading
+from pathlib import Path
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 _UNSET = object()
 
 
@@ -59,7 +60,7 @@ def _row_models(row: sqlite3.Row) -> tuple[list[str], list[str]]:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the llm_providers table if absent. Called once per process."""
+    """Create the llm_providers table if absent. Called once per database."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
@@ -85,19 +86,25 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
 
 
+def reset_schema_state_for_tests() -> None:
+    """Forget initialized database paths between tests."""
+    with _schema_lock:
+        _schema_ready.clear()
+
+
 def get_connection() -> sqlite3.Connection:
-    """Open studio.db with WAL mode, create table once per process."""
-    global _schema_ready
+    """Open studio.db with WAL mode, create table once per database."""
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise

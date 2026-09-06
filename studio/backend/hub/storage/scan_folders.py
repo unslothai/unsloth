@@ -13,8 +13,10 @@ import platform
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 from storage.studio_db import get_connection
+from utils.paths import studio_db_path
 from hub.utils.paths import normalize_path
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
 from utils.paths.scan_folder_health import is_readable_dir
@@ -24,7 +26,8 @@ from utils.paths.sensitive import (
 
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+# Keyed by resolved studio.db path: every account's database gets its own schema pass.
+_schema_ready: set[Path] = set()
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -84,11 +87,11 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    global _schema_ready
-    if _schema_ready:
+    db_path = studio_db_path().resolve()
+    if db_path in _schema_ready:
         return
     with _schema_lock:
-        if _schema_ready:
+        if db_path in _schema_ready:
             return
         collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
         conn.execute(
@@ -101,7 +104,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             """
         )
         conn.commit()
-        _schema_ready = True
+        _schema_ready.add(db_path)
 
 
 def list_scan_folders() -> list[dict]:
@@ -132,6 +135,10 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
+    from utils.paths.storage_roots import within_account
+
+    if not within_account(Path(normalized)):
+        raise ValueError("Path is outside this account's workspace")
 
     is_win = platform.system() == "Windows"
     check = os.path.normcase(normalized) if is_win else normalized

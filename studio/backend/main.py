@@ -1463,6 +1463,11 @@ app.add_middleware(RemoteAccessStopResponseMiddleware)
 # ============ Register API Routes ============
 
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
+app.include_router(
+    __import__("routes.accounts", fromlist = ["router"]).router,
+    prefix = "/api/accounts",
+    tags = ["accounts"],
+)
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
@@ -2284,6 +2289,12 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     import secrets as _secrets
 
     if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
+        return html_bytes, None
+
+    from auth.policy import installation_is_multi_user
+
+    # A local browser may belong to any account on a shared installation.
+    if installation_is_multi_user():
         return html_bytes, None
 
     bootstrap_pw = getattr(app.state, "bootstrap_password", None)

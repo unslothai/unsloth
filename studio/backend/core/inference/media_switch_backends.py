@@ -16,8 +16,13 @@ import functools
 import time
 from typing import Any, Optional
 
-from core.inference.gpu_arbiter import DIFFUSION, VIDEO
-from core.inference.media_switch_errors import probe
+from core.inference.gpu_arbiter import (
+    DIFFUSION,
+    VIDEO,
+    GpuBusyForAnotherAccountError,
+    raise_if_other_accounts_active,
+)
+from core.inference.media_switch_errors import busy, probe
 from core.inference.media_switch_locks import switcher_count, waiter_count
 
 POLL_S = 0.2
@@ -148,6 +153,11 @@ async def drain(
     # device configuration is resolved once, not on every poll: that cost ~150 round-trips a switch
     cross_owner = await asyncio.to_thread(load_takes_the_gpu)
     while True:
+        if cross_owner:
+            try:
+                raise_if_other_accounts_active()
+            except GpuBusyForAnotherAccountError as exc:
+                raise busy(kind, openai_errors, retry_after = exc.retry_after) from exc
         # this request is itself tracked and itself a waiter, so it counts as neither
         others = other_request_count(
             owner, current_request_counted = True, count_pending = count_pending

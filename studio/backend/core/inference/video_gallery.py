@@ -3,7 +3,7 @@
 
 """Disk-backed persistence for generated videos.
 
-Each video is a pair under ``studio_root()/videos``: ``{id}.mp4`` holds the bytes, ``{id}.json``
+Each video is a pair under ``workspace_root()/videos``: ``{id}.mp4`` holds the bytes, ``{id}.json``
 holds the recipe (an MP4 has no portable text-chunk like a PNG). The pair travels together; a lone
 file is not a valid record. Dumb storage: the route owns the schema; this only reads/writes/sorts.
 """
@@ -21,7 +21,9 @@ from typing import Any, Optional
 
 from core.inference import gallery_flags
 from loggers import get_logger
+from utils.account_context import is_owner_context
 from utils.paths import ensure_dir, studio_root
+from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
 
@@ -32,7 +34,9 @@ _job_lock = threading.Lock()
 
 
 def gallery_dir() -> Path:
-    return ensure_dir(studio_root() / "videos")
+    if is_owner_context():
+        return ensure_dir(studio_root() / "videos")
+    return ensure_dir(account_path("videos"))
 
 
 def _job_dir() -> Path:

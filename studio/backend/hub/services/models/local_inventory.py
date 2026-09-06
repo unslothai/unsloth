@@ -9,6 +9,8 @@ orchestrates all on-device sources and exposes the route handlers.
 
 from __future__ import annotations
 
+from hub.services.models import account_access
+
 import asyncio
 import os
 from pathlib import Path
@@ -957,6 +959,13 @@ async def _scan_local_models_response(
         )
 
 
+async def _account_local_response(response):
+    if not account_access.managed_account():
+        return response
+    models = await asyncio.to_thread(account_access.filter_model_rows, response.models)
+    return response.model_copy(update = {"models": models})
+
+
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """Coalesce overlapping local inventory requests for the same models root."""
 
@@ -1011,19 +1020,20 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             epoch,
         )
         try:
-            return await hf_cache_scan.shared_scan(
+            response = await hf_cache_scan.shared_scan(
                 _local_inventory_flights,
                 key,
                 lambda expected_epoch = epoch, folders = custom_folders, roots = sources: (
                     scan_and_classify(expected_epoch, folders, roots)
                 ),
             )
+            return await _account_local_response(response)
         except _LocalCacheChanged as changed:
             superseded = changed.response
             continue
     # Invalidations are outpacing the walk, so answer with the freshest scan instead of rescanning forever.
     logger.warning("Local inventory kept racing cache invalidations; serving the last scan")
-    return await asyncio.to_thread(classify, superseded)
+    return await _account_local_response(await asyncio.to_thread(classify, superseded))
 
 
 def get_models_folder_response() -> dict:
@@ -1058,6 +1068,7 @@ def get_scan_folders_response() -> dict:
 
 
 def add_scan_folder_response(path: str) -> dict:
+    path = account_access.private_directory(path, "")
     try:
         folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
     except ValueError as e:

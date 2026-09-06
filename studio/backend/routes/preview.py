@@ -27,7 +27,8 @@ from utils.client_ip import client_ip
 from utils.models.checkpoints import list_preview_targets, resolve_preview_checkpoint
 from utils.preview_rate_limit import check_rate_limit
 from utils.preview_sharing_settings import get_preview_sharing_enabled
-from utils.preview_token import sign_preview_ref, verify_preview_ref
+from utils.account_context import bind_account, reset_account
+from utils.preview_token import preview_token_account, sign_preview_ref
 
 logger = get_logger(__name__)
 
@@ -51,12 +52,36 @@ def _extract_token(request: Request) -> str | None:
     return None
 
 
-def _verify_or_404(run: str, checkpoint: str | None, request: Request) -> None:
+def _verify_or_404(run: str, checkpoint: str | None, request: Request):
+    """The account the capability opens, or 404. Never says which check failed."""
     ref = run if not checkpoint else f"{run}/{checkpoint}"
-    if not verify_preview_ref(ref, _extract_token(request)):
+    account = preview_token_account(ref, _extract_token(request))
+    if account is None:
         raise HTTPException(status_code = 404, detail = "Not found")
     if not get_preview_sharing_enabled():
         raise HTTPException(status_code = 404, detail = "Not found")
+    return account
+
+
+# The public routes carry no credential, so the capability decides whose outputs
+# the ref resolves in. Bound for the whole request, streaming body included, the
+# same way the authenticated dependency binds a login.
+async def _latest_account(run: str, request: Request):
+    account = _verify_or_404(run, None, request)
+    token = bind_account(account)
+    try:
+        yield account
+    finally:
+        reset_account(token)
+
+
+async def _checkpoint_account(run: str, checkpoint: str, request: Request):
+    account = _verify_or_404(run, checkpoint, request)
+    token = bind_account(account)
+    try:
+        yield account
+    finally:
+        reset_account(token)
 
 
 def _enforce_rate_limit(request: Request) -> None:
@@ -195,18 +220,16 @@ async def list_previews(
     return {"object": "list", "data": previews, "sharing_enabled": sharing_on}
 
 
-@router.post("/{run}/v1/chat/completions")
+@router.post("/{run}/v1/chat/completions", dependencies = [Depends(_latest_account)])
 async def preview_chat_latest(run: str, payload: ChatCompletionRequest, request: Request):
-    _verify_or_404(run, None, request)
     _enforce_rate_limit(request)
     return await _serve_chat(run, None, payload, request)
 
 
-@router.post("/{run}/{checkpoint}/v1/chat/completions")
+@router.post("/{run}/{checkpoint}/v1/chat/completions", dependencies = [Depends(_checkpoint_account)])
 async def preview_chat_checkpoint(
     run: str, checkpoint: str, payload: ChatCompletionRequest, request: Request
 ):
-    _verify_or_404(run, checkpoint, request)
     _enforce_rate_limit(request)
     return await _serve_chat(run, checkpoint, payload, request)
 
@@ -229,15 +252,13 @@ def _models_response(run: str, checkpoint: str | None):
 
 # The models/page GET routes only stat the checkpoint dir (no GPU), so they are
 # token-gated but not rate-limited; only the GPU-backed chat path is throttled.
-@router.get("/{run}/v1/models")
+@router.get("/{run}/v1/models", dependencies = [Depends(_latest_account)])
 async def preview_models_latest(run: str, request: Request):
-    _verify_or_404(run, None, request)
     return _models_response(run, None)
 
 
-@router.get("/{run}/{checkpoint}/v1/models")
+@router.get("/{run}/{checkpoint}/v1/models", dependencies = [Depends(_checkpoint_account)])
 async def preview_models_checkpoint(run: str, checkpoint: str, request: Request):
-    _verify_or_404(run, checkpoint, request)
     return _models_response(run, checkpoint)
 
 
@@ -285,13 +306,13 @@ def _preview_page(run: str, checkpoint: str | None) -> HTMLResponse:
     )
 
 
-@router.get("/{run}", response_class = HTMLResponse)
+@router.get("/{run}", response_class = HTMLResponse, dependencies = [Depends(_latest_account)])
 async def preview_page_latest(run: str, request: Request):
-    _verify_or_404(run, None, request)
     return _preview_page(run, None)
 
 
-@router.get("/{run}/{checkpoint}", response_class = HTMLResponse)
+@router.get(
+    "/{run}/{checkpoint}", response_class = HTMLResponse, dependencies = [Depends(_checkpoint_account)]
+)
 async def preview_page_checkpoint(run: str, checkpoint: str, request: Request):
-    _verify_or_404(run, checkpoint, request)
     return _preview_page(run, checkpoint)

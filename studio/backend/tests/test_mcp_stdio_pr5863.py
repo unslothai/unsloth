@@ -20,7 +20,7 @@ from utils import host_policy
 
 def _reset_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     # The discovered-tool cache is process-global and keyed by server id; tests
     # reuse "stdio1", so clear it (and the failure cool-off) for isolation —
     # otherwise a prior test's warm cache makes discovery skip its probe.

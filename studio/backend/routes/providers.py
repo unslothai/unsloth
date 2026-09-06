@@ -13,6 +13,7 @@ Endpoints:
 """
 
 import uuid
+import asyncio
 from typing import Optional
 
 import structlog
@@ -56,11 +57,19 @@ from models.providers import (
     ProviderUpdate,
 )
 from storage import credential_secrets, providers_db
+from hub.services.models import account_access
 from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter()
+
+async def _account_provider_storage(_subject: str = Depends(get_current_subject)):
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.ensure_account_schema, providers_db)
+        await asyncio.to_thread(account_access.ensure_account_schema, credential_secrets)
+
+
+router = APIRouter(dependencies = [Depends(_account_provider_storage)])
 
 
 def _provider_response(row: dict) -> ProviderResponse:
@@ -534,6 +543,8 @@ async def delete_provider_config(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Idempotently delete a saved provider and its installation credential."""
+    if account_access.managed_account() and providers_db.get_provider(provider_id) is None:
+        raise HTTPException(status_code = 404, detail = "Provider config not found")
     require_ui_session(via_api_key)
     await openai_codex_auth.cancel_provider_flows(provider_id)
     credential_secrets.get_or_create_credential_encryption_key()

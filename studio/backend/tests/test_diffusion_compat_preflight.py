@@ -1411,10 +1411,14 @@ def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
 
     # The CALL, not the import line at the top of each route, which names acquire_for far earlier.
     for source, acquire, label in (
-        (inspect.getsource(video_route.load_video_model_gated), "acquire_for(VIDEO", "video"),
+        (
+            inspect.getsource(video_route.load_video_model_gated),
+            "acquire_for_request(VIDEO",
+            "video",
+        ),
         (
             inspect.getsource(inference_route.load_diffusion_model_gated),
-            "acquire_for(DIFFUSION",
+            "acquire_for_request(DIFFUSION",
             "images",
         ),
     ):

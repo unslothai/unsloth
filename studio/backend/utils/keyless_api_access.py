@@ -32,6 +32,8 @@ import time
 import weakref
 from typing import Any, Optional
 
+from utils.account_context import OWNER, is_owner_context, run_as
+
 KEYLESS_API_ACCESS_SETTING_KEY = "keyless_api_access_scope"
 KEYLESS_API_TOOLS_SETTING_KEY = "keyless_api_access_tools"
 DEFAULT_KEYLESS_API_TOOLS_ENABLED = False
@@ -106,7 +108,10 @@ def _reset_scope_cache() -> None:
 def _read_settings_from_db() -> tuple[str, bool]:
     from storage.studio_db import get_app_settings
 
-    values = get_app_settings([KEYLESS_API_ACCESS_SETTING_KEY, KEYLESS_API_TOOLS_SETTING_KEY])
+    keys = [KEYLESS_API_ACCESS_SETTING_KEY, KEYLESS_API_TOOLS_SETTING_KEY]
+    # The cache is installation-wide. A refresh from a managed request must not
+    # publish that account's private settings as the authentication policy.
+    values = get_app_settings(keys) if is_owner_context() else run_as(OWNER, get_app_settings, keys)
     scope = _coerce_scope(values.get(KEYLESS_API_ACCESS_SETTING_KEY))
     tools = _coerce_bool(values.get(KEYLESS_API_TOOLS_SETTING_KEY))
     return (
@@ -233,6 +238,10 @@ def get_keyless_api_tools_enabled() -> bool:
 def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]:
     """Persist which routes are served without a key, and whether tools come with them."""
     global _cached_settings, _settings_generation, _settings_write_inflight
+    if not is_owner_context():
+        from auth import policy
+        if policy.installation_is_multi_user():
+            raise ValueError("Only the installation owner can change keyless API access.")
     scope = _coerce_scope(value)
     if scope is None:
         raise ValueError(f"Keyless API access scope must be one of: {', '.join(KEYLESS_SCOPES)}.")
@@ -600,6 +609,13 @@ def keyless_request_allowed(request: Any) -> bool:
 def _keyless_request_allowed_for_scope(request: Any, scope: str) -> bool:
     if scope == KEYLESS_SCOPE_OFF:
         return False
+    from auth.policy import installation_has_managed_accounts
+
+    # Both the middleware (cached settings) and auth dependency use this gate.
+    # Persisted grants become inert as soon as a managed account exists, and
+    # stay so while a deactivated one's files are still on disk.
+    if installation_has_managed_accounts():
+        return False
     asgi_scope = getattr(request, "scope", {})
     method = asgi_scope.get("method", "")
     path = asgi_scope.get("path", "")
@@ -623,6 +639,10 @@ def request_was_admitted_keyless(request: Any) -> Optional[bool]:
         value = getattr(request.state, KEYLESS_ADMISSION_STATE_KEY)
     except Exception:
         return None
+    if value is True:
+        from auth.policy import installation_has_managed_accounts
+        if installation_has_managed_accounts():
+            return False
     return value if isinstance(value, bool) else None
 
 

@@ -307,6 +307,7 @@ async def _gated_start_load(
     the switch out, and holding them would block new chat and video requests for as long as the
     re-plan and the load registration take.
     """
+    from fastapi import HTTPException
     from core.inference.media_keepwarm import admission_gate
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
@@ -352,7 +353,18 @@ async def _gated_start_load(
             setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))
             setup.add_done_callback(_consume_detached_error)
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(asyncio.shield(setup), _SETUP_GRACE_S)
+                try:
+                    await asyncio.wait_for(asyncio.shield(setup), _SETUP_GRACE_S)
+                except HTTPException as exc:
+                    # The final arbiter check also protects a generation that
+                    # registered while load preparation was off the event loop.
+                    if isinstance(exc.detail, dict) and exc.detail.get("error") == "gpu_busy":
+                        raise busy(
+                            kind,
+                            openai_errors,
+                            retry_after = int(exc.detail["retry_after"]),
+                        ) from exc
+                    raise
             return False
     finally:
         for held in reversed(locks):

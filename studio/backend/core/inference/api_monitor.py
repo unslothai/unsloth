@@ -992,7 +992,12 @@ class ApiMonitor:
             return True
         if entry.shared:
             # Every subject minus the cleared ones. Before ownership, so a clear hides own rows.
-            return entry.id not in self._hidden_shared.get(subject, ())
+            if entry.id in self._hidden_shared.get(subject, ()):
+                return False
+            # A load row names the model, and for a trained model that is a path
+            # inside the loading account's workspace. Another managed account
+            # gets no row; the owner and the loading account keep it.
+            return _lifecycle_row_visible_to_caller(entry, subject)
         return entry.subject == subject
 
     def _attributed(self, entry: ApiMonitorEntry, subject: Optional[str]) -> bool:
@@ -1031,3 +1036,19 @@ class ApiMonitor:
 
 
 api_monitor = ApiMonitor(enabled = not _api_monitor_disabled())
+
+
+def _lifecycle_row_visible_to_caller(entry: "ApiMonitorEntry", subject: str) -> bool:
+    """A model load or unload row is shared state, but it names the model, and for a
+    trained model that is a path inside the loading account's workspace. The owner
+    and the account that loaded it see the row; another managed account does not.
+    With one account nothing is hidden."""
+    if entry.kind != "lifecycle" or entry.subject in (None, subject):
+        return True
+    from utils.account_context import is_owner_context
+
+    if is_owner_context():
+        return True
+    from auth.policy import installation_is_multi_user
+
+    return not installation_is_multi_user()

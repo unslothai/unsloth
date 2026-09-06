@@ -32,9 +32,9 @@ def isolated_databases(tmp_path, monkeypatch):
         "get_or_create_credential_encryption_key",
         auth_storage.get_or_create_credential_encryption_key,
     )
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
     yield studio_db
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
     auth_storage._credential_encryption_key_cache = None
 
 
@@ -94,7 +94,7 @@ def test_tampering_and_key_loss_fail_closed(isolated_databases):
 
 def test_repeated_schema_initialization_and_concurrent_upserts():
     credential_secrets.get_connection().close()
-    credential_secrets._schema_ready = False
+    credential_secrets._schema_ready = set()
     credential_secrets.get_connection().close()
 
     with ThreadPoolExecutor(max_workers = 4) as pool:

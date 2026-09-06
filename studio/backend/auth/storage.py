@@ -9,11 +9,13 @@ import hashlib
 import hmac
 import ipaddress
 import os
+import re
 import secrets
 import sqlite3
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import uuid
 from typing import Iterator, Optional, Tuple
 
 from utils.paths import auth_db_path, ensure_dir
@@ -227,9 +229,46 @@ def credential_generation(jwt_secret: str) -> str:
     return hashlib.sha256(jwt_secret.encode("utf-8")).hexdigest()
 
 
+# The downgrade fence. A managed account's real credentials live in the
+# ``account_*`` columns, which a build without account support never reads; its
+# legacy ``password_salt`` / ``password_hash`` / ``jwt_secret`` hold values that
+# can never verify, and its API key and refresh token hashes carry a prefix the
+# older build never computes. So on a build that has one shared root for
+# everyone, a managed account cannot log in, present a token, refresh a session
+# or use a key: it gets 401, not the owner's data. The owner's row and rows are
+# byte for byte what they always were, and this build reads the real value with
+# COALESCE, so nothing changes for a single-account install and an upgrade
+# brings every managed account straight back.
+_FENCE_PREFIX = "account:"
+_FENCED_HASH_SQL = "IN (?, ?)"
+_LEGACY_PASSWORD_HASH_SENTINEL = "managed-account"
+_SECRET_SQL = "COALESCE(account_jwt_secret, jwt_secret)"
+_PASSWORD_HASH_SQL = "COALESCE(account_password_hash, password_hash)"
+_PASSWORD_SALT_SQL = "COALESCE(account_password_salt, password_salt)"
+
+
+def _is_owner_name(username: str) -> bool:
+    return username == DEFAULT_ADMIN_USERNAME
+
+
+def _fenced_hash(digest: str, username: str) -> str:
+    """The stored form of a credential hash: prefixed for a managed account."""
+    return digest if _is_owner_name(username) else _FENCE_PREFIX + digest
+
+
+def _hash_candidates(digest: str) -> tuple[str, str]:
+    return digest, _FENCE_PREFIX + digest
+
+
+def _legacy_dummies() -> tuple[str, str, str]:
+    """Legacy-column values for a managed row: a salt, a hash no password
+    produces, and a signing secret nothing is ever signed with."""
+    return secrets.token_hex(16), _LEGACY_PASSWORD_HASH_SENTINEL, secrets.token_urlsafe(64)
+
+
 def _current_secret(conn: sqlite3.Connection, username: str) -> Optional[str]:
     row = conn.execute(
-        "SELECT jwt_secret FROM auth_user WHERE username = ?", (username,)
+        f"SELECT {_SECRET_SQL} AS jwt_secret FROM auth_user WHERE username = ?", (username,)
     ).fetchone()
     return row["jwt_secret"] if row else None
 
@@ -333,6 +372,8 @@ def get_connection() -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
+    _ensure_account_columns(conn, columns)
+    _ensure_account_api_keys(conn, api_key_columns)
     refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     if "is_desktop" not in refresh_columns:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
@@ -345,6 +386,495 @@ def get_connection() -> sqlite3.Connection:
 # No lock needed: INSERT OR IGNORE is atomic and concurrent populations converge on the same value.
 # ── API-key PBKDF2 salt ────────────────────────────────────────────────
 _api_key_pbkdf2_salt_cache: Optional[bytes] = None
+
+
+# Immutable account identity. Storage keys on ``account_id``, never on the
+# username: a username is renamed or reused, an id is not. The seeded owner gets
+# the fixed id ``owner`` so every pre-accounts install resolves to the same
+# identity without a migration writing anything it did not have to.
+_ACCOUNT_COLUMNS = (
+    ("account_id", "TEXT"),
+    ("role", "TEXT NOT NULL DEFAULT 'user'"),
+    ("is_active", "INTEGER NOT NULL DEFAULT 1"),
+    ("created_at", "TEXT"),
+    ("setup_code_hash", "TEXT"),
+    ("setup_code_expires_at", "TEXT"),
+    # Managed credentials, unread by builds without account support (see the
+    # downgrade fence above _current_secret).
+    ("account_password_salt", "TEXT"),
+    ("account_password_hash", "TEXT"),
+    ("account_jwt_secret", "TEXT"),
+)
+
+
+def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
+    """Add the identity columns and backfill them. Idempotent, additive only, so
+    an older build reading this database sees columns it ignores."""
+    if all(name in existing for name, _decl in _ACCOUNT_COLUMNS):
+        return
+    # Two connections opened at the same moment both saw the columns missing.
+    # Take the write lock first, so the second waits here and then re-reads the
+    # table; an ALTER that still loses is the other side's, not an error.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+        added = False
+        fence_added = False
+        for name, decl in _ACCOUNT_COLUMNS:
+            if name in existing:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE auth_user ADD COLUMN {name} {decl}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+                continue
+            added = True
+            fence_added = fence_added or name == "account_jwt_secret"
+        if added:
+            _backfill_account_columns(conn, fence_added)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+_ACCOUNT_API_KEY_COLUMNS = "username, key_prefix, key_hash, name, created_at, expires_at, is_active, is_internal, account_id"
+
+
+_account_keys_synced: set[str] = set()
+
+
+def _ensure_account_api_keys(conn: sqlite3.Connection, existing: set) -> None:
+    """Pin every managed account's API keys to its immutable id, and keep a
+    copy of them where an older build never looks.
+
+    The key table names its account by username, and a username can be deleted
+    and created again. A request that authenticated with a key of the old
+    account must keep addressing the old account's keys, never the namesake's,
+    so listing and revoking scope on ``account_id``. The owner's rows keep NULL
+    and the username query they always had.
+
+    A build without account support empties the whole key table when the
+    owner resets the password. Managed keys are therefore also written to
+    ``account_api_keys``, a table that build never touches, and any managed key
+    missing from the key table on the next start is put back from there for an
+    account that still exists. Both steps are idempotent, and they run once per
+    process per database, so a one-account install's requests carry no extra
+    statements.
+    """
+    db_key = str(DB_PATH)
+    if db_key in _account_keys_synced and "account_id" in existing:
+        return
+    if "account_id" not in existing:
+        try:
+            conn.execute("ALTER TABLE api_keys ADD COLUMN account_id TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+        conn.execute(
+            """UPDATE api_keys SET account_id = (
+                   SELECT account_id FROM auth_user
+                   WHERE auth_user.username = api_keys.username AND auth_user.role != 'owner'
+               ) WHERE account_id IS NULL"""
+        )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS account_api_keys (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            username    TEXT NOT NULL,
+            key_prefix  TEXT NOT NULL,
+            key_hash    TEXT NOT NULL UNIQUE,
+            name        TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL,
+            expires_at  TEXT,
+            is_active   INTEGER NOT NULL DEFAULT 1,
+            is_internal INTEGER NOT NULL DEFAULT 0,
+            account_id  TEXT NOT NULL
+        );
+        """
+    )
+    # Managed rows the copy does not have yet (rows written before this table).
+    conn.execute(
+        f"""INSERT INTO account_api_keys ({_ACCOUNT_API_KEY_COLUMNS})
+            SELECT {_ACCOUNT_API_KEY_COLUMNS} FROM api_keys k
+            WHERE k.account_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM account_api_keys b WHERE b.key_hash = k.key_hash)"""
+    )
+    # Managed rows an older build removed, for accounts that still exist.
+    conn.execute(
+        f"""INSERT INTO api_keys ({_ACCOUNT_API_KEY_COLUMNS})
+            SELECT {_ACCOUNT_API_KEY_COLUMNS} FROM account_api_keys b
+            WHERE NOT EXISTS (SELECT 1 FROM api_keys k WHERE k.key_hash = b.key_hash)
+              AND EXISTS (SELECT 1 FROM auth_user u WHERE u.account_id = b.account_id)"""
+    )
+    conn.commit()
+    _account_keys_synced.add(db_key)
+
+
+def _backfill_account_columns(conn: sqlite3.Connection, fence_added: bool) -> None:
+    from utils.account_context import OWNER_ACCOUNT_ID, ROLE_OWNER, ROLE_USER
+    import uuid
+
+    now = datetime.now(timezone.utc).isoformat()
+    for row_id, username, account_id in conn.execute(
+        "SELECT id, username, account_id FROM auth_user"
+    ).fetchall():
+        if account_id:
+            continue
+        if username == DEFAULT_ADMIN_USERNAME:
+            account_id, role = OWNER_ACCOUNT_ID, ROLE_OWNER
+        else:
+            account_id, role = uuid.uuid4().hex, ROLE_USER
+        conn.execute(
+            "UPDATE auth_user SET account_id = ?, role = ?, created_at = COALESCE(created_at, ?) WHERE id = ?",
+            (account_id, role, now, row_id),
+        )
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS auth_user_account_id ON auth_user(account_id)")
+    if fence_added:
+        _fence_managed_credentials(conn)
+
+
+def _fence_managed_credentials(conn: sqlite3.Connection) -> None:
+    """Move managed rows written before the fence behind it. Idempotent."""
+    # Positional reads: the caller's connection may not have a row factory.
+    rows = conn.execute(
+        "SELECT id, password_salt, password_hash, jwt_secret FROM auth_user "
+        "WHERE role = 'user' AND account_jwt_secret IS NULL"
+    ).fetchall()
+    for row_id, real_salt, real_hash, real_secret in rows:
+        salt, pwd_hash, secret = _legacy_dummies()
+        conn.execute(
+            """UPDATE auth_user
+               SET account_password_salt = ?, account_password_hash = ?, account_jwt_secret = ?,
+                   password_salt = ?, password_hash = ?, jwt_secret = ?
+               WHERE id = ?""",
+            (real_salt, real_hash, real_secret, salt, pwd_hash, secret, row_id),
+        )
+    managed = "SELECT username FROM auth_user WHERE role = 'user'"
+    conn.execute(
+        f"UPDATE api_keys SET key_hash = ? || key_hash WHERE username IN ({managed}) AND key_hash NOT LIKE ?",
+        (_FENCE_PREFIX, _FENCE_PREFIX + "%"),
+    )
+    conn.execute(
+        f"UPDATE refresh_tokens SET token_hash = ? || token_hash WHERE username IN ({managed}) AND token_hash NOT LIKE ?",
+        (_FENCE_PREFIX, _FENCE_PREFIX + "%"),
+    )
+
+
+def get_user_record(username: str) -> Optional[dict]:
+    """Everything the auth dependency needs about a login, in one query: the
+    credential columns plus the account identity that the request binds to."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            f"""
+            SELECT username, {_PASSWORD_SALT_SQL} AS password_salt,
+                   {_PASSWORD_HASH_SQL} AS password_hash, {_SECRET_SQL} AS jwt_secret,
+                   must_change_password, account_id, role, is_active
+            FROM auth_user WHERE username = ?
+            """,
+            (username,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_account(username: str):
+    """The AccountContext for a login, or None."""
+    from utils.account_context import AccountContext
+
+    record = get_user_record(username)
+    if record is None:
+        return None
+    return AccountContext(record["account_id"], record["username"], record["role"])
+
+
+def get_account_by_id(account_id: str):
+    """The AccountContext for an active account id, or None."""
+    from utils.account_context import AccountContext
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT account_id, username, role, is_active FROM auth_user WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None or not row["is_active"]:
+        return None
+    return AccountContext(row["account_id"], row["username"], row["role"])
+
+
+def count_active_accounts() -> int:
+    return account_counts()[0]
+
+
+def count_managed_accounts() -> int:
+    return account_counts()[1]
+
+
+def account_counts() -> tuple[int, int]:
+    """``(active accounts, managed accounts of any state)`` in one query.
+
+    The first decides the login form; the second decides whether the host may
+    be opened up at all: a deactivated account still has its files on disk.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0) AS active,
+                   COALESCE(SUM(CASE WHEN role IS NOT NULL AND role != 'owner' THEN 1 ELSE 0 END), 0) AS managed
+            FROM auth_user
+            """
+        ).fetchone()
+        return int(row["active"]), int(row["managed"])
+    finally:
+        conn.close()
+
+
+def validate_account_username(username: str) -> str:
+    username = username.casefold()
+    if re.fullmatch(r"[a-z0-9_-]{3,32}", username) is None:
+        raise ValueError("Username must contain 3 to 32 letters, digits, underscores or hyphens")
+    if username in {"unsloth", "owner", "admin", "root", "system"}:
+        raise ValueError("This username is reserved")
+    return username
+
+
+def _public_account(row) -> dict:
+    return {
+        "account_id": row["account_id"],
+        "username": row["username"],
+        "role": row["role"],
+        "is_active": bool(row["is_active"]),
+        "created_at": row["created_at"],
+        # Expired codes still need regeneration; pending means setup is outstanding.
+        "setup_code_pending": bool(row["setup_code_hash"]),
+    }
+
+
+def list_accounts() -> list[dict]:
+    conn = get_connection()
+    try:
+        return [
+            _public_account(row)
+            for row in conn.execute("SELECT * FROM auth_user ORDER BY created_at, account_id")
+        ]
+    finally:
+        conn.close()
+
+
+def _managed_account(conn: sqlite3.Connection, account_id: str):
+    row = conn.execute("SELECT * FROM auth_user WHERE account_id = ?", (account_id,)).fetchone()
+    if row is None:
+        raise LookupError("Account not found")
+    if row["role"] == "owner" or account_id == "owner":
+        raise ValueError("The installation owner cannot be modified here")
+    return row
+
+
+def _revoke_account_credentials(conn: sqlite3.Connection, row) -> None:
+    # These frozen legacy tables reference usernames. Resolve that name only from
+    # the immutable account id, under the same write lock as the mutation.
+    conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (row["username"],))
+    conn.execute("DELETE FROM api_keys WHERE username = ?", (row["username"],))
+    conn.execute("DELETE FROM account_api_keys WHERE account_id = ?", (row["account_id"],))
+    conn.execute(
+        "UPDATE auth_user SET account_jwt_secret = ? WHERE account_id = ?",
+        (secrets.token_urlsafe(64), row["account_id"]),
+    )
+
+
+def issue_account_setup_code(
+    *, username: Optional[str] = None, account_id: Optional[str] = None
+) -> dict:
+    """Create an account or replace its setup credential, returning plaintext once."""
+    from auth.hashing import hash_password
+    from auth.policy import invalidate_account_cache
+
+    if (username is None) == (account_id is None):
+        raise ValueError("Specify either a username or an account id")
+    if username is not None:
+        username = validate_account_username(username)
+    code = secrets.token_urlsafe(32)
+    salt, pwd_hash = hash_password(code)
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(minutes = 60)).isoformat()
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if username is not None:
+                account_id = uuid.uuid4().hex
+                legacy_salt, legacy_hash, legacy_secret = _legacy_dummies()
+                conn.execute(
+                    """INSERT INTO auth_user
+                    (username, account_id, role, is_active, created_at, password_salt,
+                     password_hash, jwt_secret, account_password_salt, account_password_hash,
+                     account_jwt_secret, must_change_password, setup_code_hash, setup_code_expires_at)
+                    VALUES (?, ?, 'user', 1, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                    (
+                        username,
+                        account_id,
+                        now.isoformat(),
+                        legacy_salt,
+                        legacy_hash,
+                        legacy_secret,
+                        salt,
+                        pwd_hash,
+                        secrets.token_urlsafe(64),
+                        _hash_token(code),
+                        expires_at,
+                    ),
+                )
+            else:
+                row = _managed_account(conn, account_id)
+                _revoke_account_credentials(conn, row)
+                conn.execute(
+                    """UPDATE auth_user SET account_password_salt = ?, account_password_hash = ?,
+                       must_change_password = 1, setup_code_hash = ?, setup_code_expires_at = ?
+                       WHERE account_id = ?""",
+                    (salt, pwd_hash, _hash_token(code), expires_at, account_id),
+                )
+            account = _public_account(_managed_account(conn, account_id))
+    finally:
+        conn.close()
+    invalidate_account_cache()
+    return {"account": account, "setup_code": code, "setup_code_expires_at": expires_at}
+
+
+def authenticate_account_login(
+    username: str, password: str
+) -> Optional[Tuple[str, str, str, bool]]:
+    """Managed login: consume a setup code once, retaining its password hash for setup.
+
+    A consumed code cannot log in again: must_change_password without a pending
+    code admits only the already-issued session's change-password request.
+    """
+    from auth.hashing import verify_password
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            f"""SELECT account_id, is_active, must_change_password, setup_code_hash,
+                       {_PASSWORD_SALT_SQL} AS password_salt, {_PASSWORD_HASH_SQL} AS password_hash,
+                       {_SECRET_SQL} AS jwt_secret
+                FROM auth_user WHERE username = ?""",
+            (username,),
+        ).fetchone()
+        if row is None or not row["is_active"]:
+            return None
+        if row["must_change_password"]:
+            if not row["setup_code_hash"] or not hmac.compare_digest(
+                row["setup_code_hash"], _hash_token(password)
+            ):
+                return None
+            # Compare-and-swap includes expiry, activity and credential generation.
+            # Concurrent logins, resets or regeneration can never spend a code twice.
+            with conn:
+                cursor = conn.execute(
+                    f"""UPDATE auth_user SET setup_code_hash = NULL, setup_code_expires_at = NULL
+                       WHERE account_id = ? AND setup_code_hash = ? AND {_SECRET_SQL} = ?
+                       AND is_active = 1 AND setup_code_expires_at > ?""",
+                    (
+                        row["account_id"],
+                        row["setup_code_hash"],
+                        row["jwt_secret"],
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    return None
+        elif not verify_password(password, row["password_salt"], row["password_hash"]):
+            return None
+        return (
+            row["password_salt"],
+            row["password_hash"],
+            row["jwt_secret"],
+            bool(row["must_change_password"]),
+        )
+    finally:
+        conn.close()
+
+
+def update_account_password(
+    username: str, new_password: str, *, expect_password_hash: str, expect_secret: str
+) -> Optional[str]:
+    """Complete managed setup/password change without touching owner bootstrap or desktop state."""
+    from auth.hashing import hash_password
+
+    salt, pwd_hash = hash_password(new_password)
+    secret = secrets.token_urlsafe(64)
+    conn = get_connection()
+    try:
+        with conn:
+            cursor = conn.execute(
+                f"""UPDATE auth_user SET account_password_salt = ?, account_password_hash = ?,
+                   account_jwt_secret = ?, must_change_password = 0,
+                   setup_code_hash = NULL, setup_code_expires_at = NULL
+                   WHERE username = ? AND role = 'user' AND is_active = 1
+                   AND {_PASSWORD_HASH_SQL} = ? AND {_SECRET_SQL} = ?""",
+                (salt, pwd_hash, secret, username, expect_password_hash, expect_secret),
+            )
+            if cursor.rowcount != 1:
+                return None
+            conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        return secret
+    finally:
+        conn.close()
+
+
+def set_account_active(account_id: str, is_active: bool) -> dict:
+    from auth.policy import invalidate_account_cache
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = _managed_account(conn, account_id)
+            if not is_active:
+                _revoke_account_credentials(conn, row)
+            conn.execute(
+                "UPDATE auth_user SET is_active = ? WHERE account_id = ?",
+                (int(is_active), account_id),
+            )
+            result = _public_account(_managed_account(conn, account_id))
+    finally:
+        conn.close()
+    invalidate_account_cache()
+    return result
+
+
+def delete_account(account_id: str, retire) -> None:
+    """Revoke first, then retire files and remove the identity under a write lock.
+
+    If retirement fails, the account remains disabled for an owner to retry.
+    ``retire(AccountContext)`` must not write to auth.db while this lock is held.
+    """
+    from auth.policy import invalidate_account_cache
+    from utils.account_context import AccountContext
+
+    set_account_active(account_id, False)
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = _managed_account(conn, account_id)
+            _revoke_account_credentials(conn, row)
+            retire(AccountContext(row["account_id"], row["username"], row["role"]))
+            conn.execute("DELETE FROM auth_user WHERE account_id = ?", (account_id,))
+    except OSError:
+        # Another owner request can reactivate between the initial revocation
+        # and this write lock. A failed rename must still leave login disabled.
+        set_account_active(account_id, False)
+        raise
+    finally:
+        conn.close()
+        invalidate_account_cache()
 
 
 def _get_or_create_api_key_pbkdf2_salt() -> bytes:
@@ -598,8 +1128,18 @@ def create_initial_user(
     Raises sqlite3.IntegrityError if username already exists.
     """
     from .hashing import hash_password
+    from utils.account_context import OWNER_ACCOUNT_ID, ROLE_OWNER, ROLE_USER
+    import uuid
 
     salt, pwd_hash = hash_password(password)
+    if username == DEFAULT_ADMIN_USERNAME:
+        account_id, role = OWNER_ACCOUNT_ID, ROLE_OWNER
+        legacy = (salt, pwd_hash, jwt_secret)
+        fenced = (None, None, None)
+    else:
+        account_id, role = uuid.uuid4().hex, ROLE_USER
+        legacy = _legacy_dummies()
+        fenced = (salt, pwd_hash, jwt_secret)
     conn = get_connection()
     try:
         conn.execute(
@@ -609,15 +1149,32 @@ def create_initial_user(
                 password_salt,
                 password_hash,
                 jwt_secret,
-                must_change_password
+                account_password_salt,
+                account_password_hash,
+                account_jwt_secret,
+                must_change_password,
+                account_id,
+                role,
+                created_at
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (username, salt, pwd_hash, jwt_secret, int(must_change_password)),
+            (
+                username,
+                *legacy,
+                *fenced,
+                int(must_change_password),
+                account_id,
+                role,
+                datetime.now(timezone.utc).isoformat(),
+            ),
         )
         conn.commit()
     finally:
         conn.close()
+    from auth.policy import invalidate_account_cache
+
+    invalidate_account_cache()
 
 
 def delete_user(username: str) -> None:
@@ -632,6 +1189,9 @@ def delete_user(username: str) -> None:
         conn.commit()
     finally:
         conn.close()
+    from auth.policy import invalidate_account_cache
+
+    invalidate_account_cache()
 
 
 def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str, bool]]:
@@ -644,8 +1204,9 @@ def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str, bool]]:
     conn = get_connection()
     try:
         cur = conn.execute(
-            """
-            SELECT password_salt, password_hash, jwt_secret, must_change_password
+            f"""
+            SELECT {_PASSWORD_SALT_SQL} AS password_salt, {_PASSWORD_HASH_SQL} AS password_hash,
+                   {_SECRET_SQL} AS jwt_secret, must_change_password
             FROM auth_user
             WHERE username = ?
             """,
@@ -669,7 +1230,7 @@ def get_jwt_secret(username: str) -> Optional[str]:
     conn = get_connection()
     try:
         cur = conn.execute(
-            "SELECT jwt_secret FROM auth_user WHERE username = ?",
+            f"SELECT {_SECRET_SQL} AS jwt_secret FROM auth_user WHERE username = ?",
             (username,),
         )
         row = cur.fetchone()
@@ -766,23 +1327,30 @@ def update_password(
 
     salt, pwd_hash = hash_password(new_password)
     jwt_secret = secrets.token_urlsafe(64)
+    # The owner's row keeps the legacy columns; a managed row is written behind
+    # the downgrade fence (see _current_secret).
+    columns = (
+        "password_salt = ?, password_hash = ?, jwt_secret = ?"
+        if _is_owner_name(username)
+        else "account_password_salt = ?, account_password_hash = ?, account_jwt_secret = ?"
+    )
     conn = get_connection()
     try:
         if expect_password_hash is None:
             cursor = conn.execute(
-                """
+                f"""
                 UPDATE auth_user
-                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+                SET {columns}, must_change_password = 0
                 WHERE username = ?
                 """,
                 (salt, pwd_hash, jwt_secret, username),
             )
         else:
             cursor = conn.execute(
-                """
+                f"""
                 UPDATE auth_user
-                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-                WHERE username = ? AND password_hash = ?
+                SET {columns}, must_change_password = 0
+                WHERE username = ? AND {_PASSWORD_HASH_SQL} = ?
                 """,
                 (salt, pwd_hash, jwt_secret, username, expect_password_hash),
             )
@@ -814,7 +1382,7 @@ def save_refresh_token(
     current one, and callers that already verified a credential must pass the
     version they verified rather than let this re-read a rotated one.
     """
-    token_hash = _hash_token(token)
+    token_hash = _fenced_hash(_hash_token(token), username)
     conn = get_connection()
     try:
         if secret_gen is None:
@@ -852,12 +1420,12 @@ def consume_refresh_token(token: str) -> Optional[Tuple[str, bool, str]]:
             (now,),
         )
         cur = conn.execute(
-            """
+            f"""
             DELETE FROM refresh_tokens
-            WHERE token_hash = ? AND expires_at >= ?
+            WHERE token_hash {_FENCED_HASH_SQL} AND expires_at >= ?
             RETURNING username, is_desktop, secret_gen
             """,
-            (token_hash, now),
+            (*_hash_candidates(token_hash), now),
         )
         row = cur.fetchone()
         if row is None:
@@ -891,11 +1459,11 @@ def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
         conn.commit()
 
         cur = conn.execute(
-            """
+            f"""
             SELECT id, username, expires_at, is_desktop, secret_gen FROM refresh_tokens
-            WHERE token_hash = ?
+            WHERE token_hash {_FENCED_HASH_SQL}
             """,
-            (token_hash,),
+            _hash_candidates(token_hash),
         )
         row = cur.fetchone()
         if row is None:
@@ -1014,8 +1582,12 @@ def create_api_key(
     expires_at: Optional[str] = None,
     internal: bool = False,
     expect_gen: Optional[str] = None,
+    account_id: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """Create a new API key for *username*.
+
+    ``account_id`` pins a managed account's key to its immutable id (see
+    :func:`_ensure_api_key_account_column`); the owner's keys leave it unset.
 
     Returns ``(raw_key, row_dict)`` where *raw_key* is shown to the user
     exactly once.  The database only stores the PBKDF2 hash.
@@ -1028,7 +1600,7 @@ def create_api_key(
     cannot mint a key that outlives it. Raises ``CredentialRotated`` if it moved.
     """
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
-    key_hash = _pbkdf2_api_key(raw_key)
+    key_hash = _fenced_hash(_pbkdf2_api_key(raw_key), username)
     key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1040,10 +1612,12 @@ def create_api_key(
                 raise CredentialRotated(
                     "The credential this request authenticated with was revoked."
                 )
+        if account_id is None:
+            account_id = _managed_account_id(conn, username)
         conn.execute(
             """
-            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal, account_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 username,
@@ -1053,8 +1627,15 @@ def create_api_key(
                 now,
                 expires_at,
                 1 if internal else 0,
+                account_id,
             ),
         )
+        if account_id is not None:
+            conn.execute(
+                f"""INSERT INTO account_api_keys ({_ACCOUNT_API_KEY_COLUMNS})
+                    SELECT {_ACCOUNT_API_KEY_COLUMNS} FROM api_keys WHERE key_hash = ?""",
+                (key_hash,),
+            )
         conn.commit()
         cur = conn.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,))
         row = cur.fetchone()
@@ -1063,46 +1644,74 @@ def create_api_key(
         conn.close()
 
 
-def list_api_keys(username: str, include_internal: bool = False) -> list:
+def list_api_keys(
+    username: str,
+    include_internal: bool = False,
+    account_id: Optional[str] = None,
+) -> list:
     """Return API keys for *username*. Internal workflow keys are hidden
-    by default so they do not clutter user-facing UIs."""
+    by default so they do not clutter user-facing UIs. ``account_id`` narrows a
+    managed account's listing to keys of that exact account."""
     conn = get_connection()
     try:
-        if include_internal:
-            cur = conn.execute(
-                """
-                SELECT id, username, key_prefix, name, created_at, last_used_at,
-                       expires_at, is_active, is_internal
-                FROM api_keys
-                WHERE username = ?
-                ORDER BY created_at DESC
-                """,
-                (username,),
-            )
-        else:
-            cur = conn.execute(
-                """
-                SELECT id, username, key_prefix, name, created_at, last_used_at,
-                       expires_at, is_active, is_internal
-                FROM api_keys
-                WHERE username = ? AND is_internal = 0
-                ORDER BY created_at DESC
-                """,
-                (username,),
-            )
+        scope, params = _key_scope(username, account_id)
+        internal = "" if include_internal else " AND is_internal = 0"
+        cur = conn.execute(
+            f"""
+            SELECT id, username, key_prefix, name, created_at, last_used_at,
+                   expires_at, is_active, is_internal
+            FROM api_keys
+            WHERE {scope}{internal}
+            ORDER BY created_at DESC
+            """,
+            params,
+        )
         return [dict(row) for row in cur.fetchall()]
     finally:
         conn.close()
 
 
-def revoke_api_key(username: str, key_id: int) -> bool:
+def _managed_account_id(conn: sqlite3.Connection, username: str) -> Optional[str]:
+    """The immutable id of a managed account, None for the owner or an unknown name."""
+    row = conn.execute(
+        "SELECT account_id, role FROM auth_user WHERE username = ?", (username,)
+    ).fetchone()
+    if row is None or row["role"] in (None, "owner"):
+        return None
+    return row["account_id"]
+
+
+def _revoke_key_copy(conn: sqlite3.Connection, key_id: int) -> None:
+    conn.execute(
+        "UPDATE account_api_keys SET is_active = 0 "
+        "WHERE key_hash = (SELECT key_hash FROM api_keys WHERE id = ?)",
+        (key_id,),
+    )
+
+
+def _key_scope(username: str, account_id: Optional[str]) -> Tuple[str, tuple]:
+    """WHERE clause selecting one account's keys: by name for the owner, by
+    immutable id as well for a managed account."""
+    if account_id is None:
+        return "username = ?", (username,)
+    return "username = ? AND account_id = ?", (username, account_id)
+
+
+def revoke_api_key(
+    username: str,
+    key_id: int,
+    account_id: Optional[str] = None,
+) -> bool:
     """Soft-delete an API key.  Returns True if a matching row was found."""
     conn = get_connection()
     try:
+        scope, params = _key_scope(username, account_id)
         cursor = conn.execute(
-            "UPDATE api_keys SET is_active = 0 WHERE id = ? AND username = ?",
-            (key_id, username),
+            f"UPDATE api_keys SET is_active = 0 WHERE id = ? AND {scope}",
+            (key_id, *params),
         )
+        if cursor.rowcount:
+            _revoke_key_copy(conn, key_id)
         conn.commit()
         return cursor.rowcount > 0
     finally:
@@ -1121,6 +1730,8 @@ def revoke_internal_api_key(key_id: int) -> bool:
             "UPDATE api_keys SET is_active = 0 WHERE id = ? AND is_internal = 1",
             (key_id,),
         )
+        if cursor.rowcount:
+            _revoke_key_copy(conn, key_id)
         conn.commit()
         return cursor.rowcount > 0
     finally:
@@ -1145,7 +1756,8 @@ def is_internal_api_key(raw_key: str) -> bool:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT is_internal FROM api_keys WHERE key_hash = ?", (key_hash,)
+            f"SELECT is_internal FROM api_keys WHERE key_hash {_FENCED_HASH_SQL}",
+            _hash_candidates(key_hash),
         ).fetchone()
     finally:
         conn.close()
@@ -1184,8 +1796,8 @@ def internal_api_key_name(raw_key: str) -> Optional[str]:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT name FROM api_keys WHERE key_hash = ? AND is_internal = 1 AND is_active = 1",
-            (key_hash,),
+            f"SELECT name FROM api_keys WHERE key_hash {_FENCED_HASH_SQL} AND is_internal = 1 AND is_active = 1",
+            _hash_candidates(key_hash),
         ).fetchone()
     finally:
         conn.close()
@@ -1204,7 +1816,19 @@ def validate_api_key(raw_key: str) -> Optional[str]:
 def validate_api_key_with_credential(
     raw_key: str, *, touch: bool = True
 ) -> Optional[Tuple[str, str]]:
-    """Validate *raw_key* and return ``(username, jwt_secret)``, or ``None``.
+    """Validate *raw_key* and return ``(username, jwt_secret)``, or ``None``."""
+    verified = validate_api_key_account(raw_key, touch = touch)
+    return (verified[0]["username"], verified[1]) if verified else None
+
+
+def validate_api_key_account(raw_key: str, *, touch: bool = True) -> Optional[Tuple[dict, str]]:
+    """Validate *raw_key* and return ``(account record, jwt_secret)``, or ``None``.
+
+    The record carries ``account_id``, ``username``, ``role`` and ``is_active``,
+    read in the same statement that matched the key. A request is bound to that
+    identity and never to a second lookup by username: a username can be deleted
+    and created again while a request is in flight, an account id cannot. A key
+    whose account is deactivated does not validate.
 
     Also updates ``last_used_at`` on success. The key check and the credential
     read share one write transaction, so the returned version is the one the key
@@ -1224,8 +1848,14 @@ def validate_api_key_with_credential(
         if touch:
             conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
-            "SELECT id, username, is_active, expires_at FROM api_keys WHERE key_hash = ?",
-            (key_hash,),
+            f"""
+            SELECT k.id, k.username, k.is_active, k.expires_at,
+                   u.account_id, u.role, u.is_active AS account_active,
+                   COALESCE(u.account_jwt_secret, u.jwt_secret) AS jwt_secret
+            FROM api_keys k JOIN auth_user u ON u.username = k.username
+            WHERE k.key_hash {_FENCED_HASH_SQL}
+            """,
+            _hash_candidates(key_hash),
         )
         row = cur.fetchone()
         if row is None:
@@ -1245,7 +1875,9 @@ def validate_api_key_with_credential(
             expires = datetime.fromisoformat(row["expires_at"])
             if datetime.now(timezone.utc) > expires:
                 return None
-        secret = _current_secret(conn, row["username"])
+        if not row["account_active"]:
+            return None
+        secret = row["jwt_secret"]
         if secret is None:
             return None
         if touch:
@@ -1254,7 +1886,13 @@ def validate_api_key_with_credential(
                 (datetime.now(timezone.utc).isoformat(), row["id"]),
             )
             conn.commit()
-        return row["username"], secret
+        record = {
+            "account_id": row["account_id"],
+            "username": row["username"],
+            "role": row["role"],
+            "is_active": int(row["account_active"]),
+        }
+        return record, secret
     finally:
         conn.rollback()
         conn.close()

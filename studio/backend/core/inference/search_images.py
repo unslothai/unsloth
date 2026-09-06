@@ -12,6 +12,10 @@ import json
 import re
 import secrets
 import threading
+import sys
+from types import SimpleNamespace
+
+from utils.account_context import current_account_id, is_owner_context
 import time
 from pathlib import Path
 from typing import Any
@@ -70,6 +74,29 @@ _inflight: dict[str, threading.Lock] = {}
 _inflight_lock = threading.Lock()
 
 
+_account_states_lock = threading.Lock()
+_account_states: dict[str, SimpleNamespace] = {}
+
+
+def _account_state():
+    """The owner keeps the historical registry; each account gets its own clear fences."""
+    if is_owner_context():
+        return sys.modules[__name__]
+    with _account_states_lock:
+        key = current_account_id()
+        if key not in _account_states:
+            _account_states[key] = SimpleNamespace(
+                _registry = {},
+                _cache_generation = 0,
+                _full_clear_generation = 0,
+                _reaped_at = {},
+                _reaped_floor_generation = 0,
+                _cleared_unservable = set(),
+                _inflight = {},
+            )
+        return _account_states[key]
+
+
 def search_images_enabled() -> bool:
     try:
         from storage.studio_db import list_chat_settings
@@ -110,13 +137,16 @@ def _names_public_host(url: str) -> bool:
 
 
 def _prune_registry_locked(now: float) -> None:
-    expired = [key for key, entry in _registry.items() if now - entry["created"] > _REGISTRY_TTL_S]
+    state = _account_state()
+    expired = [
+        key for key, entry in state._registry.items() if now - entry["created"] > _REGISTRY_TTL_S
+    ]
     for key in expired:
-        _registry.pop(key, None)
-    if len(_registry) > _REGISTRY_MAX_ENTRIES:
-        oldest = sorted(_registry.items(), key = lambda item: item[1]["created"])
-        for key, _entry in oldest[: len(_registry) - _REGISTRY_MAX_ENTRIES]:
-            _registry.pop(key, None)
+        state._registry.pop(key, None)
+    if len(state._registry) > _REGISTRY_MAX_ENTRIES:
+        oldest = sorted(state._registry.items(), key = lambda item: item[1]["created"])
+        for key, _entry in oldest[: len(state._registry) - _REGISTRY_MAX_ENTRIES]:
+            state._registry.pop(key, None)
 
 
 def register_images(
@@ -127,13 +157,14 @@ def register_images(
     expected_generation: int | None = None,
 ) -> list[dict[str, str]]:
     # Public entries only; the URLs stay in this process.
+    state = _account_state()
     from .web_access_policy import check_url_access
 
     public: list[dict[str, str]] = []
     persist: list[tuple[str, dict[str, Any], int]] = []
     now = time.monotonic()
     with _registry_lock:
-        generation = _cache_generation
+        generation = state._cache_generation
         if expected_generation is not None and expected_generation != generation:
             return []
         _prune_registry_locked(now)
@@ -153,7 +184,7 @@ def register_images(
             if not (_names_public_host(thumbnail) and _names_public_host(source)):
                 continue
             image_id = secrets.token_hex(6)
-            _registry[image_id] = {
+            state._registry[image_id] = {
                 "thumbnail": thumbnail,
                 "source": source,
                 "created": now,
@@ -171,7 +202,7 @@ def register_images(
             if subject:
                 entry["subject"] = _clean_text(subject, 80)
             public.append(entry)
-            persist.append((image_id, _registry[image_id], generation))
+            persist.append((image_id, state._registry[image_id], generation))
     for image_id, stored, registered_generation in persist:
         _persist_entry(image_id, stored, registered_generation)
     if persist:
@@ -182,17 +213,19 @@ def register_images(
 
 
 def cache_generation() -> int:
+    state = _account_state()
     with _registry_lock:
-        return _cache_generation
+        return state._cache_generation
 
 
 def _lookup_locked(image_id: str) -> dict[str, Any] | None:
     """Registry read with the TTL applied. The caller holds ``_registry_lock``."""
-    entry = _registry.get(image_id)
+    state = _account_state()
+    entry = state._registry.get(image_id)
     if entry is None:
         return None
     if time.monotonic() - entry["created"] > _REGISTRY_TTL_S:
-        _registry.pop(image_id, None)
+        state._registry.pop(image_id, None)
         return None
     return dict(entry)
 
@@ -262,8 +295,9 @@ def strip_images_suffix(result: str) -> str:
 
 
 def _cache_dir() -> Path:
-    from utils.paths import ensure_dir, studio_root
-    return ensure_dir(studio_root() / _CACHE_DIRNAME)
+    from utils.paths import ensure_dir
+    from utils.paths.storage_roots import account_path
+    return ensure_dir(account_path(_CACHE_DIRNAME))
 
 
 def _cache_path(image_id: str) -> Path:
@@ -405,19 +439,21 @@ def _drop_if_cleared(image_id: str) -> bool:
     has usually let go by the next request, and once both files are gone the id is
     ordinary again -- nothing resolves it, so it 404s like any other unknown one.
     """
+    state = _account_state()
     with _registry_lock:
-        if image_id not in _cleared_unservable:
+        if image_id not in state._cleared_unservable:
             return True
         for path in (_cache_path(image_id), _meta_path(image_id)):
             try:
                 path.unlink(missing_ok = True)
             except OSError:
                 return False
-        _cleared_unservable.discard(image_id)
+        state._cleared_unservable.discard(image_id)
         return True
 
 
 def thumbnail_bytes(image_id: str) -> bytes | None:
+    state = _account_state()
     if not IMAGE_ID_RE.fullmatch(image_id or ""):
         return None
     # Ahead of that read and of the sidecar below, which both go around the registry.
@@ -434,7 +470,7 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
     # clear had just deleted would be written back. Reading it first is the safe order -- a clear after this point
     # leaves us holding a stale value, which fails the check.
     with _registry_lock:
-        generation = _cache_generation
+        generation = state._cache_generation
         entry = _lookup_locked(image_id)
     if entry is None:
         # Not in memory: the process may have restarted since the search. The metadata on disk outlives it, the same way
@@ -444,7 +480,7 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
             return None
 
     with _inflight_lock:
-        gate = _inflight.setdefault(image_id, threading.Lock())
+        gate = state._inflight.setdefault(image_id, threading.Lock())
     try:
         with gate:
             try:
@@ -480,8 +516,8 @@ def thumbnail_bytes(image_id: str) -> bytes | None:
     finally:
         with _inflight_lock:
             # Only drop the gate this call owns.
-            if _inflight.get(image_id) is gate and not gate.locked():
-                _inflight.pop(image_id, None)
+            if state._inflight.get(image_id) is gate and not gate.locked():
+                state._inflight.pop(image_id, None)
 
 
 def registered_image_ids() -> set[str] | None:
@@ -491,9 +527,10 @@ def registered_image_ids() -> set[str] | None:
     A clear is global while the chat delete it accompanies is not, so anything that
     registers after this snapshot belongs to a chat the delete is keeping.
     """
+    state = _account_state()
     ids: set[str] = set()
     with _registry_lock:
-        ids.update(_registry)
+        ids.update(state._registry)
     for pattern in ("*.jpg", "*.json"):
         try:
             ids.update(path.stem for path in _cache_dir().glob(pattern))
@@ -524,11 +561,11 @@ def snapshot_and_fence_registrations() -> set[str] | None:
     in-flight FETCHES: those are keyed per id now, and a bare generation move is not one of
     the signals they read.
     """
-    global _cache_generation
+    state = _account_state()
     ids: set[str] = set()
     with _registry_lock:
-        ids.update(_registry)
-        _cache_generation += 1
+        ids.update(state._registry)
+        state._cache_generation += 1
     for pattern in ("*.jpg", "*.json"):
         try:
             ids.update(path.stem for path in _cache_dir().glob(pattern))
@@ -541,11 +578,12 @@ def snapshot_and_fence_registrations() -> set[str] | None:
 
 def _reaped_since_locked(image_id: str, generation: int) -> bool:
     """Whether a clear covering ``image_id`` landed after ``generation``. Caller holds the lock."""
-    if _full_clear_generation > generation:
+    state = _account_state()
+    if state._full_clear_generation > generation:
         return True
-    if generation < _reaped_floor_generation:
+    if generation < state._reaped_floor_generation:
         return True
-    return _reaped_at.get(image_id, 0) > generation
+    return state._reaped_at.get(image_id, 0) > generation
 
 
 def clear_cache(only_ids: set[str] | None = None) -> None:
@@ -559,35 +597,35 @@ def clear_cache(only_ids: set[str] | None = None) -> None:
     refuse a registration racing a clear -- but the in-flight fetch check is per id, so a
     spared image's fetch is left alone. Aborting it would 404 a card that never retries.
     """
-    global _cache_generation, _full_clear_generation, _reaped_floor_generation
+    state = _account_state()
     # The unlinks are under the lock too, so an in-flight fetch cannot slip its write in between the bump and the delete
     # and leave a cleared thumbnail on disk.
     with _registry_lock:
         if only_ids is None:
-            _registry.clear()
+            state._registry.clear()
         else:
             for image_id in only_ids:
-                _registry.pop(image_id, None)
-        _cache_generation += 1
+                state._registry.pop(image_id, None)
+        state._cache_generation += 1
         if only_ids is None:
             # Nothing survives, so every in-flight fetch has to abort. One number says so for all of them, including ids
             # this process has never seen.
-            _full_clear_generation = _cache_generation
-            _reaped_at.clear()
+            state._full_clear_generation = state._cache_generation
+            state._reaped_at.clear()
         else:
-            if len(_reaped_at) + len(only_ids) > _REAPED_AT_MAX:
+            if len(state._reaped_at) + len(only_ids) > _REAPED_AT_MAX:
                 # Out of room. Drop the OLDEST records rather than promoting this to a full clear: doing that aborts
                 # every fetch in flight, including ones for images this clear spared, and an aborted fetch is not a
                 # cheap retry -- the card 404s and useSearchThumbnail never asks again. Raising the floor instead gives
                 # up only on fetches older than every record still held, which the fetch timeout makes unreachable in
                 # practice.
-                keep_from = sorted(_reaped_at.values())[len(_reaped_at) // 2 :]
-                floor = keep_from[0] - 1 if keep_from else _cache_generation
-                for stale_id in [key for key, at in _reaped_at.items() if at <= floor]:
-                    _reaped_at.pop(stale_id, None)
-                _reaped_floor_generation = max(_reaped_floor_generation, floor)
+                keep_from = sorted(state._reaped_at.values())[len(state._reaped_at) // 2 :]
+                floor = keep_from[0] - 1 if keep_from else state._cache_generation
+                for stale_id in [key for key, at in state._reaped_at.items() if at <= floor]:
+                    state._reaped_at.pop(stale_id, None)
+                state._reaped_floor_generation = max(state._reaped_floor_generation, floor)
             for image_id in only_ids:
-                _reaped_at[image_id] = _cache_generation
+                state._reaped_at[image_id] = state._cache_generation
         for pattern in ("*.jpg", "*.json", "*.tmp"):
             try:
                 paths = list(_cache_dir().glob(pattern))
@@ -606,4 +644,4 @@ def clear_cache(only_ids: set[str] | None = None) -> None:
                     # Still on disk, so remember the id and refuse to serve it until the unlink does land.
                     # `.jpg`/`.json` share a stem; a `.tmp` was never servable, and its stem carries the writer suffix.
                     if pattern != "*.tmp":
-                        _cleared_unservable.add(path.stem)
+                        state._cleared_unservable.add(path.stem)

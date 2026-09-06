@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
 import io
 import os
@@ -25,6 +26,11 @@ def _encode_bytes_to_base64(value: bytes | bytearray) -> str:
 
 
 def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None) -> str | None:
+    account_path(
+        Path(base_path) / path_value
+        if base_path and not Path(path_value).is_absolute()
+        else path_value
+    )
     try:
         path = Path(path_value)
         candidates: list[Path] = []
@@ -135,7 +141,7 @@ def build_model_providers(recipe: dict[str, Any]):
     for provider in recipe.get("model_providers", []):
         api_key = provider.get("api_key")
         api_key_env = provider.get("api_key_env")
-        if not api_key and api_key_env:
+        if not api_key and api_key_env and not managed_account():
             api_key = os.getenv(api_key_env)
         providers.append(
             ModelProvider(
@@ -214,7 +220,7 @@ def build_mcp_providers(recipe: dict[str, Any]) -> list:
         if provider_type in {"sse", "streamable_http"}:
             api_key = provider.get("api_key")
             api_key_env = provider.get("api_key_env")
-            if not api_key and api_key_env:
+            if not api_key and api_key_env and not managed_account():
                 api_key = os.getenv(str(api_key_env))
             providers.append(
                 MCPProvider(
@@ -253,6 +259,7 @@ def _strip_frontend_model_config_metadata(recipe: dict[str, Any]) -> dict[str, A
 
 
 def build_config_builder(recipe: dict[str, Any]):
+    validate_recipe_access(recipe)
     _apply_data_designer_image_context_patch()
     from data_designer.config import DataDesignerConfigBuilder  # pyright: ignore[reportMissingImports]
     from data_designer.config.processors import ProcessorType  # pyright: ignore[reportMissingImports]
@@ -288,6 +295,8 @@ def build_config_builder(recipe: dict[str, Any]):
 
 
 def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = None):
+    validate_recipe_access(recipe)
+    account_path(artifact_path)
     _apply_data_designer_image_context_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 

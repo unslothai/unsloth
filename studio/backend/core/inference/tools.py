@@ -13,6 +13,7 @@ import hashlib
 import json
 import http.client
 import os
+from functools import partial
 import signal
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -78,6 +79,8 @@ from core.inference.mcp_client import (
     stdio_mcp_enabled,
 )
 from storage import mcp_servers_db
+from utils.account_context import account_thread, current_account_id, is_owner_context
+from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 
 from loggers import get_logger
 
@@ -7162,6 +7165,36 @@ def _sandbox_preexec():
             pass
 
 
+def _account_confinement():
+    """The OS-level confinement for the acting account's next child.
+
+    None for the installation owner (one context read, nothing else changes).
+    A managed account's child is confined to its own roots; when this host
+    has no mechanism the call raises ToolConfinementUnavailable and the tool
+    reports that instead of running. See core/inference/tool_confinement.py.
+    """
+    return account_confinement(_SANDBOX_SITE_DIR)
+
+
+def _run_preexecs(first, second):
+    """Both pre-exec steps in the forked child, in order; no closures, no imports."""
+    if first is not None:
+        first()
+    second()
+
+
+def _apply_confinement(confinement, popen_kwargs: dict, argv: list) -> list:
+    """Add the confinement to the Popen call: the Landlock pre-exec on Linux,
+    the sandbox-exec wrapper on macOS. Returns the argv to spawn."""
+    if confinement is None:
+        return argv
+    if confinement.preexec is not None and sys.platform != "win32":
+        popen_kwargs["preexec_fn"] = partial(
+            _run_preexecs, popen_kwargs.get("preexec_fn"), confinement.preexec
+        )
+    return confinement.wrap(argv)
+
+
 def _bypass_preexec():
     """Minimal pre-exec for bypass exec: os.setsid() only.
 
@@ -7309,29 +7342,33 @@ def _get_shell_cmd(command: str) -> list[str]:
 
 # Per-session working directories so each chat thread gets its own sandbox.
 # Falls back to ~/studio_sandbox/_default for callers without a session_id.
-_workdirs: dict[str, str] = {}
+_workdirs: dict[tuple[str, str], str] = {}
 # Sessions with a tool call in flight. Deleting a chat unlinks its workdir, and
 # a process whose cwd has been removed fails every relative write with ENOENT.
-_active_sessions: "dict[str, int]" = {}
+_active_sessions: "dict[tuple[str, str], int]" = {}
 # Deletions that arrived mid-call: the thread has gone from history, so nothing
 # would ask for the folder again. Keyed like the above and holding every exact
 # id that folded onto the key, since each can be its own directory.
-_pending_removals: "dict[str, dict[str, bool]]" = {}
+_pending_removals: "dict[tuple[str, str], dict[str, bool]]" = {}
 _active_sessions_lock = threading.Lock()
 # Sessions whose sandbox is being removed right now. A start for one of these
 # waits on the condition rather than on the lock, so only that chat is held up.
-_removing_sessions: "set[str]" = set()
+_removing_sessions: "set[tuple[str, str]]" = set()
 _sessions_free = threading.Condition(_active_sessions_lock)
 
 
-def _session_key(session_id: "str | None") -> str:
+def _workdir_key(session_id: "str | None") -> tuple[str, str]:
+    return current_account_id(), session_id or _ANON_KEY
+
+
+def _session_key(session_id: "str | None") -> tuple[str, str]:
     """Lifecycle key for a session id.
 
     Case-folded: two ids differing only in case are one directory on Windows and
     on a default macOS volume, and keying them apart let a delete land while the
     other chat was running a tool in there.
     """
-    return (session_id or _ANON_KEY).casefold()
+    return current_account_id(), (session_id or _ANON_KEY).casefold()
 
 
 @contextlib.contextmanager
@@ -7401,8 +7438,8 @@ def _orphan_records_dir() -> str:
     from anything else.
     """
     try:
-        from utils.paths.storage_roots import studio_root
-        return os.path.join(str(studio_root()), "orphaned-projects")
+        from utils.paths.storage_roots import account_path
+        return str(account_path("orphaned-projects"))
     except Exception:
         # Only if the studio home cannot be resolved at all: beside the sandbox
         # root, whose parent an administrator may have made read-only.
@@ -7647,7 +7684,7 @@ def finish_workspace_delete_when_idle(
         wait_for_sessions_idle([session], timeout = timeout)
         collect_orphaned_project_workspaces()
 
-    thread = threading.Thread(
+    thread = account_thread(
         target = _wait_and_collect,
         name = "workspace-delete",
         daemon = True,
@@ -7767,6 +7804,12 @@ def _project_workdir_for(session_id: "str | None") -> "str | None":
 
 
 def _get_project_workdir(session_id: str) -> str | None:
+    # Host project paths are a single-user feature. Managed project sessions
+    # use their account sandbox, just like ordinary chats.
+    if not is_owner_context():
+        from auth.policy import installation_is_multi_user
+        if installation_is_multi_user():
+            return None
     if not session_id.startswith(_PROJECT_SESSION_PREFIX):
         return None
     project_id = session_id[len(_PROJECT_SESSION_PREFIX) :]
@@ -8122,11 +8165,16 @@ def sandbox_root() -> str:
     """
     override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
     if override:
-        return os.path.expanduser(override)
+        root = os.path.expanduser(override)
+        if not is_owner_context():
+            return os.path.join(root, "accounts", current_account_id())
+        return root
     try:
-        from utils.paths.storage_roots import studio_root
-        return os.path.join(str(studio_root()), "sandbox")
+        from utils.paths.storage_roots import account_path
+        return str(account_path("sandbox"))
     except Exception:
+        if not is_owner_context():
+            raise
         return _legacy_sandbox_root()
 
 
@@ -8229,6 +8277,8 @@ def _legacy_session_dir(session_id: str) -> "str | None":
     Both names, like the migration itself: a chat from before the upgrade whose
     id starts with the derived prefix kept its folder under the literal id.
     """
+    if not is_owner_context():
+        return None
     legacy_root = _legacy_sandbox_root()
     names = [_sandbox_name(session_id)]
     if not _usable_session_id(session_id):
@@ -8256,7 +8306,7 @@ def _legacy_session_dir(session_id: str) -> "str | None":
 
 def _migrate_one_legacy_session(root: str, name: str) -> None:
     """Bring one session up from the legacy root, without waiting for the rest."""
-    if _legacy_sandbox_migrated:
+    if not is_owner_context() or _legacy_sandbox_migrated:
         return
     source = os.path.join(_legacy_sandbox_root(), name)
     if os.path.islink(source) or not os.path.isdir(source):
@@ -8283,7 +8333,7 @@ _legacy_background: "threading.Thread | None" = None
 def _start_legacy_migration() -> "threading.Thread | None":
     """Carry the rest of the tree up, one pass at a time, off this request."""
     global _legacy_background
-    if _legacy_sandbox_migrated:
+    if not is_owner_context() or _legacy_sandbox_migrated:
         return None
     with _legacy_one_lock:
         if _legacy_background is not None and _legacy_background.is_alive():
@@ -8300,7 +8350,7 @@ def _migrate_legacy_sandbox(root: str) -> None:
     alone, so nothing is silently overwritten.
     """
     global _legacy_sandbox_migrated
-    if _legacy_sandbox_migrated:
+    if not is_owner_context() or _legacy_sandbox_migrated:
         return
     # Flagged only once the move is done: setting it first let a concurrent
     # call create the destination, which then read as a collision.
@@ -8477,7 +8527,7 @@ def _owned_by_session(workdir: str, session_id: str) -> bool:
 def _get_workdir(session_id: str | None = None) -> str:
     """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
-    key = session_id or _ANON_KEY
+    key = _workdir_key(session_id)
     cached = _workdirs.get(key)
     if cached is not None and not os.path.isdir(cached):
         cached = None
@@ -8575,7 +8625,7 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         if project:
             return project
     root = sandbox_root()
-    cached = _workdirs.get(session_id or _ANON_KEY)
+    cached = _workdirs.get(_workdir_key(session_id))
     if (
         cached
         and not os.path.islink(cached)
@@ -8634,7 +8684,7 @@ def migrate_legacy_sandbox_in_background() -> "threading.Thread":
         except Exception:  # noqa: BLE001 - best effort, like the rest of this
             logger.debug("legacy sandbox migration failed", exc_info = True)
 
-    thread = threading.Thread(target = _run, name = "sandbox-migrate", daemon = True)
+    thread = account_thread(target = _run, name = "sandbox-migrate", daemon = True)
     thread.start()
     return thread
 
@@ -8737,6 +8787,7 @@ def sweep_detached_sandboxes(root: "str | None" = None) -> None:
 
 
 _swept_detached = False
+_swept_detached_accounts: set[str] = set()
 
 
 def start_sandbox_recovery() -> "threading.Thread | None":
@@ -8748,9 +8799,15 @@ def _start_detached_sweep() -> "threading.Thread | None":
     """Run the sweep once per process, off the call that noticed."""
     global _swept_detached
     with _legacy_one_lock:
-        if _swept_detached:
-            return None
-        _swept_detached = True
+        if is_owner_context():
+            if _swept_detached:
+                return None
+            _swept_detached = True
+        else:
+            account_id = current_account_id()
+            if account_id in _swept_detached_accounts:
+                return None
+            _swept_detached_accounts.add(account_id)
 
     def _sweep() -> None:
         sweep_detached_sandboxes()
@@ -8758,7 +8815,7 @@ def _start_detached_sweep() -> "threading.Thread | None":
         # still running in it when the app went away.
         collect_orphaned_project_workspaces()
 
-    thread = threading.Thread(target = _sweep, name = "sandbox-sweep", daemon = True)
+    thread = account_thread(target = _sweep, name = "sandbox-sweep", daemon = True)
     thread.start()
     return thread
 
@@ -8902,7 +8959,7 @@ def _claimed_by_this_run(session_id: str, root: str) -> "str | None":
     routes find it too rather than leaving the files stranded until some later
     call happens to repair it.
     """
-    cached = _workdirs.get(session_id)
+    cached = _workdirs.get(_workdir_key(session_id))
     if not cached or cached not in _claimed_here:
         return None
     if os.path.islink(cached) or not os.path.isdir(cached):
@@ -8991,7 +9048,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         # and `Foo` are one directory: without the marker the name is the only
         # evidence, and it names the other chat.
         return False
-    _workdirs.pop(session_id, None)
+    _workdirs.pop(_workdir_key(session_id), None)
     # Resolved BEFORE anything is removed: the record is named by the real path of the
     # spill directory, which cannot be derived once the tree is gone. Without this every
     # deleted chat that ever truncated output leaves one small file behind for good.
@@ -9061,6 +9118,9 @@ def _edit_file_resolve(
     else is relative to it. Containment is checked on the realpath, so a symlink
     planted inside cannot reach out.
     """
+    from state.tool_policy import require_tool_access
+
+    require_tool_access(disable_sandbox = disable_sandbox)
     raw = (raw_path or "").strip()
     if not raw:
         return None, "Error: 'path' is required."
@@ -10419,6 +10479,9 @@ def execute_tool(
     with or without it. Tools without incremental output ignore it.
     ``website_policy``: hidden server-validated domain limits for web_search.
     """
+    from state.tool_policy import require_tool_access
+
+    require_tool_access(disable_sandbox = disable_sandbox)
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     # Set unconditionally, so a value from an earlier call on this thread can never be
     # read by a later one. That is what makes a try/finally reset unnecessary here.
@@ -10838,7 +10901,7 @@ def _search_knowledge_base_with_budget(
             release_slot()
 
     try:
-        threading.Thread(target = search, name = "rag-tool-search", daemon = True).start()
+        account_thread(target = search, name = "rag-tool-search", daemon = True).start()
     except Exception:
         release_slot()
         raise
@@ -14875,8 +14938,8 @@ def _spill_records_dir() -> str:
     beside the other records this file already keeps outside the sandboxes.
     """
     try:
-        from utils.paths.storage_roots import studio_root  # noqa: PLC0415
-        return os.path.join(str(studio_root()), "tool-output-records")
+        from utils.paths.storage_roots import account_path  # noqa: PLC0415
+        return str(account_path("tool-output-records"))
     except Exception:
         return os.path.join(
             os.path.dirname(os.path.realpath(sandbox_root())), "tool-output-records"
@@ -16053,6 +16116,11 @@ def _python_exec(
     tmp_path = None
     _scratch_name = None
     workdir = _get_workdir(session_id)
+    # After the workdir exists: the confinement names the roots it sits in.
+    try:
+        confinement = _account_confinement()
+    except ToolConfinementUnavailable as exc:
+        return _truncate(f"Execution error: {exc}")
     # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
     # one session by design. Retaining a result in either, under a path the next chat can
     # list, would leave behind output that existed only in this call's own response. See
@@ -16099,7 +16167,8 @@ def _python_exec(
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
+        argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
@@ -16228,6 +16297,11 @@ def _bash_exec(
     call_token = None
     try:
         workdir = _get_workdir(session_id)
+        # After the workdir exists: the confinement names the roots it sits in.
+        try:
+            confinement = _account_confinement()
+        except ToolConfinementUnavailable as exc:
+            return _truncate(f"Execution error: {exc}")
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
         spill_scope = _spill_scope(session_id, thread_id)
         spill_dir = workdir if session_id else None
@@ -16253,7 +16327,8 @@ def _bash_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
+        argv = _apply_confinement(confinement, popen_kwargs, _get_shell_cmd(command))
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.

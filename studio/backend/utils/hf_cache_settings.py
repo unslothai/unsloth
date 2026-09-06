@@ -109,9 +109,12 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
 
 
 def _stored_cache_home() -> Optional[Path]:
+    # The cache home is one install-wide setting, written by the owner, so every
+    # account reads it from the owner's database.
     try:
         from storage.studio_db import get_app_setting
-        value = get_app_setting(CACHE_HOME_SETTING_KEY, None)
+        from utils.account_context import OWNER, run_as
+        value = run_as(OWNER, get_app_setting, CACHE_HOME_SETTING_KEY, None)
     except Exception:  # noqa: BLE001 - the shim is optional; a spawn must never depend on it
         return None
     if not isinstance(value, str) or not value.strip():
@@ -285,7 +288,8 @@ def _validate_cache_home(raw_path: str) -> Path:
 def _stored_history() -> list[Path]:
     try:
         from storage.studio_db import get_app_setting
-        raw = get_app_setting(CACHE_HISTORY_SETTING_KEY, [])
+        from utils.account_context import OWNER, run_as
+        raw = run_as(OWNER, get_app_setting, CACHE_HISTORY_SETTING_KEY, [])
     except Exception:
         raw = []
     if not isinstance(raw, list):
