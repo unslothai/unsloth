@@ -77,13 +77,13 @@ from studiobench.scene.schedule import FAST, QUICK, STANDARD  # noqa: E402
 #: charged separately below, so about 4 ms is the round trip itself.
 ROUND_TRIP_MS = 4.0
 
-#:Enter pressed to `isRunning()` answering true: a POST to the relay and the first SSE frame back.
+#: Enter pressed to `isRunning()` answering true: a POST to the relay and the first SSE frame back.
 START_MS = 120.0
 
-#:Stop clicked to `isRunning()` answering false: the abort round trip.
+#: Stop clicked to `isRunning()` answering false: the abort round trip.
 STOP_MS = 90.0
 
-#:The delete inside `STOP_CLEANUP_JS`: the click, the removal, and the two `__sbNextPaint` frames the loop waits on.
+#: The delete inside `STOP_CLEANUP_JS`: the click, the removal, and the two `__sbNextPaint` frames
 #: the loop waits on.
 CLEANUP_MS = 90.0
 
@@ -116,7 +116,8 @@ class _Keyboard:
             return
         # SENT, NOT STARTED, and the difference is the whole of the P1 above: the app takes the text out of
         # the composer and puts the user turn and its reply into the thread NOW, while the reply begins
-        # generating `start_ms` later and the action has to poll for it.
+        # generating `start_ms` later and the action has to poll for it - the cost the first version of
+        # this shim handed out free.
         self._page.composer = ""
         self._page.messages += 2
         self._page.sent_at_ms = self._page.elapsed_ms

@@ -1714,7 +1714,7 @@ def update_openai_auto_switch_override(
             # Load order, not collection order: a lookup reads the concrete load path before the advertised repo id, so
             # reading the repo row first adopts tuning no load has used.
             _alias_ids.sort(key = lambda _key: not is_cache_load_path_key(_key))
-            # Taken as a unit from the first row that exists.
+            # Taken as a unit from the first row that exists, not field by field down the list.
             # A load stops at the first non-empty row (resolve_override_for_load) rather than merging, so filling a gap
             # in the winner from a loser would switch dormant tuning on.
             for _alias_id in _alias_ids:
