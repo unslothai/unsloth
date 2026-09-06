@@ -76,6 +76,21 @@ def _hub_doubles(export_mod, monkeypatch, calls: dict):
             calls["repo"] = {"repo_id": repo_id, "private": private}
             return _RepoUrl("https://huggingface.co/org/model")
 
+        def update_repo_settings(
+            self,
+            repo_id,
+            private = None,
+            repo_type = None,
+        ):
+            calls["visibility"] = {"repo_id": repo_id, "private": private}
+
+        def repo_info(
+            self,
+            repo_id,
+            repo_type = None,
+        ):
+            return None
+
         def upload_folder(
             self,
             folder_path,

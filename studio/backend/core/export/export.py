@@ -414,8 +414,8 @@ This {model_type} model was trained 2x faster with [Unsloth](https://github.com/
 """
 
 
-# Both llama.cpp spellings: the Hub filters on the exact string, and upstream ends up
-# with each -- "llama.cpp" from its card, "llama-cpp" from its add_tags call.
+# Both llama.cpp spellings: the Hub filters on the exact string. Upstream wants both but its
+# add_tags call is a no-op (HfApi has no add_tags, and it sits under a bare `except: pass`).
 GGUF_MODEL_CARD = """---
 tags:
 - gguf
@@ -435,6 +435,33 @@ This model was converted to GGUF format using [Unsloth](https://github.com/unslo
 ## Available model files:
 {files}
 """
+
+
+def _ensure_hub_repo_private(hf_api, repo_id):
+    """Make an existing repo private before uploading to it, or refuse.
+
+    create_repo only applies `private` to a repo it creates, so pushing into an existing
+    public one would publish the GGUFs; update_repo_settings is the only call that changes
+    visibility. repo_info is the fallback so a token without `write:repo_settings` still
+    works against an already-private repo. Mirrors the guard this path replaced on macOS,
+    unsloth_zoo.mlx.utils._ensure_hub_repo_visibility.
+    """
+    try:
+        hf_api.update_repo_settings(repo_id = repo_id, private = True, repo_type = "model")
+        return
+    except Exception as exception:
+        try:
+            info = hf_api.repo_info(repo_id = repo_id, repo_type = "model")
+            if bool(getattr(info, "private", False)):
+                return
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"private=True was requested but {repo_id!r} could not be confirmed private "
+            "(the token likely lacks `write:repo_settings`, or the repository belongs to "
+            "someone else). Refusing to upload rather than publish the GGUF files to a "
+            "public repository."
+        ) from exception
 
 
 class ExportBackend:
@@ -1167,6 +1194,7 @@ class ExportBackend:
         # here because the temp root holding it is deleted before the upload.
         exported_ggufs: List[str] = []
         exported_modelfile = False
+        exported_modelfile_bytes: Optional[bytes] = None
         exported_is_vlm = False
         exported_config: Optional[bytes] = None
         try:
@@ -1254,8 +1282,19 @@ class ExportBackend:
                             f"{abs_save_dir}"
                         )
                     exported_ggufs = [str(f) for f in drop_appledouble_metadata(relocated_ggufs)]
-                    # The Hub filters on this tag, and only the exporter knows.
-                    exported_is_vlm = bool(reported.get("is_vlm"))
+                    if not exported_ggufs:
+                        # Only Finder metadata. final_ggufs below still passes on a .gguf an
+                        # earlier export left here, so without this the Hub leg publishes
+                        # nothing and reports success.
+                        raise RuntimeError(
+                            "GGUF conversion produced only AppleDouble metadata companions "
+                            f"and no usable .gguf file for {abs_save_dir}"
+                        )
+                    # The Hub filters on this tag. The exporter wins when it says anything;
+                    # the MLX binding returns None, so fall back to Studio's own detection.
+                    exported_is_vlm = bool(
+                        reported.get("is_vlm", getattr(self, "is_vision", False))
+                    )
                     # Kept in memory, not relocated: a config.json in the export folder
                     # would make _is_model_dir read it as a checkpoint directory.
                     merged_config = (
@@ -1281,6 +1320,15 @@ class ExportBackend:
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                         except OSError as exception:
                             logger.warning(f"Could not relocate the Modelfile: {exception}")
+                            # This run produced it and the old path uploaded it, so keep the
+                            # bytes rather than lose it to a read-only destination. Before
+                            # the `finally` below removes the temp root.
+                            try:
+                                exported_modelfile_bytes = modelfile.read_bytes()
+                            except OSError as read_exception:
+                                logger.warning(
+                                    f"Could not read the Modelfile to upload it: {read_exception}"
+                                )
                 finally:
                     # The imatrix is an input, so counting it would retain the merged checkpoint on every such export.
                     unrelocated = []
@@ -1341,6 +1389,9 @@ class ExportBackend:
                     hf_api = HfApi(token = hf_token)
                     repo_url = hf_api.create_repo(repo_id, private = private, exist_ok = True)
                     repo_id = getattr(repo_url, "repo_id", repo_id)
+                    # Tightening only: unticking private is not a request to open a repo.
+                    if private:
+                        _ensure_hub_repo_private(hf_api, repo_id)
                     # Allow-list over exported_ggufs, not the folder: the save directory is
                     # user-picked, so it can hold unrelated files, a _tmp_model_* merge a
                     # failed export kept, or GGUFs from an earlier export of another model.
@@ -1363,15 +1414,31 @@ class ExportBackend:
                             repo_type = "model",
                             commit_message = "Unsloth config.json",
                         )
-                    # Last: the card advertises files, so it must not land before them.
-                    ModelCard(
-                        GGUF_MODEL_CARD.format(
-                            name = repo_id.split("/")[-1],
+                    if exported_modelfile_bytes is not None:
+                        # Produced by this run but not placeable in the export folder.
+                        hf_api.upload_file(
+                            path_or_fileobj = exported_modelfile_bytes,
+                            path_in_repo = "Modelfile",
                             repo_id = repo_id,
-                            vlm_tag = "\n- vision-language-model" if exported_is_vlm else "",
-                            files = "\n".join(f"- `{os.path.basename(f)}`" for f in exported_ggufs),
+                            repo_type = "model",
+                            commit_message = "Unsloth Ollama Modelfile",
                         )
-                    ).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                    # Last, because the card advertises files. Best-effort, because they are
+                    # already committed and RepoCard.push_to_hub validates against a
+                    # hardcoded huggingface.co that a private HF_ENDPOINT cannot serve.
+                    try:
+                        ModelCard(
+                            GGUF_MODEL_CARD.format(
+                                name = repo_id.split("/")[-1],
+                                repo_id = repo_id,
+                                vlm_tag = "\n- vision-language-model" if exported_is_vlm else "",
+                                files = "\n".join(
+                                    f"- `{os.path.basename(f)}`" for f in exported_ggufs
+                                ),
+                            )
+                        ).push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+                    except Exception as exception:
+                        logger.warning(f"Could not publish the model card: {exception}")
                 else:
                     self.current_model.push_to_hub_gguf(
                         repo_id,
@@ -1395,6 +1462,14 @@ class ExportBackend:
             import traceback
 
             logger.error(traceback.format_exc())
+            if output_path:
+                # Only the Hub leg can raise once output_path is set, so the files are on
+                # disk. Return the directory rather than imply the conversion must be re-run.
+                return (
+                    False,
+                    f"GGUF files were saved to {output_path}, but the Hub upload failed: {e}",
+                    output_path,
+                )
             return False, f"GGUF export failed: {str(e)}", None
 
     def export_lora_adapter(

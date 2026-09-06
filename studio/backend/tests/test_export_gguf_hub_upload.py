@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
-from fnmatch import fnmatch
+import types
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 import pytest
@@ -36,8 +37,26 @@ def _hub_doubles(calls, seen):
             private = False,
             exist_ok = False,
         ):
+            calls.append("create_repo")
             seen["repo"] = {"repo_id": repo_id, "private": private, "exist_ok": exist_ok}
             return _RepoUrl("https://huggingface.co/owner/model")
+
+        def update_repo_settings(
+            self,
+            repo_id,
+            private = None,
+            repo_type = None,
+        ):
+            calls.append("update_repo_settings")
+            seen["visibility"] = {"repo_id": repo_id, "private": private}
+
+        def repo_info(
+            self,
+            repo_id,
+            repo_type = None,
+        ):
+            calls.append("repo_info")
+            return seen.get("repo_info_result")
 
         def upload_file(
             self,
@@ -60,13 +79,18 @@ def _hub_doubles(calls, seen):
         ):
             calls.append("upload_folder")
             seen["folder"] = folder_path
-            # Mirror huggingface_hub: fnmatch over repo-relative paths, whole tree.
+            # Mirror huggingface_hub: fnmatchcase over repo-relative posix paths, whole
+            # tree. fnmatchcase, not fnmatch, because that is what filter_repo_objects uses
+            # -- matching is case-sensitive on every platform, so a Windows run selects the
+            # same files a Linux one does.
             root = Path(folder_path)
-            paths = [str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()]
+            paths = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
             if allow_patterns is not None:
-                paths = [p for p in paths if any(fnmatch(p, pattern) for pattern in allow_patterns)]
+                paths = [
+                    p for p in paths if any(fnmatchcase(p, pattern) for pattern in allow_patterns)
+                ]
             for pattern in ignore_patterns or ():
-                paths = [p for p in paths if not fnmatch(p, pattern)]
+                paths = [p for p in paths if not fnmatchcase(p, pattern)]
             seen["uploaded"] = sorted(paths)
 
     class _ModelCard:
@@ -127,10 +151,18 @@ def test_gguf_hub_export_uploads_the_built_files_instead_of_reconverting(tmp_pat
     )
 
     assert success is True, message
-    # One conversion, and the card lands after the files it advertises.
-    assert calls == ["convert", "upload_folder", "model_card"]
+    # One conversion, visibility settled before anything is uploaded, and the card lands
+    # after the files it advertises.
+    assert calls == [
+        "convert",
+        "create_repo",
+        "update_repo_settings",
+        "upload_folder",
+        "model_card",
+    ]
     assert seen["folder"] == output_path
     assert seen["repo"] == {"repo_id": "owner/model", "private": True, "exist_ok": True}
+    assert seen["visibility"] == {"repo_id": "owner/model", "private": True}
     assert "model.Q4_K_M.gguf" in seen["uploaded"]
     assert "Modelfile" in seen["uploaded"]
     # Studio-local, and push_to_hub_gguf never published it.
@@ -465,8 +497,623 @@ def test_gguf_hub_export_card_carries_the_vlm_tag(tmp_path, monkeypatch, is_vlm)
         .strip()
         .endswith("vision-language-model" if is_vlm else "unsloth")
     )
-    # The Hub filters on the exact string, and upstream's repos end up with both
-    # spellings: "llama.cpp" from its card, "llama-cpp" from its add_tags call.
+    # The Hub filters on the exact string, and upstream means to carry both spellings.
     tags = [line[2:] for line in seen["card"].split("---")[1].strip().splitlines()[1:]]
     assert "llama.cpp" in tags
     assert "llama-cpp" in tags
+
+
+def _visibility_backend(
+    tmp_path,
+    monkeypatch,
+    name,
+    gguf_names = ("model.Q4_K_M.gguf",),
+):
+    """A backend wired to the Hub doubles, for the visibility and failure-path tests."""
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(name, "core/export/export.py", monkeypatch)
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            calls.append("convert")
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            produced = []
+            for gguf_name in gguf_names:
+                gguf = output / gguf_name
+                # A "._" name is only Finder metadata if it carries the magic too.
+                gguf.write_bytes(b"\x00\x05\x16\x07" if gguf_name.startswith("._") else b"GGUF")
+                produced.append(str(gguf))
+            return {"gguf_files": produced}
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+    return export_module, backend, calls, seen
+
+
+def test_gguf_hub_export_makes_an_existing_repo_private_before_uploading(tmp_path, monkeypatch):
+    """create_repo ignores private on a repo that already exists, so it is settled here.
+
+    Without this the GGUFs of a "private" export land in an existing public repository.
+    """
+    _module, backend, calls, seen = _visibility_backend(
+        tmp_path, monkeypatch, "test_export_gguf_hub_upload_visibility_backend"
+    )
+
+    success, message, _path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = True,
+    )
+
+    assert success is True, message
+    assert seen["visibility"] == {"repo_id": "owner/model", "private": True}
+    # Settled before a single byte is published, not after.
+    assert calls.index("update_repo_settings") < calls.index("upload_folder")
+
+
+def test_gguf_hub_export_refuses_to_upload_when_privacy_cannot_be_confirmed(tmp_path, monkeypatch):
+    """A private=True export must fail rather than publish to a repo it cannot close."""
+    module, backend, calls, seen = _visibility_backend(
+        tmp_path, monkeypatch, "test_export_gguf_hub_upload_visibility_denied_backend"
+    )
+
+    def _denied(
+        self,
+        repo_id,
+        private = None,
+        repo_type = None,
+    ):
+        raise RuntimeError("403 Forbidden: write:repo_settings missing")
+
+    monkeypatch.setattr(module.HfApi, "update_repo_settings", _denied)
+    # repo_info reports a public repo, so the refusal stands.
+    seen["repo_info_result"] = types.SimpleNamespace(private = False)
+
+    success, message, output_path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = True,
+    )
+
+    assert success is False
+    assert "could not be confirmed private" in message
+    assert "upload_folder" not in calls
+    # The conversion did happen, so the user is pointed at the files rather than sent
+    # back to re-run it.
+    assert output_path is not None
+    assert Path(output_path, "model.Q4_K_M.gguf").is_file()
+
+
+def test_gguf_hub_export_uploads_when_the_repo_is_already_private(tmp_path, monkeypatch):
+    """A token without write:repo_settings still works against an already-private repo."""
+    module, backend, calls, seen = _visibility_backend(
+        tmp_path, monkeypatch, "test_export_gguf_hub_upload_visibility_ok_backend"
+    )
+
+    def _denied(
+        self,
+        repo_id,
+        private = None,
+        repo_type = None,
+    ):
+        raise RuntimeError("403 Forbidden: write:repo_settings missing")
+
+    monkeypatch.setattr(module.HfApi, "update_repo_settings", _denied)
+    seen["repo_info_result"] = types.SimpleNamespace(private = True)
+
+    success, message, _path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = True,
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == ["model.Q4_K_M.gguf"]
+
+
+def test_gguf_hub_export_leaves_an_existing_private_repo_alone(tmp_path, monkeypatch):
+    """private=False only means "do not create it private", never "publish this repo"."""
+    _module, backend, calls, seen = _visibility_backend(
+        tmp_path, monkeypatch, "test_export_gguf_hub_upload_visibility_public_backend"
+    )
+
+    success, message, _path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    assert "update_repo_settings" not in calls
+    assert "visibility" not in seen
+
+
+def test_gguf_hub_export_survives_a_model_card_failure(tmp_path, monkeypatch):
+    """The GGUFs are already committed by then; losing the card must not fail the export.
+
+    RepoCard.push_to_hub validates against a hardcoded huggingface.co, which a private
+    HF_ENDPOINT deployment cannot serve.
+    """
+    module, backend, calls, seen = _visibility_backend(
+        tmp_path, monkeypatch, "test_export_gguf_hub_upload_card_fails_backend"
+    )
+
+    def _boom(
+        self,
+        repo_id,
+        token = None,
+        commit_message = None,
+    ):
+        raise RuntimeError("connection refused: api/validate-yaml")
+
+    monkeypatch.setattr(module.ModelCard, "push_to_hub", _boom)
+
+    success, message, output_path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == ["model.Q4_K_M.gguf"]
+    assert output_path is not None
+
+
+def test_gguf_hub_export_reports_the_local_path_when_the_upload_fails(tmp_path, monkeypatch):
+    """A failed upload must not read as "re-run the hour-long conversion"."""
+    module, backend, calls, seen = _visibility_backend(
+        tmp_path, monkeypatch, "test_export_gguf_hub_upload_upload_fails_backend"
+    )
+
+    def _boom(
+        self,
+        folder_path,
+        repo_id,
+        repo_type,
+        allow_patterns = None,
+        ignore_patterns = None,
+    ):
+        raise RuntimeError("504 Gateway Timeout")
+
+    monkeypatch.setattr(module.HfApi, "upload_folder", _boom)
+
+    success, message, output_path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is False
+    assert "504 Gateway Timeout" in message
+    assert "saved to" in message
+    assert output_path is not None
+    assert Path(output_path, "model.Q4_K_M.gguf").is_file()
+
+
+def test_gguf_hub_export_fails_when_only_appledouble_companions_were_produced(
+    tmp_path, monkeypatch
+):
+    """A run that produced only Finder metadata has produced nothing publishable.
+
+    The directory-wide success gate would otherwise pass on a .gguf left by an earlier
+    export, and the Hub leg would create a repo, publish no model file, and report success.
+    """
+    save_dir = tmp_path / "export"
+    save_dir.mkdir(parents = True)
+    # An earlier export of a different model, still sitting in the reused folder.
+    (save_dir / "some-other-model.Q8_0.gguf").write_bytes(b"GGUF")
+
+    _module, backend, calls, seen = _visibility_backend(
+        tmp_path,
+        monkeypatch,
+        "test_export_gguf_hub_upload_only_appledouble_backend",
+        gguf_names = ("._model.Q4_K_M.gguf",),
+    )
+
+    success, message, _path = backend.export_gguf(
+        str(save_dir),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is False
+    assert "AppleDouble" in message
+    assert "upload_folder" not in calls
+    # The stale file is left exactly where it was, not published and not deleted.
+    assert (save_dir / "some-other-model.Q8_0.gguf").is_file()
+
+
+def test_gguf_hub_export_uses_the_canonical_repo_id_the_hub_returns(tmp_path, monkeypatch):
+    """A bare repo id is namespaced by the Hub, and the card must use the resolved one.
+
+    Upstream interpolates the id it was handed, so a bare name yields an unusable
+    `llama-cli -hf model-gguf`.
+    """
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_canonical_backend", "core/export/export.py", monkeypatch
+    )
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class _CanonicalRepoUrl(str):
+        repo_id = "resolved-owner/model-gguf"
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+
+    def _create_repo(
+        self,
+        repo_id,
+        private = False,
+        exist_ok = False,
+    ):
+        calls.append("create_repo")
+        seen["repo"] = {"repo_id": repo_id, "private": private, "exist_ok": exist_ok}
+        return _CanonicalRepoUrl("https://huggingface.co/resolved-owner/model-gguf")
+
+    hf_api.create_repo = _create_repo
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, _path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "model-gguf",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    # Created under the name the user gave, then everything downstream uses the resolved id.
+    assert seen["repo"]["repo_id"] == "model-gguf"
+    assert seen["card_repo"] == "resolved-owner/model-gguf"
+    assert "# model-gguf : GGUF" in seen["card"]
+    assert "llama-cli -hf resolved-owner/model-gguf --jinja" in seen["card"]
+    assert "llama-mtmd-cli -hf resolved-owner/model-gguf --jinja" in seen["card"]
+
+
+def test_gguf_hub_export_reads_config_from_the_directory_the_exporter_reports(
+    tmp_path, monkeypatch
+):
+    """The merged checkpoint is not always under our temp root.
+
+    A Kaggle disk redirect or the non-PEFT "reuse the existing checkpoint" branch makes
+    unsloth report a save_directory elsewhere, and that is where config.json lives.
+    """
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_reported_dir_backend", "core/export/export.py", monkeypatch
+    )
+
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    (elsewhere / "config.json").write_bytes(b'{"model_type": "qwen2"}')
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            gguf = output / "model.Q4_K_M.gguf"
+            gguf.write_bytes(b"GGUF")
+            # Deliberately no config.json under model_save_path.
+            return {"gguf_files": [str(gguf)], "save_directory": str(elsewhere)}
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, output_path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    assert seen["config.json"] == b'{"model_type": "qwen2"}'
+    # Still not written into the export folder: _is_model_dir would read it as a checkpoint.
+    assert not Path(output_path, "config.json").exists()
+
+
+def test_gguf_hub_export_uploads_a_modelfile_it_could_not_place_locally(tmp_path, monkeypatch):
+    """A read-only destination must not silently drop an artifact this run produced."""
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_modelfile_move_fails_backend",
+        "core/export/export.py",
+        monkeypatch,
+    )
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+            (output / "Modelfile").write_text("FROM ./model.Q4_K_M.gguf\n")
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    real_move = export_module.shutil.move
+
+    def _refuse_the_modelfile(src, dst, *args, **kwargs):
+        if Path(str(dst)).name == "Modelfile":
+            raise OSError("read-only file system")
+        return real_move(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(export_module.shutil, "move", _refuse_the_modelfile)
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, output_path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    # Not on disk, because it could not be placed there, but still published.
+    assert not Path(output_path, "Modelfile").exists()
+    assert "Modelfile" not in seen["uploaded"]
+    assert seen["Modelfile"] == b"FROM ./model.Q4_K_M.gguf\n"
+
+
+def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, monkeypatch):
+    """Without a local save directory there is nothing built to upload.
+
+    The API rejects an empty save_directory today, so this pins the defensive fallback --
+    including that the token reaches it exactly once, which is why local_token_kw is kept
+    out of imatrix_kw.
+    """
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_push_only_backend", "core/export/export.py", monkeypatch
+    )
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(
+            self,
+            model_save_path,
+            tokenizer,
+            quantization_method,
+            imatrix_file = None,
+            token = None,
+            gguf_shard_size = None,
+        ):
+            calls.append("save_pretrained_gguf")
+
+        def push_to_hub_gguf(
+            self,
+            repo_id,
+            tokenizer,
+            quantization_method = None,
+            token = None,
+            private = None,
+            imatrix_file = None,
+            gguf_shard_size = None,
+        ):
+            calls.append("push_to_hub_gguf")
+            seen["push"] = {
+                "repo_id": repo_id,
+                "quantization_method": quantization_method,
+                "token": token,
+                "private": private,
+                "imatrix_file": imatrix_file,
+                "gguf_shard_size": gguf_shard_size,
+            }
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, output_path = backend.export_gguf(
+        "",
+        "iq2_xxs",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = True,
+        imatrix_file = True,
+        gguf_shard_size = "512MB",
+    )
+
+    assert success is True, message
+    assert output_path is None
+    # No local export, so no folder upload and no repo of our own making.
+    assert "save_pretrained_gguf" not in calls
+    assert "upload_folder" not in calls
+    assert calls == ["push_to_hub_gguf"]
+    assert seen["push"] == {
+        "repo_id": "owner/model",
+        "quantization_method": "iq2_xxs",
+        "token": "token",
+        "private": True,
+        "imatrix_file": True,
+        "gguf_shard_size": "512MB",
+    }
+
+
+@pytest.mark.parametrize("is_vision", [True, False])
+def test_gguf_hub_export_falls_back_to_studios_own_vlm_detection(tmp_path, monkeypatch, is_vision):
+    """The MLX binding returns None, so `reported` says nothing about is_vlm.
+
+    Without a fallback every Apple Silicon vision export is published untagged and drops
+    out of the Hub's vision-language-model filter.
+    """
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        f"test_export_gguf_hub_upload_vlm_fallback_{is_vision}_backend",
+        "core/export/export.py",
+        monkeypatch,
+    )
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+            return None  # what the MLX exporter returns
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+    backend.is_vision = is_vision
+
+    success, message, _path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    assert ("- vision-language-model" in seen["card"]) is is_vision
+
+
+def test_gguf_hub_export_trusts_the_exporter_over_studios_guess(tmp_path, monkeypatch):
+    """A CUDA exporter that reports is_vlm=False wins, even if Studio loaded it as vision."""
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_vlm_reported_wins_backend",
+        "core/export/export.py",
+        monkeypatch,
+    )
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            gguf = output / "model.Q4_K_M.gguf"
+            gguf.write_bytes(b"GGUF")
+            return {"gguf_files": [str(gguf)], "is_vlm": False}
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+    backend.is_vision = True
+
+    success, message, _path = backend.export_gguf(
+        str(tmp_path / "export"),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is True, message
+    assert "- vision-language-model" not in seen["card"]

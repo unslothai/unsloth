@@ -146,6 +146,21 @@ def test_backend_forwards_shard_size_to_the_local_export_it_then_uploads(tmp_pat
             seen["repo"] = {"repo_id": repo_id, "private": private}
             return _RepoUrl("https://huggingface.co/owner/model")
 
+        def update_repo_settings(
+            self,
+            repo_id,
+            private = None,
+            repo_type = None,
+        ):
+            seen["visibility"] = {"repo_id": repo_id, "private": private}
+
+        def repo_info(
+            self,
+            repo_id,
+            repo_type = None,
+        ):
+            return None
+
         def upload_folder(
             self,
             folder_path,
