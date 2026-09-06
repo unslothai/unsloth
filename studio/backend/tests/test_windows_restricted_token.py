@@ -85,6 +85,12 @@ def test_public_api_profile_and_token_flags_are_pinned():
     assert "subprocess.Popen(" not in SOURCE
     assert "_PROC_THREAD_ATTRIBUTE_JOB_LIST" in SOURCE
     assert "Limited processes may not break away from their Job Object" in SOURCE
+    # Chromium's broker flags, and a named desktop: a console allocated for the
+    # child, or a desktop left to the default, is a start-up failure the payload
+    # never survives to explain.
+    assert token_launcher._DETACHED_PROCESS == 0x00000008
+    assert "_CREATE_NO_WINDOW" not in SOURCE
+    assert "StartupInfo.lpDesktop" in SOURCE
     assert '_ADMINISTRATORS_SID = "S-1-5-32-544"' in SOURCE
     # The restricting set, the default DACL, the job attachment order and the
     # failure paths are pinned behaviourally below, against a fake _api().
@@ -356,8 +362,16 @@ class _WinApiRecorder:
         self.job_list_supported = True
         self.active_processes = [0]
         self.last_error = token_launcher._ERROR_INSUFFICIENT_BUFFER
+        # The window station and desktop this process is connected to, and the
+        # error a host that refuses their DACL edit would report.
+        self.user_object_names = {101: "WinSta0", 102: "Default"}
+        self.user_object_error = 0
+        self.user_object_dacl = 4096  # 0 stands for a NULL DACL: allows everyone
+        self.acl_error = 0
+        self.desktop = None
         self.kernel32 = SimpleNamespace(
             GetCurrentProcess = lambda: 11,
+            GetCurrentThreadId = lambda: 7,
             CloseHandle = self._close,
             LocalFree = self._free,
             InitializeProcThreadAttributeList = self._initialize_attributes,
@@ -374,6 +388,21 @@ class _WinApiRecorder:
             OpenProcessToken = self._open_process_token,
             CreateRestrictedToken = self._create_restricted_token,
             CreateProcessAsUserW = self._create_process,
+            GetSecurityDescriptorDacl = self._security_descriptor_dacl,
+            SetEntriesInAclW = self._set_entries_in_acl,
+            InitializeSecurityDescriptor = lambda descriptor, revision: self._note(
+                "InitializeSecurityDescriptor"
+            ),
+            SetSecurityDescriptorDacl = lambda descriptor, present, acl, defaulted: self._note(
+                "SetSecurityDescriptorDacl"
+            ),
+        )
+        self.user32 = SimpleNamespace(
+            GetProcessWindowStation = lambda: 101,
+            GetThreadDesktop = self._thread_desktop,
+            GetUserObjectInformationW = self._user_object_information,
+            GetUserObjectSecurity = self._get_user_object_security,
+            SetUserObjectSecurity = self._set_user_object_security,
         )
 
     def names(self) -> list[str]:
@@ -442,6 +471,7 @@ class _WinApiRecorder:
         self, token, application, command_line, process_attributes, thread_attributes,
         inherit, flags, environment, workdir, startup, process_information,
     ) -> int:
+        self.desktop = startup.contents.lpDesktop
         self.calls.append(("CreateProcessAsUserW", self._value(token), flags, workdir))
         if not self.create_process_result:
             return 0
@@ -450,6 +480,51 @@ class _WinApiRecorder:
         info.hThread = 5678
         info.dwProcessId = 4242
         return 1
+
+    def _thread_desktop(self, thread) -> int:
+        self._note("GetThreadDesktop", thread)
+        return 102
+
+    def _user_object_information(self, handle, kind, buffer, length, needed) -> int:
+        self._note("GetUserObjectInformationW", self._value(handle))
+        buffer.value = self.user_object_names[self._value(handle)]
+        return 1
+
+    def _get_user_object_security(self, handle, information, buffer, length, needed) -> int:
+        self._note("GetUserObjectSecurity", self._value(handle))
+        if buffer is None:
+            needed._obj.value = 64
+            self.last_error = token_launcher._ERROR_INSUFFICIENT_BUFFER
+            return 0
+        if self.user_object_error:
+            self.last_error = self.user_object_error
+            return 0
+        return 1
+
+    def _set_user_object_security(self, handle, information, descriptor) -> int:
+        if self.user_object_error:
+            self.last_error = self.user_object_error
+            return 0
+        return self._note("SetUserObjectSecurity", self._value(handle))
+
+    def _security_descriptor_dacl(self, descriptor, present, dacl, defaulted) -> int:
+        present._obj.value = 1
+        dacl._obj.value = self.user_object_dacl
+        return self._note("GetSecurityDescriptorDacl")
+
+    def _set_entries_in_acl(self, count, entries, old, out) -> int:
+        entry = entries._obj
+        self.calls.append((
+            "SetEntriesInAclW",
+            entry.grfAccessPermissions,
+            entry.grfAccessMode,
+            entry.grfInheritance,
+            self._value(old),
+        ))
+        if self.acl_error:
+            return self.acl_error
+        out._obj.value = 8192
+        return 0
 
     def _resume(self, thread) -> int:
         self._note("ResumeThread")
@@ -703,6 +778,7 @@ def _prepare_environment(tmp_path, monkeypatch, recorder):
     granted: list[str] = []
     revoked: list[str] = []
     monkeypatch.setattr(token_launcher, "_is_windows", lambda: True)
+    monkeypatch.setattr(token_launcher, "_last_error", lambda: recorder.last_error)
     monkeypatch.setattr(token_launcher, "_manifest_root", lambda: str(manifests))
     monkeypatch.setattr(token_launcher, "_temp_root", lambda: str(temp_root))
     monkeypatch.setattr(token_launcher, "_sid_from_text", lambda text: ctypes.c_void_p(3))
@@ -738,7 +814,7 @@ def test_prepare_builds_the_token_and_the_job_before_it_returns(tmp_path, monkey
     assert prepared.cleanup_diagnostics == []
     # LIFO: the job dies and drains, then the ACEs and the private temp go.
     names = recorder.names()
-    assert names.index("job.close") < names.index("LocalFree")
+    assert names.index("job.close") < recorder.calls.index(("LocalFree", 3))
     assert 4711 in recorder.closed
     assert host.revoked == [identity.private_temp, str(host.work)]
     assert not Path(identity.manifest_path).exists()
@@ -772,7 +848,203 @@ def test_prepare_declines_and_cleans_up_when_the_token_cannot_be_created(tmp_pat
     assert list(host.manifests.iterdir()) == []
     assert list(host.temp_root.iterdir()) == []
     assert jobs == []  # the job is never created once the token failed
-    assert recorder.freed == [3]
+    # The launch SID is released once, after the ACLs built for it (8192 is the
+    # fake ACL every window station and desktop edit allocates and frees).
+    assert recorder.freed.count(3) == 1 and recorder.freed[-1] == 3
+
+
+def test_the_launch_sid_is_granted_the_window_station_and_desktop_and_loses_them(
+    tmp_path, monkeypatch
+):
+    """CreateProcessAsUser: "the DACLs for the window station and desktop must
+    grant access to the user or the logon session represented by the hToken
+    parameter". The launch SID is generated per launch, so it is on no DACL on
+    the host until this grant, and under WRITE_RESTRICTED every write the child
+    makes against those objects is checked against the restricting SIDs alone.
+    """
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    identity = prepared.spawn_callback._launch_identity
+
+    assert identity.user_objects == ("window station", "desktop")
+    assert identity.user_object_reason == ""
+    # The child is given this process's own window station and desktop by name,
+    # so the objects it connects to are the ones just granted.
+    assert identity.desktop == "WinSta0\\Default"
+    edits = [call for call in recorder.calls if call[0] == "SetEntriesInAclW"]
+    assert [call[1:4] for call in edits] == [
+        (
+            token_launcher._WINSTA_GRANT,
+            windows_lpac._GRANT_ACCESS,
+            token_launcher._NO_PROPAGATE_INHERIT_ACE,
+        ),
+        (token_launcher._DESKTOP_GRANT, windows_lpac._GRANT_ACCESS, 0),
+    ]
+    # Never WRITE_DAC, WRITE_OWNER or DELETE: a sandboxed child that could
+    # rewrite the window station DACL could grant itself anything.
+    assert not (token_launcher._WINSTA_GRANT | token_launcher._DESKTOP_GRANT) & 0x000D0000
+    assert [call[1] for call in recorder.calls if call[0] == "SetUserObjectSecurity"] == [101, 102]
+
+    prepared.cleanup()
+    assert prepared.cleanup_diagnostics == []
+    revokes = [call for call in recorder.calls if call[0] == "SetEntriesInAclW"][2:]
+    assert [call[2] for call in revokes] == [windows_lpac._REVOKE_ACCESS] * 2
+
+
+def test_a_host_that_refuses_the_user_object_dacl_records_it_and_launches_anyway(
+    tmp_path, monkeypatch
+):
+    """A refusal leaves the launch exactly where it was before this grant existed.
+
+    The child then depends on the logon SID and Everyone ACEs the session
+    happens to carry, which is what every host did until now; the reason is
+    recorded so the live probe's failure text names it instead of guessing.
+    """
+    recorder = _WinApiRecorder()
+    recorder.user_object_error = 5
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(windows_lpac, "_winerror", lambda prefix, code = None: OSError(5, prefix))
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    identity = prepared.spawn_callback._launch_identity
+
+    assert identity.user_objects == ()
+    assert "window station" in identity.user_object_reason
+    assert "SetUserObjectSecurity" not in recorder.names()
+    # Nothing was granted, so cleanup has nothing to revoke and says nothing.
+    prepared.cleanup()
+    assert prepared.cleanup_diagnostics == []
+
+
+def test_a_user_object_with_no_dacl_is_left_exactly_as_it_was(tmp_path, monkeypatch):
+    """A NULL DACL allows everyone everything, so there is nothing to add.
+
+    Writing a DACL that holds only this launch's ACE would take the interactive
+    window station away from the user's own session, which is a far worse
+    outcome than a launch that starts without the grant.
+    """
+    recorder = _WinApiRecorder()
+    recorder.user_object_dacl = 0
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    identity = prepared.spawn_callback._launch_identity
+
+    assert identity.user_objects == ()
+    assert identity.user_object_reason == "the desktop has no DACL, so it already grants every SID"
+    assert "SetEntriesInAclW" not in recorder.names()
+    assert "SetUserObjectSecurity" not in recorder.names()
+    prepared.cleanup()
+    assert prepared.cleanup_diagnostics == []
+
+
+def test_spawn_restricted_detaches_the_child_and_names_its_desktop(tmp_path, monkeypatch):
+    """Chromium's broker creates every sandboxed target with exactly
+    CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS. A detached
+    child has no console allocated for it while it is starting under the
+    restricted token, and every stdio handle here is redirected already.
+    """
+    recorder = _WinApiRecorder()
+    prepared, resources = _spawn_with_fake_api(tmp_path, monkeypatch, recorder, _FakeJob(recorder))
+    identity = _launch_identity(tmp_path)
+    identity.desktop = "WinSta0\\Default"
+
+    token_launcher._spawn_restricted(prepared, dict(_STDIO_PLAN), identity, resources)
+
+    flags = recorder.call("CreateProcessAsUserW")[2]
+    assert flags & token_launcher._DETACHED_PROCESS
+    assert flags & windows_lpac._CREATE_SUSPENDED
+    assert flags & windows_lpac._CREATE_UNICODE_ENVIRONMENT
+    assert not flags & token_launcher._CREATE_NEW_CONSOLE
+    # Never NULL: a child whose desktop is unspecified is put on a noninteractive
+    # window station, which a restricted token cannot connect to.
+    assert recorder.desktop == "WinSta0\\Default"
+
+    # A caller's own console cannot be combined with DETACHED_PROCESS, so it is
+    # refused here rather than failing the creation call.
+    other = _WinApiRecorder()
+    prepared, resources = _spawn_with_fake_api(tmp_path, monkeypatch, other, _FakeJob(other))
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "own console"):
+        token_launcher._spawn_restricted(
+            prepared,
+            dict(_STDIO_PLAN, creationflags = token_launcher._CREATE_NEW_CONSOLE),
+            identity,
+            resources,
+        )
+
+
+def test_a_child_that_dies_in_process_start_up_is_named_by_its_status(tmp_path, monkeypatch):
+    """The probe reason names the step, not just a negative number."""
+    identity = _launch_identity(tmp_path)
+    identity.desktop = "WinSta0\\Default"
+    identity.user_objects = ("window station", "desktop")
+    monkeypatch.setattr(
+        token_launcher, "_control_child", lambda argv, workdir, env, desktop: "CONTROL SAYS"
+    )
+
+    reason = token_launcher._probe_start_failure(-1073741502, "", identity, {}, (sys.executable,))
+
+    assert "STATUS_DLL_INIT_FAILED (0xc0000142)" in reason
+    assert "before running" in reason
+    assert "WinSta0\\Default" in reason
+    assert "window station, desktop" in reason
+    assert reason.endswith("CONTROL SAYS")
+
+    # A refused DACL edit is part of the same sentence, and "neither" is said
+    # rather than left blank.
+    identity.user_objects = ()
+    identity.user_object_reason = "the launch SID could not be granted the window station DACL: 5"
+    reason = token_launcher._probe_start_failure(-1073741502, "", identity, {}, (sys.executable,))
+    assert "the launch SID is on the DACL of neither" in reason
+    assert "could not be granted the window station DACL: 5" in reason
+
+    # A payload that ran and failed is reported as itself, with its output.
+    assert token_launcher._probe_start_failure(1, "boom", identity, {}, ()) == (
+        "the probe child exited with 1: boom"
+    )
+
+
+def test_a_job_that_provably_did_not_drain_is_a_cleanup_diagnostic(monkeypatch):
+    """Cleanup is LIFO, so this callback runs before the ACL revoke and the temp
+    removal; a child that outlived its job must not make those two silent.
+    """
+    recorder = _WinApiRecorder()
+    monkeypatch.setattr(windows_lpac, "_api", lambda: recorder)
+    process = SimpleNamespace(close = lambda: recorder._note("process.close"))
+
+    monkeypatch.setattr(token_launcher, "_wait_for_job_drain", lambda job: False)
+    with pytest.raises(OSError, match = "still held a process"):
+        token_launcher._close_after_drain(process, _FakeJob(recorder))
+    # The handles are released even so: keeping them would leak the job and the
+    # process for the rest of Studio's life.
+    names = recorder.names()
+    assert names.index("job.terminate") < names.index("process.close")
+
+    # A host that cannot be asked is not evidence of a live child.
+    monkeypatch.setattr(token_launcher, "_wait_for_job_drain", lambda job: None)
+    token_launcher._close_after_drain(process, _FakeJob(recorder))
+    monkeypatch.setattr(token_launcher, "_wait_for_job_drain", lambda job: True)
+    token_launcher._close_after_drain(process, _FakeJob(recorder))
 
 
 def test_wait_for_job_drain_polls_until_the_job_is_empty(monkeypatch):
@@ -786,9 +1058,11 @@ def test_wait_for_job_drain_polls_until_the_job_is_empty(monkeypatch):
     started = time.perf_counter()
     assert token_launcher._wait_for_job_drain(_FakeJob(recorder), timeout = 0.05) is False
     assert time.perf_counter() - started < 2
-    # A host without QueryInformationJobObject is reported, not spun on.
+    # A host without QueryInformationJobObject is reported, not spun on, and is
+    # told apart from a job that provably still holds a process: only the latter
+    # is evidence that cleanup is about to run against a live child.
     del recorder.kernel32.QueryInformationJobObject
-    assert token_launcher._wait_for_job_drain(_FakeJob(recorder)) is False
+    assert token_launcher._wait_for_job_drain(_FakeJob(recorder)) is None
     # A job whose handle is already closed has nothing left to wait for.
     assert token_launcher._wait_for_job_drain(SimpleNamespace(_handle = None)) is True
 
@@ -1197,6 +1471,11 @@ def _run_live(backend, workdir: Path, code: str, *argv: str, timeout: int = 60) 
         )
     )
     identity = prepared.spawn_callback._launch_identity
+    # The window station and desktop DACLs are a documented precondition of
+    # CreateProcessAsUser; a host that refuses the edit says so here rather than
+    # in a start-up failure the child never survives to explain.
+    assert identity.user_objects == ("window station", "desktop"), identity.user_object_reason
+    assert identity.desktop and "\\" in identity.desktop
     process = None
     output = ""
     try:

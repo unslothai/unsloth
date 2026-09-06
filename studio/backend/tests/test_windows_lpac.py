@@ -66,7 +66,12 @@ def test_source_only_public_api_and_profile_are_narrow_and_unique():
     assert windows_lpac.__all__ == ["WindowsLpacBackend", "WindowsLpacProcess"]
     assert "subprocess.Popen(" not in source
     assert "launch_id = secrets.token_hex(16)" in source
-    assert 'private_temp = os.path.join(temp_root, secrets.token_hex(12))' in source
+    # Windows rewrites TEMP/TMP for an AppContainer child to the package
+    # redirected <profile>\Temp, so the launch owns that directory itself and
+    # empties it rather than removing a per-launch subdirectory of it.
+    assert "private_temp = temp_root" in source
+    assert "_empty_directory(private_temp)" in source
+    assert "secrets.token_hex(12)" not in source
     assert "_SECURITY_CAPABILITIES(identity.sid, None, 0, 0)" in source
     # Both container kinds are zero-capability; only the opt-out attribute differs.
     assert source.count("_SECURITY_CAPABILITIES(identity.sid, None, 0, 0)") == 1
@@ -349,9 +354,17 @@ def test_legacy_private_temp_rejects_reparse_parent(monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "native Windows launcher regression")
-def test_native_shell_temp_matches_launch_plan_and_is_removed(tmp_path):
+def test_native_shell_temp_matches_launch_plan_and_is_emptied(tmp_path):
     # This tests the real zero-capability launcher without claiming that Python
     # or the backend as a whole qualifies. No capability or probe is overridden.
+    #
+    # Windows builds the package environment for an AppContainer child and
+    # overwrites TEMP/TMP with the package redirected <profile>\Temp, so what the
+    # plan promises has to be that directory: a per-launch subdirectory of it was
+    # planned, granted and cleaned while the child wrote to <profile>\Temp
+    # anyway. The isolation the temp is there for is unchanged - it is inside the
+    # container profile and is not the operator's TEMP - and it is emptied when
+    # the last launch of the installation finishes.
     workdir = tmp_path / "work"
     workdir.mkdir()
     backend = windows_lpac.WindowsLpacBackend()
@@ -364,7 +377,8 @@ def test_native_shell_temp_matches_launch_plan_and_is_removed(tmp_path):
         manifest = Path(identity.manifest_path)
         process = None
         try:
-            assert private != previous
+            assert previous is None or private == previous
+            # The previous launch emptied it, so nothing of that launch is left.
             assert not (private / "previous-invocation").exists()
             process = os_sandbox.spawn_prepared_launch(
                 prepared,
@@ -378,14 +392,20 @@ def test_native_shell_temp_matches_launch_plan_and_is_removed(tmp_path):
             process.wait(timeout = 10)
             output = process.stdout.read().strip()
             assert process.returncode == 0, output
-            assert output == prepared.env["TEMP"] == str(private)
+            # What the child sees is what the plan and the record say, and it is
+            # the container's own temp, never the operator's.
+            assert output == prepared.env["TEMP"] == str(private) == str(profile / "Temp")
+            assert os.path.normcase(output) != os.path.normcase(os.environ["TEMP"])
+            assert os.path.normcase(str(private)).startswith(os.path.normcase(str(profile)))
             (private / "previous-invocation").write_text("owned sentinel")
         finally:
             prepared.cleanup()
         assert not prepared.cleanup_diagnostics
-        assert not private.exists() and not manifest.exists()
-        # The container is per installation now, so its profile outlives the
-        # launch; only what the launch owns inside it is removed.
+        assert not manifest.exists()
+        # The container is per installation now, so its profile and the temp
+        # Windows names for every child of it outlive the launch; only what the
+        # launch left inside the temp is removed.
+        assert private.is_dir() and not list(private.iterdir())
         assert identity.moniker == windows_lpac._install_moniker()
         assert profile.is_dir()
         previous = private
@@ -1085,12 +1105,16 @@ def test_two_launches_in_one_process_share_the_profile_name_and_sid(monkeypatch,
         assert one.moniker == two.moniker == windows_lpac._install_moniker()
         assert one.sid_string == two.sid_string == fakes.sid_text
         assert one.sid.value == two.sid.value
-        # Per launch and never shared: the manifest and the private temp.
+        # Per launch and never shared: the manifest. The container temp is
+        # shared, because Windows points every child's TEMP at it, and it is
+        # emptied only once the last launch holding it has finished.
         assert one.manifest_path != two.manifest_path
-        assert one.private_temp != two.private_temp
-        assert Path(one.private_temp).parent == Path(two.private_temp).parent
-        assert Path(one.private_temp).is_dir() and Path(two.private_temp).is_dir()
+        assert one.private_temp == two.private_temp == str(fakes.profile / "Temp")
+        assert Path(one.private_temp).is_dir()
+        scratch = Path(one.private_temp) / "scratch"
+        scratch.write_text("owned by the second launch", encoding = "utf-8")
         first.cleanup()
+        assert scratch.is_file()  # the second launch is still running
         second.cleanup()
         assert first.cleanup_diagnostics == [] and second.cleanup_diagnostics == []
     assert [event for event in events if event[0] == "create-profile"] == [
@@ -1098,7 +1122,8 @@ def test_two_launches_in_one_process_share_the_profile_name_and_sid(monkeypatch,
     ]
     # The profile outlives both launches.
     assert not [event for event in events if event[0] == "delete-profile"]
-    assert not Path(one.private_temp).exists()
+    assert Path(one.private_temp).is_dir()
+    assert not list(Path(one.private_temp).iterdir())
     assert not Path(one.manifest_path).exists()
 
 
@@ -1293,6 +1318,93 @@ def test_a_stale_launch_manifest_is_reconciled_without_deleting_the_profile(monk
         assert not manifest.exists()
 
 
+def test_a_stale_manifest_empties_the_container_temp_only_when_nothing_holds_it(
+    monkeypatch, tmp_path
+):
+    """The temp a crashed Studio shared with this one is emptied, never removed.
+
+    Windows points every AppContainer child of this installation at
+    ``<profile>\\Temp``, so the directory belongs to the container and not to one
+    launch: reconciliation may only clear its contents, and only once no live
+    launch of this process is using it.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        live = fakes.backend.prepare(fakes.spec)
+        identity = live.spawn_callback._lpac_identity
+        payload = json.loads(Path(identity.manifest_path).read_text(encoding = "utf-8"))
+        assert payload["private_temp"] == identity.private_temp == str(fakes.profile / "Temp")
+        leftover = Path(identity.private_temp) / "crashed-launch-output"
+        leftover.write_text("left behind", encoding = "utf-8")
+        stale = fakes.manifests / f"unsloth.studio.launch.{'e' * 32}.json"
+        stale.write_text(
+            json.dumps({**payload, "launch_id": "e" * 32, "owner_pid": 99}), encoding = "utf-8"
+        )
+        monkeypatch.setattr(
+            windows_lpac, "_process_identity", lambda pid = None: None if pid == 99 else (1, 2)
+        )
+
+        fakes.backend.reconcile_stale_manifests()
+
+        # A live launch of this process holds the container temp, so the dead
+        # owner's record is kept for the next reconciliation instead.
+        assert stale.is_file() and leftover.is_file()
+
+        live.cleanup()
+        assert live.cleanup_diagnostics == []
+        # The last live launch emptied it; the directory itself stays, because a
+        # later launch's TEMP is this same path.
+        assert Path(identity.private_temp).is_dir() and not leftover.exists()
+
+        leftover.write_text("left behind", encoding = "utf-8")
+        fakes.backend.reconcile_stale_manifests()
+        assert not stale.exists()
+        assert Path(identity.private_temp).is_dir() and not leftover.exists()
+
+
+def test_another_live_studios_launch_keeps_its_grants_and_the_container_temp(
+    monkeypatch, tmp_path
+):
+    """The refcount is per process; the SID and the profile are per installation.
+
+    A second Studio process of the same installation grants the same ACEs to the
+    same SID and shares the container temp, and its manifest is the only thing
+    this process can see it through. Revoking on top of it would leave a running
+    container unable to reach its own workdir.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        mine = fakes.backend.prepare(fakes.spec)
+        identity = mine.spawn_callback._lpac_identity
+        payload = json.loads(Path(identity.manifest_path).read_text(encoding = "utf-8"))
+        # What the other Studio wrote before it granted anything: the same roots,
+        # the same container temp, its own launch id, and an owner still alive.
+        other = fakes.manifests / f"unsloth.studio.launch.{'a' * 32}.json"
+        other.write_text(json.dumps({**payload, "launch_id": "a" * 32}), encoding = "utf-8")
+        leftover = Path(identity.private_temp) / "the-other-launch-is-using-this"
+        leftover.write_text("live", encoding = "utf-8")
+        assert os.path.normcase(identity.workdir) in windows_lpac._live_launch_holds("a" * 32)
+        events.clear()
+
+        mine.cleanup()
+
+        assert mine.cleanup_diagnostics == []
+        # Nothing was revoked and nothing was emptied: the other launch is live.
+        assert not [event for event in events if event[0] == "revoke"]
+        assert leftover.is_file()
+        # This launch's own record is gone, so the other one is now alone.
+        assert not Path(identity.manifest_path).exists()
+        assert windows_lpac._live_launch_holds(payload["launch_id"])
+
+        # The installation-wide release refuses while that manifest is live, and
+        # the refusal is decided under the lock the launch path holds.
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "still running"):
+            fakes.backend.remove_persistent_grants()
+
+        other.unlink()
+        assert not windows_lpac._live_launch_holds()
+
+
 def test_a_live_owner_keeps_its_launch_manifest(monkeypatch, tmp_path):
     events: list[tuple] = []
     with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
@@ -1418,8 +1530,16 @@ def test_the_access_memo_follows_the_root_and_never_caches_a_missing_one(monkeyp
     assert resolve(root) is True
     assert resolve(root) is True
     assert calls == [str(root)]
-    # An interpreter upgrade writes into the root directory.
+    # An interpreter upgrade writes into the root directory. A Windows last
+    # write time is stamped from the system clock, which advances about every
+    # 15.6 ms, so a write this soon after the mkdir leaves the directory on the
+    # very stamp the memo pinned and the memo answers from its cache. Move the
+    # stamp by hand, so what this asserts is the memo following the root and not
+    # a filesystem's timestamp resolution.
     (root / "python.exe").write_text("new", encoding = "utf-8")
+    stamped = os.stat(root)
+    os.utime(root, ns = (stamped.st_atime_ns, stamped.st_mtime_ns + 2_000_000_000))
+    assert os.stat(root).st_mtime_ns != stamped.st_mtime_ns
     assert resolve(root) is True
     assert calls == [str(root), str(root)]
     # A root that cannot be stat'ed is asked about every time and never recorded.
@@ -1527,6 +1647,15 @@ def test_manifest_parsing_refuses_planted_records(tmp_path):
     }
     launch_name = f"unsloth.studio.launch.{'b' * 32}.json"
     assert _planted(tmp_path, launch_name, launch)["kind"] == "lpac-launch"
+    # The container temp itself is what a launch owns now: Windows points the
+    # child's TEMP there, so reconciliation empties it instead of removing a
+    # per-launch subdirectory. The subdirectory shape an earlier build wrote
+    # (``launch`` above) still parses, so its manifest reconciles.
+    container_temp = str(Path(launch["profile_folder"]) / "Temp")
+    assert (
+        _planted(tmp_path, launch_name, {**launch, "private_temp": container_temp})["kind"]
+        == "lpac-launch"
+    )
     assert _planted(tmp_path, "unsloth.studio.valid.json", single_use)["kind"] == "lpac-single-use"
     assert _planted(tmp_path, _INSTALL_MONIKER + ".json", persistent)["kind"] == "lpac-persistent"
 
@@ -1554,9 +1683,9 @@ def test_manifest_parsing_refuses_planted_records(tmp_path):
             launch_name,
             {**launch, "granted_roots": [*launch["granted_roots"], victim]},
         ),
-        # Temp itself, whose removal would take every concurrent launch's
-        # private directory with it.
-        "private temp is the shared root": (
+        # The container temp of a different profile: emptying it would take a
+        # foreign installation's live launches with it.
+        "private temp is another profile's temp": (
             launch_name,
             {
                 **launch,
@@ -2211,7 +2340,9 @@ def _run_native(
             process.kill()
             process.wait(timeout = 10)
         prepared.cleanup()
-        assert not private_temp.exists()
+        # The container temp is shared with every launch of this installation,
+        # so cleanup empties it and leaves the directory itself in place.
+        assert private_temp.is_dir() and not list(private_temp.iterdir())
         assert not manifest.exists()
     elapsed = time.perf_counter() - started
     assert process is not None and process.returncode == 0, output
@@ -2245,17 +2376,21 @@ def test_live_launches_share_one_profile_and_own_their_manifest_and_temp(
         # One identity per installation, so the interpreter grant is made once.
         assert one.moniker == two.moniker == windows_lpac._install_moniker()
         assert one.sid_string == two.sid_string
-        # Everything a single launch owns is still its own.
+        # The manifest is a launch's own. The temp is the container's, because
+        # Windows points every AppContainer child of this profile at it.
         assert one.manifest_path != two.manifest_path
-        assert one.private_temp != two.private_temp
-        assert Path(one.private_temp).parent == Path(two.private_temp).parent
+        assert one.private_temp == two.private_temp == str(profile_folder / "Temp")
         assert Path(one.manifest_path).is_file() and Path(two.manifest_path).is_file()
-        assert Path(one.private_temp).is_dir() and Path(two.private_temp).is_dir()
+        assert Path(one.private_temp).is_dir()
+        scratch = Path(two.private_temp) / "second-launch-scratch"
+        scratch.write_text("owned by the second launch", encoding = "utf-8")
         assert one.sid_string in _acl_text(workdir)
         first.cleanup()
         assert first.cleanup_diagnostics == [], first.cleanup_diagnostics
         assert not Path(one.manifest_path).exists()
-        assert not Path(one.private_temp).exists()
+        # The second launch still holds the container temp, so nothing in it is
+        # removed under it.
+        assert scratch.is_file()
         assert Path(two.manifest_path).is_file()
         assert Path(two.private_temp).is_dir()
         # The second launch is still live, so the shared workdir grant stays.
@@ -2265,7 +2400,10 @@ def test_live_launches_share_one_profile_and_own_their_manifest_and_temp(
         first.cleanup()
         second.cleanup()
     assert two.sid_string not in _acl_text(workdir)
-    assert not Path(two.private_temp).exists()
+    # The last launch of the installation emptied the container temp; the
+    # directory itself is the next launch's TEMP and stays.
+    assert Path(two.private_temp).is_dir()
+    assert not list(Path(two.private_temp).iterdir())
     # The profile and the interpreter grant outlive every launch of it.
     assert profile_folder.is_dir()
     manifest = Path(windows_lpac._persistent_manifest_path(one.moniker))
@@ -2334,7 +2472,7 @@ def test_live_consecutive_launches_reuse_the_grant_and_stay_fast(
     assert Path(windows_lpac._persistent_manifest_path(install.moniker)).is_file()
 
 
-def test_live_workdir_home_runtime_native_extension_and_fresh_temp(live_lpac_backend, tmp_path):
+def test_live_workdir_home_runtime_native_extension_and_container_temp(live_lpac_backend, tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     (workdir / "input.txt").write_text("inside", encoding = "utf-8")
@@ -2361,7 +2499,9 @@ denied({str(runtime_write)!r}, 'w')
 assert _ssl.__file__ and open(_ssl.__file__, 'rb').read(1)
 private = pathlib.Path(os.environ['TEMP'])
 assert private == pathlib.Path(os.environ['TMP'])
-assert not list(private.iterdir())
+assert private != pathlib.Path({str(os.environ.get("TEMP", ""))!r})
+parts = [part.lower() for part in private.parts]
+assert 'packages' in parts and parts[-2:] == ['ac', 'temp']
 handle = tempfile.NamedTemporaryFile(dir=private, delete=False)
 handle.write(b'private'); handle.close()
 assert pathlib.Path(handle.name).read_bytes() == b'private'

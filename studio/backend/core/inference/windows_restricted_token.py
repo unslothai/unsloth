@@ -21,6 +21,21 @@ runs the tool under a *restricted token* of the Studio user:
   objects that already grant Everyone or the session stay writable, which the
   execution record discloses.
 
+Starting the child is its own problem, and a failure there is silent: the
+creation call succeeds and the process is terminated during initialisation, so
+the only evidence is an exit status. Three things the documentation asks for are
+therefore done before the child runs, and named in the probe's failure text when
+it still does not start:
+
+* the launch SID is added to the DACL of the window station and the desktop.
+  ``CreateProcessAsUser`` requires that "the DACLs for the window station and
+  desktop must grant access to the user or the logon session represented by the
+  hToken parameter", and a per-launch random SID is on no DACL anywhere;
+* ``STARTUPINFO.lpDesktop`` names this process's own window station and desktop
+  instead of being left NULL;
+* the child is created ``DETACHED_PROCESS`` (Chromium's broker flags), so no
+  console is allocated for it while it starts under the restricted token.
+
 Reads and execution keep the user's normal access, so the selected interpreter
 runs from wherever it is installed, ``open(os.devnull)`` works, named pipes and
 ``multiprocessing`` work, and the network stays reachable. None of that is OS
@@ -103,7 +118,50 @@ _TOKEN_LOGON_SID = 28
 _EVERYONE_SID = "S-1-1-0"
 _ADMINISTRATORS_SID = "S-1-5-32-544"
 _NO_INHERITANCE = 0
-_CREATE_NO_WINDOW = 0x08000000
+# The window station ACE is the object's own, never inherited by desktops that
+# do not exist yet (the interactive sample adds a second, inherit-only ACE for
+# that; this launcher grants the one desktop it uses directly instead).
+_NO_PROPAGATE_INHERIT_ACE = 0x04
+_CREATE_NEW_CONSOLE = 0x00000010
+# Chromium's broker creates every sandboxed target with exactly
+# CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS
+# (sandbox/win/src/broker_services.cc). A detached child allocates no console at
+# all, so process start-up never has to create one under the restricted token;
+# the caller's CREATE_NO_WINDOW is documented to be ignored beside it.
+_DETACHED_PROCESS = 0x00000008
+# "To enable user interaction with the new process, you must specify the name of
+# the default interactive window station and desktop, winsta0\default, in the
+# lpDesktop member of the STARTUPINFO structure" (CreateProcessAsUser). Codex's
+# windows-sandbox-rs records the same requirement from the other side: "Some
+# processes (e.g., PowerShell) can fail with STATUS_DLL_INIT_FAILED if lpDesktop
+# is not set when launching with a restricted token."
+_INTERACTIVE_DESKTOP = "WinSta0\\Default"
+
+_UOI_NAME = 2
+_DACL_SECURITY_INFORMATION = 0x00000004
+_READ_CONTROL = 0x00020000
+# Every WINSTA_* and DESKTOP_* right, and READ_CONTROL so the child can read the
+# DACL it is being judged by. WRITE_DAC, WRITE_OWNER and DELETE are deliberately
+# left out: a sandboxed child that could rewrite the window station DACL could
+# grant itself anything. Codex's windows-sandbox-rs draws the same line for its
+# desktop participants.
+_WINSTA_ALL_ACCESS = 0x37F
+_DESKTOP_ALL_ACCESS = 0x01FF
+_WINSTA_GRANT = _WINSTA_ALL_ACCESS | _READ_CONTROL
+_DESKTOP_GRANT = _DESKTOP_ALL_ACCESS | _READ_CONTROL
+
+# An exit code the loader produced, not the payload: the child never ran.
+_NTSTATUS_NAMES = {
+    0xC0000005: "STATUS_ACCESS_VIOLATION",
+    0xC0000017: "STATUS_NO_MEMORY",
+    0xC0000022: "STATUS_ACCESS_DENIED",
+    0xC000007B: "STATUS_INVALID_IMAGE_FORMAT",
+    0xC0000135: "STATUS_DLL_NOT_FOUND",
+    0xC0000139: "STATUS_ENTRYPOINT_NOT_FOUND",
+    0xC0000142: "STATUS_DLL_INIT_FAILED",
+    0xC000013A: "STATUS_CONTROL_C_EXIT",
+    0xC0000409: "STATUS_STACK_BUFFER_OVERRUN",
+}
 _ERROR_INSUFFICIENT_BUFFER = 122
 _ERROR_NOT_SUPPORTED = 50
 _ERROR_INVALID_PARAMETER = 87
@@ -376,12 +434,18 @@ def _job_active_processes(api: Any, handle: Any) -> int | None:
     return int(info.ActiveProcesses)
 
 
-def _wait_for_job_drain(job: Any, timeout: float = _JOB_DRAIN_SECONDS) -> bool:
+def _wait_for_job_drain(job: Any, timeout: float = _JOB_DRAIN_SECONDS) -> bool | None:
     """Wait, bounded, until the job holds no process.
 
     ``TerminateJobObject`` and ``KILL_ON_JOB_CLOSE`` only initiate termination.
     Revoking the workdir ACE and removing the private temp before the children
     are actually gone races the kernel closing their handles.
+
+    ``True`` when the job is empty, ``False`` when it still held a process at the
+    deadline, and ``None`` when this host cannot be asked (no
+    ``QueryInformationJobObject``). Only ``False`` is evidence of a child that
+    outlived its job; the caller must not turn a host it cannot observe into a
+    failure.
     """
     handle = getattr(job, "_handle", None)
     if not handle:
@@ -395,7 +459,7 @@ def _wait_for_job_drain(job: Any, timeout: float = _JOB_DRAIN_SECONDS) -> bool:
             return True
         if active is None:
             logger.warning("Could not observe the Limited job draining; removal retries instead")
-            return False
+            return None
         if time.monotonic() >= deadline:
             logger.warning(
                 "The Limited job still held %d process(es) after %.1f s", active, timeout
@@ -406,10 +470,26 @@ def _wait_for_job_drain(job: Any, timeout: float = _JOB_DRAIN_SECONDS) -> bool:
 
 
 def _close_after_drain(process: Any, job: Any) -> None:
-    """Kill the job, wait for it to drain, then release the process and job handles."""
+    """Kill the job, wait for it to drain, then release the process and job handles.
+
+    A drain that provably did not finish is raised, so ``cleanup`` records it as
+    a diagnostic instead of continuing in silence: this callback runs before the
+    ACL revoke and the private temp removal (cleanup is LIFO), and both of those
+    then run against a child that has not exited. The handles are released
+    either way - holding them would leak the job and the process for the rest of
+    Studio's life - and the launch SID is still revoked afterwards, because a
+    child that outlived ``TerminateJobObject`` is a runaway that must not keep
+    its write access. A host that cannot be asked (``None``) is not a failure.
+    """
     job.terminate()
-    _wait_for_job_drain(job)
+    drained = _wait_for_job_drain(job)
     process.close()
+    if drained is False:
+        raise OSError(
+            f"the Limited job still held a process {_JOB_DRAIN_SECONDS:.0f} s after it was "
+            "terminated; the ACL revoke and the private temp removal below ran while a child "
+            "of this launch was still alive"
+        )
 
 
 @dataclass
@@ -455,6 +535,12 @@ class _LaunchIdentity:
     owner_pid: int
     owner_created: int
     cleaned: bool = False
+    # "window station" and "desktop" once their DACLs carry this launch's SID,
+    # and why they do not when a host refuses the edit.
+    user_objects: tuple[str, ...] = ()
+    user_object_reason: str = ""
+    # "<window station>\<desktop>" for STARTUPINFO.lpDesktop.
+    desktop: str = ""
 
     def cleanup(self) -> None:
         if self.cleaned:
@@ -471,6 +557,10 @@ class _LaunchIdentity:
                     _lpac._revoke_sid(path, self.sid)
                 except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
                     errors.append(f"ACL {path}: {exc}")
+            try:
+                _revoke_user_objects(self)
+            except Exception as exc:  # noqa: BLE001 - a session object, see the docstring
+                errors.append(f"user objects: {exc}")
             try:
                 _remove_private_temp(self.private_temp)
             except FileNotFoundError:
@@ -759,6 +849,193 @@ def _set_default_dacl(api: Any, token: wintypes.HANDLE, sid: ctypes.c_void_p) ->
         api.kernel32.LocalFree(new_acl)
 
 
+def _user_object_name(api: Any, handle: wintypes.HANDLE) -> str:
+    """The name of a window station or desktop handle, for the launch record."""
+    buffer = ctypes.create_unicode_buffer(256)
+    size = wintypes.DWORD()
+    if not api.user32.GetUserObjectInformationW(
+        handle, _UOI_NAME, buffer, ctypes.sizeof(buffer), ctypes.byref(size)
+    ):
+        raise _lpac._winerror("GetUserObjectInformationW(name)")
+    return buffer.value
+
+
+def _process_user_objects(api: Any) -> tuple[tuple[str, Any], ...]:
+    """The window station and desktop a child of this process connects to.
+
+    Neither handle is owned here. ``GetProcessWindowStation`` and
+    ``GetThreadDesktop`` hand out the process's own, which must not be closed.
+    """
+    winsta = api.user32.GetProcessWindowStation()
+    desktop = api.user32.GetThreadDesktop(api.kernel32.GetCurrentThreadId())
+    if not winsta or not desktop:
+        raise _lpac._winerror("GetProcessWindowStation/GetThreadDesktop")
+    return (("window station", winsta), ("desktop", desktop))
+
+
+def _launch_desktop(api: Any) -> str:
+    """``<window station>\\<desktop>`` for the objects this process is connected to.
+
+    A launcher running in a session whose window station is not ``WinSta0`` (a
+    service) would otherwise name a station it is not on. The documented default
+    is used only when the names cannot be read at all.
+    """
+    try:
+        names = [_user_object_name(api, handle) for _kind, handle in _process_user_objects(api)]
+    except OSError:
+        logger.warning("Could not name the Limited launcher's window station", exc_info = True)
+        return _INTERACTIVE_DESKTOP
+    return "\\".join(names)
+
+
+def _edit_user_object_dacl(
+    api: Any,
+    handle: Any,
+    sid: ctypes.c_void_p,
+    *,
+    mode: int,
+    access: int,
+    inheritance: int,
+) -> bool:
+    """Add or remove one SID's ACE on a window station or desktop.
+
+    The two-call size pattern of ``GetUserObjectSecurity``, then the object's
+    own DACL with this one entry added (or every entry for this trustee
+    removed), written back as an absolute descriptor. The trustee is always the
+    per-launch SID, so a revoke can never take another principal's ACE with it.
+
+    An object with no DACL is left alone, and ``False`` says so. A NULL DACL
+    allows everyone everything, so the SID needs nothing added; writing a DACL
+    that holds only this ACE would take the interactive window station away from
+    the user's own session. Chromium's ``window.cc`` guards the same trap from
+    the other direction, seeding an allow-everyone entry before it denies.
+    """
+    information = wintypes.DWORD(_DACL_SECURITY_INFORMATION)
+    needed = wintypes.DWORD()
+    api.user32.GetUserObjectSecurity(
+        handle, ctypes.byref(information), None, 0, ctypes.byref(needed)
+    )
+    if _last_error() != _ERROR_INSUFFICIENT_BUFFER or not needed.value:
+        raise _lpac._winerror("GetUserObjectSecurity(size)")
+    current = ctypes.create_string_buffer(needed.value)
+    if not api.user32.GetUserObjectSecurity(
+        handle, ctypes.byref(information), current, needed.value, ctypes.byref(needed)
+    ):
+        raise _lpac._winerror("GetUserObjectSecurity")
+    present = wintypes.BOOL()
+    defaulted = wintypes.BOOL()
+    dacl = ctypes.c_void_p()
+    if not api.advapi32.GetSecurityDescriptorDacl(
+        current, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)
+    ):
+        raise _lpac._winerror("GetSecurityDescriptorDacl(user object)")
+    if not present.value or not dacl:
+        return False
+    trustee = _lpac._TRUSTEE_W(
+        None,
+        _lpac._NO_MULTIPLE_TRUSTEE,
+        _lpac._TRUSTEE_IS_SID,
+        _lpac._TRUSTEE_IS_UNKNOWN,
+        ctypes.cast(sid, wintypes.LPWSTR),
+    )
+    entry = _lpac._EXPLICIT_ACCESS_W(access, mode, inheritance, trustee)
+    new_acl = ctypes.c_void_p()
+    result = api.advapi32.SetEntriesInAclW(1, ctypes.byref(entry), dacl, ctypes.byref(new_acl))
+    if result != 0:
+        raise _lpac._winerror("SetEntriesInAclW(user object)", result)
+    try:
+        descriptor = _lpac._SECURITY_DESCRIPTOR()
+        if not api.advapi32.InitializeSecurityDescriptor(ctypes.byref(descriptor), 1):
+            raise _lpac._winerror("InitializeSecurityDescriptor(user object)")
+        if not api.advapi32.SetSecurityDescriptorDacl(
+            ctypes.byref(descriptor), True, new_acl, False
+        ):
+            raise _lpac._winerror("SetSecurityDescriptorDacl(user object)")
+        if not api.user32.SetUserObjectSecurity(
+            handle, ctypes.byref(information), ctypes.byref(descriptor)
+        ):
+            raise _lpac._winerror("SetUserObjectSecurity")
+    finally:
+        api.kernel32.LocalFree(new_acl)
+    return True
+
+
+def _grant_user_objects(identity: _LaunchIdentity) -> str:
+    """Let the launch SID reach the window station and desktop the child needs.
+
+    ``CreateProcessAsUser`` documents this as a precondition: "before calling
+    CreateProcessAsUser, you must change the discretionary access control list
+    (DACL) of both the default interactive window station and the default
+    desktop. The DACLs for the window station and desktop must grant access to
+    the user or the logon session represented by the hToken parameter." The
+    launch SID is freshly generated, so it appears in no DACL on the host, and
+    under ``WRITE_RESTRICTED`` every write the child makes against those objects
+    is checked a second time against the restricting SIDs alone. Without this
+    the child depends on the logon SID and Everyone ACEs a particular host
+    happens to carry, and dies in ``LdrpInitializeProcess`` where it does not.
+
+    Best effort, and deliberately so: editing those DACLs needs ``WRITE_DAC`` on
+    the handles this process already holds, and a host that refuses is left
+    exactly where it was before this grant existed, with the child depending on
+    the logon SID and Everyone ACEs the session happens to carry. The reason is
+    recorded on the identity and reaches the live probe's failure text, so a
+    refusal is named rather than guessed at.
+
+    The ACEs are recorded on the identity and removed by ``cleanup``.
+    """
+    api = _lpac._api()
+    granted: list[str] = []
+    reason = ""
+    kind = "window station"
+    identity.desktop = _launch_desktop(api)
+    try:
+        for kind, handle in _process_user_objects(api):
+            access = _WINSTA_GRANT if kind == "window station" else _DESKTOP_GRANT
+            inheritance = _NO_PROPAGATE_INHERIT_ACE if kind == "window station" else _NO_INHERITANCE
+            if _edit_user_object_dacl(
+                api,
+                handle,
+                identity.sid,
+                mode = _lpac._GRANT_ACCESS,
+                access = access,
+                inheritance = inheritance,
+            ):
+                granted.append(kind)
+            else:
+                reason = f"the {kind} has no DACL, so it already grants every SID"
+    except OSError as exc:
+        reason = f"the launch SID could not be granted the {kind} DACL: {exc}"
+        logger.warning("Could not grant the Limited launch SID a user object", exc_info = True)
+    identity.user_objects = tuple(granted)
+    identity.user_object_reason = reason
+    return reason
+
+
+def _revoke_user_objects(identity: _LaunchIdentity) -> None:
+    """Remove the launch SID's window station and desktop ACEs.
+
+    Best effort by design: these are session objects, and a Studio reconciling
+    another Studio's manifest from a different session cannot reach the ones the
+    ACE was written on. The SID names no account and is never reused, so an ACE
+    that outlives its launch grants nobody anything and disappears with the
+    session.
+    """
+    if not identity.user_objects:
+        return
+    api = _lpac._api()
+    for kind, handle in _process_user_objects(api):
+        if kind not in identity.user_objects:
+            continue
+        _edit_user_object_dacl(
+            api,
+            handle,
+            identity.sid,
+            mode = _lpac._REVOKE_ACCESS,
+            access = 0,
+            inheritance = _NO_INHERITANCE,
+        )
+
+
 def _create_restricted_token(identity: _LaunchIdentity) -> wintypes.HANDLE:
     """A write-restricted, LUA, privilege-stripped copy of Studio's own primary token."""
     api = _lpac._api()
@@ -859,15 +1136,25 @@ def _spawn_restricted(
     import msvcrt
 
     api = _lpac._api()
+    # Chromium's broker uses exactly these three flags for its own
+    # CreateProcessAsUserW call (sandbox/win/src/broker_services.cc). DETACHED_PROCESS
+    # replaces the CREATE_NO_WINDOW this launcher used to add: every stdio handle is
+    # redirected here, so the child needs no console, and a detached child never has
+    # one allocated for it while it is starting under the restricted token.
+    # CREATE_NO_WINDOW from the caller is documented to be ignored beside it.
     flags = (
         int(popen_kwargs.get("creationflags", 0))
         | _lpac._CREATE_SUSPENDED
         | _lpac._CREATE_UNICODE_ENVIRONMENT
         | _lpac._EXTENDED_STARTUPINFO_PRESENT
-        | _CREATE_NO_WINDOW
+        | _DETACHED_PROCESS
     )
     if flags & _lpac._CREATE_BREAKAWAY_FROM_JOB:
         raise SandboxUnavailableError("Limited processes may not break away from their Job Object")
+    if flags & _CREATE_NEW_CONSOLE:
+        # DETACHED_PROCESS and CREATE_NEW_CONSOLE cannot both be set; the pair
+        # would fail the creation call rather than the sandbox check.
+        raise SandboxUnavailableError("Limited processes may not be given their own console")
     token = resources.token
     # The job exists before the process so the child is never outside it, not
     # even suspended: JOB_LIST attaches at creation, the fallback assigns
@@ -933,6 +1220,13 @@ def _spawn_restricted(
 
         startup = _lpac._STARTUPINFOEXW()
         startup.StartupInfo.cb = ctypes.sizeof(startup)
+        # Named, never left NULL: CreateProcessAsUser puts a child whose desktop
+        # is unspecified on a noninteractive window station, and a restricted
+        # token that cannot connect to the one it is given dies in DLL
+        # initialisation before any payload runs. The name is this process's own
+        # window station and desktop, which are the objects the launch SID was
+        # just granted, so the two can never disagree.
+        startup.StartupInfo.lpDesktop = identity.desktop or _INTERACTIVE_DESKTOP
         startup.StartupInfo.dwFlags = _lpac._STARTF_USESTDHANDLES
         startup.StartupInfo.hStdInput = child_stdin
         startup.StartupInfo.hStdOutput = child_stdout
@@ -1105,6 +1399,126 @@ print(json.dumps(findings))
 '''
 
 
+def _status_text(code: int) -> str:
+    """An exit code as the loader status it is, when it is one."""
+    unsigned = ctypes.c_uint32(code).value
+    name = _NTSTATUS_NAMES.get(unsigned)
+    return f"{name} (0x{unsigned:08x})" if name else f"0x{unsigned:08x}"
+
+
+def _is_start_failure(code: int) -> bool:
+    """Whether an exit code is a loader status, so the payload never ran."""
+    return ctypes.c_uint32(code).value & 0xC0000000 == 0xC0000000
+
+
+def _control_child(argv: tuple[str, ...], workdir: str, env: dict[str, str], desktop: str) -> str:
+    """Start one trivial child under a token restricted only in its privileges.
+
+    The control the failure text needs, and the one the staging probes lacked:
+    it separates "this host will not start a ``CreateProcessAsUserW`` child of
+    Studio at all" from "the restriction is what the child cannot initialise
+    under". ``DISABLE_MAX_PRIVILEGE`` alone is still a restricted version of the
+    caller's primary token, so no privilege is required for it, and it carries
+    none of ``LUA_TOKEN``, ``WRITE_RESTRICTED`` or the restricting SIDs.
+
+    Nothing of a caller's payload runs: the child is the probe's own interpreter
+    with an immediate exit. The job object, the inherited handles and the
+    suspension are left out, so this answers for the token and the desktop only.
+    """
+    api = _lpac._api()
+    source = wintypes.HANDLE()
+    if not api.advapi32.OpenProcessToken(
+        api.kernel32.GetCurrentProcess(), _TOKEN_ACCESS, ctypes.byref(source)
+    ):
+        return f"the control launch could not open Studio's token ({_last_error()})"
+    token = wintypes.HANDLE()
+    process_info = _lpac._PROCESS_INFORMATION()
+    try:
+        if not api.advapi32.CreateRestrictedToken(
+            source, _DISABLE_MAX_PRIVILEGE, 0, None, 0, None, 0, None, ctypes.byref(token)
+        ):
+            return f"the control token could not be built ({_last_error()})"
+        startup = _lpac._STARTUPINFOW()
+        startup.cb = ctypes.sizeof(startup)
+        startup.lpDesktop = desktop or _INTERACTIVE_DESKTOP
+        command_line = ctypes.create_unicode_buffer(
+            subprocess.list2cmdline((argv[0], "-I", "-S", "-c", "raise SystemExit(0)"))
+        )
+        with _limited_mode_wording():
+            environment = _lpac._environment_block(env)
+        if not api.advapi32.CreateProcessAsUserW(
+            token,
+            argv[0],
+            command_line,
+            None,
+            None,
+            False,
+            _DETACHED_PROCESS | _lpac._CREATE_UNICODE_ENVIRONMENT,
+            environment,
+            workdir,
+            ctypes.byref(startup),
+            ctypes.byref(process_info),
+        ):
+            return f"CreateProcessAsUserW refused the control launch ({_last_error()})"
+        api.kernel32.WaitForSingleObject(process_info.hProcess, 20000)
+        code = wintypes.DWORD()
+        if not api.kernel32.GetExitCodeProcess(process_info.hProcess, ctypes.byref(code)):
+            return f"the control child's exit code could not be read ({_last_error()})"
+        if code.value == _lpac._STILL_ACTIVE:
+            api.kernel32.TerminateProcess(process_info.hProcess, 1)
+            return "the control child did not finish within 20 s"
+        if code.value == 0:
+            return (
+                "the same launch started under a token restricted only in its privileges, so "
+                "LUA_TOKEN, WRITE_RESTRICTED or the restricting SIDs are what the child cannot "
+                "initialise under"
+            )
+        return (
+            "a control child under a token restricted only in its privileges failed the same way "
+            f"({_status_text(code.value)}), so this host does not start CreateProcessAsUserW "
+            "children of Studio at all"
+        )
+    except OSError as exc:
+        return f"the control launch could not run ({exc})"
+    finally:
+        for handle in (process_info.hThread, process_info.hProcess):
+            if handle:
+                api.kernel32.CloseHandle(handle)
+        if token:
+            api.kernel32.CloseHandle(token)
+        api.kernel32.CloseHandle(source)
+
+
+def _probe_start_failure(
+    returncode: int, output: str, identity: _LaunchIdentity, env: dict[str, str], argv: tuple[str, ...]
+) -> str:
+    """Why the probe child never reported, named as concretely as the host allows.
+
+    A loader status means the payload never ran, so the useful facts are the
+    status itself, the desktop the child was given, which of the window station
+    and desktop DACLs carry the launch SID, and how the same launch fares
+    without the restriction. Anything else is the payload's own failure and is
+    reported as the exit code and its output.
+    """
+    if not _is_start_failure(returncode):
+        return f"the probe child exited with {returncode}: {output[-400:]}"
+    granted = ", ".join(identity.user_objects) or "neither"
+    detail = (
+        f"the probe child died in Windows process start-up with {_status_text(returncode)}, "
+        f"before running: desktop {identity.desktop or _INTERACTIVE_DESKTOP}, the launch SID "
+        f"is on the DACL of {granted}"
+    )
+    if identity.user_object_reason:
+        detail += f"; {identity.user_object_reason}"
+    try:
+        detail += "; " + _control_child(argv, identity.workdir, env, identity.desktop)
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must not replace the diagnosis
+        detail += f"; the control launch raised {type(exc).__name__}: {exc}"
+    if output.strip():
+        detail += f"; child output: {output[-200:]}"
+    return detail
+
+
 def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> str | None:
     """The reason the probe failed, or ``None`` when every observation matches the model."""
     checks = (
@@ -1234,7 +1648,9 @@ class WindowsRestrictedTokenBackend:
                     return "the probe child did not finish within 20 s"
                 output = process.stdout.read()
                 if process.returncode != 0:
-                    return f"the probe child exited with {process.returncode}: {output[-400:]}"
+                    return _probe_start_failure(
+                        process.returncode, output, identity, prepared.env, prepared.argv
+                    )
                 try:
                     findings = json.loads(output.strip().splitlines()[-1])
                 except (ValueError, IndexError):
@@ -1274,6 +1690,9 @@ class WindowsRestrictedTokenBackend:
             # so a failure past it would surface as a failed tool call instead of
             # a Limited call running under the process guard.
             try:
+                # Before the token, because the token is what the window station
+                # and desktop DACLs are then checked against.
+                _grant_user_objects(identity)
                 resources.token = _create_restricted_token(identity)
                 resources.job = _lpac._job_object_with_limits()
             except OSError as exc:

@@ -32,10 +32,13 @@ What a stable SID changes
   launch of the same installation, so two concurrent tool calls can see each
   other's named objects, and one can create a name the other is about to open,
   instead of each being in a namespace of its own.
-* Both launches also share the container profile directory, so one launch's
-  private temp directory is reachable by a concurrent launch of the same
-  installation. The private temp is still a fresh random subdirectory per
-  launch and is deleted at cleanup, so it is not reachable by a *later* launch.
+* Both launches also share the container profile directory, and with it the
+  container temp ``<profile>\\Temp``. Windows builds the package environment for
+  an AppContainer process and points ``TEMP``/``TMP`` at that directory, so a
+  per-launch subdirectory of it could be planned and granted but never used: the
+  child would write to ``<profile>\\Temp`` regardless. The temp is therefore the
+  container's, shared by concurrent launches of this installation, and emptied
+  when the last of them finishes rather than deleted per launch.
 * While two launches run at once, each one's workdir carries the shared SID, so
   a tool call in one Studio chat can reach another chat's workdir for as long as
   that other call is running. The grant is released when the last launch holding
@@ -312,6 +315,8 @@ class _WinApi:
     advapi32: Any
     userenv: Any
     ole32: Any
+    # Window station and desktop security, for the restricted-token launcher.
+    user32: Any = None
 
 
 _API: _WinApi | None = None
@@ -341,6 +346,7 @@ def _api() -> _WinApi:
     advapi32 = ctypes.WinDLL("advapi32", use_last_error = True)
     userenv = ctypes.WinDLL("userenv", use_last_error = True)
     ole32 = ctypes.WinDLL("ole32", use_last_error = True)
+    user32 = ctypes.WinDLL("user32", use_last_error = True)
 
     userenv.CreateAppContainerProfile.argtypes = [
         wintypes.LPCWSTR,
@@ -415,6 +421,43 @@ def _api() -> _WinApi:
     advapi32.SetSecurityDescriptorDacl.restype = wintypes.BOOL
     advapi32.SetFileSecurityW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p]
     advapi32.SetFileSecurityW.restype = wintypes.BOOL
+    advapi32.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    advapi32.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+    # Window station and desktop DACLs. CreateProcessAsUser documents that "the
+    # DACLs for the window station and desktop must grant access to the user or
+    # the logon session represented by the hToken parameter"; the restricted
+    # token's per-launch SID is in neither until the launcher adds it.
+    user32.GetProcessWindowStation.argtypes = []
+    user32.GetProcessWindowStation.restype = wintypes.HANDLE
+    user32.GetThreadDesktop.argtypes = [wintypes.DWORD]
+    user32.GetThreadDesktop.restype = wintypes.HANDLE
+    user32.GetUserObjectInformationW.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    user32.GetUserObjectInformationW.restype = wintypes.BOOL
+    user32.GetUserObjectSecurity.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    user32.GetUserObjectSecurity.restype = wintypes.BOOL
+    user32.SetUserObjectSecurity.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    user32.SetUserObjectSecurity.restype = wintypes.BOOL
     # Token APIs used by the write-restricted Limited launcher (windows_restricted_token).
     advapi32.OpenProcessToken.argtypes = [
         wintypes.HANDLE,
@@ -530,6 +573,8 @@ def _api() -> _WinApi:
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.GetCurrentProcessId.argtypes = []
     kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+    kernel32.GetCurrentThreadId.argtypes = []
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     kernel32.GetProcessTimes.argtypes = [
         wintypes.HANDLE,
         ctypes.POINTER(wintypes.FILETIME),
@@ -546,7 +591,7 @@ def _api() -> _WinApi:
     kernel32.GetDriveTypeW.restype = wintypes.UINT
     ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
 
-    _API = _WinApi(kernel32, advapi32, userenv, ole32)
+    _API = _WinApi(kernel32, advapi32, userenv, ole32, user32)
     return _API
 
 
@@ -754,21 +799,44 @@ def _manifest_root() -> str:
     return root
 
 
+def _empty_directory(path: str) -> None:
+    """Delete everything inside ``path``, leaving the directory itself in place.
+
+    The container temp is named in the package environment Windows builds for
+    every AppContainer child of this installation, so it is emptied rather than
+    removed: a concurrent launch would otherwise find its own TEMP gone.
+    """
+    with os.scandir(path) as entries:
+        children = list(entries)
+    for entry in children:
+        if entry.is_dir(follow_symlinks = False):
+            shutil.rmtree(entry.path, ignore_errors = False)
+        else:
+            os.unlink(entry.path)
+
+
+def _is_container_temp(profile_folder: str, private_temp: str) -> bool:
+    """Whether ``private_temp`` is the container temp itself, not a child of it."""
+    return os.path.normcase(os.path.abspath(private_temp)) == os.path.normcase(
+        os.path.join(os.path.realpath(profile_folder), "Temp")
+    )
+
+
 def _validated_private_temp(profile_folder: str, private_temp: str) -> str:
     expected_parent = os.path.join(os.path.realpath(profile_folder), "Temp")
     spelled = os.path.abspath(private_temp)
     name = os.path.basename(spelled)
-    # A launch owns a random child of Temp, never Temp itself: the profile is
-    # shared by every launch of this installation, so deleting Temp would delete
-    # a concurrent launch's directory. Single-use manifests owned Temp itself and
-    # keep their cleanup path.
-    current = (
+    # A launch now owns the container temp itself, because that is where Windows
+    # points the child's TEMP; it is emptied, never removed, and only once no
+    # other live launch of this installation holds it. A random child of Temp is
+    # still accepted so a manifest written by an earlier build reconciles.
+    inherited = (
         os.path.normcase(os.path.dirname(spelled)) == os.path.normcase(expected_parent)
         and len(name) == 24
         and all(character in "0123456789abcdef" for character in name.lower())
     )
-    legacy = os.path.normcase(spelled) == os.path.normcase(expected_parent)
-    if not (current or legacy):
+    container = os.path.normcase(spelled) == os.path.normcase(expected_parent)
+    if not (container or inherited):
         raise SandboxUnavailableError("an LPAC private temp path is outside its profile")
     for root in {expected_parent, spelled}:
         if os.path.lexists(root) and getattr(os.lstat(root), "st_file_attributes", 0) & 0x400:
@@ -908,7 +976,9 @@ _ACCESS_MEMO: dict[tuple[str, int, str, str], tuple[int, float, bool]] = {}
 _ACCESS_MEMO_LOCK = threading.Lock()
 # Setting or removing a DACL entry does not change a directory's modification
 # time, so the mtime pin cannot notice another process (or icacls, or a repair
-# install) dropping the grant. The answer therefore also expires on its own; one
+# install) dropping the grant. A Windows last write time also only advances with
+# the system clock tick (about 15.6 ms), so the pin cannot separate two changes
+# inside one tick either. The answer therefore also expires on its own; one
 # DACL read per runtime root per minute is nothing next to a launch.
 _ACCESS_MEMO_SECONDS = 60.0
 _ACCESS_MEMO_LIMIT = 512
@@ -1030,6 +1100,49 @@ def _release_shared_grants(paths: tuple[str, ...]) -> set[str]:
             _SHARED_GRANTS.pop(key, None)
             released.add(key)
     return released
+
+
+def _live_launch_holds(exclude_launch_id: str = "") -> frozenset[str]:
+    """Normalised paths a launch of any live Studio process still needs.
+
+    ``_SHARED_GRANTS`` counts this process's launches only, and every launch of
+    an installation now carries the same SID, so a second Studio's ACE on a
+    shared path is indistinguishable from this one's: revoking it would leave
+    that container unable to reach its own workdir. The write-ahead manifests
+    are the cross-process ledger. One is written before its launch grants
+    anything and removed only after it has revoked, so a manifest whose owner
+    process is still alive names paths this cleanup must leave alone.
+
+    Best effort by design. A manifest root that cannot be read yields nothing,
+    which is where this was before the ledger existed. The instant between
+    another process writing its manifest and this one reading the directory is
+    not closed by a scan; the per-process lock closes it for two launches of one
+    Studio, which is the case that happens.
+    """
+    try:
+        root = _manifest_root()
+    except (SandboxUnavailableError, OSError):
+        logger.warning("Could not read the LPAC manifest root for the launch ledger", exc_info = True)
+        return frozenset()
+    held: set[str] = set()
+    for manifest in Path(root).glob(_LAUNCH_PREFIX + "*.json"):
+        payload = _parse_manifest(manifest)
+        if payload is None or payload["kind"] != _MANIFEST_KIND_LAUNCH:
+            continue
+        if exclude_launch_id and payload["launch_id"] == exclude_launch_id:
+            continue
+        owner = (payload["owner_pid"], payload["owner_created"])
+        try:
+            live = _process_identity(owner[0]) == owner
+        except OSError:
+            # An owner this process cannot query is assumed live: a revoke under
+            # a running container is worse than an ACE reconciled a little late.
+            live = True
+        if not live:
+            continue
+        held.update(os.path.normcase(path) for path in payload["granted_roots"])
+        held.add(os.path.normcase(payload["private_temp"]))
+    return frozenset(held)
 
 
 def _container_owned(path: str, profile_folder: str) -> bool:
@@ -1425,19 +1538,36 @@ class _InvocationIdentity:
                     if os.path.normcase(path) not in shared
                     or os.path.normcase(path) in self._released
                 )
+            # The in-process count answers for this Studio only, and the SID is
+            # the installation's: another live Studio's launch needs the same
+            # ACEs and would lose them here.
+            elsewhere = _live_launch_holds(self.launch_id)
+            targets = tuple(path for path in targets if os.path.normcase(path) not in elsewhere)
             traverse = {os.path.normcase(path) for path in self.traverse_roots}
             for path in reversed(targets):
                 try:
                     _revoke_sid(path, self.sid, exact = os.path.normcase(path) in traverse)
                 except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
                     errors.append(f"ACL {path}: {exc}")
-        try:
-            private_temp = _validated_private_temp(self.profile_folder, self.private_temp)
-            shutil.rmtree(private_temp, ignore_errors = False)
-        except FileNotFoundError:
-            pass
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"temp {self.private_temp}: {exc}")
+            # Inside the ledger lock: a launch starting between the release above
+            # and the removal below would otherwise have its temp emptied under it.
+            try:
+                private_temp = _validated_private_temp(self.profile_folder, self.private_temp)
+                mine = os.path.normcase(private_temp) not in elsewhere
+                if _is_container_temp(self.profile_folder, private_temp):
+                    # Shared with every concurrent launch of this installation, so
+                    # it is emptied and only once no other live launch, in this
+                    # process or another, still holds it.
+                    if mine and (
+                        self._released is None or os.path.normcase(private_temp) in self._released
+                    ):
+                        _empty_directory(private_temp)
+                elif mine:
+                    shutil.rmtree(private_temp, ignore_errors = False)
+            except FileNotFoundError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"temp {self.private_temp}: {exc}")
         if errors:
             raise OSError("; ".join(errors))
         if self.delete_profile:
@@ -1617,12 +1747,16 @@ def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
             or manifest.name != _LAUNCH_PREFIX + payload["launch_id"] + ".json"
             or not isinstance(workdir, str)
             or not os.path.isabs(workdir)
-            # A launch owns a random child of the container's Temp, never Temp
-            # itself: reconciling one must not delete a concurrent launch's
-            # directory. Only a single-use manifest may name Temp.
-            or not _is_hex(os.path.basename(private_temp), 24)
-            or os.path.normcase(os.path.dirname(private_temp))
-            != os.path.normcase(os.path.join(profile_folder, "Temp"))
+            # The container temp, which reconciliation empties rather than
+            # removes, or the random child of it an earlier build created there.
+            or not (
+                _is_container_temp(profile_folder, private_temp)
+                or (
+                    _is_hex(os.path.basename(private_temp), 24)
+                    and os.path.normcase(os.path.dirname(private_temp))
+                    == os.path.normcase(os.path.join(profile_folder, "Temp"))
+                )
+            )
         ):
             return None
         # A launch grants, and so revokes, its workdir and the ancestors it had
@@ -1791,32 +1925,39 @@ def _remove_persistent_grants(*, all_installations: bool = False) -> tuple[str, 
 
     For uninstall or a deliberate reset. The next launch recreates the profile and
     pays the interpreter grant once more; the SID is unchanged, because it is
-    derived from the profile name. Refused while a launch of this process is
-    live: it would revoke the interpreter grant under a running container and
-    delete the profile directory that launch's private temp lives in.
+    derived from the profile name. Refused while any launch is live: it would
+    revoke the interpreter grant under a running container and delete the profile
+    directory that launch's temp lives in.
+
+    The check and the removal are one critical section, under the lock the launch
+    path holds across its own manifest and grants. Checking outside it let a
+    launch start in between and lose the profile it had just been prepared with.
+    A launch of another Studio process of this installation is just as live, and
+    is seen through its manifest.
     """
     global _INSTALL_PROFILE
-    if _held_shared_grants():
-        raise SandboxUnavailableError(
-            "a sandboxed tool call is still running; its container cannot be released"
-        )
-    root = _manifest_root()
-    moniker = _install_moniker()
     removed: list[str] = []
-    with _PERSISTENT_GRANT_LOCK:
-        for manifest in sorted(Path(root).glob(_INSTALL_PREFIX + "*.json")):
-            payload = _parse_manifest(manifest)
-            if payload is None or payload["kind"] != _MANIFEST_KIND_PERSISTENT:
-                continue
-            if not all_installations and payload["moniker"] != moniker:
-                continue
-            _revoke_persistent_manifest(manifest, payload)
-            result = ctypes.c_uint32(
-                _api().userenv.DeleteAppContainerProfile(payload["moniker"])
-            ).value
-            if result not in (0, 0x80070002):
-                raise OSError(f"DeleteAppContainerProfile: 0x{result:08x}")
-            removed.append(payload["moniker"])
+    with _SHARED_GRANTS_LOCK:
+        if _held_shared_grants() or _live_launch_holds():
+            raise SandboxUnavailableError(
+                "a sandboxed tool call is still running; its container cannot be released"
+            )
+        root = _manifest_root()
+        moniker = _install_moniker()
+        with _PERSISTENT_GRANT_LOCK:
+            for manifest in sorted(Path(root).glob(_INSTALL_PREFIX + "*.json")):
+                payload = _parse_manifest(manifest)
+                if payload is None or payload["kind"] != _MANIFEST_KIND_PERSISTENT:
+                    continue
+                if not all_installations and payload["moniker"] != moniker:
+                    continue
+                _revoke_persistent_manifest(manifest, payload)
+                result = ctypes.c_uint32(
+                    _api().userenv.DeleteAppContainerProfile(payload["moniker"])
+                ).value
+                if result not in (0, 0x80070002):
+                    raise OSError(f"DeleteAppContainerProfile: 0x{result:08x}")
+                removed.append(payload["moniker"])
     with _INSTALL_PROFILE_LOCK:
         if _INSTALL_PROFILE is not None and (
             all_installations or _INSTALL_PROFILE.moniker == moniker
@@ -1840,8 +1981,9 @@ def _create_identity(
 ) -> _InvocationIdentity:
     """The per-launch state inside the installation's container.
 
-    A random private temp directory, a write-ahead manifest, and a hold on every
-    ACE this launch shares with concurrent launches of the same installation.
+    The container temp, a write-ahead manifest, and a hold on every ACE (and on
+    the temp) this launch shares with concurrent launches of the same
+    installation.
     """
     launch_id = secrets.token_hex(16)
     private_temp = ""
@@ -1851,10 +1993,13 @@ def _create_identity(
     try:
         temp_root = os.path.join(install.profile_folder, "Temp")
         os.makedirs(temp_root, mode = 0o700, exist_ok = True)
-        # A fresh child of Temp, never Temp itself: the profile is shared with
-        # every concurrent launch, and TEMP/TMP point at this directory alone.
-        private_temp = os.path.join(temp_root, secrets.token_hex(12))
-        os.makedirs(private_temp, mode = 0o700)
+        # The container temp itself. A per-launch child of it cannot be made to
+        # take effect: Windows builds the package environment for an AppContainer
+        # process and overwrites TEMP/TMP with <profile>\Temp, so the child would
+        # write here whatever the launch plan said. Shared with concurrent
+        # launches of this installation (concurrent_launches_share_the_container)
+        # and emptied when the last of them finishes.
+        private_temp = temp_root
         _validated_private_temp(install.profile_folder, private_temp)
         manifest_path = os.path.join(_manifest_root(), _LAUNCH_PREFIX + launch_id + ".json")
         traverse_roots = tuple(
@@ -2760,8 +2905,9 @@ class WindowsLpacBackend:
     def reconcile_stale_manifests(self) -> None:
         """Release what a crashed Studio left behind, and nothing that is still in use.
 
-        Per-launch grants of a dead owner are revoked and their private temps
-        removed. The installation-wide grant has no owning process by design: it
+        Per-launch grants of a dead owner are revoked and the container temp is
+        emptied when no live launch is using it. The installation-wide grant has
+        no owning process by design: it
         is kept while the interpreter it was made for still exists, and revoked
         when it does not, which is what an uninstalled or relocated runtime looks
         like from here.
@@ -2803,7 +2949,7 @@ class WindowsLpacBackend:
                 continue
 
     def _reconcile_launch_manifest(self, manifest: Path, payload: dict[str, Any]) -> None:
-        """Revoke one dead launch's grants and remove its private temp.
+        """Revoke one dead launch's grants and empty the container temp it named.
 
         A path a live launch of this process is holding is left alone: launches
         of one installation share a SID, and a workdir is per chat session, so a
