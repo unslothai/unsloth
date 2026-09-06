@@ -152,7 +152,16 @@ def torch_compile_runtime_available() -> bool:
 
     ``TORCHDYNAMO_DISABLE`` is honored on every platform: a compile under it is a silent no-op that
     would otherwise be recorded as an engaged optimisation. Cached, since neither answer can change
-    inside a process and this runs on every load."""
+    inside a process and this runs on every load.
+
+    On Windows, the first real ``import torch._dynamo`` in the process can lose a race against
+    another in-flight ``torch`` import on a different thread (the SERVER process handles requests
+    on a pool, unlike the three single-purpose workers above) and come back partially initialized
+    (``partially initialized module 'torch._dynamo' has no attribute 'utils'``). Left alone, that
+    surfaces mid-generation on the first compiled forward instead of here. Probing it eagerly,
+    inside this already-cached gate, either finishes the import cleanly on whichever thread asks
+    first or fails the gate up front -- same "decide it here instead" contract as the Triton/MSVC
+    checks below."""
     if os.environ.get("TORCHDYNAMO_DISABLE", "").strip() not in ("", "0"):
         return False
     if sys.platform != "win32":
@@ -160,6 +169,11 @@ def torch_compile_runtime_available() -> bool:
     try:
         import triton  # noqa: F401, PLC0415
     except Exception:  # noqa: BLE001 -- absent or broken Triton means eager, never a failed load
+        return False
+    try:
+        import torch._dynamo  # noqa: PLC0415
+        import torch._dynamo.utils  # noqa: F401, PLC0415
+    except Exception:  # noqa: BLE001 -- a partially-initialized dynamo means eager, never a crashed load
         return False
     try:
         from .._msvc_env import crt_headers_reachable  # noqa: PLC0415
