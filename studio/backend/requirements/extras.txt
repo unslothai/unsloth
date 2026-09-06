@@ -50,6 +50,7 @@ tensorboard==2.21.0
 torch-stoi==0.2.3
 timm==1.0.28
 einops==0.8.2
+addict==2.4.0
 # 0.10 requires >=3.10.
 tabulate==0.10.0; python_version >= "3.10"
 tabulate==0.9.0; python_version < "3.10"
