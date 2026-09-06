@@ -3366,6 +3366,163 @@ REPLICA_AGGREGATE_PER_NODE = 1.0  # n replicas -> ~n x aggregate, 1.0x per reque
 # 3024 tok/s against a 2032 tok/s single-node control.
 TRAIN_PP_SPEEDUP_2 = 1.49
 
+# ── Training: data parallel against pipeline parallel, on the same rows and loss ──────
+# LoRA r=16, seq 512, global batch 64, 32 microbatches (1024 tokens each), 20 steps, seed
+# 3407, NCCL over the pair, `studio.spark_pipeline` for every arm. The single-Spark control
+# is the same file at WORLD_SIZE=1. Both nodes ran uncapped at ~2400 MHz for every cell.
+#
+# Read the 2B row first, because it is the one with a control measured in the same state.
+# DDP reaches 1.99x -- essentially perfect scaling -- while the best pipeline schedule
+# reaches 1.58x. That inverts the old guidance: a layer split of a model that FITS was
+# never a throughput win, and the number that made it look like one (1.96x for dualpipev)
+# came from dividing by a single-Spark control taken on a node that was missing the
+# linear-attention fast path. The schedules themselves did not change; the denominator did.
+TRAIN_MEASUREMENT = (
+    "2026-09-06, unsloth/Qwen3.5-2B and -9B, LoRA r=16, seq 512, global batch 64, M=32, "
+    "20 steps, seed 3407, both Sparks uncapped at ~2400 MHz"
+)
+# tok/s per arm. `one_spark` is None where no control was measured in the same clock state:
+# the 9B control straddled a thermal cap twice and an uncapped one is still outstanding, so
+# the 9B row supports the DP-versus-PP comparison but not an "x over one Spark" claim.
+TRAIN_DP_VS_PP_TOKS: Dict[str, Dict[str, Optional[int]]] = {
+    "unsloth/Qwen3.5-2B": {
+        "one_spark": 2613, "ddp": 5203, "dualpipev": 4128, "1f1b": 4106, "fsdp": 3276,
+    },
+    "unsloth/Qwen3.5-9B": {
+        "one_spark": None, "ddp": 1741, "dualpipev": 1525, "1f1b": 1505, "fsdp": 927,
+    },
+}
+TRAIN_DP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.99}    # DDP over one Spark
+TRAIN_PP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.58}    # best PP schedule over one Spark
+TRAIN_DP_SPEEDUP_RANGE = (1.99, 1.99)
+TRAIN_PP_SPEEDUP_RANGE = (1.58, 1.58)
+# DDP over the best PP schedule on the SAME pair, which needs no single-Spark control and is
+# therefore the comparison the 9B row can also make. DP wins on both models.
+TRAIN_DP_OVER_PP = {"unsloth/Qwen3.5-2B": 1.26, "unsloth/Qwen3.5-9B": 1.14}
+# Peak GiB on the fuller rank: DDP holds the whole model per node, PP half of it. That is
+# the price of the DP win and the reason the rule is size-gated rather than universal.
+TRAIN_PEAK_GIB = {"unsloth/Qwen3.5-2B": (10.16, 9.58), "unsloth/Qwen3.5-9B": (28.60, 24.13)}
+# FSDP shards the base weights instead of replicating them, which does cut resident memory
+# (9.21 against 10.16 GiB at 2B), but it gathers every layer on every microbatch and lands
+# BELOW both DDP and the pipeline schedules. It is not a recommended axis on this pair.
+TRAIN_FSDP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.25}
+# Which schedule when a split is forced. dualpipev edges 1f1b on both models, but by well
+# under a percent (4128 vs 4106, and 1525 vs 1505), so this is a tie-break and not a result.
+# 1f1b is much the cheaper in memory on the fuller rank (5.52 vs 9.58 GiB at 2B, 16.86 vs
+# 24.13 at 9B), which is what actually decides a model that only just fits.
+TRAIN_PP_SCHEDULE = "dualpipev"
+TRAIN_PP_SCHEDULE_MARGIN = 0.005   # dualpipev over 1f1b; below noise, prefer 1f1b for memory
+
+
+
+def plan_training(
+    size_gib: Optional[float],
+    n_nodes: int = 2,
+    *,
+    model: str = "<model>",
+) -> Dict[str, Any]:
+    """Which axis to TRAIN on, from model size and node count. Pure, measured.
+
+    * A model that fits on one Spark trains data parallel: one whole model per node and
+      the LoRA gradients averaged (`unsloth spark train --data-parallel`). Measured
+      against a pipeline split of the same model on the same rows
+      (TRAIN_DP_VS_PP_TOKS): the split pays a fill/drain bubble and holds the two halves
+      in lockstep, the replicas do not. The price is memory: the whole model per node
+      instead of half.
+    * A model that does not fit trains layer split (`--layer-split --shard-load
+      --grad-checkpoint`), with TRAIN_PP_SCHEDULE. There is no other option; DP would
+      need the whole model on each node. No speedup is claimed for that case: it is a
+      capacity feature, and the schedule choice is a near-tie decided on memory.
+
+    ``fits`` uses the serving budget (SPARK_USABLE_GIB minus SERVE_OVERHEAD_GIB), which
+    is deliberately looser than `training_memory_estimate`; that function is the one to
+    run before a big job, this one only picks the axis.
+    """
+    budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
+    nodes = max(1, int(n_nodes or 1))
+    out: Dict[str, Any] = {
+        "size_gib": size_gib,
+        "budget_gib": budget,
+        "n_nodes": nodes,
+        "measurement": TRAIN_MEASUREMENT,
+    }
+    if size_gib is None:
+        out.update(
+            axis = None,
+            fits_one_node = None,
+            schedule = None,
+            speedup = None,
+            measured = False,
+            commands = [],
+            recommendation = "could not determine model size; not guessing",
+        )
+        return out
+    fits = size_gib <= budget
+    out["fits_one_node"] = fits
+    env = 'eval "$(unsloth spark env)"   # GB10 NCCL settings; NCCL_NET_GDR_LEVEL=0 is mandatory'
+    if nodes < 2:
+        out.update(
+            axis = "single" if fits else "none",
+            schedule = None,
+            speedup = 1.0 if fits else None,
+            measured = fits,
+            commands = [f"unsloth train --model {model}"] if fits else [],
+            recommendation = (
+                f"{size_gib:.1f} GiB fits on this Spark ({budget:.0f} GiB budget); train "
+                f"as usual. Pair a second Spark for {TRAIN_DP_SPEEDUP_RANGE[0]:.2f}x to "
+                f"{TRAIN_DP_SPEEDUP_RANGE[1]:.2f}x."
+                if fits
+                else f"{size_gib:.1f} GiB does NOT fit on one Spark ({budget:.0f} GiB "
+                f"budget). Pair a second Spark and layer-split it."
+            ),
+        )
+        return out
+    if fits:
+        lo, _hi = TRAIN_DP_SPEEDUP_RANGE
+        plo, _phi = TRAIN_PP_SPEEDUP_RANGE
+        over_pp = min(TRAIN_DP_OVER_PP.values())
+        out.update(
+            axis = "data-parallel",
+            schedule = None,
+            speedup = lo,
+            speedup_over_pipeline = over_pp,
+            measured = True,
+            commands = [env, f"unsloth spark train --data-parallel {model} --run"],
+            recommendation = (
+                f"{size_gib:.1f} GiB fits on one Spark ({budget:.0f} GiB budget): train it "
+                f"DATA PARALLEL, one whole model per Spark. Measured {lo:.2f}x over one "
+                f"Spark against {plo:.2f}x for a layer split of the same model on the same "
+                f"rows, and DDP beat the best schedule by {over_pp:.2f}x or more on every "
+                f"model tried. The split costs a fill/drain bubble and buys nothing here; "
+                f"it is for capacity. Budget the WHOLE model per node, not half."
+            ),
+        )
+        return out
+    out.update(
+        axis = "pipeline-parallel",
+        schedule = TRAIN_PP_SCHEDULE,
+        speedup = None,
+        measured = False,
+        commands = [
+            env,
+            f"unsloth spark train --layer-split {model} --shard-load --grad-checkpoint "
+            f"--schedule {TRAIN_PP_SCHEDULE} --run",
+        ],
+        recommendation = (
+            f"{size_gib:.1f} GiB does NOT fit on one Spark ({budget:.0f} GiB budget): "
+            f"layer-split it with --shard-load --grad-checkpoint, schedule "
+            f"{TRAIN_PP_SCHEDULE}. A whole-model replica per node is impossible at this "
+            f"size, so this is the only two-Spark axis -- it buys capacity, not speed. "
+            f"{TRAIN_PP_SCHEDULE} led 1f1b by under "
+            f"{TRAIN_PP_SCHEDULE_MARGIN * 100:.1f} percent, which is inside the noise, so "
+            f"switch to --schedule 1f1b if the fuller rank is close to its memory limit: "
+            f"1f1b peaked at 5.52 GiB where dualpipev peaked at 9.58 on the same 2B run. "
+            f"Run `unsloth spark estimate` first."
+        ),
+    )
+    return out
+
+
 INTENTS = ("latency", "throughput", "capacity")
 
 
@@ -3485,7 +3642,11 @@ def expected_gain(
             measured = n_nodes == 2,
             note = (
                 f"GPipe with M=4 microbatches measured {TRAIN_PP_SPEEDUP_2:.2f}x on 2 "
-                f"Sparks (3024 vs 2032 tok/s). Bubbles, not bandwidth, are the ceiling."
+                f"Sparks (3024 vs 2032 tok/s). Bubbles, not bandwidth, are the ceiling -- "
+                f"and for a model that FITS this axis is the wrong one entirely: see "
+                f"`plan_training`, where data parallel measured "
+                f"{TRAIN_DP_SPEEDUP_RANGE[0]:.2f}x against the best schedule's "
+                f"{TRAIN_PP_SPEEDUP_RANGE[0]:.2f}x on the same rows."
             ),
         )
         return out
@@ -4521,24 +4682,38 @@ def _cmd_pipeline(
             print(f"  cannot launch: {problem}")
         return 1
 
+    data_parallel = "--data-parallel" in extra.split()
     # A layer split is for capacity. Warn when it is not needed, because a model that fits
     # on one Spark trains faster there than split across two.
     size = model_size_gib(model)
-    if size is not None:
+    if data_parallel and size is not None:
+        budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
+        if size > budget:
+            print(
+                f"  NOTE: {model} is {size:.1f} GiB and does NOT fit on one Spark "
+                f"({budget:.0f} GiB budget); a data-parallel replica holds the whole model."
+            )
+            print("        Use --layer-split with --shard-load for it instead.")
+            print("")
+    elif size is not None:
         budget = SPARK_USABLE_GIB - SERVE_OVERHEAD_GIB
         if size <= budget:
             print(
                 f"  NOTE: {model} is {size:.1f} GiB and fits on ONE Spark "
                 f"({budget:.0f} GiB budget)."
             )
-            print("        A layer split buys capacity, not speed. Consider DDP")
-            print("        (`--script`) for throughput instead.")
+            print("        A layer split buys capacity, not speed. Consider")
+            print("        `--data-parallel` for throughput instead.")
             print("")
 
     if run:
         return run_pipeline(plan)
-    print("  Two-Spark layer-split training (capacity, not throughput -- this is how a")
-    print("  model too large for one Spark gets trained; add --shard-load for those).")
+    if data_parallel:
+        print("  Two-Spark data-parallel training (throughput, not capacity -- one whole")
+        print("  model per Spark; the LoRA gradients are averaged across the pair).")
+    else:
+        print("  Two-Spark layer-split training (capacity, not throughput -- this is how a")
+        print("  model too large for one Spark gets trained; add --shard-load for those).")
     print("")
     print("  Export on BOTH nodes:")
     for key, value in plan["env"].items():

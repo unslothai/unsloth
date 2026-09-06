@@ -1823,3 +1823,85 @@ def test_no_fast_flag_reaches_provision(monkeypatch, capsys) -> None:
     text = " ".join(capsys.readouterr().out.split())
     assert "--no-fast" in text and "UNENCRYPTED" in text and "point-to-point" in text
     assert f"{sc.FAST_ENV}=0" in text
+
+
+def test_training_planner_picks_data_parallel_for_a_model_that_fits() -> None:
+    """A model that fits trains one-whole-model-per-Spark; the split is for capacity only."""
+    sc = _load("studio/spark_cluster.py")
+    budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
+    out = sc.plan_training(budget * 0.5, n_nodes = 2, model = "m")
+    assert out["axis"] == "data-parallel" and out["fits_one_node"] is True
+    assert out["schedule"] is None
+    assert any("--data-parallel m" in c for c in out["commands"])
+    assert "--layer-split" not in " ".join(out["commands"])
+    # The recommendation carries both measured numbers so the user can check the call.
+    assert out["speedup"] == sc.TRAIN_DP_SPEEDUP_RANGE[0]
+    assert f"{sc.TRAIN_DP_SPEEDUP_RANGE[0]:.2f}x" in out["recommendation"]
+    assert f"{sc.TRAIN_PP_SPEEDUP_RANGE[0]:.2f}x" in out["recommendation"]
+    # DP costs the WHOLE model per node. A recommendation that does not say so invites the
+    # user to size a job by half the weights and OOM on the first step.
+    assert "WHOLE model per node" in out["recommendation"]
+
+
+def test_training_planner_splits_a_model_that_does_not_fit() -> None:
+    sc = _load("studio/spark_cluster.py")
+    budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
+    out = sc.plan_training(budget * 1.1, n_nodes = 2, model = "big")
+    assert out["axis"] == "pipeline-parallel" and out["fits_one_node"] is False
+    assert out["schedule"] == sc.TRAIN_PP_SCHEDULE
+    cmd = " ".join(out["commands"])
+    assert "--layer-split big" in cmd and "--shard-load" in cmd and "--grad-checkpoint" in cmd
+    assert f"--schedule {sc.TRAIN_PP_SCHEDULE}" in cmd
+    assert "--data-parallel" not in cmd
+    # No speedup may be claimed for the capacity case: it was never measured against a
+    # single Spark, because at this size a single Spark cannot run the job at all.
+    assert out["speedup"] is None and out["measured"] is False
+    # The schedule lead is inside the noise, so the text must send a memory-tight user to
+    # 1f1b rather than presenting dualpipev as a settled winner.
+    assert "1f1b" in out["recommendation"]
+    # Boundary: exactly the budget still fits.
+    assert sc.plan_training(budget, n_nodes = 2)["axis"] == "data-parallel"
+
+
+def test_training_planner_constants_are_measured_and_consistent() -> None:
+    """The rule is only as good as its numbers: every ratio must follow from the recorded
+    tok/s, and DP must actually have beaten PP on every model measured, or the rule is
+    wrong. A model with no single-Spark control may state a DP-versus-PP ratio but must
+    NOT appear in the over-one-Spark tables."""
+    sc = _load("studio/spark_cluster.py")
+    assert "__" not in sc.TRAIN_MEASUREMENT and "2026" in sc.TRAIN_MEASUREMENT
+    for name, arms in sc.TRAIN_DP_VS_PP_TOKS.items():
+        best_pp = max(arms["dualpipev"], arms["1f1b"])
+        assert arms["ddp"] > best_pp, name          # the whole point of the rule
+        assert arms["fsdp"] < arms["ddp"], name     # sharding the base weights costs speed
+        assert abs(sc.TRAIN_DP_OVER_PP[name] - arms["ddp"] / best_pp) < 0.01, name
+        one = arms["one_spark"]
+        if one is None:
+            assert name not in sc.TRAIN_DP_SPEEDUP and name not in sc.TRAIN_PP_SPEEDUP, name
+            continue
+        assert abs(sc.TRAIN_DP_SPEEDUP[name] - arms["ddp"] / one) < 0.02, name
+        assert abs(sc.TRAIN_PP_SPEEDUP[name] - best_pp / one) < 0.02, name
+        assert sc.TRAIN_DP_SPEEDUP[name] > sc.TRAIN_PP_SPEEDUP[name], name
+        ddp_gib, pp_gib = sc.TRAIN_PEAK_GIB[name]
+        # DP replicates, PP halves: the memory price must be visible in the table.
+        assert ddp_gib > pp_gib > 0, name
+    assert sc.TRAIN_DP_SPEEDUP_RANGE == (
+        min(sc.TRAIN_DP_SPEEDUP.values()), max(sc.TRAIN_DP_SPEEDUP.values())
+    )
+    assert sc.TRAIN_PP_SPEEDUP_RANGE == (
+        min(sc.TRAIN_PP_SPEEDUP.values()), max(sc.TRAIN_PP_SPEEDUP.values())
+    )
+    assert sc.TRAIN_PP_SCHEDULE in ("dualpipev", "1f1b")
+    # The schedule is a tie-break, not a result; if the margin ever grows past a percent
+    # that claim has to be rewritten rather than silently strengthened.
+    assert 0 < sc.TRAIN_PP_SCHEDULE_MARGIN <= 0.01
+
+
+def test_training_planner_refuses_to_guess_and_handles_one_node() -> None:
+    sc = _load("studio/spark_cluster.py")
+    out = sc.plan_training(None, n_nodes = 2)
+    assert out["axis"] is None and out["commands"] == []
+    budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
+    one = sc.plan_training(budget * 0.5, n_nodes = 1, model = "m")
+    assert one["axis"] == "single" and "unsloth train" in one["commands"][0]
+    assert sc.plan_training(budget * 2, n_nodes = 1)["axis"] == "none"

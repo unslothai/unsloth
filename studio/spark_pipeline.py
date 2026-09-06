@@ -1727,11 +1727,253 @@ def build_parser() -> argparse.ArgumentParser:
         "--data", default = None, help = "jsonl with {q, a} rows; random token ids if omitted"
     )
     p.add_argument("--save", default = None, help = "directory to save this stage into")
+    p.add_argument(
+        "--data-parallel",
+        action = "store_true",
+        help = "one FULL model per rank, gradients averaged by DDP (or parameters "
+        "sharded with --fsdp). Buys throughput, not capacity: the model must fit "
+        "on one Spark. Same data, loss and LoRA setup as the layer split, so the "
+        "two are directly comparable. WORLD_SIZE=1 is the single-Spark control.",
+    )
+    p.add_argument(
+        "--fsdp",
+        action = "store_true",
+        help = "with --data-parallel: shard the base weights across the ranks "
+        "(torch.distributed.fsdp.fully_shard) instead of replicating them",
+    )
     return p
+
+
+LORA_TARGET_MODULES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
+
+
+def apply_lora(model, r: int):
+    """The one LoRA configuration every arm trains, so that a layer split and a data
+    parallel replica of the same model train the same adapters."""
+    from peft import LoraConfig, get_peft_model
+
+    return get_peft_model(
+        model,
+        LoraConfig(
+            r = r,
+            lora_alpha = r,
+            lora_dropout = 0.0,
+            bias = "none",
+            task_type = "CAUSAL_LM",
+            target_modules = list(LORA_TARGET_MODULES),
+        ),
+    )
+
+
+def make_token_batches(tok, args, device):
+    """The training rows for a run, identical on every rank.
+
+    Seeded at 3407 and drawn on every rank rather than broadcast: it is what the layer
+    split already relies on (stage 0 draws the inputs, the loss stage draws the targets,
+    and they have to agree), and it keeps the data parallel arm on the very same rows.
+    """
+    import torch
+
+    torch.manual_seed(3407)
+    need = args.batch * args.steps
+    if args.data:
+        rows = [json.loads(l) for l in open(args.data)]
+        texts = [
+            tok.apply_chat_template(
+                [{"role": "user", "content": r["q"]}, {"role": "assistant", "content": r["a"]}],
+                tokenize = False,
+            )
+            for r in rows
+        ]
+        enc = tok(
+            texts, return_tensors = "pt", padding = "max_length", truncation = True, max_length = args.seq
+        ).input_ids
+        return enc.repeat((need + len(enc) - 1) // len(enc), 1)[:need].to(device)
+    return torch.randint(0, tok.vocab_size, (need, args.seq), device = device)
+
+
+def _main_data_parallel(args) -> int:
+    """`--data-parallel`: one whole model per rank; the ranks average gradients.
+
+    The comparison the layer split has always lacked. A split of a model that FITS on
+    one Spark buys nothing by construction (both nodes still read every weight once per
+    step), so the honest question for such a model is data parallel against pipeline
+    parallel, measured on the same rows with the same loss. With LoRA the all-reduce
+    carries only the adapters (tens of MB), so the link is never the limit; with
+    `--fsdp` the base weights are sharded instead and gathered per layer as needed,
+    which also halves the resident weights.
+
+    WORLD_SIZE=1 runs the identical code with no wrapper, and is the single-Spark
+    control every two-Spark number is divided by.
+    """
+    import contextlib
+
+    import torch
+    import torch.distributed as dist
+
+    rank = int(os.environ.get("RANK", "0"))
+    world = int(os.environ.get("WORLD_SIZE", "1"))
+    if args.shard_load:
+        raise SystemExit(
+            "--shard-load is a layer-split option; a data-parallel replica holds the "
+            "whole model on every rank."
+        )
+    if args.batch % args.microbatches:
+        raise SystemExit("--batch must be divisible by --microbatches")
+    if args.batch % world or args.microbatches % world:
+        raise SystemExit(
+            f"--batch ({args.batch}) and --microbatches ({args.microbatches}) must both "
+            f"be divisible by the world size ({world}) so every rank gets equal rows."
+        )
+    use_cpu = os.environ.get("SPARK_PP_CPU", "0") == "1"
+    if use_cpu:
+        dist.init_process_group("gloo")
+        device = torch.device("cpu")
+        dtype = torch.float32
+    else:
+        torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", 0)))
+        dist.init_process_group("nccl")
+        device = torch.device("cuda")
+        dtype = torch.bfloat16
+
+    def log(msg):
+        print(f"[spark-dp {rank}/{world}] {msg}", flush = True)
+
+    mode = "fsdp" if (args.fsdp and world > 1) else ("ddp" if world > 1 else "single")
+    log(f"host={os.uname().nodename} data-parallel mode={mode}")
+
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(args.model)
+    # rank 0 of a world of 1: the whole stack, embedding and head, on this device.
+    model, cfg, _ = build_stage_model(
+        args.model, 0, 1, device, shard_load = False, dtype = dtype, log = log
+    )
+    if not args.full_finetune:
+        model = apply_lora(model, args.lora_r)
+    if args.grad_checkpoint:
+        # The HF forward is what runs here, so transformers' own switch is honoured.
+        base_model = getattr(model, "base_model", model)
+        inner_model = getattr(base_model, "model", base_model)
+        target = inner_model if hasattr(inner_model, "gradient_checkpointing_enable") else model
+        target.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        log("gradient checkpointing enabled (use_reentrant=False)")
+    model.to(device)
+    if not use_cpu:
+        torch.cuda.empty_cache()
+
+    unwrapped = model
+    no_sync = None
+    if mode == "ddp":
+        from torch.nn.parallel import DistributedDataParallel
+
+        model = DistributedDataParallel(
+            model, device_ids = None if use_cpu else [device.index or 0]
+        )
+        no_sync = model.no_sync
+    elif mode == "fsdp":
+        try:
+            from torch.distributed.fsdp import fully_shard
+        except ImportError as exc:
+            raise SystemExit(f"--fsdp needs torch.distributed.fsdp.fully_shard: {exc}")
+        from torch.distributed.device_mesh import init_device_mesh
+
+        mesh = init_device_mesh("cpu" if use_cpu else "cuda", (world,))
+        _, owner = unwrap_stack(model)
+        for layer in owner.layers:
+            if isinstance(layer, torch.nn.Module) and any(True for _ in layer.parameters()):
+                fully_shard(layer, mesh = mesh)
+        fully_shard(model, mesh = mesh)
+
+        def _sync(on):
+            model.set_requires_gradient_sync(on)
+
+        @contextlib.contextmanager
+        def _no_sync():
+            _sync(False)
+            try:
+                yield
+            finally:
+                _sync(True)
+
+        no_sync = _no_sync
+
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    resident = f"{torch.cuda.memory_allocated()/2**30:.2f} GiB" if not use_cpu else "cpu"
+    log(
+        f"{sum(p.numel() for p in model.parameters())/1e9:.2f} B params resident "
+        f"({resident}), {sum(p.numel() for p in trainable)/1e6:.1f} M trainable"
+    )
+    opt = torch.optim.AdamW(trainable, lr = args.lr)
+
+    ids_all = make_token_batches(tok, args, device)
+    per_rank = args.batch // world
+    mb_per_rank = args.microbatches // world
+    mb_rows = per_rank // mb_per_rank
+    mb_tokens = mb_rows * args.seq
+    if mb_tokens < 436:
+        log(
+            f"WARNING: each microbatch is {mb_tokens} tokens, below the ~436-token "
+            f"compute/bandwidth crossover; raise --batch or --seq, or lower --microbatches."
+        )
+    log(
+        f"global batch {args.batch} = {world} rank(s) x {mb_per_rank} microbatch(es) "
+        f"x {mb_rows} rows x {args.seq} tokens"
+    )
+
+    dist.barrier()
+    t0 = time.perf_counter()
+    for step in range(args.steps):
+        opt.zero_grad(set_to_none = True)
+        whole = ids_all[step * args.batch : (step + 1) * args.batch]
+        mine = whole[rank * per_rank : (rank + 1) * per_rank]
+        acc = torch.zeros((), device = device, dtype = torch.float32)
+        for m in range(mb_per_rank):
+            x = mine[m * mb_rows : (m + 1) * mb_rows]
+            last = m == mb_per_rank - 1
+            ctx = contextlib.nullcontext() if (last or no_sync is None) else no_sync()
+            with ctx:
+                logits = model(input_ids = x, use_cache = False).logits
+                # Same mean-reduced next-token loss as the pipeline, and the same 1/M
+                # scaling that scale_grads=True applies there.
+                loss = pp_loss_fn(logits, x) / mb_per_rank
+                loss.backward()
+            acc += loss.detach().float()
+        opt.step()
+        if (step + 1) % 5 == 0 or args.steps <= 10:
+            if world > 1:
+                dist.all_reduce(acc, op = dist.ReduceOp.AVG)
+            if rank == 0:
+                log(f"step {step+1}/{args.steps} loss={acc.item():.4f}")
+
+    dist.barrier()
+    elapsed = time.perf_counter() - t0
+    if rank == 0:
+        toks = args.batch * args.seq * args.steps
+        log(
+            f"DONE {args.steps} steps in {elapsed:.1f}s | "
+            f"{elapsed/args.steps:.2f}s/step | {toks/elapsed:.0f} tok/s"
+        )
+    if not use_cpu:
+        log(f"peak_mem={torch.cuda.max_memory_allocated()/2**30:.2f} GiB")
+
+    if args.save and rank == 0 and mode != "fsdp":
+        os.makedirs(args.save, exist_ok = True)
+        unwrapped.save_pretrained(args.save)
+        log(f"saved to {args.save}")
+    elif args.save and mode == "fsdp":
+        log("--save is not implemented for --fsdp (sharded parameters); skipped")
+
+    dist.destroy_process_group()
+    return 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.data_parallel:
+        return _main_data_parallel(args)
 
     import torch
     import torch.distributed as dist
@@ -1847,26 +2089,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     stage_model_ref = [model]
 
     if not args.full_finetune:
-        from peft import LoraConfig, get_peft_model
-        model = get_peft_model(
-            model,
-            LoraConfig(
-                r = args.lora_r,
-                lora_alpha = args.lora_r,
-                lora_dropout = 0.0,
-                bias = "none",
-                task_type = "CAUSAL_LM",
-                target_modules = [
-                    "q_proj",
-                    "k_proj",
-                    "v_proj",
-                    "o_proj",
-                    "gate_proj",
-                    "up_proj",
-                    "down_proj",
-                ],
-            ),
-        )
+        model = apply_lora(model, args.lora_r)
     if args.grad_checkpoint and use_torch_pp:
         # The torch backend calls the decoder layers directly out of `_PPStageModule`, so
         # transformers' own `gradient_checkpointing_enable()` -- which is consulted inside
@@ -1996,23 +2219,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         is_loss_rank = stage.is_last
     opt = torch.optim.AdamW(trainable, lr = args.lr)
 
-    torch.manual_seed(3407)
-    need = args.batch * args.steps
-    if args.data:
-        rows = [json.loads(l) for l in open(args.data)]
-        texts = [
-            tok.apply_chat_template(
-                [{"role": "user", "content": r["q"]}, {"role": "assistant", "content": r["a"]}],
-                tokenize = False,
-            )
-            for r in rows
-        ]
-        enc = tok(
-            texts, return_tensors = "pt", padding = "max_length", truncation = True, max_length = args.seq
-        ).input_ids
-        ids_all = enc.repeat((need + len(enc) - 1) // len(enc), 1)[:need].to(device)
-    else:
-        ids_all = torch.randint(0, tok.vocab_size, (need, args.seq), device = device)
+    ids_all = make_token_batches(tok, args, device)
 
     posid = torch.arange(args.seq, device = device).unsqueeze(0).expand(mb_rows, -1)
     schedule = SCHEDULES[args.schedule] if not use_torch_pp else None

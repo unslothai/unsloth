@@ -920,6 +920,19 @@ def train(
     layer_split: str = typer.Option(
         "", "--layer-split", "-L", help = "Model to split across the Sparks instead."
     ),
+    data_parallel: str = typer.Option(
+        "",
+        "--data-parallel",
+        "-D",
+        help = "Model to replicate on both Sparks (DDP over the LoRA gradients). "
+        "Throughput, not capacity: it must fit on one Spark.",
+    ),
+    fsdp: bool = typer.Option(
+        False,
+        "--fsdp",
+        help = "With --data-parallel: shard the base weights across the pair "
+        "instead of replicating them.",
+    ),
     shard_load: bool = typer.Option(
         False,
         "--shard-load",
@@ -962,12 +975,15 @@ def train(
         False, "--run", help = "Launch it on both Sparks instead of printing commands."
     ),
 ) -> None:
-    """Print the two-node commands for DDP (--script) or layer-split (--layer-split).
+    """Print the two-node commands for DDP (--script), a layer split (--layer-split) or
+    a built-in data-parallel LoRA run (--data-parallel).
 
-    The two modes solve different problems. DDP replicates the model for throughput, so
-    it must still fit on one Spark. A layer split divides the decoder stack across both,
-    which is the only way to train something larger than one Spark's ~117 GiB -- verified
-    here on Llama-3.3-70B, which is 132 GiB and cannot be trained on a single node.
+    The modes solve different problems. DDP replicates the model for throughput, so it
+    must still fit on one Spark; --data-parallel is that, on the same loader, LoRA and
+    loss as the layer split, so the two can be compared on one model. A layer split
+    divides the decoder stack across both, which is the only way to train something
+    larger than one Spark's ~117 GiB -- verified here on Llama-3.3-70B, which is 132 GiB
+    and cannot be trained on a single node.
     """
     sc = _cluster_or_none()
     if sc is None:
@@ -977,9 +993,16 @@ def train(
         "these are two-Spark launch commands and do not apply here. "
         "Train as usual with `unsloth train`.",
     )
-    if not script and not layer_split:
-        typer.echo("give either --script <train.py> (DDP) or --layer-split <model>.")
+    if not script and not layer_split and not data_parallel:
+        typer.echo(
+            "give one of --script <train.py>, --layer-split <model> or --data-parallel <model>."
+        )
         raise typer.Exit(2)
+    if layer_split and data_parallel:
+        typer.echo("--layer-split and --data-parallel are different topologies; give one.")
+        raise typer.Exit(2)
+    if data_parallel:
+        layer_split = data_parallel
     if layer_split:
         extra = [
             f"--microbatches {microbatches}",
@@ -993,6 +1016,10 @@ def train(
             extra.append("--shard-load")
         if full_finetune:
             extra.append("--full-finetune")
+        if data_parallel:
+            extra.append("--data-parallel")
+            if fsdp:
+                extra.append("--fsdp")
         argv = [
             "train",
             "--layer-split",
