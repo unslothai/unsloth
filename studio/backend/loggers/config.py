@@ -10,6 +10,7 @@ context-var integration, log-level filtering, and logger caching.
 import logging
 import os
 import sys
+import threading
 from typing import Optional
 
 import structlog
@@ -477,6 +478,45 @@ def quiet_third_party_progress_bars() -> None:
     _silence_datasets_bar_output()
 
 
+_STDOUT_LOCK = threading.Lock()
+
+
+class _CurrentStdoutLogger:
+    """A structlog logger that writes each record to whatever ``sys.stdout`` is at
+    the moment the record is emitted.
+
+    ``cache_logger_on_first_use`` freezes the logger a module first logs with, and a
+    ``PrintLogger`` binds its stream when it is built. Together they pin every later
+    record from that module to the stream that happened to be ``sys.stdout`` on its
+    first line: a stream a tee, a redirect or a test's capture has since replaced. A
+    module whose first line is written while another module is being imported (a
+    route inventory, a probe at import) then loses the rest of its output for the
+    life of the process. Resolving the stream per record keeps the process-wide
+    contract simple: stdout is wherever stdout points now.
+
+    One lock, one write per record, so a record and the traceback echoed after it
+    stay adjacent, exactly as ``PrintLogger`` keeps them.
+    """
+
+    def msg(self, message: str) -> None:
+        stream = sys.stdout
+        if stream is None:
+            return
+        with _STDOUT_LOCK:
+            stream.write(message + "\n")
+            stream.flush()
+
+    log = debug = info = warn = warning = msg
+    fatal = failure = err = error = critical = exception = msg
+
+    def __repr__(self) -> str:
+        return "<CurrentStdoutLogger>"
+
+
+def _current_stdout_logger_factory(*args) -> _CurrentStdoutLogger:
+    return _CurrentStdoutLogger()
+
+
 class LogConfig:
     """Structured logging configuration for the application."""
 
@@ -540,7 +580,7 @@ class LogConfig:
                 ),
             ],
             wrapper_class = structlog.make_filtering_bound_logger(log_level),
-            logger_factory = structlog.PrintLoggerFactory(file = sys.stdout),
+            logger_factory = _current_stdout_logger_factory,
             cache_logger_on_first_use = True,
         )
 
