@@ -3,7 +3,9 @@
 """torch / torchcodec ABI guardrails (unslothai/unsloth#7225)."""
 
 from __future__ import annotations
+import argparse
 import importlib.util
+import json
 import re
 import sys
 import types
@@ -1907,3 +1909,87 @@ def test_the_cron_refreshes_both_oracles_not_just_the_packages():
     workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text()
     assert "--out unsloth/scripts/data/colab_pip_freeze.gpu.txt" not in workflow
     assert workflow.count("--all --snapshot-dir unsloth/scripts/data") >= 2
+
+
+def test_python_dash_m_pip_is_a_pip_invocation():
+    """`python -m pip` is pip's own recommended invocation, and the cell regex already
+    selected it, so a notebook using it reached the rules with zero invocations and
+    R-INST-001 missed a prohibited `git+` install outright."""
+    nv = _load_notebook_validator_module()
+
+    for line in (
+        "!python -m pip install git+https://example.com/pkg.git",
+        "!python3 -m pip install git+https://example.com/pkg.git",
+        "!python3.11 -m pip install -q git+https://example.com/pkg.git",
+    ):
+        invocations = list(nv.iter_pip_invocations(line))
+        assert len(invocations) == 1, line
+        assert invocations[0].tool == "pip", line
+        assert invocations[0].packages == ["git+https://example.com/pkg.git"], line
+        assert nv.rule_inst_001_git_plus(line, "nb/T.ipynb", 0), line
+
+    # The bare forms keep their own tool, and a lookalike is still not pip.
+    assert next(nv.iter_pip_invocations("!uv pip install foo")).tool == "uv-pip"
+    assert next(nv.iter_pip_invocations("!pip install foo")).tool == "pip"
+    assert not list(nv.iter_pip_invocations("!python -m pipx install foo"))
+
+
+def test_a_conditional_only_cell_does_not_replay_the_bare_oracle(tmp_path):
+    """`!command -v uv || pip install foo` runs pip only on the fallback side, so the
+    compat rules -- which replay UNCONDITIONAL invocations only -- resolved nothing and
+    compared the Colab oracle against itself, blaming an unrelated notebook for the base
+    image's own peft/torchao pair."""
+    nv = _load_notebook_validator_module()
+
+    conditional = "!command -v uv || pip install foo"
+    assert list(nv.iter_pip_invocations(conditional))
+    assert not list(nv.unconditional_pip_invocations(conditional))
+
+    colab = {"peft": "0.20.0", "torchao": "0.10.0"}
+    # The rule itself still reports on the bare oracle; the gate in cmd_lint is what keeps
+    # such a cell away from it, so assert the property the gate reads.
+    assert nv.rule_inst_003_peft_torchao(conditional, colab, "nb/T.ipynb", 0)
+
+    notebook = {
+        "cells": [{
+            "cell_type": "code",
+            "metadata": {},
+            "source": [conditional + "\n"],
+            "outputs": [],
+            "execution_count": None,
+        }],
+        "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3"},
+                     "language_info": {"name": "python"}},
+        "nbformat": 4,
+        "nbformat_minor": 0,
+    }
+    nb_dir = tmp_path / "nb"
+    nb_dir.mkdir()
+    (nb_dir / "Conditional_Only.ipynb").write_text(json.dumps(notebook), encoding = "utf-8")
+
+    args = argparse.Namespace(
+        notebooks_dir = str(tmp_path), colab_pin = None, no_pypi = True, json = False,
+    )
+    findings: list = []
+    original_emit = nv._emit
+    nv._emit = lambda f: findings.extend(f)
+    try:
+        nv.cmd_lint(args)
+    finally:
+        nv._emit = original_emit
+    assert [f for f in findings if f.rule.startswith("R-INST-00")] == []
+
+
+def test_python_version_drift_in_the_os_oracle_fails_strict():
+    """_marker_environment reads the Python line out of os-info, so that key is
+    rule-bearing even though the rest of the file is human context. With only the pip
+    freeze named strict, a Colab interpreter bump behind an unchanged package set left the
+    cron green and the committed Python stale."""
+    nv = _load_notebook_validator_module()
+
+    assert nv.COLAB_STRICT_ORACLE == "pip-freeze.gpu.txt"
+    assert "python" in nv.COLAB_STRICT_ORACLE_KEYS["os-info-gpu.txt"]
+    # apt-list stays fully advisory: an Ubuntu bump nothing consults must not go red.
+    assert "apt-list-gpu.txt" not in nv.COLAB_STRICT_ORACLE_KEYS
+    # The key is the one _parse_os_lines actually emits for that line.
+    assert nv._parse_os_lines("Python 3.13.15\nUbuntu 22.04\n")["python"] == "3.13.15"

@@ -198,13 +198,21 @@ COLAB_ORACLE_FILES: dict[str, str] = {
 # what R-INST-002/003/004/005 resolve against. apt-list drift is reported but never fails,
 # otherwise an Ubuntu security bump nothing can consult turns the daily cron red.
 #
-# os-info is no longer purely human context, though it still does not fail --strict:
-# _marker_environment reads its Python version to decide which requirements pip would skip.
-# It therefore has to be refreshed WITH the pip snapshot, never on its own -- markers
-# evaluated at an old Python against a freshly pulled package set can skip a requirement
-# that applies to the live image, or replay one that does not. notebooks-ci.yml refreshes
-# both together via `refresh-colab --all` for that reason.
+# os-info is no longer purely human context: _marker_environment reads its Python version to
+# decide which requirements pip would skip. It therefore has to be refreshed WITH the pip
+# snapshot, never on its own -- markers evaluated at an old Python against a freshly pulled
+# package set can skip a requirement that applies to the live image, or replay one that does
+# not. notebooks-ci.yml refreshes both together via `refresh-colab --all` for that reason,
+# and COLAB_STRICT_ORACLE_KEYS makes the Python line alone fail --strict, so a Colab
+# interpreter bump cannot sit uncommitted behind an unchanged pip freeze. The rest of
+# os-info, and all of apt-list, stay advisory: an Ubuntu bump nothing can consult must not
+# turn the daily cron red.
 COLAB_STRICT_ORACLE = "pip-freeze.gpu.txt"
+# Keys within a non-strict oracle that are rule-bearing anyway. `python` is the one
+# _parse_os_lines emits for the "Python 3.13.15" line.
+COLAB_STRICT_ORACLE_KEYS: dict[str, frozenset[str]] = {
+    "os-info-gpu.txt": frozenset({"python"}),
+}
 COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
 
 # ----- Compat tables. PRs add rows as new releases land. ----- #
@@ -399,8 +407,12 @@ class PipInvocation:
     conditional: bool = False  # the fallback side of an `||`: runs only if the left failed
 
 
+# `python -m pip` is pip's own recommended invocation, so it has to parse to the same
+# thing as bare `pip`. Without it a cell still matched _PIP_CELL_RE, yielded no
+# invocation, and R-INST-001 missed a prohibited `git+` install outright.
 PIP_LINE_RE = re.compile(
-    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip)\s+(?P<action>install|uninstall)\b(?P<rest>.*)$",
+    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip|python[0-9.]*\s+-m\s+pip)\s+"
+    r"(?P<action>install|uninstall)\b(?P<rest>.*)$",
     re.IGNORECASE,
 )
 NON_PKG_FLAG_TAKES_VAL = {
@@ -423,7 +435,9 @@ def parse_pip_line(line: str, line_no: int = 0) -> PipInvocation | None:
     m = PIP_LINE_RE.match(line)
     if not m:
         return None
-    tool = "uv-pip" if "uv" in m.group("tool") else "pip"
+    # startswith, not `in`: `python3 -m pip` must not be read as uv because of a stray
+    # substring, and only the uv form can begin with it.
+    tool = "uv-pip" if m.group("tool").lower().startswith("uv") else "pip"
     rest = m.group("rest")
     # Strip trailing comment.
     rest = re.split(r"(?<!\S)#", rest, maxsplit = 1)[0]
@@ -568,8 +582,6 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
         text = rest
     return text, prefixed
 
-
-_PIP_WORD_RE = re.compile(r"(?:^|\s)((?:uv\s+)?pip|python[0-9.]*\s+-m\s+pip)\s+", re.IGNORECASE)
 
 _SHELL_TEST_KEYWORDS = frozenset({"if", "while", "until", "for", "case"})
 _SHELL_BODY_KEYWORDS = frozenset({"then", "elif", "else", "do"})
@@ -1961,12 +1973,15 @@ def cmd_lint(args: argparse.Namespace) -> int:
         # Whole-notebook rules: install steps may span multiple cells, so merge
         # before resolving compat against Colab.
         merged = "\n".join(c for _, c in cells)
-        # A cell can look like an install and contain none -- `!echo "pip install foo"` matches
-        # _PIP_CELL_RE but runs no pip. The compat rules then resolve nothing and compare the
-        # bare oracle against itself, so any finding describes the base image rather than the
-        # notebook (R-INST-003 fires on Colab's own peft/torchao pair). A notebook with no
-        # install cell at all is already skipped; this makes the lookalike behave the same.
-        if not any(True for _ in iter_pip_invocations(merged)):
+        # A cell can look like an install and resolve nothing -- `!echo "pip install foo"`
+        # matches _PIP_CELL_RE but runs no pip, and `!command -v uv || pip install foo` runs
+        # pip only on the fallback side. The compat rules replay UNCONDITIONAL invocations
+        # only, so in both cases they compare the bare oracle against itself and any finding
+        # describes the base image rather than the notebook (R-INST-003 fires on Colab's own
+        # peft/torchao pair). A notebook with no install cell at all is already skipped; this
+        # makes both lookalikes behave the same. R-INST-001 still sees the conditional path:
+        # it runs per cell above, before this gate.
+        if not any(True for _ in unconditional_pip_invocations(merged)):
             merged = ""
         if env == "colab" and merged:
             first_cell = cells[0][0] if cells else None
@@ -2198,7 +2213,19 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             print("  no drift")
             continue
         any_diff = True
-        strict_diff = strict_diff or upstream_name == COLAB_STRICT_ORACLE
+        strict_keys = COLAB_STRICT_ORACLE_KEYS.get(upstream_name, frozenset())
+        drifted_strict_keys = sorted(
+            strict_keys.intersection(
+                [k for k, _ in new] + [k for k, _ in removed] + [k for k, _, _ in changed]
+            )
+        )
+        if upstream_name == COLAB_STRICT_ORACLE:
+            strict_diff = True
+        elif drifted_strict_keys:
+            strict_diff = True
+            print(
+                f"  (rule-bearing key drifted: {', '.join(drifted_strict_keys)})"
+            )
         for k, v in new[:50]:
             print(f"  NEW      {k}=={v}")
         if len(new) > 50:
@@ -2213,8 +2240,8 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             print(f"  ...and {len(changed) - 80} more changed entries")
     if strict_diff and args.strict:
         print(
-            f"\n::error::Colab oracle {COLAB_STRICT_ORACLE} drifted from its "
-            "committed snapshot; run `notebook_validator.py refresh-colab --all "
+            "\n::error::A rule-bearing Colab oracle drifted from its committed "
+            "snapshot; run `notebook_validator.py refresh-colab --all "
             "--snapshot-dir scripts/data` to acknowledge.",
             file = sys.stderr,
         )
