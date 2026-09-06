@@ -8750,7 +8750,7 @@ def test_a_status_body_without_is_gguf_still_launches(fake_studio, monkeypatch, 
     ("agent", "unset"),
     [
         ("codex", ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")),
-        ("openclaw", ("OPENAI_API_KEY",)),
+        ("openclaw", ("OPENAI_API_KEY", "CODEX_API_KEY")),
     ],
 )
 def test_launch_drops_provider_credentials(agent, unset, fake_studio, monkeypatch):

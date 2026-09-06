@@ -193,7 +193,9 @@ _CLAUDE_ENV_UNSET = (
     "CLAUDE_CODE_USE_MANTLE",
 )
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
-_OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY",)
+# OpenClaw reads CODEX_API_KEY before OPENAI_API_KEY for its openai provider, so dropping
+# only the latter still lets default-on memory search embed through OpenAI.
+_OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY")
 
 # Shared by every agent command; only the config/env/command differ.
 # Help is grouped into rich panels so `--help` reads as Model / Server / Session
