@@ -176,16 +176,41 @@ def public_check_disabled() -> bool:
     return os.environ.get(DISABLE_PUBLIC_CHECK_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
+def _resolve_lan_ip(ip_version: int = 4) -> str:
+    """This machine's own LAN-facing address. No third-party network call.
+
+    Discovery is a UDP route lookup plus the active interfaces; the lookup only
+    fixes the local end of the socket and sends no packet.
+    """
+    from lan_access import detect_lan_addresses
+
+    try:
+        addresses = detect_lan_addresses(ip_version)
+    except Exception:
+        addresses = []
+    if addresses:
+        return addresses[0]
+    return "0.0.0.0" if ip_version == 4 else "::"
+
+
 def _resolve_external_ip() -> str:
     """Resolve the machine's external IP address.
 
     Tries, in order:
     1. GCE metadata server (instant on Google Cloud VMs)
     2. ifconfig.me (anywhere with internet, skipped by UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK)
-    3. LAN IP via UDP socket trick (fallback)
+    3. The default route's own source address (fallback)
+
+    This is the machine's INTERNET-facing address, used for the reachability
+    probe and the Cloudflare messaging -- not for "another device on your
+    network," which _network_share_host_for_bind answers instead. Step 3 stays
+    a raw route lookup rather than _resolve_lan_ip: that one filters out every
+    address a LAN peer cannot open (WSL's NAT side, link-local), which is the
+    right policy for an address we advertise and the wrong one for a last-resort
+    answer to "where am I".
     """
-    import urllib.request
     import socket
+    import urllib.request
 
     # 1. GCE metadata server (<10ms on GCE, times out fast elsewhere).
     try:
@@ -210,7 +235,8 @@ def _resolve_external_ip() -> str:
         except Exception:
             pass
 
-    # 3. Fallback: LAN IP via UDP socket trick
+    # 3. Fallback: the source address the default route picks. A UDP connect only
+    # fixes the local end of the socket; nothing is sent to the target.
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -221,13 +247,20 @@ def _resolve_external_ip() -> str:
         return "0.0.0.0"
 
 
-def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> None:
-    """Rewrite Uvicorn's startup log line: swap wildcard bind for the
-    externally-reachable address, use our Mac-aware stop hint, and rename the
-    prefix to "Unsloth Studio running on"."""
+def _install_uvicorn_startup_log_rewrite(bind_host: str) -> None:
+    """Rewrite Uvicorn's startup log line: swap a wildcard bind for the address
+    this machine answers on, use our Mac-aware stop hint, and rename the prefix
+    to "Unsloth Studio running on".
+
+    The line is a claim about where the server is reachable, so the address is
+    _network_share_host_for_bind's, resolved here rather than passed in so no
+    caller can hand it the internet-facing one (#8868). With no LAN address to
+    name, the guard below leaves uvicorn's raw wildcard.
+    """
     import logging
     import re
 
+    display_host = _network_share_host_for_bind(bind_host)
     rewrite_host = is_wildcard_host(bind_host) and bool(display_host) and display_host != bind_host
     new_suffix = "(To stop: press Ctrl+C -- on macOS, Control+C not Command+C)"
     old_suffix_re = re.compile(r"\(Press CTRL\+C to quit\)")
@@ -540,6 +573,26 @@ def _display_host_for_bind(host: str) -> str:
     return ipv4_display_host or "::"
 
 
+def _network_share_host_for_bind(host: str) -> str:
+    """The address to hand another device on this LAN, or to build the API
+    panel's direct base URL from.
+
+    Deliberately not _display_host_for_bind: that answers "what is this
+    machine's internet-facing address" (right for the reachability probe and the
+    Cloudflare line), and for a wildcard bind that can be a public WAN IP a LAN
+    peer cannot route to (#8868). Only a family the wildcard actually binds is
+    resolved, so an IPv6-only launch is never advertised at an IPv4 address.
+    """
+    wildcard_versions = wildcard_ip_versions(host)
+    if not wildcard_versions:
+        return host
+    for ip_version in wildcard_versions:
+        lan_host = _resolve_lan_ip(ip_version)
+        if not is_wildcard_host(lan_host):
+            return lan_host
+    return host
+
+
 def _loopback_bind_host_for(host: str) -> str:
     return wildcard_loopback_host(host) or "127.0.0.1"
 
@@ -551,6 +604,23 @@ def _url_host(host: str) -> str:
         if ":" in url_host and not (url_host.startswith("[") and url_host.endswith("]"))
         else url_host
     )
+
+
+def _direct_server_url(host: str, port: int) -> "Optional[str]":
+    """The API panel's direct (non-tunnel) base, or None when this launch has no
+    address worth publishing.
+
+    The frontend prefers any non-null server_url over the origin the client
+    reached, so publishing ``http://0.0.0.0:<port>`` (a wildcard bind with no LAN
+    address: WSL behind NAT, loopback-only) would put an unroutable address in
+    the API examples, the desktop agent command and a copied preview link.
+    """
+    if not port or port <= 0:
+        return None
+    share_host = _network_share_host_for_bind(host)
+    if is_wildcard_host(share_host):
+        return None
+    return f"http://{_url_host(share_host)}:{port}"
 
 
 def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
@@ -623,6 +693,9 @@ def _emit_startup_output(
         port = port,
         bind_host = host,
         display_host = display_host,
+        # The "from another device on your network" line needs the LAN address,
+        # not display_host's possibly-public one (#8868).
+        network_host = _network_share_host_for_bind(host),
         include_stop_hint = False,
         lan_addresses = lan_addresses,
     )
@@ -2064,238 +2137,8 @@ def _stream_isatty(stream) -> bool:
     """
     try:
         return stream.isatty()
-    except (AttributeError, OSError, ValueError):
+    except (AttributeError, ValueError):
         return False
-
-
-def _console_only_stream(stream):
-    """Return the real console stream behind a _TeeStream session-log wrapper.
-
-    run_server() calls _setup_server_disk_logging() early, which replaces
-    sys.stdout/stderr with _TeeStream so diagnostics are mirrored into a retained
-    logs/server/server-*.log. A one-time secret (the auto-generated admin
-    password) must reach the operator's console but MUST NOT land in that
-    persisted file (OWASP CWE-532: never write credentials to logs). Writing to
-    the underlying stream shows the banner on the console while bypassing the tee.
-
-    Unwraps RECURSIVELY: run_server() can run twice in one process (e.g. a local
-    run followed by a public one), and each call re-wraps the already-wrapped
-    sys.stdout/stderr, so the tees nest. Peeling one layer would return an inner
-    _TeeStream -- which forwards isatty() to the real console and so passes the
-    TTY check -- and the credential would be mirrored into the older run's
-    retained server-*.log. The depth bound keeps a pathological self-referential
-    wrapper from looping forever; a stream still wrapped after it is reported as
-    unusable (None) so the caller fails closed rather than tee a credential.
-    """
-    for _ in range(64):
-        if not isinstance(stream, _TeeStream):
-            return stream
-        stream = stream._stream
-    return None
-
-
-def _one_time_secret_stream(*, skip = None):
-    """Return an interactive-terminal stream to surface a one-time secret, or None.
-
-    Prefers sys.stderr, then sys.stdout, unwrapping the _TeeStream session-log
-    wrapper (see _console_only_stream) so the secret bypasses the retained
-    logs/server/server-*.log (CWE-532: never write credentials to log files).
-
-    Requires the underlying stream to be a real TTY. A writable non-tty stream --
-    a `> file` shell redirect, nohup.out, a systemd-journald socket, a Docker
-    logging pipe -- is NOT an ephemeral console: writing the one-time credential
-    there PERSISTS the plaintext to a file/journal/pipe that log consumers can
-    read (CWE-532), which breaks the banner's "shown once, not written to disk"
-    promise. Only a TTY is a transient surface, so a non-tty stream is skipped and
-    the caller MUST fail closed (refuse to rotate the only recovery credential).
-
-    Returns None when neither stream is a usable TTY -- e.g. a Windows
-    pythonw/service wrapper (both None), a closed/non-writable inherited stream, or
-    a fully headless (nohup/systemd) launch whose stderr/stdout is redirected. The
-    caller then fails closed: print(file=None) would fall back to the tee'd
-    sys.stdout and persist the credential, and printing to a redirected stream
-    persists it just the same -- AFTER the seeded credential was already rotated --
-    so neither may be treated as usable. Mirrors the CLI's
-    _one_time_secret_console_stream tty/closed/writable preflight so the direct
-    `python run.py` path makes the same fail-closed decision before rotating.
-
-    *skip* excludes an already-resolved console (identity match on the unwrapped
-    stream) so a delivery that RAISED on it can retry the other one; see
-    _deliver_one_time_credential. The remaining candidate still has to pass every
-    check above, so the retry can never downgrade to a tee'd or non-tty surface.
-    """
-    for candidate in (sys.stderr, sys.stdout):
-        raw = _console_only_stream(candidate)
-        if raw is None:
-            continue
-        if skip is not None and raw is skip:
-            continue
-        try:
-            if getattr(raw, "closed", False):
-                continue
-            if not callable(getattr(raw, "write", None)):
-                continue
-        except (AttributeError, ValueError):
-            continue
-        # Reject redirected streams that would persist the credential (CWE-532).
-        if not _stream_isatty(raw):
-            continue
-        return raw
-    return None
-
-
-def _tunnel_binary_confirmed_unavailable() -> bool:
-    """True only if cloudflared is provably unavailable (absent from PATH and the
-    Unsloth cache AND a download attempt failed), so a --secure tunnel cannot start.
-
-    On --secure the bind is loopback, so the tunnel is the ONLY public exposure:
-    rotating the seeded recovery password before a public URL that never comes up
-    can lock out supervisor/nohup launches that do not preserve the one-time
-    stderr banner. Mirrors the CLI's _tunnel_binary_confirmed_unavailable so the
-    direct `python run.py --secure` path makes the same decision. Returns False on
-    ANY uncertainty: a possible credential leak outweighs a recoverable lockout, so
-    the caller keeps rotating unless the tunnel is provably dead.
-    """
-    try:
-        from cloudflare_tunnel import ensure_cloudflared
-        return ensure_cloudflared() is None
-    except Exception:
-        return False
-
-
-def _generated_password_is_live(admin_username: str, candidate: str) -> bool:
-    """True when *candidate* is the password the stored admin hash now accepts.
-
-    Only used to resolve a partial success: ``update_password`` commits the row
-    before its remaining best-effort cleanup, so a raise from that cleanup still
-    leaves the new password live. Any failure to read or verify answers False, so
-    the caller fails closed instead of assuming the write landed. Comparison runs
-    through ``verify_password`` (PBKDF2 + ``hmac.compare_digest``).
-    """
-    from auth import hashing as _auth_hashing
-    from auth import storage as _auth_storage
-
-    try:
-        record = _auth_storage.get_user_and_secret(admin_username)
-        if record is None:
-            return False
-        salt, pwd_hash = record[0], record[1]
-        return bool(_auth_hashing.verify_password(candidate, salt, pwd_hash))
-    except Exception:
-        return False
-
-
-def _auto_generate_admin_password(admin_username: str, *, out = None) -> "Optional[str]":
-    """Generate a strong random admin password and commit it for a headless
-    public launch that supplied none.
-
-    Uses the existing ``update_password`` path, so it clears
-    ``must_change_password`` (no interactive prompt is then needed), rotates the
-    JWT secret, revokes refresh tokens, and deletes the on-disk bootstrap
-    password. The value is returned once for display; it is NEVER written to disk
-    or placed on argv.
-
-    The commit is a compare-and-set on ``must_change_password``: another Studio
-    process or tab sharing this auth DB can complete /change-password between the
-    gate's read and this write, and an unconditional update would overwrite the
-    password the user just chose. Returns None when that guard rejects the write,
-    so the caller shows nothing rather than a credential that never took effect.
-
-    ``update_password`` commits the row BEFORE its remaining best-effort cleanup
-    (removing the on-disk bootstrap password file), so that cleanup can still
-    raise -- e.g. printing its own warning to a stderr the launcher has closed --
-    with the new password already live and the seeded recovery credential already
-    gone. Propagating there would abort the launch behind a password nobody has
-    ever seen, an unrecoverable lockout short of `unsloth studio reset-password`.
-    So an exception is resolved against the stored hash, exactly as the Colab path
-    does: return the generated value when it is the live one, and re-raise when it
-    is not (nothing was committed, the seeded credential still works, and the
-    caller must fail closed rather than publish under an unknown state).
-    """
-    import secrets as _secrets
-
-    from auth import storage as _auth_storage
-
-    generated = _secrets.token_urlsafe(24)
-    try:
-        # Returns the rotated JWT secret, or None when the compare-and-set lost.
-        committed = (
-            _auth_storage.update_password(
-                admin_username,
-                generated,
-                revoke_refresh_tokens = True,
-                require_must_change = True,
-                mark_credential_undelivered = True,
-            )
-            is not None
-        )
-    except Exception as e:
-        if not _generated_password_is_live(admin_username, generated):
-            raise
-        if out is not None:
-            # Report cleanup failure on the console, never the session log.
-            try:
-                print(
-                    "Warning: the admin password commit reported an error after it "
-                    f"was applied ({e}); the password below is the live one.",
-                    file = out,
-                    flush = True,
-                )
-            except Exception:
-                pass
-        return generated
-    return generated if committed else None
-
-
-def _print_auto_generated_credentials(username: str, password: str, *, out) -> None:
-    """Surface an auto-generated admin credential once, in the startup banner.
-
-    Printed to the given stream (stderr for CLI launches); never logged elsewhere
-    and never persisted. Colab prints its own copy into the notebook cell.
-    """
-    line = "=" * 70
-    print(
-        f"\n{line}\n"
-        "  Unsloth Studio admin login (auto-generated for this public launch)\n"
-        f"    Username: {username}\n"
-        f"    Password: {password}\n"
-        "  Save this now: it is shown once, not written to disk, and not in the\n"
-        "  process list. Rotate later with `unsloth studio reset-password`.\n"
-        f"{line}\n",
-        file = out,
-        flush = True,
-    )
-
-
-def _deliver_one_time_credential(username: str, password: str, *, out) -> bool:
-    """Write the one-time credential to *out*, retrying once on the other console.
-
-    The stream checks in _one_time_secret_stream run BEFORE the rotation, but the
-    write happens after ``update_password`` has already committed the generated
-    password and deleted the seeded bootstrap credential. A terminal that goes
-    away in between (an SSH session that drops, a closed terminal window: writes
-    to the orphaned pty raise OSError EIO) would make ``print`` raise, and letting
-    that propagate aborts the launch with the new password live and never shown,
-    locking the operator out of the account until `unsloth studio reset-password`.
-
-    So a failed write is not fatal by itself: retry once on the other console
-    (resolved through the same tty/closed/writable/no-tee preflight, so the retry
-    cannot land the credential in the retained session log or a redirected file),
-    and report whether the credential reached a console at all. Returns False only
-    when every console failed, and the caller must then fail closed -- there is no
-    third surface, and logging or printing the value would persist it (CWE-532).
-    """
-    fallback = _one_time_secret_stream(skip = out)
-    # Never retry the stream that just failed (a stubbed resolver could return it).
-    for stream in (out, fallback if fallback is not out else None):
-        if stream is None:
-            continue
-        try:
-            _print_auto_generated_credentials(username, password, out = stream)
-            return True
-        except Exception:
-            continue
-    return False
 
 
 def _terminal_password_gate(
@@ -2334,6 +2177,10 @@ def _terminal_password_gate(
 
     from auth import hashing as _auth_hashing
     from auth import storage as _auth_storage
+    from auth.bootstrap_timeout import (
+        bootstrap_timeout_seconds,
+        should_arm_bootstrap_timeout,
+    )
     from auth.terminal_prompt import (
         prompt_for_password_change,
         should_prompt_password_change,
@@ -2342,25 +2189,8 @@ def _terminal_password_gate(
     _admin = _auth_storage.DEFAULT_ADMIN_USERNAME
     # Gate can run before lifespan: seed the admin row here (idempotent).
     _auth_storage.ensure_default_admin()
-    # A prior generated password was never shown. Fail closed until it is reset.
-    if _auth_storage.credential_undelivered(_admin):
-        logger.error(
-            "Refusing to publish Unsloth: the admin password auto-generated by an "
-            "earlier launch was committed but never displayed, so no one can log in. "
-            "Reset it with `unsloth studio reset-password`, then relaunch."
-        )
-        return False, False
     requires_change = _auth_storage.requires_password_change(_admin)
     if not requires_change:
-        # Recheck after the password read to catch a concurrent pending delivery.
-        if _auth_storage.credential_undelivered(_admin):
-            logger.error(
-                "Refusing to publish Unsloth: another launch auto-generated the "
-                "admin password but has not confirmed that it was displayed. Retry "
-                "after that launch completes, or reset the credential with `unsloth "
-                "studio reset-password`."
-            )
-            return False, False
         return True, False
 
     if not should_prompt_password_change(
@@ -2369,48 +2199,46 @@ def _terminal_password_gate(
         stdin_isatty = _stream_isatty(sys.stdin),
         stderr_isatty = _stream_isatty(sys.stderr),
     ):
-        # Headless public launches replace the seeded password and show it once.
-        # Resolve a real TTY before rotation so the secret cannot reach the tee'd
-        # session log or another persistent stream (CWE-532).
-        out = _one_time_secret_stream()
-        if out is None:
-            return False, False
-        # Without cloudflared, keep the seeded credential for local recovery.
-        if secure and _tunnel_binary_confirmed_unavailable():
+        # No terminal: only proceed if the bootstrap deadline will arm; api-only
+        # and TIMEOUT=0 never arm it, leaving the default credential public.
+        deadline_arms = should_arm_bootstrap_timeout(
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            frontend_served = frontend_served,
+            is_colab = is_colab,
+            requires_change = True,
+            timeout_seconds = bootstrap_timeout_seconds(),
+        )
+        if not deadline_arms:
             print(
-                "Error: refusing to expose Unsloth: the Cloudflare tunnel binary "
-                "(cloudflared) is unavailable and could not be downloaded, so no "
-                "secure link can be published. Your admin password is unchanged.",
-                file = out,
+                "Refusing to publish Unsloth on a public Cloudflare URL: the "
+                "default admin password was never changed, no terminal is "
+                "attached to change it here, and the bootstrap shutdown "
+                "deadline does not apply to this launch (api-only, or "
+                "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0). Change the password "
+                "first (run `unsloth studio` locally and log in, or re-run "
+                "with a terminal attached), then retry.",
+                file = sys.stderr,
                 flush = True,
             )
             return False, False
-        generated = _auto_generate_admin_password(_admin, out = out)
-        if generated is None:
-            # Inspect the compare-and-set winner; another auto-launch may still be
-            # delivering its password.
-            if _auth_storage.credential_undelivered(_admin):
-                logger.error(
-                    "Refusing to publish Unsloth: another launch auto-generated the "
-                    "admin password but has not confirmed that it was displayed. Retry "
-                    "after that launch completes, or reset the credential with `unsloth "
-                    "studio reset-password`."
-                )
-                return False, False
-            return True, True
-        # Write only to the raw console, never the retained server log. If delivery
-        # fails after commit, the transactional marker keeps later launches closed.
-        if not _deliver_one_time_credential(_admin, generated, out = out):
-            logger.error(
-                "The auto-generated Unsloth admin password could not be shown: the "
-                "console went away after the pre-rotation check. It is now the live "
-                "password but was never displayed, so nothing can recover it. Reset "
-                "the credential with `unsloth studio reset-password`, then relaunch."
-            )
-            return False, False
-        _auth_storage.clear_credential_undelivered()
-        # Password is no longer the default; still suppress any HTML injection of a
-        # stale bootstrap credential over the public URL.
+        # The public page won't auto-fill the bootstrap credential (suppressed
+        # below) and the seeded file may already be gone, so point recovery at a
+        # terminal-attached run / reset-password instead of reading it from disk.
+        print(
+            "  WARNING: the default admin password is still active while "
+            "Unsloth is about to be published on a public Cloudflare URL, and "
+            "no terminal is attached to change it here. The public page will "
+            "NOT auto-fill the bootstrap credential. Set a new password by "
+            "running `unsloth studio` locally with a terminal attached, or "
+            "`unsloth studio reset-password`. Unsloth shuts down after the "
+            "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
+            "unless the password is changed.",
+            file = sys.stderr,
+            flush = True,
+        )
+        # Never serve the default credential in HTML over a public URL.
         return True, True
 
     def _is_current_password(candidate: str) -> bool:
@@ -2866,9 +2694,10 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
-    # Resolve once; shared by the log rewrite and banner.
+    # For the banner and the reachability probe; the startup log line resolves
+    # its own, LAN-only, answer.
     display_host = _display_host_for_bind(host)
-    _install_uvicorn_startup_log_rewrite(host, display_host)
+    _install_uvicorn_startup_log_rewrite(host)
     # LoggingMiddleware already logs every unhandled request exception with its full
     # traceback as a structured event; without this uvicorn prints the same traceback
     # again on stderr and the desktop shell copies it into tauri.log line by line.
@@ -2925,11 +2754,7 @@ def run_server(
     app.state.server_port = port if port and port > 0 else None
     app.state.server_request_host = None
     # Direct (non-tunnel) base for the API panel; resolve wildcard binds to the LAN IP.
-    if port and port > 0:
-        _direct_host = _display_host_for_bind(host)
-        app.state.server_url = f"http://{_url_host(_direct_host)}:{port}"
-    else:
-        app.state.server_url = None
+    app.state.server_url = _direct_server_url(host, port)
     # raw bind address: the keyless exposure warning must tell loopback from a wildcard bind
     app.state.bind_host = host
     app.state.secure = secure
@@ -3071,7 +2896,7 @@ def run_server(
     port = _final_bound_port(_server, port)
     app.state.server_port = port
     app.state.server_request_host = _bound_request_host(_server)
-    app.state.server_url = f"http://{_url_host(_display_host_for_bind(host))}:{port}"
+    app.state.server_url = _direct_server_url(host, port)
     app.state.remote_access_port = port
     app.state.lan_access_port = port
 

@@ -3473,3 +3473,49 @@ html[data-chat-font] .aui-root {
 	animation: none !important;
 	transition: none !important;
 }
+
+/* Find in page. The bar paints matches through the CSS Custom Highlight API,
+   so these two pseudo-elements are the whole visual: nothing is inserted into
+   the thread and nothing reflows when a match moves. An engine without the
+   registry falls back to selecting the active match.
+
+   Fixed colours in both themes, not palette tokens: a highlight has to stay
+   legible over body text, over a code fence with its own background, and over
+   a badge, and the accent colours move with the palette while that text does
+   not. `color` is set alongside the background because the API paints over
+   text of any colour. */
+::highlight(unsloth-find) {
+	background-color: #ffd84d;
+	color: #1a1a1a;
+}
+
+::highlight(unsloth-find-active) {
+	background-color: #ff8c1a;
+	color: #1a1a1a;
+}
+
+/* The find bar's surface: no border in either mode, so colour and shadow are
+   what separate it from the conversation.
+
+   Light is the chatbox's own background and shadow, so the panel a reader
+   summons over the conversation is made of the same material as the one they
+   type into. Dark cannot copy it: the composer sits at `--card` with no shadow,
+   because nothing overlaps it. This bar floats over cards that are themselves
+   `--card`, so it sits one step lighter, which also gives the ghost buttons
+   inside somewhere to go: their default `--muted/50` hover lands within a shade
+   of `--card` and reads as nothing. The shadow is the page background rather
+   than black, a halo that fades what passes underneath instead of a dark edge
+   around a panel that has given up its border. */
+.find-bar-surface {
+	background-color: #ffffff;
+	/* The composer's shadow spread wider and softened: that one sits at the
+	   bottom of the page with nothing under it, this one floats over content and
+	   needs more to sit on, but not more weight. Kept in step by
+	   tests/find-in-page.test.ts. */
+	box-shadow: 0 3px 14px -1px rgba(0, 0, 0, 0.13);
+}
+
+.dark .find-bar-surface {
+	background-color: #2c2c2c;
+	box-shadow: 0 4px 20px 6px var(--background);
+}

@@ -29,6 +29,7 @@ ENV = "UNSLOTH_STUDIO_MAX_MCP_SESSIONS"
 
 
 # --------------------------------------------------------------------------
+
 # Entry points an old install may still call
 # --------------------------------------------------------------------------
 
@@ -45,6 +46,7 @@ def test_the_old_close_name_takes_the_same_arguments():
 
 
 # --------------------------------------------------------------------------
+
 # Session cap: the name changed, the setting must not
 # --------------------------------------------------------------------------
 
@@ -90,6 +92,7 @@ def test_the_cap_never_drops_below_one(monkeypatch, raw, expected):
 
 
 # --------------------------------------------------------------------------
+
 # The fastmcp surface this module relies on
 # --------------------------------------------------------------------------
 
@@ -127,6 +130,7 @@ def test_tool_errors_are_still_distinguishable_from_transport_errors():
 
 
 # --------------------------------------------------------------------------
+
 # Rows written by an older Studio
 # --------------------------------------------------------------------------
 

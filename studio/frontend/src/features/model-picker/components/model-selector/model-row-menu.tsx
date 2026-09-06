@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Condensed row actions for model rows: everything except the run-settings
-// gear collapses into one dots menu (pin, update, delete) so rows don't grow
-// an icon strip. Mirrors the sidebar chat rows' MoreVertical menu pattern.
+// Condensed row actions for model rows: everything except the run-settings gear collapses into
+// one dots menu (pin, update, delete) so rows do not grow an icon strip. Mirrors the sidebar
+// chat rows' MoreVertical menu pattern.
 
 import {
   DropdownMenu,
@@ -64,8 +64,8 @@ interface ModelRowMenuUpdate {
 interface ModelRowMenuDelete {
   title: string;
   description: ReactNode;
-  /** Repo (and quant) to preview the delete for, so the dialog can state what it actually
-   * reclaims and what shared assets it leaves behind. Omit to keep the plain wording. */
+  /** Repo (and quant) to preview the delete for, so the dialog can state what it actually reclaims
+   *  and what shared assets it leaves behind. Omit to keep the plain wording. */
   impact?: { repoId: string; variant?: string | null };
   successMessage: string;
   disabled?: boolean;
@@ -157,8 +157,8 @@ export function ModelRowMenu({
 
   const onUpdateConfirm = update?.onConfirm;
   const handleUpdateConfirm = useCallback(() => {
-    // Start the re-download and close the dialog; the Downloads panel owns
-    // progress + cancel. Only a failure to START toasts.
+    // Start the re-download and close the dialog; the Downloads panel owns progress and cancel. Only
+    // a failure to START toasts.
     void Promise.resolve()
       .then(onUpdateConfirm)
       .catch((err) => {

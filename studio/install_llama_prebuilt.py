@@ -541,6 +541,14 @@ _os_error_messages = _core._os_error_messages
 is_busy_lock_error = _core.is_busy_lock_error
 
 
+def is_cross_device_error(exc: BaseException) -> bool:
+    """True for an EXDEV "cross-device link" rename failure, e.g. inside a Docker
+    build where the staging tree and the install dir land on different overlayfs
+    layers. Unlike a busy/in-use error, such a move is safely completed by copy +
+    remove of the (idle) source."""
+    return isinstance(exc, OSError) and exc.errno == errno.EXDEV
+
+
 # Status logs default to stderr so resolver modes keep stdout machine-readable
 # (setup.sh json.load()s the whole stdout). main() flips this for the install
 # path, where PowerShell otherwise renders stderr as NativeCommandError noise.
@@ -1976,13 +1984,17 @@ def _fetch_download_host_json(url: str) -> Any:
     )
 
 
-def _download_host_resolved_release(repo: str) -> ResolvedPublishedRelease | None:
-    """Resolve the latest fork release from the download host with zero
-    api.github.com calls, reusing the API path's parsing and validation. The latest
-    tag is the authoritative /releases/latest redirect tag, and the checksum asset's
+def _download_host_resolved_release(
+    repo: str, published_release_tag: str = ""
+) -> ResolvedPublishedRelease | None:
+    """Resolve a fork release from the download host with zero api.github.com calls,
+    reusing the API path's parsing and validation.
+
+    When *published_release_tag* is set, that tag is fetched directly. Otherwise the
+    latest tag comes from the /releases/latest redirect and the checksum asset's
     self-reported release_tag is cross-checked against it. Returns None (caller falls
     back to the API) on a missing JSON asset or a tag mismatch."""
-    release_tag = _download_host_latest_release_tag(repo)
+    release_tag = (published_release_tag or "").strip() or _download_host_latest_release_tag(repo)
     if not release_tag:
         return None
     sha_url = _release_asset_download_url(repo, release_tag, DEFAULT_PUBLISHED_SHA256_ASSET)
@@ -2109,6 +2121,48 @@ def iter_resolved_published_releases(
     repo = published_repo or DEFAULT_PUBLISHED_REPO
     normalized_requested = normalized_requested_llama_tag(requested_tag)
 
+    # Fast path: resolve a pinned or latest fork release from the download host (no
+    # api.github.com rate limit). Latest surfaces only the single newest release, so
+    # the caller disables it when the multi-release walk-back is needed (macOS
+    # skipping too-new prebuilts); a broken latest then drops to source build, not
+    # an older release. Pinned tags use the same CDN path so in-app updates avoid
+    # the API entirely (#9970). Any rejection/network error is non-fatal and falls
+    # through to the API.
+    fast_path_tag: str | None = None
+    if published_release_tag:
+        fast_path_tag = published_release_tag
+    elif normalized_requested == "latest":
+        fast_path_tag = ""
+
+    if (
+        fast_path_tag is not None
+        and allow_download_host_fast_path
+        and repo == DEFAULT_PUBLISHED_REPO
+        and _download_host_resolve_enabled()
+    ):
+        tag_label = fast_path_tag or "latest"
+        try:
+            resolved = _download_host_resolved_release(repo, fast_path_tag)
+        except PrebuiltFallback as exc:
+            log(f"download-host release rejected for {repo}@{tag_label} ({exc}); trying GitHub API")
+            resolved = None
+        except Exception as exc:
+            log(
+                f"download-host resolve unavailable for {repo}@{tag_label} ({exc}); trying GitHub API"
+            )
+            resolved = None
+        if resolved is not None:
+            if published_release_tag and not published_release_matches_request(
+                resolved.bundle, normalized_requested
+            ):
+                raise PrebuiltFallback(
+                    "published release "
+                    f"{repo}@{resolved.bundle.release_tag} targeted upstream tag "
+                    f"{resolved.bundle.upstream_tag}, but requested {normalized_requested}"
+                )
+            yield resolved
+            return
+
     if published_release_tag:
         bundle = pinned_published_release_bundle(repo, published_release_tag)
         if not published_release_matches_request(bundle, normalized_requested):
@@ -2122,29 +2176,6 @@ def iter_resolved_published_releases(
             checksums = validated_checksums_for_bundle(repo, bundle),
         )
         return
-
-    # Fast path: resolve the fork's latest release from the download host (no
-    # api.github.com rate limit). It surfaces only the single latest release, so the
-    # caller disables it when the multi-release walk-back is needed (macOS skipping
-    # too-new prebuilts); a broken latest then drops to source build, not an older
-    # release. Any rejection/network error is non-fatal and falls through to the API.
-    if (
-        allow_download_host_fast_path
-        and repo == DEFAULT_PUBLISHED_REPO
-        and normalized_requested == "latest"
-        and _download_host_resolve_enabled()
-    ):
-        try:
-            resolved = _download_host_resolved_release(repo)
-        except PrebuiltFallback as exc:
-            log(f"download-host latest release rejected for {repo} ({exc}); trying GitHub API")
-            resolved = None
-        except Exception as exc:
-            log(f"download-host latest resolve unavailable for {repo} ({exc}); trying GitHub API")
-            resolved = None
-        if resolved is not None:
-            yield resolved
-            return
 
     matched_any = False
     skipped_invalid = 0
@@ -2365,6 +2396,8 @@ def run_capture(
         command,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = timeout,
         env = env,
         **windows_hidden_subprocess_kwargs(),
@@ -2538,8 +2571,8 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     int(cuda_match.group(1)),
                     int(cuda_match.group(2)),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            log(f"nvidia-smi driver probe failed: {exc}")
 
         try:
             caps = run_capture(
@@ -3361,6 +3394,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
             if result.returncode == 0:
@@ -3386,6 +3421,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
         except Exception:
@@ -4436,20 +4473,94 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
     ``os.replace`` failure means the directory is genuinely in use, and a
     silent copy + ``rmtree`` could partially delete a live install.
 
-    Only busy/lock errors (``is_busy_lock_error``) trigger the copy; anything
-    else (disk full, cross-device, missing path) re-raises so it cannot leave
-    a partially copied install behind. A copy is preferred over retrying the
-    rename because antivirus scans of large DLLs can outlast any reasonable
-    retry window.
+    Only busy/lock errors (``is_busy_lock_error``) and cross-device links
+    (``is_cross_device_error``, hit when a Docker build lands the staging tree
+    and the install dir on different overlay layers) trigger the copy; anything
+    else (disk full, missing path) re-raises so it cannot leave a partially
+    copied install behind. A copy is preferred over retrying the rename because
+    antivirus scans of large DLLs can outlast any reasonable retry window.
     """
     try:
         os.replace(staging_dir, dst)
     except OSError as exc:
-        if not is_busy_lock_error(exc):
+        # busy/in-use (Windows AV) or cross-device (Docker overlayfs) are both safe to
+        # complete by copy + remove; anything else re-raises
+        if not (is_busy_lock_error(exc) or is_cross_device_error(exc)):
             raise
         log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
-        shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
+        # symlinks = True, like the aside-move and rollback-restore copies below. The
+        # default DEREFERENCES every link, so each soname alias is written out as a
+        # full second copy of its library. Measured on the linux-x64-cuda12 bundle
+        # this branch exists for (Docker overlayfs EXDEV): 5 symlinks, 13.1 MiB
+        # duplicated. Not the headline number one might expect -- the 358 MB
+        # libggml-cuda.so is a regular file and is copied once either way -- but it is
+        # wasted bytes and it replaces the link topology the loader resolves against.
+        # dirs_exist_ok stays for the empty-dst case
+        # os.replace also accepts; a NON-empty dst never reaches here on one device
+        # (ENOTEMPTY re-raises above), and if a partially removed aside-move left one
+        # behind, os.symlink's FileExistsError fails the activation into the rollback
+        # path instead of silently half-merging two installs.
+        shutil.copytree(staging_dir, dst, dirs_exist_ok = True, symlinks = True)
         remove_tree(staging_dir)
+
+
+def move_install_dir_aside(
+    src: Path,
+    dst: Path,
+    *,
+    busy_retry: bool = False,
+) -> None:
+    """Move an existing install dir to ``dst`` (a unique, non-existent sibling).
+
+    os.replace is the fast path, falling back to copy + remove on EXDEV. A busy/in-use
+    failure is deliberately NOT copy-faked: the source is a live install and a partial
+    copy + rmtree would be worse than failing.
+
+    ``busy_retry`` is opt-in per call site: the aside-move of the *live* install is the
+    one this installer most needs to survive, while the recovery path's move of an
+    already-failed tree has a cheaper answer (drop the tree) than blocking on a scanner.
+
+    Callers treat ``dst.exists()`` as proof of a COMPLETE tree, so the copy goes to a
+    temp sibling and is published with one atomic rename; a copy that dies halfway
+    leaves nothing at ``dst`` and ``src`` untouched.
+    """
+    try:
+        if busy_retry:
+            replace_with_busy_retry(src, dst)
+        else:
+            os.replace(src, dst)
+    except OSError as exc:
+        if not is_cross_device_error(exc):
+            raise
+        if _is_link_or_junction(src):
+            # copytree always follows the ROOT it is given, so copying a linked
+            # install would duplicate a checkout this installer does not own
+            log("install path is a link; not copying it aside")
+            raise
+        copy_tmp = dst.with_name(dst.name + ".copying")
+        counter = 0
+        while copy_tmp.exists():
+            counter += 1
+            copy_tmp = dst.with_name(f"{dst.name}.copying-{counter}")
+        log(f"os.replace cross-device ({exc!r}); copy+publish {src} -> {dst}")
+        try:
+            # symlinks = True, matching the rollback-restore copy below. The default
+            # DEREFERENCES links inside the tree, and a Linux llama.cpp bundle is full
+            # of soname links (libllama.so.0 -> libllama.so), so the aside copy would
+            # duplicate every shared library and, restored after a failed activation,
+            # replace the install's link topology with independent files. Safe here
+            # only because copy_tmp is a fresh uniquified path: combined with
+            # dirs_exist_ok it raises FileExistsError on any name the destination
+            # already holds, which is why the remaining dirs_exist_ok calls in this
+            # file (which merge into populated trees) cannot simply be given the same
+            # flag. activate_staged_dir can, because a dst os.replace refused is empty
+            # or absent.
+            shutil.copytree(src, copy_tmp, symlinks = True)
+            os.replace(copy_tmp, dst)
+        except BaseException:
+            remove_tree(copy_tmp)
+            raise
+        remove_tree(src)
 
 
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
@@ -4462,7 +4573,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             had_existing = True
             rollback_dir = unique_install_side_path(install_dir, "rollback")
             log(f"moving existing install to rollback path {rollback_dir}")
-            replace_with_busy_retry(install_dir, rollback_dir)
+            move_install_dir_aside(install_dir, rollback_dir, busy_retry = True)
             moved_aside = True
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
@@ -4497,7 +4608,10 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 failed_dir = unique_install_side_path(install_dir, "failed")
                 log(f"moving failed active install to {failed_dir}")
                 try:
-                    os.replace(install_dir, failed_dir)
+                    # not a bare os.replace: in a Docker build the failed tree and
+                    # the staging root can sit on different overlay layers, and EXDEV
+                    # there must not cost the retained copy
+                    move_install_dir_aside(install_dir, failed_dir)
                 except Exception as failed_move_exc:
                     failed_dir = None
                     log(f"failed active install could not be moved aside: {failed_move_exc}")
@@ -5702,6 +5816,8 @@ def validate_quantize(
         command,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = 120,
         env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
         **windows_hidden_subprocess_kwargs(),
@@ -5792,6 +5908,8 @@ def validate_server(
                     stdout = log_handle,
                     stderr = subprocess.STDOUT,
                     text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
                     env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
                     **_validation_server_kwargs(),
                     **windows_hidden_subprocess_kwargs(),
@@ -8052,8 +8170,8 @@ def install_prebuilt(
             #
             # Not dead code despite the download-host fast path: macOS skips it
             # entirely (see allow_download_host_fast_path below), as does a
-            # pinned UNSLOTH_LLAMA_RELEASE_TAG, a non-latest tag, a non-default
-            # --published-repo, and any CDN outage.
+            # non-latest requested tag without a published-release pin, a
+            # non-default --published-repo, and any CDN outage.
             #
             # Transport shapes only: URLError covers HTTPError and the socket/DNS
             # errors urllib wraps, JSONDecodeError is a ValueError, and
@@ -8287,7 +8405,9 @@ def install_prebuilt(
             if preserve_backend
             else "prebuilt install path failed; falling back to source build"
         )
-        log(f"prebuilt fallback reason: {exc}")
+        # log_lines, not log: a preflight failure lists one library per line, and
+        # only prefixed lines are distinguishable from the system report below.
+        log_lines(f"prebuilt fallback reason: {exc}".splitlines())
         # Diagnostics must never change the verdict: a probe that raises here
         # would replace the fallback with EXIT_ERROR, which never source builds.
         try:
@@ -8732,7 +8852,9 @@ if __name__ == "__main__":
         fatal = _environment_fatal_reason(exc)
         if fatal:
             _fail_no_space(f"prebuilt install failed: {fatal}")
-        log(textwrap.shorten(str(exc), width = 400, placeholder = "..."))
+        log(
+            f"prebuilt install failed: {textwrap.shorten(str(exc), width = 400, placeholder = '...')}"
+        )
         raise SystemExit(EXIT_FALLBACK)
     except Exception as exc:
         fatal = _environment_fatal_reason(exc)

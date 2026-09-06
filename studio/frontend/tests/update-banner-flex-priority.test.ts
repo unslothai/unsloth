@@ -23,6 +23,10 @@ function read(path: string): string {
 const TAURI = read("components/tauri/update-banner.tsx");
 const WEB = read("components/web/update-banner.tsx");
 const LLAMA = read("components/llama-update-banner.tsx");
+const LLAMA_CHANGELOG = read(
+  "components/update/llama-update-changelog-panel.tsx",
+);
+const NOTES_LAYOUT = read("components/update/update-notes-layout.ts");
 const NOTES = read("components/update/release-notes-panel.tsx");
 const PROVIDER = read("app/provider.tsx");
 const STORE = read("features/settings/stores/monitor-frame-store.ts");
@@ -89,14 +93,40 @@ for (const [name, source] of CARDS) {
   });
 }
 
-test("the desktop failure card does not shrink at all", () => {
-  // It has no notes panel, so there is nothing in it to give up: shrinking it
-  // only clips the diagnostics and the retry button.
-  assert.match(
-    TAURI,
-    /showFailure\s*\n?\s*\? "shrink-0"/,
-    "the failure card shares the notes-bearing card's floor, which is too low",
-  );
+test("a card with no notes panel does not shrink at all", () => {
+  // Only a rendered notes panel gives the card content it may shrink.
+  for (const [name, source] of CARDS) {
+    const stacked = classes(source, "pointer-events-auto flex ");
+    assert.match(stacked, /\bshrink-0\b/, `the ${name} card can be squeezed`);
+    assert.doesNotMatch(
+      source,
+      /["\s]min-h-\[calc\(/,
+      `the ${name} card floors unconditionally again, around a card that may paint none of it`,
+    );
+    assert.match(
+      source,
+      /has-\[\[data-slot=update-release-notes\]\]:min-h-\[calc\(/,
+      `the ${name} card's floor is not gated on its notes panel`,
+    );
+    assert.match(
+      source,
+      /has-\[\[data-slot=update-release-notes\]\]:shrink\b/,
+      `the ${name} card cannot give up its notes' height once it has them`,
+    );
+  }
+  // Keep the selector and its target coupled.
+  assert.match(NOTES, /data-slot="update-release-notes"/);
+});
+
+test("a floored card paints all the height its slot reserves", () => {
+  // Short notes content must not leave an unpainted gap inside the floor.
+  for (const [name, source] of [...CARDS, ["llama.cpp", LLAMA] as const]) {
+    assert.match(
+      classes(source, "relative flex max-h-[calc(100dvh_-_2rem)] "),
+      /\bgrow\b/,
+      `the ${name} card can be shorter than the slot it sits in`,
+    );
+  }
 });
 
 test("the desktop failure card can scroll to its own diagnostics", () => {
@@ -127,7 +157,7 @@ test("the two update cards do not drift apart", () => {
   const root = (source: string) =>
     classes(source, "pointer-events-auto flex ")
       .split(" ")
-      .filter((rule) => !/^(max-\[\d+px\]:)?min-h-/.test(rule))
+      .filter((rule) => !/(^|:)min-h-/.test(rule))
       .join(" ");
   assert.equal(
     root(TAURI),
@@ -144,18 +174,76 @@ test("the two update cards do not drift apart", () => {
   }
 });
 
-
-test("the llama.cpp card keeps its full height in the rail", () => {
-  // Nothing inside it can give up height, so squeezing it only mangles it.
-  assert.match(
-    classes(LLAMA, "pointer-events-auto w-[calc(100vw-2rem)]"),
-    /\bshrink-0\b/,
+test("the llama.cpp card takes the desktop updater's floor only with its changelog open", () => {
+  // A collapsed changelog leaves nothing for the floor to protect.
+  const slot = LLAMA.slice(
+    LLAMA.indexOf("pointer-events-auto flex "),
+    LLAMA.indexOf('data-testid="llama-update-banner"'),
   );
+  // The constants match the desktop card, though their gates differ.
+  for (const floor of [
+    "min-h-[calc(117px+93px*var(--ui-font-scale,1))]",
+    "min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
+  ]) {
+    assert.ok(slot.includes(floor) && TAURI.includes(floor));
+  }
+  assert.match(slot, /max-\[383px\]:min-h-\[calc\(24px/);
+  assert.match(
+    slot,
+    /changelogPanelOpen\s*\n?\s*\?\s*"min-h-\[calc\(117px/,
+    "the floor is back on every state of the card, including the collapsed one",
+  );
+  // The floor and panel share the same predicate.
+  assert.match(LLAMA, /\{changelogPanelOpen &&/);
+  assert.match(
+    slot,
+    /"shrink-0"/,
+    "with no notes to give up, the card must hold its height and let the rail scroll",
+  );
+  // Only the conditional branch may carry a floor.
+  assert.doesNotMatch(classes(LLAMA, "pointer-events-auto flex "), /min-h-/);
+  assert.doesNotMatch(slot, /\bmin-h-0\b/);
+  assert.ok(LLAMA.includes("max-w-[448px]"));
+});
+
+test("the llama.cpp changelog uses the desktop update notes layout", () => {
+  for (const sharedClass of [
+    "UPDATE_NOTES_ROOT_CLASS",
+    "UPDATE_NOTES_SURFACE_CLASS",
+    "UPDATE_NOTES_EXPANDED_SCROLL_CLASS",
+    "UPDATE_NOTES_ITEM_CLASS",
+    "UPDATE_NOTES_BULLET_CLASS",
+    "UPDATE_NOTES_LEAD_CLASS",
+    "UPDATE_NOTES_FOOTER_CLASS",
+    "UPDATE_NOTES_LINK_CLASS",
+  ]) {
+    assert.ok(
+      NOTES.includes(sharedClass) && LLAMA_CHANGELOG.includes(sharedClass),
+      `${sharedClass} is not shared by both update panels`,
+    );
+  }
+  assert.match(NOTES_LAYOUT, /\bmax-h-64\b/);
+  assert.match(NOTES_LAYOUT, /\boverflow-y-auto\b/);
+  assert.match(NOTES_LAYOUT, /\boverscroll-contain\b/);
+});
+
+test("the llama.cpp header and actions do not compress around its changelog", () => {
+  assert.match(classes(LLAMA, "flex min-w-0 "), /\bshrink-0\b/);
+  const footer = classes(LLAMA, "mt-4 flex shrink-0");
+  assert.match(footer, /\bflex-wrap\b/);
+  assert.match(footer, /\bshrink-0\b/);
+});
+
+test("the llama.cpp progress indicator is not a dead keyboard stop", () => {
+  const progress = LLAMA.indexOf('role="progressbar"');
+  assert.notEqual(progress, -1, "the progress indicator is missing");
+  const openingTag = LLAMA.slice(progress, LLAMA.indexOf(">", progress));
+  assert.doesNotMatch(openingTag, /\btabIndex=/);
 });
 
 test("the notes panel clips whatever height it gives up", () => {
   assert.match(
-    classes(NOTES, "mt-3 flex min-h-0 flex-col"),
+    classes(NOTES_LAYOUT, "mt-3 flex min-h-0 flex-1 flex-col"),
     /\boverflow-hidden\b/,
     "the panel shrinks but its content still paints past the panel",
   );
@@ -163,7 +251,7 @@ test("the notes panel clips whatever height it gives up", () => {
   // height: a scroll container there collapses the expanded notes to nothing,
   // because their scroller is a flex-basis-0 child of it.
   assert.ok(
-    !/overflow-hidden[^"]*rounded-\[14px\]/.test(NOTES),
+    !/overflow-hidden[^"]*rounded-\[14px\]/.test(NOTES_LAYOUT),
     "the inner surface clips, which empties the expanded notes",
   );
 });
@@ -174,7 +262,7 @@ test("the collapsed notes summary scrolls, like the expanded notes", () => {
   const summary = classes(NOTES, "hover-scrollbar min-h-0 flex-1 space-y-1");
   assert.match(summary, /\boverflow-y-auto\b/);
   assert.match(summary, /\boverscroll-contain\b/);
-  const expanded = classes(NOTES, "hover-scrollbar max-h-64");
+  const expanded = classes(NOTES_LAYOUT, "hover-scrollbar max-h-64");
   assert.match(expanded, /\boverflow-y-auto\b/);
   assert.match(expanded, /\boverscroll-contain\b/);
 });
@@ -194,7 +282,11 @@ test("the rail scrolls rather than spilling its cards", () => {
     // A cap without a scroller drops the overflow below the bottom of the
     // screen: at a large type size the two banner floors exceed the cap on
     // their own, and the cards under it cannot be reached.
-    assert.match(rules, /\boverflow-y-auto\b/, "a capped rail spills its cards");
+    assert.match(
+      rules,
+      /\boverflow-y-auto\b/,
+      "a capped rail spills its cards",
+    );
     // The scroller clips at the padding box, so without room reserved there the
     // cards lose their shadows; the negative margin puts the rail back where it
     // was.
@@ -240,7 +332,10 @@ test("the rail's block gutter costs the cards no room", () => {
   // A z-index on the toolbar would read as protection and give none: it sits inside a
   // positioned, numbered header, which is a stacking context.
   const toolbar = TITLEBAR.slice(
-    TITLEBAR.lastIndexOf("<div", TITLEBAR.indexOf('aria-label="Window controls"')),
+    TITLEBAR.lastIndexOf(
+      "<div",
+      TITLEBAR.indexOf('aria-label="Window controls"'),
+    ),
     TITLEBAR.indexOf('aria-label="Window controls"'),
   );
   assert.doesNotMatch(

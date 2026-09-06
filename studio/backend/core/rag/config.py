@@ -10,8 +10,7 @@ import re
 
 DEFAULT_EMBEDDING_MODEL = "unsloth/bge-small-en-v1.5"
 EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-# Under bge's 512 limit, leaving headroom for the 2 special tokens (else overflow:
-# llama-server 500s, ST truncates). Keep <= embedder_max - ~12.
+# Keep <= embedder_max - ~12: bge's 512 limit plus 2 special tokens (llama-server 500s on overflow, ST truncates).
 CHUNK_TOKENS = int(os.environ.get("RAG_CHUNK_TOKENS", "500"))
 CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "64"))
 TOP_K_LEXICAL = int(os.environ.get("RAG_TOP_K_LEXICAL", "30"))
@@ -19,80 +18,55 @@ TOP_K_DENSE = int(os.environ.get("RAG_TOP_K_DENSE", "30"))
 TOP_K_HYBRID = int(os.environ.get("RAG_TOP_K_HYBRID", "10"))
 RRF_K = int(os.environ.get("RAG_RRF_K", "60"))
 
-# Whole-document context: a thread-attached file under the token budget is injected
-# in full (every chunk, in order) instead of top-K retrieval; above it, use retrieval.
+# Whole-document context: a file under this budget is injected in full instead of top-K retrieval.
 THREAD_WHOLE_DOC = os.environ.get("RAG_THREAD_WHOLE_DOC", "1") == "1"
 WHOLE_DOC_MAX_TOKENS = int(os.environ.get("RAG_WHOLE_DOC_MAX_TOKENS", "6000"))
 
-# Conversation archive: turns evicted by the rolling context window go to a per-thread
-# searchable scope and the relevant ones are recalled on the turn that evicted them. Off,
-# evicted turns are simply dropped again, and the recall reserve is not taken. Only applies
-# once the window evicts, which is itself opt-in per request via
-# context_overflow="truncate_oldest".
-#
-# It does NOT turn the rolling window back into what it was before: the compaction headroom
-# and the sticky boundary belong to the window, not to the archive, and have their own knob
-# (ROLLING_COMPACTION_HEADROOM_RATIO). Gating them here instead would make a host without
-# sqlite-vec silently compact differently.
+# Off, evicted turns are simply dropped and the recall reserve is not taken. Only applies once the
+# window evicts, itself opt-in per request via context_overflow="truncate_oldest"; the compaction
+# headroom and sticky boundary belong to the window (ROLLING_COMPACTION_HEADROOM_RATIO), not here.
 CONVERSATION_ARCHIVE = os.environ.get("RAG_CONVERSATION_ARCHIVE", "1") == "1"
 CONVERSATION_ARCHIVE_TOP_K = int(os.environ.get("RAG_CONVERSATION_ARCHIVE_TOP_K", "4"))
-# Room held back during the fit for the turns recalled straight after it. Sized to
-# CONVERSATION_ARCHIVE_TOP_K * CHUNK_TOKENS with slack for the wrapper text.
+# Sized to CONVERSATION_ARCHIVE_TOP_K * CHUNK_TOKENS with slack for the wrapper text.
 CONVERSATION_RECALL_RESERVE_TOKENS = int(
     os.environ.get("RAG_CONVERSATION_RECALL_RESERVE_TOKENS", "2048")
 )
-# Shape the archive's lexical query: require identifier-like tokens first, drop function
-# words from the fallback. Off restores the plain OR-of-every-token other scopes use.
+# Off restores the plain OR-of-every-token query other scopes use.
 CONVERSATION_QUERY_FOCUS = os.environ.get("RAG_CONVERSATION_QUERY_FOCUS", "1") == "1"
-# "chronological" presents recalled turns oldest first, labelled, with later superseding
-# earlier; "relevance" restores the previous rendering. Presentation only: neither changes
-# which turns are selected.
+# Presentation only: neither ordering changes which turns are selected.
 CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chronological")
-# Cosine floor for the automatic recall only, never for a search the model asked for.
-# Default 0.0 (off): a weak match is often still the right turn in one's own conversation.
-# Raise it when the automatic block does more harm than good.
+# Automatic recall only, never a search the model asked for; default 0.0 since a weak match is often
+# still the right turn.
 CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
 
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
-# Reject uploads larger than this, so one pathological file can't drive unbounded parse
-# + vision work at ingest. 0 disables the cap. Default 200 MB.
+# 0 disables the cap; bounds parse + vision work at ingest.
 MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
-# Linked folders use periodic full reconciliation. Metadata-only comparisons keep
-# unchanged passes cheap; caps prevent an accidentally broad folder from becoming
-# an unbounded ingestion queue.
+# Caps prevent an accidentally broad linked folder from becoming an unbounded ingestion queue.
 FOLDER_SYNC_INTERVAL_S = float(os.environ.get("RAG_FOLDER_SYNC_INTERVAL_S", "30"))
 FOLDER_MAX_FILES = int(os.environ.get("RAG_FOLDER_MAX_FILES", "10000"))
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
 
-# Extract PDF text as layout-aware Markdown (pymupdf4llm) instead of flat text, so
-# tables, headings and lists survive into chunks and retrieval. Falls back to plain
-# PyMuPDF text when off, when pymupdf4llm is missing, or when extraction fails.
+# Falls back to plain PyMuPDF text when off, when pymupdf4llm is missing, or when extraction fails.
 PDF_MARKDOWN = os.environ.get("RAG_PDF_MARKDOWN", "1") == "1"
 
-# Figure captioning via the loaded vision model: detected figures are transcribed +
-# described so they become searchable. On by default, a no-op without a vision model;
-# the chat's "Describe figures & charts" toggle overrides it per upload.
+# No-op without a vision model; the chat's "Describe figures & charts" toggle overrides it per upload.
 CAPTION_IMAGES = os.environ.get("RAG_CAPTION_IMAGES", "1") == "1"
 # Total per-document tile budget (figure-bearing pages are tiled, see below).
 CAPTION_MAX_IMAGES = int(os.environ.get("RAG_CAPTION_MAX_IMAGES", "24"))
 CAPTION_TIMEOUT_S = float(os.environ.get("RAG_CAPTION_TIMEOUT_S", "60"))
-# Larger than a one-line caption since captions transcribe every label. FIGURE_DPI is
-# high enough to keep small box/axis labels legible when tiles are rendered.
+# Captions transcribe every label, and FIGURE_DPI keeps small box/axis labels legible when tiled.
 CAPTION_MAX_TOKENS = int(os.environ.get("RAG_CAPTION_MAX_TOKENS", "768"))
 FIGURE_DPI = int(os.environ.get("RAG_FIGURE_DPI", "200"))
-# Figure pages are tiled into an overlapping ROWS x COLS grid of high-DPI tiles (plus
-# an optional full page), so small labels and every sub-figure are covered without
-# exact region detection. MAX_PAGES bounds figure pages; MAX_IMAGES bounds total tiles.
+# Overlapping tile grid covers sub-figures and small labels without exact region detection.
 FIGURE_TILE_ROWS = int(os.environ.get("RAG_FIGURE_TILE_ROWS", "2"))
 FIGURE_TILE_COLS = int(os.environ.get("RAG_FIGURE_TILE_COLS", "2"))
 FIGURE_TILE_OVERLAP = float(os.environ.get("RAG_FIGURE_TILE_OVERLAP", "0.12"))
 FIGURE_FULLPAGE = os.environ.get("RAG_FIGURE_FULLPAGE", "1") == "1"
 CAPTION_MAX_PAGES = int(os.environ.get("RAG_CAPTION_MAX_PAGES", "4"))
 
-# Scanned-PDF OCR: a page with little extractable text is rendered and transcribed by
-# the vision model so it becomes searchable. Needs a vision model, else skipped (page
-# stays empty). MIN_CHARS is the text length below which a page is treated as scanned.
+# Needs a vision model, else the page stays empty; MIN_CHARS is the text length below which a page counts as scanned.
 OCR_SCANNED = os.environ.get("RAG_OCR_SCANNED", "1") == "1"
 OCR_MIN_CHARS = int(os.environ.get("RAG_OCR_MIN_CHARS", "16"))
 OCR_MAX_PAGES = int(os.environ.get("RAG_OCR_MAX_PAGES", "20"))
@@ -100,15 +74,10 @@ OCR_DPI = int(os.environ.get("RAG_OCR_DPI", "150"))
 OCR_TIMEOUT_S = float(os.environ.get("RAG_OCR_TIMEOUT_S", "60"))
 OCR_MAX_TOKENS = int(os.environ.get("RAG_OCR_MAX_TOKENS", "2048"))
 
-# Embedder backend. "auto": sentence-transformers on a CUDA/ROCm GPU (torch fp16
-# wins bulk indexing), else torch-free GGUF llama-server. Switching backends changes
-# the vectors, so the index must be rebuilt.
+# Switching backends changes the vectors, so the index must be rebuilt.
 EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
 
-# ``documents.embedding_model`` records the embedder that produced a document's
-# vectors, not just the configured model name. The name alone is not the embedding
-# space: llama-server ignores it and embeds through the GGUF companion, which pools
-# its own way, so one name can mean two spaces on the same machine.
+# The model name alone is not the embedding space: llama-server embeds through the GGUF companion and pools its own way.
 EMBEDDING_IDENTITY_TAGS = ("sentence-transformers", "llama-server")
 
 
@@ -179,8 +148,7 @@ def _names_gguf(model: str) -> bool:
     return "gguf" in re.split(r"[^a-z0-9]+", model.lower())
 
 
-# Suffixes unsloth puts on an unquantized re-upload; the GGUF sits on the base
-# name (embeddinggemma-300m-qat-q8_0-unquantized -> embeddinggemma-300m-GGUF).
+# Suffixes unsloth puts on an unquantized re-upload; the GGUF sits on the base name.
 _QUANT_SUFFIX_RE = re.compile(r"(?:-qat)?(?:-q\d+_\d+[a-z]*)?-unquantized$", re.I)
 
 
@@ -244,27 +212,20 @@ def effective_gguf_repo_for_embedding_model(model: str) -> str:
         from utils.embedding_model_settings import get_stored_gguf_repo, remembered_gguf_repo
         stored = get_stored_gguf_repo(model)
         if stored is None:
-            # One stored record, so saving another model takes this one's repo
-            # away while a job pinned to it is still ingesting; the derived name
-            # would move that job's identity mid-run and split one document set
-            # across two tags. The memo is what this process last saw for it.
+            # One stored record, so saving another model would move a pinned job's derived identity mid-run and
+            # split one document set across two tags.
             stored = remembered_gguf_repo(model)
     except Exception:  # noqa: BLE001 - store unavailable: fall back to the convention
         stored = None
     return stored or gguf_repo_for_embedding_model(model)
 
 
-# llama-server backend only. F16 over Q8_0: faster (no per-block dequant for this
-# tiny model) and exact vs fp32, for ~30MB more on disk.
+# F16 over Q8_0: faster (no per-block dequant at this size) and exact, for ~30MB more on disk.
 EMBED_GGUF_REPO = os.environ.get("RAG_EMBED_GGUF_REPO", "unsloth/bge-small-en-v1.5-GGUF")
 EMBED_GGUF_VARIANT = os.environ.get("RAG_EMBED_GGUF_VARIANT", "F16")
-# Read by BOTH backends, and "auto" means something different to each, because the
-# cost of a GPU is different. llama-server offloads inside its own subprocess, so
-# "auto" there means GPU when there is room. sentence-transformers loads inside the
-# backend process, where the first CUDA allocation pins a primary context for the life
-# of the process (712 MiB on a B200, against 74 MiB of weights), so "auto" there means
-# CPU. Set "gpu" to offload either one; "cpu" keeps both off the GPU.
-EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")  # "auto" | "gpu" | "cpu"
+# "auto" differs per backend: llama-server offloads inside its own subprocess, while
+# sentence-transformers would pin a CUDA primary context (712 MiB on a B200), so it stays on CPU.
+EMBED_DEVICE = os.environ.get("RAG_EMBED_DEVICE", "auto")
 
 
 def embed_device_preference() -> str:
@@ -297,7 +258,7 @@ def embed_device_requires_gpu() -> bool:
 
 
 EMBED_HOST = os.environ.get("RAG_EMBED_HOST", "127.0.0.1")
-EMBED_PORT = int(os.environ.get("RAG_EMBED_PORT", "0"))  # 0 = auto-pick a free port
+EMBED_PORT = int(os.environ.get("RAG_EMBED_PORT", "0"))
 EMBED_BATCH = int(os.environ.get("RAG_EMBED_BATCH", "64"))
 EMBED_STARTUP_TIMEOUT_S = float(os.environ.get("RAG_EMBED_STARTUP_TIMEOUT_S", "120"))
 EMBED_REQUEST_TIMEOUT_S = float(os.environ.get("RAG_EMBED_REQUEST_TIMEOUT_S", "60"))
