@@ -76,6 +76,45 @@ class TestWaitForHealthResilience:
         assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
         assert any("health check timed out" in ln for ln in b._stdout_lines)
 
+    def test_a_teardown_during_the_wait_is_a_failed_load_not_a_crash(self, monkeypatch):
+        """App shutdown kills llama-server and clears the reference from another
+        thread while this wait is still running, so the wait has to read the
+        process once and treat its absence as "the server is gone" (#10353).
+        Before this it raised AttributeError, which surfaced to the user as
+        "Error loading model: 'NoneType' object has no attribute 'poll'"."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        probes = []
+
+        def probe(*a, **kw):
+            probes.append(1)
+            if len(probes) == 2:
+                b._process = None  # what _kill_process does on shutdown
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert len(probes) == 2
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_a_teardown_before_the_first_probe_is_still_not_a_crash(self, monkeypatch):
+        b = _make_backend()
+        b._process = None
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 200))
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+
+    def test_a_crash_still_reports_the_exit_code(self, monkeypatch):
+        """The teardown guard must not swallow the crash branch: an exited
+        process still has to name its exit code and its output."""
+        b = _make_backend()
+        b._process.poll.return_value = 1
+        b._process.returncode = 1
+        b._stdout_lines = ["ROCm error: out of memory"]
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        with mock.patch("core.inference.llama_cpp.logger") as log:
+            assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
+        assert any("exited with code 1" in str(c) for c in log.error.call_args_list)
+
     def test_cancel_stops_the_wait_without_a_timeout_marker(self, monkeypatch):
         b = _make_backend()
         b._process.poll.return_value = None
