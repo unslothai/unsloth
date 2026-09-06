@@ -466,6 +466,42 @@ def _torchcodec_python_is_supported(
     return False
 
 
+# download.pytorch.org carries torchcodec only from 0.3 up; 0.1 and 0.2 were published to
+# PyPI alone. So the two oldest rows (torch 2.5 -> 0.1, 2.6 -> 0.2) cannot be pinned at all,
+# and pinning them would turn a working-or-not install into a guaranteed skip on exactly the
+# oldest venvs. They keep today's unpinned behavior.
+_TORCHCODEC_MIN_ON_TORCH_INDEX = (0, 3, 0)
+
+
+def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str | None":
+    """The torchcodec index serving the resident torch's build, or None to stay unpinned.
+
+    torchcodec is published per accelerator exactly the way torch is: PyPI carries one
+    default flavor and the rest live at download.pytorch.org/whl/<tag>. Upstream's install
+    docs say to pass --index-url and "make sure to install the corresponding PyTorch version
+    as well", so a cu126 or cu128 venv that takes PyPI's default gets a codec built against a
+    different CUDA and libtorchcodec cannot dlopen. docker/Dockerfile already pins cu128 by
+    hand for this reason.
+
+    Only an EXPLICIT local tag pins. An untagged torch is PyPI's own build, whose counterpart
+    is PyPI's default torchcodec -- already the right pairing. That is the opposite reading
+    from _torch_flavor_tag, which maps untagged to "cpu" for the Windows repair path; here an
+    untagged Linux torch is a CUDA build, so pinning cpu would install the wrong one.
+    rocm and xpu publish no torchcodec under that name, so they stay unpinned rather than
+    being sent to an index that cannot serve them.
+    """
+    if not torch_version:
+        return None
+    if spec:
+        _, ceiling = _torchcodec_spec_bounds(spec)
+        if ceiling is not None and ceiling <= _TORCHCODEC_MIN_ON_TORCH_INDEX:
+            return None  # window sits entirely below what any torch index publishes
+    local = str(torch_version).partition("+")[2].strip().lower()
+    if local == "cpu" or re.fullmatch(r"cu\d+", local):
+        return f"https://download.pytorch.org/whl/{local}"
+    return None
+
+
 def _torchcodec_spec_bounds(spec: str) -> "tuple[tuple[int, ...], tuple[int, ...] | None]":
     """`torchcodec>=0.6.0,<0.8.0` -> ((0,6,0), (0,8,0)); an open floor gives (floor, None)."""
 
@@ -7592,7 +7628,17 @@ def install_python_stack() -> int:
     else:
         _progress("torchcodec")
         _codec_spec = _select_torchcodec_spec(_codec_torch_ver)
-        _safe_print(f"   torch {_codec_torch_ver} detected -- installing {_codec_spec}")
+        # Pin the index to the resident torch's build. The version alone is not enough:
+        # torchcodec ships a separate wheel per accelerator, and the right version from the
+        # wrong index is a codec that cannot load.
+        _codec_index = _torchcodec_index_url(_codec_torch_ver, _codec_spec)
+        _codec_args = ("--no-deps", "--no-cache-dir")
+        if _codec_index:
+            _codec_args += ("--index-url", _codec_index)
+        _safe_print(
+            f"   torch {_codec_torch_ver} detected -- installing {_codec_spec}"
+            + (f" from {_codec_index}" if _codec_index else "")
+        )
         # pip_install_try, not pip_install: audio is an optional extra, and pip_install's
         # failure path is run(check=True), i.e. exit. Letting an audio wheel end a Studio
         # install inverts the rule the extras-no-deps filter above exists to enforce, and
@@ -7600,8 +7646,7 @@ def install_python_stack() -> int:
         # offline mirror, a platform tag added or dropped upstream after this shipped.
         if not pip_install_try(
             "Installing torchcodec",
-            "--no-deps",
-            "--no-cache-dir",
+            *_codec_args,
             _codec_spec,
         ):
             _note(

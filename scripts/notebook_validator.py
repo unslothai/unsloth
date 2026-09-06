@@ -605,6 +605,39 @@ def rule_inst_003_peft_torchao(
     return findings
 
 
+def _requested_bounds(install_cell: str, package: str) -> tuple[str, str]:
+    """The cell's `>=` floor and `<` ceiling for `package`, each "" when absent."""
+    floor = ceiling = ""
+    for invocation in iter_pip_invocations(install_cell):
+        for requirement in invocation.packages:
+            if not re.match(rf"\s*{re.escape(package)}\s*[><=!~]", requirement):
+                continue
+            for operator, version in re.findall(r"([><=!~]=?)\s*([0-9][0-9.]*)", requirement):
+                if operator == ">=" and (not floor or cmp_versions(version, floor) > 0):
+                    floor = version
+                elif operator == "<" and (not ceiling or cmp_versions(version, ceiling) < 0):
+                    ceiling = version
+    return floor, ceiling
+
+
+def _effective_requested_version(install_cell: str, package: str, oracle: str) -> str:
+    """What pip actually leaves installed, when the cell's range rules the oracle out.
+
+    resolved_set only overrides the oracle on an exact `==` pin, so a range such as
+    `torchcodec>=0.10.0,<0.11.0` still reads as whatever the image preinstalled. When the
+    oracle satisfies the range it does survive; otherwise pip must move, and the floor is
+    the version it moves to for the one-minor-wide ranges these rules care about.
+    """
+    floor, ceiling = _requested_bounds(install_cell, package)
+    if not floor and not ceiling:
+        return oracle
+    if floor and cmp_versions(oracle, floor) < 0:
+        return floor
+    if ceiling and cmp_versions(oracle, ceiling) >= 0:
+        return floor or oracle
+    return oracle
+
+
 def rule_inst_004_torchcodec_torch(
     install_cell: str, colab: dict[str, str], file: str, cell_idx: int
 ) -> list[Finding]:
@@ -614,6 +647,10 @@ def rule_inst_004_torchcodec_torch(
     codec_v = res.get("torchcodec")
     if not torch_v or not codec_v:
         return findings
+    # resolved_set keeps the oracle's preinstalled version for anything the cell does not pin
+    # exactly, so a cell asking for `torchcodec>=0.12.0` still reads as Colab's 0.11 and the
+    # branches below report a mismatch pip would never produce. Judge what pip installs.
+    codec_v = _effective_requested_version(install_cell, "torchcodec", codec_v)
     # torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION
     # to 2.11), so that half of the matrix is open-ended and cannot be a finite set of minors.
     # Without this, adding the 2.11 row below would flag torch 2.11 with torchcodec 0.12

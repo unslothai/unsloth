@@ -371,6 +371,85 @@ _UPSTREAM_TORCH_TO_TORCHCODEC_MINORS = {
 }
 
 
+# What each download.pytorch.org index actually publishes, read off the live listings:
+# the torch 2.x minors it serves, and the inclusive range of torchcodec minors.
+# Note cu130 starts at codec 0.8, and no index carries 0.1 or 0.2 -- those are PyPI-only.
+_INDEX_INVENTORY = {
+    "cpu": {"torch": range(5, 15), "codec": (3, 16)},
+    "cu118": {"torch": range(5, 8), "codec": (3, 5)},
+    "cu126": {"torch": range(6, 15), "codec": (3, 16)},
+    "cu128": {"torch": range(7, 12), "codec": (3, 11)},
+    "cu130": {"torch": range(9, 15), "codec": (8, 16)},
+}
+
+
+def test_torchcodec_index_follows_the_resident_torch_build():
+    """torchcodec ships one wheel per accelerator, so the right version from the wrong index
+    is a codec that cannot dlopen. Upstream's install docs say to pass --index-url and match
+    it to the torch build; docker/Dockerfile pins cu128 by hand for exactly this reason."""
+    ips = _load_install_python_stack()
+    base = "https://download.pytorch.org/whl/"
+    assert ips._torchcodec_index_url("2.11.0+cu128") == base + "cu128"
+    assert ips._torchcodec_index_url("2.11.0+cu126") == base + "cu126"
+    assert ips._torchcodec_index_url("2.14.0+cu130") == base + "cu130"
+    assert ips._torchcodec_index_url("2.11.0+cpu") == base + "cpu"
+
+    # Untagged is PyPI's own torch, whose counterpart is PyPI's default torchcodec. Pinning
+    # cpu here would be wrong: on Linux an untagged torch is a CUDA build.
+    assert ips._torchcodec_index_url("2.11.0") is None
+    # No torchcodec is published under these, so unpinned beats an index that cannot serve.
+    assert ips._torchcodec_index_url("2.9.0+rocm6.4") is None
+    assert ips._torchcodec_index_url("2.10.0+xpu") is None
+    assert ips._torchcodec_index_url(None) is None
+    assert ips._torchcodec_index_url("") is None
+
+
+def test_pinning_the_index_never_starves_a_reachable_torch():
+    """A pin that removed audio from a supported host would trade one bug for another.
+
+    Every torch build that pins must find its selected codec on that same index. This holds
+    because torch and torchcodec are cut together: cu128 stops at torch 2.11 and its
+    torchcodec stops at 0.11, the exact pair the matrix maps 2.11 to; cu130 starts at torch
+    2.9 and its torchcodec starts at 0.8, the pair for 2.9.
+
+    The one gap is deliberate and handled in the helper rather than here: no index carries
+    torchcodec 0.1 or 0.2, so torch 2.5 and 2.6 must not pin at all.
+    """
+    from packaging.specifiers import SpecifierSet
+
+    ips = _load_install_python_stack()
+    for tag, inv in _INDEX_INVENTORY.items():
+        low, high = inv["codec"]
+        for minor in inv["torch"]:
+            version = f"2.{minor}.0+{tag}"
+            spec = ips._select_torchcodec_spec(version)
+            specifier = SpecifierSet(spec.split("torchcodec", 1)[1])
+            served = [
+                f"0.{m}.0" for m in range(low, high + 1) if specifier.contains(f"0.{m}.0")
+            ]
+            index = ips._torchcodec_index_url(version, spec)
+            if index is None:
+                # Only the PyPI-only rows may decline to pin.
+                assert minor in (5, 6), f"torch 2.{minor}+{tag} unexpectedly refused to pin"
+                continue
+            assert index.endswith("/" + tag)
+            assert served, (
+                f"torch 2.{minor} pins the {tag} index and selects {spec}, but that index "
+                f"publishes only torchcodec 0.{low}-0.{high}"
+            )
+
+
+def test_the_two_pypi_only_rows_stay_unpinned():
+    """torchcodec 0.1 and 0.2 were never published to download.pytorch.org, so pinning torch
+    2.5 / 2.6 would guarantee a skip on the oldest venvs instead of leaving them as they are."""
+    ips = _load_install_python_stack()
+    for minor in (5, 6):
+        version = f"2.{minor}.0+cu126"
+        assert ips._torchcodec_index_url(version, ips._select_torchcodec_spec(version)) is None
+    # 2.7 selects >=0.3.0,<0.6.0, which the indexes do carry, so it pins.
+    assert ips._torchcodec_index_url("2.7.0+cu118", ips._select_torchcodec_spec("2.7.0")) is not None
+
+
 def test_compat_matrix_matches_the_published_upstream_table():
     """Pin the runtime guard to upstream, not merely to our own other copies of it."""
     fixes = _load_import_fixes_module()
@@ -485,6 +564,41 @@ def test_the_2_11_row_does_not_flag_an_abi_stable_codec():
         "", {"torch": "2.10.0+cu128", "torchcodec": "0.12.0"}, "nb.ipynb", 0
     )
     assert [f.rule for f in old_torch] == ["R-INST-004"]
+
+
+def test_a_requested_codec_range_beats_the_preinstalled_oracle():
+    """resolved_set only overrides the oracle on an exact `==`, so a cell asking for a RANGE
+    still read as Colab's preinstalled codec and R-INST-004 (error severity) fired on
+    notebooks pip would have resolved correctly.
+
+    Both bounds matter. `torchcodec>=0.12.0,<0.13.0` on torch 2.12 was reported against the
+    image's 0.11; `torchcodec>=0.10.0,<0.11.0` on torch 2.10 was reported for the mirror
+    reason, the ceiling ruling the oracle out rather than the floor.
+    """
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    clean = [
+        '!pip install torch==2.12.0 "torchcodec>=0.12.0,<0.13.0"',
+        '!pip install torch==2.10.0 "torchcodec>=0.10.0,<0.11.0"',
+        '!pip install torch==2.11.0 "torchcodec>=0.11.0,<0.12.0"',
+        '!pip install torch==2.9.0 "torchcodec>=0.8.0,<0.10.0"',
+    ]
+    for cell in clean:
+        assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == [], cell
+
+    # The rule must still fire where pip really does leave a mismatch: an exact wrong pin,
+    # a bare torch upgrade that leaves the oracle codec in place, and a floor that is itself
+    # incompatible with the requested torch.
+    flagged = [
+        '!pip install torch==2.12.0 "torchcodec==0.11.0"',
+        "!pip install torch==2.12.0",
+        '!pip install torch==2.10.0 "torchcodec>=0.12.0"',
+    ]
+    for cell in flagged:
+        assert [
+            f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)
+        ] == ["R-INST-004"], cell
 
 
 def test_validator_and_runtime_guard_agree_on_the_whole_matrix(monkeypatch):
