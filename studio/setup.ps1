@@ -584,6 +584,12 @@ function Get-InstalledLlamaPrebuiltRelease {
     if ($payload.tag -and $payload.tag -ne $payload.release_tag) {
         $message += " (tag $($payload.tag))"
     }
+    # Name the backend. Without it a host running a Vulkan bundle and a host running
+    # a ROCm one print the same line, so a bundle that has drifted away from the
+    # hardware is invisible in the install log.
+    if ($payload.backend) {
+        $message += " -- $($payload.backend) backend"
+    }
     return $message
 }
 

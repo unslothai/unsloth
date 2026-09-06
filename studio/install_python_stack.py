@@ -5027,7 +5027,11 @@ def _torch_step_label(suffix: str) -> str:
     if not backend:
         if _has_usable_nvidia_gpu():
             backend = "cuda"
-        elif _has_rocm_gpu():
+        # _has_rocm_gpu() probes rocminfo and amd-smi, which ship with the HIP SDK
+        # and not with AMD's bundled-runtime wheels, so a Windows ROCm host without
+        # the SDK reads as CPU here while the very next step correctly detects it.
+        # torch.version.hip is the installed build's own answer.
+        elif _has_rocm_gpu() or _installed_torch_is_windows_rocm():
             backend = "rocm"
         else:
             backend = "cpu"
