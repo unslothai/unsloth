@@ -37,6 +37,13 @@ class AuthStatusResponse(BaseModel):
         "unsloth",
         description = "Default admin username for first-boot UI prefill.",
     )
+    login_mode: str = Field(
+        "single",
+        description = (
+            "'single' when one account exists, so the form posts default_username without asking; "
+            "'multi' when a username has to be entered. Never lists accounts."
+        ),
+    )
     requires_password_change: bool = Field(
         ...,
         description = "True if the seeded admin must still change the default password",

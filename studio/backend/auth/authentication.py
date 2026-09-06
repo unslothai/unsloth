@@ -11,7 +11,11 @@ from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 from starlette.concurrency import run_in_threadpool
 
+from utils.account_context import OWNER, AccountContext, bind_account
+
 from .storage import (
+    get_account,
+    get_user_record,
     API_KEY_PREFIX,
     DEFAULT_ADMIN_USERNAME,
     credential_generation,
@@ -188,6 +192,24 @@ class _BearerOrKeyless(HTTPBearer):
 
 # scheme_name pinned so the OpenAPI securitySchemes entry keeps its published name
 security = _BearerOrKeyless(scheme_name = "HTTPBearer")
+
+
+def _bind_owner() -> None:
+    bind_account(OWNER)
+
+
+async def _bind_for(username: str) -> None:
+    """Bind a login resolved without its record in hand (API keys)."""
+    if username == OWNER.username:
+        bind_account(OWNER)
+        return
+    account = await run_in_threadpool(get_account, username)
+    if account is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
+        )
+    bind_account(account)
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -472,6 +494,7 @@ async def _get_current_credential(
     Credential reads run in the threadpool so stalled SQLite cannot block the event loop.
     """
     if credentials.scheme == KEYLESS_SCHEME:
+        _bind_owner()
         return await run_in_threadpool(_admin_credential)
 
     if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
@@ -481,6 +504,7 @@ async def _get_current_credential(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = "Invalid authentication credentials",
             )
+        _bind_owner()
         return await run_in_threadpool(_admin_credential)
 
     token = credentials.credentials
@@ -493,6 +517,7 @@ async def _get_current_credential(
                 detail = _invalid_api_key_detail(token),
             )
         username, secret = verified
+        await _bind_for(username)
         return username, credential_generation(secret)
 
     subject = _decode_subject_without_verification(token)
@@ -502,14 +527,18 @@ async def _get_current_credential(
             detail = "Invalid token payload",
         )
 
-    record = await run_in_threadpool(get_user_and_secret, subject)
-    if record is None:
+    record = await run_in_threadpool(get_user_record, subject)
+    if record is None or not record.get("is_active", 1):
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired token",
         )
 
-    _salt, _pwd_hash, jwt_secret, must_change_password = record
+    jwt_secret = record["jwt_secret"]
+    must_change_password = bool(record["must_change_password"])
+    # Same query, no second read: the request is bound to its account here and
+    # every storage lookup below the route resolves through that binding.
+    bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
     try:
         payload = jwt.decode(token, jwt_secret, algorithms = [ALGORITHM])
         if payload.get("sub") != subject:

@@ -333,6 +333,7 @@ def get_connection() -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
+    _ensure_account_columns(conn, columns)
     refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     if "is_desktop" not in refresh_columns:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
@@ -345,6 +346,86 @@ def get_connection() -> sqlite3.Connection:
 # No lock needed: INSERT OR IGNORE is atomic and concurrent populations converge on the same value.
 # ── API-key PBKDF2 salt ────────────────────────────────────────────────
 _api_key_pbkdf2_salt_cache: Optional[bytes] = None
+
+
+# Immutable account identity. Storage keys on ``account_id``, never on the
+# username: a username is renamed or reused, an id is not. The seeded owner gets
+# the fixed id ``owner`` so every pre-accounts install resolves to the same
+# identity without a migration writing anything it did not have to.
+_ACCOUNT_COLUMNS = (
+    ("account_id", "TEXT"),
+    ("role", "TEXT NOT NULL DEFAULT 'user'"),
+    ("is_active", "INTEGER NOT NULL DEFAULT 1"),
+    ("created_at", "TEXT"),
+    ("setup_code_hash", "TEXT"),
+    ("setup_code_expires_at", "TEXT"),
+)
+
+
+def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
+    """Add the identity columns and backfill them. Idempotent, additive only, so
+    an older build reading this database sees columns it ignores."""
+    from utils.account_context import OWNER_ACCOUNT_ID, ROLE_OWNER, ROLE_USER
+    import uuid
+
+    added = False
+    for name, decl in _ACCOUNT_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE auth_user ADD COLUMN {name} {decl}")
+            added = True
+    if not added:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    for row in conn.execute("SELECT id, username, account_id FROM auth_user").fetchall():
+        if row["account_id"]:
+            continue
+        if row["username"] == DEFAULT_ADMIN_USERNAME:
+            account_id, role = OWNER_ACCOUNT_ID, ROLE_OWNER
+        else:
+            account_id, role = uuid.uuid4().hex, ROLE_USER
+        conn.execute(
+            "UPDATE auth_user SET account_id = ?, role = ?, created_at = COALESCE(created_at, ?) WHERE id = ?",
+            (account_id, role, now, row["id"]),
+        )
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS auth_user_account_id ON auth_user(account_id)")
+    conn.commit()
+
+
+def get_user_record(username: str) -> Optional[dict]:
+    """Everything the auth dependency needs about a login, in one query: the
+    credential columns plus the account identity that the request binds to."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT username, password_salt, password_hash, jwt_secret, must_change_password,
+                   account_id, role, is_active
+            FROM auth_user WHERE username = ?
+            """,
+            (username,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_account(username: str):
+    """The AccountContext for a login, or None."""
+    from utils.account_context import AccountContext
+
+    record = get_user_record(username)
+    if record is None:
+        return None
+    return AccountContext(record["account_id"], record["username"], record["role"])
+
+
+def count_active_accounts() -> int:
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT COUNT(*) AS c FROM auth_user WHERE is_active = 1").fetchone()
+        return int(row["c"])
+    finally:
+        conn.close()
 
 
 def _get_or_create_api_key_pbkdf2_salt() -> bytes:
@@ -598,8 +679,14 @@ def create_initial_user(
     Raises sqlite3.IntegrityError if username already exists.
     """
     from .hashing import hash_password
+    from utils.account_context import OWNER_ACCOUNT_ID, ROLE_OWNER, ROLE_USER
+    import uuid
 
     salt, pwd_hash = hash_password(password)
+    if username == DEFAULT_ADMIN_USERNAME:
+        account_id, role = OWNER_ACCOUNT_ID, ROLE_OWNER
+    else:
+        account_id, role = uuid.uuid4().hex, ROLE_USER
     conn = get_connection()
     try:
         conn.execute(
@@ -609,15 +696,24 @@ def create_initial_user(
                 password_salt,
                 password_hash,
                 jwt_secret,
-                must_change_password
+                must_change_password,
+                account_id,
+                role,
+                created_at
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (username, salt, pwd_hash, jwt_secret, int(must_change_password)),
+            (
+                username, salt, pwd_hash, jwt_secret, int(must_change_password),
+                account_id, role, datetime.now(timezone.utc).isoformat(),
+            ),
         )
         conn.commit()
     finally:
         conn.close()
+    from auth.policy import invalidate_account_cache
+
+    invalidate_account_cache()
 
 
 def delete_user(username: str) -> None:
@@ -632,6 +728,9 @@ def delete_user(username: str) -> None:
         conn.commit()
     finally:
         conn.close()
+    from auth.policy import invalidate_account_cache
+
+    invalidate_account_cache()
 
 
 def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str, bool]]:

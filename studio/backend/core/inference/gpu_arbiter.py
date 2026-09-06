@@ -25,6 +25,11 @@ VIDEO = "video"
 _lock = threading.Lock()
 _owner: Optional[str] = None
 _owner_epoch = 0
+# The account whose load put the current owner on the GPU. Arbitration between
+# modalities stays as it was; this is what lets a route refuse to evict a model
+# that ANOTHER account is actively generating with, and lets status responses
+# hide a private model's identity from everybody but its loader.
+_owner_account: Optional[str] = None
 
 
 class OwnerChangedError(RuntimeError):
@@ -86,12 +91,31 @@ class GpuOwnerBusyError(RuntimeError):
         super().__init__(f"GPU is owned by {owner}")
 
 
+class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
+    """Another account is generating on the resident model right now.
+
+    Routes answer this with 409 ``gpu_busy`` and a retry hint rather than
+    cancelling somebody else's stream, which is what cancel_all() used to do.
+    """
+
+    def __init__(self, owner: str, active: int):
+        self.active = active
+        super().__init__(owner)
+
+
+def other_accounts_active(account_id: str) -> int:
+    """Generations in flight that do not belong to ``account_id``."""
+    from state import active_generations
+    return active_generations.foreign_count(account_id)
+
+
 def acquire_for(
     owner: str,
     register: Optional[Callable[[], Any]] = None,
     *,
     expected_current: Optional[tuple[Optional[str], int]] = None,
     allow_evict: bool = True,
+    account_id: Optional[str] = None,
 ) -> Any:
     """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
 
@@ -101,28 +125,38 @@ def acquire_for(
     letting both loaders allocate VRAM at once. It must be quick and not re-enter the arbiter; if it
     raises, ownership stays with ``owner``.
     """
-    global _owner, _owner_epoch
+    global _owner, _owner_epoch, _owner_account
     if owner not in _EVICTORS:
         raise ValueError(f"unknown GPU owner: {owner!r}")
+    from utils.account_context import current_account_id
+
+    acting = account_id or current_account_id()
     with _lock:
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
         if _owner is not None and _owner != owner:
             if not allow_evict:
                 raise GpuOwnerBusyError(_owner)
+            # Another account mid-generation on the outgoing owner is never
+            # evicted; the caller retries once their stream finishes.
+            busy = other_accounts_active(acting)
+            if busy:
+                raise GpuBusyForAnotherAccountError(_owner, busy)
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
         _owner = owner
+        _owner_account = acting
         _owner_epoch += 1
         return register() if register is not None else None
 
 
 def release(owner: str) -> None:
     """Drop ``owner``'s claim (no-op if it isn't the current owner)."""
-    global _owner, _owner_epoch
+    global _owner, _owner_epoch, _owner_account
     with _lock:
         if _owner == owner:
             _owner = None
+            _owner_account = None
             _owner_epoch += 1
 
 
@@ -133,17 +167,23 @@ def release_if(owner: str, predicate: Callable[[], bool]) -> bool:
     whose ``acquire_for(register=...)`` re-registers ownership under this lock; evaluating the
     predicate under the lock keeps them atomic so ``release`` never clears the newer claim.
     ``predicate`` must be quick and not re-enter the arbiter. Returns True iff ownership was dropped."""
-    global _owner, _owner_epoch
+    global _owner, _owner_epoch, _owner_account
     with _lock:
         if _owner != owner or not predicate():
             return False
         _owner = None
+        _owner_account = None
         _owner_epoch += 1
         return True
 
 
 def current_owner() -> Optional[str]:
     return _owner
+
+
+def owner_account() -> Optional[str]:
+    """The account that loaded the current owner, or None when the GPU is free."""
+    return _owner_account
 
 
 def owner_snapshot() -> tuple[Optional[str], int]:

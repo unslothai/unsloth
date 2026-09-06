@@ -13,6 +13,7 @@ from typing import Iterable
 import tempfile
 
 from loggers import get_logger
+from utils.account_context import current_account, is_owner_context
 from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
 
 logger = get_logger(__name__)
@@ -63,8 +64,23 @@ def studio_root() -> Path:
     return Path.home() / ".unsloth" / "studio"
 
 
+def workspace_root() -> Path:
+    """Private persistent root of the acting account.
+
+    The installation owner keeps the historical install-root layout exactly,
+    so an install that never created a second account never sees a path move.
+    Every other account lives under ``accounts/<account_id>/``, keyed by the
+    immutable id rather than the username so a renamed or reused name cannot
+    inherit anything.
+    """
+    root = studio_root()
+    if is_owner_context():
+        return root
+    return root / "accounts" / current_account().account_id
+
+
 def cache_root() -> Path:
-    """Central cache dir for all studio downloads (models, datasets, etc.)."""
+    """Central cache dir for all studio downloads (models, datasets, etc.). Shared."""
     return studio_root() / "cache"
 
 
@@ -79,7 +95,7 @@ def studio_bin_root() -> Path:
 
 
 def assets_root() -> Path:
-    return studio_root() / "assets"
+    return workspace_root() / "assets"
 
 
 def datasets_root() -> Path:
@@ -95,11 +111,11 @@ def recipe_datasets_root() -> Path:
 
 
 def outputs_root() -> Path:
-    return studio_root() / "outputs"
+    return workspace_root() / "outputs"
 
 
 def exports_root() -> Path:
-    return studio_root() / "exports"
+    return workspace_root() / "exports"
 
 
 def auth_root() -> Path:
@@ -111,12 +127,12 @@ def auth_db_path() -> Path:
 
 
 def studio_db_path() -> Path:
-    return studio_root() / "studio.db"
+    return workspace_root() / "studio.db"
 
 
 def rag_root() -> Path:
     """Root directory for retrieval-augmented-generation state (db + uploads)."""
-    return studio_root() / "rag"
+    return workspace_root() / "rag"
 
 
 def rag_db_path() -> Path:
@@ -194,13 +210,18 @@ def documents_root() -> Path:
 
 def project_workspaces_root() -> Path:
     override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
-    if override:
-        return Path(override).expanduser()
-    return documents_root() / "Unsloth Studio" / "Projects"
+    base = Path(override).expanduser() if override else documents_root() / "Unsloth Studio"
+    if is_owner_context():
+        return base if override else base / "Projects"
+    # A separate Documents tree, so it keys on the account like the rest.
+    return base / "Accounts" / current_account().account_id / "Projects"
 
 
 def tmp_root() -> Path:
-    return Path(tempfile.gettempdir()) / "unsloth-studio"
+    root = Path(tempfile.gettempdir()) / "unsloth-studio"
+    if is_owner_context():
+        return root
+    return root / "accounts" / current_account().account_id
 
 
 def seed_uploads_root() -> Path:
@@ -220,7 +241,7 @@ def oxc_validator_tmp_root() -> Path:
 
 
 def tensorboard_root() -> Path:
-    return studio_root() / "runs"
+    return workspace_root() / "runs"
 
 
 def ensure_dir(path: Path) -> Path:

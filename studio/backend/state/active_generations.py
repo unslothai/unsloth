@@ -23,6 +23,8 @@ import time
 import uuid
 from typing import Any, Optional
 
+from utils.account_context import current_account_id
+
 # Keyed by handle, not thread_id: a tool continuation can register before the previous leg
 # unregisters, and one key would drop the other.
 _ACTIVE: dict[str, dict[str, Any]] = {}
@@ -41,6 +43,7 @@ class ActiveGeneration:
         "cancel_event",
         "model",
         "kind",
+        "account_id",
         "_handle",
         "_borrowed",
     )
@@ -53,7 +56,11 @@ class ActiveGeneration:
         run_id: Optional[str] = None,
         model: Optional[str] = None,
         kind: str = "chat",
+        account_id: Optional[str] = None,
     ):
+        # Captured at registration: the account this generation belongs to, so a
+        # cancel or a swap can be scoped to one account instead of everyone.
+        self.account_id = account_id or current_account_id()
         self.thread_id = thread_id or None
         self.run_id = run_id or None
         self.cancel_event = cancel_event
@@ -85,6 +92,7 @@ class ActiveGeneration:
                 "run_id": self.run_id,
                 "model": self.model,
                 "kind": self.kind,
+                "account_id": self.account_id,
                 "started_at": time.time(),
                 "event": self.cancel_event,
             }
@@ -101,10 +109,14 @@ class ActiveGeneration:
         return False
 
 
-def snapshot() -> list[dict[str, Any]]:
-    """In-flight generations, newest last. Drops the Event: this is a response."""
+def snapshot(account_id: Optional[str] = None) -> list[dict[str, Any]]:
+    """In-flight generations, newest last. Drops the Event: this is a response.
+
+    ``account_id`` narrows to one account; None is every account, which only
+    installation-wide callers (shutdown, the arbiter) should ask for.
+    """
     with _LOCK:
-        entries = list(_ACTIVE.values())
+        entries = [e for e in _ACTIVE.values() if account_id is None or e["account_id"] == account_id]
     entries.sort(key = lambda e: e["started_at"])
     return [
         {
@@ -113,41 +125,58 @@ def snapshot() -> list[dict[str, Any]]:
             "run_id": e["run_id"],
             "model": e["model"],
             "kind": e["kind"],
+            "account_id": e["account_id"],
             "started_at": e["started_at"],
         }
         for e in entries
     ]
 
 
-def active_thread_ids() -> list[str]:
+def active_thread_ids(account_id: Optional[str] = None) -> list[str]:
     """Distinct conversation ids with a generation in flight, in start order.
 
     A first turn that races persistence has no thread id yet: count() sees it,
     this cannot name it.
     """
     seen: list[str] = []
-    for e in snapshot():
+    for e in snapshot(account_id):
         tid = e["thread_id"]
         if tid and tid not in seen:
             seen.append(tid)
     return seen
 
 
-def count() -> int:
-    """Number of generations currently in flight."""
+def count(account_id: Optional[str] = None) -> int:
+    """Number of generations currently in flight, for one account or for all."""
     with _LOCK:
-        return len(_ACTIVE)
+        if account_id is None:
+            return len(_ACTIVE)
+        return sum(1 for e in _ACTIVE.values() if e["account_id"] == account_id)
 
 
-def cancel_all() -> int:
-    """Signal every in-flight generation to stop. Returns how many were signalled.
+def foreign_count(account_id: str) -> int:
+    """Generations in flight that belong to OTHER accounts. What a load or
+    unload by ``account_id`` is not allowed to interrupt."""
+    with _LOCK:
+        return sum(1 for e in _ACTIVE.values() if e["account_id"] != account_id)
+
+
+def cancel_all(account_id: Optional[str] = None) -> int:
+    """Signal in-flight generations to stop. Returns how many were signalled.
+
+    ``account_id`` limits the cancel to one account's generations, which is what
+    every request-driven caller must pass: a user's forced reload stops their own
+    chats, never somebody else's. None is everyone, for shutdown only.
 
     Only sets the cancel events; each stream tears itself down. Entries are
     removed by their own __exit__, so one mid-cleanup is neither lost nor double
     counted.
     """
     with _LOCK:
-        events = [e["event"] for e in _ACTIVE.values()]
+        events = [
+            e["event"] for e in _ACTIVE.values()
+            if account_id is None or e["account_id"] == account_id
+        ]
     for ev in events:
         try:
             ev.set()
@@ -156,12 +185,19 @@ def cancel_all() -> int:
     return len(events)
 
 
-def cancel_thread(thread_id: str) -> int:
-    """Signal only the generations belonging to ``thread_id``."""
+def cancel_thread(thread_id: str, account_id: Optional[str] = None) -> int:
+    """Signal only the generations belonging to ``thread_id``.
+
+    Thread ids are client-chosen, so ``account_id`` (default: the acting
+    account) keeps one account from stopping the same id in another."""
     if not thread_id:
         return 0
+    scope = account_id or current_account_id()
     with _LOCK:
-        events = [e["event"] for e in _ACTIVE.values() if e["thread_id"] == thread_id]
+        events = [
+            e["event"] for e in _ACTIVE.values()
+            if e["thread_id"] == thread_id and e["account_id"] == scope
+        ]
     for ev in events:
         try:
             ev.set()
@@ -170,12 +206,17 @@ def cancel_thread(thread_id: str) -> int:
     return len(events)
 
 
-def cancel_run(run_id: str) -> int:
-    """Signal only the generation registered for a durable Studio run."""
+def cancel_run(run_id: str, account_id: Optional[str] = None) -> int:
+    """Signal only the generation registered for a durable Studio run, scoped
+    to the acting account unless told otherwise."""
     if not run_id:
         return 0
+    scope = account_id or current_account_id()
     with _LOCK:
-        events = [e["event"] for e in _ACTIVE.values() if e["run_id"] == run_id]
+        events = [
+            e["event"] for e in _ACTIVE.values()
+            if e["run_id"] == run_id and e["account_id"] == scope
+        ]
     for ev in events:
         try:
             ev.set()
