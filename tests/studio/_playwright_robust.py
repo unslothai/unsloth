@@ -397,7 +397,12 @@ PASSWORD_CHANGE_ENDPOINTS = (
 )
 
 
-def prepare_first_boot_form(page: Any, old_password: str | None, *, info: Callable[[str], None] | None = None) -> None:
+def prepare_first_boot_form(
+    page: Any,
+    old_password: str | None,
+    *,
+    info: Callable[[str], None] | None = None,
+) -> None:
     """Get the first-boot change-password form ready to submit, and say what it is.
 
     What the backend puts in the page decides which fields the form renders. A
@@ -422,7 +427,9 @@ def prepare_first_boot_form(page: Any, old_password: str | None, *, info: Callab
     except Exception:
         shown = False
     if info is not None:
-        info(f"first-boot form: __UNSLOTH_BOOTSTRAP__ keys={injected!r} current-password visible={shown}")
+        info(
+            f"first-boot form: __UNSLOTH_BOOTSTRAP__ keys={injected!r} current-password visible={shown}"
+        )
     if shown and old_password:
         current.fill(old_password, timeout = 30_000)
 
