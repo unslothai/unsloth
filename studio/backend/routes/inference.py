@@ -7989,10 +7989,14 @@ async def _maybe_auto_switch_model(
     :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
     non-GGUF image count and byte validation.
     """
+    # A raw-body route passes the reload-only sentinel for an omitted ``model``;
+    # to the account checks that is an omitted model, not a name to look up.
+    named_model = requested_model if requested_model != _RELOAD_ONLY_MODEL else None
+
     async def _switch() -> None:
         if account_access.managed_account():
-            if requested_model:
-                await asyncio.to_thread(account_access.require_model_access, requested_model)
+            if named_model:
+                await asyncio.to_thread(account_access.require_model_access, named_model)
             elif account_access.resident_hidden("chat", _loaded_slot_ident()):
                 raise HTTPException(status_code = 404, detail = "Model not found")
         from utils.openai_auto_switch_settings import (
@@ -8463,13 +8467,13 @@ async def _maybe_auto_switch_model(
     # would run the prompt through a model this account cannot even see on the
     # status routes. So a managed caller that named a model is served only if the
     # resident model is its own or answers to the name it asked for.
-    if not isinstance(requested_model, str) or not requested_model:
+    if not isinstance(named_model, str) or not named_model:
         return
     if not account_access.managed_account():
         return
     if not account_access.resident_hidden("chat", _loaded_slot_ident()):
         return
-    if await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+    if await asyncio.to_thread(_loaded_identity_satisfies, named_model):
         return
     raise HTTPException(status_code = 404, detail = "Model not found")
 

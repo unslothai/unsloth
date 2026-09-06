@@ -68,3 +68,12 @@ def test_omitted_model_against_a_foreign_resident_is_refused_as_before(no_switch
     with pytest.raises(HTTPException) as info:
         _run(None, managed = True, hidden = True, satisfies = False, monkeypatch = monkeypatch)
     assert info.value.status_code == 404
+
+
+def test_a_raw_body_request_without_a_model_is_served_by_the_accounts_own_resident(no_switch, monkeypatch):
+    """The raw-body routes pass a reload-only sentinel for an omitted model; a
+    managed account is not sent to look that sentinel up as a model name."""
+    assert _run(inference._RELOAD_ONLY_MODEL, managed = True, hidden = False, satisfies = False, monkeypatch = monkeypatch) is None
+    with pytest.raises(HTTPException) as info:
+        _run(inference._RELOAD_ONLY_MODEL, managed = True, hidden = True, satisfies = False, monkeypatch = monkeypatch)
+    assert info.value.status_code == 404
