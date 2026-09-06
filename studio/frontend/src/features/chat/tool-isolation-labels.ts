@@ -27,6 +27,8 @@ export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = 
     "Limited mode on Windows can read your user profile, including documents and credentials stored as files, the temp folders of other Limited runs, and the memory of your other processes; only writes are confined.",
   user_profile_unreadable:
     "Limited mode on Windows could not read your user profile on this machine, so tools cannot see documents or credentials stored there. Writes stay confined to the chat working folder and a private temp folder, as they are in either case.",
+  named_pipes_denied:
+    "Limited mode on Windows cannot create named pipes on this machine, so multiprocessing queues and pools, and a DataLoader with num_workers above zero, will fail. Importing torch, single-process training and ordinary subprocesses are unaffected; use Full access for the rest.",
   network_unrestricted:
     "Limited mode on Windows does not restrict the network; the tool can reach any host.",
   everyone_writable_objects_writable:

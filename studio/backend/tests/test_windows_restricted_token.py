@@ -133,7 +133,11 @@ def _good_findings(sid_text: str) -> dict:
         "temp_writable": True,
         "temp_is_private": True,
         "devnull": True,
+        # The named pipe is a disclosure, the anonymous one a requirement: the
+        # first takes a descriptor the named pipe filesystem supplies, the
+        # second takes the token's default DACL, which this launcher edits.
         "pipe": True,
+        "anonymous_pipe": True,
     }
 
 
@@ -161,20 +165,27 @@ def test_public_api_profile_and_token_flags_are_pinned():
     backend = token_launcher.WindowsRestrictedTokenBackend()
     assert backend.identity == "windows-restricted-token"
     assert backend.profile_id == "windows-restricted-token-write-isolation-v1"
-    # The pre-probe default is the more disclosing of the two profile codes: a
-    # launch must never claim more confinement than the probe observed.
+    # The pre-probe default is the more disclosing of the two profile codes, and
+    # it names the pipe restriction as well: a launch must never claim more
+    # confinement, or more capability, than the probe observed.
     assert backend.limitations == (
         "user_profile_readable",
         "network_unrestricted",
         "everyone_writable_objects_writable",
+        "named_pipes_denied",
     )
     assert token_launcher._LIMITATIONS_PROFILE_UNREADABLE == (
         "user_profile_unreadable",
         "network_unrestricted",
         "everyone_writable_objects_writable",
     )
-    assert token_launcher._disclosed_limitations(True) == token_launcher._LIMITATIONS
-    assert token_launcher._disclosed_limitations(False) == (
+    assert token_launcher._disclosed_limitations(
+        profile_readable = True, named_pipes = True
+    ) == token_launcher._LIMITATIONS
+    assert token_launcher._disclosed_limitations(
+        profile_readable = True, named_pipes = False
+    ) == (*token_launcher._LIMITATIONS, token_launcher._LIMITATION_NAMED_PIPES_DENIED)
+    assert token_launcher._disclosed_limitations(profile_readable = False, named_pipes = True) == (
         token_launcher._LIMITATIONS_PROFILE_UNREADABLE
     )
     # DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED, the Codex / DeepSeek flag set.
@@ -267,7 +278,7 @@ def test_probe_evaluation_requires_every_observation():
         "temp_writable": (_DENIED, "private temp was not writable"),
         "temp_is_private": (False, "TEMP was not redirected"),
         "devnull": ("PermissionError", "NUL device was unavailable"),
-        "pipe": ("PermissionError", "named pipes were unavailable"),
+        "anonymous_pipe": ("PermissionError", "anonymous pipes were unavailable"),
     }
     for key, (value, fragment) in flips.items():
         findings = _good_findings(sid)
@@ -280,6 +291,18 @@ def test_probe_evaluation_requires_every_observation():
         assert len(verdict.held) == 14, (key, verdict.held)
         assert fragment in verdict.reason()
         assert "what held" in verdict.reason()
+
+    # The named pipe is the one observation that is disclosed rather than
+    # required: multiprocessing.Queue, Pool, Manager and a DataLoader with
+    # workers stop working, but the interpreter, torch and single-process
+    # training do not, so refusing the launch would cost more than it protects.
+    denied = _good_findings(sid)
+    denied["pipe"] = "PermissionError: [WinError 5] Access is denied."
+    verdict = token_launcher._evaluate_probe(denied, sid_text = sid)
+    assert verdict.available is True
+    assert token_launcher._LIMITATION_NAMED_PIPES_DENIED in verdict.limitations
+    assert "named pipes were refused" in verdict.reason()
+    assert "num_workers above zero" in verdict.reason()
     without_launch_sid = _good_findings(sid)
     without_launch_sid["restricted_sids"] = ["S-1-1-0"]
     assert token_launcher._evaluate_probe(without_launch_sid, sid_text = sid).failures == (
@@ -490,7 +513,7 @@ def test_a_failed_probe_leaves_the_disclosure_at_its_cautious_default(monkeypatc
     assert capability.available is False
     assert "another launch's temp directory was writable" in capability.reason
     assert capability.limitations == ()
-    assert backend.limitations == token_launcher._LIMITATIONS
+    assert backend.limitations == token_launcher._LIMITATIONS_UNPROBED
 
 
 def test_a_probe_that_cannot_run_at_all_is_reported_as_itself(monkeypatch):
@@ -2998,7 +3021,9 @@ def test_live_token_child_writes_only_the_workdir_and_private_temp(live_token_ba
         # accepted here and the disclosure is what has to match, not the outcome.
         assert report["secret_read"] in ("secret", "PermissionError"), report
         readable = report["secret_read"] == "secret"
-        assert live_token_backend.limitations == token_launcher._disclosed_limitations(readable)
+        assert live_token_backend.limitations == token_launcher._disclosed_limitations(
+            profile_readable = readable, named_pipes = True
+        )
         assert report["secret_write"] == "PermissionError"
         assert report["user_temp"] == "PermissionError"
         assert report["work"] is True and (work / "out.txt").exists()

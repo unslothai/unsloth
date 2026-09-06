@@ -71,9 +71,55 @@ it still does not start:
   console is allocated for it while it starts under the restricted token.
 
 Reads are *usually* left alone, so the selected interpreter runs from wherever
-it is installed, ``open(os.devnull)`` works, named pipes and ``multiprocessing``
+it is installed, ``open(os.devnull)`` works, anonymous pipes and ``subprocess``
 work, and the network stays reachable. None of that is OS isolation; the record
 says ``os_isolation = False`` and lists the limitations.
+
+*Named* pipes are the one capability this token takes away outright, and hosted
+Windows CI (staging round 19) is what found it. ``multiprocessing.connection.Pipe``
+calls ``CreateNamedPipe`` with a NULL ``lpSecurityAttributes``, and Microsoft is
+explicit about what that means: "the named pipe gets a default security
+descriptor ... The ACLs in the default security descriptor for a named pipe grant
+full control to the LocalSystem account, administrators, and the creator owner.
+They also grant read access to members of the Everyone group and the anonymous
+account." That descriptor is a fixed one the named pipe filesystem supplies, not
+the token's default DACL, so the ``SetTokenInformation(TokenDefaultDacl)`` below
+never reaches it. ``CREATOR OWNER`` is replaced at assignment with the child's own
+user SID, so the *first* access check passes and the create succeeds; CPython then
+opens the client half with ``GENERIC_READ | GENERIC_WRITE`` (``GENERIC_WRITE``
+alone for the ``duplex = False`` pipe a ``Queue`` uses), which is a write, so the
+*second* check runs, and of the three restricting SIDs the launch SID and the
+logon SID are absent from that DACL while Everyone holds read alone.
+``ERROR_ACCESS_DENIED``, at ``CreateFile`` and not at ``CreateNamedPipe``.
+
+Nothing this launcher can reach fixes that. The only restricting SID that would
+satisfy the second check on that descriptor is the token's own user SID, because
+``CREATOR OWNER`` became it, and adding the user SID to ``SidsToRestrict`` would
+make the second check a formality on every object the account owns. The write
+fence would be gone, and the probe's own ``granted-user`` directory would begin
+taking writes, which is the requirement that exists to catch exactly that. So
+named pipes are a *disclosure*, ``named_pipes_denied``, on the same footing as an
+unreadable user profile, and the probe says what it costs.
+
+What it costs is bounded, and the bound is what makes disclosing it defensible
+rather than merely convenient. ``multiprocessing.Process`` ships its child the
+pickled work through ``_winapi.CreatePipe``, an *anonymous* pipe, which is created
+with a NULL descriptor and therefore does take the token's default DACL and does
+work; so do ``subprocess``, threads, sockets, and the named semaphores
+``multiprocessing.synchronize`` builds under ``\\BaseNamedObjects``. ``import
+torch`` creates no pipe of either kind (``multiprocessing.resource_sharer`` builds
+its ``Listener`` on the first shared resource, not at import), so unlike the LPAC
+AppContainer, where ``NUL`` is denied as well, the interpreter and the entire
+single-process torch path are intact. What is lost is what is built on
+``connection.Pipe``: ``multiprocessing.Queue``, ``SimpleQueue``, ``Pool``,
+``Manager``, ``concurrent.futures.ProcessPoolExecutor``, and therefore a
+``DataLoader`` with ``num_workers > 0``. Work that needs those has Full access.
+
+The anonymous pipe is a *requirement* rather than a disclosure, because unlike the
+named one it is something this launcher promises: it is the whole point of the
+default DACL edit. A host that refuses it is a host where that edit did not take,
+which is a defect here and not a property of the account, so Limited falls back
+rather than running on a model that is wrong.
 
 "Usually" is the part hosted Windows CI corrected. ``WRITE_RESTRICTED`` leaves
 reads to the *first* access check, and that check runs against a token whose
@@ -154,6 +200,11 @@ _LIMITATION_USER_PROFILE_READABLE = "user_profile_readable"
 _LIMITATION_USER_PROFILE_UNREADABLE = "user_profile_unreadable"
 _LIMITATION_NETWORK_UNRESTRICTED = "network_unrestricted"
 _LIMITATION_EVERYONE_WRITABLE = "everyone_writable_objects_writable"
+# Added only when the probe watched a named pipe be refused. Unlike the two
+# above, this one is a capability the child does not have rather than a way the
+# fence is looser than it looks; the launcher cannot grant it without giving up
+# the fence (see the module docstring), so it is disclosed instead.
+_LIMITATION_NAMED_PIPES_DENIED = "named_pipes_denied"
 # Disclosed by os_sandbox when a Limited launch on Windows could not use this
 # launcher for that one call (for example a workdir too large to ACL-scan) and
 # ran under the process guard alone instead.
@@ -170,16 +221,31 @@ _LIMITATIONS_PROFILE_UNREADABLE = (
 )
 
 
-def _disclosed_limitations(profile_readable: bool) -> tuple[str, ...]:
-    """What a launch under this token may claim, given what the probe read.
+def _disclosed_limitations(*, profile_readable: bool, named_pipes: bool) -> tuple[str, ...]:
+    """What a launch under this token may claim, given what the probe observed.
 
-    ``everyone_writable_objects_writable`` stays on both sides. Everyone is a
-    restricting SID either way, so an object that grants Everyone write is still
-    writable as far as the second access check is concerned; a host that also
-    refuses it on the first check is disclosed as more open than it is, which is
-    the safe direction for a disclosure to be wrong in.
+    ``everyone_writable_objects_writable`` stays on both sides of the profile
+    question. Everyone is a restricting SID either way, so an object that grants
+    Everyone write is still writable as far as the second access check is
+    concerned; a host that also refuses it on the first check is disclosed as
+    more open than it is, which is the safe direction for a disclosure to be
+    wrong in.
+
+    ``named_pipes_denied`` is the other direction and is added only when a pipe
+    was actually refused, because it is the one entry a user reads as "this
+    cannot run my code" rather than "this is looser than you think". Claiming it
+    on a host where pipes work would send someone to Full access for nothing.
     """
-    return _LIMITATIONS if profile_readable else _LIMITATIONS_PROFILE_UNREADABLE
+    disclosed = _LIMITATIONS if profile_readable else _LIMITATIONS_PROFILE_UNREADABLE
+    return disclosed if named_pipes else (*disclosed, _LIMITATION_NAMED_PIPES_DENIED)
+
+
+# What a backend that has not been probed yet discloses. Every hosted Windows
+# runner so far has refused named pipes, and the mechanism that refuses them is a
+# fixed descriptor rather than anything host-specific, so the unprobed default
+# names the restriction and the probe drops it again on a host that does not have
+# it. Promising a capability that is then missing is the surprise worth avoiding.
+_LIMITATIONS_UNPROBED = (*_LIMITATIONS, _LIMITATION_NAMED_PIPES_DENIED)
 
 
 _TOKEN_ASSIGN_PRIMARY = 0x0001
@@ -2056,6 +2122,136 @@ try:
     a.close(); b.close()
 except Exception as exc:
     findings["pipe"] = describe(exc)
+
+# The anonymous pipe is the one this launcher promises: os.pipe() creates it with
+# a NULL descriptor, so it takes the token's default DACL, which the launcher
+# adds the launch SID to precisely so a write to it survives the second access
+# check. subprocess and multiprocessing.Process both ride on it.
+try:
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"ping")
+        findings["anonymous_pipe"] = True if os.read(read_fd, 4) == b"ping" else "the pipe echoed something else"
+    finally:
+        os.close(read_fd); os.close(write_fd)
+except OSError as exc:
+    findings["anonymous_pipe"] = describe(exc)
+
+# A named kernel semaphore under \BaseNamedObjects, which is what
+# multiprocessing.synchronize builds a Lock out of. Reported rather than
+# required: it is the evidence that losing named pipes costs the Queue family
+# and not multiprocessing as a whole.
+try:
+    import multiprocessing
+    with multiprocessing.Lock():
+        pass
+    findings["named_semaphore"] = True
+except Exception as exc:
+    findings["named_semaphore"] = describe(exc)
+
+# Why the named pipe above was refused, taken apart rather than guessed at.
+# connection.Pipe() is two calls, CreateNamedPipe then CreateFile with
+# GENERIC_READ | GENERIC_WRITE, and it passes NULL security attributes, which
+# MSDN documents as a fixed descriptor of the named pipe filesystem's own
+# (SYSTEM, administrators and CREATOR OWNER full control, Everyone read) and not
+# as the token's default DACL. Repeating the pair by hand says which of the two
+# calls returns the error and what descriptor the pipe carries; repeating it once
+# more with a descriptor naming the launch SID says whether the descriptor is the
+# reason. Those three answers separate the diagnosis from every alternative.
+class SECURITY_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p), ("bInheritHandle", wintypes.BOOL)]
+
+INVALID_HANDLE = ctypes.c_void_p(-1).value
+kernel32.CreateNamedPipeW.argtypes = [wintypes.LPCWSTR] + [wintypes.DWORD] * 6 + [ctypes.c_void_p]
+kernel32.CreateNamedPipeW.restype = wintypes.HANDLE
+kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+kernel32.CreateFileW.restype = wintypes.HANDLE
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+advapi32.GetSecurityInfo.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD] + [ctypes.c_void_p] * 5
+advapi32.GetSecurityInfo.restype = wintypes.DWORD
+advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p]
+advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR), ctypes.c_void_p]
+advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = wintypes.BOOL
+
+def failure(call):
+    code = ctypes.get_last_error()
+    return "%s: [WinError %d] %s" % (call, code, ctypes.FormatError(code))
+
+def pipe_dacl(handle):
+    # SE_KERNEL_OBJECT (6) and DACL_SECURITY_INFORMATION (4). GetSecurityInfo
+    # returns a Win32 error code rather than a BOOL.
+    descriptor = ctypes.c_void_p()
+    code = advapi32.GetSecurityInfo(handle, 6, 4, None, None, None, None, ctypes.byref(descriptor))
+    if code != 0:
+        return "GetSecurityInfo failed: %d" % code
+    text = wintypes.LPWSTR()
+    if advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, 1, 4, ctypes.byref(text), None):
+        value = text.value
+        kernel32.LocalFree(text)
+    else:
+        value = failure("ConvertSecurityDescriptorToStringSecurityDescriptorW")
+    kernel32.LocalFree(descriptor)
+    return value
+
+def pipe_pair(sddl):
+    """One connection.Pipe() by hand, on the same flags, reporting each step.
+
+    An empty sddl repeats exactly what CPython does; a descriptor is the control
+    that says whether the descriptor is what the access check refused.
+    """
+    report = {}
+    descriptor = ctypes.c_void_p()
+    attributes = None
+    if sddl:
+        if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
+            report["refused"] = failure("ConvertStringSecurityDescriptorToSecurityDescriptorW")
+            report["opened"] = False
+            return report
+        attributes = SECURITY_ATTRIBUTES(ctypes.sizeof(SECURITY_ATTRIBUTES), descriptor, False)
+    try:
+        name = "\\\\.\\pipe\\unsloth-limited-probe-%d-%s" % (os.getpid(), os.urandom(8).hex())
+        # PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+        # then PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE: connection.Pipe()'s own.
+        server = kernel32.CreateNamedPipeW(
+            name, 0x00000003 | 0x40000000 | 0x00080000, 0x00000004 | 0x00000002,
+            1, 8192, 8192, 0, ctypes.byref(attributes) if attributes is not None else None,
+        )
+        if not server or server == INVALID_HANDLE:
+            report["opened"] = False
+            report["refused"] = failure("CreateNamedPipe")
+            return report
+        try:
+            report["dacl"] = pipe_dacl(server)
+            # GENERIC_READ | GENERIC_WRITE, no sharing, OPEN_EXISTING,
+            # FILE_FLAG_OVERLAPPED: the client half connection.Pipe() opens.
+            client = kernel32.CreateFileW(name, 0x80000000 | 0x40000000, 0, None, 3, 0x40000000, None)
+            if not client or client == INVALID_HANDLE:
+                report["opened"] = False
+                report["refused"] = failure("CreateFile")
+                return report
+            kernel32.CloseHandle(client)
+            report["opened"] = True
+            return report
+        finally:
+            kernel32.CloseHandle(server)
+    finally:
+        if descriptor:
+            kernel32.LocalFree(descriptor)
+
+try:
+    findings["pipe_default_sd"] = pipe_pair("")
+    # The token's user SID satisfies the first access check and the launch SID is
+    # the only one of the restricting SIDs the second can be satisfied with, so
+    # this is the descriptor a working pipe would need and nothing more.
+    principals = [s for s in (findings.get("user_sid"), sys.argv[5]) if s]
+    findings["pipe_launch_sid"] = (
+        pipe_pair("D:" + "".join("(A;;GA;;;%s)" % s for s in principals))
+        if principals
+        else "neither SID this descriptor needs was known to the child"
+    )
+except Exception as exc:
+    findings["pipe_forensics"] = describe(exc)
 print(json.dumps(findings))
 '''
 
@@ -2320,6 +2516,54 @@ def _observed(value: Any) -> str:
     return "" if value is True else f": {value}"
 
 
+def _reported(value: Any) -> str:
+    """One observation as words, for a note that is neither a pass nor a fail."""
+    return "worked" if value is True else f"did not ({value})"
+
+
+def _named_pipe_note(findings: dict[str, Any]) -> str:
+    """Which of the two access checks refused the child's named pipe.
+
+    The diagnosis this launcher acts on is that it is the *second* check, run
+    against the descriptor Microsoft documents for a pipe created with NULL
+    security attributes: CREATOR OWNER is replaced with the child's own user SID,
+    so the first check passes and the create succeeds, and of the restricting SIDs
+    only Everyone appears there, holding read alone, so the client half's
+    GENERIC_WRITE is denied. The evidence is one pair refused where a second pair,
+    identical but for a descriptor naming the launch SID, was not, and the whole
+    point of printing it is that a host is free to refute it.
+    """
+    default = findings.get("pipe_default_sd")
+    granted = findings.get("pipe_launch_sid")
+    if not isinstance(default, dict):
+        return (
+            "which access check refused the pipe is unconfirmed: the child could not take it "
+            f"apart ({findings.get('pipe_forensics') or default})"
+        )
+    outcome = (
+        "opened"
+        if default.get("opened") is True
+        else f"was refused at {default.get('refused') or 'a step it did not name'}"
+    )
+    if not isinstance(granted, dict):
+        remedy = f"and the descriptor control did not run ({granted})"
+    elif granted.get("opened") is True:
+        remedy = (
+            "and the same pair opened when the descriptor named the token's user SID and the "
+            "launch SID, so the pipe's own DACL is what the access check refused"
+        )
+    else:
+        remedy = (
+            "and naming the token's user SID and the launch SID in the descriptor did not help "
+            f"either ({granted.get('refused')}), so the pipe's DACL is not the whole reason"
+        )
+    return (
+        "a pipe created with the NULL security attributes CPython passes "
+        f"{outcome} and carried {default.get('dacl') or 'a descriptor this host would not read'}, "
+        f"{remedy}"
+    )
+
+
 def _refused(findings: dict[str, Any], key: str) -> bool:
     """Whether a write was attempted and did not succeed.
 
@@ -2420,12 +2664,21 @@ def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> _ProbeVerdict
             "the NUL device is available",
             f"the NUL device was unavailable: {findings.get('devnull')}",
         ),
+        # The anonymous pipe, and not the named one. This is the pipe the launcher
+        # promises: it is created with a NULL descriptor, so it takes the token's
+        # default DACL, and adding the launch SID to that DACL is the one thing
+        # _set_default_dacl exists to do. A host that refuses it is a host where
+        # that edit did not take, which is this launcher's defect rather than the
+        # account's, so it fails closed. Named pipes take a descriptor the
+        # launcher cannot reach and are disclosed below instead.
         (
-            findings.get("pipe") is True,
-            "named pipes are available",
-            f"named pipes were unavailable: {findings.get('pipe')}",
+            findings.get("anonymous_pipe") is True,
+            "anonymous pipes are available",
+            "anonymous pipes were unavailable, so the launch SID is not on the token's default "
+            f"DACL: {findings.get('anonymous_pipe')}",
         ),
     )
+    named_pipes = findings.get("pipe") is True
     notes: list[str] = []
     if profile_readable:
         notes.append("the user's own files stayed readable, which the record discloses")
@@ -2459,10 +2712,26 @@ def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> _ProbeVerdict
             f"({findings.get('user_only_readable')}), so its refused write is not by itself "
             "evidence about the restricting SIDs"
         )
+    if named_pipes:
+        notes.append("named pipes are available on this host, so multiprocessing is unaffected")
+    else:
+        notes.append(
+            "named pipes were refused "
+            f"({findings.get('pipe')}), so multiprocessing.Queue, Pool, Manager, "
+            "ProcessPoolExecutor and a DataLoader with num_workers above zero cannot run "
+            "under Limited mode here; importing torch, single-process training and "
+            "multiprocessing.Process itself are unaffected"
+        )
+        if findings.get("pipe_dacl"):
+            # The descriptor the named pipe filesystem supplied, so the next run
+            # decides the diagnosis above instead of restating it.
+            notes.append(f"the pipe the child created carried {findings['pipe_dacl']}")
     return _ProbeVerdict(
         failures = tuple(failure for held, _name, failure in requirements if not held),
         held = tuple(name for held, name, _failure in requirements if held),
-        limitations = _disclosed_limitations(profile_readable),
+        limitations = _disclosed_limitations(
+            profile_readable = profile_readable, named_pipes = named_pipes
+        ),
         notes = tuple(notes),
     )
 
@@ -2479,12 +2748,12 @@ class WindowsRestrictedTokenBackend:
     # The class value is the pre-probe default, and it is the more disclosing of
     # the two on purpose: promising the user less confinement than they get is
     # the safe direction to be wrong in.
-    limitations = _LIMITATIONS
+    limitations = _LIMITATIONS_UNPROBED
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._capability: SandboxCapability | None = None
-        self.limitations = _LIMITATIONS
+        self.limitations = _LIMITATIONS_UNPROBED
 
     def probe(self, *, force: bool = False) -> SandboxCapability:
         """Run (once per process unless forced) the live probe under a real restricted token."""
