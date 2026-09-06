@@ -92,17 +92,39 @@ export function sortDownloadableGgufVariants(
 export function sortLocalGgufVariants(
   variants: readonly GgufVariantDetail[],
   options: GgufFitInput & {
-    activeGgufVariant?: string | null;
     defaultVariant?: string | null;
   },
 ): GgufVariantDetail[] {
   return [...variants].sort((a, b) => {
-    const aActive = ggufVariantsMatch(a.quant, options.activeGgufVariant);
-    const bActive = ggufVariantsMatch(b.quant, options.activeGgufVariant);
-    if (aActive !== bActive) return aActive ? -1 : 1;
     const aDefault = ggufVariantsMatch(a.quant, options.defaultVariant);
     const bDefault = ggufVariantsMatch(b.quant, options.defaultVariant);
     if (aDefault !== bDefault) return aDefault ? -1 : 1;
     return compareGgufVariantFitAndSize(a, b, options);
   });
+}
+
+export function resolveLocalGgufVariant<T extends { quant: string }>(
+  variants: readonly T[] | null | undefined,
+  options: {
+    selectedVariant?: string | null;
+    activeVariant?: string | null;
+    defaultVariant?: string | null;
+  },
+): T | null {
+  if (!variants || variants.length === 0) {
+    return null;
+  }
+  for (const candidate of [
+    options.selectedVariant,
+    options.activeVariant,
+    options.defaultVariant,
+  ]) {
+    const match = variants.find((variant) =>
+      ggufVariantsMatch(variant.quant, candidate),
+    );
+    if (match) {
+      return match;
+    }
+  }
+  return variants[0] ?? null;
 }

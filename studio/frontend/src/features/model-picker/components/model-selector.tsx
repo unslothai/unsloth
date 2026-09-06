@@ -34,7 +34,14 @@ import {
   useState,
 } from "react";
 import {
-  isOllamaLinkPath,
+  type ModelConfigHandoffRequest,
+  modelConfigTarget,
+  modelConfigTargetIsResident,
+  modelConfigTargetMatchesSelection,
+} from "../model-config/model-config-handoff";
+import { modelConfigInstanceKey } from "../model-config/config-signature";
+import {
+  ggufVariantsMatch,
   modelDisplayName,
 } from "../model-config/model-identity";
 import {
@@ -153,6 +160,8 @@ interface ModelSelectorProps {
   activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
+  configRequest?: ModelConfigHandoffRequest | null;
+  onConfigRequestAdopted?: (requestId: string) => void;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   /** Optional task-specific resolver for companion assets a GGUF row alone cannot describe. */
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
@@ -358,11 +367,14 @@ function ModelSelectorContent({
   loraModels,
   externalModels,
   value,
+  loaded,
   activeGgufVariant,
   activeModelConfig,
   activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
+  configRequest,
+  onConfigRequestAdopted,
   onSelect,
   resolveDownloadFootprint,
   onEject,
@@ -383,11 +395,14 @@ function ModelSelectorContent({
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
   value?: string;
+  loaded?: boolean;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
   activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
+  configRequest?: ModelConfigHandoffRequest | null;
+  onConfigRequestAdopted?: (requestId: string) => void;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
@@ -445,6 +460,9 @@ function ModelSelectorContent({
   const [configTarget, setConfigTarget] = useState<ModelPickTarget | null>(
     null,
   );
+  const [adoptedConfigRequestId, setAdoptedConfigRequestId] = useState<
+    string | null
+  >(null);
 
   // The picker remounts on each open but this section state does not, so re-derive the default
   // section on the open edge.
@@ -504,21 +522,51 @@ function ModelSelectorContent({
     }
   }
 
-  const visibleConfigTarget = open ? configTarget : null;
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
-    const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
-    const isGguf = meta.isGguf ?? Boolean(meta.ggufVariant);
-    setConfigTarget({
-      id,
-      displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
-      ggufVariant: meta.ggufVariant ?? null,
-      isGguf,
-      // Ollama's models sit under a link dir the resolver skips, so mirroring their settings would
-      // advertise an impossible load.
-      apiLoadable: isGguf && !isOllamaLinkPath(id),
-      meta,
-    });
+    setConfigTarget(modelConfigTarget(id, meta));
   };
+  const requestedConfigTarget = useMemo(
+    () =>
+      open && configRequest
+        ? modelConfigTarget(
+            configRequest.id,
+            configRequest.meta,
+            configRequest.displayName,
+          )
+        : null,
+    [configRequest, open],
+  );
+  const visibleConfigTarget = open
+    ? (requestedConfigTarget ?? configTarget)
+    : null;
+  const visibleConfigMatchesSelection =
+    visibleConfigTarget !== null &&
+    modelConfigTargetMatchesSelection(visibleConfigTarget, value);
+  const visibleConfigIsResident =
+    visibleConfigTarget !== null &&
+    modelConfigTargetIsResident({
+      target: visibleConfigTarget,
+      selectedId: value,
+      activeGgufVariant,
+      loaded,
+    });
+  const visibleLoadedConfig = visibleConfigIsResident
+    ? (activeModelConfig ?? null)
+    : null;
+  if (
+    configRequest &&
+    requestedConfigTarget &&
+    adoptedConfigRequestId !== configRequest.requestId
+  ) {
+    setAdoptedConfigRequestId(configRequest.requestId);
+    setConfigTarget(requestedConfigTarget);
+  }
+  useEffect(() => {
+    if (!configRequest || adoptedConfigRequestId !== configRequest.requestId) {
+      return;
+    }
+    onConfigRequestAdopted?.(configRequest.requestId);
+  }, [adoptedConfigRequestId, configRequest, onConfigRequestAdopted]);
   const handlePick = (id: string, meta: ModelSelectorChangeMeta) => {
     if (meta.source === "external") {
       onSelect(id, meta);
@@ -535,6 +583,11 @@ function ModelSelectorContent({
     <PopoverContent
       align="start"
       alignOffset={10}
+      aria-label={
+        visibleConfigTarget
+          ? `Run settings for ${visibleConfigTarget.displayName}`
+          : undefined
+      }
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
@@ -569,38 +622,36 @@ function ModelSelectorContent({
         {visibleConfigTarget ? (
           <div className="min-h-0 w-full overflow-y-auto px-4 pt-4 pb-4">
             <ModelConfigPage
-            key={`${visibleConfigTarget.id}::${visibleConfigTarget.ggufVariant ?? ""}`}
-            target={visibleConfigTarget}
-            onBack={() => setConfigTarget(null)}
-            onRun={(config, isDiffusion) =>
-              onSelect(visibleConfigTarget.id, {
-                ...visibleConfigTarget.meta,
-                config,
-                isDiffusion,
-                forceReload: true,
-              })
-            }
-            loadedConfig={
-              value === visibleConfigTarget.id &&
-              (activeGgufVariant ?? null) ===
-                (visibleConfigTarget.ggufVariant ?? null)
-                ? (activeModelConfig ?? null)
-                : null
-            }
-            loadedContextLength={
-              value === visibleConfigTarget.id &&
-              (activeGgufVariant ?? null) ===
-                (visibleConfigTarget.ggufVariant ?? null)
-                ? (activeLoadedContextLength ?? null)
-                : null
-            }
-            initialConfig={
-              value === visibleConfigTarget.id &&
-              (selectedGgufVariant ?? null) ===
-                (visibleConfigTarget.ggufVariant ?? null)
-                ? (selectedConfig ?? null)
-                : null
-            }
+              key={modelConfigInstanceKey(
+                visibleConfigTarget.configId ?? visibleConfigTarget.id,
+                visibleConfigTarget.ggufVariant,
+                visibleLoadedConfig,
+              )}
+              target={visibleConfigTarget}
+              onBack={() => setConfigTarget(null)}
+              onRun={(config, isDiffusion) =>
+                onSelect(visibleConfigTarget.id, {
+                  ...visibleConfigTarget.meta,
+                  config,
+                  isDiffusion,
+                  forceReload: true,
+                })
+              }
+              loadedConfig={visibleLoadedConfig}
+              loadedContextLength={
+                visibleConfigIsResident
+                  ? (activeLoadedContextLength ?? null)
+                  : null
+              }
+              initialConfig={
+                visibleConfigMatchesSelection &&
+                ggufVariantsMatch(
+                  selectedGgufVariant,
+                  visibleConfigTarget.ggufVariant,
+                )
+                  ? (selectedConfig ?? null)
+                  : null
+              }
             />
           </div>
         ) : (
@@ -662,6 +713,8 @@ export function ModelSelector({
   activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
+  configRequest,
+  onConfigRequestAdopted,
   onValueChange,
   resolveDownloadFootprint,
   onEject,
@@ -828,11 +881,14 @@ export function ModelSelector({
         loraModels={loraModels}
         externalModels={externalModels}
         value={selected}
+        loaded={loaded}
         activeGgufVariant={activeGgufVariant}
         activeModelConfig={activeModelConfig}
         activeLoadedContextLength={activeLoadedContextLength}
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
+        configRequest={configRequest}
+        onConfigRequestAdopted={onConfigRequestAdopted}
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}

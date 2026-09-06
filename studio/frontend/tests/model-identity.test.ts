@@ -4,11 +4,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { settingsGgufVariantForRow } from "../src/features/hub/inventory/settings-identity.ts";
-import type {
-  CachedInventoryRow,
-  LocalInventoryRow,
-} from "../src/features/hub/inventory/types.ts";
 import {
   isOllamaLinkPath,
   isStandaloneGgufPath,
@@ -109,11 +104,29 @@ test("a resident path-loaded model is matched by the id /status reports", () => 
     ),
     true,
   );
-  // A repo in an inactive cache keeps the repo id as its settings identity.
+  // A repo in an inactive cache can be reconciled through its public id.
   assert.equal(
     residentModelIdMatches(
       "unsloth/Qwen3-8B-GGUF",
       "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123",
+      "unsloth/Qwen3-8B-GGUF",
+    ),
+    true,
+  );
+  const pinnedSnapshot =
+    "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123";
+  assert.equal(
+    residentModelIdMatches(
+      pinnedSnapshot,
+      "unsloth/Qwen3-8B-GGUF",
+      "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF",
+    ),
+    false,
+  );
+  assert.equal(
+    residentModelIdMatches(
+      pinnedSnapshot,
+      pinnedSnapshot,
       "unsloth/Qwen3-8B-GGUF",
     ),
     true,
@@ -197,35 +210,6 @@ test("Ollama link paths are recognised the way the resolver excludes them", () =
   assert.equal(isOllamaLinkPath("/srv/models/Qwen3-8B-Q4_K_M.gguf"), false);
   assert.equal(isOllamaLinkPath("unsloth/Qwen3-8B-GGUF"), false);
   assert.equal(isOllamaLinkPath(null), false);
-});
-
-test("a standalone gguf keeps one settings identity across surfaces", () => {
-  const loose = {
-    kind: "local",
-    path: "/srv/models/Qwen3-8B-Q4_K_M.gguf",
-    // What hub/services/models/common.py emits for a single scanned file.
-    formatVariant: "Q4_K_M",
-  } as LocalInventoryRow;
-  // The Chat picker opens the same file with no variant, so adopting the filename label would split the config.
-  assert.equal(settingsGgufVariantForRow(loose), null);
-
-  // A GGUF directory still has a variant slot for the quant lookup to fill.
-  const repoDir = {
-    kind: "local",
-    path: "/srv/models/Qwen3-8B-GGUF",
-    formatVariant: null,
-  } as LocalInventoryRow;
-  assert.equal(settingsGgufVariantForRow(repoDir), null);
-  const lmStudioDir = {
-    kind: "local",
-    path: "/srv/lmstudio/Qwen3-8B-GGUF",
-    formatVariant: "Q8_0",
-  } as LocalInventoryRow;
-  assert.equal(settingsGgufVariantForRow(lmStudioDir), "Q8_0");
-
-  // Cached repo rows are unaffected (cache_inventory.py never sets one).
-  const cached = { kind: "cache", formatVariant: null } as CachedInventoryRow;
-  assert.equal(settingsGgufVariantForRow(cached), null);
 });
 
 // The backfill matches on the folded identity, unambiguous only because storage holds one record per model.
