@@ -277,6 +277,7 @@ DISABLE_COMPILE_MODEL_NAMES = [
     "aya_vision",
     "modernbert",
     "granite,llava_next",  # Granite-vision 3
+    "paddleocr-",  # PaddleOCR-VL (trust_remote_code model)
 ]
 
 # Architectures with gated-deltanet (linear attention) layers. Unsloth bundles the
