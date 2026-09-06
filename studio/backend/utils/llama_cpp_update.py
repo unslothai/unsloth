@@ -832,14 +832,25 @@ def _run_llama_phase(
         if exc.returncode == _EXIT_BACKEND_UNAVAILABLE:
             # This can race hardware or release changes after option resolution.
             failed_backend = backend_request or _env_backend_override()
+            # "requested" reads as the user's choice, and on an automatic update
+            # nobody requested anything: three failures in the field were reported
+            # as "Could not install the requested llama.cpp build" against a
+            # backend_request of None.
             backend_label = (
-                failed_backend
+                f"{failed_backend} "
                 if failed_backend is not None and failed_backend != "auto"
-                else "requested"
+                else ""
             )
-            logger.warning("llama update: backend unavailable", backend = failed_backend)
+            # The reason, like every sibling branch in this except block. Without it
+            # the only record of three consecutive failures was the word "null", and
+            # the installer's own explanation goes to a stdout nothing captures.
+            logger.warning(
+                "llama update: backend unavailable",
+                backend = failed_backend,
+                error = str(exc),
+            )
             raise _LlamaPhaseError(
-                f"Could not install the {backend_label} llama.cpp build on this machine. "
+                f"Could not install a {backend_label}llama.cpp build on this machine. "
                 "The installed backend was kept.",
                 reload_required = model_was_active,
             ) from exc

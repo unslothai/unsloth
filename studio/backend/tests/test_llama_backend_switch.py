@@ -210,7 +210,7 @@ def test_a_backend_with_no_build_here_is_reported_by_name(monkeypatch, tmp_path)
     job = _await_job()
 
     assert job["state"] == "error"
-    assert "Could not install the rocm llama.cpp build on this machine" in job["error"]
+    assert "Could not install a rocm llama.cpp build on this machine" in job["error"]
 
 
 @pytest.mark.parametrize(
@@ -248,7 +248,40 @@ def test_update_failure_names_the_environment_pinned_backend(
     job = _await_job()
 
     assert job["state"] == "error"
-    assert f"Could not install the {expected} llama.cpp build on this machine" in job["error"]
+    assert f"Could not install a {expected} llama.cpp build on this machine" in job["error"]
+
+
+def test_an_automatic_update_does_not_blame_a_backend_nobody_requested(monkeypatch, tmp_path):
+    """An update carries no backend_request, so failed_backend is None. The message
+    used to read "the requested llama.cpp build", which names a choice the user never
+    made: three consecutive failures in the field were reported that way, against a
+    log line that recorded only backend=null."""
+    install_dir = _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        upd,
+        "_plan_llama_phase",
+        lambda backend_request = None: {
+            "spec": {
+                "install_dir": install_dir,
+                "repo": "unslothai/llama.cpp",
+                "asset": None,
+                "script": tmp_path / "install_llama_prebuilt.py",
+                "pin_release_tag": "b9597-mix-new",
+                "from_tag": "b9596-mix-abc",
+                "llama_backend": "auto",
+                "rocm_gfx": None,
+                "backend_request": None,
+            }
+        },
+    )
+    _patch_installer(monkeypatch, returncode = upd._EXIT_BACKEND_UNAVAILABLE)
+
+    assert upd.start_update()["started"] is True
+    job = _await_job()
+
+    assert job["state"] == "error"
+    assert "Could not install a llama.cpp build on this machine" in job["error"]
+    assert "requested" not in job["error"]
 
 
 def test_a_switch_rejects_a_cross_repository_result(monkeypatch, tmp_path):

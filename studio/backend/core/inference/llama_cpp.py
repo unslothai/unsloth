@@ -16319,10 +16319,17 @@ class LlamaCppBackend:
                     "different model, or use this model directly through "
                     "Ollama instead."
                 )
+            # Not "cannot be run": the branches above name architectures Studio
+            # knows llama-server will never run, and this one is everything else,
+            # which includes an architecture the INSTALLED build simply predates.
+            # Seen in the field on qwen4exp: four refusals with this wording, then
+            # the identical file at the identical path loaded and ran for six days
+            # after a llama.cpp update. Between the two the user reinstalled four
+            # times, because nothing here pointed at the build.
             return (
-                f"llama.cpp does not support this GGUF's model architecture "
-                f"('{arch}'). The file is valid, but this model type cannot "
-                "be run with llama-server."
+                f"The installed llama.cpp does not recognise this GGUF's model "
+                f"architecture ('{arch}'). The file is valid. If the model is newer "
+                "than this llama.cpp build, updating llama.cpp may add support for it."
             )
 
         # Other Ollama compat failures that don't name an arch. Only when
@@ -21147,9 +21154,14 @@ class LlamaCppBackend:
                         else 0
                     )
                     if _mtp_will_engage:
+                        # Name what the reserve is actually a function of. It was
+                        # printed with n_max, which _mtp_bytes does not take, so the
+                        # line read byte-identical across a 4x change in n_max and
+                        # invited the reader to conclude the reserve had scaled.
                         _mtp_note = (
                             f"MTP reserve: {_mtp_reserve_bytes / (1024**3):.2f} GB "
-                            f"(draft KV @ {effective_ctx} + verify n_max={_mtp_eff_n_max}"
+                            f"(draft KV @ {effective_ctx} x {n_parallel or 1} slots, "
+                            f"ubatch {_effective_ubatch}"
                             + (", flat-frac fallback" if mtp_overhead_fn is None else "")
                             + "), "
                         )
@@ -25726,6 +25738,10 @@ class LlamaCppBackend:
             self._unload_epoch += 1
             self._kill_process()
             self._cleanup_cpu_fallback_runtime()
+            # The one unload line. routes/inference.py used to log its own, from the
+            # request path, so every unload appeared twice 1-3 ms apart under two
+            # different names (a repo id here, a snapshot path there) and "how many
+            # times did this model reload" could not be answered by grep.
             logger.info(f"Unloaded GGUF model: {self._model_identifier}")
             self._model_identifier = None
             self._gguf_path = None
