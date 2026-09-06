@@ -54,7 +54,12 @@ class _Tok:
 
 
 class _Proc:
-    def __init__(self, tokenizer, processor_class = "Gemma4Processor", chat_template = None):
+    def __init__(
+        self,
+        tokenizer,
+        processor_class = "Gemma4Processor",
+        chat_template = None,
+    ):
         self.tokenizer = tokenizer
         self.processor_class = processor_class
         self.chat_template = chat_template

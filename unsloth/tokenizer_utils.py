@@ -178,7 +178,11 @@ def _fix_gemma4_base_bos_token(tokenizer, config = None):
     return tokenizer
 
 
-def _apply_post_load_tokenizer_fixes(tokenizer, fix_tokenizer = True, config = None):
+def _apply_post_load_tokenizer_fixes(
+    tokenizer,
+    fix_tokenizer = True,
+    config = None,
+):
     if not fix_tokenizer:
         return tokenizer
     return _fix_gemma4_base_bos_token(tokenizer, config = config)
