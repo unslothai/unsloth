@@ -8807,6 +8807,42 @@ class LlamaCppBackend:
         return arch_by_id
 
     @staticmethod
+    def _offload_target_shares_system_memory(
+        *,
+        is_vulkan_backend: bool,
+        shared_gpu_ids,
+        detected_gpus,
+        gpu_indices,
+    ) -> bool:
+        """True when EVERY device this launch offloads to reports host RAM as its VRAM.
+
+        An iGPU or a unified-memory APU has no separate pool and no bus between the
+        two: a buffer llama.cpp calls "host RAM" and one it calls "VRAM" are the same
+        physical memory. Tuning that exists to avoid moving bytes across PCI-E
+        therefore buys nothing there, and any recovery path it disables is pure loss.
+
+        Fails closed. A mixed selection, an unreadable inventory or a launch that
+        pins nothing all answer False, so the caller keeps the behaviour it has.
+        The two index spaces are kept apart the way the rest of this file keeps
+        them: Vulkan ordinals against shared_gpu_ids, physical HIP/CUDA ids
+        against the unified-memory sets.
+        """
+        devices = list(gpu_indices) if gpu_indices else [idx for idx, _free in (detected_gpus or ())]
+        if not devices:
+            return False
+        if is_vulkan_backend:
+            shared = set(shared_gpu_ids or ())
+            return bool(shared) and all(idx in shared for idx in devices)
+        try:
+            unified = (
+                LlamaCppBackend._rocm_unified_memory_gpu_ids()
+                | LlamaCppBackend._integrated_cuda_gpu_ids()
+            )
+        except Exception:
+            return False
+        return bool(unified) and all(idx in unified for idx in devices)
+
+    @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
         """True only for AMD unified-memory APUs, where GGML_CUDA_ENABLE_UNIFIED_MEMORY
         lets llama.cpp use shared system RAM (it hurts discrete GPUs). gpu_indices
@@ -22404,7 +22440,28 @@ class LlamaCppBackend:
                 # Windows + full offload: drop the host-RAM KV checkpoints that cause
                 # WDDM/PCI-E overhead, but keep prompt caching (in-VRAM prefix reuse) so
                 # a repeated prompt is not re-prefilled on every request. #5692.
-                if sys.platform == "win32" and full_offload_tuning_active:
+                # ... unless the offload target IS system RAM. #5692 is a discrete
+                # card: its host-RAM checkpoints cross PCI-E under WDDM, so dropping
+                # them is a saving. An iGPU or APU has one pool and no bus, so the
+                # same flags buy nothing and only remove the prompt cache, and with
+                # it every chance of reusing a prefix. --cache-ram 0 silently takes
+                # --cache-idle-slots down too ("requires --cache-ram, disabling").
+                # Measured cost of getting it wrong on a Strix Halo: one 48.8 h
+                # session spent 44.3 h re-ingesting prompts, 3.38 M prompt tokens
+                # against 72 k generated, on a context it re-read every turn.
+                _shared_memory_offload = self._offload_target_shares_system_memory(
+                    is_vulkan_backend = is_vulkan_backend,
+                    shared_gpu_ids = _shared_gpu_ids,
+                    detected_gpus = _detected_gpus,
+                    gpu_indices = gpu_indices,
+                )
+                if sys.platform == "win32" and full_offload_tuning_active and _shared_memory_offload:
+                    logger.info(
+                        "Keeping the llama-server prompt cache: this load offloads to a GPU "
+                        "that shares system memory, so --cache-ram 0 and --ctx-checkpoints 0 "
+                        "would remove prefix reuse without saving a transfer."
+                    )
+                elif sys.platform == "win32" and full_offload_tuning_active:
                     unsupported_cache_flags: list[str] = []
                     # An explicit control wins over the platform tuning: llama.cpp
                     # is last-wins, so a 0 emitted after it would overrule the panel
