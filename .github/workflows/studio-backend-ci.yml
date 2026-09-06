@@ -552,3 +552,37 @@ jobs:
           dir: ${{ steps.pip-cache.outputs.dir }}
           key: ${{ steps.pip-cache.outputs.key }}
           cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+
+
+  cli-launcher-windows:
+    # unsloth_cli/tests otherwise runs only on ubuntu (the matrix above), yet
+    # the launcher's hardest paths are Windows-shaped: npm .cmd shims (#9167,
+    # #9238), the sys.executable re-exec (#8490), PowerShell --no-launch
+    # recipes, and CREATE_NEW_PROCESS_GROUP. Reviewing #9238 showed that suite
+    # had never executed on the platform those branches target.
+    #
+    # Only test_start.py: on windows-latest the rest of unsloth_cli/tests has
+    # ~50 pre-existing failures whose per-file distribution shifts with the
+    # installed dependency set, so a broader leg would flake rather than guard.
+    # Widen this once those suites hold on Windows.
+    #
+    # Same minimal dependency footprint as the ubuntu CLI step: the suite
+    # self-bootstraps sys.path and imports neither unsloth nor torch.
+    name: CLI launcher tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - run: python -m pip install -U pip pytest typer pyyaml pydantic click rich
+
+      - name: CLI launcher tests (unsloth_cli/tests/test_start.py)
+        env:
+          UNSLOTH_NO_TORCH: '1'
+        run: python -m pytest unsloth_cli/tests/test_start.py -q --tb=short
