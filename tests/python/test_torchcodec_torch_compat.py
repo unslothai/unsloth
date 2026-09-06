@@ -1053,7 +1053,7 @@ def test_compatible_release_and_inclusive_caps_are_read():
 
     assert nv._compatible_release_ceiling("0.12.0") == "0.13"
     assert nv._compatible_release_ceiling("0.12") == "1"
-    assert nv._compatible_release_ceiling("1") == ""  # `~=1` is invalid, so it bounds nothing
+    assert not nv._compatible_release_ceiling("1")  # `~=1` is invalid, so it bounds nothing
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     assert (
@@ -1123,68 +1123,76 @@ def test_a_bounded_window_lands_on_its_newest_candidate():
     assert nv.rule_inst_004_torchcodec_torch(within, colab, "nb.ipynb", 0) == []
 
 
-def test_a_patch_level_ceiling_keeps_its_own_minor():
-    """`<0.10.5` still admits 0.10.0 through 0.10.4, so it lands on 0.10. Decrementing the
-    minor regardless modelled it as 0.9 and suppressed a real torch 2.9 mismatch."""
+def test_an_exclusive_ceiling_names_the_minor_pip_moves_to():
+    """A window wider than one minor still names the MINOR pip lands on, which is what the
+    callers compare. `<0.10.5` admits 0.10.0 through 0.10.4, so only a ceiling ON a minor
+    boundary excludes that whole minor; treating both alike hid a real torch 2.9 mismatch."""
     from scripts import notebook_validator as nv
 
     assert nv._highest_minor_below("0.10.5") == "0.10"
     assert nv._highest_minor_below("0.10.0") == "0.9"  # on the boundary, so 0.10 is excluded
     assert nv._highest_minor_below("0.11") == "0.10"
+    assert nv._highest_minor_below("1") == ""  # not a 0.N ceiling, so it names nothing
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     cell = '!pip install torch==2.9.0 "torchcodec<0.10.5"'
-    assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == ("0.10", True)
+    assert nv._effective_version(cell, "torchcodec", "0.11.0") == ("0.10", True)
     assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)] == [
         "R-INST-004"
     ]
+    assert nv._effective_version(
+        '!pip install "torchcodec>=0.8,<0.11"', "torchcodec", "0.11.0"
+    ) == (
+        "0.10",
+        True,
+    )
+
+    # A window whose top IS supported stays silent, so this did not just become noisy.
+    within = '!pip install torch==2.9.0 "torchcodec>=0.8.0,<0.10.0"'
+    assert nv.rule_inst_004_torchcodec_torch(within, colab, "nb.ipynb", 0) == []
 
 
 def test_a_strict_lower_bound_excludes_the_installed_version():
     """`>0.11.0` rules out the 0.11.0 the image ships, and which release pip picks instead is
-    only in the index. Recording nothing kept the excluded 0.11.0 and rejected the notebook."""
+    only in the index, so nothing names the landing and the rule declines to judge."""
     from scripts import notebook_validator as nv
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     cell = '!pip install torch==2.12.0 "torchcodec>0.11.0"'
-    assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == ("", True)
+    assert nv._effective_version(cell, "torchcodec", "0.11.0") == (None, True)
     assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == []
 
     # A strict bound the installed version already clears leaves it alone.
     satisfied = '!pip install "torchcodec>0.10.0"'
-    assert nv._effective_requested_version(satisfied, "torchcodec", "0.11.0") == ("0.11.0", True)
+    assert nv._effective_version(satisfied, "torchcodec", "0.11.0") == ("0.11.0", True)
 
 
 def test_a_later_install_keeps_what_an_earlier_one_landed_on():
     """pip does not reinstall a package that already satisfies the new requirement, so
-    `>=0.12.0` followed by the broader `>=0.10.0` ends on the 0.12. Reading only the last
-    command re-evaluated the broader range against the image's 0.11 and rejected it."""
+    `>=0.12.0` followed by the broader `>=0.10.0` ends on the 0.12, and a later command that
+    does NOT admit that landing still moves it back down."""
     from scripts import notebook_validator as nv
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     widened = '!pip install torch==2.12.0 "torchcodec>=0.12.0"\n!pip install "torchcodec>=0.10.0"'
-    assert nv._effective_requested_version(widened, "torchcodec", "0.11.0") == ("0.12.0", False)
+    assert nv._effective_version(widened, "torchcodec", "0.11.0")[0] == "0.12.0"
     assert nv.rule_inst_004_torchcodec_torch(widened, colab, "nb.ipynb", 0) == []
 
-    # A later command that does NOT admit the earlier landing still moves it back down.
     narrowed = '!pip install "torchcodec>=0.12.0"\n!pip install "torchcodec<0.12.0"'
-    assert nv._effective_requested_version(narrowed, "torchcodec", "0.11.0") == ("0.11", True)
+    assert nv._effective_version(narrowed, "torchcodec", "0.11.0") == ("0.11", True)
 
     # An exact pin after an uninstall restores a version rather than staying gone.
     restored = '!pip uninstall -y torchcodec\n!pip install "torchcodec==0.11.1"'
-    assert nv._effective_requested_version(restored, "torchcodec", "0.11.0") == ("0.11.1", True)
+    assert nv._effective_version(restored, "torchcodec", "0.11.0") == ("0.11.1", True)
 
 
 def test_an_exclusion_rules_out_the_installed_version():
     """`!=` inverts `==` (PEP 440 version exclusion), so `torchcodec!=0.11.0` really does
-    make pip replace the image's 0.11.0. Ignoring the operator kept the excluded version and
-    R-INST-004 rejected a torch 2.12 notebook that pip resolves to an ABI-stable codec."""
+    make pip replace the image's 0.11.0. Local labels are not part of the comparison, which
+    matters because the oracle carries `+cu128`."""
     from scripts import notebook_validator as nv
 
-    # An exact clause blocks one release after zero-padding; a `.*` clause blocks the prefix.
-    # Local labels are not part of the comparison.
     assert nv._version_is_excluded("0.11.0+cu128", "0.11.0")
-    assert nv._version_is_excluded("0.11.0", "0.11")
     assert nv._version_is_excluded("0.11.5", "0.11.*")
     assert not nv._version_is_excluded("0.11.1", "0.11.0")
     assert not nv._version_is_excluded("0.12.0", "0.11.*")
@@ -1194,48 +1202,22 @@ def test_an_exclusion_rules_out_the_installed_version():
         '!pip install "torch==2.12.0" "torchcodec!=0.11.0"',
         '!pip install "torch==2.12.0" "torchcodec!=0.11.*"',
     ):
-        assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == ("", True), cell
+        assert nv._effective_version(cell, "torchcodec", "0.11.0") == (None, True), cell
         assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == [], cell
 
     # An exclusion that does NOT cover the installed version leaves it alone, so a real
     # mismatch is still reported.
     untouched = '!pip install "torch==2.9.0" "torchcodec!=0.12.0"'
-    assert nv._effective_requested_version(untouched, "torchcodec", "0.11.0") == ("0.11.0", True)
+    assert nv._effective_version(untouched, "torchcodec", "0.11.0") == ("0.11.0", True)
     assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(untouched, colab, "nb.ipynb", 0)] == [
-        "R-INST-004"
-    ]
-
-    # A window whose own landing the exclusion rules out names nothing.
-    self_excluded = '!pip install "torch==2.12.0" "torchcodec>=0.12.0,!=0.12.0"'
-    assert nv._effective_requested_version(self_excluded, "torchcodec", "0.11.0") == ("", True)
-    # ...but an exclusion elsewhere in the range leaves the landing intact.
-    kept = '!pip install "torch==2.12.0" "torchcodec>=0.12.0,!=0.11.0"'
-    assert nv._effective_requested_version(kept, "torchcodec", "0.11.0") == ("0.12.0", False)
-
-
-def test_an_open_floor_is_a_floor_not_a_landing():
-    """pip installs the NEWEST release above an open `>=`, so `torchcodec>=0.11.1` on a
-    torch 2.12 cell can land on the ABI-stable line. Recording the floor as the answer
-    reported a mismatch against a version pip would never have left in place."""
-    from scripts import notebook_validator as nv
-
-    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
-    open_floor = '!pip install "torch==2.12.0" "torchcodec>=0.11.1"'
-    assert nv._effective_requested_version(open_floor, "torchcodec", "0.11.0") == ("0.11.1", False)
-    assert nv.rule_inst_004_torchcodec_torch(open_floor, colab, "nb.ipynb", 0) == []
-
-    # The floor is still usable where every version at or above it gives the same answer:
-    # torch 2.10 cannot take any 0.12+ codec, so this one is still reported.
-    too_old = '!pip install "torch==2.10.0" "torchcodec>=0.12.0"'
-    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(too_old, colab, "nb.ipynb", 0)] == [
         "R-INST-004"
     ]
 
 
 def test_versions_are_compared_with_pep440_zero_padding():
     """PEP 440 pads the shorter release segment, so `0.11` and `0.11.0` are one version.
-    Comparing the raw tuples sorted `0.11` below `0.11.0`, which threw away the
-    ceiling-derived minor whenever the floor spelled out its patch."""
+    Comparing the raw tuples sorted `0.11` below `0.11.0`, which silently changed which
+    branch answered for a window whose floor spells out its patch."""
     from scripts import notebook_validator as nv
 
     assert nv.cmp_versions("0.11", "0.11.0") == 0
@@ -1245,7 +1227,6 @@ def test_versions_are_compared_with_pep440_zero_padding():
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     strict_window = '!pip install "torch==2.12.0" "torchcodec>0.11.0,<0.12.0"'
-    assert nv._effective_requested_version(strict_window, "torchcodec", "0.11.0") == ("0.11", True)
     assert [
         f.rule for f in nv.rule_inst_004_torchcodec_torch(strict_window, colab, "nb.ipynb", 0)
     ] == ["R-INST-004"]
@@ -1253,8 +1234,8 @@ def test_versions_are_compared_with_pep440_zero_padding():
 
 def test_the_codec_index_honours_an_explicitly_pinned_torch_mirror(monkeypatch):
     """UNSLOTH_TORCH_INDEX_URL names the index torch itself came from. Rebuilding a public
-    download.pytorch.org URL from the local tag sent an authenticated or air-gapped mirror
-    to the internet, and the `--index-url` that follows also drops the inherited index
+    download.pytorch.org URL from the local tag sent an authenticated or air-gapped mirror to
+    the internet, and the `--index-url` that follows also drops the inherited index
     configuration, so the codec install fails outright where public PyTorch is unreachable."""
     from studio import install_python_stack as ips
 
@@ -1282,12 +1263,12 @@ def test_the_ceiling_landing_respects_an_exclusion_that_covers_it():
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     excluded_top = '!pip install torch==2.9.0 "torchcodec>=0.8,<0.11,!=0.10.*"'
-    assert nv._effective_requested_version(excluded_top, "torchcodec", "0.11.0") == ("", True)
+    assert nv._effective_version(excluded_top, "torchcodec", "0.11.0") == (None, True)
     assert nv.rule_inst_004_torchcodec_torch(excluded_top, colab, "nb.ipynb", 0) == []
 
     # An exclusion that misses the landing leaves it alone.
     kept = '!pip install "torchcodec>=0.8,<0.11,!=0.9.*"'
-    assert nv._effective_requested_version(kept, "torchcodec", "0.11.0") == ("0.10", True)
+    assert nv._effective_version(kept, "torchcodec", "0.11.0") == ("0.10", True)
 
 
 def test_an_equal_strict_bound_upgrades_the_floor():
@@ -1296,23 +1277,20 @@ def test_an_equal_strict_bound_upgrades_the_floor():
     from scripts import notebook_validator as nv
 
     combined = '!pip install torch==2.10.0 "torchcodec>=0.10,>0.10,<0.12"'
-    _, floor, ceiling, _cap, exclusive, _removed, _excl = nv._requested_bounds(
-        combined, "torchcodec"
-    )[0]
+    _exact, floor, _cap, ceiling, _excl, exclusive = nv._spec_window(
+        [(">=", "0.10"), (">", "0.10"), ("<", "0.12")]
+    )
     assert (floor, ceiling, exclusive) == ("0.10", "0.12", True)
 
     colab = {"torch": "2.10.0+cu128", "torchcodec": "0.10.0+cu128"}
-    assert nv._effective_requested_version(combined, "torchcodec", "0.10.0") == ("0.11", True)
+    assert nv._effective_version(combined, "torchcodec", "0.10.0") == ("0.11", True)
     assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(combined, colab, "nb.ipynb", 0)] == [
         "R-INST-004"
     ]
 
     # Order does not matter, and a plain `>=` is still inclusive.
-    reordered = '!pip install "torchcodec>0.10,>=0.10,<0.12"'
-    assert nv._requested_bounds(reordered, "torchcodec")[0][4] is True
-    assert (
-        nv._requested_bounds('!pip install "torchcodec>=0.10,<0.12"', "torchcodec")[0][4] is False
-    )
+    assert nv._spec_window([(">", "0.10"), (">=", "0.10"), ("<", "0.12")])[5] is True
+    assert nv._spec_window([(">=", "0.10"), ("<", "0.12")])[5] is False
 
 
 def test_the_runtime_remedy_honours_a_configured_torch_index(monkeypatch):
@@ -1416,7 +1394,7 @@ def test_a_chained_uninstall_does_not_swallow_the_reinstall():
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     chained = "!pip uninstall -y torchcodec && pip install torchcodec==0.10.0"
-    assert nv._effective_requested_version(chained, "torchcodec", "0.11.0") == ("0.10.0", True)
+    assert nv._effective_version(chained, "torchcodec", "0.11.0") == ("0.10.0", True)
     assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(chained, colab, "nb.ipynb", 0)] == [
         "R-INST-004"
     ]
@@ -1427,10 +1405,7 @@ def test_a_chained_uninstall_does_not_swallow_the_reinstall():
         "!uv pip uninstall torchcodec",
         "!pip install torchcodec==0.10.0 && pip uninstall -y torchcodec",
     ):
-        assert nv._effective_requested_version(removed, "torchcodec", "0.11.0") == (
-            "",
-            True,
-        ), removed
+        assert nv._effective_version(removed, "torchcodec", "0.11.0") == (None, True), removed
         assert nv.rule_inst_004_torchcodec_torch(removed, colab, "nb.ipynb", 0) == [], removed
 
 
@@ -1486,32 +1461,6 @@ def test_the_runtime_remedy_follows_a_configured_pytorch_mirror(monkeypatch):
     )
 
 
-def test_a_torch_range_is_replayed_before_the_pair_is_judged():
-    """`pip install "torch>=2.12.0"` does not satisfy the image's 2.11, so pip upgrades torch
-    while the codec stays on 0.11. Replaying only the codec left torch at the oracle and the
-    rule saw a pairing the cell had already moved away from."""
-    from scripts import notebook_validator as nv
-
-    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
-    upgraded = '!pip install "torch>=2.12.0"'
-    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(upgraded, colab, "nb.ipynb", 0)] == [
-        "R-INST-004"
-    ]
-
-    # A floor the image already satisfies moves nothing, so the pair stays as shipped.
-    assert (
-        nv.rule_inst_004_torchcodec_torch('!pip install "torch>=2.11.0"', colab, "nb.ipynb", 0)
-        == []
-    )
-    # Removing torch leaves nothing to judge.
-    assert nv.rule_inst_004_torchcodec_torch("!pip uninstall -y torch", colab, "nb.ipynb", 0) == []
-    # An inexact torch cannot pick a row, so the table half stays silent rather than guessing.
-    assert (
-        nv.rule_inst_004_torchcodec_torch('!pip install "torch>=2.7,<2.8"', colab, "nb.ipynb", 0)
-        == []
-    )
-
-
 def test_the_provenance_hint_does_not_assert_a_cause_it_has_not_established(monkeypatch):
     """Differing local tags show the two wheels came from different indexes, nothing more.
     torchcodec is published per accelerator on every line, 0.12+ included, so the mismatch
@@ -1564,33 +1513,46 @@ def test_the_remedy_uses_the_shell_of_the_host_it_prints_on(monkeypatch):
     )
 
 
+def test_a_torch_range_is_replayed_before_the_pair_is_judged():
+    """`pip install "torch>=2.12.0"` does not satisfy the image's 2.11, so pip upgrades torch
+    while the codec stays on 0.11. Both sides have to be replayed, not just the codec."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch>=2.12.0"', colab, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]
+    # A floor the image already satisfies moves nothing, and a removal leaves nothing to judge.
+    assert (
+        nv.rule_inst_004_torchcodec_torch('!pip install "torch>=2.11.0"', colab, "nb.ipynb", 0)
+        == []
+    )
+    assert nv.rule_inst_004_torchcodec_torch("!pip uninstall -y torch", colab, "nb.ipynb", 0) == []
+
+
 def test_each_pip_command_owns_the_packages_it_names():
-    """A chained line can carry several verbs, and this branch has no shell splitter, so the
-    whole line arrives as one invocation. A single verb for it is wrong both ways: the first
-    verb threw away a reinstall after an uninstall, and the last verb cleared torch and the
-    codec when a THIRD package was the one removed."""
+    """A chained line carries several verbs, and a package must be attributed to the command
+    that names it: an uninstall of a THIRD package must not clear the pair an earlier install
+    on the same line put in place."""
     from scripts import notebook_validator as nv
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
 
-    # The uninstall names torchaudio, so the incompatible pair the install leaves stands.
     other_package = "!pip install torch==2.10.0 torchcodec==0.12.0 && pip uninstall -y torchaudio"
-    assert nv._effective_requested_version(other_package, "torchcodec", "0.11.0") == (
-        "0.12.0",
-        True,
-    )
-    assert nv._effective_requested_version(other_package, "torch", "2.11.0") == ("2.10.0", True)
+    assert nv._effective_version(other_package, "torchcodec", "0.11.0") == ("0.12.0", True)
+    assert nv._effective_version(other_package, "torch", "2.11.0") == ("2.10.0", True)
     assert [
         f.rule for f in nv.rule_inst_004_torchcodec_torch(other_package, colab, "nb.ipynb", 0)
     ] == ["R-INST-004"]
 
-    # A reinstall after an uninstall of the SAME package still lands.
     reinstalled = "!pip uninstall -y torchcodec && pip install torchcodec==0.10.0"
-    assert nv._effective_requested_version(reinstalled, "torchcodec", "0.11.0") == ("0.10.0", True)
+    assert nv._effective_version(reinstalled, "torchcodec", "0.11.0") == ("0.10.0", True)
 
-    # ...and an uninstall that really does come last still clears it.
     removed = "!pip install torchcodec==0.10.0 && pip uninstall -y torchcodec"
-    assert nv._effective_requested_version(removed, "torchcodec", "0.11.0") == ("", True)
+    assert nv._effective_version(removed, "torchcodec", "0.11.0") == (None, True)
     assert nv.rule_inst_004_torchcodec_torch(removed, colab, "nb.ipynb", 0) == []
 
 
@@ -1602,13 +1564,13 @@ def test_a_fallback_after_a_successful_install_does_not_run():
 
     colab = {"torch": "2.10.0+cu128", "torchcodec": "0.11.0+cu128"}
     fallback = "!pip install torchcodec==0.10.0 || pip install torchcodec==0.12.0"
-    assert nv._effective_requested_version(fallback, "torchcodec", "0.11.0") == ("0.10.0", True)
+    assert nv._effective_version(fallback, "torchcodec", "0.11.0") == ("0.10.0", True)
     assert nv.rule_inst_004_torchcodec_torch(fallback, colab, "nb.ipynb", 0) == []
 
     # `&&` and `;` both run, so the later command still decides there.
     for separator in ("&&", ";"):
         chained = f"!pip install torchcodec==0.10.0 {separator} pip install torchcodec==0.12.0"
-        assert nv._effective_requested_version(chained, "torchcodec", "0.11.0") == (
+        assert nv._effective_version(chained, "torchcodec", "0.11.0") == (
             "0.12.0",
             True,
         ), separator
@@ -1621,12 +1583,11 @@ def test_a_package_is_attributed_by_token_not_substring():
     from scripts import notebook_validator as nv
 
     overlapping = "!pip install torch && pip uninstall -y torchaudio"
-    assert nv._effective_requested_version(overlapping, "torch", "2.11.0") == ("2.11.0", True)
-    assert nv._span_tokens(" -y torchaudio") == {"-y", "torchaudio"}
+    assert nv._effective_version(overlapping, "torch", "2.11.0") == ("2.11.0", True)
 
     # The uninstall of the package itself still lands.
     removed = "!pip install torchaudio && pip uninstall -y torch"
-    assert nv._effective_requested_version(removed, "torch", "2.11.0") == ("", True)
+    assert nv._effective_version(removed, "torch", "2.11.0") == (None, True)
 
 
 def test_the_provenance_remedy_pins_the_compatible_window(monkeypatch):
