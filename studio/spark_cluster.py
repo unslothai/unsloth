@@ -3825,6 +3825,17 @@ NVFP4_KERNELS = {
             "compute-bound, which is the one regime where FP4's 3.3x arithmetic advantage "
             "over BF16 is reachable."
         ),
+        # NVFP4_FINDINGS.md sections 12 and 33: the override works on 0.28.0 and fails at
+        # init on main (cell e_u27_ficut), because on main it also picks the FP8 ScaledMM
+        # kernel for the FP8 layers of Unsloth's mixed FP8+NVFP4 checkpoints, which refuses
+        # on GB10. Section 37 (4096-token study) refuted the earlier "b12x 1.6x at long
+        # prompts" claim: flashinfer_b12x is worth about 5% on offline batch prefill only,
+        # nothing for serving, so it is not a serving recommendation.
+        "note": (
+            "validated on vLLM 0.28.0; on vLLM main the same override also selects the FP8 "
+            "ScaledMM kernel for the FP8 layers of Unsloth's mixed checkpoints and fails at "
+            "init; there, leave auto. flashinfer_b12x only for offline batch prefill, about 5%."
+        ),
     },
 }
 
@@ -3861,6 +3872,8 @@ def _cmd_kernels(workload: str = "mixed") -> int:
     print(f"  flag     : {rec['flag']}")
     print("")
     print(f"  {rec['why']}")
+    if rec.get("note"):
+        print(f"  Note: {rec['note']}")
     print("")
     print("  Measured on this hardware (same weights, same shape, kernel varied):")
     print("    kernel        acts   M=1        M=4096")
@@ -3871,6 +3884,8 @@ def _cmd_kernels(workload: str = "mixed") -> int:
     print("")
     print("  Also on GB10: pin `nvidia-cutlass-dsl==4.6.2` -- 4.7.0 fails b12x with an")
     print("  internal DSL compiler error, disabling the kernel family built for this GPU.")
+    print("  b12x itself is an offline batch-prefill kernel (about 5% there, nothing for")
+    print("  serving); the serving default is auto.")
     return 0
 
 
