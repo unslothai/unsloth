@@ -625,8 +625,10 @@ case "$MODE" in
     # hang guard. Nothing here can adjudicate a partial turn either -- the
     # verdict is a llama-server log slice -- so a cap stays fatal, as it does
     # for connection and resume.
+    # --tools "" and nothing else: gemma-3-270m declares no tools, so /v1/messages now 400s
+    # the default 25 schemas. The system prompt stays -- the attribution line lives in it.
     ab_invoke() {
-      invoke_via_connect "$@"
+      invoke_via_connect "$1" --tools "" "${@:2}"
       [ "${TIMED_OUT:-0}" = 1 ] && guide_fail "attribution-ab invoke timed out after ${TIMEOUT}s; the A/B cannot be judged from a partial turn"
       return 0
     }
