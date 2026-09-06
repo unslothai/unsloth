@@ -3,9 +3,11 @@
 
 """engine_stats must not attribute a whole generation to the tick it was counted on.
 
-llama-server updates tokens_predicted_total and prompt_tokens_total once per
-generation, from callback_on_reset when the slot is released. Dividing that count
-by the poll interval reports the rate of a window the generation did not run in.
+llama-server updates tokens_predicted_total once per generation, from the
+callback_on_reset installed beside slot.reset(). Dividing that count by the poll
+interval reports the rate of a window the generation did not run in. prompt_tokens_total
+is different and is deliberately left alone: metrics_post_decode() flushes it on every
+decode step, so its delta already covers the tick it is read in.
 Measured in the field: 48,216 engine_stats records, gen_tok_s == 0.0 in 47,629 of
 them (98.77%), and two records at 150.6 and 183.7 tok/s on a 103.7 GB Q4 MoE whose
 measured ceiling is 24.6 tok/s.
@@ -144,16 +146,25 @@ def test_a_build_without_the_decode_counter_still_reports(monkeypatch):
     assert max(s["gen_tok_s"] for s in stats) == 5.0
 
 
-def test_a_prompt_counter_gets_the_same_treatment(monkeypatch):
-    """prompt_tokens_total flushes only on a decode that produced output, so a long
-    prefill lands in one tick the same way."""
-    snaps = [_busy(decode = float(i)) for i in range(5)] + [_busy(prompt = 9000.0, decode = 5.0)]
+def test_the_prompt_counter_is_not_charged_the_decode_that_preceded_it(monkeypatch):
+    """The prompt counter must NOT get the generation counter's treatment.
+
+    The two are updated differently, which is the whole reason only one of them needs
+    correcting. tokens_predicted_total is flushed once per generation, from the
+    callback installed beside slot.reset(); prompt_tokens_total is flushed from
+    metrics_post_decode() on every decode step. So a prompt delta already covers the
+    tick it is read in, and charging it the accumulated busy time would divide a
+    prefill by the decode that ran before it: measured at 33.3 tok/s for a prefill
+    whose real rate is 200.
+
+    Trace: one 2000-token prefill, five ticks of decode with the slot held and the
+    prompt counter flat, then a second identical prefill."""
+    snaps = [_busy(prompt = 0.0)] + [_busy(prompt = 2000.0)] * 6 + [_busy(prompt = 4000.0)]
     stats = _drive(snaps, monkeypatch)
 
-    # 9000 tokens over the 50 seconds of held slot this poller actually observed.
-    # The first scrape sets the baseline and contributes no elapsed time, which is
-    # the honest floor: nothing before it was measured.
-    assert max(s["prompt_tok_s"] for s in stats) == 180.0
+    rates = [s["prompt_tok_s"] for s in stats]
+    # 2000 tokens in one 10 s tick, both times, whatever happened in between.
+    assert [r for r in rates if r] == [200.0, 200.0], rates
 
 
 def test_the_llama_cpp_gauge_still_wins_when_it_reports(monkeypatch):

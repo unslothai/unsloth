@@ -46,11 +46,11 @@ class LlamaServerStatsLogger:
         self._stall_since = None
         self._stall_reported = False
         self._unmeasurable_reported = False
-        # Busy seconds since each token counter last advanced. Both counters move
-        # once per generation, at slot release, so the tick they move on is not the
-        # window the tokens were produced in. See _token_rate.
+        # Busy seconds since tokens_predicted_total last advanced. That counter moves
+        # once per generation, at slot release, so the tick it moves on is not the
+        # window the tokens were produced in. See _token_rate. prompt_tokens_total
+        # needs no such accumulator: llama-server flushes it every decode step.
         self._gen_busy_s = 0.0
-        self._prompt_busy_s = 0.0
 
     def start(self):
         if self._thread is None:
@@ -78,13 +78,20 @@ class LlamaServerStatsLogger:
 
     @staticmethod
     def _token_rate(delta_tokens, busy_s, tick_s):
-        """Tokens per second over the window they were produced in.
+        """Generated tokens per second over the window they were produced in.
 
-        llama-server updates tokens_predicted_total and prompt_tokens_total once
-        per generation, from callback_on_reset when the slot is released. Dividing
-        the whole count by the poll interval therefore reports the rate of a
-        10-second window that the generation did not run in: a 103.7 GB Q4 MoE whose
-        measured ceiling is 24.6 tok/s was logged at 150.6 and 183.7 tok/s that way.
+        llama-server updates tokens_predicted_total once per generation, from
+        callback_on_reset when the slot is released (server-context.cpp, the
+        callback installed beside slot.reset()). Dividing the whole count by the
+        poll interval therefore reports the rate of a 10-second window that the
+        generation did not run in: a 103.7 GB Q4 MoE whose measured ceiling is
+        24.6 tok/s was logged at 150.6 and 183.7 tok/s that way.
+
+        Generation only. prompt_tokens_total is flushed from metrics_post_decode()
+        on EVERY decode step, so its delta already covers the tick it is read in;
+        charging it the same busy time would divide one prefill by the decode that
+        preceded it (measured: a 2000-token prefill reported at 33 tok/s instead
+        of 200).
 
         busy_s is the time the engine actually held a slot since this counter last
         moved, so an idle gap between two generations is not charged to the second
@@ -177,17 +184,16 @@ class LlamaServerStatsLogger:
             if prev is not None and now > prev[0]:
                 dt = now - prev[0]
                 # Only busy time counts toward a rate. A slot held is the engine
-                # working: the token counters stay still through a healthy prefill
-                # and a healthy decode alike, so "not moving" is not "idle".
+                # working: tokens_predicted_total stays still through a healthy
+                # prefill and a healthy decode alike, so "not moving" is not "idle".
                 if running or waiting:
                     self._gen_busy_s += dt
-                    self._prompt_busy_s += dt
                 gen_delta = self._token_rate(predicted - prev[1], self._gen_busy_s, dt)
-                prompt_delta = self._token_rate(prompt - prev[2], self._prompt_busy_s, dt)
+                # Plain delta: this counter moves on every decode step, so the tick
+                # it is read in IS the window it was produced in.
+                prompt_delta = max(0.0, (prompt - prev[2]) / dt)
                 if predicted > prev[1]:
                     self._gen_busy_s = 0.0
-                if prompt > prev[2]:
-                    self._prompt_busy_s = 0.0
                 if decode_calls is not None and prev[3] is not None:
                     decode_rate = max(0.0, (decode_calls - prev[3]) / dt)
             prev = (now, predicted, prompt, decode_calls)
