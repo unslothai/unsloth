@@ -39,9 +39,7 @@ import pytest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
-requires_pwsh = pytest.mark.skipif(
-    shutil.which("pwsh") is None, reason = "PowerShell is unavailable"
-)
+requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
 HELPERS = (
     "Test-WoaVersionAtLeast",
@@ -67,7 +65,7 @@ def _drop_list_block(source: str) -> str:
     start = re.search(r"(?m)^        \$WoaWheelNames = @\{\}\s*$", source)
     end = re.search(r"(?m)^        \$WoaOverrideLines \+= 'torch>=2\.4'\s*$", source)
     assert start and end, "the drop-list block moved"
-    return textwrap.dedent(source[start.start():end.start()].replace("\r\n", "\n"))
+    return textwrap.dedent(source[start.start() : end.start()].replace("\r\n", "\n"))
 
 
 def _run(script: str) -> str:
@@ -75,7 +73,11 @@ def _run(script: str) -> str:
     prelude = "\n".join(_function(source, name) for name in HELPERS)
     proc = subprocess.run(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", prelude + "\n" + script],
-        capture_output = True, text = True, encoding = "utf-8", errors = "replace", timeout = 120,
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+        timeout = 120,
     )
     assert proc.returncode == 0, f"pwsh failed: {proc.stdout}\n{proc.stderr}"
     return proc.stdout.strip()
@@ -156,14 +158,14 @@ def test_pypi_counts_only_when_the_resolve_would_reach_it(env, reaches):
 def test_a_wheel_taken_from_pypi_is_not_then_excluded_on_arm64():
     """Bug 1, the one that matters: skipping our copy must not read as "no wheel exists"."""
     nothing_anywhere = _dropped_names("@{}")
-    assert {"brotli", "hf-transfer", "hf_transfer"} <= nothing_anywhere, (
-        f"a name with no wheel anywhere must be dropped on ARM64, got {nothing_anywhere}"
-    )
+    assert (
+        {"brotli", "hf-transfer", "hf_transfer"} <= nothing_anywhere
+    ), f"a name with no wheel anywhere must be dropped on ARM64, got {nothing_anywhere}"
 
     from_pypi = _dropped_names('@{ "brotli" = @("1.3.0"); "hf-transfer" = @("0.2.0") }')
-    assert not ({"brotli", "hf-transfer", "hf_transfer"} & from_pypi), (
-        f"PyPI supplies these, so they must not be excluded on ARM64; dropped {from_pypi}"
-    )
+    assert not (
+        {"brotli", "hf-transfer", "hf_transfer"} & from_pypi
+    ), f"PyPI supplies these, so they must not be excluded on ARM64; dropped {from_pypi}"
     # What is genuinely unavailable is still dropped, so the fix did not blanket-allow.
     assert {"xformers", "torchcodec", "brotlicffi"} <= from_pypi
 
