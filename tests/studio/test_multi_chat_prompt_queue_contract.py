@@ -474,6 +474,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "liveRuntime.supportsTools" in auto_load_merge
     assert "liveRuntime.supportsReasoning" in auto_load_merge
     assert "liveRuntime.loadedContextLength" in auto_load_merge
+    assert "queuedEmptyModelRuntime.loadedIsGguf" in auto_load_merge
+    assert "liveRuntime.loadedIsGguf" in auto_load_merge
     assert "isExternalModelId(visibleState.params.checkpoint)" in CHAT_ADAPTER
     assert "resolveInferenceCheckpointId(status)" in CHAT_ADAPTER
     assert "skipAdoptServerModel: true" in CHAT_ADAPTER
@@ -601,6 +603,8 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         QUEUED_MODEL_CAPABILITIES
     )
     assert "loadedIsMultimodal: state.loadedIsMultimodal" in CHAT_ADAPTER
+    assert "loadedIsGguf: state.loadedIsGguf" in CHAT_ADAPTER
+    assert "loadedIsGguf: status.is_gguf ?? null" in lifecycle
     assert "queuedEmptyModelRuntime?.loadedIsMultimodal" in auto_load_merge
     assert "usesLocalModel:" in target
     assert "usePromptQueueUI.getState().byThreadId" in CONFIRM_MODEL_SWAP

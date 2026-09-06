@@ -23,6 +23,7 @@ import {
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import {
+  isServedByLlamaCpp,
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
@@ -2155,6 +2156,7 @@ type QueuedResolvedModelRuntime = {
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
   loadedContextLength: number | null;
+  loadedIsGguf: boolean | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
 };
@@ -2302,6 +2304,7 @@ function queuedResolvedModelFromStore(
     supportsPreserveThinking: state.supportsPreserveThinking,
     preserveThinking: state.preserveThinking,
     loadedContextLength: state.loadedContextLength,
+    loadedIsGguf: state.loadedIsGguf,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
       ? {
@@ -3858,6 +3861,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
               status.supports_preserve_thinking ?? false,
             preserveThinking: resolvePreserveThinkingOnLoad(status),
             loadedContextLength: loadedContextFields(status).loadedContextLength,
+            loadedIsGguf: status.is_gguf ?? null,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,
@@ -4089,6 +4093,7 @@ export function createOpenAIStreamAdapter(
                   queuedEmptyModelRuntime.supportsPreserveThinking,
                 preserveThinking: queuedEmptyModelRuntime.preserveThinking,
                 loadedContextLength: queuedEmptyModelRuntime.loadedContextLength,
+                loadedIsGguf: queuedEmptyModelRuntime.loadedIsGguf,
                 models: mergeQueuedModelCapabilities(
                   base.models,
                   queuedEmptyModelRuntime.checkpoint,
@@ -4470,6 +4475,10 @@ export function createOpenAIStreamAdapter(
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.loadedContextLength
                   : liveRuntime.loadedContextLength,
+              loadedIsGguf:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.loadedIsGguf
+                  : liveRuntime.loadedIsGguf,
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
@@ -4936,6 +4945,22 @@ export function createOpenAIStreamAdapter(
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
+      // Media turns use the legacy stream, so they must carry the same explicit
+      // compaction policy as text turns. Prefer the backend's loaded-model answer;
+      // catalog metadata is only a fallback while no backend answer has arrived.
+      // The pre-load classifier also covers a selected GGUF whose catalog row is
+      // not present yet (native path/variant or a .gguf checkpoint), while the
+      // shared helper keeps a stale local flag from affecting external models.
+      const isGgufForCompaction =
+        isServedByLlamaCpp({
+          loadedIsGguf: runtime.loadedIsGguf,
+          activeGgufVariant: runtime.activeGgufVariant,
+          activeNativePathToken: runtime.activeNativePathToken,
+          checkpoint: params.checkpoint,
+        }) ||
+        (runtime.loadedIsGguf == null &&
+          !isExternalModelId(params.checkpoint) &&
+          activeModel?.isGguf === true);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -6024,7 +6049,7 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context bar and tok/s populate (backend gates it).
             stream_options: { include_usage: true },
             ...ggufCompactionRequestFields({
-              isGguf: activeModel?.isGguf === true,
+              isGguf: isGgufForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
               contextPolicy: runtime.contextPolicy,
               compactionHeadroomRatio: runtime.compactionHeadroomRatio,
