@@ -8808,11 +8808,7 @@ class LlamaCppBackend:
 
     @staticmethod
     def _offload_target_shares_system_memory(
-        *,
-        is_vulkan_backend: bool,
-        shared_gpu_ids,
-        detected_gpus,
-        gpu_indices,
+        *, is_vulkan_backend: bool, shared_gpu_ids, detected_gpus, gpu_indices
     ) -> bool:
         """True when EVERY device this launch offloads to reports host RAM as its VRAM.
 
@@ -8827,7 +8823,9 @@ class LlamaCppBackend:
         them: Vulkan ordinals against shared_gpu_ids, physical HIP/CUDA ids
         against the unified-memory sets.
         """
-        devices = list(gpu_indices) if gpu_indices else [idx for idx, _free in (detected_gpus or ())]
+        devices = (
+            list(gpu_indices) if gpu_indices else [idx for idx, _free in (detected_gpus or ())]
+        )
         if not devices:
             return False
         if is_vulkan_backend:
@@ -22455,7 +22453,11 @@ class LlamaCppBackend:
                     detected_gpus = _detected_gpus,
                     gpu_indices = gpu_indices,
                 )
-                if sys.platform == "win32" and full_offload_tuning_active and _shared_memory_offload:
+                if (
+                    sys.platform == "win32"
+                    and full_offload_tuning_active
+                    and _shared_memory_offload
+                ):
                     logger.info(
                         "Keeping the llama-server prompt cache: this load offloads to a GPU "
                         "that shares system memory, so --cache-ram 0 and --ctx-checkpoints 0 "

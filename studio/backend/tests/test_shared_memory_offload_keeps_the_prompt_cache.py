@@ -37,7 +37,11 @@ def _shares(**kwargs) -> bool:
     return LlamaCppBackend._offload_target_shares_system_memory(**kwargs)
 
 
-def _vulkan(shared_gpu_ids, detected, gpu_indices = None) -> bool:
+def _vulkan(
+    shared_gpu_ids,
+    detected,
+    gpu_indices = None,
+) -> bool:
     return _shares(
         is_vulkan_backend = True,
         shared_gpu_ids = shared_gpu_ids,
@@ -118,9 +122,7 @@ def test_a_discrete_amd_card_keeps_the_tuning(monkeypatch):
 
 
 def test_an_apu_next_to_a_discrete_card_keeps_the_tuning(monkeypatch):
-    monkeypatch.setitem(
-        __import__("sys").modules, "torch", _fake_torch(["gfx1151", "gfx1100"])
-    )
+    monkeypatch.setitem(__import__("sys").modules, "torch", _fake_torch(["gfx1151", "gfx1100"]))
     assert (
         _shares(
             is_vulkan_backend = False,
