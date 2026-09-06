@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""The published tag list is meant to be short: :core, :latest, :studio, the release
-tags, and one dated nightly pin per image. Per-commit sha tags used to land on every
-push, and the mutable :nightly said nothing :latest did not. The digest handoff
-between jobs now uses a per-run handle that a cleanup job removes, so these pin the
-scheme and run the cleanup step with curl stubbed.
-"""
+"""The published tag list must stay short: :core, :latest, :studio, the release tags,
+and one dated nightly pin per image. Per-run handles are removed by cleanup."""
 
 from __future__ import annotations
 
@@ -67,7 +63,6 @@ def test_each_image_has_a_per_run_handle_and_a_dated_pin(
     rules = _tag_rules(doc, job)
     assert handle in rules, f"{job} lost the per-run handle the digest handoff resolves"
     assert pin in rules, f"{job} lost its dated nightly pin"
-    # the date comes from prepare, computed once, so a rerun of failed jobs keeps it
     assert "prepare" in doc["jobs"][job]["needs"]
     assert doc["jobs"]["prepare"]["outputs"]["pin_date"] == "${{ steps.pin.outputs.date }}"
 
@@ -99,9 +94,7 @@ def _run_pin(step: dict, tmp_path: Path, *, gh: str) -> tuple[subprocess.Complet
 
 
 def test_the_pin_date_is_the_run_creation_date(doc: dict, tmp_path: Path):
-    """created_at is fixed at the first attempt while run_started_at and the clock
-    move, so a rerun of an older scheduled run on a later day keeps its own date
-    instead of claiming that day's pin with an older commit."""
+    """created_at is fixed at the first attempt, unlike run_started_at and the clock, so a late rerun cannot claim today's pin with an older commit."""
     step = _pin_step(doc)
     assert doc["jobs"]["prepare"]["permissions"].get("actions") == "read"
     assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
@@ -147,8 +140,7 @@ def cleanup_job(doc: dict) -> dict:
 
 
 def test_cleanup_runs_after_everything_except_an_overridden_dispatch(cleanup_job: dict, doc: dict):
-    """A dispatch with the default inputs on the default branch publishes the stable
-    tags, so its handles are not its only names and must go like a push's."""
+    """A default-input dispatch on the default branch publishes the stable tags, so its handles are not its only names and must go like a push's."""
     assert set(cleanup_job["needs"]) == {"merge", "merge-studio", "hub-readme", "smoke-test"}
     cond = cleanup_job["if"]
     assert cond.startswith("${{ always() && (github.event_name != 'workflow_dispatch' || (")
@@ -225,8 +217,6 @@ def _probes(tmp_path: Path) -> list[str]:
 
 @pytest.mark.parametrize("job", ["merge", "merge-studio"])
 def test_an_existing_dated_pin_is_never_replaced(doc: dict, job: str, tmp_path: Path):
-    """A same-day rerun, or a late rerun of an older scheduled run, would otherwise
-    rewrite an allegedly immutable pin with different contents."""
     step = _manifest_step(doc, job)
     res, log = _run_manifest(
         step,
@@ -259,8 +249,7 @@ def test_a_new_dated_pin_is_created(doc: dict, job: str, tmp_path: Path):
 @pytest.mark.parametrize("job", ["merge", "merge-studio"])
 @pytest.mark.parametrize("code", ["000", "429", "503"])
 def test_an_unanswered_probe_stops_the_merge(doc: dict, job: str, code: str, tmp_path: Path):
-    """Anything but a 404 used to count as absent, and the probe sits in a condition
-    where bash -e is off, so a transport failure or a 429 became an overwrite."""
+    """Anything but 404 used to count as absent, and bash -e is off inside the probe's condition, so a transport failure or a 429 became an overwrite."""
     step = _manifest_step(doc, job)
     res, log = _run_manifest(
         step,
@@ -318,7 +307,6 @@ def _run_cleanup(
         encoding = "utf-8",
     )
     (bin_dir / "curl").chmod(0o755)
-    # the cutoff comes from `date -u -d "-N days"`; pin today so the test is stable
     (bin_dir / "date").write_text(
         "#!/usr/bin/env bash\n"
         f'/bin/date -u -d "{today.replace(".", "-")} -${{NIGHTLY_KEEP_DAYS}} days" +%Y.%m.%d\n',
@@ -360,7 +348,7 @@ def test_a_push_removes_both_handles_on_the_namespace_route(cleanup_job: dict, t
 
 
 def test_a_missing_handle_is_not_a_failure(cleanup_job: dict, tmp_path: Path):
-    """A failed merge never created the handle; 404 on delete is the expected shape."""
+    """A failed merge never created the handle, so 404 on delete is expected."""
     step = cleanup_job["steps"][-1]["run"]
     res, _ = _run_cleanup(step, tmp_path, event = "push", delete_code = "404")
     assert res.returncode == 0, res.stdout + res.stderr
@@ -382,11 +370,11 @@ def test_the_daily_run_prunes_only_old_dated_pins(cleanup_job: dict, tmp_path: P
         "core-v2026.9.1",
         "stable",
         "nightly-2026.09.05",
-        "core-nightly-2026.09.05",  # fresh, kept
+        "core-nightly-2026.09.05",
         "nightly-2026.07.01",
-        "core-nightly-2026.07.01",  # older than 60 days, pruned
+        "core-nightly-2026.07.01",
         "nightly",
-        "core-nightly",  # not dated pins, never touched
+        "core-nightly",
         "2026.5.9-pt2.10.0-vllm-0.16.0-cu12.8-studio-release-v0.1.43-beta-2026-MAY-31",
     ]
     res, log = _run_cleanup(step, tmp_path, event = "schedule", tags = tags)
@@ -401,9 +389,7 @@ def test_the_daily_run_prunes_only_old_dated_pins(cleanup_job: dict, tmp_path: P
 
 
 def test_the_prune_follows_every_page(cleanup_job: dict, tmp_path: Path):
-    """Two pins a day pass 100 tags well inside the retention window, and the listing
-    is newest first, so the expired pins live on the pages a single request never
-    returns."""
+    """The listing is newest first and two pins a day pass 100 tags inside the retention window, so expired pins live on pages a single request never returns."""
     step = cleanup_job["steps"][-1]["run"]
     res, log = _run_cleanup(
         step,

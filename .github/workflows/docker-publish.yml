@@ -56,9 +56,7 @@ env:
 # at all. The accepted cost is that two main commits can race to retag :core/:latest,
 # which is self-correcting on the next push, where a cancelled run leaves that commit
 # with no image at all. Each published image is still internally coherent: the digest
-# handoff and the smoke test resolve this run's own :core-build-<run_id>/:build-<run_id>
-# tag rather than tags[0], and then verify that the manifest behind it holds the arches
-# THIS run pushed. Those tags are unique per run and removed by the cleanup job.
+# handoff and the smoke test resolve this run's own tag, not tags[0], and verify it.
 # tests/studio/test_main_runs_survive_merge_bursts.py enforces this shape.
 concurrency:
   group: docker-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
@@ -77,7 +75,7 @@ jobs:
       contents: read
       actions: read
     outputs:
-      # the nightly pin's date; computed once so a rerun of failed jobs keeps it
+      # computed once, so a rerun of failed jobs keeps the same date
       pin_date: ${{ steps.pin.outputs.date }}
       llama_tag: ${{ steps.llama.outputs.tag }}
       unsloth_ref: ${{ steps.unsloth_ref.outputs.ref }}
@@ -89,10 +87,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The run's creation time, not the clock: created_at is fixed at the first
-          # attempt (run_started_at resets), so a rerun of an older scheduled run on
-          # a later day keeps its own date instead of claiming that day's pin with
-          # an older commit and racing the real daily run for it.
+          # created_at is fixed at the first attempt: a late rerun cannot claim today's pin.
           created="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq .created_at || true)"
           case "$created" in
             [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*) ;;
@@ -323,23 +318,19 @@ jobs:
             # dispatch, else a feature ref overwrites :core with non-main bits
             type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag,prefix=core-
-            # one immutable pin per daily rebuild; pruned after 60 days by cleanup
             type=schedule,pattern=core-nightly-${{ needs.prepare.outputs.pin_date }}
-            # this run's handle for the digest handoff below; cleanup removes it
             type=raw,value=core-build-${{ github.run_id }}
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
         run: |
-          # A dated pin is immutable: a rerun on the same day, or a late rerun of an
-          # older scheduled run, must not replace one that already exists.
+          # A dated pin is immutable: a rerun must not replace an existing one.
           TAGS=""
           for t in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
             name="${t##*:}"
             case "$name" in
               nightly-[0-9]*|core-nightly-[0-9]*)
-                # Only a 404 frees the name. A transport error (000), 429 or 5xx is
-                # retried, then stops the merge: it must not become an overwrite.
+                # Only 404 frees the name; 000/429/5xx must not become an overwrite.
                 for i in 1 2 3 4 5; do
                   code="$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}" || true)"
                   case "$code" in 200|404) break ;; esac
@@ -367,14 +358,11 @@ jobs:
         id: manifest_digest
         working-directory: /tmp/digests
         run: |
-          # NOT tags[0]: on a main push that is the mutable :core, which an
-          # unserialised second run can retag between the manifest creation and this
-          # inspection. :core-build-<run_id> is this run's own name.
+          # NOT tags[0]: on a main push that is the mutable :core, retagged by racing runs.
           TAG="$(jq -r '([.tags[] | select(contains(":core-build-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
           DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test -n "$DIGEST"
-          # Still confirm the manifest we hand to build-studio holds what this run
-          # pushed: baking another run's base image would be silent otherwise.
+          # Confirm it holds what this run pushed: baking another run's base is silent.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
           # A build leg does not push a bare image manifest: with provenance and SBOM
@@ -519,15 +507,13 @@ jobs:
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
         run: |
-          # A dated pin is immutable: a rerun on the same day, or a late rerun of an
-          # older scheduled run, must not replace one that already exists.
+          # A dated pin is immutable: a rerun must not replace an existing one.
           TAGS=""
           for t in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
             name="${t##*:}"
             case "$name" in
               nightly-[0-9]*|core-nightly-[0-9]*)
-                # Only a 404 frees the name. A transport error (000), 429 or 5xx is
-                # retried, then stops the merge: it must not become an overwrite.
+                # Only 404 frees the name; 000/429/5xx must not become an overwrite.
                 for i in 1 2 3 4 5; do
                   code="$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}" || true)"
                   case "$code" in 200|404) break ;; esac
@@ -555,9 +541,6 @@ jobs:
         id: studio_manifest_digest
         working-directory: /tmp/digests
         run: |
-          # Same reasoning as the base merge: resolve this run's own :build-<run_id>
-          # once and hand the smoke test an immutable digest rather than a name
-          # another run can retag under it.
           TAG="$(jq -r '([.tags[] | select(contains(":build-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
           DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test -n "$DIGEST"
@@ -648,9 +631,7 @@ jobs:
       # with the merge jobs' gates.
       - name: Pull and smoke-test the base image
         run: |
-          # By digest, not by name: the :core-build-<run_id> tag is gone once cleanup
-          # ran, and merge already verified that the manifest behind this digest is
-          # the one it pushed.
+          # By digest: the handle tag is gone once cleanup ran.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}"
           echo "smoke-testing $REF"
           docker pull "$REF"
@@ -676,15 +657,8 @@ jobs:
           [ "$ok_jupyter" = 1 ] || { echo "Jupyter /login never responded"; exit 1; }
           echo "Studio + Jupyter healthy"
 
-  # The :build-<run_id> / :core-build-<run_id> handles exist only for the digest
-  # handoff and verification above; the published names are :core, :latest, :studio,
-  # the release tags and one dated nightly pin per image. This removes the handles
-  # (namespace-scoped route: the legacy /v2/repositories path rejects the
-  # organization token) and, on the daily rebuild, prunes nightly pins older than
-  # 60 days. A dispatch with an overridden input publishes nothing durable by
-  # design (the stable-tag gates above are off), so that one keeps its handles for
-  # whoever dispatched it to pull and delete; a dispatch with the defaults on the
-  # default branch published :core/:latest/:studio and is cleaned like a push.
+  # Namespace-scoped route: the legacy /v2/repositories path rejects the organization
+  # token. A dispatch with an overridden input keeps its handles, its only names.
   cleanup:
     needs: [merge, merge-studio, hub-readme, smoke-test]
     if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '')) }}
@@ -708,8 +682,6 @@ jobs:
           fi
           failed=0
           drop() {
-            # 204 removed, 404 never existed (a failed merge); anything else is a
-            # leftover that would show on the tag list
             code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "${HUB}/tags/$1" -H "Authorization: Bearer ${TOKEN}")"
             case "$code" in
               204|404) echo "removed ${IMAGE_NAME}:$1 (HTTP ${code})" ;;
@@ -720,8 +692,6 @@ jobs:
           drop "build-${{ github.run_id }}"
           if [ "${{ github.event_name }}" = "schedule" ]; then
             cutoff="$(date -u -d "-${NIGHTLY_KEEP_DAYS} days" +%Y.%m.%d)"
-            # every page: the listing is newest first, so the expired pins are exactly
-            # the ones a first-page-only read would never see
             url="${HUB}/tags?page_size=100"
             names=""
             while [ -n "$url" ]; do

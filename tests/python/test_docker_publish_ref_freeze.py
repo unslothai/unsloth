@@ -415,9 +415,7 @@ def test_the_digest_export_still_works_without_a_handle_tag(
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason = "needs jq")
 def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: str, tmp_path: Path):
-    """:core-build-<run_id> is this run's own name, but the step still checks the
-    manifest it resolves to: if it does not contain the per-arch digests this run
-    pushed, the step has to fail rather than hand build-studio another run's base."""
+    """Even under this run's own name, a manifest without the per-arch digests this run pushed must fail rather than hand build-studio another run's base."""
     bin_dir = tmp_path / "bin"
     # the tag now resolves to a manifest built from somebody else's arches, while
     # this run's own per-arch indexes still answer with their real children
