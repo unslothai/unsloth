@@ -37,6 +37,7 @@ from .network_proxy import (
     NetworkAudit,
     proxy_environment,
     tls_trust_environment,
+    tls_trust_paths,
 )
 
 logger = get_logger(__name__)
@@ -1439,7 +1440,7 @@ class LinuxBubblewrapBackend:
         for path in _LINUX_ETC_FILES:
             argv.extend(("--ro-bind-try", path, path))
         if spec.network_policy == "allowlist":
-            for path in _LINUX_CA_TRUST_PATHS:
+            for path in (*_LINUX_CA_TRUST_PATHS, *tls_trust_paths()):
                 argv.extend(("--ro-bind-try", path, path))
         argv.extend(("--ro-bind", passwd, "/etc/passwd"))
         argv.extend(("--ro-bind", group, "/etc/group"))
@@ -1760,6 +1761,45 @@ _MACOS_TLS_MACH_SERVICES = (
     "com.apple.trustd.agent",
     "com.apple.ocspd",
 )
+_developer_paths_cache: tuple[str, ...] | None = None
+_developer_paths_lock = threading.Lock()
+
+
+def _macos_developer_paths() -> tuple[str, ...]:
+    """The active developer directory, resolved once through xcode-select.
+
+    /usr/bin/git, /usr/bin/python3 and the other shims call xcselect to find
+    the developer directory and exec the real tool from it, so a profile that
+    cannot see that directory ends every such call with "See man xcode-select".
+    The directory is versioned on many hosts (/Applications/Xcode_16.4.app) and
+    the static list cannot name it; the real path is read from xcode-select and
+    kept for the process lifetime.
+    """
+    global _developer_paths_cache
+    with _developer_paths_lock:
+        if _developer_paths_cache is not None:
+            return _developer_paths_cache
+        found: list[str] = []
+        if sys.platform == "darwin" and os.path.exists("/usr/bin/xcode-select"):
+            try:
+                result = subprocess.run(
+                    ["/usr/bin/xcode-select", "-p"],
+                    capture_output = True,
+                    text = True,
+                    timeout = 10,
+                    check = False,
+                )
+                candidate = result.stdout.strip()
+                if result.returncode == 0 and candidate and os.path.isdir(candidate):
+                    found.append(os.path.realpath(candidate))
+                    if candidate not in found:
+                        found.append(candidate)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        _developer_paths_cache = tuple(found)
+        return _developer_paths_cache
+
+
 _MACOS_DENIED_EXECUTABLES = (
     "/usr/bin/open",
     "/usr/bin/osascript",
@@ -1889,7 +1929,8 @@ def _macos_seatbelt_profile(
 ) -> str:
     readable_paths = (
         *_MACOS_READ_ROOTS,
-        *(_MACOS_TLS_TRUST_PATHS if proxy_port else ()),
+        *_macos_developer_paths(),
+        *((*_MACOS_TLS_TRUST_PATHS, *tls_trust_paths()) if proxy_port else ()),
         *_MACOS_DEVICES,
         *runtime_paths,
         workdir,

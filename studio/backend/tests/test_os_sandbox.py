@@ -2520,6 +2520,7 @@ def test_linux_allowlist_policy_argv_adds_control_fd_bridge_and_proxy(monkeypatc
         "tls_trust_environment",
         lambda base = None: {"SSL_CERT_FILE": "/fake/certifi/cacert.pem"},
     )
+    monkeypatch.setattr(os_sandbox, "tls_trust_paths", lambda: ("/fake/openssl",))
     plan = os_sandbox.replace(
         _spec(workdir, sys.executable, "-c", "pass"), network_policy = "allowlist"
     )
@@ -2544,7 +2545,7 @@ def test_linux_allowlist_policy_argv_adds_control_fd_bridge_and_proxy(monkeypatc
         assert prepared.env.get("SSL_CERT_FILE") == "/fake/certifi/cacert.pem"
         assert "--unshare-all" in argv
         # The CA bundles ride along, or TLS through the proxy fails verification.
-        for path in os_sandbox._LINUX_CA_TRUST_PATHS:
+        for path in (*os_sandbox._LINUX_CA_TRUST_PATHS, "/fake/openssl"):
             assert argv[argv.index(path) - 1] == "--ro-bind-try"
     finally:
         prepared.cleanup()

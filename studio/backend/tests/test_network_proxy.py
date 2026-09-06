@@ -919,28 +919,38 @@ def test_bytes_pipelined_with_the_connect_head_reach_the_upstream(proxy, upstrea
     client.close()
 
 
-def test_tls_trust_environment_only_fills_a_missing_default_store(monkeypatch, tmp_path):
+def test_tls_trust_environment_prefers_the_host_store_and_falls_back_to_certifi(monkeypatch, tmp_path):
     import ssl
     import types
 
     bundle = tmp_path / "cacert.pem"
     bundle.write_text("x")
+    host_file = tmp_path / "openssl" / "cert.pem"
+    host_file.parent.mkdir()
+    host_file.write_text("y")
     fake_certifi = types.SimpleNamespace(where = lambda: str(bundle))
     monkeypatch.setitem(sys.modules, "certifi", fake_certifi)
     missing = types.SimpleNamespace(cafile = None, capath = None)
-    present = types.SimpleNamespace(cafile = "/etc/ssl/cert.pem", capath = None)
+    present = types.SimpleNamespace(cafile = str(host_file), capath = None)
 
     monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: missing)
     assert network_proxy.tls_trust_environment() == {
         "SSL_CERT_FILE": str(bundle),
         "REQUESTS_CA_BUNDLE": str(bundle),
     }
+    assert network_proxy.tls_trust_paths() == (str(bundle),)
     # An operator's own setting wins.
     assert network_proxy.tls_trust_environment({"SSL_CERT_FILE": "/mine.pem"}) == {}
-    # A working default store needs no override.
+    # The host store, when it exists, is named and exposed (its directory) together
+    # with certifi; the sandbox may not see the store otherwise (macOS framework builds).
     monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: present)
-    assert network_proxy.tls_trust_environment() == {}
-    # No certifi: nothing to point at.
+    assert network_proxy.tls_trust_environment() == {
+        "SSL_CERT_FILE": str(host_file),
+        "REQUESTS_CA_BUNDLE": str(host_file),
+    }
+    assert network_proxy.tls_trust_paths() == (str(host_file.parent), str(bundle))
+    # No certifi and no store: nothing to point at.
     monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: missing)
     monkeypatch.setitem(sys.modules, "certifi", None)
     assert network_proxy.tls_trust_environment() == {}
+    assert network_proxy.tls_trust_paths() == ()

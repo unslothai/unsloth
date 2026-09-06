@@ -328,30 +328,66 @@ def proxy_environment(port: int, credential: ProxyCredential) -> dict[str, str]:
     return env
 
 
-def tls_trust_environment(base: dict[str, str] | None = None) -> dict[str, str]:
-    """``SSL_CERT_FILE`` for interpreters whose OpenSSL has no trust store of its own.
-
-    python.org and hosted-toolcache builds on macOS ship OpenSSL with default
-    cert paths that do not exist, so ``urllib`` fails every HTTPS request with
-    CERTIFICATE_VERIFY_FAILED while pip (which vendors certifi) works. When the
-    defaults are missing and ``certifi`` is importable, its bundle is named
-    through the standard variable, which OpenSSL and Python's ssl module honour.
-    A caller that already set the variable keeps its value.
-    """
-    if base and any(key in base for key in ("SSL_CERT_FILE", "SSL_CERT_DIR")):
-        return {}
+def _openssl_default_paths() -> tuple[str | None, str | None]:
+    """OpenSSL's compiled-in cafile and capath as the host sees them (None when absent)."""
     try:
         import ssl
 
         paths = ssl.get_default_verify_paths()
-        if paths.cafile or paths.capath:
-            return {}
+    except Exception:  # noqa: BLE001 - a broken ssl build is treated as no defaults
+        return None, None
+    cafile = paths.cafile if paths.cafile and os.path.isfile(paths.cafile) else None
+    capath = paths.capath if paths.capath and os.path.isdir(paths.capath) else None
+    return cafile, capath
+
+
+def _certifi_bundle() -> str | None:
+    try:
         import certifi  # type: ignore[import-not-found]
 
         bundle = certifi.where()
-    except Exception:  # noqa: BLE001 - a missing module or a broken ssl build means no override
+    except Exception:  # noqa: BLE001 - optional dependency
+        return None
+    return bundle if isinstance(bundle, str) and os.path.isfile(bundle) else None
+
+
+def tls_trust_paths() -> tuple[str, ...]:
+    """Paths the sandbox must be able to read for TLS verification to work.
+
+    OpenSSL's default store often lives outside the system roots the sandbox
+    exposes: python.org and hosted-toolcache builds keep it under the
+    interpreter's own ``etc/openssl``, which is not part of the runtime tree the
+    backends bind. certifi's bundle is returned too so the environment fallback
+    below has something readable to point at.
+    """
+    cafile, capath = _openssl_default_paths()
+    candidates = [
+        os.path.dirname(cafile) if cafile else None,
+        capath,
+        _certifi_bundle(),
+    ]
+    seen: list[str] = []
+    for path in candidates:
+        if path and os.path.exists(path) and path not in seen:
+            seen.append(path)
+    return tuple(seen)
+
+
+def tls_trust_environment(base: dict[str, str] | None = None) -> dict[str, str]:
+    """``SSL_CERT_FILE`` naming a bundle the sandboxed interpreter can verify against.
+
+    The host's OpenSSL default cafile when it exists (it is exposed read-only by
+    ``tls_trust_paths``), else certifi's bundle: python.org and hosted-toolcache
+    builds on macOS report default cert paths that do not exist, so ``urllib``
+    fails every HTTPS request with CERTIFICATE_VERIFY_FAILED while pip (which
+    vendors certifi) works. A caller that already set the variable keeps its
+    value; pip and requests read the same variables.
+    """
+    if base and any(key in base for key in ("SSL_CERT_FILE", "SSL_CERT_DIR")):
         return {}
-    if not (isinstance(bundle, str) and os.path.isfile(bundle)):
+    cafile, _capath = _openssl_default_paths()
+    bundle = cafile or _certifi_bundle()
+    if not bundle:
         return {}
     return {"SSL_CERT_FILE": bundle, "REQUESTS_CA_BUNDLE": bundle}
 
