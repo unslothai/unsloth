@@ -137,9 +137,9 @@ class TestThePromotedFallbackCoversBothAttempts:
         assert snapshots, "the chat produced no text at all"
         final = snapshots[-1]
         thought, _, fallback = final.partition("</think>")
-        assert "The first half. " in thought and "The second half." in thought, (
-            f"the thought lost an attempt: {final!r}"
-        )
+        assert (
+            "The first half. " in thought and "The second half." in thought
+        ), f"the thought lost an attempt: {final!r}"
         assert "The first half. " in fallback, (
             "the promoted fallback IS the answer for a reasoning-only model, and it was "
             f"built from the resumed attempt alone: {final!r}"

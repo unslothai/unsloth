@@ -2398,7 +2398,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         base = str(getattr(llama_backend, "base_url", "") or "")
         if not base:
             return
-        occupancy = read_slot_occupancy(lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend)))
+        occupancy = read_slot_occupancy(
+            lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
+        )
         controller.note_resident(
             None if occupancy is None else occupancy.get("resident"),
             0 if occupancy is None else int(occupancy.get("idle_tokens") or 0),
@@ -2434,7 +2436,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         if needed > 0 and occupancy.get("idle"):
             freed = reclaim_idle_slots(
                 occupancy,
-                lambda slot_id: erase_llama_slot(base, slot_id, headers = _llama_slot_headers(llama_backend)),
+                lambda slot_id: erase_llama_slot(
+                    base, slot_id, headers = _llama_slot_headers(llama_backend)
+                ),
                 needed = needed,
             )
             if freed:
@@ -2515,7 +2519,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                     _idle_tokens = int(occupancy.get("idle_tokens") or 0)
                     freed = reclaim_idle_slots(
                         occupancy,
-                        lambda slot_id: erase_llama_slot(base, slot_id, headers = _llama_slot_headers(llama_backend)),
+                        lambda slot_id: erase_llama_slot(
+                            base, slot_id, headers = _llama_slot_headers(llama_backend)
+                        ),
                         needed = sum(v.tokens for v in victims),
                     )
                     if freed:
@@ -2720,12 +2726,16 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
         )
         if not contended:
             return
-        occupancy = read_slot_occupancy(lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend)))
+        occupancy = read_slot_occupancy(
+            lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
+        )
         if not occupancy or not occupancy.get("idle"):
             return
         freed = reclaim_idle_slots(
             occupancy,
-            lambda slot_id: erase_llama_slot(base, slot_id, headers = _llama_slot_headers(llama_backend)),
+            lambda slot_id: erase_llama_slot(
+                base, slot_id, headers = _llama_slot_headers(llama_backend)
+            ),
             needed = int(occupancy.get("resident") or 0),
         )
         if freed:
@@ -30457,7 +30467,12 @@ async def anthropic_messages(
             cancel_event = cancel_event,
         )
 
-    async def _admitted_anthropic(coro, *, tool_loop: bool = False, raw: bool = False):
+    async def _admitted_anthropic(
+        coro,
+        *,
+        tool_loop: bool = False,
+        raw: bool = False,
+    ):
         try:
             reservation, admission_config = _openai_llama_admission_reserve(
                 request = request,

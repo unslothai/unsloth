@@ -135,9 +135,7 @@ class TestTheFinalPassIsClampedToWhatWasAdmitted:
         payloads: list[dict] = []
         streams = [_tool_round(), _final_answer(3)]
         backend = _backend(monkeypatch, streams, payloads)
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool", lambda *a, **k: "RESULT"
-        )
+        monkeypatch.setattr("core.inference.tools.execute_tool", lambda *a, **k: "RESULT")
 
         _run(backend, max_tokens = 3000, admission_output_allowance = 512)
 
@@ -152,9 +150,7 @@ class TestTheFinalPassIsClampedToWhatWasAdmitted:
         payloads: list[dict] = []
         streams = [_tool_round(), _final_answer(3)]
         backend = _backend(monkeypatch, streams, payloads)
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool", lambda *a, **k: "RESULT"
-        )
+        monkeypatch.setattr("core.inference.tools.execute_tool", lambda *a, **k: "RESULT")
 
         _run(backend, max_tokens = 300)
 
@@ -170,9 +166,7 @@ class TestTheFinalPassReportsItsGrowth:
         # Enough content chunks for two reports on the final pass alone.
         streams = [_tool_round(), _final_answer(_TOKEN_REPORT_EVERY * 2 + 1)]
         backend = _backend(monkeypatch, streams, payloads)
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool", lambda *a, **k: "RESULT"
-        )
+        monkeypatch.setattr("core.inference.tools.execute_tool", lambda *a, **k: "RESULT")
         seen: list[int] = []
 
         _run(backend, max_tokens = 3000, on_tokens = seen.append)
@@ -189,9 +183,7 @@ class TestTheFinalPassReportsItsGrowth:
         payloads: list[dict] = []
         streams = [_tool_round(), _final_answer(_TOKEN_REPORT_EVERY + 1)]
         backend = _backend(monkeypatch, streams, payloads)
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool", lambda *a, **k: "RESULT"
-        )
+        monkeypatch.setattr("core.inference.tools.execute_tool", lambda *a, **k: "RESULT")
 
         def _boom(_n):
             raise RuntimeError("the sweep exploded")

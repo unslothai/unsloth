@@ -117,9 +117,9 @@ class TestABudgetIsSpentByLaunchesOnly:
     def test_no_call_comes_back_as_budget_exhausted(self, executed):
         lines = _run(_transport_with_a_repeat(), max_calls = 3, tools = [WEB])
         results = [end.get("result") or "" for end in _events(lines, "tool_end")]
-        assert not any("budget" in result.lower() for result in results), (
-            f"a call was refused for a budget that was not spent: {results}"
-        )
+        assert not any(
+            "budget" in result.lower() for result in results
+        ), f"a call was refused for a budget that was not spent: {results}"
 
     def test_a_budget_that_really_is_spent_still_refuses(self, executed):
         """The guard the counting exists for, unchanged.
