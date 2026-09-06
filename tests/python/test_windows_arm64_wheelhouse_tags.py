@@ -1027,10 +1027,22 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
         ):
             monkeypatch.delenv(var, raising = False)
         (tmp_path / "proj").mkdir()
-        (tmp_path / "xdg").mkdir()
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        # uv reads the user file from %APPDATA%\uv\uv.toml on Windows and
+        # $XDG_CONFIG_HOME/uv/uv.toml elsewhere, and _uv_config_files branches on exactly
+        # that. Pointing only XDG_CONFIG_HOME at a directory left the user-file case
+        # unsatisfiable on Windows -- APPDATA was deleted just above, so nothing was
+        # discovered and the assertion failed there while passing on the Linux row CI runs
+        # this file on. Both names point at one directory so the case is real on every
+        # platform, and `user_config` below names it so the parametrised row does not have
+        # to know which one is in play.
+        (tmp_path / "user").mkdir()
+        monkeypatch.setenv("APPDATA", str(tmp_path / "user"))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user"))
         monkeypatch.chdir(tmp_path / "proj")
         self.tmp = tmp_path
+
+    #: Where _write puts the "user file" row, spelled the same on every platform.
+    user_config = "user/uv/uv.toml"
 
     def _write(self, rel, body):
         p = self.tmp / rel
@@ -1068,7 +1080,7 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
                 "pyproject [tool.uv.pip]",
             ),
             ("uv.toml", "no-index = true\n", "a parent directory"),
-            ("xdg/uv/uv.toml", "no-index = true\n", "the user file"),
+            ("user/uv/uv.toml", "no-index = true\n", "the user file"),
         ],
     )
     def test_a_configured_exclusive_source_is_not_pypi(self, ips, rel, body, why):
@@ -1085,7 +1097,10 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
 
     def test_project_outranks_user_for_a_scalar(self, ips):
         self._write("proj/uv.toml", "no-index = false\n")
-        self._write("xdg/uv/uv.toml", "no-index = true\n")
+        self._write(self.user_config, "no-index = true\n")
+        # Vacuous unless the user file is somewhere uv would look: if it is not discovered,
+        # this passes on the project file alone and asserts nothing about precedence.
+        assert (self.tmp / self.user_config) in [p for p, _ in ips._uv_config_files()]
         assert ips._public_pypi_is_reachable() is True
 
     def test_uv_toml_beats_pyproject_in_the_same_directory(self, ips):
