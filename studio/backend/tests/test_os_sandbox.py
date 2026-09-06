@@ -3210,11 +3210,11 @@ def test_editable_install_source_trees_are_readable(monkeypatch, tmp_path):
     site = tmp_path / "site-packages"
     site.mkdir()
     checkout = tmp_path / "checkout" / "src"
-    checkout.mkdir(parents = True)
+    (checkout / "unsloth").mkdir(parents = True)
     (site / "__editable__.unsloth.pth").write_text(f"{checkout}\n")
     (site / "distutils-precedence.pth").write_text("import os; os.environ\n")
     (site / "relative.pth").write_text("../relative-tree\n")
-    (tmp_path / "relative-tree").mkdir()
+    (tmp_path / "relative-tree" / "unsloth_zoo").mkdir(parents = True)
     monkeypatch.setattr(
         os_sandbox.sysconfig,
         "get_paths",
@@ -3228,6 +3228,56 @@ def test_editable_install_source_trees_are_readable(monkeypatch, tmp_path):
     # Every entry is a real directory and each appears once.
     assert all(os.path.isdir(path) for path in found)
     assert len(found) == len(set(found))
+
+
+def test_an_unrelated_pth_entry_is_not_bound_into_the_sandbox(monkeypatch, tmp_path):
+    # Any package may drop a legal absolute path into a .pth file. Binding it
+    # read-only would hand Required-mode tool code whatever it names, and a
+    # reviewer reproduced exactly this with a home directory.
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    home = tmp_path / "home" / "alice"
+    (home / ".ssh").mkdir(parents = True)
+    (home / ".ssh" / "id_rsa").write_text("PRIVATE KEY")
+    ours = tmp_path / "checkout"
+    (ours / "unsloth").mkdir(parents = True)
+    (site / "someone-else.pth").write_text(f"{home}\n")
+    (site / "__editable__.unsloth.pth").write_text(f"{ours}\n")
+    monkeypatch.setattr(
+        os_sandbox.sysconfig,
+        "get_paths",
+        lambda: {"purelib": str(site), "platlib": str(site)},
+    )
+    found = os_sandbox._editable_install_paths()
+    assert str(ours) in found
+    assert str(home) not in found
+    assert not any(str(home) in path for path in found)
+
+
+def test_a_pep_660_finder_module_is_read_as_data_not_imported(monkeypatch, tmp_path):
+    # setuptools' other editable shape writes no path at all, only a finder
+    # whose MAPPING names each package's directory, so a checkout installed
+    # that way used to be invisible. The module is parsed, never imported:
+    # importing one from site-packages would run its code in this process.
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    package = tmp_path / "checkout" / "unsloth_zoo"
+    package.mkdir(parents = True)
+    stranger = tmp_path / "stranger"
+    stranger.mkdir()
+    (site / "__editable___unsloth_zoo_2026_1_0_finder.py").write_text(
+        "import sys\n"
+        "raise SystemExit('importing this module must never happen')\n"
+        f"MAPPING = {{'unsloth_zoo': {str(package)!r}, 'other': {str(stranger)!r}}}\n"
+    )
+    monkeypatch.setattr(
+        os_sandbox.sysconfig,
+        "get_paths",
+        lambda: {"purelib": str(site), "platlib": str(site)},
+    )
+    found = os_sandbox._editable_install_paths()
+    assert str(package) in found
+    assert str(stranger) not in found
 
 
 def test_linux_system_roots_cover_libexec_and_usr_local():

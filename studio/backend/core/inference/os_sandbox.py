@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import errno
 import ctypes
 import hashlib
@@ -700,8 +701,14 @@ def _editable_install_paths() -> list[str]:
     site-packages naming a checkout that lives outside every path above. Studio is
     usually installed that way, so without these the Python tool cannot import the
     package it is part of. Only existing directories are returned, and only from
-    .pth files in the interpreter's own site directories; the file content is read
-    as plain paths, never executed.
+    site directories of the interpreter itself; file content is read as data,
+    never executed.
+
+    A .pth entry is only accepted when the directory it names actually holds one
+    of the packages this is for. Any package may drop a legal absolute path into
+    a .pth file, and an entry such as /home/alice would otherwise be bound
+    read-only into every Required-mode launch, handing tool code the user's whole
+    home. A reviewer reproduced exactly that.
     """
     found: list[str] = []
     site_dirs: list[str] = []
@@ -732,8 +739,72 @@ def _editable_install_paths() -> list[str]:
                 if not os.path.isabs(line):
                     line = os.path.join(directory, line)
                 path = os.path.abspath(line)
-                if os.path.isdir(path) and path not in found:
+                if path not in found and _holds_a_sandbox_package(path):
                     found.append(path)
+        for entry in entries:
+            # PEP 660's other shape: setuptools writes a finder module whose
+            # MAPPING names each package's directory, and no .pth path at all,
+            # so a checkout installed that way was invisible here.
+            if not (entry.startswith("__editable___") and entry.endswith("_finder.py")):
+                continue
+            for path in _editable_finder_mapping(os.path.join(directory, entry)):
+                if path not in found:
+                    found.append(path)
+    return found
+
+
+# The packages an editable checkout has to expose for the tools to import what
+# Studio is part of. Anything else a .pth happens to name is not ours to bind.
+_SANDBOX_EDITABLE_PACKAGES = ("unsloth", "unsloth_zoo", "studio")
+
+
+def _holds_a_sandbox_package(path: str) -> bool:
+    if not os.path.isdir(path):
+        return False
+    for name in _SANDBOX_EDITABLE_PACKAGES:
+        if os.path.isdir(os.path.join(path, name)):
+            return True
+        if os.path.isfile(os.path.join(path, f"{name}.py")):
+            return True
+    return False
+
+
+def _editable_finder_mapping(path: str) -> list[str]:
+    """Directories a setuptools PEP 660 finder maps our packages to.
+
+    The module is parsed as data and never imported: it is written by pip into
+    site-packages, but so is every other package's, and importing one here would
+    run its code in the Studio process.
+    """
+    try:
+        with open(path, "r", encoding = "utf-8") as handle:
+            source = handle.read(262144)
+    except (OSError, UnicodeDecodeError):
+        return []
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+    found: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "MAPPING" for t in node.targets):
+            continue
+        try:
+            mapping = ast.literal_eval(node.value)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            continue
+        if not isinstance(mapping, dict):
+            continue
+        for name, target in mapping.items():
+            if not isinstance(name, str) or not isinstance(target, str):
+                continue
+            if name.split(".", 1)[0] not in _SANDBOX_EDITABLE_PACKAGES:
+                continue
+            resolved = os.path.abspath(target)
+            if os.path.isdir(resolved) and resolved not in found:
+                found.append(resolved)
     return found
 
 
@@ -1621,6 +1692,13 @@ class LinuxBubblewrapBackend:
                     end.close()
                 except OSError:
                     pass
+            # The seccomp descriptor and the identity directory are owned by the
+            # PreparedSandboxLaunch that was never returned, so they are this
+            # path's to release too, like the empty-mask failure above. Leaking
+            # a descriptor here is worst exactly when it matters: socketpair
+            # fails under descriptor exhaustion, and every retry made it worse.
+            seccomp_filter.close()
+            shutil.rmtree(identity_dir, ignore_errors = True)
             raise
 
 
