@@ -28,7 +28,11 @@ export function useSandboxImage(url: string | null): {
   state: SandboxImageState;
 } {
   const ref = useRef<HTMLImageElement>(null);
-  const [state, setState] = useState<{ url: string | null; load: SandboxImageState }>({
+  const [state, setState] = useState<{
+    url: string | null;
+    load: SandboxImageState;
+    signal?: AbortSignal;
+  }>({
     url,
     load: IDLE,
   });
@@ -62,16 +66,30 @@ export function useSandboxImage(url: string | null): {
       .then(async (response) => {
         // Guarded on both arms: a late write for the url this element used to hold must not land.
         if (!response.ok) {
-          if (!controller.signal.aborted) setState({ url, load: { status: "failed" } });
+          if (!controller.signal.aborted)
+            setState({
+              url,
+              load: { status: "failed" },
+              signal: controller.signal,
+            });
           return;
         }
         const blob = await response.blob();
         if (controller.signal.aborted) return;
         objectUrl = URL.createObjectURL(blob);
-        setState({ url, load: { status: "loaded", url: objectUrl } });
+        setState({
+          url,
+          load: { status: "loaded", url: objectUrl },
+          signal: controller.signal,
+        });
       })
       .catch(() => {
-        if (!controller.signal.aborted) setState({ url, load: { status: "failed" } });
+        if (!controller.signal.aborted)
+          setState({
+            url,
+            load: { status: "failed" },
+            signal: controller.signal,
+          });
       });
 
     return () => {
@@ -82,5 +100,9 @@ export function useSandboxImage(url: string | null): {
     };
   }, [url, nearViewport]);
 
-  return { ref, state: state.url === url ? state.load : IDLE };
+  // Returning to the same URL must not reuse a result whose fetch was cleaned up.
+  return {
+    ref,
+    state: state.url === url && !state.signal?.aborted ? state.load : IDLE,
+  };
 }
