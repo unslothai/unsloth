@@ -3481,7 +3481,7 @@ class _RenderRecordingBackend:
     active_model_name = "mlx/model"
 
     def __init__(self):
-        self.messages = self.system = self.tools = None
+        self.messages = self.system = self.tools = self.reasoning = None
 
     def count_chat_tokens(
         self,
@@ -3491,6 +3491,10 @@ class _RenderRecordingBackend:
     ):
         self.messages, self.system = messages, system_prompt
         self.tools = kwargs.get("tools")
+        self.reasoning = {
+            key: kwargs.get(key)
+            for key in ("enable_thinking", "reasoning_effort", "preserve_thinking")
+        }
         return 11, "mlx/model"
 
 
@@ -3540,6 +3544,26 @@ def test_an_mlx_count_is_served_where_llama_cpp_would_have_refused(monkeypatch):
     with pytest.raises(HTTPException) as refused:
         _count_route(monkeypatch, _RenderRecordingBackend(), messages = [])
     assert refused.value.status_code == 503
+
+
+def test_an_mlx_count_uses_the_shared_nested_reasoning_controls(monkeypatch):
+    backend = _RenderRecordingBackend()
+    _count_route(
+        monkeypatch,
+        backend,
+        messages = [{"role": "user", "content": "hello"}],
+        thinking = {"type": "disabled"},
+        chat_template_kwargs = {
+            "reasoning_effort": "high",
+            "preserve_thinking": True,
+        },
+    )
+
+    assert backend.reasoning == {
+        "enable_thinking": True,
+        "reasoning_effort": "high",
+        "preserve_thinking": True,
+    }
 
 
 @pytest.mark.parametrize(

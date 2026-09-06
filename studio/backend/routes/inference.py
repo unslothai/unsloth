@@ -663,22 +663,6 @@ def _has_openai_tool_history(messages) -> bool:
     return False
 
 
-def _extra_body_enable_thinking(payload) -> Optional[bool]:
-    """``enable_thinking`` sent through the OpenAI SDK's ``extra_body``, or None.
-
-    The SDK spreads ``chat_template_kwargs`` into the request body, where ``extra="allow"``
-    stashes it in ``model_extra``; every render consumes the typed field instead, so each
-    entry point lifts it first.
-    """
-    extra = getattr(payload, "model_extra", None)
-    if not isinstance(extra, dict):
-        return None
-    template_kwargs = extra.get("chat_template_kwargs")
-    if isinstance(template_kwargs, dict) and "enable_thinking" in template_kwargs:
-        return bool(template_kwargs["enable_thinking"])
-    return None
-
-
 def _raise_unsupported_openai_parameter(param: str, message: str) -> None:
     raise HTTPException(
         status_code = 400,
@@ -3943,19 +3927,18 @@ def _anthropic_reasoning_args(payload) -> dict:
     # whose _request_reasoning_kwargs looks at the boolean only. The
     # effort-dial families already honor effort downstream, so this is what
     # makes one request mean the same thing across template shapes.
-    enable_thinking = payload.enable_thinking
-    reasoning_effort = payload.reasoning_effort
-    # Mirror the /v1/responses mapping: an effort-only request still drives
-    # enable_thinking-style templates, whose only dial is the boolean --
-    # "none" means off, any named level means on. This keeps generation and
-    # the think-markup parsing gate reading the same effective controls.
-    if enable_thinking is None and reasoning_effort is not None:
-        enable_thinking = reasoning_effort != "none"
+    enable_thinking, reasoning_effort = _resolve_reasoning_controls(
+        payload.enable_thinking, payload.reasoning_effort
+    )
     if enable_thinking is None:
         # Neither x-unsloth control was sent: fall back to Anthropic's native
         # `thinking` block (and to None when that is absent too, leaving the
-        # model in its load-time default).
-        enable_thinking = payload.resolved_enable_thinking()
+        # model in its load-time default). A ChatCompletionRequest has already
+        # mapped that block onto the boolean and carries no resolver, so the
+        # sampling gate can share this helper.
+        resolver = getattr(payload, "resolved_enable_thinking", None)
+        if resolver is not None:
+            enable_thinking = resolver()
     return {
         "enable_thinking": enable_thinking,
         "reasoning_effort": reasoning_effort,
@@ -20260,6 +20243,144 @@ async def delete_openai_container(
         await client.close()
 
 
+_REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
+
+
+def _valid_reasoning_effort(value) -> Optional[str]:
+    """An effort level the templates understand, else None."""
+    if isinstance(value, str) and value in _REASONING_EFFORT_VALUES:
+        return value
+    return None
+
+
+def _chat_template_reasoning_kwargs(payload) -> dict:
+    """Validated reasoning controls from OpenAI ``extra_body``."""
+    extra = getattr(payload, "model_extra", None)
+    template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
+    if not isinstance(template_kwargs, dict):
+        return {}
+    controls = {}
+    enable_thinking = template_kwargs.get("enable_thinking")
+    if isinstance(enable_thinking, bool):
+        controls["enable_thinking"] = enable_thinking
+    effort = _valid_reasoning_effort(template_kwargs.get("reasoning_effort"))
+    if effort is not None:
+        controls["reasoning_effort"] = effort
+    preserve = template_kwargs.get("preserve_thinking")
+    if isinstance(preserve, bool):
+        controls["preserve_thinking"] = preserve
+    return controls
+
+
+def _resolve_reasoning_controls(
+    enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> tuple[Optional[bool], Optional[str]]:
+    """Resolve the on/off gate while keeping a compatible effort level."""
+    if reasoning_effort is None:
+        return enable_thinking, None
+    effort_enables_thinking = reasoning_effort != "none"
+    if enable_thinking is None:
+        return effort_enables_thinking, reasoning_effort
+    if enable_thinking != effort_enables_thinking:
+        return enable_thinking, None
+    return enable_thinking, reasoning_effort
+
+
+def _normalize_chat_reasoning_controls(payload) -> None:
+    """Merge typed and nested controls, then remove contradictory state."""
+    nested = _chat_template_reasoning_kwargs(payload)
+    fields_set = getattr(payload, "model_fields_set", set())
+    typed_enable = payload.enable_thinking if "enable_thinking" in fields_set else None
+    typed_effort = (
+        _valid_reasoning_effort(payload.reasoning_effort)
+        if "reasoning_effort" in fields_set
+        else None
+    )
+
+    if typed_enable is not None or typed_effort is not None:
+        enable_thinking, reasoning_effort = _resolve_reasoning_controls(typed_enable, typed_effort)
+        nested_effort = nested.get("reasoning_effort")
+        if typed_effort is None and nested_effort is not None:
+            _, compatible_effort = _resolve_reasoning_controls(enable_thinking, nested_effort)
+            if compatible_effort is not None:
+                reasoning_effort = compatible_effort
+    elif "enable_thinking" in nested or "reasoning_effort" in nested:
+        enable_thinking, reasoning_effort = _resolve_reasoning_controls(
+            nested.get("enable_thinking"), nested.get("reasoning_effort")
+        )
+    else:
+        # Lowest priority: Anthropic ``thinking``, already mapped onto the boolean.
+        enable_thinking = payload.enable_thinking
+        reasoning_effort = _valid_reasoning_effort(payload.reasoning_effort)
+
+    payload.enable_thinking = enable_thinking
+    payload.reasoning_effort = reasoning_effort
+    if payload.preserve_thinking is None and "preserve_thinking" in nested:
+        payload.preserve_thinking = nested["preserve_thinking"]
+
+
+def _loaded_llama_backend_for(model_id):
+    """The live llama.cpp backend serving ``model_id``, or None.
+
+    The id has to match: a transformers/MLX request must never be answered from the
+    llama.cpp launch state.
+    """
+    if not model_id:
+        return None
+    backend = get_llama_cpp_backend()
+    if backend is None or not getattr(backend, "is_loaded", False):
+        return None
+    if getattr(backend, "model_identifier", None) != model_id:
+        return None
+    return backend
+
+
+def _normalized_sampling_thinking_mode(payload) -> Optional[bool]:
+    """Three-valued reasoning mode read from the request alone.
+
+    Precedence: ``enable_thinking``, then effort (``none`` means off), then the
+    Anthropic ``thinking`` block. The block is mapped for chat requests already;
+    the fallback also covers /v1/messages. None means the request picked nothing,
+    leaving the mode to the loaded template.
+    """
+    enable_thinking, reasoning_effort = _resolve_reasoning_controls(
+        getattr(payload, "enable_thinking", None),
+        getattr(payload, "reasoning_effort", None),
+    )
+    if enable_thinking is not None or reasoning_effort is not None:
+        return enable_thinking
+    thinking = getattr(payload, "thinking", None)
+    thinking_type = getattr(thinking, "type", None)
+    if thinking_type is not None:
+        # No .lower(): resolved_enable_thinking() treats only the exact "disabled"
+        # as off, and a case variant must not split sampling from generation.
+        return str(thinking_type) != "disabled"
+    return None
+
+
+def _sampling_thinking_mode(payload, model_id) -> Optional[bool]:
+    """The mode generation will actually run in, used to pick sampling recommendations.
+
+    Defers to ``_think_parsing_expected``, the same resolver the think-markup gate uses,
+    so sampling cannot disagree with generation: it honors always-on templates that
+    ignore an off control, effort-dial families that map "off" onto a low-but-thinking
+    effort, and -- when the request sends nothing -- the mode Studio launched the model
+    in. That last case is the common one: Qwen3.8 thinks by default, its card pairs that
+    with presence_penalty 0.0, and the Chat UI already seeds itself this way
+    (apply-inference-status-to-store.ts). Without a live backend only the request can
+    speak, so the historical flat preset stands.
+    """
+    backend = _loaded_llama_backend_for(model_id)
+    # "Cannot answer" is not the same as "answered no": a backend reporting
+    # supports_reasoning=False has told us this template never reasons, and
+    # _think_parsing_expected turns that into False. Only a backend without the
+    # introspection at all (a test double) leaves the request as the sole source, and
+    # then the historical flat preset stands rather than a silently re-priced request.
+    if backend is None or getattr(backend, "supports_reasoning", None) is None:
+        return _normalized_sampling_thinking_mode(payload)
+    return _think_parsing_expected(backend, payload)
+
+
 def _fill_recommended_sampling_openai(payload, model_id) -> None:
     """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
     ChatCompletionRequest in place.
@@ -20275,7 +20396,11 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
         f: (getattr(payload, f) if f in payload.model_fields_set else None)
         for f in SAMPLING_FIELD_NAMES
     }
-    effective = resolve_effective_sampling(model_id, explicit)
+    effective = resolve_effective_sampling(
+        model_id,
+        explicit,
+        thinking_mode = _sampling_thinking_mode(payload, model_id),
+    )
     for field, value in effective.items():
         setattr(payload, field, value)
 
@@ -20644,12 +20769,8 @@ async def produce_openai_chat_completions(
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
-    # Clients that only know the OpenAI shape (data_designer recipe runs, etc.) control
-    # the reasoning preamble this way, so lift it onto the typed field the generators read.
-    if payload.enable_thinking is None:
-        _lifted_enable_thinking = _extra_body_enable_thinking(payload)
-        if _lifted_enable_thinking is not None:
-            payload.enable_thinking = _lifted_enable_thinking
+    # Lift ``extra_body`` template controls before sampling and generation read them.
+    _normalize_chat_reasoning_controls(payload)
 
     # ── Determine which backend is active ─────────────────────
     # Single-model server: any model name serves the loaded model (drop-in
@@ -26100,7 +26221,6 @@ def _responses_tool_output_content(output: Union[str, list]) -> Union[str, list]
 
 _RESPONSES_THINK_OPEN = "<think>"
 _RESPONSES_THINK_CLOSE = "</think>"
-_RESPONSES_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
 
 
 def _coerce_responses_reasoning_text(value: Any) -> str:
@@ -26489,15 +26609,16 @@ def _build_chat_request(
     if payload.parallel_tool_calls is not None:
         chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
-    # Both Responses paths reach a Chat Completions render, and the streaming
-    # pass-through reads the typed field directly rather than re-lifting, so lift here.
+    # ``chat_template_kwargs`` arrives in ``model_extra`` (ResponsesRequest is
+    # ``extra="allow"``), but both Chat Completions paths read the typed fields,
+    # so lift it here to cover streaming and non-streaming alike.
     explicit_enable_thinking = False
-    _lifted_enable_thinking = _extra_body_enable_thinking(payload)
-    if _lifted_enable_thinking is not None:
-        chat_kwargs["enable_thinking"] = _lifted_enable_thinking
-        explicit_enable_thinking = True
     _extra = getattr(payload, "model_extra", None)
     if isinstance(_extra, dict):
+        _nested_reasoning = _chat_template_reasoning_kwargs(payload)
+        chat_kwargs.update(_nested_reasoning)
+        if "enable_thinking" in _nested_reasoning:
+            explicit_enable_thinking = True
         # auto_heal_tool_calls / nudge_tool_calls are not typed on
         # ResponsesRequest; lift them from the extra-body so passthrough
         # healing (and the opt-in nudge) honor them on both paths.
@@ -26512,7 +26633,7 @@ def _build_chat_request(
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")
-        if isinstance(effort, str) and effort in _RESPONSES_REASONING_EFFORTS:
+        if isinstance(effort, str) and effort in _REASONING_EFFORT_VALUES:
             if not explicit_enable_thinking:
                 chat_kwargs["reasoning_effort"] = effort
                 chat_kwargs["enable_thinking"] = effort != "none"
@@ -26525,7 +26646,9 @@ def _build_chat_request(
     if response_format is not None:
         chat_kwargs["response_format"] = response_format
 
-    return ChatCompletionRequest(**chat_kwargs)
+    chat_request = ChatCompletionRequest(**chat_kwargs)
+    _normalize_chat_reasoning_controls(chat_request)
+    return chat_request
 
 
 def _responses_custom_tool_input(arguments: Any) -> str:
@@ -28404,10 +28527,8 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             status_code = 503,
             detail = "Cannot count tokens for an empty prompt.",
         )
-    # The same lift the completion applies before it renders.
-    enable_thinking = payload.enable_thinking
-    if enable_thinking is None:
-        enable_thinking = _extra_body_enable_thinking(payload)
+    # The same normalization the completion applies before it renders.
+    _normalize_chat_reasoning_controls(payload)
     # Re-checked immediately before the only work that takes the orchestrator's lock:
     # everything since the endpoint's entry check awaits, so a chat can have started in
     # the gap and would then wait on this count. The GGUF path re-checks for this reason.
@@ -28422,7 +28543,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             messages,
             system_prompt or "",
             tools = _tools_to_use,
-            enable_thinking = enable_thinking,
+            enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
             preserve_thinking = payload.preserve_thinking,
         )
@@ -28637,6 +28758,7 @@ async def chat_count_tokens(
 
     # llama-server falls back to the load-time --chat-template-kwargs per key a request omits,
     # so omitting these prices the template in whatever mode the model was LOADED in.
+    _normalize_chat_reasoning_controls(payload)
     _template_kwargs = llama_backend._request_reasoning_kwargs(
         payload.enable_thinking,
         payload.reasoning_effort,
@@ -29005,8 +29127,9 @@ async def anthropic_messages(
     # Anthropic sampling fields are Optional, so None already marks "client omitted".
     from utils.inference.inference_config import resolve_effective_sampling
 
+    _anthropic_model_id = getattr(llama_backend, "model_identifier", None) or model_name
     _anthropic_sampling = resolve_effective_sampling(
-        getattr(llama_backend, "model_identifier", None) or model_name,
+        _anthropic_model_id,
         {
             "temperature": payload.temperature,
             "top_p": payload.top_p,
@@ -29015,6 +29138,7 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
+        thinking_mode = _sampling_thinking_mode(payload, _anthropic_model_id),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]

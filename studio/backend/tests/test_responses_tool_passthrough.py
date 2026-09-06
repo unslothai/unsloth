@@ -492,6 +492,17 @@ class TestBuildChatRequest:
 
         assert chat_req.enable_thinking is False
 
+    def test_chat_template_kwargs_enable_thinking_requires_json_boolean(self):
+        payload = ResponsesRequest(
+            input = "hi",
+            chat_template_kwargs = {"enable_thinking": "false"},
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert chat_req.enable_thinking is None
+
     def test_reasoning_effort_high_enables_local_thinking(self):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
