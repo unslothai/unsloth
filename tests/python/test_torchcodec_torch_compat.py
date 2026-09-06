@@ -1,4 +1,5 @@
 """torch / torchcodec ABI guardrails (unslothai/unsloth#7225)."""
+
 from __future__ import annotations
 import importlib.util
 import re
@@ -6,6 +7,7 @@ import sys
 import types
 from pathlib import Path
 import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 IMPORT_FIXES_PATH = REPO_ROOT / "unsloth" / "import_fixes.py"
@@ -23,6 +25,7 @@ def _tomllib():
         return tomllib
     return pytest.importorskip("tomli")
 
+
 def _load_import_fixes_module():
     spec = importlib.util.spec_from_file_location(
         "unsloth_import_fixes_under_test",
@@ -33,6 +36,7 @@ def _load_import_fixes_module():
     spec.loader.exec_module(mod)
     return mod
 
+
 def test_pyproject_declares_torch210_audio_extra_with_python_gate():
     text = PYPROJECT.read_text(encoding = "utf-8")
     assert "audio-torch210 = [" in text
@@ -42,10 +46,12 @@ def test_pyproject_declares_torch210_audio_extra_with_python_gate():
     assert "audio-torch280 = [" in text
     assert "\naudio = [" not in text
 
+
 def _stub_torch(monkeypatch, version: str):
     torch_mod = types.ModuleType("torch")
     torch_mod.__version__ = version
     monkeypatch.setitem(sys.modules, "torch", torch_mod)
+
 
 def test_torch210_extras_bundle_audio_torch210():
     text = PYPROJECT.read_text(encoding = "utf-8")
@@ -58,15 +64,18 @@ def test_torch210_extras_bundle_audio_torch210():
         assert match is not None, extra
         assert "unsloth[audio-torch210]" in match.group(1)
 
+
 def test_torchcodec_matrix_matches_notebook_validator():
     from scripts import notebook_validator as nv
     fixes = _load_import_fixes_module()
     assert fixes._TORCH_TORCHCODEC_MINORS == nv.TORCH_TORCHCODEC
 
+
 def test_torchcodec_exclusive_upper_bound():
     fixes = _load_import_fixes_module()
     assert fixes._torchcodec_exclusive_upper("0.10") == "<0.11.0"
     assert fixes._torchcodec_exclusive_upper("0.9") == "<0.10.0"
+
 
 def test_torch290_rejects_torchcodec_07(monkeypatch):
     import importlib.metadata
@@ -79,6 +88,7 @@ def test_torch290_rejects_torchcodec_07(monkeypatch):
     assert hint is not None
     assert "audio-torch210" not in hint
 
+
 def test_torch280_accepts_torchcodec_07(monkeypatch):
     import importlib.metadata
 
@@ -87,6 +97,7 @@ def test_torch280_accepts_torchcodec_07(monkeypatch):
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.7.0")
 
     assert fixes._torchcodec_version_mismatch_hint() is None
+
 
 def test_torch210_rejects_torchcodec_011(monkeypatch):
     import importlib.metadata
@@ -106,6 +117,7 @@ def test_torch210_rejects_torchcodec_011(monkeypatch):
     assert "<0.11.0" in hint
     assert "<11.0" not in hint
 
+
 def test_torch210_accepts_torchcodec_010(monkeypatch):
     import importlib.metadata
 
@@ -119,10 +131,12 @@ def test_torch210_accepts_torchcodec_010(monkeypatch):
 
     assert fixes._torchcodec_version_mismatch_hint() is None
 
+
 def test_import_fixes_loads_on_python39_syntax():
     """Regression: module must import on 3.9 (postponed annotations for str | None)."""
     fixes = _load_import_fixes_module()
     assert callable(fixes._torchcodec_version_mismatch_hint)
+
 
 def _load_install_python_stack():
     studio_dir = REPO_ROOT / "studio"
@@ -131,6 +145,7 @@ def _load_install_python_stack():
     import install_python_stack
 
     return install_python_stack
+
 
 def test_torch211_rejects_torchcodec_010(monkeypatch):
     """The guard must not be silent on the torch minor where the mismatch happens."""
@@ -152,6 +167,7 @@ def test_torch211_rejects_torchcodec_010(monkeypatch):
     assert "<0.12.0" in hint
     assert "audio-torch210" not in hint
 
+
 def test_torch211_accepts_torchcodec_011(monkeypatch):
     import importlib.metadata
 
@@ -164,6 +180,7 @@ def test_torch211_accepts_torchcodec_011(monkeypatch):
     )
 
     assert fixes._torchcodec_version_mismatch_hint() is None
+
 
 def test_torch211_accepts_abi_stable_torchcodec(monkeypatch):
     """torchcodec 0.12+ targets torch >=2.11, so it is not locked to one minor."""
@@ -178,6 +195,7 @@ def test_torch211_accepts_abi_stable_torchcodec(monkeypatch):
                 fixes._torchcodec_version_mismatch_hint() is None
             ), f"{torch_version} + torchcodec {codec_version} is supported upstream"
 
+
 def test_torch210_still_rejects_abi_stable_torchcodec(monkeypatch):
     """The ABI-stable floor starts at torch 2.11: 2.10 keeps the exact pairing."""
     import importlib.metadata
@@ -189,6 +207,7 @@ def test_torch210_still_rejects_abi_stable_torchcodec(monkeypatch):
     hint = fixes._torchcodec_version_mismatch_hint()
     assert hint is not None
     assert "audio-torch210" in hint
+
 
 def test_torch_past_last_lockstep_row_rejects_legacy_torchcodec(monkeypatch):
     """0.11 is pinned to torch 2.11 exactly, so 2.12/2.13 with a pre-0.12 codec still warns."""
@@ -205,6 +224,7 @@ def test_torch_past_last_lockstep_row_rejects_legacy_torchcodec(monkeypatch):
             # No audio-torch2xx extra exists for these minors, so none is offered.
             assert "unsloth[audio-torch" not in hint
 
+
 def test_torch_below_the_table_stays_silent(monkeypatch):
     """A torch minor older than the matrix keeps the original no-opinion behaviour."""
     import importlib.metadata
@@ -214,12 +234,14 @@ def test_torch_below_the_table_stays_silent(monkeypatch):
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.0.3")
     assert fixes._torchcodec_version_mismatch_hint() is None
 
+
 def test_pyproject_declares_torch211_audio_extra_with_python_gate():
     text = PYPROJECT.read_text(encoding = "utf-8")
     match = re.search(r"^audio-torch211 = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
     assert match is not None, "pyproject must declare an audio-torch211 extra"
     assert "torchcodec>=0.11.0,<0.12.0" in match.group(1)
     assert "python_version >= '3.10'" in match.group(1)
+
 
 def test_security_audit_covers_every_installable_torchcodec_line():
     """extras-no-deps.txt used to pin torchcodec flat, so 0.10 was the only line that ever
@@ -259,6 +281,7 @@ def test_security_audit_covers_every_installable_torchcodec_line():
             spec in dep for extra in audited for dep in extras[extra]
         ), f"torch {torch_minor} installs {spec}, which no audited extra declares"
 
+
 def test_extras_no_deps_has_no_unconditional_torchcodec_pin():
     """A flat pin cannot serve both torch lines, so the installer picks the spec."""
     lines = [
@@ -271,12 +294,14 @@ def test_extras_no_deps_has_no_unconditional_torchcodec_pin():
         "install_python_stack._select_torchcodec_spec picks it per torch minor"
     )
 
+
 def test_select_torchcodec_spec_tracks_torch_minor():
     ips = _load_install_python_stack()
     assert ips._select_torchcodec_spec("2.11.0+cu128") == "torchcodec>=0.11.0,<0.12.0"
     assert ips._select_torchcodec_spec("2.10.0+cu130") == "torchcodec>=0.10.0,<0.11.0"
     assert ips._select_torchcodec_spec("2.9.1+cu128") == "torchcodec>=0.8.0,<0.10.0"
     assert ips._select_torchcodec_spec("2.8.0+cu126") == "torchcodec>=0.6.0,<0.8.0"
+
 
 def test_select_torchcodec_spec_never_caps_newer_torch_to_the_011_line():
     """0.11 is locked to torch 2.11 exactly, so torch >2.11 takes the open floor."""
@@ -286,10 +311,12 @@ def test_select_torchcodec_spec_never_caps_newer_torch_to_the_011_line():
         assert spec == ips._TORCHCODEC_ABI_STABLE_SPEC, version
         assert "<" not in spec, version
 
+
 def test_select_torchcodec_spec_falls_back_on_unknown_torch():
     ips = _load_install_python_stack()
     for value in (None, "", "not-a-version", "3.0.0", "2.rc1"):
         assert ips._select_torchcodec_spec(value) == ips._TORCHCODEC_DEFAULT_SPEC
+
 
 def test_select_torchcodec_spec_matches_pyproject_audio_extras():
     """The installer's specs and the pip extras must not drift apart."""
@@ -304,6 +331,7 @@ def test_select_torchcodec_spec_matches_pyproject_audio_extras():
         match = re.search(rf"^{extra} = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
         assert match is not None, extra
         assert ips._select_torchcodec_spec(torch_version) in match.group(1), extra
+
 
 def test_select_torchcodec_spec_matches_compat_matrix():
     """Installer specs must admit exactly the minors the compat matrix allows."""
@@ -321,6 +349,7 @@ def test_select_torchcodec_spec_matches_compat_matrix():
             f"torch {torch_minor}: installer admits {sorted(admitted)}, "
             f"matrix allows {sorted(allowed)}"
         )
+
 
 def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
     """torchcodec publishes no sdist and no wheel for Linux aarch64, Windows ARM64 or
