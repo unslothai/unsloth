@@ -788,13 +788,7 @@ with sync_playwright() as p:
                 page,
                 url_substr = PASSWORD_CHANGE_ENDPOINTS,
                 method = "POST",
-                do_click = lambda: (
-                    print(
-                        f"[ui]   submit disabled={page.locator('button[type=\"submit\"]').is_disabled()}",
-                        flush = True,
-                    ),
-                    page.locator('button[type="submit"]').click(),
-                )[-1],
+                do_click = lambda: page.locator('button[type="submit"]').click(),
                 timeout_ms = 30_000,
                 info = lambda m: print(f"[ui]   {m}", flush = True),
             )
