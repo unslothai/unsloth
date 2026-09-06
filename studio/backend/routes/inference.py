@@ -2707,13 +2707,16 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
         if not base:
             return
         snapshot = get_preemption_controller(key).snapshot()
-        # "Somebody else is still in the cache" is the whole test, and ``committed`` is the
-        # broadest way to ask it: it sums every participant that holds KV, including the
-        # raw streams the counted-but-never-chosen surfaces register. With this generation
-        # already unregistered above, a committed of zero means this was the only chat, so
-        # the cells it leaves behind are a free prefix cache for its own next turn.
+        # "Somebody else is still in the cache" is the whole test, and ``holders`` is the
+        # way to ask it: every participant that holds KV, including the raw streams the
+        # counted-but-never-chosen surfaces register. With this generation already
+        # unregistered above, no holder means this was the only chat, so the cells it
+        # leaves behind are a free prefix cache for its own next turn. NOT ``committed``:
+        # that folds in the last residency reading, which was taken while this chat was
+        # still decoding and so still counts its cells, and a lone chat judged by it
+        # erased its own prompt cache on every turn.
         contended = (
-            int(getattr(snapshot, "committed", 0) or 0) > 0
+            int(getattr(snapshot, "holders", 0) or 0) > 0
             or int(getattr(snapshot, "paused", 0) or 0) > 0
             or int(getattr(snapshot, "decoding", 0) or 0) > 0
             or int(getattr(snapshot, "parked", 0) or 0) > 0
@@ -2808,6 +2811,16 @@ def _openai_llama_admission_enforced_max_tokens(
     # arithmetic was the only defence; it is the design now, and preemption is the
     # enforcement. If eviction stops being timely this becomes the crash again, which is
     # why the watermark sweep runs on token growth and not only between rounds.
+    # ONLY while something will reclaim the difference. Under the rollout switch, or with
+    # a private cache per slot, nothing can pause a chat that outgrows its charge, and
+    # the window as a ceiling is the overcommit with no enforcement: four chats admitted
+    # on small charges, each permitted the whole window, is the crash again. The share
+    # is the stopgap the switch exists to fall back to, so it is what the switch gets.
+    if not _openai_llama_preemption_will_apply(llama_backend, budget):
+        share = max(1, budget // max(1, capacity))
+        if share >= (window or budget):
+            return None
+        return max(1, share - prompt_tokens)
     ceiling = window or budget
     return max(1, ceiling - prompt_tokens)
 

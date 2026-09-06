@@ -104,6 +104,16 @@ class TestTheSingleUserCaseCIChecks:
             "cached_tokens=0 failure, reproduced without a server."
         )
 
+    def test_a_lone_chat_that_reported_residency_keeps_its_cells_too(self, controller, erasures):
+        """The residency reading taken while it decoded still counts its own cells."""
+        controller.register("only-chat", lease = _Lease(), tokens = 2000)
+        controller.note_resident(2000, 2000)
+        inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "only-chat")
+        assert erasures == [], (
+            "the cached residency is this chat's own cells; judged by it, a lone chat "
+            "erased its prompt cache on every turn"
+        )
+
     def test_the_ledger_is_exact_either_way(self, controller, erasures):
         """Skipping the erase must never mean skipping the unregister.
 

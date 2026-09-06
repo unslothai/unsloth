@@ -39,11 +39,14 @@ def _chat(text = "hi", **fields):
     return _Payload(messages = [{"role": "user", "content": text}], **fields)
 
 
-def _backend(*, window, total, slots):
+def _backend(*, window, total, slots, unified = True):
+    # ``_kv_cache_unified`` as the real backend sets it under --kv-unified: the window is
+    # offered only while preemption can reclaim, and that needs one shared pool.
     return SimpleNamespace(
         context_length = window,
         _kv_cache_context_total = total,
         effective_parallel_slots = slots,
+        _kv_cache_unified = unified,
     )
 
 
@@ -328,3 +331,30 @@ class TestChargedAndPermittedCannotDrift:
             assert (
                 charged * slots <= budget
             ), f"budget={budget} slots={slots}: {slots} small chats charge {charged * slots}"
+
+
+class TestWhenNothingWillReclaim:
+    """The window is the ceiling only while preemption can reclaim the overcommit.
+
+    Under the rollout switch nothing can pause a chat that outgrows its charge, so four
+    chats each permitted the whole window is the shared-cache overflow the switch exists
+    to fall back from. The share comes back there, held per request as it was before.
+    """
+
+    def test_the_switch_brings_the_share_back(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        prompt = _prompt_tokens(_chat("hi"))
+        assert _enforced(_chat("hi"), backend) == 4096 - prompt
+
+    def test_with_the_switch_on_the_window_is_offered(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        prompt = _prompt_tokens(_chat("hi"))
+        assert _enforced(_chat("hi"), backend) == 16384 - prompt
+
+    def test_four_shares_fit_the_cache(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
+        backend = _backend(window = 16384, total = 16384, slots = 4)
+        prompt = _prompt_tokens(_chat("hi"))
+        assert 4 * (prompt + _enforced(_chat("hi"), backend)) <= 16384

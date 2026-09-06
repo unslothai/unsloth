@@ -693,6 +693,11 @@ class PreemptionSnapshot:
     # exactly while this is non-zero, so a log line that reports one without the other
     # cannot be read back.
     prefilling: int = 0
+    # Participants that hold cells right now, in any state, raw streams included. This
+    # is the question "is anybody else in the cache" answered by the ledger alone:
+    # ``committed`` folds in the last residency reading, which can still be counting a
+    # chat that has just unregistered.
+    holders: int = 0
 
 
 class PreemptionController:
@@ -1583,6 +1588,7 @@ class PreemptionController:
                 slots = max(1, self._slots or 1),
                 tools_running = states.count(ParticipantState.TOOLS_RUNNING),
                 prefilling = self._pending_prefill_locked(),
+                holders = sum(1 for p in self._participants.values() if p.holds_kv),
             )
 
 
