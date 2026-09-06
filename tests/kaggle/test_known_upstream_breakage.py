@@ -81,6 +81,7 @@ def test_a_listed_model_still_fails_every_other_rule():
         ({"padding_side_after": "right"}, "padding_side_after"),
         ({"distinct_lengths": 1}, "nothing was ever padded"),
         ({"empty_outputs": [3]}, "generated nothing at all"),
+        ({"empty_batched_outputs": {"8": [2]}}, "inside the batch"),
         ({"singles": ["x"] * 2}, "largest batch was never actually formed"),
     ):
         broken = batched_generation_failures(_record(**over), "unsloth/Qwen3.5-2B")
