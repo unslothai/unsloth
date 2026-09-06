@@ -7653,7 +7653,11 @@ def install_python_stack() -> int:
                 _codec_rebuild = True
         _safe_print(
             f"   torch {_codec_torch_ver} detected -- installing {_codec_spec}"
-            + (f" from {_codec_index}" if _codec_index else "")
+            # Redacted for display only; the installer below still gets the exact URL.
+            # An authenticated mirror puts its credentials in the userinfo or a query
+            # token, and this line is printed straight to the terminal and CI log rather
+            # than through _redact_install_output, which only covers captured pip output.
+            + (f" from {_strip_index_url_credentials(_codec_index)}" if _codec_index else "")
             + (" (replacing a build from another index)" if _codec_rebuild else "")
         )
         # pip_install_try, not pip_install: audio is an optional extra, and pip_install's
