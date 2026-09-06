@@ -689,6 +689,7 @@ def test_download_mtp_prefers_root_over_new_scheme_copies(monkeypatch):
         label,
         cancel_event = None,
         near_path = None,
+        reuse_snapshot_sibling = True,
     ):
         captured["pick"] = pick
         return None
@@ -776,9 +777,11 @@ def _capture_companion_download(backend):
         label,
         cancel_event = None,
         near_path = None,
+        reuse_snapshot_sibling = True,
     ):
         captured["pick"] = pick
         captured["near_path"] = near_path
+        captured["reuse_snapshot_sibling"] = reuse_snapshot_sibling
         return "/downloaded/mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
 
     backend._download_companion_gguf = _fake
@@ -854,6 +857,89 @@ def test_download_mtp_keeps_a_lone_shared_head_offline(tmp_path, monkeypatch):
         hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF", near_path = str(snap / "UD-IQ1_S" / "model.gguf")
     )
     assert "pick" not in captured
+    assert got is not None and Path(got).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+
+
+def _stub_hub(monkeypatch, published, *, listing_fails = False):
+    """The live repo, without a network: listing plus the fetch, stubbed where
+    _download_companion_gguf really calls them, so the helper's own snapshot
+    lookup still runs against the files on disk."""
+    import huggingface_hub
+
+    import core.inference.llama_cpp as llama_cpp_module
+
+    def _list(repo, token = None):
+        if listing_fails:
+            raise ConnectionError("hub unreachable")
+        return list(published)
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", _list)
+    monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda repo: False)
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "hf_hub_download_with_xet_fallback",
+        lambda repo, fn, token, cancel_event = None, cache_dir = None: "/downloaded/" + fn,
+    )
+
+
+def test_download_mtp_lists_the_repo_past_the_helpers_own_snapshot_reuse(tmp_path, monkeypatch):
+    """The fall-through has to survive _download_companion_gguf.
+
+    The helper repeats _companion_snapshot_sibling with the same near_path and
+    the same pick before it lists anything, so passing the cached borrowing head
+    on to it returned that same file and the --fit under-reservation
+    (unsloth#10322) survived the upgrade untouched. Exercises the real helper
+    rather than replacing it, which is what hid this.
+    """
+    import utils.models.gguf_metadata as gm
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
+    snap = _hub_snapshot(
+        tmp_path,
+        ["UD-IQ1_S/model.gguf", "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"],
+    )
+    _stub_hub(
+        monkeypatch,
+        [
+            "UD-IQ1_S/model.gguf",
+            "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf",
+            "MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf",
+        ],
+    )
+
+    got = LlamaCppBackend()._download_mtp(
+        hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF",
+        near_path = str(snap / "UD-IQ1_S" / "model.gguf"),
+    )
+    assert got is not None and Path(got).name == "mtp-Qwen3.8-Flash-Next-Q8_0.gguf", (
+        f"the fall-through handed back {got}; the helper reused the snapshot copy "
+        f"before listing the repo"
+    )
+
+
+def test_download_mtp_keeps_the_borrowing_head_when_the_listing_never_answers(
+    tmp_path, monkeypatch
+):
+    """Suppressing the reuse must not cost the load its drafter: an unmeasurable
+    head still drafts, and a Hub that cannot be reached says nothing about what
+    the repo publishes."""
+    import utils.models.gguf_metadata as gm
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(gm, "read_gguf_nextn_predict_layers", lambda p: 0)
+    snap = _hub_snapshot(
+        tmp_path,
+        ["UD-IQ1_S/model.gguf", "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"],
+    )
+    _stub_hub(monkeypatch, [], listing_fails = True)
+
+    got = LlamaCppBackend()._download_mtp(
+        hf_repo = "unsloth/Qwen3.8-Flash-Next-GGUF",
+        near_path = str(snap / "UD-IQ1_S" / "model.gguf"),
+    )
     assert got is not None and Path(got).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
 
 
@@ -995,6 +1081,7 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
         label,
         cancel_event = None,
         near_path = None,
+        reuse_snapshot_sibling = True,
     ):
         reached["hit"] = True
         return None

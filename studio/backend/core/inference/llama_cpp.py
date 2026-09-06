@@ -14344,6 +14344,7 @@ class LlamaCppBackend:
         label: str,
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
+        reuse_snapshot_sibling: bool = True,
         outcome: Optional[dict] = None,
         on_transient_failure: Optional[Callable[[], None]] = None,
     ) -> Optional[str]:
@@ -14363,6 +14364,13 @@ class LlamaCppBackend:
         then cannot open, so the load fell back to no speculation with nothing to
         show for the download -- and it disagreed with the local scan, which
         accepts a split drafter only when every shard is present.
+
+        ``reuse_snapshot_sibling=False`` skips only that first step, for a caller that
+        has already looked at the snapshot copy and rejected it. Without it the caller
+        cannot get past this reuse: it repeats the same lookup with the same
+        ``near_path`` and the same ``pick`` and hands the rejected file straight back,
+        so a fall-through here is a no-op. ``near_path`` is still passed, since it also
+        selects the cache directory the fetch writes into.
 
         ``on_transient_failure`` fires when the companion was lost to a listing that
         never completed or a download that dropped, the one None worth another attempt.
@@ -14384,7 +14392,7 @@ class LlamaCppBackend:
             return pick(available)
 
         # Keep companion files in the main GGUF's snapshot.
-        if near_path:
+        if near_path and reuse_snapshot_sibling:
             cached = _companion_snapshot_sibling(near_path, pick)
             if cached:
                 logger.info("Reusing cached %s: %s", label, cached)
@@ -14673,6 +14681,10 @@ class LlamaCppBackend:
 
         pick = _pick_mtp if allow_nested else _pick_mtp_root_only
 
+        # The borrowing head already in the snapshot, kept as the fallback: it is a
+        # working drafter, just an unmeasurable one, so a listing that never answers
+        # must not cost the load its speculation entirely.
+        borrowed_cached: Optional[str] = None
         if near_path:
             cached = _companion_snapshot_sibling(near_path, pick)
             if cached and _mtp_head_borrows(cached) and not _hf_env_offline():
@@ -14686,6 +14698,7 @@ class LlamaCppBackend:
                     "repo for a self-contained head: %s",
                     cached,
                 )
+                borrowed_cached = cached
             elif cached:
                 logger.info("Reusing cached MTP drafter: %s", cached)
                 return cached
@@ -14704,14 +14717,24 @@ class LlamaCppBackend:
                 logger.info(f"Reusing cached MTP drafter (offline): {cached}")
                 return cached
 
-        return self._download_companion_gguf(
+        fetched = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
             pick = pick,
             label = "MTP drafter",
             cancel_event = cancel_event,
             near_path = near_path,
+            # Suppressed only when this call is the fall-through: the helper would
+            # otherwise repeat the snapshot lookup above and return the same
+            # borrowing head before it ever lists the repo.
+            reuse_snapshot_sibling = borrowed_cached is None,
         )
+        if fetched is None and borrowed_cached is not None:
+            # The repo publishes nothing better, or the Hub never answered. An
+            # unmeasurable drafter still drafts; no drafter at all is the bigger loss.
+            logger.info("Keeping the cached borrowing MTP drafter: %s", borrowed_cached)
+            return borrowed_cached
+        return fetched
 
     def _cached_repo_dspark_drafter(
         self,
