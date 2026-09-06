@@ -45,6 +45,11 @@ def _assert_env_unset(output: str, name: str) -> None:
     assert needle in output, f"{needle!r} not found in:\n{output}"
 
 
+def _assert_env_kept(output: str, name: str) -> None:
+    needle = f"Remove-Item Env:{name}" if os.name == "nt" else f"unset {name}"
+    assert needle not in output, f"{needle!r} unexpectedly found in:\n{output}"
+
+
 def _assert_env_cwd(output: str, name: str) -> None:
     needle = f"$env:{name} = (Get-Location).Path" if os.name == "nt" else f'export {name}="$PWD"'
     assert needle in output, f"{needle!r} not found in:\n{output}"
@@ -2284,6 +2289,8 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
 def test_connect_codex_no_launch(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
+    for name in start._CODEX_ENV_UNSET:
+        _assert_env_unset(result.output, name)
     _assert_env_set(result.output, "UNSLOTH_STUDIO_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     assert "codex --oss --profile unsloth_api" in result.output
     # Config lands in the session-scoped CODEX_HOME, not the user's ~/.codex.
@@ -2318,6 +2325,10 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert "--model" not in command
     parent_home = tmp_path / "agents" / "codex-subagent" / "parent"
     _assert_env_set(result.output, "CODEX_HOME", str(parent_home))
+    # The parent here is the user's own cloud Codex, so its provider credentials
+    # must survive; only the local `unsloth start codex` session drops them.
+    for name in start._CODEX_ENV_UNSET:
+        _assert_env_kept(result.output, name)
     assert start._CODEX_ENV_KEY not in result.output
     assert "sk-unsloth-feedfacefeedface" not in result.output
     home = tmp_path / "agents" / "codex-subagent"
@@ -4706,6 +4717,8 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
     # Config + state are scoped to the session dir, not the user's ~/.openclaw.
     _assert_env_set(result.output, "OPENCLAW_CONFIG_PATH", str(config_path))
     _assert_env_set(result.output, "OPENCLAW_STATE_DIR", str(tmp_path / "agents" / "openclaw"))
+    for name in start._OPENCLAW_ENV_UNSET:
+        _assert_env_unset(result.output, name)
     config = json.loads(config_path.read_text())
     assert config["models"]["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
@@ -8731,3 +8744,19 @@ def test_a_status_body_without_is_gguf_still_launches(fake_studio, monkeypatch, 
     result = CliRunner().invoke(start.start_app, [agent, "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "needs a GGUF model" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("agent", "unset"),
+    [
+        ("codex", ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")),
+        ("openclaw", ("OPENAI_API_KEY", "CODEX_API_KEY")),
+    ],
+)
+def test_launch_drops_provider_credentials(agent, unset, fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    for name in unset:
+        monkeypatch.setenv(name, "sk-stale")
+    captured = _capture_launch(monkeypatch, [agent])
+    for name in unset:
+        assert name not in captured["env"]

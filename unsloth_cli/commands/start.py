@@ -193,6 +193,9 @@ _CLAUDE_ENV_UNSET = (
     "CLAUDE_CODE_USE_MANTLE",
 )
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
+# OpenClaw reads CODEX_API_KEY before OPENAI_API_KEY for its openai provider, so dropping
+# only the latter still lets default-on memory search embed through OpenAI.
+_OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY")
 
 # Shared by every agent command; only the config/env/command differ.
 # Help is grouped into rich panels so `--help` reads as Model / Server / Session
@@ -5280,7 +5283,15 @@ def codex(
     with _session_config("codex", launch, persist = persist) as home:
         write_codex_config(base, entry, home)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
-        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+        _run(
+            base,
+            entry,
+            env,
+            command,
+            launch = launch,
+            install_hint = install_hint,
+            unset_env = _CODEX_ENV_UNSET,
+        )
 
 
 @start_app.command("openclaw", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
@@ -5374,6 +5385,7 @@ def openclaw(
             command,
             launch = launch,
             install_hint = install_hint,
+            unset_env = _OPENCLAW_ENV_UNSET,
             cwd_env = ("OPENCLAW_WORKSPACE_DIR",),
         )
 
