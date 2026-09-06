@@ -2051,6 +2051,7 @@ class FastBaseModel:
         # FastModel never calls load_correct_tokenizer; heal Gemma 4 base BOS from
         # the finalized processor / model config (unslothai/unsloth#7903).
         from ..tokenizer_utils import _apply_post_load_tokenizer_fixes
+
         tokenizer = _apply_post_load_tokenizer_fixes(
             tokenizer,
             fix_tokenizer = True,
