@@ -551,14 +551,21 @@ def test_a_replaced_python_script_is_refused_before_anything_runs(tmp_path):
     handle, identity = tools._seal_scratch_script(str(script))
     try:
         assert not tools._scratch_script_was_swapped(str(script), identity)
-        # Rewriting the same bytes in place is not a swap.
-        script.write_text("print('victim')", encoding = "utf-8")
-        assert not tools._scratch_script_was_swapped(str(script), identity)
+        if sys.platform != "win32":
+            # Rewriting the same bytes in place is not a swap. Not on Windows,
+            # where the seal denies writers outright, which the branch below
+            # asserts.
+            script.write_text("print('victim')", encoding = "utf-8")
+            assert not tools._scratch_script_was_swapped(str(script), identity)
         if sys.platform == "win32":
             # Windows prevents it outright: the handle denies delete and write.
             assert handle is not None
+            attacker = tmp_path / "attacker.py"
+            attacker.write_text("print('attacker')", encoding = "utf-8")
             with pytest.raises(PermissionError):
-                os.replace(str(tmp_path / "attacker.py"), str(script))
+                os.replace(str(attacker), str(script))
+            with pytest.raises(PermissionError):
+                open(str(script), "w").close()
         else:
             # POSIX cannot prevent it, so it is detected: a replacement gets a
             # new inode and the launch is refused.

@@ -2015,12 +2015,15 @@ def test_the_ledger_lock_waits_out_a_holder_and_then_gives_up(monkeypatch, tmp_p
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path))
 
+    # A budget wide enough that a slow or loaded host still polls more than
+    # once: on a hosted Windows runner a 0.2 s budget was spent inside the first
+    # attempt, so the test read "polled once" as "does not poll".
     started = time.monotonic()
-    assert windows_lpac._open_ledger_lock(_INSTALL_MONIKER, started + 0.2) is None
+    assert windows_lpac._open_ledger_lock(_INSTALL_MONIKER, started + 2.0) is None
     elapsed = time.monotonic() - started
 
     assert len(ledger.attempts) > 1  # polled, not asked once and abandoned
-    assert 0.2 <= elapsed < 10.0  # and it ends
+    assert 2.0 <= elapsed < 30.0  # and it ends
     # A holder that goes away inside the budget is waited out rather than refused.
     ledger.busy.clear()
     handle = windows_lpac._open_ledger_lock(_INSTALL_MONIKER, time.monotonic() + 5.0)
@@ -2041,7 +2044,9 @@ def test_the_ledger_budget_is_spent_on_other_processes_not_on_this_one(monkeypat
     ledger = _FakeLedger(events)
     api = SimpleNamespace(kernel32 = ledger.install(SimpleNamespace()))
     _reset_ledger_state(monkeypatch)
-    monkeypatch.setattr(windows_lpac, "_LEDGER_WAIT_SECONDS", 0.3)
+    # Same reason as the wait test above: the budget has to outlast one attempt
+    # on a slow host, or the assertion below reads a loaded runner as a bug.
+    monkeypatch.setattr(windows_lpac, "_LEDGER_WAIT_SECONDS", 2.0)
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path))
     entered = threading.Event()
@@ -3632,7 +3637,11 @@ def test_live_production_timeout_and_cancellation(live_lpac_backend, monkeypatch
             if isolated_shell.lower().endswith(("bash", "bash.exe"))
             # Letters and digits only: waitfor rejects a signal name with an
             # underscore ("cannot contain characters other than a-z, A-Z, 0-9").
-            else "waitfor /t 30 unslothcancelprobe"
+            # A cmd sleeper that needs nothing the container denies: waitfor
+            # wants a signal object it cannot create there and exits 1 at once,
+            # timeout wants a console input handle, and a redirect to NUL cannot
+            # be opened. A spin costs half a second of CPU and always runs.
+            else "for /l %%i in (1,1,2000000000) do @rem"
         )
         cancelled = inference_tools._bash_exec(command, cancel_event = cancel, timeout = 20)
     finally:
