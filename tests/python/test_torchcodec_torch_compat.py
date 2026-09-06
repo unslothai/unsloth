@@ -1201,9 +1201,9 @@ def test_an_exclusion_rules_out_the_installed_version():
     # mismatch is still reported.
     untouched = '!pip install "torch==2.9.0" "torchcodec!=0.12.0"'
     assert nv._effective_requested_version(untouched, "torchcodec", "0.11.0") == "0.11.0"
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(untouched, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(untouched, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
 
     # A window whose own landing the exclusion rules out names nothing.
     self_excluded = '!pip install "torch==2.12.0" "torchcodec>=0.12.0,!=0.12.0"'
