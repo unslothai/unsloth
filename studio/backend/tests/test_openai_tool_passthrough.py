@@ -4350,9 +4350,7 @@ class TestGgufVisionToolRouting:
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
         assert "".join(d.get("content", "") for d in deltas) == "done"
 
-    def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(
-        self, monkeypatch
-    ):
+    def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(self, monkeypatch):
         # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery here finds
         # no MCP tool, so the selection is empty and the loop is skipped. Refusing on
         # intent would 400 a request that answers fine without ever prompting.

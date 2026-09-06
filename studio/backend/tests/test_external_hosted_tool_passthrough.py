@@ -356,9 +356,7 @@ def test_mcp_intent_with_no_tools_is_not_refused_for_a_prompt_it_can_never_show(
     )
 
     async def go():
-        resp = await inf._proxy_to_external_provider(
-            payload, headerless, current_subject = "t"
-        )
+        resp = await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
         return [chunk async for chunk in resp.body_iterator]
 
     # No LoopEntered and no HTTPException: the request proxies through.
