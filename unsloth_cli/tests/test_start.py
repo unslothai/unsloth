@@ -8777,12 +8777,23 @@ def test_openclaw_memory_search_drops_a_stale_remote_when_the_route_is_gone(
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
     config_path.parent.mkdir(parents = True)
-    config_path.write_text(json.dumps({"memory": {"search": {
-        "provider": "openai-compatible",
-        "model": "unsloth/bge-small-en-v1.5",
-        "fallback": "none",
-        "remote": {"baseUrl": "http://127.0.0.1:8888/v1", "apiKey": "sk-unsloth-old"},
-    }}}))
+    config_path.write_text(
+        json.dumps(
+            {
+                "memory": {
+                    "search": {
+                        "provider": "openai-compatible",
+                        "model": "unsloth/bge-small-en-v1.5",
+                        "fallback": "none",
+                        "remote": {
+                            "baseUrl": "http://127.0.0.1:8888/v1",
+                            "apiKey": "sk-unsloth-old",
+                        },
+                    }
+                }
+            }
+        )
+    )
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert result.exit_code == 0, result.output
     search = json.loads(config_path.read_text())["memory"]["search"]
@@ -8807,9 +8818,7 @@ def test_openclaw_memory_search_model_is_stripped(fake_studio, tmp_path, monkeyp
     assert config["memory"]["search"]["model"] == "unsloth/bge-small-en-v1.5"
 
 
-def test_openclaw_memory_search_does_not_swallow_a_cli_abort(
-    fake_studio, tmp_path, monkeypatch
-):
+def test_openclaw_memory_search_does_not_swallow_a_cli_abort(fake_studio, tmp_path, monkeypatch):
     # typer.Exit is a RuntimeError subclass, so a bare `except Exception` around the
     # probe would turn a deliberate abort into a silently degraded config.
     _openclaw_without_the_settings_route(monkeypatch, exc = typer.Exit(2))
