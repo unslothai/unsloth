@@ -20,12 +20,13 @@ from unsloth_pwsh_runner import run_pwsh
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
+SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 POWERSHELLS = [shell for shell in ("pwsh", "powershell") if shutil.which(shell)]
 
 
 def _extract(pattern: str, source: str) -> str:
     match = re.search(pattern, source, flags = re.DOTALL)
-    assert match is not None, f"install.ps1 block not found: {pattern}"
+    assert match is not None, f"PowerShell block not found: {pattern}"
     return match.group(0)
 
 
@@ -429,3 +430,220 @@ def test_readiness_gate_precedes_installs_and_names_both_interpreters():
     assert 'Write-StudioLine "        Managed Python: $VenvPython"' in source
     assert 'Write-StudioLine "        Recorded base Python home: $recordedBaseHome"' in source
     assert 'return (Exit-InstallFailure "Managed Python is unavailable' in source
+
+
+def _uv_cache_lifecycle_blocks(source: str) -> tuple[str, str, str]:
+    capture = _extract(
+        r"    \$previousUvCacheDir = \$env:UV_CACHE_DIR\n"
+        r"    \$hadPreviousUvCacheDir = \(\$null -ne \$previousUvCacheDir\)\n",
+        source,
+    )
+    setup = _extract(
+        r"    if \(\[string\]::IsNullOrWhiteSpace\(\$env:UV_CACHE_DIR\)\) \{.*?\n    \}\n",
+        source,
+    )
+    restore = _extract(
+        r"        if \(\$hadPreviousUvCacheDir\) \{.*?\n        \}\n"
+        r"(?=        for \(\$i = \$studioRuntimeMutexes.Count)",
+        source,
+    )
+    return capture, setup, restore
+
+
+def _setup_uv_cache_lifecycle_blocks(source: str) -> tuple[str, str, str]:
+    capture = _extract(
+        r"(?m)^\$previousUvCacheDir = \$env:UV_CACHE_DIR\n"
+        r"\$hadPreviousUvCacheDir = \(\$null -ne \$previousUvCacheDir\)\n",
+        source,
+    )
+    setup = _extract(
+        r"    if \(\[string\]::IsNullOrWhiteSpace\(\$env:UV_CACHE_DIR\)\) \{.*?\n    \}\n",
+        source,
+    )
+    restore = _extract(
+        r"    if \(\$hadPreviousUvCacheDir\) \{.*?\n    \}\n(?=\}\n\Z)",
+        source,
+    )
+    return capture, setup, restore
+
+
+def test_uv_cache_lifecycle_wraps_outer_install_try():
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    capture, _, restore = _uv_cache_lifecycle_blocks(source)
+    capture_at = source.index(capture)
+    outer_try_at = source.index("    try {", capture_at)
+    setup_at = source.index("if ([string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR))")
+    restore_at = source.index(restore)
+    lock_release_at = source.index(
+        "for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--)",
+        restore_at,
+    )
+
+    assert capture_at < outer_try_at < setup_at < restore_at < lock_release_at
+    assert "$env:UV_CACHE_DIR = $previousUvCacheDir" in restore
+    assert "Remove-Item Env:UV_CACHE_DIR -ErrorAction SilentlyContinue" in restore
+
+
+def test_uv_cache_recovery_follows_existing_venv_ownership_guard():
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    _, cache_setup, _ = _uv_cache_lifecycle_blocks(source)
+    ownership_rejection_at = source.index('throw "Refusing to delete non-Unsloth venv at $VenvDir"')
+    cache_setup_at = source.index(cache_setup)
+    uv_venv_at = source.index(
+        'Invoke-InstallCommand -Label "create virtual environment"',
+        cache_setup_at,
+    )
+
+    assert ownership_rejection_at < cache_setup_at < uv_venv_at
+
+
+def test_setup_uv_cache_guard_covers_every_setup_uv_call_after_ownership_validation():
+    source = SETUP_PS1.read_text(encoding = "utf-8")
+    capture, cache_setup, restore = _setup_uv_cache_lifecycle_blocks(source)
+    ownership_rejection_at = source.index(
+        'Exit-SetupFailure "$VenvDir is not an Unsloth Studio environment"'
+    )
+    capture_at = source.index(capture)
+    outer_try_at = source.index("try {", capture_at)
+    cache_setup_at = source.index(cache_setup, outer_try_at)
+    restore_at = source.index(restore, cache_setup_at)
+    # Direct uv calls and the Python child that invokes uv must stay inside the region.
+    uv_calls = [match.start() for match in re.finditer(r"(?m)^\s*(?:\$\w+ = )?& uvx?\b", source)]
+    python_stack_at = source.index(r'python "$PSScriptRoot\install_python_stack.py"')
+
+    assert ownership_rejection_at < capture_at < outer_try_at < cache_setup_at < restore_at
+    assert uv_calls
+    assert all(cache_setup_at < call_at < restore_at for call_at in uv_calls)
+    assert cache_setup_at < python_stack_at < restore_at
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("mode", ["default", "override", "blank"])
+@pytest.mark.parametrize(
+    ("source_path", "lifecycle_blocks"),
+    [
+        (INSTALL_PS1, _uv_cache_lifecycle_blocks),
+        (SETUP_PS1, _setup_uv_cache_lifecycle_blocks),
+    ],
+    ids = ["installer", "setup"],
+)
+def test_uv_cache_defaults_to_studio_root_and_restores_caller(
+    tmp_path: Path, shell: str, mode: str, source_path: Path, lifecycle_blocks
+):
+    source = source_path.read_text(encoding = "utf-8")
+    capture, cache_setup, restore = lifecycle_blocks(source)
+
+    studio_home = tmp_path / "studio"
+    default_cache = studio_home / "cache" / "uv"
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_home)
+
+    if mode == "default":
+        default_cache.parent.mkdir(parents = True)
+        default_cache.write_text("blocking file", encoding = "utf-8")
+        env.pop("UV_CACHE_DIR", None)
+        expected = default_cache
+    elif mode == "override":
+        expected = tmp_path / "explicit-uv-cache"
+        expected.mkdir()
+        env["UV_CACHE_DIR"] = str(expected)
+    else:
+        expected = default_cache
+        env["UV_CACHE_DIR"] = "   "
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+$StudioHome = $env:TEST_STUDIO_HOME
+function substep {{ param([string]$Text, [string]$Color) }}
+function Exit-SetupFailure {{
+    param([string]$Message, [int]$Code = 1)
+    throw $Message
+}}
+{capture}
+try {{
+{cache_setup}
+    Write-Output ("active=" + $env:UV_CACHE_DIR)
+}} finally {{
+{restore}
+}}
+if (Test-Path Env:UV_CACHE_DIR) {{
+    Write-Output ("after=[" + $env:UV_CACHE_DIR + "]")
+}} else {{
+    Write-Output "after=<missing>"
+}}
+"""
+    lines = _run_powershell(shell, script, env).splitlines()
+    configured = Path(lines[0].removeprefix("active="))
+    assert configured.resolve() == expected.resolve()
+
+    if mode == "default":
+        assert lines[1] == "after=<missing>"
+        assert default_cache.is_dir()
+        moved = list(default_cache.parent.glob("uv.invalid.*"))
+        assert len(moved) == 1
+        assert moved[0].read_text(encoding = "utf-8") == "blocking file"
+    elif mode == "override":
+        assert lines[1] == f"after=[{expected}]"
+        assert not default_cache.exists()
+    else:
+        assert lines[1] == "after=[   ]"
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize(
+    ("source_path", "lifecycle_blocks"),
+    [
+        (INSTALL_PS1, _uv_cache_lifecycle_blocks),
+        (SETUP_PS1, _setup_uv_cache_lifecycle_blocks),
+    ],
+    ids = ["installer", "setup"],
+)
+def test_uv_cache_two_runs_in_one_session_use_their_own_studio_root(
+    tmp_path: Path, shell: str, source_path: Path, lifecycle_blocks
+):
+    source = source_path.read_text(encoding = "utf-8")
+    capture, cache_setup, restore = lifecycle_blocks(source)
+    first_home = tmp_path / "first-studio"
+    second_home = tmp_path / "second-studio"
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+function substep {{ param([string]$Text, [string]$Color) }}
+function Exit-SetupFailure {{
+    param([string]$Message, [int]$Code = 1)
+    throw $Message
+}}
+function Invoke-UvCacheRun {{
+    param([string]$RequestedHome)
+    $StudioHome = $RequestedHome
+{capture}
+    try {{
+{cache_setup}
+        Write-Output ("active=" + $env:UV_CACHE_DIR)
+    }} finally {{
+{restore}
+    }}
+}}
+Remove-Item Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
+Invoke-UvCacheRun $env:TEST_FIRST_STUDIO_HOME
+Invoke-UvCacheRun $env:TEST_SECOND_STUDIO_HOME
+if (Test-Path Env:UV_CACHE_DIR) {{
+    Write-Output ("after=[" + $env:UV_CACHE_DIR + "]")
+}} else {{
+    Write-Output "after=<missing>"
+}}
+"""
+    env = os.environ.copy()
+    env["TEST_FIRST_STUDIO_HOME"] = str(first_home)
+    env["TEST_SECOND_STUDIO_HOME"] = str(second_home)
+    lines = _run_powershell(shell, script, env).splitlines()
+
+    assert (
+        Path(lines[0].removeprefix("active=")).resolve() == (first_home / "cache" / "uv").resolve()
+    )
+    assert (
+        Path(lines[1].removeprefix("active=")).resolve() == (second_home / "cache" / "uv").resolve()
+    )
+    assert lines[2] == "after=<missing>"
