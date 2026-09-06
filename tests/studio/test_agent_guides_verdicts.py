@@ -116,14 +116,14 @@ def test_only_a_marker_can_excuse_a_connection_cap() -> None:
     or the connection guard is waived by anything that hangs.
     """
     body = _block("run_timed")
-    assert body.count("TURN_DONE=1") == body.count('grep -qF -- "$TURN_DONE_RE"'), (
-        "run_timed sets TURN_DONE somewhere that does not first match the marker"
-    )
+    assert body.count("TURN_DONE=1") == body.count(
+        'grep -qF -- "$TURN_DONE_RE"'
+    ), "run_timed sets TURN_DONE somewhere that does not first match the marker"
     source = _source()
     declared = re.findall(r"TURN_DONE_RE='([^']*)'", source)
-    assert declared == ["ended with stopReason="], (
-        f"unexpected end-of-run markers declared: {declared}"
-    )
+    assert declared == [
+        "ended with stopReason="
+    ], f"unexpected end-of-run markers declared: {declared}"
 
 
 def test_a_non_zero_exit_is_still_drift() -> None:
