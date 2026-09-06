@@ -21,6 +21,7 @@ import queue
 import threading
 import time
 from pathlib import Path
+from hub.utils.hf_tokens import HfTokenArg
 from typing import Any, Deque, Dict, List, Optional, Tuple
 from utils.paths import outputs_root
 
@@ -30,6 +31,14 @@ _CTX = mp.get_context("spawn")
 
 # Max log lines kept per orchestrator (live log panel scrollback); ~1 MB worst-case.
 _LOG_BUFFER_MAXLEN = 4000
+
+# How long an export op may go without a single log or status line before the worker is treated as
+# dead. Not how long an export may run: a reporting worker resets it on every line.
+_EXPORT_INACTIVITY_TIMEOUT = 3600.0
+
+# Teardown is a bounded amount of work, so it is capped outright rather than by silence: the log
+# gate an export opens is never closed, and teardown chatter would otherwise renew this forever.
+_CLEANUP_TIMEOUT = 30.0
 
 
 class ExportOrchestrator:
@@ -334,14 +343,25 @@ class ExportOrchestrator:
     def _wait_response(
         self,
         expected_type: str,
-        timeout: float = 3600.0,
+        timeout: float = _EXPORT_INACTIVITY_TIMEOUT,
+        max_wait: Optional[float] = None,
     ) -> dict:
         """Block until a response of the expected type arrives.
 
-        Export ops can take a long time — GGUF conversion for large
-        models (30B+) easily takes 20-30 minutes. Default timeout 1 hour.
+        *timeout* is an **inactivity** timeout: it resets on each log and status message, so a
+        large export survives as long as the worker keeps reporting. Matches the inference side.
+
+        *max_wait* additionally caps the total wait, for ops that must fail fast: a short
+        inactivity budget alone is not one, since any line printed renews it.
         """
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        hard_deadline = None if max_wait is None else started + max_wait
+
+        def renew() -> float:
+            extended = time.monotonic() + timeout
+            return extended if hard_deadline is None else min(extended, hard_deadline)
+
+        deadline = renew()
 
         while time.monotonic() < deadline:
             remaining = max(0.1, deadline - time.monotonic())
@@ -364,6 +384,7 @@ class ExportOrchestrator:
             if rtype == "log":
                 # Forwarded stdout/stderr line from the worker.
                 self._append_log(resp)
+                deadline = renew()
                 continue
 
             if rtype == "status":
@@ -379,6 +400,7 @@ class ExportOrchestrator:
                             "ts": resp.get("ts", time.time()),
                         }
                     )
+                deadline = renew()
                 continue
 
             # Other response types during wait - skip.
@@ -388,7 +410,13 @@ class ExportOrchestrator:
                 expected_type,
             )
 
-        raise RuntimeError(f"Timeout waiting for '{expected_type}' response after {timeout}s")
+        if hard_deadline is not None and time.monotonic() >= hard_deadline:
+            raise RuntimeError(
+                f"Timeout waiting for '{expected_type}' response (gave up after {max_wait}s)"
+            )
+        raise RuntimeError(
+            f"Timeout waiting for '{expected_type}' response (no activity for {timeout}s)"
+        )
 
     def _drain_queue(self) -> list:
         """Drain all pending responses."""
@@ -412,7 +440,8 @@ class ExportOrchestrator:
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
+        allow_ambient: bool = True,
         subject: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
@@ -427,6 +456,7 @@ class ExportOrchestrator:
             "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
             "subject": subject,
             "hf_token": hf_token,
+            "allow_ambient": allow_ambient,
         }
 
         with self._lock:
@@ -466,8 +496,8 @@ class ExportOrchestrator:
                 try:
                     self._spawn_subprocess(sub_config)
                 except Exception:
-                    # A stale current_checkpoint would make the Export page claim a loaded checkpoint the next op then
-                    # fails on.
+                    # The old worker is already gone; a stale current_checkpoint would make the Export page claim a
+                    # loaded checkpoint that the next op then fails on with "No export subprocess running".
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
@@ -509,7 +539,7 @@ class ExportOrchestrator:
         format_type: str = "16-bit (FP16)",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -532,7 +562,7 @@ class ExportOrchestrator:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -555,7 +585,7 @@ class ExportOrchestrator:
         quantization_method = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
         gguf_shard_size: Optional[str] = None,
@@ -580,7 +610,7 @@ class ExportOrchestrator:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
@@ -632,13 +662,15 @@ class ExportOrchestrator:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
-                    # GGUF for a 30B+ model can take 30+ min per quant, and a multi-quant list runs every quant in one
-                    # op off a single merge, so scale the timeout by quant count.
+                    # Scaled by quant count because the budget is silence, not duration: a
+                    # multi-quant list runs every pass in one op, and the quant passes emit
+                    # nothing (Studio leaves UNSLOTH_ENABLE_LOGGING unset, which is what makes
+                    # save_pretrained_gguf quantize without streaming). One hour per silent pass.
                     _qm = params.get("quantization_method")
                     _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
                     resp = self._wait_response(
                         f"export_{export_type}_done",
-                        timeout = 3600 * max(1, _n),
+                        timeout = _EXPORT_INACTIVITY_TIMEOUT * max(1, _n),
                     )
                     op_success = resp.get("success", False)
                     op_message = resp.get("message", "")
@@ -667,7 +699,11 @@ class ExportOrchestrator:
             try:
                 try:
                     self._send_cmd({"type": "cleanup"})
-                    resp = self._wait_response("cleanup_done", timeout = 30)
+                    resp = self._wait_response(
+                        "cleanup_done",
+                        timeout = _CLEANUP_TIMEOUT,
+                        max_wait = _CLEANUP_TIMEOUT,
+                    )
                     success = resp.get("success", False)
                 except RuntimeError:
                     success = False

@@ -6,6 +6,7 @@ import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
 } from "@/features/hub/lib/model-identity";
+import { looksLikeLocalPath } from "@/lib/local-path";
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 export {
@@ -77,8 +78,8 @@ export function ggufVariantFromStorageKey(key: string): string | null {
   return separator >= 0 ? key.slice(separator + 2) : null;
 }
 
-// Mirrors split_quant_suffix in studio/backend/utils/openai_auto_switch_settings.py.
-// The bpw modifier ("IQ4_XS-3.53bpw") is optional: the backend label helpers disagree.
+// Mirrors split_quant_suffix in openai_auto_switch_settings.py. The bpw modifier
+// ("IQ4_XS-3.53bpw") is optional: the backend label helpers disagree.
 const BPW_SUFFIX = /-[0-9]+(?:\.[0-9]+)?bpw$/i;
 // One source for the anchored test and the scan below. Mirrors _GGUF_QUANT_RE in gguf.py.
 const QUANT_TOKEN_SOURCE =
@@ -103,9 +104,8 @@ function ggufStem(filename: string): string {
   return withoutExtension.replace(GGUF_SPLIT_SUFFIX, "").trim();
 }
 
-/**
-* Mirrors extract_quant_label in gguf.py, for a bare filename. The parent-directory pass
-* cannot fire on a basename, so this is the stem's quant token or the stem itself. */
+/** Mirrors extract_quant_label in gguf.py, for a bare filename. The parent-directory pass cannot
+ *  fire on a basename, so this is the stem's quant token or the stem itself. */
 export function ggufQuantLabel(filename: string): string {
   const stem = ggufStem(filename);
   let fallback: RegExpExecArray | null = null;
@@ -122,9 +122,8 @@ export function ggufQuantLabel(filename: string): string {
   return stem || "gguf";
 }
 
-/**
-* `[head, quant]` for a `head:QUANT` key, or null when the colon is not one. The suffix must
-* look like a real quant, so an ordinary colon in a POSIX filename and a drive letter are left alone. */
+/** `[head, quant]` for a `head:QUANT` key, or null when the colon is not one. The suffix must look
+ *  like a real quant, so an ordinary colon in a POSIX filename and a drive letter are left alone. */
 export function splitQuantSuffix(value: string): [string, string] | null {
   const separator = value.lastIndexOf(":");
   if (separator <= 0 || separator === value.length - 1) {
@@ -145,10 +144,36 @@ export function splitQuantSuffix(value: string): [string, string] | null {
   if (!head.toLowerCase().endsWith(".gguf")) {
     return null;
   }
-  // Exactly that label, as the backend requires: a colon is legal in a POSIX filename, so
-  // reading the suffix as a variant folds two real files onto one lowercased key.
+  // Exactly that label, as the backend requires: a colon is legal in a POSIX filename, so reading
+  // the suffix as a variant folds two real files onto one lowercased key.
   const filename = head.replace(BACKSLASHES, "/").split("/").pop() ?? head;
   return tail.toLowerCase() === ggufQuantLabel(filename).toLowerCase()
     ? [head, tail]
     : null;
+}
+
+/**
+* `[modelId, variant]` for an override key, or `[value, null]` when it names no variant.
+*
+* splitQuantSuffix answers for a bare quant token, which is what a stored key usually spells.
+* A qualified variant is not one: it can name a directory (`distilled/model-Q6_K`) or a whole
+* filename stem, and both are refused there. A repo id carries no colon, so for anything that
+* is not a local path the last colon is the separator whatever the tail spells. A path is left
+* whole for the reason the backend's resolver leaves it whole: a colon is legal in a POSIX
+* filename, so "/models/foo:bar/baz.gguf" is one name and splitting it would answer for a
+* different model. */
+export function splitModelOverrideKey(value: string): [string, string | null] {
+  const quant = splitQuantSuffix(value);
+  if (quant) {
+    return quant;
+  }
+  const separator = value.lastIndexOf(":");
+  if (
+    separator <= 0 ||
+    separator === value.length - 1 ||
+    looksLikeLocalPath(value)
+  ) {
+    return [value, null];
+  }
+  return [value.slice(0, separator), value.slice(separator + 1)];
 }

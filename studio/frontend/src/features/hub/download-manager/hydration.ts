@@ -9,11 +9,7 @@ import {
   type DownloadJobState,
 } from "./api";
 import { DOWNLOAD_KIND, isResolvedTransport } from "./constants";
-import {
-  ACTIVE_STATES,
-  POLL_REQUEST_TIMEOUT_MS,
-  RESUMABLE_STATES,
-} from "./download-manager-config";
+import { ACTIVE_STATES, POLL_REQUEST_TIMEOUT_MS } from "./download-manager-config";
 import {
   apiGetProgress,
   apiGetStatus,
@@ -206,40 +202,6 @@ async function probeHydratedIdleProgress(
   }
 }
 
-async function revalidateHydratedResumableJob(
-  key: string,
-  job: ManagedDownload,
-): Promise<void> {
-  try {
-    const progressResp = await withHydrationTimeout((signal) =>
-      apiGetProgress(job, signal),
-    );
-    const current = getState().jobs[key];
-    if (!current || !RESUMABLE_STATES.has(current.state)) return;
-    applyProgressUpdate(key, current, progressResp);
-    const updated = getState().jobs[key];
-    if (!updated || !RESUMABLE_STATES.has(updated.state)) return;
-    if (hasObservedExpectedBytes(updated)) {
-      // Completed jobs are not restored after a restart; removing the stale
-      // terminal row lets the verified inventory state show through.
-      removeJob(key);
-      return;
-    }
-    if (
-      idleProbeVerdict(
-        progressResp.downloaded_bytes,
-        progressResp.cache_path,
-        progressResp.target_present,
-        progressResp.cache_measured,
-      ) === "gone"
-    ) {
-      removeJob(key);
-    }
-  } catch {
-    // An unavailable or unreadable cache is not evidence that the partial is gone.
-  }
-}
-
 async function settleHydratedJob(
   key: string,
   req: DownloadRequest,
@@ -325,13 +287,6 @@ export function hydrateDownloadManager(): void {
   for (const job of jobs) {
     // External jobs are live in memory and have no hub job to probe.
     if (job.external) continue;
-    // Failed and cancelled rows stay in Downloads so they can be resumed
-    // after a restart. Complete jobs are not persisted, and anything else
-    // is not a card the list should keep.
-    if (RESUMABLE_STATES.has(job.state)) {
-      void revalidateHydratedResumableJob(job.key, job);
-      continue;
-    }
     if (!ACTIVE_STATES.has(job.state)) {
       removeJob(job.key);
       continue;

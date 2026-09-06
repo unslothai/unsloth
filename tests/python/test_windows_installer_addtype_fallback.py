@@ -36,8 +36,7 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
-# Stands in for every Add-Type in install.ps1 that compiles C# rather than loading
-# an assembly.
+# Stands in for every Add-Type in install.ps1 that compiles C# rather than loading an assembly.
 SABOTAGE = (
     """function Add-Type { throw "(0) : error CS2001: Source file 'a.0.cs' could not be found" }"""
 )
@@ -80,19 +79,17 @@ LOCK_CHAIN = (
 
 
 def _run_powershell(script: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
-    # Through a FILE, not -Command: these scripts carry the whole extracted helper
-    # chain, and Windows caps a command line at 32767 characters. Passed inline,
-    # the moment the chain grows past that every test here dies as WinError 206
-    # rather than testing anything. utf-8-sig because Windows PowerShell 5.1 reads
-    # a BOM-less .ps1 as ANSI; utf-8 with replacement on the way back because the
-    # default console codepage there cannot decode what PowerShell writes.
+    # Through a FILE, not -Command: these scripts carry the whole extracted helper chain, and Windows caps a command
+    # line at 32767 characters. Passed inline, the moment the chain grows past that every test here dies as WinError 206
+    # rather than testing anything. utf-8-sig because Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI; utf-8 with
+    # replacement on the way back because the default console codepage there cannot decode what PowerShell writes.
     handle, name = tempfile.mkstemp(suffix = ".ps1")
     os.close(handle)
     try:
         Path(name).write_text(script, encoding = "utf-8-sig")
-        # run_pwsh, not subprocess.run: every test in this file reads this result as
-        # "did the Add-Type fallback chain survive", and an interpreter that aborted at
-        # startup produces the same empty stdout as a helper that never ran its fallback.
+        # run_pwsh, not subprocess.run: every test in this file reads this result as "did the Add-Type fallback chain
+        # survive", and an interpreter that aborted at startup produces the same empty stdout as a helper that never ran
+        # its fallback.
         # See tests/_shared/unsloth_pwsh_runner.py.
         return run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", name],
@@ -177,8 +174,7 @@ Write-Output "CALLS:$global:AddTypeCalls"
         )
     )
     assert result.returncode == 0, result.stderr
-    # One attempt, one retry with a private %TEMP%, then cached: the scan below
-    # resolves a path per running process.
+    # One attempt, one retry with a private %TEMP%, then cached: the scan below resolves a path per running process.
     assert _lines(result, "CALLS:") == ["CALLS:2"]
 
 
@@ -233,7 +229,6 @@ Write-Output "TEMP:$env:TEMP"
         env = env,
     )
     assert result.returncode == 0, result.stderr
-    # One failed attempt, then one retry with a private %TEMP%, which succeeds.
     assert _lines(result, "ATTEMPTS:") == ["ATTEMPTS:2"]
     assert _lines(result, "LOADED:") == ["LOADED:True"]
     assert not [line for line in result.stdout.splitlines() if "native path resolver" in line]
@@ -241,8 +236,8 @@ Write-Output "TEMP:$env:TEMP"
     assert _lines(result, "TMP:") == [f"TMP:{dead}"]
     assert _lines(result, "TEMP:") == [f"TEMP:{dead}"]
     assert list((local_app_data / "Unsloth Studio" / "temp").glob("ust-*")) == []
-    # The P/Invoke targets kernel32, so off Windows the type loads but the CALL
-    # fails; it has to degrade to a usable answer rather than throw.
+    # The P/Invoke targets kernel32, so off Windows the type loads but the CALL fails; it has to degrade to a usable
+    # answer rather than throw.
     assert _lines(result, "PATH:")[0].startswith("PATH:")
     assert _lines(result, "PATH:") != ["PATH:"]
 
@@ -311,8 +306,8 @@ Write-Output "NULL:$($null -eq $answer)"
         )
     )
     assert result.returncode == 0, result.stderr
-    # Without exact resolution two spellings may still be one directory; $null makes
-    # the caller take BOTH runtime locks, where $false would silently drop one.
+    # Without exact resolution two spellings may still be one directory; $null makes the caller take BOTH runtime
+    # locks, where $false would silently drop one.
     assert _lines(result, "NULL:") == ["NULL:True"]
 
 
@@ -348,8 +343,8 @@ Write-Output "AFTER:$(Test-StudioDirectoryUsable -Path '{good}')"
 
 @requires_pwsh
 def test_unusable_temp_is_replaced_and_then_restored(tmp_path: Path):
-    # Under a regular file so it cannot merely be created: the probe has to fail the
-    # way an ACL-restricted temp directory fails.
+    # Under a regular file so it cannot merely be created: the probe has to fail the way an ACL-restricted temp
+    # directory fails.
     blocker = tmp_path / "blocker"
     blocker.write_text("not a directory")
     env = os.environ.copy()
@@ -384,11 +379,9 @@ Write-Output "KEPT:$(Test-Path -LiteralPath $replacement)"
     # Both, because Windows reads TMP before TEMP.
     assert _lines(result, "MATCHED:") == ["MATCHED:True"]
     assert _lines(result, "TMP:") == [f"TMP:{env['TMP']}"]
-    # TEMP was absent; restoring it as "" would change how every later child
-    # resolves its own temp directory.
+    # TEMP was absent; restoring it as "" would change how every later child resolves its own temp directory.
     assert _lines(result, "TEMPSET:") == ["TEMPSET:False"]
-    # It survives on purpose: an autostarted Unsloth inherited it as its own %TEMP%,
-    # and the host's real one is broken. Stale ones are swept on the next run.
+    # It survives on purpose: an autostarted Unsloth inherited it as its own %TEMP%, and the host's real one is broken.
     assert _lines(result, "KEPT:") == ["KEPT:True"]
 
 
@@ -414,12 +407,10 @@ def _same_path(got: str, expected: str) -> bool:
 _NT_DEVICE_PREFIX = "\\??\\"
 _LIST = "$l=[System.Collections.Generic.List[string]]::new(); {0}; $l"
 
-# What (Get-Item).Target actually hands back. 5.1 returns a COLLECTION, not a
-# string and not an [array] either, so a container test naming one type lets the
-# real one fall through and be space-joined. Junctions store the NT device form;
-# system junctions and Store AppExecLinks report nothing. None of these shapes can
-# be produced on Linux, so Get-Item is stubbed and the paths are POSIX-style; see
-# _same_path for why the comparison cannot be a string equality.
+# What (Get-Item).Target actually hands back. 5.1 returns a COLLECTION, not a string and not an [array] either, so a
+# container test naming one type lets the real one fall through and be space-joined. Junctions store the NT device
+# form; system junctions and Store AppExecLinks report nothing. None of these shapes can be produced on Linux, so
+# Get-Item is stubbed and the paths are POSIX-style; see _same_path for why the comparison cannot be a string equality.
 _TARGET_SHAPES = [
     ("generic collection", _LIST.format('$l.Add("/real/target")'), "/real/target"),
     (
@@ -659,8 +650,7 @@ def test_final_normalization_strips_every_extended_prefix():
     assert "$resolved.Substring(4)" in body
 
     gate = (REPO_ROOT / "unsloth_cli" / "_studio_runtime_gate.py").read_text(encoding = "utf-8")
-    # The two sides have to agree about which prefixes come off, and there are
-    # exactly two rules on the Python side.
+    # The two sides have to agree about which prefixes come off, and there are exactly two rules on the Python side.
     assert 'resolved.startswith("\\\\\\\\?\\\\UNC\\\\")' in gate
     assert "resolved = resolved[4:]" in gate
     assert "Volume{" not in gate
@@ -700,7 +690,6 @@ def test_the_installer_and_the_runtime_gate_normalize_alike(resolved: str, expec
     got = _lines(result, "OUT:")[0][len("OUT:") :]
     assert got == expected
 
-    # And the same input through the Python gate's own rules.
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -805,7 +794,6 @@ def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path
     (live / "in-use.txt").write_text("a live process owns this", encoding = "utf-8")
     abandoned = root / f"ust-{_DEAD_PID}-01d01d01"
     abandoned.mkdir()
-    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
     (abandoned / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
 
     aged = time.time() - 3 * 24 * 3600
@@ -918,9 +906,9 @@ def test_an_undeletable_probe_file_is_reclaimed_next_time(tmp_path: Path):
     stale.write_text("left by a run that could not delete it", encoding = "utf-8")
     fresh = good / "unsloth-probe-cafebabe.tmp"
     fresh.write_text("another process is using this right now", encoding = "utf-8")
-    # Same prefix, same suffix, not the shape the probe writes. This sweep runs in
-    # the HOST's temp directory, so a name that merely starts the same way is
-    # somebody else's file however old it is.
+    # Same prefix, same suffix, not the shape the probe writes.
+    # This sweep runs in the HOST's temp directory, so a name that merely starts the same way is somebody else's file
+    # however old it is.
     theirs = good / "unsloth-probe-report.tmp"
     theirs.write_text("not ours", encoding = "utf-8")
     theirs_long = good / "unsloth-probe-deadbeefcafe.tmp"
@@ -1017,12 +1005,11 @@ def test_the_sweep_only_takes_directories_the_allocator_could_have_made(tmp_path
 
     ours = root / f"ust-{_DEAD_PID}-abcdef01"
     ours.mkdir()
-    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
     (ours / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (ours / "scratch.bin").write_text("x", encoding = "utf-8")
     keep = []
-    # Case-insensitively ours: Windows filenames are case-insensitive, so refusing
-    # the uppercase spelling would leak a directory we created.
+    # Case-insensitively ours: Windows filenames are case-insensitive, so refusing the uppercase spelling would leak a
+    # directory we created.
     upper = root / f"ust-{_DEAD_PID}-ABCDEF01"
     upper.mkdir()
     (upper / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
@@ -1136,11 +1123,10 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     precious = tmp_path / "precious"
     precious.mkdir()
     (precious / "keepme.txt").write_text("do not delete", encoding = "utf-8")
-    # A dead owner PID, or the sweep keeps the directory for the live process its
-    # name says owns it; that case is the test below.
+    # A dead owner PID, or the sweep keeps the directory for the live process its name says owns it; that case is the
+    # test below.
     stale = root / f"ust-{_DEAD_PID}-01d01d01"
     stale.mkdir()
-    # Recorded, not guessed: an unrecorded owner is now treated as unknown.
     (stale / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (stale / "junk").write_text("x", encoding = "utf-8")
     fresh = root / f"ust-{_DEAD_PID}-0e0e0e0e"
@@ -1157,10 +1143,9 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
     try:
         os.utime(link, (aged, aged), follow_symlinks = False)
     except (NotImplementedError, OSError):
-        # Windows has no follow_symlinks=False for utime, and aging the link any
-        # other way writes THROUGH it, leaving the link fresh so the sweep skips it.
-        # The 5.1 staging probe ages the reparse point via a
-        # FILE_FLAG_OPEN_REPARSE_POINT handle instead.
+        # Windows has no follow_symlinks=False for utime, and aging the link any other way writes THROUGH it, leaving
+        # the link fresh so the sweep skips it.
+        # The 5.1 staging probe ages the reparse point via a FILE_FLAG_OPEN_REPARSE_POINT handle instead.
         pytest.skip("this host cannot age a link without writing through it")
 
     result = _run_powershell(
@@ -1227,8 +1212,8 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     # LOCALAPPDATA\"Unsloth Studio" is the data dir uninstall.ps1 removes wholesale.
     assert 'Join-Path $env:LOCALAPPDATA "Unsloth Studio\\temp"' in roots
     assert '"Unsloth Studio"' in uninstall
-    # ~\.unsloth\.cache is on its explicit sibling list. Directly under ~\.unsloth
-    # would be worse: that directory is removed only when it is empty.
+    # ~\.unsloth\.cache is on its explicit sibling list. Directly under ~\.unsloth would be worse: that directory
+    # is removed only when it is empty.
     assert 'Join-Path $env:USERPROFILE ".unsloth\\.cache\\temp"' in roots
     assert (
         '$defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" }'
@@ -1236,18 +1221,16 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     )
     assert ".unsloth\\temp" not in roots
 
-    # The GetFolderPath fallback is the whole point of the second root: LOCALAPPDATA
-    # is dropped in service and CI contexts. The uninstaller has to resolve the data
-    # dir the same way, or the tree it places there survives an uninstall on exactly
-    # the hosts that needed the fallback.
+    # The GetFolderPath fallback is the whole point of the second root: LOCALAPPDATA is dropped in service and CI
+    # contexts. The uninstaller has to resolve the data dir the same way, or the tree it places there survives an
+    # uninstall on exactly the hosts that needed the fallback.
     assert '[Environment]::GetFolderPath("LocalApplicationData")' in roots
-    # And it has to consider BOTH spellings rather than the first that answers:
-    # install.ps1 falls through from a set-but-unusable LOCALAPPDATA to the known
-    # folder, so the variable being non-blank does not say where the tree landed.
+    # And it has to consider BOTH spellings rather than the first that answers: install.ps1 falls through from a
+    # set-but-unusable LOCALAPPDATA to the known folder, so the variable being non-blank does not say where the tree
+    # landed.
     assert "foreach ($root in @($env:LOCALAPPDATA, $knownLocalAppData)) {" in uninstall
-    # And the second spelling gets the TEMP TREE ONLY. It can name a different
-    # user's profile, and the data-dir delete is recursive with no ownership
-    # sentinel, so widening that to both roots would have been the larger bug.
+    # And the second spelling gets the TEMP TREE ONLY. It can name a different user's profile, and the data-dir
+    # delete is recursive with no ownership sentinel, so widening that to both roots would have been the larger bug.
     assert 'Join-Path $root "Unsloth Studio\\temp"' in uninstall
     assert "_RemoveStudioPrivateTempTrees -Paths $privateTempDirs" in uninstall
     assert "foreach ($d in $defaultDataDirs)" not in uninstall
@@ -1269,7 +1252,6 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
         '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
     )
 
-    # 1. A live owner is left alone; a dead one goes.
     temp = tmp_path / "Unsloth Studio" / "temp"
     temp.mkdir(parents = True)
     live = temp / "ust-1234-abcdef01"
@@ -1294,7 +1276,6 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
     assert (live / "owner.pid").exists(), "a live owner's temp was removed"
     assert not dead.exists()
 
-    # 2. A linked temp directory is refused outright.
     victim = tmp_path / "victim"
     victim.mkdir()
     (victim / "ust-1234-abcdef03").mkdir()
@@ -1331,9 +1312,8 @@ def test_a_live_owner_survives_the_data_directory_removal(tmp_path: Path):
     """
     uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
 
-    # The order is a property of the script body, not of any one function, so it
-    # is checked as one: every wholesale data-dir removal is preceded by the
-    # sweep and carries what the sweep kept.
+    # The order is a property of the script body, not of any one function, so it is checked as one: every wholesale
+    # data-dir removal is preceded by the sweep and carries what the sweep kept.
     body = uninstall[uninstall.index("function Uninstall-UnslothStudio") :]
     calls = [
         line.strip()
@@ -1421,8 +1401,8 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
         '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
     )
 
-    # The real profile, with an Unsloth temp tree in it that belongs to a dead
-    # owner: nothing about the entries themselves protects them.
+    # The real profile, with an Unsloth temp tree in it that belongs to a dead owner: nothing about the entries
+    # themselves protects them.
     real = tmp_path / "real profile"
     real_temp = real / "localappdata" / "Unsloth Studio" / "temp"
     real_temp.mkdir(parents = True)
@@ -1431,8 +1411,7 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
     (stale / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     (stale / "precious.txt").write_text("another profile", encoding = "utf-8")
 
-    # Three levels above the temp directory, so neither it nor its parent is a
-    # link. Only a full walk sees this.
+    # Three levels above the temp directory, so neither it nor its parent is a link. Only a full walk sees this.
     redirected = tmp_path / "redirected profile"
     redirected.symlink_to(real, target_is_directory = True)
     aliased = redirected / "localappdata" / "Unsloth Studio" / "temp"
@@ -1587,7 +1566,6 @@ def test_the_uninstaller_reclaims_the_temp_tree_at_both_spellings(tmp_path: Path
     dirs = [line[len("DIR:") :] for line in _lines(result, "DIR:")]
     assert len(dirs) == 2, dirs
     assert any(d.startswith(dead) for d in dirs), dirs
-    # The temp tree, not the data directory.
     assert all(d.rstrip("\\/").endswith("temp") for d in dirs), dirs
     assert len(set(dirs)) == len(dirs)
 
@@ -1618,7 +1596,6 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
                 '$ErrorActionPreference = "Stop"',
                 "function _Substep { param([string]$Msg, [string]$Color) }",
                 block,
-                # The profile being uninstalled, so shape alone is enough here.
                 f"_RemoveStudioPrivateTempTrees -Paths @('{temp}') -PrimaryPath '{temp}'",
                 'Write-Output "DONE:1"',
             ]
@@ -1631,6 +1608,5 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
     assert (temp / "ust-legacy").is_dir()
     assert (temp / "ust-notapid-abcdef01").is_dir()
     assert (temp / "somebody-elses").is_dir()
-    # And neither directory went, because neither was left empty.
     assert temp.is_dir()
     assert (data / "studio.port").exists()

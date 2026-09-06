@@ -125,3 +125,34 @@ export function classifyGgufFit(
   if (required <= combined) return "partial";
   return "oom";
 }
+
+/** Structural rather than the Hub's `GgufVariantDetail`, so this module stays below
+ *  the features that own it. */
+export interface GgufVariantSizes {
+  size_bytes: number;
+  download_size_bytes?: number;
+}
+
+/** Byte basis for a fit verdict on a listed variant.
+ *
+ * `size_bytes` is the main weights; `download_size_bytes` also covers the companion
+ * GGUFs fetched beside them — a vision model's mmproj, and the MTP or DFlash drafter
+ * `auto` speculation may promote to.
+ *
+ * Leans high on purpose. One aggregate cannot say which of those stay resident, while
+ * the load planner charges a projector at a multiple of its file size, skips it with
+ * vision off, and prices a drafter only when one would open (`/kv-cache-estimate` in
+ * routes/models.py).
+ *
+ * The larger of the two, never the total alone: the offline listing path reports it as
+ * the weights and an older backend as zero (hub/services/models/gguf_variants.py). */
+export function ggufVariantFitSizeBytes(variant: GgufVariantSizes): number {
+  return Math.max(variant.size_bytes, variant.download_size_bytes ?? 0);
+}
+
+export function classifyGgufVariantFit(
+  variant: GgufVariantSizes,
+  input: GgufFitInput,
+): GgufFitClass {
+  return classifyGgufFit(ggufVariantFitSizeBytes(variant), input);
+}

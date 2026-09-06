@@ -256,8 +256,8 @@ def _build_harness(run_dir: Path) -> None:
     assert "async function waitForServerModel(" in poll
     sync = _between(
         source,
-        "// Prevent older concurrent status reads",
-        "/**\n * Reconcile the UI after the SERVER unloaded",
+        "let syncGeneration = 0;",
+        "export async function resyncInferenceStatusAfterServerModelChange(",
     )
     assert "async function syncInferenceStatusToStore(" in sync
     # The sequencing IS the bug, so refresh runs for real rather than being re-typed here.

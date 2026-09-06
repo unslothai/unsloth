@@ -21103,7 +21103,7 @@ async def produce_openai_chat_completions(
     # verbatim so structured `tool_calls` flow back to the client. This
     # branch runs BEFORE `_extract_content_parts` because that helper is
     # unaware of `role="tool"` messages and assistant messages that only
-    # carry `tool_calls` (content=None) — both of which are valid in
+    # carry `tool_calls` (content=None) - both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
 
@@ -24338,6 +24338,11 @@ _SANDBOX_MEDIA_TYPES = {
     ".gif": "image/gif",
     ".webp": "image/webp",
     ".bmp": "image/bmp",
+    # A raster codec, not a document type: `nosniff` below pins the type either way, and a model
+    # that writes `photo.avif` should get an image rather than an attachment it cannot see.
+    ".avif": "image/avif",
+    # `.svg` stays OUT on purpose. The filename is model-chosen, so an inline SVG would be
+    # same-origin script execution; it stays octet-stream + attachment (a download card).
 }
 
 
@@ -25510,7 +25515,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         async def _stream():
             # Manual httpx client/response lifecycle AND explicit iterator
-            # close — see _anthropic_passthrough_stream for the full rationale.
+            # close - see _anthropic_passthrough_stream for the full rationale.
             # Saving the iterator and closing it in the finally block avoids the
             # Python 3.13 + httpcore 1.0.x "Exception ignored in:
             # <async_generator>" / anyio cancel-scope trace.

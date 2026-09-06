@@ -43,9 +43,9 @@ export function SidebarModelConfig({
   loadedConfig,
   onReload,
 }: SidebarModelConfigProps) {
-  // A standalone .gguf has no quant to choose between, but the loader labels it from its filename
-  // and /status echoes that back. Keying settings by it would write "<path>:Q4_K_M" while every
-  // other settings entry points use the bare path.
+  // A standalone .gguf has no quant to choose between, but the loader labels it from its filename and
+  // /status echoes that back. Keying settings by it would write "<path>:Q4_K_M" while all other
+  // settings entry points use the bare path.
   const settingsGgufVariant = isStandaloneGgufPath(modelId)
     ? null
     : ggufVariant;
