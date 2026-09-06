@@ -2490,10 +2490,13 @@ def _torch_index_url_for_remedy(local_tag: str) -> str:
         # terminals and CI logs. The shell expands it, so the command still works verbatim
         # for the person who configured it, and nothing is written down.
         return '"$UNSLOTH_TORCH_INDEX_URL"'
-    family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
-    if family:
-        return f"https://download.pytorch.org/whl/{family.strip('/')}"
-    return f"https://download.pytorch.org/whl/{local_tag}"
+    leaf = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/") or local_tag
+    if os.environ.get("UNSLOTH_PYTORCH_MIRROR", "").strip():
+        # UNSLOTH_PYTORCH_MIRROR replaces the base every index in install_python_stack is
+        # built from, so a remedy naming the public site cannot be reached on an air-gapped
+        # host. Same treatment as the URL above: expand the variable, disclose nothing.
+        return f'"$UNSLOTH_PYTORCH_MIRROR"/{leaf}'
+    return f"https://download.pytorch.org/whl/{leaf}"
 
 
 def _torchcodec_version_mismatch_hint() -> str | None:
