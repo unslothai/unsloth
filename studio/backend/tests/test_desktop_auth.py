@@ -816,6 +816,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     whisper_module.router = APIRouter()
     profile_stats_module = ModuleType("routes.profile_stats")
     profile_stats_module.router = APIRouter()
+    accounts_module = ModuleType("routes.accounts")
+    accounts_module.router = APIRouter()
 
     # Derived from main.py's import block, not hand-listed: the old hardcoded dict went stale
     # twice (#8511's openai_codex_auth_router, #8648's youtube_router), each time killing every
@@ -838,6 +840,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
     monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
     monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
+    monkeypatch.setitem(sys.modules, "routes.accounts", accounts_module)
 
     import studio.backend.main as backend_main
 

@@ -30,7 +30,7 @@ from models.auth import (
     RefreshTokenRequest,
 )
 from models.users import Token
-from auth import storage, hashing
+from auth import storage, hashing, policy
 from auth.authentication import (
     authenticated_via_desktop_jwt,
     authenticated_without_credential,
@@ -445,7 +445,8 @@ def auth_status() -> AuthStatusResponse:
 @router.post("/login", response_model = Token)
 async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
-    key = _bucket_key(request, payload.username)
+    username = payload.username.casefold() if policy.installation_is_multi_user() else payload.username
+    key = _bucket_key(request, username)
     unknown_key = _unknown_user_key(request)
     blocked_for = max(_login_blocked(key), _login_blocked(unknown_key))
     if blocked_for > 0:
@@ -456,7 +457,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             headers = {"Retry-After": str(blocked_for)},
         )
 
-    record = storage.get_user_and_secret(payload.username)
+    record = storage.get_user_and_secret(username)
     if record is None:
         # Record under one sentinel key per IP so attacker-controlled username
         # cardinality can't allocate unbounded buckets.
@@ -466,8 +467,15 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
-    salt, pwd_hash, jwt_secret, must_change_password = record
-    if not hashing.verify_password(payload.password, salt, pwd_hash):
+    if username == storage.DEFAULT_ADMIN_USERNAME:
+        salt, pwd_hash, jwt_secret, must_change_password = record
+        verified = hashing.verify_password(payload.password, salt, pwd_hash)
+    else:
+        record = storage.authenticate_account_login(username, payload.password)
+        verified = record is not None
+        if record is not None:
+            salt, pwd_hash, jwt_secret, must_change_password = record
+    if not verified:
         _record_login_failure(key)
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
@@ -477,8 +485,8 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
     # Issue against the credential version just verified.
-    access_token = create_access_token(subject = payload.username, secret = jwt_secret)
-    refresh_token = create_refresh_token(subject = payload.username, secret = jwt_secret)
+    access_token = create_access_token(subject = username, secret = jwt_secret)
+    refresh_token = create_refresh_token(subject = username, secret = jwt_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
@@ -498,10 +506,11 @@ async def logout(
         storage.revoke_user_refresh_tokens(current_subject)
     except Exception:
         pass
-    try:
-        request.app.state.bootstrap_password = None
-    except AttributeError:
-        pass
+    if current_subject == storage.DEFAULT_ADMIN_USERNAME:
+        try:
+            request.app.state.bootstrap_password = None
+        except AttributeError:
+            pass
     return Response(status_code = status.HTTP_204_NO_CONTENT)
 
 
@@ -651,22 +660,31 @@ async def change_password(
     # Single transaction: a separate refresh-token purge could fail after the password commit,
     # leaving pre-change tokens able to mint access tokens. Conditional on the hash just
     # verified, so a concurrent reset-password cannot be overwritten by it.
-    new_secret = storage.update_password(
-        current_subject,
-        payload.new_password,
-        revoke_refresh_tokens = True,
-        expect_password_hash = pwd_hash,
-        preserve_desktop_secret = is_desktop,
-    )
+    if current_subject == storage.DEFAULT_ADMIN_USERNAME:
+        new_secret = storage.update_password(
+            current_subject,
+            payload.new_password,
+            revoke_refresh_tokens = True,
+            expect_password_hash = pwd_hash,
+            preserve_desktop_secret = is_desktop,
+        )
+    else:
+        new_secret = storage.update_account_password(
+            current_subject,
+            payload.new_password,
+            expect_password_hash = pwd_hash,
+            expect_secret = _jwt_secret,
+        )
     if new_secret is None:
         raise HTTPException(
             status_code = status.HTTP_409_CONFLICT,
             detail = "The password changed while this request was in flight. Sign in again.",
         )
-    try:
-        request.app.state.bootstrap_password = None
-    except AttributeError:
-        pass
+    if current_subject == storage.DEFAULT_ADMIN_USERNAME:
+        try:
+            request.app.state.bootstrap_password = None
+        except AttributeError:
+            pass
     access_token = create_access_token(
         subject = current_subject, desktop = is_desktop, secret = new_secret
     )
