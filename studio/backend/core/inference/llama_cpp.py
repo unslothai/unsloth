@@ -33198,8 +33198,15 @@ class LlamaCppBackend:
             return (pcm * 32767.0).astype("<i2").tobytes()
 
         since_decode = 0
+        # Flat, unlike the blocking path's _audio_generation_timeout(): httpx applies
+        # the read timeout per socket read, and this response is consumed token by
+        # token, so it bounds the gap between two tokens (a stalled server), not the
+        # whole clip. The blocking path scales because its single post waits for
+        # the entire generation. Scaling this one with the token budget would only
+        # delay noticing a wedged server.
         with httpx.Client(
-            timeout = httpx.Timeout(300, connect = 10), headers = self._auth_headers
+            timeout = httpx.Timeout(_GGUF_AUDIO_READ_TIMEOUT, connect = 10),
+            headers = self._auth_headers,
         ) as client:
             with client.stream("POST", f"{self.base_url}/completion", json = payload) as resp:
                 if resp.status_code != 200:

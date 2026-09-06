@@ -72,13 +72,16 @@ def _fake_llama_backend(
     return llama
 
 
-def _patch_backends(inf, llama):
+def _patch_backends(inf, llama, voice = None):
     """Stub core.inference + routes.inference modules so the lazy imports inside
-    training_vram resolve to fakes (avoids importing torch-heavy backends)."""
+    training_vram resolve to fakes (avoids importing torch-heavy backends).
+    ``voice`` is the voice-slot llama-server; empty unless a test loads one."""
     core_inf = types.ModuleType("core.inference")
     core_inf.get_inference_backend = lambda: inf
     routes_inf = types.ModuleType("routes.inference")
     routes_inf.get_llama_cpp_backend = lambda: llama
+    voice = voice if voice is not None else _fake_llama_backend(active = False)
+    routes_inf.get_voice_llama_backend = lambda: voice
     return patch.dict(sys.modules, {"core.inference": core_inf, "routes.inference": routes_inf})
 
 
@@ -147,7 +150,7 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
         with _patch_backends(_fake_inference_backend(), _fake_llama_backend(active = False)):
             self.assertEqual(
                 tv.summarize_resident_chat(),
-                {"hf": None, "gguf": None, "loading": False, "any": False},
+                {"hf": None, "gguf": None, "voice": None, "loading": False, "any": False},
             )
 
     def test_hf_resident_via_active_model(self):
@@ -224,6 +227,40 @@ class TestSummarizeResidentChat(_GpuCacheResetMixin, unittest.TestCase):
             out = tv.summarize_resident_chat()
         self.assertIsNone(out["hf"])
         self.assertTrue(out["any"])  # GGUF still detected
+
+    def test_voice_slot_is_a_vram_resident(self):
+        # A loaded voice slot with an EMPTY chat slot: the second llama-server holds
+        # VRAM on its own, so training must see it (the case that used to be invisible).
+        with _patch_backends(
+            _fake_inference_backend(),
+            _fake_llama_backend(active = False),
+            voice = _fake_llama_backend(active = True, identifier = "orpheus.gguf"),
+        ):
+            out = tv.summarize_resident_chat()
+        self.assertEqual(out["voice"], "orpheus.gguf")
+        self.assertIsNone(out["gguf"])
+        self.assertFalse(out["loading"])
+        self.assertTrue(out["any"])
+
+    def test_mid_start_voice_slot_is_in_flight(self):
+        with _patch_backends(
+            _fake_inference_backend(),
+            _fake_llama_backend(active = False),
+            voice = _fake_llama_backend(active = True, loaded = False, identifier = "orpheus.gguf"),
+        ):
+            out = tv.summarize_resident_chat()
+        self.assertEqual(out["voice"], "orpheus.gguf")
+        self.assertTrue(out["loading"])
+
+    def test_cpu_only_voice_slot_is_not_a_vram_resident(self):
+        with _patch_backends(
+            _fake_inference_backend(),
+            _fake_llama_backend(active = False),
+            voice = _fake_llama_backend(active = True, identifier = "cpu.gguf", gpu_offload = False),
+        ):
+            out = tv.summarize_resident_chat()
+        self.assertIsNone(out["voice"])
+        self.assertFalse(out["any"])
 
 
 class TestSummarizeResidentStt(_GpuCacheResetMixin, unittest.TestCase):
@@ -536,6 +573,37 @@ class TestFreeChatModels(_GpuCacheResetMixin, unittest.TestCase):
         llama = _fake_llama_backend(active = False)
         with _patch_backends(inf, llama):
             freed = tv.free_chat_models_for_training(reason = "test")
+        self.assertEqual(freed, [])
+
+    def test_unloads_voice_slot_beside_chat_slot(self):
+        # Both llama-servers resident: freeing only the chat slot would leave the
+        # voice server holding VRAM under the trainer.
+        inf = _fake_inference_backend()
+        llama = _fake_llama_backend(active = True, identifier = "gemma.gguf")
+        voice = _fake_llama_backend(active = True, identifier = "orpheus.gguf")
+        with _patch_backends(inf, llama, voice = voice):
+            freed = tv.free_chat_models_for_training(reason = "test")
+        llama.unload_model.assert_called_once()
+        voice.unload_model.assert_called_once()
+        self.assertEqual(freed, ["gguf:gemma.gguf", "voice:orpheus.gguf"])
+
+    def test_unloads_voice_slot_alone(self):
+        inf = _fake_inference_backend()
+        llama = _fake_llama_backend(active = False)
+        voice = _fake_llama_backend(active = True, identifier = "orpheus.gguf")
+        with _patch_backends(inf, llama, voice = voice):
+            freed = tv.free_chat_models_for_training(reason = "test")
+        llama.unload_model.assert_not_called()
+        voice.unload_model.assert_called_once()
+        self.assertEqual(freed, ["voice:orpheus.gguf"])
+
+    def test_leaves_cpu_only_voice_slot_alone(self):
+        inf = _fake_inference_backend()
+        llama = _fake_llama_backend(active = False)
+        voice = _fake_llama_backend(active = True, identifier = "cpu.gguf", gpu_offload = False)
+        with _patch_backends(inf, llama, voice = voice):
+            freed = tv.free_chat_models_for_training(reason = "test")
+        voice.unload_model.assert_not_called()
         self.assertEqual(freed, [])
 
     def test_hf_failure_still_unloads_gguf(self):

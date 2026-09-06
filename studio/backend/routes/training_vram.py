@@ -36,9 +36,14 @@ def _free_vram_by_index(devices: List[Dict[str, Any]]) -> Dict[int, float]:
 
 
 def summarize_resident_chat() -> Dict[str, Any]:
-    """Report which chat models hold GPU memory (resident even while loading). Never raises."""
+    """Report which chat models hold GPU memory (resident even while loading). Never raises.
+
+    The voice slot counts too: it is a second llama-server, holding VRAM exactly like
+    the chat slot's, so training coordination that saw only the chat slot could unload
+    that one and launch the trainer beside a voice server it never knew about."""
     hf_name: Optional[str] = None
     gguf_name: Optional[str] = None
+    voice_name: Optional[str] = None
     loading: bool = False
 
     try:
@@ -67,11 +72,24 @@ def summarize_resident_chat() -> Dict[str, Any]:
     except Exception as e:
         logger.warning("Could not inspect GGUF backend: %s", e)
 
+    try:
+        from routes.inference import get_voice_llama_backend
+        voice = get_voice_llama_backend()
+        # Same rule as the chat slot: active (not merely loaded) holds VRAM, and a
+        # confirmed CPU-only server holds none.
+        if voice.is_active and getattr(voice, "_gpu_offload_active", None) is not False:
+            voice_name = voice.model_identifier or "voice"
+            if not getattr(voice, "is_loaded", False):
+                loading = True
+    except Exception as e:
+        logger.warning("Could not inspect voice slot backend: %s", e)
+
     return {
         "hf": hf_name,
         "gguf": gguf_name,
+        "voice": voice_name,
         "loading": loading,
-        "any": bool(hf_name or gguf_name),
+        "any": bool(hf_name or gguf_name or voice_name),
     }
 
 
@@ -452,6 +470,22 @@ def free_chat_models_for_training(reason: str) -> List[str]:
             freed.append(f"gguf:{name}")
     except Exception as e:
         logger.warning("Could not unload GGUF chat model: %s", e)
+
+    try:
+        from routes.inference import get_voice_llama_backend
+        voice = get_voice_llama_backend()
+        # The voice slot is its own llama-server; same CPU-only exemption as above.
+        if voice.is_active and getattr(voice, "_gpu_offload_active", None) is not False:
+            name = voice.model_identifier or "voice"
+            logger.info(
+                "Unloading GGUF voice model '%s' to free GPU memory for training (%s)",
+                name,
+                reason,
+            )
+            voice.unload_model()
+            freed.append(f"voice:{name}")
+    except Exception as e:
+        logger.warning("Could not unload GGUF voice model: %s", e)
 
     return freed
 

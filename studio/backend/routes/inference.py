@@ -15882,19 +15882,27 @@ async def voice_load_model(
     accepted.  Any other model (text LLM, csm, whisper, audio_vlm) is rejected
     with HTTP 400 after detection and the slot is left empty.
     """
+    from core.inference.llama_cpp import _hf_offline_if_unreachable_for
     from utils.models import ModelConfig
 
     model_identifier = request.model_path.strip()
     voice_backend = get_voice_llama_backend()
 
     # Resolve model config — auto-selects GGUF variant when gguf_variant is None,
-    # exactly mirroring the ModelConfig.from_identifier() call in /load.
+    # mirroring the ModelConfig.from_identifier() call in /load, including how it
+    # runs: from_identifier scans the HF cache and can resolve Hub metadata, so it
+    # goes to a worker thread under the same offline guard rather than stalling every
+    # other request on the event loop while it does.
+    def _resolve_config():
+        with _hf_offline_if_unreachable_for(model_identifier):
+            return ModelConfig.from_identifier(
+                model_id = model_identifier,
+                hf_token = request.hf_token,
+                gguf_variant = request.gguf_variant,
+            )
+
     try:
-        config = ModelConfig.from_identifier(
-            model_id = model_identifier,
-            hf_token = request.hf_token,
-            gguf_variant = request.gguf_variant,
-        )
+        config = await asyncio.to_thread(_resolve_config)
     except Exception as e:
         raise HTTPException(status_code = 400, detail = f"Could not resolve model: {e}")
 
@@ -15971,9 +15979,10 @@ async def voice_load_model(
     if not ok:
         # load_model returned False (e.g. the server became healthy but audio
         # codec init failed). Tear the half-started slot down before raising so
-        # the llama-server process doesn't linger and occupy memory.
+        # the llama-server process doesn't linger and occupy memory. Off-loop,
+        # like every other unload here: teardown waits on the subprocess.
         try:
-            voice_backend.unload_model()
+            await asyncio.to_thread(voice_backend.unload_model)
         except Exception:
             pass
         raise HTTPException(status_code = 500, detail = "Voice model failed to start.")
@@ -15984,7 +15993,7 @@ async def voice_load_model(
     if not is_audio or audio_type not in _VOICE_SLOT_AUDIO_TYPES:
         # Not a supported TTS type — reject and leave slot empty.
         try:
-            voice_backend.unload_model()
+            await asyncio.to_thread(voice_backend.unload_model)
         except Exception:
             pass
         raise HTTPException(
@@ -16022,8 +16031,11 @@ async def voice_unload_model(current_subject: str = Depends(get_current_subject)
     if not voice_backend.is_active:
         return {"status": "not_loaded"}
     model_id = voice_backend.model_identifier
+    # Off the event loop, as /unload runs the chat slot's teardown: unload_model
+    # waits on the llama-server subprocess, and a sync call would block every
+    # other request for the whole of that wait.
     try:
-        voice_backend.unload_model()
+        await asyncio.to_thread(voice_backend.unload_model)
     except Exception as e:
         logger.error("Voice slot unload error: %s", e, exc_info = True)
         raise HTTPException(status_code = 500, detail = f"Failed to unload voice model: {e}")
@@ -17272,6 +17284,19 @@ async def openai_audio_speech_stream(
         raise HTTPException(
             status_code = 400,
             detail = "Streaming speech requires a loaded SNAC (Orpheus) voice.",
+        )
+    # IQ1/IQ2/Q2 Orpheus quants read the "voice:" speaker prefix aloud. The blocking
+    # route trims that spoken name off the clip, which needs the whole clip and so has
+    # no streaming equivalent (see generate_audio_response_stream). Refuse up front,
+    # before the monitor row opens, so the client falls back to /audio/speech instead
+    # of hearing the speaker's name before every sentence.
+    if not backend._orpheus_voice_prefix_ok():
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Streaming speech is unavailable for IQ1/IQ2/Q2 Orpheus quants, which "
+                "speak the voice prefix aloud. Use /audio/speech, which trims it."
+            ),
         )
 
     voice_name = (body.voice or "").strip().lower() or "tara"
