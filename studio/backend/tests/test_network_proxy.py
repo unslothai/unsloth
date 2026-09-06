@@ -124,6 +124,123 @@ def _connect_head(target: str, credential: ProxyCredential | None, extra: str = 
     return f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n{auth}{extra}\r\n"
 
 
+# A tunnel has to open with a ClientHello naming the CONNECT host before it may
+# carry anything, so these build one; every tunnel test below starts with one.
+
+
+def _client_hello(server_name: str | None, padding: int = 0) -> bytes:
+    """The smallest TLS 1.2 record that carries a ClientHello, with or without SNI.
+
+    ``padding`` adds an RFC 7685 padding extension of that many bytes, which is
+    how a real hello grows past a kilobyte.
+    """
+    extensions = b""
+    if server_name is not None:
+        name = server_name.encode("ascii")
+        entry = b"\x00" + len(name).to_bytes(2, "big") + name
+        block = len(entry).to_bytes(2, "big") + entry
+        extensions = b"\x00\x00" + len(block).to_bytes(2, "big") + block
+    if padding:
+        extensions += b"\x00\x15" + padding.to_bytes(2, "big") + b"\x00" * padding
+    body = (
+        b"\x03\x03"
+        + b"\x2a" * 32
+        + b"\x00"
+        + b"\x00\x02\x13\x01"
+        + b"\x01\x00"
+        + len(extensions).to_bytes(2, "big")
+        + extensions
+    )
+    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
+    return b"\x16\x03\x01" + len(handshake).to_bytes(2, "big") + handshake
+
+
+def _split_hello(hello: bytes, at: int) -> bytes:
+    """The same handshake message, cut into two TLS records at ``at`` bytes."""
+    handshake = hello[5:]
+    first, second = handshake[:at], handshake[at:]
+    assert first and second
+    return (
+        b"\x16\x03\x01" + len(first).to_bytes(2, "big") + first
+        + b"\x16\x03\x01" + len(second).to_bytes(2, "big") + second
+    )
+
+
+def _hello_records(hello: bytes, chunk: int) -> bytes:
+    """The same handshake message, cut into TLS records of at most ``chunk`` bytes."""
+    handshake = hello[5:]
+    records = b""
+    for index in range(0, len(handshake), chunk):
+        piece = handshake[index : index + chunk]
+        records += b"\x16\x03\x01" + len(piece).to_bytes(2, "big") + piece
+    return records
+
+
+def _hello_at_the_body_cap(server_name: str) -> bytes:
+    """A ClientHello whose handshake body is exactly ``MAX_CLIENT_HELLO_BYTES``."""
+    base = len(_client_hello(server_name)) - 5 - 4
+    # A padding extension costs four bytes of header on top of its payload.
+    hello = _client_hello(server_name, padding = network_proxy.MAX_CLIENT_HELLO_BYTES - base - 4)
+    assert len(hello) - 5 - 4 == network_proxy.MAX_CLIENT_HELLO_BYTES
+    return hello
+
+
+def _tunnel(proxy: AllowlistProxy, upstream, host: str) -> socket.socket:
+    client, response = _request(proxy, _connect_head(f"{host}:{upstream.port}", proxy.credential))
+    assert response.startswith(b"HTTP/1.1 200"), response
+    return client
+
+
+def _echo(client: socket.socket, payload: bytes) -> bytes:
+    """Send bytes into a tunnel and read back what the echo upstream returns."""
+    client.sendall(payload)
+    client.settimeout(5)
+    echoed = b""
+    while len(echoed) < len(payload):
+        chunk = client.recv(4096)
+        assert chunk, f"the tunnel ended after {len(echoed)} of {len(payload)} bytes"
+        echoed += chunk
+    return echoed
+
+
+def _read_until_eof(client: socket.socket, timeout: float = 5.0) -> bytes:
+    """Everything the proxy sent before it closed the tunnel.
+
+    A refusal that does not close is the mystery hang this proxy must never
+    produce, so waiting past the timeout is a failure and not a pass.
+    """
+    client.settimeout(timeout)
+    data = b""
+    while True:
+        try:
+            chunk = client.recv(4096)
+        except socket.timeout as exc:
+            raise AssertionError(
+                f"the proxy never closed the refused tunnel; it sent {data!r}"
+            ) from exc
+        except OSError:
+            # A reset is how a refusal reaches a client with unread bytes queued.
+            return data
+        if not chunk:
+            return data
+        data += chunk
+
+
+def _assert_tls_refusal(client: socket.socket) -> None:
+    """The tunnel ended with the alert a TLS client can report, and nothing else."""
+    assert _read_until_eof(client) == network_proxy.TLS_UNRECOGNIZED_NAME_ALERT
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> bool:
+    """Poll a predicate the proxy's worker fills in after the client has gone."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
 # --- host normalization and allowlist ----------------------------------------
 
 
@@ -264,11 +381,50 @@ def test_proxy_environment_sets_every_standard_variable_and_keeps_loopback_direc
         ("::ffff:127.0.0.1", False),
         ("::ffff:10.0.0.1", False),
         ("::ffff:93.184.216.34", True),
+        ("fec0::1", False),
         ("not-an-ip", False),
     ],
 )
 def test_public_address_rule(address, expected):
     assert public_address(address) is expected
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        # RFC 3879 deprecated site-local addressing, so ``ipaddress`` never
+        # listed fec0::/10 beside fe80::/10 and fc00::/7 and reports these
+        # is_private False and is_global True. Gear older than the deprecation
+        # still routes them, which makes them a way back onto the LAN.
+        "fec0::1",
+        "fec0::a00:1",
+        "fecf:ffff::1",
+        "feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        # RFC 9602 gave 5f00::/16 to SRv6 SIDs and IANA marks it Globally
+        # Reachable: False; CPython reports it global all the same.
+        "5f00::1",
+        # Reserved by the IETF and outside the block IANA allocates from.
+        "4000::1",
+        "c000::1",
+    ],
+)
+def test_public_address_refuses_the_blocks_ipaddress_still_calls_global(address):
+    """Membership of 2000::/3 decides, because ``is_global`` alone does not."""
+    import ipaddress
+
+    assert ipaddress.ip_address(address).is_global is True, (
+        "this address is only interesting while ipaddress still calls it global"
+    )
+    assert public_address(address) is False
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["2606:4700::6810:84e5", "2a00:1450:4001:80e::200e", "2001:4860:4860::8888", "3ffe::1"],
+)
+def test_public_address_still_admits_ordinary_global_unicast(address):
+    """The block rule must not cost the addresses allowlisted hosts really answer with."""
+    assert public_address(address) is True
 
 
 # --- tunnel behaviour --------------------------------------------------------
@@ -279,8 +435,10 @@ def test_connect_to_allowlisted_host_tunnels_bytes_both_ways(proxy, upstream):
         proxy, _connect_head(f"upstream.test:{upstream.port}", proxy.credential)
     )
     assert response.startswith(b"HTTP/1.1 200")
-    client.sendall(b"hello through the tunnel")
-    assert client.recv(4096) == b"hello through the tunnel"
+    # The opening ClientHello has to name the CONNECT host; the payload behind it
+    # is ordinary tunnel traffic and the echo upstream sends every byte back.
+    opening = _client_hello("upstream.test") + b"hello through the tunnel"
+    assert _echo(client, opening) == opening
     client.close()
     assert upstream.connections == 1
     summary = proxy.audit.summary()
@@ -290,11 +448,11 @@ def test_connect_to_allowlisted_host_tunnels_bytes_both_ways(proxy, upstream):
 
 
 def test_connect_to_wildcard_host_is_allowed(proxy, upstream):
-    client, response = _request(
-        proxy, _connect_head(f"cdn.wild.test:{upstream.port}", proxy.credential)
-    )
-    assert response.startswith(b"HTTP/1.1 200")
+    client = _tunnel(proxy, upstream, "cdn.wild.test")
+    hello = _client_hello("cdn.wild.test")
+    assert _echo(client, hello) == hello
     client.close()
+    assert proxy.audit.summary()["allowed"] == {"cdn.wild.test": 1}
 
 
 def test_missing_or_wrong_credential_is_refused_with_407(proxy, upstream):
@@ -450,10 +608,11 @@ def test_module_defaults_are_read_at_construction(monkeypatch, upstream):
 
 
 def test_close_stops_the_listener_and_open_tunnels(proxy, upstream):
-    client, response = _request(
-        proxy, _connect_head(f"upstream.test:{upstream.port}", proxy.credential)
-    )
-    assert response.startswith(b"HTTP/1.1 200")
+    client = _tunnel(proxy, upstream, "upstream.test")
+    hello = _client_hello("upstream.test")
+    # Spliced, not still inside the server name check, so this closes a tunnel
+    # that is carrying traffic.
+    assert _echo(client, hello) == hello
     port = proxy.port
     proxy.close()
     client.settimeout(5)
@@ -995,69 +1154,6 @@ def test_nat64_prefixes_are_reparsed_when_the_variable_changes(monkeypatch):
 # --- server name checking ----------------------------------------------------
 
 
-def _client_hello(server_name: str | None, padding: int = 0) -> bytes:
-    """The smallest TLS 1.2 record that carries a ClientHello, with or without SNI.
-
-    ``padding`` adds an RFC 7685 padding extension of that many bytes, which is
-    how a real hello grows past a kilobyte.
-    """
-    extensions = b""
-    if server_name is not None:
-        name = server_name.encode("ascii")
-        entry = b"\x00" + len(name).to_bytes(2, "big") + name
-        block = len(entry).to_bytes(2, "big") + entry
-        extensions = b"\x00\x00" + len(block).to_bytes(2, "big") + block
-    if padding:
-        extensions += b"\x00\x15" + padding.to_bytes(2, "big") + b"\x00" * padding
-    body = (
-        b"\x03\x03"
-        + b"\x2a" * 32
-        + b"\x00"
-        + b"\x00\x02\x13\x01"
-        + b"\x01\x00"
-        + len(extensions).to_bytes(2, "big")
-        + extensions
-    )
-    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
-    return b"\x16\x03\x01" + len(handshake).to_bytes(2, "big") + handshake
-
-
-def _split_hello(hello: bytes, at: int) -> bytes:
-    """The same handshake message, cut into two TLS records at ``at`` bytes."""
-    handshake = hello[5:]
-    first, second = handshake[:at], handshake[at:]
-    assert first and second
-    return (
-        b"\x16\x03\x01" + len(first).to_bytes(2, "big") + first
-        + b"\x16\x03\x01" + len(second).to_bytes(2, "big") + second
-    )
-
-
-def _hello_records(hello: bytes, chunk: int) -> bytes:
-    """The same handshake message, cut into TLS records of at most ``chunk`` bytes."""
-    handshake = hello[5:]
-    records = b""
-    for index in range(0, len(handshake), chunk):
-        piece = handshake[index : index + chunk]
-        records += b"\x16\x03\x01" + len(piece).to_bytes(2, "big") + piece
-    return records
-
-
-def _hello_at_the_body_cap(server_name: str) -> bytes:
-    """A ClientHello whose handshake body is exactly ``MAX_CLIENT_HELLO_BYTES``."""
-    base = len(_client_hello(server_name)) - 5 - 4
-    # A padding extension costs four bytes of header on top of its payload.
-    hello = _client_hello(server_name, padding = network_proxy.MAX_CLIENT_HELLO_BYTES - base - 4)
-    assert len(hello) - 5 - 4 == network_proxy.MAX_CLIENT_HELLO_BYTES
-    return hello
-
-
-def _tunnel(proxy: AllowlistProxy, upstream, host: str) -> socket.socket:
-    client, response = _request(proxy, _connect_head(f"{host}:{upstream.port}", proxy.credential))
-    assert response.startswith(b"HTTP/1.1 200"), response
-    return client
-
-
 def test_a_client_hello_naming_the_connect_host_is_tunnelled(proxy, upstream):
     client = _tunnel(proxy, upstream, "upstream.test")
     hello = _client_hello("upstream.test")
@@ -1076,31 +1172,40 @@ def test_a_client_hello_naming_the_connect_host_is_tunnelled(proxy, upstream):
 def test_a_client_hello_naming_another_host_ends_the_tunnel(proxy, upstream):
     client = _tunnel(proxy, upstream, "upstream.test")
     client.sendall(_client_hello("evil.example"))
-    client.settimeout(5)
-    try:
-        assert client.recv(4096) == b""
-    except OSError:
-        pass
+    # The echo upstream returns everything it is sent, so an alert and nothing
+    # else is proof that no byte of the hello was forwarded.
+    _assert_tls_refusal(client)
     client.close()
-    denied = proxy.audit.summary()["denied"]
-    assert denied["upstream.test"]["reason"] == "SNI does not match the CONNECT host"
+    summary = proxy.audit.summary()
+    assert summary["denied"]["upstream.test"]["reason"] == "SNI does not match the CONNECT host"
+    assert summary["allowed"] == {}
     assert "SNI does not match the CONNECT host" in format_denied_trailer(proxy.audit)
 
 
-def test_a_client_hello_without_a_server_name_is_allowed_and_counted(proxy, upstream):
+def test_a_client_hello_without_a_server_name_is_refused_and_recorded(proxy, upstream):
+    """Replaces the test that asserted an SNI-less hello was tunnelled and counted.
+
+    Nothing Studio has to support sends one to a public host. RFC 6066 section 3
+    RECOMMENDS the extension whenever a client locates a server by name and bans
+    IP literals from it, RFC 8446 section 9.2 lists it mandatory to implement,
+    and RFC 9113 section 9.2 says "clients MUST send the server_name TLS
+    extension" when the server is identified by a domain name, which is every
+    HTTP/2 request to an allowlisted host. The one case where a client has no
+    name to send is a connection to an IP literal, and this proxy already
+    refuses those in the CONNECT authority, so the allowance only ever covered
+    a client hiding where it was going.
+    """
     client = _tunnel(proxy, upstream, "upstream.test")
-    hello = _client_hello(None)
-    client.sendall(hello)
-    client.settimeout(5)
-    echoed = b""
-    while len(echoed) < len(hello):
-        chunk = client.recv(4096)
-        assert chunk
-        echoed += chunk
-    assert echoed == hello
+    client.sendall(_client_hello(None))
+    _assert_tls_refusal(client)
     client.close()
-    assert proxy.audit.summary()["sni_absent"] == 1
-    assert proxy.audit.summary()["denied"] == {}
+    summary = proxy.audit.summary()
+    assert summary["sni_absent"] == 1
+    assert summary["allowed"] == {}
+    assert summary["denied"]["upstream.test"]["reason"] == (
+        "the TLS ClientHello named no server to check against the CONNECT host"
+    )
+    assert "named no server" in format_denied_trailer(proxy.audit)
 
 
 def test_a_client_hello_split_across_records_cannot_hide_a_mismatched_name(proxy, upstream):
@@ -1110,11 +1215,7 @@ def test_a_client_hello_split_across_records_cannot_hide_a_mismatched_name(proxy
     client.sendall(fragments[:25])
     time.sleep(0.1)
     client.sendall(fragments[25:])
-    client.settimeout(5)
-    try:
-        assert client.recv(4096) == b"", "a fragmented ClientHello must not reach the upstream"
-    except OSError:
-        pass
+    _assert_tls_refusal(client)
     client.close()
     denied = proxy.audit.summary()["denied"]
     assert denied["upstream.test"]["reason"] == "SNI does not match the CONNECT host"
@@ -1164,11 +1265,7 @@ def test_a_client_hello_over_the_body_cap_is_still_refused(proxy, upstream):
     hello = _client_hello("upstream.test", padding = network_proxy.MAX_CLIENT_HELLO_BYTES)
     client = _tunnel(proxy, upstream, "upstream.test")
     client.sendall(_hello_records(hello, 4096))
-    client.settimeout(10)
-    try:
-        assert client.recv(4096) == b""
-    except OSError:
-        pass
+    _assert_tls_refusal(client)
     client.close()
     denied = proxy.audit.summary()["denied"]
     assert denied["upstream.test"]["reason"] == (
@@ -1183,12 +1280,8 @@ def test_a_tls_stream_that_never_completes_its_hello_is_refused(upstream):
         client = _tunnel(instance, upstream, "upstream.test")
         # A handshake record that promises 64 bytes and then stops.
         client.sendall(b"\x16\x03\x01\x00\x40" + b"\x01\x00\x00\x3c" + b"\x00" * 4)
-        client.settimeout(5)
         started = time.monotonic()
-        try:
-            assert client.recv(4096) == b""
-        except OSError:
-            pass
+        _assert_tls_refusal(client)
         assert time.monotonic() - started < 5.0, "the header deadline must end the wait"
         client.close()
         denied = instance.audit.summary()["denied"]
@@ -1200,22 +1293,297 @@ def test_a_tls_stream_that_never_completes_its_hello_is_refused(upstream):
         instance.close()
 
 
-def test_a_stream_that_is_not_tls_is_tunnelled_and_counted(proxy, upstream):
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"SSH-2.0-OpenSSH_9.6\r\n",
+        b"GET /secrets HTTP/1.1\r\nHost: upstream.test\r\n\r\n",
+        b"\x00\x00\x00\x2c\x14\x00\x00\x00",
+    ],
+)
+def test_a_stream_that_is_not_tls_is_refused_and_recorded(proxy, upstream, payload):
+    """Replaces the test that asserted an SSH banner was tunnelled and counted.
+
+    That banner is the concrete consequence: an allowlisted host that also
+    answers SSH on 443 turned this proxy into an arbitrary TCP tunnel out of a
+    sandbox whose UI says only the listed hosts are reachable, over HTTPS.
+    """
     client = _tunnel(proxy, upstream, "upstream.test")
-    payload = b"SSH-2.0-OpenSSH_9.6\r\n"
     client.sendall(payload)
-    client.settimeout(5)
-    echoed = b""
-    while len(echoed) < len(payload):
-        chunk = client.recv(4096)
-        assert chunk
-        echoed += chunk
-    assert echoed == payload
+    # No TLS alert: these bytes are not TLS, so a TLS record would be noise in
+    # whatever protocol this is. The echo upstream would have sent the payload
+    # back had any of it been forwarded.
+    assert _read_until_eof(client) == b""
     client.close()
     summary = proxy.audit.summary()
     assert summary["non_tls"] == 1
     assert summary["sni_absent"] == 0
+    assert summary["allowed"] == {}
+    assert summary["denied"]["upstream.test"]["reason"] == (
+        "the tunnel did not open with TLS, and only HTTPS is proxied"
+    )
+    assert "only HTTPS is proxied" in format_denied_trailer(proxy.audit)
+
+
+def test_waiting_out_the_header_deadline_does_not_buy_an_unchecked_tunnel(upstream):
+    """Failing open at the deadline would make every refusal above optional."""
+    instance = _instance(upstream, header_timeout = 1.0)
+    instance.listen_loopback()
+    try:
+        client = _tunnel(instance, upstream, "upstream.test")
+        time.sleep(1.5)
+        try:
+            client.sendall(b"SSH-2.0-OpenSSH_9.6\r\n")
+        except OSError:
+            pass  # the proxy may have closed the tunnel first
+        assert _read_until_eof(client) == b""
+        client.close()
+        summary = instance.audit.summary()
+        assert summary["allowed"] == {}
+        assert summary["denied"]["upstream.test"]["reason"] == (
+            "no TLS ClientHello arrived before the deadline"
+        )
+        assert "no TLS ClientHello arrived" in format_denied_trailer(instance.audit)
+    finally:
+        instance.close()
+
+
+def test_a_client_that_opens_a_tunnel_and_says_nothing_is_a_close_not_a_refusal(proxy, upstream):
+    """Nothing was forwarded and nothing was checked, so there is nothing to report.
+
+    Counted rather than denied: a denial line would tell the model an allowlist
+    refused a host it never refused, and a launch full of these means a client
+    dying before it speaks, which is worth being able to see.
+    """
+    client = _tunnel(proxy, upstream, "upstream.test")
+    client.close()
+    assert _wait_for(lambda: proxy.audit.summary()["silent_close"] == 1)
+    summary = proxy.audit.summary()
     assert summary["denied"] == {}
+    assert summary["allowed"] == {}
+    assert format_denied_trailer(proxy.audit) == ""
+
+
+def test_the_refusal_alert_is_a_fatal_unrecognized_name_record():
+    alert = network_proxy.TLS_UNRECOGNIZED_NAME_ALERT
+    assert alert[0] == 0x15, "content type alert"
+    assert alert[1:3] == b"\x03\x03", "legacy_record_version, RFC 8446 section 5.1"
+    assert int.from_bytes(alert[3:5], "big") == len(alert) - 5
+    assert alert[5] == 2, "fatal"
+    assert alert[6] == 112, "unrecognized_name, RFC 6066 section 3"
+
+
+def test_a_real_tls_client_is_told_why_its_tunnel_was_refused(proxy, upstream):
+    """The diagnosability half of the refusal, against a real OpenSSL handshake.
+
+    A bare close reaches a client as "EOF occurred in violation of protocol" or
+    a reset, which is a mystery for whoever has to explain the failed launch.
+    """
+    import ssl
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    client = _tunnel(proxy, upstream, "upstream.test")
+    client.settimeout(10)
+    with pytest.raises(ssl.SSLError) as failure:
+        context.wrap_socket(client, server_hostname = "evil.example")
+    assert "UNRECOGNIZED_NAME" in str(failure.value), failure.value
+    # Polled, not read straight off: unlike every other refusal here the client
+    # learns of this one from the alert, which the worker sends before it
+    # records the denial, so reading the audit at once is a race.
+    assert _wait_for(
+        lambda: proxy.audit.summary()["denied"].get("upstream.test", {}).get("reason")
+        == "SNI does not match the CONNECT host"
+    ), proxy.audit.summary()
+
+
+def test_a_real_tls_client_naming_the_connect_host_is_forwarded(proxy, upstream):
+    """The other side of the same handshake: a real hello has to pass the parser.
+
+    Hand-built hellos are small and tidy; an OpenSSL one carries key shares and
+    a dozen extensions, so this is what proves the check admits real clients.
+    """
+    import ssl
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    client = _tunnel(proxy, upstream, "upstream.test")
+    client.settimeout(10)
+    with pytest.raises(ssl.SSLError) as failure:
+        # The upstream echoes rather than speaking TLS, so the handshake still
+        # fails; what matters is that it fails on the upstream's answer and not
+        # on a refusal by the proxy.
+        context.wrap_socket(client, server_hostname = "upstream.test")
+    assert "UNRECOGNIZED_NAME" not in str(failure.value), failure.value
+    assert _wait_for(lambda: proxy.audit.summary()["allowed"] == {"upstream.test": 1})
+    assert proxy.audit.summary()["denied"] == {}
+
+
+# --- listener ownership and close ---------------------------------------------
+
+
+def _bound_listener() -> socket.socket:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+    return listener
+
+
+def test_serve_listener_owns_the_listener_and_close_is_what_closes_it(upstream):
+    """The contract both backends rely on, and it has to be the same for both.
+
+    Linux hands over the listener the sandboxed wrapper bound inside its network
+    namespace and passed back through SCM_RIGHTS, and that descriptor is the
+    host's only copy; macOS binds host loopback in ``listen_loopback`` and hands
+    it to the same method. Neither caller closes what it passed.
+    """
+    listener = _bound_listener()
+    instance = _instance(upstream)
+    instance.serve_listener(listener)
+    try:
+        assert instance.port == listener.getsockname()[1]
+    finally:
+        instance.close()
+    assert listener.fileno() == -1, "close() must close the listener it was handed"
+
+
+def test_listen_loopback_leaves_the_same_ownership_as_a_handed_over_listener(upstream):
+    instance = _instance(upstream)
+    instance.listen_loopback()
+    listener = instance._listener
+    assert listener is not None
+    instance.close()
+    assert listener.fileno() == -1
+
+
+@pytest.mark.parametrize("already", ["serving", "closed"])
+def test_a_refused_hand_over_closes_the_listener_rather_than_leaking_it(upstream, already):
+    """A caller told "no" has no way to know whether the fd is still its own."""
+    instance = _instance(upstream)
+    if already == "serving":
+        instance.listen_loopback()
+    else:
+        instance.close()
+    listener = _bound_listener()
+    try:
+        with pytest.raises(RuntimeError):
+            instance.serve_listener(listener)
+        assert listener.fileno() == -1
+    finally:
+        listener.close()
+        instance.close()
+
+
+def test_a_listener_whose_accept_thread_cannot_start_is_closed(monkeypatch, upstream):
+    instance = _instance(upstream)
+    listener = _bound_listener()
+
+    class _Unstartable(threading.Thread):
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(network_proxy.threading, "Thread", _Unstartable)
+    try:
+        with pytest.raises(RuntimeError):
+            instance.serve_listener(listener)
+    finally:
+        monkeypatch.undo()
+    assert listener.fileno() == -1
+    # The proxy did not keep a half-started listener either, so it can be given
+    # another one.
+    second = _bound_listener()
+    instance.serve_listener(second)
+    instance.close()
+    assert second.fileno() == -1
+
+
+def test_close_does_not_return_while_a_worker_is_still_splicing(monkeypatch, upstream):
+    """The cleanup path runs at the end of every tool call.
+
+    Returning from it while a worker still holds both sockets leaves the caller
+    with threads it cannot see, moving bytes through a launch it believes is
+    finished.
+    """
+    entered = threading.Event()
+    holder: dict[str, threading.Thread] = {}
+    real_splice = AllowlistProxy._splice
+
+    def slow_splice(self, client, peer):
+        holder["worker"] = threading.current_thread()
+        entered.set()
+        # Long enough that a close() which does not join returns first.
+        time.sleep(0.5)
+        return real_splice(self, client, peer)
+
+    monkeypatch.setattr(AllowlistProxy, "_splice", slow_splice)
+    instance = _instance(upstream)
+    instance.listen_loopback()
+    try:
+        client = _tunnel(instance, upstream, "upstream.test")
+        client.sendall(_client_hello("upstream.test"))
+        assert entered.wait(5)
+        instance.close()
+        assert not holder["worker"].is_alive(), "close() returned with a worker still running"
+        client.close()
+    finally:
+        instance.close()
+
+
+def test_close_is_bounded_when_a_worker_will_not_stop(monkeypatch, upstream):
+    """The other half of the decision: cleanup may wait, but it may not hang."""
+    entered = threading.Event()
+    release = threading.Event()
+
+    def wedged_splice(self, client, peer):
+        entered.set()
+        release.wait(30)
+
+    monkeypatch.setattr(AllowlistProxy, "_splice", wedged_splice)
+    instance = _instance(upstream)
+    instance.listen_loopback()
+    try:
+        client = _tunnel(instance, upstream, "upstream.test")
+        client.sendall(_client_hello("upstream.test"))
+        assert entered.wait(5)
+        started = time.monotonic()
+        instance.close()
+        elapsed = time.monotonic() - started
+        assert elapsed >= network_proxy.CLOSE_JOIN_SECONDS, "close() did not wait at all"
+        assert elapsed < 3 * network_proxy.CLOSE_JOIN_SECONDS, elapsed
+        client.close()
+    finally:
+        release.set()
+        instance.close()
+
+
+def test_close_leaves_no_proxy_thread_of_its_own_behind(upstream):
+    before = {
+        thread
+        for thread in threading.enumerate()
+        if thread.name.startswith("studio-tool-network-")
+    }
+    instance = _instance(upstream)
+    instance.listen_loopback()
+    clients = []
+    try:
+        for _ in range(3):
+            client = _tunnel(instance, upstream, "upstream.test")
+            clients.append(client)
+            hello = _client_hello("upstream.test")
+            assert _echo(client, hello) == hello
+        instance.close()
+        after = {
+            thread
+            for thread in threading.enumerate()
+            if thread.name.startswith("studio-tool-network-") and thread.is_alive()
+        }
+        assert not after - before, [thread.name for thread in after - before]
+    finally:
+        for client in clients:
+            client.close()
+        instance.close()
 
 
 def test_bytes_pipelined_with_the_connect_head_reach_the_upstream(proxy, upstream):

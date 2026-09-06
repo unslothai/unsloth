@@ -28,6 +28,25 @@ Design points, each of which a test pins down:
 * Audited. Allowed and denied hosts are counted per launch so the tool result
   can name the host a script tried and was refused, instead of leaving the
   model to guess why ``pip`` failed.
+* TLS, and to the host that was asked for. A tunnel must open with a TLS
+  ClientHello naming the CONNECT host, or it is refused before a byte reaches
+  the upstream. The block comment above ``_check_server_name`` argues out why
+  a missing name and a stream that is not TLS at all are refusals and not
+  allowances.
+
+Two holes this design cannot close are named rather than implied, because a
+sandbox whose UI says "only these hosts, over HTTPS" should be read with them
+in mind:
+
+* Domain fronting through the inner HTTP ``Host`` header. The proxy checks the
+  CONNECT authority and the ClientHello SNI, both of which are outside the
+  encryption; the request that then travels inside the TLS session can ask an
+  allowlisted front end for any site it also serves. Seeing that header means
+  terminating TLS, which would put the sandbox's traffic in cleartext in this
+  process and hand it a certificate authority the sandbox trusts. That trade is
+  refused, so this stays open and is stated here instead.
+* An IPv6 answer under a NAT64 prefix that no operator named. Argued out in the
+  block comment above ``_NAT64_WELL_KNOWN``.
 """
 
 from __future__ import annotations
@@ -44,7 +63,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Callable, Iterable, NoReturn
 
 from loggers import get_logger
 
@@ -120,6 +139,20 @@ CONNECT_TIMEOUT_SECONDS = 20.0
 IDLE_TIMEOUT_SECONDS = 120.0
 HEADER_TIMEOUT_SECONDS = 15.0
 MAX_AUDITED_HOSTS = 128
+# How long ``close`` waits for the accept thread, and then for every worker
+# still holding a socket. Two bounded waits rather than one unbounded one: the
+# cleanup path runs at the end of every tool call, so it may not hang, and it
+# may not return while a thread it started is still splicing bytes.
+CLOSE_JOIN_SECONDS = 2.0
+
+# The whole record for a fatal ``unrecognized_name(112)`` alert: content type
+# 21, legacy_record_version 0x0303 (RFC 8446 section 5.1 asks every record but
+# an initial ClientHello for that value), a two byte body, level fatal(2),
+# description 112. RFC 6066 section 3 assigns this alert to a server that will
+# not serve the name the ClientHello asked for, which is this decision exactly,
+# so a client reports "tlsv1 alert unrecognized name" and a reader can check the
+# code against the RFC that defines the extension being enforced.
+TLS_UNRECOGNIZED_NAME_ALERT = b"\x15\x03\x03\x00\x02\x02\x70"
 
 # ``fullmatch`` and not ``match``: with ``$`` a trailing newline still matched,
 # so a label ending in a control character passed validation.
@@ -712,6 +745,26 @@ def _public_unicast(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return bool(ip.is_global) and not ip.is_multicast
 
 
+# RFC 4291 section 2.4 gives 2000::/3 to global unicast, and it is still the
+# only block IANA allocates from, so an IPv6 answer outside it is special
+# purpose or unallocated rather than a host on the internet.
+#
+# Membership is tested by block because ``ipaddress`` cannot be relied on to
+# know which blocks are reachable. On CPython 3.13, ``fec0::1`` reports
+# ``is_private`` False and ``is_global`` True: RFC 3879 deprecated site-local
+# addressing in 2004, so the module never listed fec0::/10 beside fe80::/10 and
+# fc00::/7, yet gear that predates the deprecation still routes it and IANA
+# still marks the block Globally Reachable: False. ``5f00::1`` (RFC 9602 SRv6
+# SIDs, also Globally Reachable: False) reports the same way. Either would let
+# an allowlisted name resolve onto a network the sandbox must not reach, which
+# is the whole class this check exists to refuse.
+#
+# The one block outside 2000::/3 still admitted is the NAT64 Well-Known Prefix,
+# and only because it is decoded to the IPv4 address it carries and judged as
+# that address before this test is reached.
+_GLOBAL_UNICAST = ipaddress.IPv6Network("2000::/3")
+
+
 def public_address(address: str) -> bool:
     """True for a global unicast address; every IPv4-in-IPv6 form is judged as IPv4."""
     try:
@@ -726,6 +779,8 @@ def public_address(address: str) -> bool:
             # Translation space that is not the Well-Known Prefix and that no
             # operator claimed. Which /96 inside it carries the IPv4 address is
             # unknowable from the bytes, and RFC 8215 permits a private one.
+            return False
+        if ip not in _GLOBAL_UNICAST:
             return False
     return _public_unicast(ip)
 
@@ -856,6 +911,7 @@ class NetworkAudit:
         self._overflow = 0
         self._sni_absent = 0
         self._non_tls = 0
+        self._silent = 0
 
     def record_allowed(self, host: str) -> None:
         with self._lock:
@@ -865,18 +921,29 @@ class NetworkAudit:
             self._allowed[host] = self._allowed.get(host, 0) + 1
 
     def record_sni_absent(self) -> None:
-        """A tunnel whose first bytes carried no server name to check."""
+        """A tunnel refused because its ClientHello carried no server name.
+
+        The counter is separate from the denial the caller also records, because
+        an allowlisted host answering with no SNI is worth telling apart from
+        one answering with the wrong SNI when a client turns out to need it.
+        """
         with self._lock:
             self._sni_absent += 1
 
     def record_non_tls(self) -> None:
-        """A tunnel whose first bytes were not a TLS handshake at all.
-
-        Such a tunnel is let through, as it always was, but it is counted: it is
-        the one path where the server name check has nothing to check.
-        """
+        """A tunnel refused because its first bytes were not a TLS handshake."""
         with self._lock:
             self._non_tls += 1
+
+    def record_silent_close(self) -> None:
+        """A tunnel the client closed before sending anything.
+
+        Not a refusal: no byte was forwarded and none was refused, so this never
+        reaches the trailer. It is counted because a launch full of these is a
+        client failing before it speaks, which is otherwise invisible.
+        """
+        with self._lock:
+            self._silent += 1
 
     def record_denied(self, host: str, reason: str, kind: str = POLICY_REFUSAL) -> None:
         # Sanitize here, not at the point of display: this is the boundary where
@@ -899,6 +966,7 @@ class NetworkAudit:
             overflow = self._overflow
             sni_absent = self._sni_absent
             non_tls = self._non_tls
+            silent = self._silent
         denied: dict[str, dict[str, object]] = {}
         for (host, reason, kind), count in entries:
             record = denied.get(host)
@@ -920,6 +988,7 @@ class NetworkAudit:
             "unrecorded": overflow,
             "sni_absent": sni_absent,
             "non_tls": non_tls,
+            "silent_close": silent,
         }
 
     def denied_entries(self) -> list[tuple[str, int, str, str]]:
@@ -952,8 +1021,70 @@ class _TunnelAborted(Exception):
         self.reason = reason
 
 
+def _close_quietly(sock: socket.socket) -> None:
+    """Close a socket whose failure to close is not something a caller can act on."""
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# What the server name check decides, and what it cannot.
+#
+# The CONNECT line names a host and the allowlist judges that name, but the
+# name is the client's claim about where it is going. Everything after the 200
+# is opaque, so the first bytes of the tunnel are the last chance to check that
+# claim against something the far end will also act on.
+#
+# REFUSED, on purpose, and each of these used to be forwarded:
+#
+# * A ClientHello whose SNI is some other host. The tunnel lands on whatever
+#   front end the allowlisted name resolves to, and asks it for a different
+#   site.
+# * A ClientHello with no SNI at all. Refusing this costs nothing a real client
+#   needs: RFC 6066 section 3 says "Literal IPv4 and IPv6 addresses are not
+#   permitted in HostName" and RECOMMENDS the extension whenever a client
+#   locates a server by name, RFC 8446 section 9.2 makes it mandatory to
+#   implement, and RFC 9113 section 9.2 turns that into "clients MUST send the
+#   server_name TLS extension" when the server is identified by a domain name,
+#   which is every HTTP/2 request an ML tool makes to an allowlisted host. This
+#   proxy already refuses IP literals in the CONNECT authority, so the one case
+#   where a client legitimately has no name to send cannot arrive here at all.
+# * A stream whose first byte is not a TLS handshake record. This was the
+#   concrete hole: an allowlisted host that also answers SSH on 443 turned the
+#   proxy into an arbitrary TCP tunnel out of a sandbox whose UI promises HTTPS
+#   to a fixed list of hosts.
+# * A TLS stream that never yields a readable ClientHello inside the byte cap
+#   and the header deadline, including one that sends nothing and waits the
+#   deadline out. Failing open at the deadline would have made the refusals
+#   above a formality: wait, then speak anything.
+#
+# ADMITTED, on purpose, and this is the hole:
+#
+# * Domain fronting through the inner HTTP ``Host`` header. The outer name is
+#   allowlisted, the SNI agrees with it, and the request inside the TLS session
+#   asks that front end for a host that is not on the list. Nothing outside the
+#   encryption distinguishes the two, so catching it means terminating TLS in
+#   this process, which is a larger loss than the one it prevents. Named here
+#   rather than implied, and named again in the module docstring.
+# * A client that encrypts its ClientHello (RFC 9849 ECH) is not admitted but
+#   is worth naming beside it: the outer SNI is the ECH provider's public name,
+#   which will not equal the CONNECT host, so such a tunnel is refused. That is
+#   the safe direction, and nothing the sandbox runs does it today (OpenSSL 4.0
+#   carries the code, curl needs an explicit --ech, CPython's ssl exposes no
+#   API for it), but a client that turns it on will be refused rather than
+#   silently downgraded.
+# ---------------------------------------------------------------------------
+
+
 class AllowlistProxy:
-    """One proxy per launch; ``close()`` stops the listener and every tunnel."""
+    """One proxy per launch.
+
+    ``close()`` stops the listener, ends every tunnel and waits under a bound for
+    the workers holding them, so the launch's cleanup does not return while a
+    thread it started is still moving bytes.
+    """
 
     # Shared by every instance, so the per-launch cap is not the only bound on
     # how many tunnels this process can hold. A test lowers it on the class.
@@ -996,7 +1127,11 @@ class AllowlistProxy:
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._closed = threading.Event()
+        # Guards both sets. Every socket a worker holds and every worker that
+        # holds one has to be reachable from ``close``, and the two are added
+        # and dropped together, so one lock covers them.
         self._tunnels: set[socket.socket] = set()
+        self._workers: set[threading.Thread] = set()
         self._tunnel_lock = threading.Lock()
 
     # -- lifecycle -----------------------------------------------------------
@@ -1008,7 +1143,12 @@ class AllowlistProxy:
         return int(self._listener.getsockname()[1])
 
     def listen_loopback(self) -> int:
-        """Bind an ephemeral port on the host's loopback (macOS path)."""
+        """Bind an ephemeral port on the host's loopback (macOS path).
+
+        The listener is made here and handed to ``serve_listener``, so from the
+        caller's side this is the same contract as the Linux path: the proxy
+        owns the socket and ``close`` is the only thing that closes it.
+        """
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             listener.bind(("127.0.0.1", 0))
@@ -1020,17 +1160,57 @@ class AllowlistProxy:
         return self.port
 
     def serve_listener(self, listener: socket.socket) -> None:
-        """Accept on a listener the caller already bound (Linux passes one from the sandbox)."""
+        """Take ownership of a bound listener and accept on it.
+
+        The ownership contract, which is the same for both backends and holds
+        whether this returns or raises: from the moment of the call the listener
+        belongs to the proxy, and ``close`` is the only thing that closes it. A
+        hand-over this refuses (a second listener, or a proxy already closed) or
+        cannot complete closes the listener here, so no caller is ever left
+        holding a socket it does not know whether to close.
+
+        The two callers differ only in where the socket comes from. The Linux
+        backend has no route out of the sandbox's network namespace, so the
+        sandboxed wrapper binds the listener inside it and passes the descriptor
+        back through SCM_RIGHTS; that descriptor is the only copy the host has,
+        and this method is handed it directly. The macOS backend has no network
+        namespace, so ``listen_loopback`` binds the host's own loopback and
+        hands that socket to this same method. Neither caller closes what it
+        passed, and neither has to unwind differently on failure.
+        """
+        refusal: str | None = None
         if self._listener is not None:
-            raise RuntimeError("the proxy already serves a listener")
-        listener.setblocking(True)
-        self._listener = listener
-        self._thread = threading.Thread(
-            target = self._accept_loop, name = "studio-tool-network-proxy", daemon = True
-        )
-        self._thread.start()
+            refusal = "the proxy already serves a listener"
+        elif self._closed.is_set():
+            refusal = "the proxy is closed"
+        if refusal is not None:
+            _close_quietly(listener)
+            raise RuntimeError(refusal)
+        try:
+            listener.setblocking(True)
+            self._listener = listener
+            thread = threading.Thread(
+                target = self._accept_loop, name = "studio-tool-network-proxy", daemon = True
+            )
+            thread.start()
+        except BaseException:
+            # A listener nobody accepts on is a descriptor nobody will ever
+            # close, and on Linux it is the sandbox's only way out.
+            self._listener = None
+            _close_quietly(listener)
+            raise
+        self._thread = thread
 
     def close(self) -> None:
+        """Stop the listener, end every tunnel, and wait for the workers.
+
+        Called from the cleanup path of every tool call, so it waits under a
+        bound rather than forever: sockets are shut down first, which wakes any
+        worker blocked in ``select`` or ``recv``, then the workers are joined,
+        and only then are the sockets closed. Joining before the close is what
+        makes it deterministic; closing first would free descriptors a worker
+        still holds and could hand it a number that has been reused.
+        """
         if self._closed.is_set():
             return
         self._closed.set()
@@ -1043,18 +1223,34 @@ class AllowlistProxy:
             listener.close()
         with self._tunnel_lock:
             pending = list(self._tunnels)
+            workers = list(self._workers)
         for sock in pending:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
-            try:
-                sock.close()
-            except OSError:
-                pass
+        current = threading.current_thread()
         thread = self._thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout = 2.0)
+        if thread is not None and thread is not current:
+            thread.join(timeout = CLOSE_JOIN_SECONDS)
+        # One budget for every worker, not one each: a launch at the tunnel cap
+        # must not turn a two second cleanup into a minute of them.
+        deadline = time.monotonic() + CLOSE_JOIN_SECONDS
+        alive = 0
+        for worker in workers:
+            if worker is current:
+                continue
+            worker.join(timeout = max(0.0, deadline - time.monotonic()))
+            if worker.is_alive():
+                alive += 1
+        if alive:
+            logger.warning(
+                "Tool network proxy closed with %d worker thread(s) still running; "
+                "their sockets are closed here so they cannot forward anything further",
+                alive,
+            )
+        for sock in pending:
+            _close_quietly(sock)
 
     def __enter__(self) -> "AllowlistProxy":
         return self
@@ -1097,18 +1293,15 @@ class AllowlistProxy:
                 )
                 continue
             try:
-                threading.Thread(
-                    target = self._serve_client, args = (client,), daemon = True
-                ).start()
+                self._spawn_worker(
+                    self._serve_client, (client,), "studio-tool-network-tunnel"
+                )
             except BaseException as exc:
                 # RuntimeError("can't start new thread") would otherwise burn the
                 # slot for the life of the launch and leak the accepted socket.
                 logger.warning("Tool network proxy could not start a worker: %s", exc)
                 self._release_slots()
-                try:
-                    client.close()
-                except OSError:
-                    pass
+                _close_quietly(client)
 
     def _dispatch_refusal(self, client: socket.socket, status: int, reason: str) -> None:
         """Answer a refusal off the accept thread, with a timeout on the write.
@@ -1128,33 +1321,34 @@ class AllowlistProxy:
             pass
         if not self._refusal_slots.acquire(blocking = False):
             logger.debug("Tool network proxy closed a connection without a refusal reply")
-            try:
-                client.close()
-            except OSError:
-                pass
+            _close_quietly(client)
             return
         try:
-            threading.Thread(
-                target = self._refusal_worker,
-                args = (client, status, reason),
-                name = "studio-tool-network-refuse",
-                daemon = True,
-            ).start()
+            self._spawn_worker(
+                self._refusal_worker,
+                (client, status, reason),
+                "studio-tool-network-refuse",
+            )
         except BaseException as exc:
             # Never answer inline: that is the accept thread, and this client may
             # never read.
             logger.warning("Tool network proxy could not start a refusal worker: %s", exc)
             self._release_refusal_slot()
-            try:
-                client.close()
-            except OSError:
-                pass
+            _close_quietly(client)
 
     def _refusal_worker(self, client: socket.socket, status: int, reason: str) -> None:
         try:
-            self._refuse(client, status, reason)
+            if self._track(client):
+                # Tracked so ``close`` can shut this socket down: a client that
+                # never reads its refusal would otherwise sit in ``sendall``
+                # until the header timeout, well past the end of the tool call.
+                self._refuse(client, status, reason)
+            else:
+                _close_quietly(client)
         finally:
+            self._untrack(client)
             self._release_refusal_slot()
+            self._retire_worker()
 
     def _release_refusal_slot(self) -> None:
         try:
@@ -1169,28 +1363,69 @@ class AllowlistProxy:
             except ValueError:  # pragma: no cover - a release without an acquire
                 logger.warning("Tool network proxy released a tunnel slot twice")
 
-    def _track(self, sock: socket.socket) -> None:
+    def _track(self, sock: socket.socket) -> bool:
+        """Put a socket under ``close``, or answer False when ``close`` already ran.
+
+        ``close`` sets the flag before it takes this lock, so a socket is either
+        in the set it snapshots or gets False here and is closed by its caller.
+        Neither order leaves a socket that nothing will close.
+        """
         with self._tunnel_lock:
+            if self._closed.is_set():
+                return False
             self._tunnels.add(sock)
+            return True
 
     def _untrack(self, sock: socket.socket) -> None:
         with self._tunnel_lock:
             self._tunnels.discard(sock)
 
+    def _spawn_worker(self, target: Callable[..., None], args: tuple, name: str) -> None:
+        """Start a worker ``close`` can wait for.
+
+        Registered before ``start`` and dropped by the worker itself, so there
+        is no window where a thread is running and ``close`` cannot see it. A
+        thread that fails to start is dropped here instead.
+        """
+        thread = threading.Thread(target = target, args = args, name = name, daemon = True)
+        with self._tunnel_lock:
+            self._workers.add(thread)
+        try:
+            thread.start()
+        except BaseException:
+            with self._tunnel_lock:
+                self._workers.discard(thread)
+            raise
+
+    def _retire_worker(self) -> None:
+        with self._tunnel_lock:
+            self._workers.discard(threading.current_thread())
+
     def _serve_client(self, client: socket.socket) -> None:
         upstream: socket.socket | None = None
-        self._track(client)
         try:
+            if not self._track(client):
+                # ``close`` already ran, so this connection is nobody's to
+                # serve; the finally below closes it.
+                return
             host, port, pipelined = self._authorize(client)
             upstream = self._connect_upstream(host, port)
-            self.audit.record_allowed(host)
-            self._track(upstream)
+            if not self._track(upstream):
+                return
             client.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            pipelined = self._check_server_name(client, host, pipelined)
-            if pipelined:
+            opening = self._check_server_name(client, host, pipelined)
+            if opening is None:
+                # The client hung up without sending anything, so no byte was
+                # forwarded and nothing was refused. Nothing to report either.
+                return
+            # Recorded only once the tunnel is about to carry traffic: a tunnel
+            # the server name check refused is a denial, and counting it as an
+            # allowed host too would tell the model both at once.
+            self.audit.record_allowed(host)
+            if opening:
                 # A client that wrote its ClientHello in the same segment as the
                 # CONNECT head would otherwise hang until the idle timeout.
-                upstream.sendall(pipelined)
+                upstream.sendall(opening)
             self._splice(client, upstream)
         except _TunnelAborted as aborted:
             self.audit.record_denied(aborted.host, aborted.reason, POLICY_REFUSAL)
@@ -1211,29 +1446,33 @@ class AllowlistProxy:
                 if sock is None:
                     continue
                 self._untrack(sock)
-                try:
-                    sock.close()
-                except OSError:
-                    pass
+                _close_quietly(sock)
             self._release_slots()
+            self._retire_worker()
 
-    def _check_server_name(self, client: socket.socket, host: str, pipelined: bytes) -> bytes:
-        """Refuse a tunnel whose ClientHello names a host other than the CONNECT one.
+    def _check_server_name(
+        self, client: socket.socket, host: str, pipelined: bytes
+    ) -> bytes | None:
+        """The bytes to forward, or None when the client left without sending any.
 
-        Without this the allowlist checks only the name in the CONNECT line: a
-        client can name an allowlisted host, then ask the shared front end it
-        lands on for a different site entirely (domain fronting). A client that
-        sends no server name is let through, since that is legal, but the audit
-        counts it so the gap is visible.
+        Every other outcome raises ``_TunnelAborted`` before a byte reaches the
+        upstream. What is refused and what is knowingly admitted is argued out
+        in the block comment above this class; the short version is that a
+        tunnel must open with a TLS ClientHello naming the CONNECT host, and a
+        missing name, a stream that is not TLS, and a stream that never
+        completes a hello are all refusals rather than allowances.
 
         A stream that begins with a TLS handshake record must produce a complete
         ClientHello within the byte cap and the header deadline, whatever record
         boundaries it uses. Treating a handshake split across records as "not
-        TLS" was the whole bypass: the tunnel was then forwarded unchecked, so
-        any server name reached any allowlisted address.
+        TLS" was an earlier bypass of the name check itself.
         """
         buffer = pipelined
         deadline = time.monotonic() + self._header_timeout
+        # Told apart because the two mean different things once the buffer is
+        # empty: a peer that hung up refused nothing, while a deadline that ran
+        # out is a client holding an unchecked tunnel open.
+        hung_up = False
         status, name = _client_hello_sni(buffer)
         # The wire allowance, not the body cap: a hello inside the body cap still
         # spends five bytes on every record header it arrives in, and measuring
@@ -1245,34 +1484,70 @@ class AllowlistProxy:
             try:
                 client.settimeout(max(0.1, remaining))
                 chunk = client.recv(4096)
+            except socket.timeout:
+                break
             except OSError:
+                # The socket is gone, which is also how ``close`` ends a tunnel.
+                hung_up = True
                 break
             if not chunk:
+                hung_up = True
                 break
             buffer += chunk
             status, name = _client_hello_sni(buffer)
         if status == "found":
-            if name.strip().rstrip(".").lower() != host:
-                raise _TunnelAborted(host, "SNI does not match the CONNECT host")
-            return buffer
+            if name.strip().rstrip(".").lower() == host:
+                return buffer
+            self._abort_tls_tunnel(client, host, "SNI does not match the CONNECT host")
         if status == "absent":
             self.audit.record_sni_absent()
-            return buffer
+            self._abort_tls_tunnel(
+                client,
+                host,
+                "the TLS ClientHello named no server to check against the CONNECT host",
+            )
         if status == "not-tls":
-            # Never a TLS handshake, so there is no name to check; the tunnel is
-            # allowed as it always was, and counted.
             self.audit.record_non_tls()
-            return buffer
+            # No alert here. These bytes are not TLS, so a TLS record would be
+            # noise in whatever protocol this is, and the reason reaches the
+            # model through the trailer either way.
+            raise _TunnelAborted(
+                host, "the tunnel did not open with TLS, and only HTTPS is proxied"
+            )
         if not buffer:
-            # The client opened the tunnel and said nothing. Nothing was checked
-            # and nothing was sent, so this is the same gap as a hello without a
-            # server name.
-            self.audit.record_sni_absent()
-            return buffer
+            if hung_up:
+                # Opened a tunnel, said nothing, closed it. Nothing was checked
+                # because nothing was sent, and nothing was forwarded, so there
+                # is no refusal to report; returning None ends the tunnel here
+                # rather than splicing a stream that was never checked.
+                self.audit.record_silent_close()
+                return None
+            # Silent until the deadline. Forwarding from here is the bypass that
+            # would make every refusal above optional: wait, then speak anything.
+            raise _TunnelAborted(host, "no TLS ClientHello arrived before the deadline")
         # "incomplete" here means the cap, the deadline or an EOF ended the wait,
         # and "malformed" that the records will never yield a hello. Either way a
         # TLS stream did not name its host, which is a refusal and not an allow.
-        raise _TunnelAborted(host, "the TLS ClientHello did not name the CONNECT host")
+        self._abort_tls_tunnel(
+            client, host, "the TLS ClientHello did not name the CONNECT host"
+        )
+
+    def _abort_tls_tunnel(self, client: socket.socket, host: str, reason: str) -> NoReturn:
+        """End a TLS client's tunnel with an alert it can report, then abort.
+
+        The 200 is already on the wire, so no HTTP status can carry this. A bare
+        close reaches a TLS client as "EOF occurred in violation of protocol" or
+        a reset, which is the mystery a user is then left to guess at; the alert
+        reaches it as "tlsv1 alert unrecognized name", which names the thing
+        this proxy actually enforces. Sent only where the stream already looked
+        like TLS, so nothing else is ever handed a TLS record it did not ask
+        for, and only towards the sandbox, never towards the upstream.
+        """
+        try:
+            client.sendall(TLS_UNRECOGNIZED_NAME_ALERT)
+        except OSError:
+            pass
+        raise _TunnelAborted(host, reason)
 
     def _refuse(self, client: socket.socket, status: int, reason: str) -> None:
         reasons = {
@@ -1298,10 +1573,7 @@ class AllowlistProxy:
         except OSError:
             pass
         finally:
-            try:
-                client.close()
-            except OSError:
-                pass
+            _close_quietly(client)
 
     def _read_head(self, client: socket.socket) -> tuple[bytes, bytes]:
         """The request head and whatever the client pipelined behind it."""
@@ -1433,9 +1705,15 @@ class AllowlistProxy:
         pairs = {client: upstream, upstream: client}
         open_sides = {client, upstream}
         while open_sides and not self._closed.is_set():
-            readable, _, errored = select.select(
-                list(open_sides), [], list(open_sides), self._idle_timeout
-            )
+            try:
+                readable, _, errored = select.select(
+                    list(open_sides), [], list(open_sides), self._idle_timeout
+                )
+            except (OSError, ValueError):
+                # ``close`` shut these sockets down underneath the splice, which
+                # ``select`` reports as EBADF or, once Python has blanked the
+                # descriptor, as a negative file descriptor.
+                return
             if errored or not readable:
                 # Idle past the cap, or a socket error: end the tunnel.
                 return
@@ -1456,7 +1734,7 @@ class AllowlistProxy:
                     continue
                 try:
                     _send_all_blocking(peer, data, self._idle_timeout)
-                except OSError:
+                except (OSError, ValueError):
                     return
 
 

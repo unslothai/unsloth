@@ -3114,8 +3114,21 @@ def tunnel(target):
             break
         head += chunk
     return s, head.split(b"\\r\\n")[0].decode()
+def client_hello(name):
+    # The proxy refuses a tunnel whose stream is not TLS or whose hello does not
+    # name the CONNECT host, so the payload has to arrive behind a real hello.
+    host = name.encode()
+    entry = b"\\x00" + len(host).to_bytes(2, "big") + host
+    block = len(entry).to_bytes(2, "big") + entry
+    extensions = b"\\x00\\x00" + len(block).to_bytes(2, "big") + block
+    body = (
+        b"\\x03\\x03" + b"\\x2a" * 32 + b"\\x00" + b"\\x00\\x02\\x13\\x01" + b"\\x01\\x00"
+        + len(extensions).to_bytes(2, "big") + extensions
+    )
+    handshake = b"\\x01" + len(body).to_bytes(3, "big") + body
+    return b"\\x16\\x03\\x01" + len(handshake).to_bytes(2, "big") + handshake
 s, status = tunnel("upstream.test:{upstream_port}")
-s.sendall(b"ping-from-sandbox")
+s.sendall(client_hello("upstream.test") + b"ping-from-sandbox")
 echo = s.recv(4096).decode() if status.startswith("HTTP/1.1 200") else ""
 s.close()
 _, denied = tunnel("evil.example:{upstream_port}")
@@ -3157,7 +3170,7 @@ print(json.dumps({{"status": status, "echo": echo, "denied": denied, "ip_denied"
         assert report["ip_denied"].startswith("HTTP/1.1 403")
         assert report["direct"] != "connected", "the namespace must not reach host loopback directly"
         assert report["ctrl"] is None
-        assert seen == [b"ping-from-sandbox"]
+        assert seen and seen[0].endswith(b"ping-from-sandbox")
         summary = prepared.network_audit.summary()
         assert summary["allowed"] == {"upstream.test": 1}
         assert "evil.example" in summary["denied"]
