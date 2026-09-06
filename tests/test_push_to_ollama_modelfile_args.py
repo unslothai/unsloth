@@ -79,9 +79,9 @@ def _load(modelfile):
         "push_to_ollama_hub": push_to_ollama_hub,
     }
     for name, stub in namespace.items():
-        assert _params(name) == list(stub.__code__.co_varnames[:stub.__code__.co_argcount]), (
-            f"the {name} stub no longer matches save.py; update it and this test's assertions"
-        )
+        assert _params(name) == list(
+            stub.__code__.co_varnames[: stub.__code__.co_argcount]
+        ), f"the {name} stub no longer matches save.py; update it and this test's assertions"
     exec(compile(_extract("push_to_ollama"), "push_to_ollama", "exec"), namespace)
     return namespace["push_to_ollama"], seen
 
