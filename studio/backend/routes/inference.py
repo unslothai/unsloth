@@ -7925,9 +7925,11 @@ async def _resolve_last_local_model_for_cold_start(
     """Resolve the per-user last-local-model record for a cold API start.
 
     The Studio UI records every successful load via ``PUT /api/settings/last-local-model``
-    and auto-loads it before chat. Credentialed OpenAI-compatible clients (PocketPal
-    with a key, etc.) hit ``/v1`` directly, so mirror that behavior when nothing is
-    resident yet. A keyless caller never reaches this path.
+    and auto-loads it before chat. OpenAI-compatible clients (PocketPal, etc.) hit
+    ``/v1`` directly, so mirror that when nothing is resident yet.
+
+    ``resolve_local_gguf`` is the local disk index for both GGUF and non-GGUF
+    (safetensors / MLX) rows; a ``kind != "gguf"`` record is resolved by bare id.
     """
     from routes.settings import _read_last_local_model
     from core.inference.local_model_resolver import resolve_local_gguf
@@ -7950,6 +7952,29 @@ async def _resolve_last_local_model_for_cold_start(
     else:
         ref = model_id
     return await asyncio.to_thread(resolve_local_gguf, ref)
+
+
+def _request_names_local_target(
+    requested_model: str,
+    target_id: str,
+    variant: Optional[str],
+    override_id: str,
+) -> bool:
+    """Whether *requested_model* names this resolved local target.
+
+    Same rule as idle-unload stash restore: a keyless caller may load only the
+    model it named, and an explicit quant must match.
+    """
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+    requested_base, requested_variant = split_model_ref(requested_model)
+    if not _matches_any(requested_base, (target_id, override_id, public_model_id(target_id))):
+        return False
+    if looks_like_quant(requested_variant) and (
+        not variant or requested_variant.lower() != variant.lower()
+    ):
+        return False
+    return True
 
 
 async def _maybe_auto_switch_model(
@@ -8086,11 +8111,7 @@ async def _maybe_auto_switch_model(
     cold_start = not await _resident_model_is_loaded()
     cold_start_load = False
     if not auto_switch_on and not idle_unload_is_configured():
-        # A keyless caller never causes a load: the dialog only offers what is
-        # already resident. Credentialed /v1 clients (PocketPal with a key) have
-        # no pre-chat /api/inference/load, so a cold start still loads a
-        # downloaded request model or the last-local record.
-        if not cold_start or keyless_caller:
+        if not cold_start:
             # No switching to do, but a named model must still not be answered by another.
             # Reject first: a request that is turned away here must not claim the slot.
             await _reject_unservable_model(requested_model, fastapi_request)
@@ -8098,8 +8119,18 @@ async def _maybe_auto_switch_model(
             if claim_resident:
                 _claim_slot_for_non_preview(fastapi_request)
             return
-        # API cold-start for a credentialed caller only. Auto-switch stays opt-in
-        # for swapping a model that is already serving.
+        if not keyless_caller:
+            # Credentialed /v1 cold start: load a downloaded request model (or
+            # last-local when the field is omitted). Auto-switch stays opt-in
+            # for swapping a model that is already serving.
+            cold_start_load = True
+            auto_switch_on = True
+        # Keyless cold start: do not enable auto-switch. Last-local — or a
+        # request that names that same model — is the only load allowed below.
+    elif not auto_switch_on and idle_unload_is_configured() and cold_start and not keyless_caller:
+        # UNSLOTH_MODEL_IDLE_TTL can mark idle-unload configured while auto-switch
+        # is off (headless). After restart the in-memory stash is empty, so still
+        # cold-load a named on-disk model / last-local.
         cold_start_load = True
         auto_switch_on = True
 
@@ -8115,7 +8146,7 @@ async def _maybe_auto_switch_model(
     # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
     if auto_switch_on and keyless_caller:
         auto_switch_on = False
-        if not idle_unload_is_configured():
+        if not idle_unload_is_configured() and not cold_start:
             await _reject_unservable_model(requested_model, fastapi_request)
             return
 
@@ -8168,6 +8199,13 @@ async def _maybe_auto_switch_model(
             ):
                 if reload_only and cold_start and not keyless_caller:
                     resolved = await _resolve_last_local_model_for_cold_start(current_subject)
+                elif cold_start and keyless_caller:
+                    last_local = await _resolve_last_local_model_for_cold_start(current_subject)
+                    if last_local is not None and (
+                        reload_only
+                        or _request_names_local_target(requested_model, *last_local)
+                    ):
+                        resolved = last_local
                 if resolved is None:
                     # Unknown name, model already resident: the non-preview call uses it,
                     # so claim it for Unsloth.

@@ -169,7 +169,7 @@ def test_flag_off_never_loads(monkeypatch):
 
 
 def test_cold_start_loads_requested_model_when_auto_switch_off(monkeypatch):
-    # PocketPal / OpenAI clients hit /v1 with nothing loaded: mirror the browser's
+    # Credentialed OpenAI clients hit /v1 with nothing loaded: mirror the browser's
     # pre-chat load without requiring Settings > API auto-switch.
     backend = _FakeBackend(loaded_id = None)
     rec = _LoadRecorder(backend)
@@ -222,7 +222,7 @@ def test_cold_start_reload_only_loads_last_local_model(monkeypatch):
     assert rec.calls[0].model_path == "unsloth/A-GGUF"
 
 
-def test_keyless_cold_start_does_not_load_named_model(monkeypatch):
+def test_keyless_cold_start_does_not_load_a_model_that_is_not_last_local(monkeypatch):
     import auth.authentication as authentication
 
     backend = _FakeBackend(loaded_id = None)
@@ -240,8 +240,7 @@ def test_keyless_cold_start_does_not_load_named_model(monkeypatch):
         lambda: type("_B", (), {"active_model_name": None})(),
     )
     monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
-    # Nothing is resident, so _reject_unservable_model is a no-op; the /v1 handler
-    # then answers with the existing "no model loaded" error. The load must not run.
+    # Dummy-bearer PocketPal is keyless: it may not pick an arbitrary on-disk model.
     _run_hook("unsloth/B-GGUF:Q4_K_M")
     assert rec.calls == []
 
@@ -268,7 +267,7 @@ def test_keyless_cold_start_does_not_load_even_when_auto_switch_on(monkeypatch):
     assert rec.calls == []
 
 
-def test_keyless_cold_start_reload_only_does_not_load_last_local(monkeypatch):
+def test_keyless_cold_start_reload_only_loads_last_local(monkeypatch):
     import auth.authentication as authentication
     from routes import settings as settings_route
 
@@ -297,7 +296,80 @@ def test_keyless_cold_start_reload_only_does_not_load_last_local(monkeypatch):
             inference_route._RELOAD_ONLY_MODEL, object(), "tester"
         )
     )
-    assert rec.calls == []
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/A-GGUF"
+
+
+def test_keyless_cold_start_loads_when_request_names_last_local(monkeypatch):
+    import auth.authentication as authentication
+    from routes import settings as settings_route
+
+    backend = _FakeBackend(loaded_id = None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(
+        settings_route,
+        "_read_last_local_model",
+        lambda _s: {"id": "unsloth/A-GGUF", "kind": "gguf", "gguf_variant": "Q4_K_M"},
+    )
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
+    _run_hook("unsloth/A-GGUF:Q4_K_M")
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/A-GGUF"
+
+
+def test_cold_start_loads_named_model_when_idle_ttl_is_configured(monkeypatch):
+    # Headless UNSLOTH_MODEL_IDLE_TTL keeps idle-unload configured with auto-switch
+    # off; after restart the stash is empty, so a credentialed name must still load.
+    backend = _FakeBackend(loaded_id = None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": None})(),
+    )
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/B-GGUF"
+
+
+def test_last_local_cold_start_resolves_a_non_gguf_record_by_bare_id(monkeypatch):
+    from routes import settings as settings_route
+
+    seen = []
+
+    def _resolve(ref, **_kw):
+        seen.append(ref)
+        return ("/weights/Qwen", None, "unsloth/Qwen")
+
+    monkeypatch.setattr(
+        settings_route,
+        "_read_last_local_model",
+        lambda _s: {"id": "unsloth/Qwen", "kind": "model"},
+    )
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+    result = asyncio.run(inference_route._resolve_last_local_model_for_cold_start("tester"))
+    assert seen == ["unsloth/Qwen"]
+    assert result == ("/weights/Qwen", None, "unsloth/Qwen")
 
 
 def test_unknown_model_falls_through(monkeypatch):
