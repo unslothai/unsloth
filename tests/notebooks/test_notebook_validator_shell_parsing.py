@@ -1789,9 +1789,9 @@ def test_a_cap_only_install_after_an_uninstall_lands_on_the_cap():
     assert nv._effective_version(
         cell, "torchcodec", colab["torchcodec"], nv._marker_environment(colab)
     ) == ("0.10", True)
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
 
     # An exclusive ceiling names no landing version, so it stays unknown rather than guessing.
     open_ceiling = '!pip uninstall -y torchcodec\n!pip install "torchcodec<0.11"'
