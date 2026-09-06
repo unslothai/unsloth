@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { downloadFile, downloadUrlStreaming } from "@/lib/native-files";
 import { DebugLogRequestError } from "../lib/debug-log-error";
 
 export { DebugLogRequestError } from "../lib/debug-log-error";
@@ -112,4 +114,40 @@ export async function loadDebugLog(
     fileLoggingDisabled: Boolean(body.file_logging_disabled),
     sizeBytes: Number(body.size_bytes ?? 0),
   };
+}
+
+export async function exportDebugLogs(): Promise<void> {
+  const exportPath = "/api/settings/debug/logs/export";
+  if (isTauri) {
+    const compactTimestamp = new Date()
+      .toISOString()
+      .replace(/\D/g, "")
+      .slice(0, 14);
+    const timestamp =
+      `${compactTimestamp.slice(0, 8)}-${compactTimestamp.slice(8)}`;
+    await downloadUrlStreaming(
+      apiUrl(exportPath),
+      `unsloth-logs-${timestamp}.zip`,
+      { refreshDesktopAuth: true, slowFirstChunk: true },
+    );
+    return;
+  }
+
+  // Browsers have to materialize Blob downloads. The backend applies a
+  // documented source-size cap to this path; desktop exports stream to disk.
+  const response = await authFetch(`${exportPath}?browser=true`);
+  if (!response.ok) {
+    throw new Error(
+      await readFastApiError(response, "Could not export the log files."),
+    );
+  }
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const filename =
+    /filename="([^"\\/]+)"/i.exec(disposition)?.[1] ?? "unsloth-logs.zip";
+  await downloadFile(await response.blob(), filename, "application/zip");
+}
+
+export async function openDebugLogsFolder(realpath: string | null): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("open_logs_dir", { path: realpath });
 }

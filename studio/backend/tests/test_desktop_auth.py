@@ -414,6 +414,24 @@ def test_desktop_login_mints_admin_token_without_clearing_web_password_change():
     assert payload["desktop"] is True
 
 
+def test_desktop_access_only_login_does_not_persist_a_refresh_token():
+    seed_user()
+    raw = storage.create_desktop_secret()
+    client = auth_client()
+
+    response = client.post(
+        "/api/auth/desktop-login?access_only=true",
+        json = {"secret": raw},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["access_token"]
+    assert body["refresh_token"] == ""
+    with sqlite3.connect(storage.DB_PATH) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM refresh_tokens").fetchone()[0] == 0
+
+
 def test_desktop_refresh_preserves_desktop_marker():
     seed_user(must_change_password = True)
     raw = storage.create_desktop_secret()

@@ -347,7 +347,7 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert "parsed.password().is_some()" in dialogs
     # The chooser has to come first, or the user waits on the body before being asked where.
     streaming = dialogs[dialogs.index("pub async fn save_native_file_from_url") :]
-    assert streaming.index(".save_file(") < streaming.index("stream_url_to_path(&url")
+    assert streaming.index(".save_file(") < streaming.index("stream_url_to_path(")
     # No proxy (the signed URL must not reach one) and no redirects (they would leave loopback
     # after the check). read_timeout, not timeout: it bounds each chunk, so a backend that goes
     # quiet cannot hang the save while a legitimately large clip still finishes.
