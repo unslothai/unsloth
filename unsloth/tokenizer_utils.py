@@ -670,6 +670,7 @@ def _load_correct_tokenizer(
     cache_dir = "huggingface_tokenizers_cache",
     fix_tokenizer = True,
     revision = None,
+    config = None,
 ):
     if IS_COLAB_ENVIRONMENT:
         cache_dir = cache_dir
@@ -715,13 +716,13 @@ def _load_correct_tokenizer(
     )
 
     if not fix_tokenizer or tokenizer_name.lower() in IGNORED_TOKENIZER_NAMES:
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer)
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer, config)
     # Ignore Mistral ones - they're a bit weird to handle!
     elif "mistral" in tokenizer_name.lower():
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer)
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer, config)
     # Ignore Phi-4 ones as well
     elif "phi-4" in tokenizer_name.lower():
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer)
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer, config)
     elif slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
@@ -730,16 +731,17 @@ def _load_correct_tokenizer(
 
         # Confirm whether slow and fast are equivalent.
         if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-            return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer)
+            return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer, config)
         else:
             logger.warning(f"Unsloth: Will load {tokenizer_name} as a legacy tokenizer.")
             return _apply_post_load_tokenizer_fixes(
                 convert_to_fast_tokenizer(slow_tokenizer),
                 fix_tokenizer,
+                config,
             )
         pass
     else:
-        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer)
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, fix_tokenizer, config)
 
 
 def _fix_pad_token(tokenizer):
@@ -771,6 +773,7 @@ def load_correct_tokenizer(
     cache_dir = "huggingface_tokenizers_cache",
     fix_tokenizer = True,
     revision = None,
+    config = None,
 ):
     tokenizer = _load_correct_tokenizer(
         tokenizer_name = tokenizer_name,
@@ -781,6 +784,7 @@ def load_correct_tokenizer(
         cache_dir = cache_dir,
         fix_tokenizer = fix_tokenizer,
         revision = revision,
+        config = config,
     )
 
     if fix_tokenizer:

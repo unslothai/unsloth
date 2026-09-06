@@ -187,6 +187,52 @@ def test_load_correct_tokenizer_skips_instruct():
     assert result.add_bos_token is False
 
 
+def test_load_correct_tokenizer_uses_model_config_when_tokenizer_is_generic():
+    # Stripped local tokenizers have no processor_class; FastLanguageModel still
+    # has model.config.model_type == gemma4.
+    def from_pretrained(model_name, **kwargs):
+        return _Tok(add_bos_token = False)
+
+    config = types.SimpleNamespace(model_type = "gemma4", text_config = None)
+    with patch.object(tu, "AutoTokenizer", types.SimpleNamespace(from_pretrained = from_pretrained)):
+        result = tu._load_correct_tokenizer(
+            "/models/local-gemma4-bnb-4bit",
+            fix_tokenizer = True,
+            config = config,
+        )
+
+    assert result.add_bos_token is True
+
+
+def test_fastmodel_processor_path_heals_from_config():
+    # FastModel loads Gemma4Processor, then heals after the processor is final.
+    inner = _Tok(add_bos_token = False)
+    processor = types.SimpleNamespace(
+        tokenizer = inner,
+        image_processor = object(),
+        chat_template = None,
+    )
+    config = types.SimpleNamespace(model_type = "gemma4", text_config = None)
+
+    fixed = tu._apply_post_load_tokenizer_fixes(processor, fix_tokenizer = True, config = config)
+
+    assert fixed is processor
+    assert inner.add_bos_token is True
+
+
+def test_fastmodel_processor_path_skips_instruct_template():
+    inner = _Tok(add_bos_token = False, chat_template = "{{- bos_token -}}")
+    processor = types.SimpleNamespace(
+        tokenizer = inner,
+        image_processor = object(),
+        chat_template = "{{- bos_token -}}{{ messages }}",
+    )
+    config = types.SimpleNamespace(model_type = "gemma4", text_config = None)
+
+    tu._apply_post_load_tokenizer_fixes(processor, fix_tokenizer = True, config = config)
+    assert inner.add_bos_token is False
+
+
 @pytest.mark.e2e
 def test_gemma4_e2b_hub_tokenizer_prepends_bos():
     pytest.importorskip("transformers")
