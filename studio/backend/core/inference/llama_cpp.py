@@ -12602,6 +12602,42 @@ class LlamaCppBackend:
             return total if total > 0 else None
         return draft_kv + weights + target_ctx_copy + target_recurrent_copies
 
+    def _mtp_reserve_note(
+        self,
+        reserve_bytes: int,
+        *,
+        n_ctx: int,
+        n_parallel: int,
+        n_ubatch: Optional[int],
+        n_max: Optional[int],
+        target_rollback: bool,
+        flat_fallback: bool,
+    ) -> str:
+        """The MTP reserve line, naming what that number is a function of.
+
+        n_max is named only where it moves the number. The line used to carry it
+        unconditionally, and on every model whose recurrent state is nil it then
+        read byte-identical across a 4x change in n_max, inviting the reader to
+        conclude the reserve had scaled. On a Hybrid Mamba target it does scale --
+        verification allocates one rollback copy per drafted token -- so there it
+        is named.
+
+        A None micro-batch is llama.cpp's own default, which is both what the
+        reserve was computed with and what the child runs at, so it is rendered
+        rather than printed as None: "ubatch None" names no parameter.
+        """
+        scales_with_n_max = bool(
+            target_rollback and n_max and self._rollback_state_bytes(n_parallel) > 0
+        )
+        return (
+            f"MTP reserve: {reserve_bytes / (1024**3):.2f} GB "
+            f"(draft KV @ {n_ctx} x {n_parallel} slots, "
+            f"ubatch {self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch}"
+            + (f", n_max {n_max}" if scales_with_n_max else "")
+            + (", flat-frac fallback" if flat_fallback else "")
+            + "), "
+        )
+
     _DEFAULT_N_UBATCH = _DEFAULT_LLAMA_N_UBATCH
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
     # Soft VRAM the modeled terms omit; charged to the fit budget on tight tiers (#6682).
@@ -21154,16 +21190,14 @@ class LlamaCppBackend:
                         else 0
                     )
                     if _mtp_will_engage:
-                        # Name what the reserve is actually a function of. It was
-                        # printed with n_max, which _mtp_bytes does not take, so the
-                        # line read byte-identical across a 4x change in n_max and
-                        # invited the reader to conclude the reserve had scaled.
-                        _mtp_note = (
-                            f"MTP reserve: {_mtp_reserve_bytes / (1024**3):.2f} GB "
-                            f"(draft KV @ {effective_ctx} x {n_parallel or 1} slots, "
-                            f"ubatch {_effective_ubatch}"
-                            + (", flat-frac fallback" if mtp_overhead_fn is None else "")
-                            + "), "
+                        _mtp_note = self._mtp_reserve_note(
+                            _mtp_reserve_bytes,
+                            n_ctx = effective_ctx,
+                            n_parallel = n_parallel or 1,
+                            n_ubatch = _effective_ubatch,
+                            n_max = _mtp_eff_n_max,
+                            target_rollback = _target_rollback,
+                            flat_fallback = mtp_overhead_fn is None,
                         )
                     else:
                         _mtp_note = ""
@@ -25736,13 +25770,19 @@ class LlamaCppBackend:
         self._cancel_event.set()
         with self._lock:
             self._unload_epoch += 1
+            # Read before the kill clears it. Cleanup paths call unload_model() in a
+            # finally whether or not a server was ever running, and an unload event
+            # for a backend that held nothing is the same problem as the duplicate
+            # below: it makes the count wrong.
+            _was_resident = self._process is not None
             self._kill_process()
             self._cleanup_cpu_fallback_runtime()
             # The one unload line. routes/inference.py used to log its own, from the
             # request path, so every unload appeared twice 1-3 ms apart under two
             # different names (a repo id here, a snapshot path there) and "how many
             # times did this model reload" could not be answered by grep.
-            logger.info(f"Unloaded GGUF model: {self._model_identifier}")
+            if _was_resident:
+                logger.info(f"Unloaded GGUF model: {self._model_identifier}")
             self._model_identifier = None
             self._gguf_path = None
             self._gguf_load_identity = None
