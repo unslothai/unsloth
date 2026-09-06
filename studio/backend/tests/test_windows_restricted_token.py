@@ -58,9 +58,7 @@ class _FakeLedgerFiles:
 
     def create_file(self, path, _access, share, _attributes, disposition, _flags, _template):
         self.attempts.append((os.path.basename(path), share))
-        if share == 0 and (
-            path in self.opened.values() or os.path.basename(path) in self.busy
-        ):
+        if share == 0 and (path in self.opened.values() or os.path.basename(path) in self.busy):
             return windows_lpac._INVALID_HANDLE_VALUE
         self._next += 1
         self.opened[self._next] = path
@@ -192,12 +190,14 @@ def test_public_api_profile_and_token_flags_are_pinned():
         "network_unrestricted",
         "everyone_writable_objects_writable",
     )
-    assert token_launcher._disclosed_limitations(
-        profile_readable = True, named_pipes = True
-    ) == token_launcher._LIMITATIONS
-    assert token_launcher._disclosed_limitations(
-        profile_readable = True, named_pipes = False
-    ) == (*token_launcher._LIMITATIONS, token_launcher._LIMITATION_NAMED_PIPES_DENIED)
+    assert (
+        token_launcher._disclosed_limitations(profile_readable = True, named_pipes = True)
+        == token_launcher._LIMITATIONS
+    )
+    assert token_launcher._disclosed_limitations(profile_readable = True, named_pipes = False) == (
+        *token_launcher._LIMITATIONS,
+        token_launcher._LIMITATION_NAMED_PIPES_DENIED,
+    )
     assert token_launcher._disclosed_limitations(profile_readable = False, named_pipes = True) == (
         token_launcher._LIMITATIONS_PROFILE_UNREADABLE
     )
@@ -235,18 +235,21 @@ def test_no_failure_this_module_raises_mentions_lpac():
 
 
 def test_shared_validation_failures_are_restated_for_limited_mode():
-    assert token_launcher._limited_wording(
-        "the LPAC workdir contains a reparse point: C:\\w\\link"
-    ) == "the Limited mode workdir contains a reparse point: C:\\w\\link"
-    assert token_launcher._limited_wording("LPAC requires a non-root directory on a local drive") == (
-        "Limited mode requires a non-root directory on a local drive"
+    assert (
+        token_launcher._limited_wording("the LPAC workdir contains a reparse point: C:\\w\\link")
+        == "the Limited mode workdir contains a reparse point: C:\\w\\link"
     )
+    assert token_launcher._limited_wording(
+        "LPAC requires a non-root directory on a local drive"
+    ) == ("Limited mode requires a non-root directory on a local drive")
     with pytest.raises(os_sandbox.SandboxUnavailableError, match = "Limited mode workdir") as caught:
         with token_launcher._limited_mode_wording():
             raise os_sandbox.SandboxUnavailableError("the LPAC workdir root is a reparse point")
     assert "LPAC" not in str(caught.value)
     # A message that never mentioned LPAC is re-raised untouched, transient flag included.
-    original = os_sandbox.SandboxUnavailableError("a Limited mode private temp path is outside its root")
+    original = os_sandbox.SandboxUnavailableError(
+        "a Limited mode private temp path is outside its root"
+    )
     with pytest.raises(os_sandbox.SandboxUnavailableError) as unchanged:
         with token_launcher._limited_mode_wording():
             raise original
@@ -350,16 +353,16 @@ def test_the_verdict_prints_the_default_dacl_and_not_only_what_it_produced():
     # wrong" from "the pipe never took this DACL".
     refused = _good_findings(sid)
     refused["anonymous_pipe"] = "PermissionError: [WinError 5] Access is denied."
-    refused["anonymous_pipe_default_sd"] = {
-        "created": "CreatePipe: [WinError 5] Access is denied."
-    }
+    refused["anonymous_pipe_default_sd"] = {"created": "CreatePipe: [WinError 5] Access is denied."}
     refused["anonymous_pipe_granted_sd"] = {"created": True, "dacl": "D:(A;;GA;;;WD)"}
     verdict = token_launcher._evaluate_probe(refused, sid_text = sid)
     assert verdict.available is False
     # The failure states the observation and stops there; the mechanism is the
     # note's job, and asserting a cause in the failure text is how round 20 came
     # to claim the launch SID was missing from a DACL that in fact held it.
-    assert verdict.failures == ("anonymous pipes were unavailable: PermissionError: [WinError 5] Access is denied.",)
+    assert verdict.failures == (
+        "anonymous pipes were unavailable: PermissionError: [WinError 5] Access is denied.",
+    )
     assert "the anonymous pipe was refused at CreatePipe" in verdict.reason()
     assert "worked, so the descriptor is the whole of it" in verdict.reason()
 
@@ -399,9 +402,7 @@ def test_the_probe_child_is_given_the_private_temp_and_the_launch_sid(tmp_path, 
         return SimpleNamespace(
             wait = lambda timeout = None: None,
             returncode = 0,
-            stdout = SimpleNamespace(
-                read = lambda: json.dumps(_good_findings(identity.sid_string))
-            ),
+            stdout = SimpleNamespace(read = lambda: json.dumps(_good_findings(identity.sid_string))),
         )
 
     spawn._launch_identity = identity
@@ -427,7 +428,8 @@ def test_the_probe_child_is_given_the_private_temp_and_the_launch_sid(tmp_path, 
     monkeypatch.setattr(windows_lpac, "_grant_modify", lambda path, sid: None)
     monkeypatch.setattr(windows_lpac, "_revoke_sid", lambda path, sid: None)
     monkeypatch.setattr(
-        windows_lpac, "_api",
+        windows_lpac,
+        "_api",
         lambda: SimpleNamespace(kernel32 = SimpleNamespace(LocalFree = lambda sid: None)),
     )
 
@@ -653,9 +655,8 @@ def test_probe_publishes_the_disclosure_it_observed(monkeypatch):
         (_profile_denied_findings(sid), token_launcher._LIMITATIONS_PROFILE_UNREADABLE),
     ):
         backend = _probing_backend(
-            monkeypatch, lambda findings = findings: token_launcher._evaluate_probe(
-                findings, sid_text = sid
-            )
+            monkeypatch,
+            lambda findings = findings: token_launcher._evaluate_probe(findings, sid_text = sid),
         )
         capability = backend.probe()
         assert capability.available is True, capability.reason
@@ -692,9 +693,7 @@ def test_a_probe_that_cannot_run_at_all_is_reported_as_itself(monkeypatch):
     capability = backend.probe()
 
     assert capability.available is False
-    assert capability.reason == (
-        "the restricted-token live probe could not run: ctypes exploded"
-    )
+    assert capability.reason == ("the restricted-token live probe could not run: ctypes exploded")
 
 
 def _dacl_api(kinds, *, result: int = 0):
@@ -722,7 +721,9 @@ def _dacl_api(kinds, *, result: int = 0):
         advapi32 = SimpleNamespace(
             GetNamedSecurityInfoW = get_named, GetAce = get_ace, ConvertSidToStringSidW = convert
         ),
-        kernel32 = SimpleNamespace(LocalFree = lambda value: freed.append(getattr(value, "value", value))),
+        kernel32 = SimpleNamespace(
+            LocalFree = lambda value: freed.append(getattr(value, "value", value))
+        ),
     )
     api.freed = freed
     api.held = (aces, acl)  # kept alive for the duration of the walk
@@ -815,7 +816,9 @@ def test_launcher_is_unavailable_off_windows(tmp_path):
 
 
 def test_launch_environment_redirects_temp_and_keeps_system_root(monkeypatch):
-    identity = SimpleNamespace(private_temp = r"C:\Users\u\AppData\Local\Unsloth\Studio\limited-temp\a")
+    identity = SimpleNamespace(
+        private_temp = r"C:\Users\u\AppData\Local\Unsloth\Studio\limited-temp\a"
+    )
     monkeypatch.setenv("SystemRoot", r"C:\WINDOWS")
     env = token_launcher._launch_environment(
         {"PATH": "p", "Temp": r"C:\old", "TMP": r"C:\old", "PYTHONIOENCODING": "utf-8"}, identity
@@ -853,9 +856,7 @@ def _ledger_kernel32(ledger: _FakeLedgerFiles | None = None, **extra) -> SimpleN
     answer it.
     """
     ledger = ledger or _FakeLedgerFiles()
-    return SimpleNamespace(
-        CreateFileW = ledger.create_file, CloseHandle = ledger.close, **extra
-    )
+    return SimpleNamespace(CreateFileW = ledger.create_file, CloseHandle = ledger.close, **extra)
 
 
 def _unmapped_sid_api(freed: list, *, resolves: bool = False) -> SimpleNamespace:
@@ -890,9 +891,9 @@ def test_manifest_parser_accepts_only_this_launchers_records(tmp_path):
         [workdir, workdir],
         [],
     ):
-        assert token_launcher._parse_manifest(
-            _manifest(tmp_path, sid, granted_roots = planted)
-        ) is None, planted
+        assert (
+            token_launcher._parse_manifest(_manifest(tmp_path, sid, granted_roots = planted)) is None
+        ), planted
     assert token_launcher._parse_manifest(
         _manifest(tmp_path, sid, granted_roots = [private_temp, workdir])
     )["granted_roots"] == [private_temp, workdir]
@@ -917,10 +918,22 @@ def test_reconcile_cleans_only_manifests_whose_owner_is_gone(tmp_path, monkeypat
     dead_temp.mkdir()
     live_temp.mkdir()
     (dead_temp / "scratch.txt").write_text("x")
-    dead = _manifest(manifests, dead_sid, workdir = str(tmp_path / "work"), private_temp = str(dead_temp),
-                     granted_roots = [str(tmp_path / "work"), str(dead_temp)], owner_pid = 4242)
-    live = _manifest(manifests, live_sid, workdir = str(tmp_path / "work"), private_temp = str(live_temp),
-                     granted_roots = [str(tmp_path / "work"), str(live_temp)], owner_pid = 5151)
+    dead = _manifest(
+        manifests,
+        dead_sid,
+        workdir = str(tmp_path / "work"),
+        private_temp = str(dead_temp),
+        granted_roots = [str(tmp_path / "work"), str(dead_temp)],
+        owner_pid = 4242,
+    )
+    live = _manifest(
+        manifests,
+        live_sid,
+        workdir = str(tmp_path / "work"),
+        private_temp = str(live_temp),
+        granted_roots = [str(tmp_path / "work"), str(live_temp)],
+        owner_pid = 5151,
+    )
     # A manifest whose file name does not match its SID is evidence, never acted on.
     mismatched = manifests / (token_launcher._MANIFEST_PREFIX + "S-1-5-21-3-3-3-3.json")
     mismatched.write_text(dead.read_text(encoding = "utf-8"), encoding = "utf-8")
@@ -929,11 +942,15 @@ def test_reconcile_cleans_only_manifests_whose_owner_is_gone(tmp_path, monkeypat
     freed: list[int] = []
     monkeypatch.setattr(token_launcher, "_manifest_root", lambda: str(manifests))
     monkeypatch.setattr(token_launcher, "_temp_root", lambda: str(temp_root))
-    monkeypatch.setattr(token_launcher, "_sid_from_text", lambda text: ctypes.c_void_p(hash(text) & 0xFFFF or 1))
+    monkeypatch.setattr(
+        token_launcher, "_sid_from_text", lambda text: ctypes.c_void_p(hash(text) & 0xFFFF or 1)
+    )
     monkeypatch.setattr(
         windows_lpac, "_process_identity", lambda pid = None: (5151, 7) if pid == 5151 else None
     )
-    monkeypatch.setattr(windows_lpac, "_revoke_sid", lambda path, sid, **kw: revoked.append((path, sid.value)))
+    monkeypatch.setattr(
+        windows_lpac, "_revoke_sid", lambda path, sid, **kw: revoked.append((path, sid.value))
+    )
     monkeypatch.setattr(windows_lpac, "_api", lambda: _unmapped_sid_api(freed))
     monkeypatch.setattr(token_launcher, "_last_error", lambda: token_launcher._ERROR_NONE_MAPPED)
 
@@ -965,12 +982,20 @@ def test_identity_cleanup_is_idempotent_and_reports_every_failure(tmp_path, monk
     monkeypatch.setattr(windows_lpac, "_revoke_sid", revoke)
     freed: list = []
     monkeypatch.setattr(
-        windows_lpac, "_api", lambda: SimpleNamespace(kernel32 = _ledger_kernel32(LocalFree = freed.append))
+        windows_lpac,
+        "_api",
+        lambda: SimpleNamespace(kernel32 = _ledger_kernel32(LocalFree = freed.append)),
     )
     monkeypatch.setattr(token_launcher, "_sid_from_text", lambda text: ctypes.c_void_p(2))
     identity = token_launcher._LaunchIdentity(
-        ctypes.c_void_p(1), "S-1-5-21-9-9-9-9", str(tmp_path / "work"), str(private), str(manifest),
-        (str(tmp_path / "work"), str(private)), 1, 1,
+        ctypes.c_void_p(1),
+        "S-1-5-21-9-9-9-9",
+        str(tmp_path / "work"),
+        str(private),
+        str(manifest),
+        (str(tmp_path / "work"), str(private)),
+        1,
+        1,
     )
     with pytest.raises(OSError, match = "ACL .*work"):
         identity.cleanup()
@@ -1084,21 +1109,31 @@ class _WinApiRecorder:
         return self._note("OpenProcessToken", access)
 
     def _create_restricted_token(
-        self, source, flags, disable_count, disable, privilege_count, privileges,
-        restrict_count, restrict, out,
+        self,
+        source,
+        flags,
+        disable_count,
+        disable,
+        privilege_count,
+        privileges,
+        restrict_count,
+        restrict,
+        out,
     ) -> int:
-        self.calls.append((
-            "CreateRestrictedToken",
-            flags,
-            disable_count,
-            None if disable is None else len(disable),
-            [] if disable is None else [(entry.Sid, entry.Attributes) for entry in disable],
-            privilege_count,
-            privileges,
-            restrict_count,
-            len(restrict),
-            [(entry.Sid, entry.Attributes) for entry in restrict],
-        ))
+        self.calls.append(
+            (
+                "CreateRestrictedToken",
+                flags,
+                disable_count,
+                None if disable is None else len(disable),
+                [] if disable is None else [(entry.Sid, entry.Attributes) for entry in disable],
+                privilege_count,
+                privileges,
+                restrict_count,
+                len(restrict),
+                [(entry.Sid, entry.Attributes) for entry in restrict],
+            )
+        )
         if not self.create_token_result:
             return 0
         out._obj.value = 9999
@@ -1113,14 +1148,27 @@ class _WinApiRecorder:
 
     def _update_attribute(self, attributes, flags, attribute, value, size, a, b) -> int:
         self._note("UpdateProcThreadAttribute", attribute)
-        if attribute == windows_lpac._PROC_THREAD_ATTRIBUTE_JOB_LIST and not self.job_list_supported:
+        if (
+            attribute == windows_lpac._PROC_THREAD_ATTRIBUTE_JOB_LIST
+            and not self.job_list_supported
+        ):
             self.last_error = token_launcher._ERROR_NOT_SUPPORTED
             return 0
         return 1
 
     def _create_process(
-        self, token, application, command_line, process_attributes, thread_attributes,
-        inherit, flags, environment, workdir, startup, process_information,
+        self,
+        token,
+        application,
+        command_line,
+        process_attributes,
+        thread_attributes,
+        inherit,
+        flags,
+        environment,
+        workdir,
+        startup,
+        process_information,
     ) -> int:
         self.desktop = startup.contents.lpDesktop
         self.calls.append(("CreateProcessAsUserW", self._value(token), flags, workdir))
@@ -1165,13 +1213,15 @@ class _WinApiRecorder:
 
     def _set_entries_in_acl(self, count, entries, old, out) -> int:
         entry = entries._obj
-        self.calls.append((
-            "SetEntriesInAclW",
-            entry.grfAccessPermissions,
-            entry.grfAccessMode,
-            entry.grfInheritance,
-            self._value(old),
-        ))
+        self.calls.append(
+            (
+                "SetEntriesInAclW",
+                entry.grfAccessPermissions,
+                entry.grfAccessMode,
+                entry.grfInheritance,
+                self._value(old),
+            )
+        )
         if self.acl_error:
             return self.acl_error
         out._obj.value = 8192
@@ -1186,8 +1236,10 @@ class _WinApiRecorder:
 
     def _query_job(self, handle, kind, info, length, returned) -> int:
         self._note("QueryInformationJobObject", kind)
-        remaining = self.active_processes.pop(0) if len(self.active_processes) > 1 else (
-            self.active_processes[0]
+        remaining = (
+            self.active_processes.pop(0)
+            if len(self.active_processes) > 1
+            else (self.active_processes[0])
         )
         info._obj.ActiveProcesses = remaining
         return 1
@@ -1196,7 +1248,11 @@ class _WinApiRecorder:
 class _FakeJob:
     """The _WindowsJob surface _spawn_restricted and the drain wait use."""
 
-    def __init__(self, recorder: _WinApiRecorder, handle: int = 55) -> None:
+    def __init__(
+        self,
+        recorder: _WinApiRecorder,
+        handle: int = 55,
+    ) -> None:
         self._handle = handle
         self._recorder = recorder
 
@@ -1222,8 +1278,14 @@ _STDIO_PLAN = {
 
 def _launch_identity(tmp_path) -> object:
     return token_launcher._LaunchIdentity(
-        ctypes.c_void_p(77), "S-1-5-21-1-1-1-1", str(tmp_path), str(tmp_path / "temp"),
-        str(tmp_path / "m.json"), (str(tmp_path),), 1, 1,
+        ctypes.c_void_p(77),
+        "S-1-5-21-1-1-1-1",
+        str(tmp_path),
+        str(tmp_path / "temp"),
+        str(tmp_path / "m.json"),
+        (str(tmp_path),),
+        1,
+        1,
     )
 
 
@@ -1254,7 +1316,8 @@ def test_create_restricted_token_pins_the_flags_and_the_restricting_set(monkeypa
     monkeypatch.setattr(token_launcher, "_sid_from_text", sid_from_text)
     monkeypatch.setattr(token_launcher, "_token_group_sids", lambda api, token, kind: groups[kind])
     monkeypatch.setattr(
-        token_launcher, "_set_default_dacl",
+        token_launcher,
+        "_set_default_dacl",
         lambda api, token, sid: dacl.append((recorder._value(token), sid.value)),
     )
     identity = SimpleNamespace(sid = ctypes.c_void_p(77), sid_string = "S-1-5-21-1-1-1-1")
@@ -1263,8 +1326,16 @@ def test_create_restricted_token_pins_the_flags_and_the_restricting_set(monkeypa
 
     assert handle.value == 9999
     (
-        _, flags, disable_count, disable_length, disable_entries,
-        privilege_count, privileges, restrict_count, restrict_length, restrict_entries,
+        _,
+        flags,
+        disable_count,
+        disable_length,
+        disable_entries,
+        privilege_count,
+        privileges,
+        restrict_count,
+        restrict_length,
+        restrict_entries,
     ) = recorder.call("CreateRestrictedToken")
     assert flags == token_launcher._RESTRICTED_TOKEN_FLAGS == 0x1 | 0x4 | 0x8
     assert privilege_count == 0 and privileges is None
@@ -1274,7 +1345,9 @@ def test_create_restricted_token_pins_the_flags_and_the_restricting_set(monkeypa
     assert restrict_count == restrict_length == 3
     # The launch SID first, then the logon SID, then Everyone; Attributes zero.
     assert [entry[0] for entry in restrict_entries] == [
-        sids["S-1-5-21-1-1-1-1"], sids["S-1-5-5-0-9999"], sids["S-1-1-0"]
+        sids["S-1-5-21-1-1-1-1"],
+        sids["S-1-5-5-0-9999"],
+        sids["S-1-1-0"],
     ]
     assert [entry[1] for entry in restrict_entries] == [0, 0, 0]
     # The default DACL is widened to the launch SID, on the restricted token.
@@ -1348,7 +1421,10 @@ def test_spawn_restricted_attaches_the_job_before_it_resumes_the_child(tmp_path,
     created = names.index("CreateProcessAsUserW")
     # The job is attached at creation through PROC_THREAD_ATTRIBUTE_JOB_LIST, so
     # no instruction ever runs outside it, and the resume comes last.
-    assert ("UpdateProcThreadAttribute", windows_lpac._PROC_THREAD_ATTRIBUTE_JOB_LIST) in recorder.calls
+    assert (
+        "UpdateProcThreadAttribute",
+        windows_lpac._PROC_THREAD_ATTRIBUTE_JOB_LIST,
+    ) in recorder.calls
     assert names.index("UpdateProcThreadAttribute") < created < names.index("ResumeThread")
     assert "AssignProcessToJobObject" not in names
     token_value, flags, workdir = recorder.call("CreateProcessAsUserW")[1:]
@@ -1386,7 +1462,9 @@ def test_spawn_restricted_falls_back_to_assigning_the_job_before_the_resume(tmp_
     assert prepared.cleanup_diagnostics == []
 
 
-def test_spawn_restricted_terminates_the_suspended_child_when_the_resume_fails(tmp_path, monkeypatch):
+def test_spawn_restricted_terminates_the_suspended_child_when_the_resume_fails(
+    tmp_path, monkeypatch
+):
     recorder = _WinApiRecorder()
     recorder.resume_result = 0xFFFFFFFF
     job = _FakeJob(recorder)
@@ -1429,7 +1507,12 @@ _USER_SID_VALUE = 4
 
 
 def _prepare_environment(
-    tmp_path, monkeypatch, recorder, *, already_granted = (), already_named = None
+    tmp_path,
+    monkeypatch,
+    recorder,
+    *,
+    already_granted = (),
+    already_named = None,
 ):
     """Everything prepare() touches on a host, replaced by recorders.
 
@@ -1454,17 +1537,17 @@ def _prepare_environment(
     monkeypatch.setattr(token_launcher, "_manifest_root", lambda: str(manifests))
     monkeypatch.setattr(token_launcher, "_temp_root", lambda: str(temp_root))
     monkeypatch.setattr(
-        token_launcher, "_sid_from_text",
+        token_launcher,
+        "_sid_from_text",
         lambda text: ctypes.c_void_p(
             _USER_SID_VALUE if text == _TOKEN_USER_SID else _LAUNCH_SID_VALUE
         ),
     )
-    monkeypatch.setattr(
-        token_launcher, "_token_user_sid_text", lambda api, token: _TOKEN_USER_SID
-    )
+    monkeypatch.setattr(token_launcher, "_token_user_sid_text", lambda api, token: _TOKEN_USER_SID)
     monkeypatch.setattr(token_launcher, "_dacl_names_sid", lambda path, sid: path in named_already)
     monkeypatch.setattr(
-        windows_lpac, "_existing_access",
+        windows_lpac,
+        "_existing_access",
         lambda path, sids, required: path in granted_already,
     )
     monkeypatch.setattr(windows_lpac, "_api", lambda: recorder)
@@ -1478,8 +1561,11 @@ def _prepare_environment(
         windows_lpac, "_revoke_sid", lambda path, sid, **kw: revoked.append((path, sid.value))
     )
     return SimpleNamespace(
-        manifests = manifests, temp_root = temp_root, work = work,
-        granted = granted, revoked = revoked,
+        manifests = manifests,
+        temp_root = temp_root,
+        work = work,
+        granted = granted,
+        revoked = revoked,
     )
 
 
@@ -1857,7 +1943,8 @@ def test_the_crash_manifest_records_and_revokes_the_user_object_grants(tmp_path,
     token_launcher.WindowsRestrictedTokenBackend().reconcile_stale_manifests()
 
     revokes = [
-        call for call in recorder.calls
+        call
+        for call in recorder.calls
         if call[0] == "SetEntriesInAclW" and call[2] == windows_lpac._REVOKE_ACCESS
     ]
     assert len(revokes) == 2
@@ -1880,15 +1967,18 @@ def test_the_crash_manifest_records_and_revokes_the_user_object_grants(tmp_path,
 def test_a_manifest_may_only_name_the_user_objects_this_launcher_grants(tmp_path):
     sid = "S-1-5-21-1-2-3-4"
     assert token_launcher._parse_manifest(_manifest(tmp_path, sid))["user_objects"] == []
-    assert token_launcher._parse_manifest(
-        _manifest(tmp_path, sid, user_objects = ["desktop"], desktop = "WinSta0\\Default")
-    )["desktop"] == "WinSta0\\Default"
+    assert (
+        token_launcher._parse_manifest(
+            _manifest(tmp_path, sid, user_objects = ["desktop"], desktop = "WinSta0\\Default")
+        )["desktop"]
+        == "WinSta0\\Default"
+    )
     # The reconciler drives a DACL edit on this process's own objects from these
     # two, so nothing else may appear in either.
     for planted in (["clipboard"], ["window station", "screen"], "desktop", [1]):
-        assert token_launcher._parse_manifest(
-            _manifest(tmp_path, sid, user_objects = planted)
-        ) is None, planted
+        assert (
+            token_launcher._parse_manifest(_manifest(tmp_path, sid, user_objects = planted)) is None
+        ), planted
     assert token_launcher._parse_manifest(_manifest(tmp_path, sid, desktop = ["a"])) is None
 
 
@@ -1908,7 +1998,8 @@ def test_the_user_sid_is_read_off_the_token_that_was_built(monkeypatch):
     )
     queried: list[tuple] = []
     monkeypatch.setattr(
-        token_launcher, "_token_information",
+        token_launcher,
+        "_token_information",
         lambda api, token, kind: queried.append((token, kind)) or buffer,
     )
     monkeypatch.setattr(windows_lpac, "_sid_string", lambda api, sid: f"S-1-5-21-{sid.value:x}")
@@ -1920,7 +2011,8 @@ def test_the_user_sid_is_read_off_the_token_that_was_built(monkeypatch):
 
     empty = token_launcher._SID_AND_ATTRIBUTES(0, 0)
     monkeypatch.setattr(
-        token_launcher, "_token_information",
+        token_launcher,
+        "_token_information",
         lambda api, token, kind: ctypes.create_string_buffer(
             ctypes.string_at(ctypes.byref(empty), ctypes.sizeof(empty)), ctypes.sizeof(empty)
         ),
@@ -1943,7 +2035,8 @@ def test_the_user_sid_ace_is_added_after_the_token_and_recorded_before_it(tmp_pa
     host = _prepare_environment(tmp_path, monkeypatch, recorder)
     order: list[str] = []
     monkeypatch.setattr(
-        token_launcher, "_create_restricted_token",
+        token_launcher,
+        "_create_restricted_token",
         lambda identity: order.append("token") or wintypes.HANDLE(4711),
     )
     monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
@@ -1958,7 +2051,8 @@ def test_the_user_sid_ace_is_added_after_the_token_and_recorded_before_it(tmp_pa
 
     monkeypatch.setattr(token_launcher, "_write_manifest", record)
     monkeypatch.setattr(
-        windows_lpac, "_grant_modify",
+        windows_lpac,
+        "_grant_modify",
         lambda path, sid: grant_modify(path, sid) or order.append(f"grant {sid.value}"),
     )
 
@@ -1968,9 +2062,13 @@ def test_the_user_sid_ace_is_added_after_the_token_and_recorded_before_it(tmp_pa
     identity = prepared.spawn_callback._launch_identity
 
     assert order == [
-        "manifest", f"grant {_LAUNCH_SID_VALUE}", f"grant {_LAUNCH_SID_VALUE}",
+        "manifest",
+        f"grant {_LAUNCH_SID_VALUE}",
+        f"grant {_LAUNCH_SID_VALUE}",
         "token",
-        "manifest", f"grant {_USER_SID_VALUE}", f"grant {_USER_SID_VALUE}",
+        "manifest",
+        f"grant {_USER_SID_VALUE}",
+        f"grant {_USER_SID_VALUE}",
     ]
     # The first record cannot name a SID that did not exist yet; the second is
     # written before the ACE it describes, so a crash between the two is
@@ -2068,7 +2166,8 @@ def test_the_grant_plan_answers_needed_and_revocable_separately(monkeypatch):
     """
     masks: list[int] = []
     monkeypatch.setattr(
-        windows_lpac, "_existing_access",
+        windows_lpac,
+        "_existing_access",
         lambda path, sids, required: masks.append(required) or "modify" in path,
     )
     # Anything the access check accepts is necessarily on the DACL, so the
@@ -2116,14 +2215,17 @@ def test_dacl_names_sid_asks_the_path_and_releases_its_descriptor(monkeypatch):
     assert token_launcher._dacl_names_sid("C:\\w", ctypes.c_void_p(4)) is True
     assert token_launcher._dacl_names_sid("C:\\w", ctypes.c_void_p(9)) is False
     assert seen[0] == (
-        "C:\\w", windows_lpac._SE_FILE_OBJECT, token_launcher._DACL_SECURITY_INFORMATION
+        "C:\\w",
+        windows_lpac._SE_FILE_OBJECT,
+        token_launcher._DACL_SECURITY_INFORMATION,
     )
     assert freed == [4242, 4242]
 
     # A descriptor that cannot be read is a failure, never a silent "no ACE":
     # answering False there would add an ACE the cleanup then cannot account for.
     monkeypatch.setattr(
-        api.advapi32, "GetNamedSecurityInfoW",
+        api.advapi32,
+        "GetNamedSecurityInfoW",
         lambda *arguments: 5,
     )
     monkeypatch.setattr(windows_lpac, "_winerror", lambda prefix, code = None: OSError(5, prefix))
@@ -2156,16 +2258,25 @@ def test_a_manifest_may_only_point_a_user_sid_revoke_at_its_own_roots(tmp_path):
         [1],
         "workdir",
     ):
-        assert token_launcher._parse_manifest(
-            _manifest(tmp_path, sid, user_sid = "S-1-5-21-9-9-9-1001", user_sid_roots = planted)
-        ) is None, planted
+        assert (
+            token_launcher._parse_manifest(
+                _manifest(tmp_path, sid, user_sid = "S-1-5-21-9-9-9-1001", user_sid_roots = planted)
+            )
+            is None
+        ), planted
     # Roots without a SID to revoke, or a SID that is not one, name nothing.
-    assert token_launcher._parse_manifest(
-        _manifest(tmp_path, sid, user_sid = "", user_sid_roots = [workdir])
-    ) is None
-    assert token_launcher._parse_manifest(
-        _manifest(tmp_path, sid, user_sid = "runneradmin", user_sid_roots = [private_temp])
-    ) is None
+    assert (
+        token_launcher._parse_manifest(
+            _manifest(tmp_path, sid, user_sid = "", user_sid_roots = [workdir])
+        )
+        is None
+    )
+    assert (
+        token_launcher._parse_manifest(
+            _manifest(tmp_path, sid, user_sid = "runneradmin", user_sid_roots = [private_temp])
+        )
+        is None
+    )
     planted_sid = _manifest(tmp_path, sid, user_sid = ["S-1-5-18"])
     assert token_launcher._parse_manifest(planted_sid) is None
 
@@ -2308,11 +2419,13 @@ def test_every_root_dacl_edit_happens_under_that_roots_lock(tmp_path, monkeypatc
 
     monkeypatch.setattr(token_launcher, "_root_acl_edit", watched)
     monkeypatch.setattr(
-        windows_lpac, "_grant_modify",
+        windows_lpac,
+        "_grant_modify",
         lambda path, sid: edits.append((path, stack[-1] if stack else None)) or grant(path, sid),
     )
     monkeypatch.setattr(
-        windows_lpac, "_revoke_sid",
+        windows_lpac,
+        "_revoke_sid",
         lambda path, sid, **kw: (
             edits.append((path, stack[-1] if stack else None)) or revoke(path, sid, **kw)
         ),
@@ -2389,9 +2502,9 @@ def test_a_busy_ledger_skips_the_root_revoke_and_keeps_the_whole_record(tmp_path
     # reads: the ACEs it names are still on the workdir.
     assert Path(identity.manifest_path).exists()
     assert identity.cleaned is False
-    assert any("could not be taken" in text for text in prepared.cleanup_diagnostics), (
-        prepared.cleanup_diagnostics
-    )
+    assert any(
+        "could not be taken" in text for text in prepared.cleanup_diagnostics
+    ), prepared.cleanup_diagnostics
     assert token_launcher._DEFERRED_CLEANUPS == [identity]
 
 
@@ -2450,9 +2563,9 @@ def test_a_busy_ledger_skips_the_user_object_revoke_and_leaves_it_recorded(tmp_p
     assert recorder.names().count("SetUserObjectSecurity") == writes + 1
     assert identity.user_objects == ("window station", "desktop")
     assert Path(identity.manifest_path).exists()
-    assert any("window station" in text for text in prepared.cleanup_diagnostics), (
-        prepared.cleanup_diagnostics
-    )
+    assert any(
+        "window station" in text for text in prepared.cleanup_diagnostics
+    ), prepared.cleanup_diagnostics
     assert token_launcher._DEFERRED_CLEANUPS == [identity]
 
 
@@ -2758,10 +2871,10 @@ def test_private_temp_removal_retries_a_sharing_violation_then_gives_up(tmp_path
     private.mkdir()
     attempts.clear()
     monkeypatch.setattr(
-        token_launcher.shutil, "rmtree",
-        lambda path, **kwargs: attempts.append(path) or (_ for _ in ()).throw(
-            PermissionError(13, "still in use")
-        ),
+        token_launcher.shutil,
+        "rmtree",
+        lambda path, **kwargs: attempts.append(path)
+        or (_ for _ in ()).throw(PermissionError(13, "still in use")),
     )
     with pytest.raises(PermissionError):
         token_launcher._remove_private_temp(str(private))
@@ -2817,9 +2930,12 @@ def test_reconcile_refuses_a_manifest_whose_sid_names_a_real_account(tmp_path, m
     private = temp_root / ("a" * 24)
     private.mkdir()
     planted = _manifest(
-        manifests, "S-1-5-21-1004336348-1177238915-682003330-1001",
-        workdir = str(tmp_path / "work"), private_temp = str(private),
-        granted_roots = [str(tmp_path / "work"), str(private)], owner_pid = 4242,
+        manifests,
+        "S-1-5-21-1004336348-1177238915-682003330-1001",
+        workdir = str(tmp_path / "work"),
+        private_temp = str(private),
+        granted_roots = [str(tmp_path / "work"), str(private)],
+        owner_pid = 4242,
     )
     revoked: list[str] = []
     freed: list = []
@@ -2877,7 +2993,12 @@ class _FakeLauncher:
     profile_id = "windows-restricted-token-write-isolation-v1"
     limitations = token_launcher._LIMITATIONS
 
-    def __init__(self, *, available: bool = True, decline: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        available: bool = True,
+        decline: Exception | None = None,
+    ):
         self.available = available
         self.decline = decline
         self.probe_calls: list[bool] = []
@@ -2887,8 +3008,12 @@ class _FakeLauncher:
         self.probe_calls.append(force)
         if self.available:
             return os_sandbox.SandboxCapability(
-                self.identity, True, "fake token probe passed", available = True,
-                protection_state = "preview", profile_id = self.profile_id,
+                self.identity,
+                True,
+                "fake token probe passed",
+                available = True,
+                protection_state = "preview",
+                profile_id = self.profile_id,
                 limitations = self.limitations,
             )
         return os_sandbox.SandboxCapability(
@@ -2900,9 +3025,14 @@ class _FakeLauncher:
         if self.decline is not None:
             raise self.decline
         return os_sandbox.PreparedSandboxLaunch(
-            argv = spec.argv, workdir = spec.workdir, env = {**spec.env, "TEMP": "private"},
-            preexec_fn = None, backend = self.identity, timeout_seconds = spec.timeout_seconds,
-            close_fds = spec.close_fds, terminate_descendants = spec.terminate_descendants,
+            argv = spec.argv,
+            workdir = spec.workdir,
+            env = {**spec.env, "TEMP": "private"},
+            preexec_fn = None,
+            backend = self.identity,
+            timeout_seconds = spec.timeout_seconds,
+            close_fds = spec.close_fds,
+            terminate_descendants = spec.terminate_descendants,
             spawn_callback = lambda prepared, kwargs: None,
         )
 
@@ -2915,12 +3045,17 @@ def _limited_plan(tmp_path, monkeypatch, launcher):
     monkeypatch.setattr(os_sandbox, "_limited_isolation_backend", lambda: launcher)
     capability = os_sandbox.capability_snapshot()
     grant = tool_isolation.issue_limited_grant(
-        current_subject = "actor", tool_ui_session_id = "page",
+        current_subject = "actor",
+        tool_ui_session_id = "page",
         probe_generation = capability.probe_generation,
     )
     return os_sandbox.ToolLaunchPlan(
-        argv = (sys.executable, "-c", "pass"), workdir = str(tmp_path), env = {"PATH": "p"},
-        requested_mode = "limited", current_subject = "actor", tool_ui_session_id = "page",
+        argv = (sys.executable, "-c", "pass"),
+        workdir = str(tmp_path),
+        env = {"PATH": "p"},
+        requested_mode = "limited",
+        current_subject = "actor",
+        tool_ui_session_id = "page",
         limited_grant = grant.token,
     )
 
@@ -2967,7 +3102,10 @@ def test_limited_mode_falls_back_to_the_process_guard_when_the_launcher_declines
     assert record.os_isolation is False
     # An OS-level refusal (an ACL API error) falls back the same way; anything else propagates.
     launcher.decline = OSError(5, "denied")
-    assert "restricted_token_unavailable" in os_sandbox.prepare_tool_launch(plan).execution_record.limitations
+    assert (
+        "restricted_token_unavailable"
+        in os_sandbox.prepare_tool_launch(plan).execution_record.limitations
+    )
     launcher.decline = RuntimeError("bug")
     with pytest.raises(RuntimeError):
         os_sandbox.prepare_tool_launch(plan)
@@ -2987,7 +3125,9 @@ def test_limited_mode_ignores_a_launcher_that_did_not_qualify(
         assert "detached_descendant_cleanup_unverified" in record.limitations
 
 
-def test_limited_grant_is_not_bound_to_the_launcher_probe(tmp_path, monkeypatch, isolated_capability_cache):
+def test_limited_grant_is_not_bound_to_the_launcher_probe(
+    tmp_path, monkeypatch, isolated_capability_cache
+):
     # The token launcher qualifying (or not) must not invalidate grants: it is
     # deliberately outside probe_generation, so a grant issued before the launcher
     # probe still authorises the launch that now runs under the token.
@@ -3003,7 +3143,9 @@ def test_limited_grant_is_not_bound_to_the_launcher_probe(tmp_path, monkeypatch,
     assert prepared.execution_record.backend == "windows-restricted-token"
 
 
-def test_capability_snapshot_reports_what_limited_runs_under(monkeypatch, isolated_capability_cache):
+def test_capability_snapshot_reports_what_limited_runs_under(
+    monkeypatch, isolated_capability_cache
+):
     os_backend = SimpleNamespace(
         identity = "fake-os",
         profile_id = "fake-os-v1",
@@ -3027,7 +3169,9 @@ def test_capability_snapshot_reports_what_limited_runs_under(monkeypatch, isolat
     assert forced.limited_backend == "windows-restricted-token"
 
     os_sandbox._capability_cache.clear()
-    monkeypatch.setattr(os_sandbox, "_limited_isolation_backend", lambda: _FakeLauncher(available = False))
+    monkeypatch.setattr(
+        os_sandbox, "_limited_isolation_backend", lambda: _FakeLauncher(available = False)
+    )
     unavailable = os_sandbox.capability_snapshot()
     assert unavailable.limited_backend == "process-guard"
     assert unavailable.limited_profile_id == "limited-software-safeguards-v1"
@@ -3041,7 +3185,9 @@ def test_capability_snapshot_reports_what_limited_runs_under(monkeypatch, isolat
     assert plain.limited_reason == ""
 
 
-def test_capability_snapshot_survives_a_crashing_launcher_probe(monkeypatch, isolated_capability_cache):
+def test_capability_snapshot_survives_a_crashing_launcher_probe(
+    monkeypatch, isolated_capability_cache
+):
     monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: None)
     monkeypatch.setattr(os_sandbox, "_environment_fingerprint", lambda _backend: "env-crash")
 
@@ -3054,7 +3200,8 @@ def test_capability_snapshot_survives_a_crashing_launcher_probe(monkeypatch, iso
     assert unsupported.limited_backend == "process-guard"
     assert "RuntimeError: ctypes exploded" in unsupported.limited_reason
     os_backend = SimpleNamespace(
-        identity = "fake-os", profile_id = "fake-os-v1",
+        identity = "fake-os",
+        profile_id = "fake-os-v1",
         probe = lambda: os_sandbox.SandboxCapability("fake-os", False, "no", available = False),
     )
     monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: os_backend)
@@ -3065,7 +3212,10 @@ def test_capability_snapshot_survives_a_crashing_launcher_probe(monkeypatch, iso
 
 
 def test_tools_treats_both_job_owning_backends_alike():
-    assert inference_tools._WINDOWS_JOB_OWNING_BACKENDS == {"windows-lpac", "windows-restricted-token"}
+    assert inference_tools._WINDOWS_JOB_OWNING_BACKENDS == {
+        "windows-lpac",
+        "windows-restricted-token",
+    }
     source = Path(inference_tools.__file__).read_text(encoding = "utf-8")
     assert source.count("or prepared_launch.backend in _WINDOWS_JOB_OWNING_BACKENDS") == 2
     assert 'prepared_launch.backend == "windows-lpac"' not in source
@@ -3078,8 +3228,14 @@ def test_windows_lpac_exposes_the_shared_job_factory():
     assert "def _job_object_with_limits(" in lpac_source
     assert "active_process_limit" in lpac_source
     assert "_PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D" in lpac_source
-    for name in ("OpenProcessToken", "CreateRestrictedToken", "SetTokenInformation",
-                 "CreateProcessAsUserW", "IsTokenRestricted", "IsProcessInJob"):
+    for name in (
+        "OpenProcessToken",
+        "CreateRestrictedToken",
+        "SetTokenInformation",
+        "CreateProcessAsUserW",
+        "IsTokenRestricted",
+        "IsProcessInJob",
+    ):
         assert f"{name}.argtypes" in lpac_source, name
     assert windows_lpac.__all__ == ["WindowsLpacBackend", "WindowsLpacProcess"]
 
@@ -3108,7 +3264,13 @@ def live_token_backend():
     return backend
 
 
-def _run_live(backend, workdir: Path, code: str, *argv: str, timeout: int = 60) -> tuple[str, int, float]:
+def _run_live(
+    backend,
+    workdir: Path,
+    code: str,
+    *argv: str,
+    timeout: int = 60,
+) -> tuple[str, int, float]:
     started = time.perf_counter()
     prepared = backend.prepare(
         os_sandbox.ToolLaunchPlan(
@@ -3116,7 +3278,10 @@ def _run_live(backend, workdir: Path, code: str, *argv: str, timeout: int = 60) 
             workdir = str(workdir),
             env = {
                 "PATH": os.pathsep.join(
-                    (os.path.dirname(sys.executable), os.path.join(os.environ["SystemRoot"], "System32"))
+                    (
+                        os.path.dirname(sys.executable),
+                        os.path.join(os.environ["SystemRoot"], "System32"),
+                    )
                 ),
                 "PYTHONIOENCODING": "utf-8",
             },
@@ -3137,9 +3302,16 @@ def _run_live(backend, workdir: Path, code: str, *argv: str, timeout: int = 60) 
     output = ""
     try:
         process = os_sandbox.spawn_prepared_launch(
-            prepared, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, stdin = subprocess.DEVNULL,
-            text = True, encoding = "utf-8", errors = "replace", cwd = prepared.workdir,
-            env = prepared.env, close_fds = True,
+            prepared,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
+            stdin = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            cwd = prepared.workdir,
+            env = prepared.env,
+            close_fds = True,
         )
         process.wait(timeout = timeout)
         output = process.stdout.read()
@@ -3165,7 +3337,8 @@ def test_live_token_child_writes_only_the_workdir_and_private_temp(live_token_ba
     secret.write_text("secret", encoding = "utf-8")
     try:
         output, returncode, elapsed = _run_live(
-            live_token_backend, work,
+            live_token_backend,
+            work,
             "import json, os, sys\n"
             "def w(p):\n"
             "    try:\n"
@@ -3180,7 +3353,8 @@ def test_live_token_child_writes_only_the_workdir_and_private_temp(live_token_ba
             "print(json.dumps({'secret_read': r(sys.argv[1]), 'secret_write': w(sys.argv[1]),"
             " 'work': w('out.txt'), 'temp': w(os.path.join(os.environ['TEMP'], 't.txt')),"
             " 'user_temp': w(os.path.join(sys.argv[2], 'u.txt')), 'exe': sys.executable}))",
-            str(secret), str(secret_root),
+            str(secret),
+            str(secret_root),
         )
         assert returncode == 0, output
         report = json.loads(output.strip().splitlines()[-1])
@@ -3217,7 +3391,8 @@ def test_live_token_child_keeps_nul_and_the_anonymous_pipe(live_token_backend, t
     work = tmp_path / "work"
     work.mkdir()
     output, returncode, _ = _run_live(
-        live_token_backend, work,
+        live_token_backend,
+        work,
         "import os\n"
         "open(os.devnull, 'r+b').close()\n"
         "r, w = os.pipe()\n"
@@ -3236,13 +3411,18 @@ def test_live_token_is_restricted_lua_and_privilege_stripped(live_token_backend,
     work = tmp_path / "work"
     work.mkdir()
     output, returncode, _ = _run_live(
-        live_token_backend, work,
+        live_token_backend,
+        work,
         token_launcher._PROBE_PAYLOAD,
         # argv[4] is the private temp and argv[5] the launch SID. This test drives
         # the payload by hand, so it has neither before the launch exists; the
         # child falls back to its own user SID for the descriptor controls and
         # reads the launch SID it is actually running under off the token.
-        str(work / "missing-secret"), str(work), str(work / "missing-user-only"), "", "",
+        str(work / "missing-secret"),
+        str(work),
+        str(work / "missing-user-only"),
+        "",
+        "",
     )
     assert returncode == 0, output
     findings = json.loads(output.strip().splitlines()[-1])
@@ -3250,7 +3430,9 @@ def test_live_token_is_restricted_lua_and_privilege_stripped(live_token_backend,
     assert findings["privileges"] <= 1
     assert findings["in_job"] is True
     assert "S-1-1-0" in findings["restricted_sids"]
-    launch_sid = next(s for s in findings["restricted_sids"] if token_launcher._is_launch_sid_text(s))
+    launch_sid = next(
+        s for s in findings["restricted_sids"] if token_launcher._is_launch_sid_text(s)
+    )
     assert findings["devnull"] is True
     assert findings["interpreter_readable"] is True
     # The mechanism this launcher promises, read off the token by the child that
@@ -3284,7 +3466,8 @@ def test_live_detached_grandchild_dies_with_the_job(live_token_backend, tmp_path
     work = tmp_path / "work"
     work.mkdir()
     output, returncode, _ = _run_live(
-        live_token_backend, work,
+        live_token_backend,
+        work,
         "import subprocess, sys\n"
         "p = subprocess.Popen([sys.executable, '-I', '-S', '-c', 'import time; time.sleep(300)'],"
         " creationflags=0x8 | 0x200)\n"  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
@@ -3308,8 +3491,12 @@ def test_live_breakaway_is_refused_before_any_process_exists(live_token_backend,
         with pytest.raises(os_sandbox.SandboxUnavailableError, match = "break away"):
             prepared.spawn_callback(
                 prepared,
-                {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL,
-                 "creationflags": 0x01000000},
+                {
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.STDOUT,
+                    "stdin": subprocess.DEVNULL,
+                    "creationflags": 0x01000000,
+                },
             )
         with pytest.raises(os_sandbox.SandboxUnavailableError, match = "stdio plan"):
             prepared.spawn_callback(prepared, {"stdout": subprocess.PIPE})
@@ -3318,7 +3505,9 @@ def test_live_breakaway_is_refused_before_any_process_exists(live_token_backend,
     assert prepared.cleanup_diagnostics == []
 
 
-def test_live_limited_tool_call_records_the_token_launcher(live_token_backend, tmp_path, monkeypatch):
+def test_live_limited_tool_call_records_the_token_launcher(
+    live_token_backend, tmp_path, monkeypatch
+):
     workdir = tmp_path / "limited-work"
     workdir.mkdir()
     monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
@@ -3330,14 +3519,18 @@ def test_live_limited_tool_call_records_the_token_launcher(live_token_backend, t
         assert capability.available is False
         assert capability.limited_backend == "windows-restricted-token"
         grant = tool_isolation.issue_limited_grant(
-            current_subject = "test:limited-user", tool_ui_session_id = "test-page-token",
+            current_subject = "test:limited-user",
+            tool_ui_session_id = "test-page-token",
             probe_generation = capability.probe_generation,
         )
         records = []
         result = inference_tools._python_exec(
             "import os\nopen('made-here.txt', 'w').write('x')\nprint(os.environ['TEMP'])",
-            timeout = 60, tool_execution_mode = "limited", current_subject = "test:limited-user",
-            tool_ui_session_id = "test-page-token", limited_grant = grant.token,
+            timeout = 60,
+            tool_execution_mode = "limited",
+            current_subject = "test:limited-user",
+            tool_ui_session_id = "test-page-token",
+            limited_grant = grant.token,
             launch_record_callback = records.append,
         )
     finally:
@@ -3363,7 +3556,12 @@ def test_token_information_class_constants_are_integers():
     # constant shadowed it, and SetTokenInformation received the type object as its
     # class argument ("argument 2: TypeError ... cannot be interpreted as an integer"),
     # which made every restricted-token probe fail and Limited fall back silently.
-    for name in ("_TOKEN_DEFAULT_DACL", "_TOKEN_LOGON_SID", "_TOKEN_GROUPS_CLASS", "_TOKEN_PRIVILEGES_CLASS"):
+    for name in (
+        "_TOKEN_DEFAULT_DACL",
+        "_TOKEN_LOGON_SID",
+        "_TOKEN_GROUPS_CLASS",
+        "_TOKEN_PRIVILEGES_CLASS",
+    ):
         value = getattr(token_launcher, name, None)
         if value is not None:
             assert isinstance(value, int), name
@@ -3402,31 +3600,36 @@ def test_set_default_dacl_passes_the_integer_class_and_frees_the_acl(monkeypatch
     # GetTokenInformation hands back a raw buffer; a zeroed one means no default DACL.
     info = ctypes.create_string_buffer(ctypes.sizeof(token_launcher._TOKEN_DEFAULT_DACL_INFO))
     monkeypatch.setattr(
-        token_launcher, "_token_information", lambda api, token, kind: calls.append(("query", kind)) or info
+        token_launcher,
+        "_token_information",
+        lambda api, token, kind: calls.append(("query", kind)) or info,
     )
     # The user SID is read off the token that was built, never Studio's own.
     monkeypatch.setattr(
-        token_launcher, "_token_user_sid_text",
+        token_launcher,
+        "_token_user_sid_text",
         lambda api, token: calls.append(("user sid", token)) or "S-1-5-21-9-9-9-500",
     )
     monkeypatch.setattr(token_launcher, "_sid_from_text", lambda text: ctypes.c_void_p(0x4242))
 
     def set_entries(count, entries, old_acl, new_acl_ref):
-        calls.append((
-            "SetEntriesInAclW",
-            int(count),
-            old_acl,
-            [
-                (
-                    entry.grfAccessPermissions,
-                    entry.grfAccessMode,
-                    entry.grfInheritance,
-                    entry.Trustee.TrusteeForm,
-                    _trustee_sid(entry),
-                )
-                for entry in entries
-            ],
-        ))
+        calls.append(
+            (
+                "SetEntriesInAclW",
+                int(count),
+                old_acl,
+                [
+                    (
+                        entry.grfAccessPermissions,
+                        entry.grfAccessMode,
+                        entry.grfInheritance,
+                        entry.Trustee.TrusteeForm,
+                        _trustee_sid(entry),
+                    )
+                    for entry in entries
+                ],
+            )
+        )
         new_acl_ref._obj.value = 0x5150
         return 0
 
@@ -3438,7 +3641,11 @@ def test_set_default_dacl_passes_the_integer_class_and_frees_the_acl(monkeypatch
         advapi32 = SimpleNamespace(
             SetEntriesInAclW = set_entries, SetTokenInformation = set_token_information
         ),
-        kernel32 = SimpleNamespace(LocalFree = lambda handle: calls.append(("LocalFree", handle.value if hasattr(handle, "value") else handle))),
+        kernel32 = SimpleNamespace(
+            LocalFree = lambda handle: calls.append(
+                ("LocalFree", handle.value if hasattr(handle, "value") else handle)
+            )
+        ),
     )
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     token_launcher._set_default_dacl(api, 77, ctypes.c_void_p(0x1234))
@@ -3449,8 +3656,20 @@ def test_set_default_dacl_passes_the_integer_class_and_frees_the_acl(monkeypatch
     # granted, and never inherited: a default DACL's ACEs apply to the object
     # itself and to nothing under it.
     assert acl_call[3] == [
-        (windows_lpac._GENERIC_ALL, windows_lpac._GRANT_ACCESS, 0, windows_lpac._TRUSTEE_IS_SID, 0x1234),
-        (windows_lpac._GENERIC_ALL, windows_lpac._GRANT_ACCESS, 0, windows_lpac._TRUSTEE_IS_SID, 0x4242),
+        (
+            windows_lpac._GENERIC_ALL,
+            windows_lpac._GRANT_ACCESS,
+            0,
+            windows_lpac._TRUSTEE_IS_SID,
+            0x1234,
+        ),
+        (
+            windows_lpac._GENERIC_ALL,
+            windows_lpac._GRANT_ACCESS,
+            0,
+            windows_lpac._TRUSTEE_IS_SID,
+            0x4242,
+        ),
     ]
     set_call = next(call for call in calls if call[0] == "SetTokenInformation")
     assert set_call[1] == 77

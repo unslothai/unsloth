@@ -298,9 +298,7 @@ _ADMINISTRATORS_SID = "S-1-5-32-544"
 _FILE_GENERIC_READ = 0x00120089
 _FILE_GENERIC_WRITE = 0x00120116
 _FILE_GENERIC_EXECUTE = 0x001200A0
-_MODIFY_ACCESS = (
-    _FILE_GENERIC_READ | _FILE_GENERIC_WRITE | _FILE_GENERIC_EXECUTE | _lpac._DELETE
-)
+_MODIFY_ACCESS = _FILE_GENERIC_READ | _FILE_GENERIC_WRITE | _FILE_GENERIC_EXECUTE | _lpac._DELETE
 _NO_INHERITANCE = 0
 # The window station ACE is the object's own, never inherited by desktops that
 # do not exist yet (the interactive sample adds a second, inherit-only ACE for
@@ -518,9 +516,7 @@ def _limited_mode_wording() -> Iterator[None]:
         message = _limited_wording(str(exc))
         if message == str(exc):
             raise
-        raise SandboxUnavailableError(
-            message, transient = getattr(exc, "transient", False)
-        ) from exc
+        raise SandboxUnavailableError(message, transient = getattr(exc, "transient", False)) from exc
 
 
 def _random_domain_sid_text() -> str:
@@ -1126,8 +1122,9 @@ def _root_acl_edit(path: str, *, destructive: bool = False) -> Iterator[None]:
     instant hold different keys of the same ledger and can still lose an edit;
     closing that needs one key derived from the root, shared by both launchers.
     """
-    with _ROOT_ACL_LOCK, _ledger_section(
-        _root_acl_key(path), f"the DACL revoke on {path}", destructive = destructive
+    with (
+        _ROOT_ACL_LOCK,
+        _ledger_section(_root_acl_key(path), f"the DACL revoke on {path}", destructive = destructive),
     ):
         yield
 
@@ -1593,10 +1590,13 @@ def _edit_user_object_dacl(
     the user's own session. Chromium's ``window.cc`` guards the same trap from
     the other direction, seeding an allow-everyone entry before it denies.
     """
-    with _USER_OBJECT_LOCK, _ledger_section(
-        _user_object_key(api, handle),
-        "the user object DACL revoke",
-        destructive = destructive,
+    with (
+        _USER_OBJECT_LOCK,
+        _ledger_section(
+            _user_object_key(api, handle),
+            "the user object DACL revoke",
+            destructive = destructive,
+        ),
     ):
         return _write_user_object_dacl(
             api, handle, sid, mode = mode, access = access, inheritance = inheritance
@@ -1604,13 +1604,7 @@ def _edit_user_object_dacl(
 
 
 def _write_user_object_dacl(
-    api: Any,
-    handle: Any,
-    sid: ctypes.c_void_p,
-    *,
-    mode: int,
-    access: int,
-    inheritance: int,
+    api: Any, handle: Any, sid: ctypes.c_void_p, *, mode: int, access: int, inheritance: int
 ) -> bool:
     """The read-modify-write itself, only ever called under ``_edit_user_object_dacl``."""
     information = wintypes.DWORD(_DACL_SECURITY_INFORMATION)
@@ -2516,7 +2510,11 @@ def _control_child(argv: tuple[str, ...], workdir: str, env: dict[str, str], des
 
 
 def _probe_start_failure(
-    returncode: int, output: str, identity: _LaunchIdentity, env: dict[str, str], argv: tuple[str, ...]
+    returncode: int,
+    output: str,
+    identity: _LaunchIdentity,
+    env: dict[str, str],
+    argv: tuple[str, ...],
 ) -> str:
     """Why the probe child never reported, named as concretely as the host allows.
 
@@ -2766,7 +2764,9 @@ def _default_dacl_note(findings: dict[str, Any]) -> str:
                 f"for write {_reported(event.get('opened'))}"
             )
         else:
-            parts.append(f"an event could not be created to compare against ({event.get('created')})")
+            parts.append(
+                f"an event could not be created to compare against ({event.get('created')})"
+            )
     anonymous = findings.get("anonymous_pipe_default_sd")
     if isinstance(anonymous, dict):
         if anonymous.get("created") is True:
@@ -2815,7 +2815,11 @@ def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> _ProbeVerdict
     # (held, what held, why it did not). Every entry is evaluated; none of them
     # short-circuit the rest.
     requirements = (
-        (findings.get("restricted") is True, "the token is restricted", "the token is not restricted"),
+        (
+            findings.get("restricted") is True,
+            "the token is restricted",
+            "the token is not restricted",
+        ),
         (
             sid_text in restricted_sids,
             "the launch SID restricts writes",
@@ -2831,7 +2835,11 @@ def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> _ProbeVerdict
             "privileges are stripped",
             "the token kept privileges beyond SeChangeNotifyPrivilege",
         ),
-        (findings.get("in_job") is True, "the child is in its Job Object", "the child is not inside its Job Object"),
+        (
+            findings.get("in_job") is True,
+            "the child is in its Job Object",
+            "the child is not inside its Job Object",
+        ),
         (
             findings.get("interpreter_readable") is True,
             "the interpreter is readable",
@@ -3069,8 +3077,16 @@ class WindowsRestrictedTokenBackend:
             prepared = self.prepare(
                 ToolLaunchPlan(
                     argv = (
-                        sys.executable, "-I", "-S", "-c", _PROBE_PAYLOAD, secret, sibling,
-                        user_only, "", "",
+                        sys.executable,
+                        "-I",
+                        "-S",
+                        "-c",
+                        _PROBE_PAYLOAD,
+                        secret,
+                        sibling,
+                        user_only,
+                        "",
+                        "",
                     ),
                     workdir = workdir,
                     env = {
@@ -3078,7 +3094,9 @@ class WindowsRestrictedTokenBackend:
                         "PATH": os.pathsep.join(
                             (
                                 os.path.dirname(os.path.realpath(sys.executable)),
-                                os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32"),
+                                os.path.join(
+                                    os.environ.get("SystemRoot", r"C:\Windows"), "System32"
+                                ),
                             )
                         ),
                     },
@@ -3118,9 +3136,7 @@ class WindowsRestrictedTokenBackend:
                 # the launch SID is what the child's descriptor controls are made
                 # of: without it the pipe forensics run against a descriptor that
                 # grants nobody and prove nothing.
-                prepared.argv = (
-                    *prepared.argv[:-2], identity.private_temp, identity.sid_string
-                )
+                prepared.argv = (*prepared.argv[:-2], identity.private_temp, identity.sid_string)
                 process = prepared.spawn_callback(
                     prepared,
                     {
@@ -3198,8 +3214,9 @@ class WindowsRestrictedTokenBackend:
             # launcher made is an ACE this launcher takes back.
             if probe_user_sid:
                 try:
-                    with _sid_of(probe_user_sid) as user_sid, _root_acl_edit(
-                        user_only, destructive = True
+                    with (
+                        _sid_of(probe_user_sid) as user_sid,
+                        _root_acl_edit(user_only, destructive = True),
                     ):
                         _lpac._revoke_sid(user_only, user_sid)
                 except Exception:  # noqa: BLE001 - the tree removal is the real cleanup
@@ -3263,9 +3280,7 @@ class WindowsRestrictedTokenBackend:
                 try:
                     release()
                 except Exception:  # noqa: BLE001 - the manifest keeps the record
-                    logger.warning(
-                        "Could not release a declined Limited launch", exc_info = True
-                    )
+                    logger.warning("Could not release a declined Limited launch", exc_info = True)
             raise
 
     def reconcile_stale_manifests(self) -> None:
@@ -3335,7 +3350,9 @@ class WindowsRestrictedTokenBackend:
                 )
                 identity.cleanup()
             except Exception:  # noqa: BLE001 - keep the record for the next startup
-                logger.warning("Could not reconcile Limited launch manifest %s", manifest, exc_info = True)
+                logger.warning(
+                    "Could not reconcile Limited launch manifest %s", manifest, exc_info = True
+                )
                 continue
 
 

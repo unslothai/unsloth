@@ -302,9 +302,7 @@ class NetworkAllowlist:
                 suffixes.add(suffix)
                 shown = f"*.{suffix}"
             elif "*" in entry:
-                raise AllowlistError(
-                    f"only a leading '*.' wildcard is supported: {entry!r}"
-                )
+                raise AllowlistError(f"only a leading '*.' wildcard is supported: {entry!r}")
             else:
                 shown = normalize_host(entry)
                 exact.add(shown)
@@ -394,7 +392,6 @@ def _openssl_verify_paths() -> object | None:
     """``ssl.get_default_verify_paths()``, or None on a build that cannot report it."""
     try:
         import ssl
-
         return ssl.get_default_verify_paths()
     except Exception:  # noqa: BLE001 - a broken ssl build is treated as no defaults
         return None
@@ -488,7 +485,6 @@ def _capath_trust_paths(capath: str | None) -> tuple[str, ...]:
 def _certifi_bundle() -> str | None:
     try:
         import certifi  # type: ignore[import-not-found]
-
         bundle = certifi.where()
     except Exception:  # noqa: BLE001 - optional dependency
         return None
@@ -704,9 +700,7 @@ def _rfc6052_embedded(packed: bytes, prefix_length: int) -> ipaddress.IPv4Addres
     return ipaddress.IPv4Address(bytes(packed[index] for index in offsets))
 
 
-def _embedded_ipv4_candidates(
-    ip: ipaddress.IPv6Address,
-) -> tuple[ipaddress.IPv4Address, ...]:
+def _embedded_ipv4_candidates(ip: ipaddress.IPv6Address) -> tuple[ipaddress.IPv4Address, ...]:
     """Every IPv4 address this IPv6 address is known to carry, for the forms ``ipv4_mapped`` misses.
 
     ``ipv4_mapped`` only covers ``::ffff:0:0/96``. ``::7f00:1`` (the deprecated
@@ -945,7 +939,12 @@ class NetworkAudit:
         with self._lock:
             self._silent += 1
 
-    def record_denied(self, host: str, reason: str, kind: str = POLICY_REFUSAL) -> None:
+    def record_denied(
+        self,
+        host: str,
+        reason: str,
+        kind: str = POLICY_REFUSAL,
+    ) -> None:
         # Sanitize here, not at the point of display: this is the boundary where
         # an untrusted CONNECT authority enters data the model is shown.
         key = (
@@ -995,8 +994,7 @@ class NetworkAudit:
         """One entry per (host, reason, kind), so no reason is overwritten."""
         with self._lock:
             return [
-                (host, count, reason, kind)
-                for (host, reason, kind), count in self._denied.items()
+                (host, count, reason, kind) for (host, reason, kind), count in self._denied.items()
             ]
 
     def denied_hosts(self) -> list[tuple[str, int, str]]:
@@ -1004,7 +1002,13 @@ class NetworkAudit:
 
 
 class _Denied(Exception):
-    def __init__(self, status: int, reason: str, host: str = "", kind: str | None = None) -> None:
+    def __init__(
+        self,
+        status: int,
+        reason: str,
+        host: str = "",
+        kind: str | None = None,
+    ) -> None:
         super().__init__(reason)
         self.status = status
         self.reason = reason
@@ -1111,8 +1115,12 @@ class AllowlistProxy:
         # the proxy at a loopback upstream without reaching into the sandbox
         # backend that builds it.
         self._resolver = resolver or DEFAULT_RESOLVER
-        self._allowed_ports = frozenset(allowed_ports) if allowed_ports is not None else ALLOWED_PORTS
-        self._require_public = REQUIRE_PUBLIC_ADDRESSES if require_public is None else require_public
+        self._allowed_ports = (
+            frozenset(allowed_ports) if allowed_ports is not None else ALLOWED_PORTS
+        )
+        self._require_public = (
+            REQUIRE_PUBLIC_ADDRESSES if require_public is None else require_public
+        )
         self._connect_timeout = connect_timeout
         self._idle_timeout = idle_timeout
         # A wall-clock budget for the whole request head, not per recv: a client
@@ -1288,14 +1296,10 @@ class AllowlistProxy:
                     "the backend was at its process-wide tunnel cap",
                     PROXY_REFUSAL,
                 )
-                self._dispatch_refusal(
-                    client, 503, "too many concurrent tunnels in this backend"
-                )
+                self._dispatch_refusal(client, 503, "too many concurrent tunnels in this backend")
                 continue
             try:
-                self._spawn_worker(
-                    self._serve_client, (client,), "studio-tool-network-tunnel"
-                )
+                self._spawn_worker(self._serve_client, (client,), "studio-tool-network-tunnel")
             except BaseException as exc:
                 # RuntimeError("can't start new thread") would otherwise burn the
                 # slot for the life of the launch and leak the accepted socket.
@@ -1437,9 +1441,7 @@ class AllowlistProxy:
         except OSError as exc:
             logger.debug("Tool network tunnel ended: %s", exc)
         except Exception as exc:  # noqa: BLE001 - one request must not kill the worker
-            logger.warning(
-                "Tool network proxy failed to serve a request: %s", exc, exc_info = True
-            )
+            logger.warning("Tool network proxy failed to serve a request: %s", exc, exc_info = True)
             self._refuse(client, 400, "the proxy could not process this request")
         finally:
             for sock in (client, upstream):
@@ -1528,9 +1530,7 @@ class AllowlistProxy:
         # "incomplete" here means the cap, the deadline or an EOF ended the wait,
         # and "malformed" that the records will never yield a hello. Either way a
         # TLS stream did not name its host, which is a refusal and not an allow.
-        self._abort_tls_tunnel(
-            client, host, "the TLS ClientHello did not name the CONNECT host"
-        )
+        self._abort_tls_tunnel(client, host, "the TLS ClientHello did not name the CONNECT host")
 
     def _abort_tls_tunnel(self, client: socket.socket, host: str, reason: str) -> NoReturn:
         """End a TLS client's tunnel with an alert it can report, then abort.

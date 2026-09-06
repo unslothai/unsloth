@@ -51,6 +51,7 @@ def _clean_warmup_state():
 
 # --- notice --------------------------------------------------------------------
 
+
 def test_unavailable_capability_prints_the_full_notice(capsys):
     sandbox_startup.print_sandbox_startup_notice(_UNAVAILABLE)
     out = capsys.readouterr().out
@@ -125,6 +126,7 @@ def test_notice_waits_for_an_in_flight_warm_probe(capsys, monkeypatch):
 
 # --- warm probe ----------------------------------------------------------------
 
+
 def test_warmup_returns_immediately_with_a_daemon_thread(monkeypatch):
     entered = threading.Event()
     release = threading.Event()
@@ -187,6 +189,7 @@ def test_warmup_swallows_probe_failures_and_marks_done(monkeypatch):
 
 
 # --- wiring --------------------------------------------------------------------
+
 
 def test_banner_emits_the_notice_and_respects_disable_tools(monkeypatch, capsys):
     import run

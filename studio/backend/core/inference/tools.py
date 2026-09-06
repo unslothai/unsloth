@@ -7388,7 +7388,10 @@ def _shell_is_posix() -> bool:
 
 
 def _get_shell_cmd(
-    command: str, *, os_isolated: bool = False, script_path: str | None = None
+    command: str,
+    *,
+    os_isolated: bool = False,
+    script_path: str | None = None,
 ) -> list[str]:
     """Return the platform-appropriate shell invocation for a command string.
 
@@ -7503,7 +7506,6 @@ def _release_batch_script(handle: "object | None") -> None:
         return
     try:
         import ctypes
-
         ctypes.WinDLL("kernel32", use_last_error = True).CloseHandle(ctypes.c_void_p(handle))
     # TypeError: a caller that passes something that is not a handle at all.
     # This runs in the launch's finally, where raising would replace the tool's
@@ -10305,7 +10307,6 @@ def _network_denied_trailer(prepared_launch) -> str:
         return ""
     try:
         from core.inference.network_proxy import format_denied_trailer
-
         return format_denied_trailer(audit)
     except Exception:  # noqa: BLE001 - a reporting failure must not fail the tool
         return ""
@@ -10327,9 +10328,7 @@ def _isolation_cleanup_trailer(prepared_launch, tool_name: str) -> str:
     if not isinstance(diagnostics, (list, tuple)) or not diagnostics:
         return ""
     diagnostics = [str(item) for item in diagnostics]
-    logger.warning(
-        "Sandbox cleanup incomplete after %s: %s", tool_name, "; ".join(diagnostics)
-    )
+    logger.warning("Sandbox cleanup incomplete after %s: %s", tool_name, "; ".join(diagnostics))
     lines = ["", "[isolation] cleanup incomplete:"]
     for diagnostic in diagnostics[:_MAX_CLEANUP_DIAGNOSTICS]:
         # One line per diagnostic: the text can carry an exception message.
@@ -16731,7 +16730,7 @@ def _created_file_sentinels(
 _LEGACY_MODE_NOTICE_LOGGED = False
 _API_OPT_OUT_HINT = (
     "API clients that accept running without OS isolation must say so explicitly with "
-    "permission_mode \"full\" (or bypass_permissions true); an omitted tool_execution_mode "
+    'permission_mode "full" (or bypass_permissions true); an omitted tool_execution_mode '
     "means OS isolation is required."
 )
 
@@ -16878,8 +16877,7 @@ def _python_exec(
             # Refusing beats running someone else's code under this call's
             # tier and grant. Nothing has been spawned yet.
             raise RuntimeError(
-                "the script for this call was replaced before it could run; "
-                "nothing was executed"
+                "the script for this call was replaced before it could run; nothing was executed"
             )
         if effective_execution_mode == "limited" and sys.platform != "win32":
             # Validate in the parent so configuration failures remain actionable;

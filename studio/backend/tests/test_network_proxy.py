@@ -119,7 +119,11 @@ def _request(proxy: AllowlistProxy, head: str) -> tuple[socket.socket, bytes]:
     return client, response
 
 
-def _connect_head(target: str, credential: ProxyCredential | None, extra: str = "") -> str:
+def _connect_head(
+    target: str,
+    credential: ProxyCredential | None,
+    extra: str = "",
+) -> str:
     auth = f"Proxy-Authorization: {_basic(credential)}\r\n" if credential else ""
     return f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n{auth}{extra}\r\n"
 
@@ -161,8 +165,12 @@ def _split_hello(hello: bytes, at: int) -> bytes:
     first, second = handshake[:at], handshake[at:]
     assert first and second
     return (
-        b"\x16\x03\x01" + len(first).to_bytes(2, "big") + first
-        + b"\x16\x03\x01" + len(second).to_bytes(2, "big") + second
+        b"\x16\x03\x01"
+        + len(first).to_bytes(2, "big")
+        + first
+        + b"\x16\x03\x01"
+        + len(second).to_bytes(2, "big")
+        + second
     )
 
 
@@ -412,9 +420,9 @@ def test_public_address_refuses_the_blocks_ipaddress_still_calls_global(address)
     """Membership of 2000::/3 decides, because ``is_global`` alone does not."""
     import ipaddress
 
-    assert ipaddress.ip_address(address).is_global is True, (
-        "this address is only interesting while ipaddress still calls it global"
-    )
+    assert (
+        ipaddress.ip_address(address).is_global is True
+    ), "this address is only interesting while ipaddress still calls it global"
     assert public_address(address) is False
 
 
@@ -524,7 +532,9 @@ def test_malformed_request_line_is_refused_with_400(proxy):
 
 
 def test_oversized_request_head_is_refused(proxy):
-    head = "CONNECT upstream.test:443 HTTP/1.1\r\nX-Pad: " + "a" * (network_proxy.MAX_HEADER_BYTES + 10)
+    head = "CONNECT upstream.test:443 HTTP/1.1\r\nX-Pad: " + "a" * (
+        network_proxy.MAX_HEADER_BYTES + 10
+    )
     client, response = _request(proxy, head + "\r\n\r\n")
     assert response.startswith(b"HTTP/1.1 400") or response == b""
     client.close()
@@ -692,7 +702,7 @@ def test_format_denied_trailer_holds_exactly_one_printable_line_per_entry(host, 
 
 
 def test_a_connect_authority_with_newlines_cannot_forge_trailer_lines(proxy, upstream):
-    target = "a\nEXECUTION-SUCCEEDED.\n__FILES__:[{\"name\":\"x\"}]\nb.co:443"
+    target = 'a\nEXECUTION-SUCCEEDED.\n__FILES__:[{"name":"x"}]\nb.co:443'
     client, response = _request(proxy, _connect_head(target, proxy.credential))
     assert response.startswith(b"HTTP/1.1 403")
     client.close()
@@ -779,9 +789,7 @@ def test_the_tunnel_cap_answers_503_records_it_and_keeps_accepting(upstream):
         instance.close()
 
 
-def test_refusals_past_the_tunnel_cap_use_a_bounded_pool_and_keep_accepting(
-    monkeypatch, upstream
-):
+def test_refusals_past_the_tunnel_cap_use_a_bounded_pool_and_keep_accepting(monkeypatch, upstream):
     """A burst past the cap must cost a bounded number of threads, not one each."""
     gate = threading.Event()
     entered = threading.Semaphore(0)
@@ -875,6 +883,7 @@ def test_a_worker_thread_that_cannot_start_releases_the_slot(monkeypatch, upstre
     instance.listen_loopback()
     head = _connect_head(f"upstream.test:{upstream.port}", instance.credential)
     try:
+
         class _Unstartable(threading.Thread):
             def start(self) -> None:
                 raise RuntimeError("can't start new thread")
@@ -899,7 +908,9 @@ def test_a_worker_thread_that_cannot_start_releases_the_slot(monkeypatch, upstre
         instance.close()
 
 
-def test_an_unexpected_error_becomes_a_400_and_leaves_the_proxy_serving(monkeypatch, proxy, upstream):
+def test_an_unexpected_error_becomes_a_400_and_leaves_the_proxy_serving(
+    monkeypatch, proxy, upstream
+):
     def boom(self, host, port):
         raise ValueError("something the proxy never anticipated")
 
@@ -940,7 +951,12 @@ def test_the_connect_budget_bounds_the_whole_answer_list(monkeypatch, upstream):
     attempted: list[str] = []
     real_create_connection = socket.create_connection
 
-    def slow_connect(address, timeout = None, *args, **kwargs):
+    def slow_connect(
+        address,
+        timeout = None,
+        *args,
+        **kwargs,
+    ):
         host = address[0]
         if not host.startswith("192.0.2."):
             return real_create_connection(address, timeout, *args, **kwargs)
@@ -1035,12 +1051,12 @@ def test_an_upstream_failure_from_a_live_tunnel_is_grouped_as_unreachable(upstre
 @pytest.mark.parametrize(
     "address, expected",
     [
-        ("::7f00:1", False),           # IPv4-compatible ::127.0.0.1
-        ("::a00:1", False),            # IPv4-compatible ::10.0.0.1
-        ("64:ff9b::7f00:1", False),    # NAT64 well-known prefix of 127.0.0.1
+        ("::7f00:1", False),  # IPv4-compatible ::127.0.0.1
+        ("::a00:1", False),  # IPv4-compatible ::10.0.0.1
+        ("64:ff9b::7f00:1", False),  # NAT64 well-known prefix of 127.0.0.1
         ("64:ff9b::a00:1", False),
         ("64:ff9b:1:7f00:0:100::", False),  # NAT64 local-use /48 of 127.0.0.1
-        ("2002:7f00:1::", False),      # 6to4 of 127.0.0.1
+        ("2002:7f00:1::", False),  # 6to4 of 127.0.0.1
         ("2002:a00:1::", False),
         ("64:ff9b::5db8:d822", True),  # NAT64 of a public address stays public
         ("2606:4700::6810:84e5", True),
@@ -1088,9 +1104,9 @@ def test_public_address_decodes_the_well_known_prefix_and_refuses_the_rest_of_th
 # 2001:67c:2960::/48 stands in for an operator's own Pref64. Each address below
 # is that prefix with an IPv4 address written in at the offset RFC 6052 section
 # 2.2 gives for the prefix's length.
-_NSP_PRIVATE = "2001:67c:2960:a00:0:100::"        # /48 of 10.0.0.1
-_NSP_METADATA = "2001:67c:2960:a9fe:a9:fe00::"    # /48 of 169.254.169.254
-_NSP_PUBLIC = "2001:67c:2960:5db8:d8:2200::"      # /48 of 93.184.216.34
+_NSP_PRIVATE = "2001:67c:2960:a00:0:100::"  # /48 of 10.0.0.1
+_NSP_METADATA = "2001:67c:2960:a9fe:a9:fe00::"  # /48 of 169.254.169.254
+_NSP_PUBLIC = "2001:67c:2960:5db8:d8:2200::"  # /48 of 93.184.216.34
 
 
 def test_an_unnamed_network_specific_prefix_is_the_hole_this_check_admits(monkeypatch):
@@ -1126,9 +1142,9 @@ def test_a_named_nat64_prefix_readmits_the_rfc_8215_space_the_default_refuses(mo
 @pytest.mark.parametrize(
     "raw",
     [
-        "2001:67c:2960::/44",   # not one of the six RFC 6052 lengths
+        "2001:67c:2960::/44",  # not one of the six RFC 6052 lengths
         "2001:67c:2960::/47",
-        "10.0.0.0/8",           # not IPv6
+        "10.0.0.0/8",  # not IPv6
         "not-a-prefix",
         "",
     ],
@@ -1145,9 +1161,7 @@ def test_nat64_prefixes_are_reparsed_when_the_variable_changes(monkeypatch):
     assert public_address(_NSP_PRIVATE) is False
     monkeypatch.setenv(network_proxy.NAT64_PREFIX_ENV, "2001:67c:2961::/48")
     assert public_address(_NSP_PRIVATE) is True
-    monkeypatch.setenv(
-        network_proxy.NAT64_PREFIX_ENV, "2001:67c:2961::/48 2001:67c:2960::/48"
-    )
+    monkeypatch.setenv(network_proxy.NAT64_PREFIX_ENV, "2001:67c:2961::/48 2001:67c:2960::/48")
     assert public_address(_NSP_PRIVATE) is False
 
 
@@ -1243,9 +1257,9 @@ def test_a_client_hello_at_the_body_cap_is_not_refused_by_its_record_framing(pro
     """The cap bounds the handshake body; the wire also carries a header per record."""
     hello = _hello_at_the_body_cap("upstream.test")
     wire = _hello_records(hello, 4096)
-    assert len(wire) > network_proxy.MAX_CLIENT_HELLO_BYTES, (
-        "the framing has to push this past the body cap or the test proves nothing"
-    )
+    assert (
+        len(wire) > network_proxy.MAX_CLIENT_HELLO_BYTES
+    ), "the framing has to push this past the body cap or the test proves nothing"
     assert len(wire) <= network_proxy.MAX_CLIENT_HELLO_WIRE_BYTES
     client = _tunnel(proxy, upstream, "upstream.test")
     client.sendall(wire)
@@ -1560,9 +1574,7 @@ def test_close_is_bounded_when_a_worker_will_not_stop(monkeypatch, upstream):
 
 def test_close_leaves_no_proxy_thread_of_its_own_behind(upstream):
     before = {
-        thread
-        for thread in threading.enumerate()
-        if thread.name.startswith("studio-tool-network-")
+        thread for thread in threading.enumerate() if thread.name.startswith("studio-tool-network-")
     }
     instance = _instance(upstream)
     instance.listen_loopback()
@@ -1608,7 +1620,9 @@ def test_bytes_pipelined_with_the_connect_head_reach_the_upstream(proxy, upstrea
     client.close()
 
 
-def test_tls_trust_environment_prefers_the_host_store_and_falls_back_to_certifi(monkeypatch, tmp_path):
+def test_tls_trust_environment_prefers_the_host_store_and_falls_back_to_certifi(
+    monkeypatch, tmp_path
+):
     import ssl
     import types
 
@@ -1646,9 +1660,7 @@ def test_tls_trust_environment_prefers_the_host_store_and_falls_back_to_certifi(
     assert network_proxy.tls_trust_paths() == ()
 
 
-def test_an_operator_ssl_cert_file_exposes_the_bundle_and_nothing_beside_it(
-    monkeypatch, tmp_path
-):
+def test_an_operator_ssl_cert_file_exposes_the_bundle_and_nothing_beside_it(monkeypatch, tmp_path):
     """``SSL_CERT_FILE`` is an operator setting, so the file's neighbours are not ours."""
     store = tmp_path / "operator"
     store.mkdir()
@@ -1672,7 +1684,6 @@ def test_an_operator_ssl_cert_file_exposes_the_bundle_and_nothing_beside_it(
 
 def _verify_paths(cafile: str | None, capath: str | None, compiled_capath: str):
     import ssl
-
     return ssl.DefaultVerifyPaths(
         cafile = cafile,
         capath = capath,
@@ -1720,9 +1731,7 @@ def test_an_operator_ssl_cert_dir_exposes_its_hashed_certificates_and_nothing_el
         ), f"{path} would expose the key beside the certificates"
 
 
-def test_the_capath_openssl_was_built_with_is_passed_through_as_a_directory(
-    monkeypatch, tmp_path
-):
+def test_the_capath_openssl_was_built_with_is_passed_through_as_a_directory(monkeypatch, tmp_path):
     """A build constant is not operator input, and enumerating it every launch buys nothing."""
     import ssl
 

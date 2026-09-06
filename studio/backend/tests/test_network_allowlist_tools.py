@@ -139,7 +139,11 @@ def test_refused_hosts_survive_a_timeout(capture_plan):
 
 def test_descriptions_gain_the_allowlisted_hosts_only_when_asked(monkeypatch):
     monkeypatch.setattr(tools_module.sys, "platform", "linux")
-    specs = [dict(tools_module.PYTHON_TOOL), dict(tools_module.TERMINAL_TOOL), {"type": "function", "function": {"name": "web_search", "description": "search"}}]
+    specs = [
+        dict(tools_module.PYTHON_TOOL),
+        dict(tools_module.TERMINAL_TOOL),
+        {"type": "function", "function": {"name": "web_search", "description": "search"}},
+    ]
     assert tools_module.apply_os_isolated_tool_descriptions(specs) is specs
     assert tools_module.apply_os_isolated_tool_descriptions(specs, network_allowlist = ()) is specs
 
@@ -176,7 +180,9 @@ def test_windows_cmd_note_and_allowlist_note_compose(monkeypatch):
     assert "admits only these hosts: pypi.org" in terminal
     assert "admits only these hosts: pypi.org" in out[1]["function"]["description"]
     # Without an allowlist, the python tool is returned by identity as before.
-    plain = tools_module.apply_os_isolated_tool_descriptions([bash_terminal, tools_module.PYTHON_TOOL])
+    plain = tools_module.apply_os_isolated_tool_descriptions(
+        [bash_terminal, tools_module.PYTHON_TOOL]
+    )
     assert plain[1] is tools_module.PYTHON_TOOL
 
 

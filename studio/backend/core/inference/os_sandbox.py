@@ -71,9 +71,7 @@ _WSL1_REMEDIATION = (
     "current version with `wsl -l -v`), then start Studio again and choose Check again. Until "
     "then, use Limited mode only for a trusted task."
 )
-_GENERIC_REMEDIATION = (
-    "Use Limited mode only for a trusted task, or install and enable a qualified OS sandbox backend."
-)
+_GENERIC_REMEDIATION = "Use Limited mode only for a trusted task, or install and enable a qualified OS sandbox backend."
 _APPARMOR_USERNS_SYSCTL = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 _DEFAULT_BWRAP_PATH = "/usr/bin/bwrap"
 
@@ -168,7 +166,12 @@ class SandboxUnavailableError(RuntimeError):
     retryable instead of caching them as a permanent unavailability.
     """
 
-    def __init__(self, message: str = "", *, transient: bool = False) -> None:
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        transient: bool = False,
+    ) -> None:
         super().__init__(message)
         self.transient = transient
 
@@ -621,7 +624,13 @@ def _linux_mount_points() -> tuple[str, ...]:
 def _fingerprint_roots() -> tuple[str, ...]:
     """Paths whose mount topology the sandbox actually exposes or masks."""
     roots: list[str] = [
-        "/", *_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES, *_LINUX_CA_TRUST_PATHS, "/etc", "/nix/store", "/tmp"
+        "/",
+        *_LINUX_SYSTEM_ROOTS,
+        *_LINUX_ETC_FILES,
+        *_LINUX_CA_TRUST_PATHS,
+        "/etc",
+        "/nix/store",
+        "/tmp",
     ]
     try:
         roots.extend(_runtime_read_paths())
@@ -690,9 +699,9 @@ def _symlink_chain(path: str) -> list[str]:
             # os.readlink reports absolute targets in extended-length form; keep
             # the ordinary spelling so hops compare and bind like every other path.
             if target.startswith("\\\\?\\UNC\\"):
-                target = "\\\\" + target[len("\\\\?\\UNC\\"):]
+                target = "\\\\" + target[len("\\\\?\\UNC\\") :]
             elif target.startswith("\\\\?\\"):
-                target = target[len("\\\\?\\"):]
+                target = target[len("\\\\?\\") :]
         current = os.path.normpath(os.path.join(os.path.dirname(current), target))
     return hops
 
@@ -1092,8 +1101,10 @@ def _linux_environment(*, run_detector: bool = True) -> str:
         # similar; WSL1 translates syscalls and its osrelease is "<ver>-Microsoft"
         # with no standard suffix. WSL1 has no namespaces, so Bubblewrap can never
         # work there and the remediation is a distro upgrade, not a package.
-        if release and "microsoft" in release and not (
-            "wsl2" in release or "microsoft-standard" in release
+        if (
+            release
+            and "microsoft" in release
+            and not ("wsl2" in release or "microsoft-standard" in release)
         ):
             return "wsl1"
         return "wsl2"
@@ -1503,7 +1514,9 @@ class LinuxBubblewrapBackend:
                 limitations = limitations,
             )
         return replace(
-            _explain_linux_probe_failure(result, candidate), available = False, limitations = limitations
+            _explain_linux_probe_failure(result, candidate),
+            available = False,
+            limitations = limitations,
         )
 
     def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
@@ -1657,9 +1670,7 @@ class LinuxBubblewrapBackend:
                 argv.extend(("--setenv", _NETWORK_BRIDGE_ENV, str(sandbox_end.fileno())))
                 spawn_callback = _bridged_spawn(proxy, host_end, sandbox_end)
                 network_audit = proxy.audit
-            wrapper = _linux_wrapper_source(
-                limit = _nproc_limit(), network_bridge = network_bridge
-            )
+            wrapper = _linux_wrapper_source(limit = _nproc_limit(), network_bridge = network_bridge)
             argv.extend(
                 (
                     "--",
@@ -2976,9 +2987,7 @@ def capability_snapshot(*, force: bool = False) -> SandboxCapability:
             backend.probe(),
             environment = _environment_class(),
             fingerprint = current_fingerprint,
-            network_allowlist_supported = bool(
-                getattr(backend, "supports_network_allowlist", False)
-            ),
+            network_allowlist_supported = bool(getattr(backend, "supports_network_allowlist", False)),
         )
         result = _with_limited_capability(result, force = force)
         if not result.transient:

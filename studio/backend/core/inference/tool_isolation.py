@@ -246,7 +246,6 @@ def capability_snapshot(*, force: bool = False) -> ToolIsolationCapability:
     """Return the OS backend's capability using a stable API-facing shape."""
 
     from core.inference.os_sandbox import capability_snapshot as os_capability_snapshot
-
     return _shape_capability(os_capability_snapshot(force = force))
 
 
@@ -272,7 +271,9 @@ def _shape_capability(snapshot: object) -> ToolIsolationCapability:
         network_policies = _network_policies_with_deny(
             _string_tuple(_optional_snapshot_value(snapshot, "network_policies", ("deny",)))
         ),
-        network_allowlist = _string_tuple(_optional_snapshot_value(snapshot, "network_allowlist", ())),
+        network_allowlist = _string_tuple(
+            _optional_snapshot_value(snapshot, "network_allowlist", ())
+        ),
         limited_backend = (
             str(_optional_snapshot_value(snapshot, "limited_backend", None))
             if _optional_snapshot_value(snapshot, "limited_backend", None) is not None
@@ -283,7 +284,9 @@ def _shape_capability(snapshot: object) -> ToolIsolationCapability:
             if _optional_snapshot_value(snapshot, "limited_profile_id", None) is not None
             else None
         ),
-        limited_limitations = _string_tuple(_optional_snapshot_value(snapshot, "limited_limitations", ())),
+        limited_limitations = _string_tuple(
+            _optional_snapshot_value(snapshot, "limited_limitations", ())
+        ),
     )
 
 

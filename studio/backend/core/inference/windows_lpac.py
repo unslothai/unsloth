@@ -1118,7 +1118,9 @@ def _acl_grants(acl: ctypes.c_void_p, sids: tuple[ctypes.c_void_p, ...], require
             continue
         base = entry.value or 0
         # ACCESS_ALLOWED_ACE / ACCESS_DENIED_ACE: header (4 bytes), Mask (4 bytes), SidStart.
-        mask = ctypes.cast(base + ctypes.sizeof(_ACE_HEADER), ctypes.POINTER(ctypes.c_uint32)).contents.value
+        mask = ctypes.cast(
+            base + ctypes.sizeof(_ACE_HEADER), ctypes.POINTER(ctypes.c_uint32)
+        ).contents.value
         ace_sid = ctypes.c_void_p(base + ctypes.sizeof(_ACE_HEADER) + 4)
         if not any(api.advapi32.EqualSid(ace_sid, sid) for sid in sids):
             continue
@@ -1183,12 +1185,7 @@ def _root_stamp(path: str) -> int:
 
 
 def _memoized_existing_access(
-    path: str,
-    sids: tuple[ctypes.c_void_p, ...],
-    required: int,
-    *,
-    sid_text: str,
-    ambient_text: str,
+    path: str, sids: tuple[ctypes.c_void_p, ...], required: int, *, sid_text: str, ambient_text: str
 ) -> bool:
     """``_existing_access`` for a grant that is never revoked while this process lives.
 
@@ -1707,11 +1704,7 @@ def _live_launch_holds(
 
 
 def _release_private_temp(
-    profile_folder: str,
-    private_temp: str,
-    *,
-    released: set[str] | None,
-    elsewhere: frozenset[str],
+    profile_folder: str, private_temp: str, *, released: set[str] | None, elsewhere: frozenset[str]
 ) -> None:
     """Give up one launch's claim on its temp without disturbing a live one.
 
@@ -2255,9 +2248,7 @@ def _persistent_manifest_path(moniker: str) -> str:
 
 
 def _write_persistent_manifest(
-    install: _InstallProfile,
-    granted_roots: tuple[str, ...],
-    traverse_roots: tuple[str, ...],
+    install: _InstallProfile, granted_roots: tuple[str, ...], traverse_roots: tuple[str, ...]
 ) -> None:
     """Record the installation-wide grants, before they are made.
 
@@ -2525,9 +2516,7 @@ def _ensure_persistent_grants(
                 _UNVERIFIED_ROOTS.pop(os.path.normcase(path), None)
                 _memoize_access(path, required, install.sid_string, ambient_text, True)
         unverified = [
-            path
-            for path in (*roots, *traverse)
-            if os.path.normcase(path) in _UNVERIFIED_ROOTS
+            path for path in (*roots, *traverse) if os.path.normcase(path) in _UNVERIFIED_ROOTS
         ]
     return _PersistentGrants(
         frozenset(os.path.normcase(path) for path in (*granted_all, *traverse_all)),
@@ -2560,7 +2549,11 @@ def _revoke_persistent_manifest(manifest: Path, payload: dict[str, Any]) -> None
         pass
 
 
-def _recorded_monikers(root: str, prefix: str, kind: str | None = None) -> set[str]:
+def _recorded_monikers(
+    root: str,
+    prefix: str,
+    kind: str | None = None,
+) -> set[str]:
     """Which installations the manifests under ``root`` belong to.
 
     Every manifest carries the moniker of the installation that wrote it, which
@@ -3818,11 +3811,9 @@ class WindowsLpacBackend:
                     # record of *this* interpreter under a moniker that is no
                     # longer ours is this installation renamed, and only this
                     # code will ever release it.
-                    superseded = (
-                        payload["moniker"] != _install_moniker()
-                        and os.path.normcase(payload["interpreter"])
-                        == os.path.normcase(os.path.realpath(sys.executable))
-                    )
+                    superseded = payload["moniker"] != _install_moniker() and os.path.normcase(
+                        payload["interpreter"]
+                    ) == os.path.normcase(os.path.realpath(sys.executable))
                     if os.path.exists(payload["interpreter"]) and not superseded:
                         continue
                     _revoke_persistent_manifest(manifest, payload)
@@ -3834,9 +3825,7 @@ class WindowsLpacBackend:
             except Exception:
                 # A stale record is retained for the next startup; never delete
                 # evidence or reuse its identity after partial reconciliation.
-                logger.warning(
-                    "Could not reconcile the LPAC manifest %s", manifest, exc_info = True
-                )
+                logger.warning("Could not reconcile the LPAC manifest %s", manifest, exc_info = True)
                 continue
 
     def _reconcile_launch_manifest(self, manifest: Path, payload: dict[str, Any]) -> None:

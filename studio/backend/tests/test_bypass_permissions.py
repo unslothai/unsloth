@@ -136,7 +136,9 @@ def captured_popen(monkeypatch):
     # probe that meets ``_FakeProc`` caches a bogus "unavailable" for the process
     # (that is how the Seatbelt live tests failed when the suites ran together).
     monkeypatch.setattr(
-        tools, "spawn_prepared_launch", lambda prepared, **kwargs: fake_popen(prepared.argv, **kwargs)
+        tools,
+        "spawn_prepared_launch",
+        lambda prepared, **kwargs: fake_popen(prepared.argv, **kwargs),
     )
     return cap
 

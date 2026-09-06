@@ -624,7 +624,14 @@ class _FakeLedger:
     other Studio this process cannot see, holding a lock this one must not get.
     """
 
-    def __init__(self, events, *, mutex = False, lock = True, busy = ()):
+    def __init__(
+        self,
+        events,
+        *,
+        mutex = False,
+        lock = True,
+        busy = (),
+    ):
         self.events = events
         self.mutex = mutex
         self.lock = lock
@@ -686,7 +693,12 @@ def _reset_ledger_state(monkeypatch):
     monkeypatch.setattr(windows_lpac, "_LEDGER_WAIT_SECONDS", 0.05)
 
 
-def _cleanup_recorder(monkeypatch, events, *, ledger = None):
+def _cleanup_recorder(
+    monkeypatch,
+    events,
+    *,
+    ledger = None,
+):
     sid = ctypes.c_void_p(1234)
     ledger = ledger or _FakeLedger([])
     api = SimpleNamespace(
@@ -909,9 +921,10 @@ def test_orphan_temporary_manifests_are_swept_by_age(monkeypatch, tmp_path):
 def _sid_bytes(*subauthorities: int) -> bytes:
     """A syntactically valid SID: revision 1, authority 15 (package), given subauthorities."""
     import struct
-
-    return bytes([1, len(subauthorities)]) + (15).to_bytes(6, "big") + b"".join(
-        struct.pack("<I", value) for value in subauthorities
+    return (
+        bytes([1, len(subauthorities)])
+        + (15).to_bytes(6, "big")
+        + b"".join(struct.pack("<I", value) for value in subauthorities)
     )
 
 
@@ -1008,7 +1021,11 @@ def test_ambient_sid_matches_the_container_kind():
 class _FakeCreateProfile:
     """``CreateAppContainerProfile`` recording its calls and its queued results."""
 
-    def __init__(self, events, results = None):
+    def __init__(
+        self,
+        events,
+        results = None,
+    ):
         self._events = events
         self._results = list(results or [])
 
@@ -1129,7 +1146,12 @@ def _lpac_fakes(
         windows_lpac, "_grant_traverse", grant("traverse", windows_lpac._FILE_TRAVERSE)
     )
 
-    def revoke(path, _value, *, exact = False):
+    def revoke(
+        path,
+        _value,
+        *,
+        exact = False,
+    ):
         held = [key for key in acl if key[0] == path]
         if not held:
             events.append(("revoke-absent", path))
@@ -1457,9 +1479,7 @@ def test_a_stale_manifest_empties_the_container_temp_only_when_nothing_holds_it(
         assert Path(identity.private_temp).is_dir() and not leftover.exists()
 
 
-def test_another_live_studios_launch_keeps_its_grants_and_the_container_temp(
-    monkeypatch, tmp_path
-):
+def test_another_live_studios_launch_keeps_its_grants_and_the_container_temp(monkeypatch, tmp_path):
     """The refcount is per process; the SID and the profile are per installation.
 
     A second Studio process of the same installation grants the same ACEs to the
@@ -1883,7 +1903,13 @@ def test_the_installation_reset_refuses_a_ledger_it_could_not_take(monkeypatch, 
         assert fakes.backend.remove_persistent_grants() == (fakes.moniker,)
 
 
-def _foreign_persistent_manifest(fakes, tmp_path, moniker, *, interpreter_exists = True):
+def _foreign_persistent_manifest(
+    fakes,
+    tmp_path,
+    moniker,
+    *,
+    interpreter_exists = True,
+):
     """A second installation of this account, with a container of its own.
 
     An interpreter that is gone is what an uninstalled runtime looks like from
@@ -2077,9 +2103,7 @@ def test_the_ledger_budget_is_spent_on_other_processes_not_on_this_one(monkeypat
             # The owning thread is in the key rather than implied by the grants
             # lock, so narrowing that lock later cannot make _ledger_is_held
             # report one thread's ledger as another thread's.
-            assert list(windows_lpac._LEDGER_DEPTH) == [
-                (threading.get_ident(), _INSTALL_MONIKER)
-            ]
+            assert list(windows_lpac._LEDGER_DEPTH) == [(threading.get_ident(), _INSTALL_MONIKER)]
             entered.set()
             # What a first launch of this installation costs, in miniature.
             time.sleep(windows_lpac._LEDGER_WAIT_SECONDS * 3)
@@ -2333,9 +2357,7 @@ def test_a_new_runtime_root_is_granted_once_and_appended_to_the_manifest(monkeyp
         first = fakes.backend.prepare(fakes.spec)
         first.cleanup()
         manifest = fakes.manifests / (fakes.moniker + ".json")
-        assert json.loads(manifest.read_text(encoding = "utf-8"))["granted_roots"] == [
-            fakes.runtime
-        ]
+        assert json.loads(manifest.read_text(encoding = "utf-8"))["granted_roots"] == [fakes.runtime]
         # A Terminal call reaching Git bash after a Python call.
         monkeypatch.setattr(
             windows_lpac, "_runtime_roots", lambda _workdir, _argv: (fakes.runtime, shell)
@@ -2443,7 +2465,6 @@ def test_the_access_memo_expires_so_an_external_acl_change_is_seen(monkeypatch, 
     assert calls == [str(root), str(root)]
 
 
-
 def test_a_manifest_write_survives_a_leftover_temporary_file(tmp_path):
     target = str(tmp_path / "unsloth.studio.sandbox.0123456789abcdef.json")
     windows_lpac._atomic_write_manifest(target, {"version": 1, "round": 1})
@@ -2471,9 +2492,7 @@ def test_a_profile_whose_storage_was_deleted_is_created_again(monkeypatch, tmp_p
                 events.append(("delete-profile", moniker)) or 0
             ),
         ),
-        advapi32 = SimpleNamespace(
-            FreeSid = lambda value: events.append(("free-sid", value.value))
-        ),
+        advapi32 = SimpleNamespace(FreeSid = lambda value: events.append(("free-sid", value.value))),
     )
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: "S-1-15-2-1-2-3-4-5-6-7")
@@ -2632,7 +2651,12 @@ def test_a_cleanup_cannot_revoke_between_a_concurrent_launch_check_and_its_grant
 
         recorded_revoke = windows_lpac._revoke_sid
 
-        def slow_revoke(path, value, *, exact = False):
+        def slow_revoke(
+            path,
+            value,
+            *,
+            exact = False,
+        ):
             # Wide open: the other launch gets its whole prepare in here.
             entered.set()
             time.sleep(0.4)
@@ -2815,9 +2839,7 @@ def test_a_profile_directory_that_cannot_be_rebuilt_refuses_the_launch(monkeypat
                 events.append(("delete-profile", moniker)) or 0
             ),
         ),
-        advapi32 = SimpleNamespace(
-            FreeSid = lambda value: events.append(("free-sid", value.value))
-        ),
+        advapi32 = SimpleNamespace(FreeSid = lambda value: events.append(("free-sid", value.value))),
     )
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: "S-1-15-2-1-2-3-4-5-6-7")
@@ -2862,9 +2884,7 @@ def test_a_reconciled_identity_frees_its_sid_even_when_cleanup_fails(monkeypatch
 
 def test_prepare_skips_grants_the_dacl_already_covers(monkeypatch, tmp_path):
     events: list[tuple] = []
-    with _lpac_fakes(
-        monkeypatch, tmp_path, events = events, existing = {str(tmp_path)}
-    ) as fakes:
+    with _lpac_fakes(monkeypatch, tmp_path, events = events, existing = {str(tmp_path)}) as fakes:
         prepared = fakes.backend.prepare(fakes.spec)
         identity = prepared.spawn_callback._lpac_identity
         prepared.cleanup()
@@ -2903,11 +2923,7 @@ def test_prepare_records_access_denied_on_machine_wide_paths_instead_of_failing(
             windows_lpac,
             "_grant_traverse",
             lambda path, value, **_k: events.append(("traverse", path))
-            or (
-                (_ for _ in ()).throw(OSError(5, "denied"))
-                if "Program Files" in path
-                else None
-            ),
+            or ((_ for _ in ()).throw(OSError(5, "denied")) if "Program Files" in path else None),
         )
         fakes.backend._profile = "appcontainer"
         prepared = fakes.backend.prepare(fakes.spec)
@@ -2920,9 +2936,7 @@ def test_prepare_records_access_denied_on_machine_wide_paths_instead_of_failing(
         # A refusal Windows owns is recorded once, not retried on every launch.
         events.clear()
         second = fakes.backend.prepare(fakes.spec)
-        assert not [
-            event for event in events if event[0] in {"read_execute", "validate-runtime"}
-        ]
+        assert not [event for event in events if event[0] in {"read_execute", "validate-runtime"}]
         # It is not retried, and it is still disclosed: a launch must not report a
         # tree as verified because an earlier launch was refused on it.
         assert set(second.spawn_callback._lpac_identity.unverified_access) == {
@@ -3095,7 +3109,9 @@ def test_environment_keeps_the_trusted_git_directory(monkeypatch, tmp_path):
     private.mkdir(parents = True)
     git_dir.mkdir(parents = True)
     identity = SimpleNamespace(private_temp = str(private), profile_folder = str(private.parent))
-    monkeypatch.setattr(inference_tools, "_resolve_trusted_windows_git", lambda: (str(git_dir), ".exe"))
+    monkeypatch.setattr(
+        inference_tools, "_resolve_trusted_windows_git", lambda: (str(git_dir), ".exe")
+    )
     safe = windows_lpac._safe_environment({}, str(workdir), identity, (sys.executable,))
     assert safe["PATH"].split(os.pathsep)[-1] == str(git_dir)
 
@@ -3113,7 +3129,7 @@ def test_spawn_attribute_count_follows_the_profile():
     spawn = source[source.index("def _spawn_lpac") :]
     assert spawn.index("job = _job_object_with_limits()") < spawn.index("CreateProcessW(")
     assert spawn.index("AssignProcessToJobObject") < spawn.index("ResumeThread(")
-    assert 'less_privileged = identity.profile != _PROFILE_APPCONTAINER' in source
+    assert "less_privileged = identity.profile != _PROFILE_APPCONTAINER" in source
 
 
 def test_limited_windows_job_requests_kill_on_close_and_is_terminated_after_drain():
@@ -3273,9 +3289,7 @@ def test_live_launches_share_one_profile_and_own_their_manifest_and_temp(
     manifest = Path(windows_lpac._persistent_manifest_path(one.moniker))
     assert manifest.is_file()
     persistent = json.loads(manifest.read_text(encoding = "utf-8"))
-    verified = [
-        root for root in persistent["granted_roots"] if root not in one.unverified_access
-    ]
+    verified = [root for root in persistent["granted_roots"] if root not in one.unverified_access]
     # Not just the record: the ACE itself is still on the runtime tree.
     for root in verified[:1]:
         assert one.sid_string in _acl_text(Path(root))
@@ -3569,16 +3583,22 @@ print('LPAC_NULL_PIPES ' + repr(outcomes))
     assert windows_lpac._LIMITATION_NULL_DEVICE_PIPES in capability.limitations
 
 
-def test_live_pytorch_import_failure_is_the_disclosed_null_device_limit(live_lpac_backend, tmp_path):
+def test_live_pytorch_import_failure_is_the_disclosed_null_device_limit(
+    live_lpac_backend, tmp_path
+):
     """torch cannot import inside the container, and the failure is the advertised one."""
     if importlib.util.find_spec("torch") is None:
         pytest.skip("PyTorch is not installed")
     workdir = tmp_path / "work"
     workdir.mkdir()
     site_dirs = [
-        path for path in (sysconfig.get_paths().get("purelib"), sysconfig.get_paths().get("platlib")) if path
+        path
+        for path in (sysconfig.get_paths().get("purelib"), sysconfig.get_paths().get("platlib"))
+        if path
     ]
-    code = f"import sys; sys.path[:0] = {site_dirs!r}\n" + """
+    code = (
+        f"import sys; sys.path[:0] = {site_dirs!r}\n"
+        + """
 try:
     import torch
 except PermissionError as exc:
@@ -3586,6 +3606,7 @@ except PermissionError as exc:
 else:
     print('LPAC_TORCH_IMPORTED')
 """
+    )
     output, _elapsed = _run_native(live_lpac_backend, workdir, code, timeout = 120)
     assert "LPAC_TORCH_DENIED 'nul'" in output or "LPAC_TORCH_IMPORTED" in output, output
 

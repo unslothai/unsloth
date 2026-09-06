@@ -51,7 +51,6 @@ _DEFAULT_NOTICE_WAIT_SECONDS = 20.0
 
 def _capability_snapshot() -> "SandboxCapability":
     from core.inference.os_sandbox import capability_snapshot
-
     return capability_snapshot()
 
 

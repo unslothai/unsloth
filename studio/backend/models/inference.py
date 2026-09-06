@@ -1994,7 +1994,7 @@ def _note_omitted_tool_execution_mode(request: Any) -> None:
         "A tools-enabled request omitted tool_execution_mode; defaulting to "
         "os_isolation_required, so Python and Terminal need a qualified OS sandbox. "
         "Clients that accept running without OS isolation must send "
-        "tool_execution_mode \"full\" (permission_mode \"full\" and bypass_permissions "
+        'tool_execution_mode "full" (permission_mode "full" and bypass_permissions '
         "true mean the same)."
     )
 

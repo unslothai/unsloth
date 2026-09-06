@@ -442,8 +442,14 @@ def test_os_isolated_windows_launch_uses_cmd_even_with_bash(monkeypatch):
     # The real launch hands cmd a batch file so every line of the command runs.
     # `call`, not the bare path: inside the container cmd's search for a command
     # named like a batch file is refused even when the file itself reads fine.
-    assert tools._get_shell_cmd("echo hi", os_isolated = True, script_path = r"C:\w\studio_exec_a.cmd") == [
-        "cmd", "/d", "/c", "call", r"C:\w\studio_exec_a.cmd",
+    assert tools._get_shell_cmd(
+        "echo hi", os_isolated = True, script_path = r"C:\w\studio_exec_a.cmd"
+    ) == [
+        "cmd",
+        "/d",
+        "/c",
+        "call",
+        r"C:\w\studio_exec_a.cmd",
     ]
 
 
