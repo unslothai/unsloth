@@ -2317,8 +2317,24 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     # mint, so the row count is bounded by the TTL rather than by uptime.
     try:
         from auth.authentication import create_link_token
+        from auth.bootstrap_timeout import (
+            DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS,
+            bootstrap_timeout_seconds,
+        )
 
-        link_token = create_link_token(storage.DEFAULT_ADMIN_USERNAME)
+        # Live as long as the seeded credential itself would have been useful.
+        # This token is minted when the setup page LOADS and redeemed when the
+        # operator submits the form, so a URL-handoff TTL would expire under
+        # anyone who opened Studio and came back to it a few minutes later --
+        # turning a working first login into an error the seed never produced.
+        # The bootstrap deadline is the natural bound: past it Studio shuts down
+        # anyway, so the token cannot outlive the window it replaces. A disabled
+        # deadline (0) falls back to the default rather than minting a token that
+        # never expires.
+        setup_ttl = bootstrap_timeout_seconds() or DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
+        link_token = create_link_token(
+            storage.DEFAULT_ADMIN_USERNAME, expires_in = setup_ttl
+        )
     except Exception:
         # No token means the page simply shows the ordinary login form; never
         # fall back to serving the seed.
