@@ -105,8 +105,8 @@ def test_generated_compiled_caches_are_excluded():
 
 
 def test_backend_test_suites_stay_out_of_the_wheel():
-    # Dropping them from packages.find is not enough on its own: with
-    # include-package-data they return as package data of studio.backend.
+    # Dropping them from packages.find is not enough on its own: with include-package-data they return as package data
+    # of studio.backend.
     leaked = [
         path
         for path in _wheel_payload()

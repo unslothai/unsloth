@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==80.9.0", "setuptools-scm==9.2.0"]
+requires = ["setuptools==82.0.1", "setuptools-scm==9.2.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -458,16 +458,73 @@ cu130onlytorch291 = [
     "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.33.post2-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
 ]
 cu126onlytorch2100 = [
-    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
-    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
+    # Pin torch so ARM64 (x86-64-only xformers wheel skipped) stays on 2.10.
+    "torch==2.10.0",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu128onlytorch2100 = [
-    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
-    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
+    "torch==2.10.0",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu130onlytorch2100 = [
-    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform)",
-    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32')",
+    "torch==2.10.0",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu126onlytorch2110 = [
+    # Pin the trio to +cuNNN: torch 2.11+ defaults to a CUDA-13 wheel and xformers 0.0.35
+    # does not pin torch. == not a range (+cu126 wins, PEP 440) and not === (force-replaces).
+    "torch==2.11.0+cu126",
+    "torchvision==0.26.0+cu126",
+    "torchaudio==2.11.0+cu126",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu128onlytorch2110 = [
+    "torch==2.11.0+cu128",
+    "torchvision==0.26.0+cu128",
+    "torchaudio==2.11.0+cu128",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu128/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu130onlytorch2110 = [
+    "torch==2.11.0+cu130",
+    "torchvision==0.26.0+cu130",
+    "torchaudio==2.11.0+cu130",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+# torch 2.12 ships on cu126/cu130 only, so no cu128 leaf; torchaudio has no 2.12 release.
+cu126onlytorch2120 = [
+    "torch==2.12.0+cu126",
+    "torchvision==0.27.0+cu126",
+    "torchaudio==2.11.0+cu126",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu130onlytorch2120 = [
+    "torch==2.12.0+cu130",
+    "torchvision==0.27.0+cu130",
+    "torchaudio==2.11.0+cu130",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu126onlytorch2121 = [
+    # torchvision exact-pins torch, so the 2.12.1 patch takes 0.27.1.
+    "torch==2.12.1+cu126",
+    "torchvision==0.27.1+cu126",
+    "torchaudio==2.11.0+cu126",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu126/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+]
+cu130onlytorch2121 = [
+    "torch==2.12.1+cu130",
+    "torchvision==0.27.1+cu130",
+    "torchaudio==2.11.0+cu130",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xformers @ https://download.pytorch.org/whl/cu130/xformers-0.0.35-py39-none-win_amd64.whl ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
 ]
 cu118 = [
     "unsloth[huggingface]",
@@ -676,6 +733,41 @@ cu130-torch2100 = [
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch2100]",
     "unsloth[audio-torch210]",
+]
+cu126-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2110]",
+]
+cu128-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu128onlytorch2110]",
+]
+cu130-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2110]",
+]
+cu126-torch2120 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2120]",
+]
+cu130-torch2120 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2120]",
+]
+cu126-torch2121 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2121]",
+]
+cu130-torch2121 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2121]",
 ]
 kaggle = [
     "unsloth[huggingface]",
@@ -978,6 +1070,41 @@ cu130-ampere-torch2100 = [
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
     "unsloth[cu130onlytorch2100]",
     "unsloth[audio-torch210]",
+]
+cu126-ampere-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2110]",
+]
+cu128-ampere-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu128onlytorch2110]",
+]
+cu130-ampere-torch2110 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2110]",
+]
+cu126-ampere-torch2120 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2120]",
+]
+cu130-ampere-torch2120 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2120]",
+]
+cu126-ampere-torch2121 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu126onlytorch2121]",
+]
+cu130-ampere-torch2121 = [
+    "unsloth[huggingface]",
+    "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0",
+    "unsloth[cu130onlytorch2121]",
 ]
 flashattentiontorch260abiFALSEcu12x = [
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp39-cp39-linux_x86_64.whl ; ('linux' in sys_platform) and python_version == '3.9'",

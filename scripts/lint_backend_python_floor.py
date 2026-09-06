@@ -38,58 +38,40 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "studio-backend-ci.yml"
 
-# Both trees the matrix legs actually execute. studio-backend-ci lists 'unsloth_cli/**'
-# in its own paths filter and runs `pytest unsloth_cli/tests` as a step on every leg, so
-# a post-floor stdlib name on a shipped CLI path was covered by the old 3.10 leg exactly
-# as a backend one was. Scanning only the backend would have moved that coverage to the
-# push to main while looking like it had replaced it.
+# Both trees the matrix legs actually execute.
+# studio-backend-ci lists 'unsloth_cli/**' in its own paths filter and runs `pytest unsloth_cli/tests` as a step on
+# every leg, so a post-floor stdlib name on a shipped CLI path was covered by the old 3.10 leg exactly as a backend
+# one was. Scanning only the backend would have moved that coverage to the push to main while looking like it had
+# replaced it.
 ROOTS = (
     REPO / "studio" / "backend",
     REPO / "unsloth_cli",
 )
 
-# Everything shipped under studio/backend is scanned. The first version of this listed the
-# packages instead, and that is exactly the wrong shape for a floor check: it named core,
-# utils and routes and silently missed 116 files, including all of hub, plugins, models,
-# storage, auth, picker and state, plus _platform_compat.py which main.py imports directly.
+# Everything shipped under studio/backend is scanned.
+# The first version of this listed the packages instead, and that is exactly the wrong shape for a floor check: it named
+# core, utils and routes and silently missed 116 files, including all of hub, plugins, models, storage, auth, picker and
+# state, plus _platform_compat.py which main.py imports directly.
 # It also named "loggers.py", which is a directory, so that entry matched nothing at all.
-# A check that covers most of the tree reads exactly like one that covers all of it.
-#
-# So the tree is the input and only vendored code comes out, pinned to its own support
-# range. Tests are IN, which the first version had wrong on the theory that they are not
-# shipped: shipping is not the question, execution is. studio-backend-ci runs
-# `pytest tests/` from studio/backend on every leg, so a 3.11 API in a test file is
-# executed by the 3.10 leg exactly as one in a shipped module is. With the pull request
-# down to a single 3.13 leg, that leg and this lint would both pass and the failure would
-# arrive on the push to main, which is the whole gap this exists to close.
+# studio-backend-ci runs `pytest tests/` from studio/backend on every leg, so a 3.11 API in a test file is executed by
+# the 3.10 leg exactly as one in a shipped module is.
+# With the pull request down to a single 3.13 leg, that leg and this lint would both pass and the failure would arrive
+# on the push to main, which is the whole gap this exists to close.
 EXCLUDE_PARTS = ("vendor", "node_modules", "__pycache__", ".venv")
 
-# An above-floor symbol reached deliberately is suppressed AT THE SITE, with `# novermin`
-# and a comment saying why, not by dropping its file from the scan. Excluding the file
-# would leave everything else in it permanently unchecked, which is the same mistake as
-# the package allowlist this replaced, one level down.
-#
-# The one live case is locale.getencoding() in the data-designer plugin's state_store,
-# inside a try/except AttributeError with a pre-3.11 fallback. vermin reads names rather
-# than control flow, so it cannot see that the guard is already there.
-#
-# Comment parsing is therefore ON, which is what makes the annotation work.
+
+# An above-floor symbol reached deliberately is suppressed AT THE SITE, with `# novermin` and a comment saying why, not
+# by dropping its file from the scan.
+# The one live case is locale.getencoding() in the data-designer plugin's state_store, inside a try/except
+# AttributeError with a pre-3.11 fallback.
 
 
 # The floor is DECLARED, in the workflow, next to where the legs used to be.
-#
-# It used to be derived from the matrix, which was right while the matrix ran several
-# interpreters and became self-defeating the moment it ran one: a 3.13-only matrix would
-# have moved the floor to 3.13 and left this check asserting that code written for 3.13
-# runs on 3.13. Deriving it from pyproject.toml is not the answer either, because that
-# says >= 3.9 and is not true today: unsloth/models/_utils.py already uses
-# dataclasses.dataclass(kw_only) and tempfile.TemporaryDirectory(ignore_cleanup_errors),
-# both 3.10, so a 3.9 target fails on the tree as it stands. That mismatch is worth
-# fixing, in its own change, and this lint is what makes it visible rather than what
-# hides it.
-#
-# So it is a number, written down once, in the workflow that would otherwise have tested
-# it, and read from there.
+# Deriving it from the matrix became self-defeating once the matrix ran one interpreter: a 3.13-only matrix would move
+# the floor to 3.13 and leave this asserting that code written for 3.13 runs on 3.13. Deriving it from pyproject.toml
+# is not the answer either, because that says >= 3.9 and is not true today: unsloth/models/_utils.py already uses
+# tempfile.TemporaryDirectory(ignore_cleanup_errors), which is 3.10, so a 3.9 target fails on the tree as it stands.
+# So it is a number, written down once, in the workflow that would otherwise have tested it, and read from there.
 FLOOR_KEY = "PYTHON_FLOOR"
 
 

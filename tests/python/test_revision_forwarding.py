@@ -183,8 +183,8 @@ def test_revision_survives_when_the_repo_is_unchanged():
     ],
 )
 def test_revision_is_dropped_once_the_repo_is_remapped(model_name, old_model_name):
-    # The ref only exists on the repo the caller named: elsewhere it 404s or, worse,
-    # resolves a same-named branch on a different repo.
+    # The ref only exists on the repo the caller named: elsewhere it 404s or, worse, resolves a same-named branch on a
+    # different repo.
     assert _load_gate()("abc123", model_name, old_model_name) is None
 
 
@@ -263,7 +263,6 @@ def test_both_loader_paths_gate_before_and_after_resolution():
             keyword = _revision_kwarg(probe)
             if keyword is None:
                 continue  # the PEFT base-model probe deliberately pins nothing
-            # adapter_revision is the same gated value, taken before the vLLM drop.
             assert getattr(keyword.value, "id", None) in (
                 "base_revision",
                 "adapter_revision",

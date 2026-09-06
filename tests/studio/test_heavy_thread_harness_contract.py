@@ -22,7 +22,7 @@ STUDIO_TESTS = ROOT / "tests" / "studio"
 FRONTEND = ROOT / "studio" / "frontend"
 
 HARNESS = "playwright_heavy_thread.py"
-# Recorded by the harness, produced only by Chromium. None of these may decide anything.
+# Recorded by the harness, produced only by Chromium.
 CHROMIUM_ONLY = (
     "layout_count",
     "layout_ms",
@@ -59,9 +59,9 @@ def verdict() -> str:
 
 
 def test_every_measured_action_has_a_growth_axis() -> None:
-    # An action that is driven but never checked for growth is an action whose column could be
-    # constant at every size without anything failing. The axes are generated from ACTIONS, so
-    # what has to hold is that ACTIONS is the generator and that it still lists all six.
+    # An action that is driven but never checked for growth is an action whose column could be constant at every size
+    # without anything failing. The axes are generated from ACTIONS, so what has to hold is that ACTIONS is the
+    # generator and that it still lists all six.
     text = source(HARNESS)
     declared = section(text, "ACTIONS = (", ")")
     for action in ACTIONS:
@@ -78,8 +78,8 @@ def test_the_portable_primaries_are_the_growth_axes() -> None:
 
 
 def test_no_growth_axis_is_chromium_only() -> None:
-    # The whole point of the portable metrics: a curve built on CDP counters is a curve that does
-    # not exist on the engine Unsloth Desktop actually ships on macOS and Linux.
+    # The whole point of the portable metrics: a curve built on CDP counters is a curve that does not exist on the
+    # engine Unsloth Desktop actually ships on macOS and Linux.
     axes = growth_axes()
     for metric in CHROMIUM_ONLY:
         assert f'"{metric}"' not in axes, metric
@@ -92,8 +92,6 @@ def test_the_verdict_never_rests_on_a_chromium_only_metric() -> None:
 
 
 def test_chromium_only_rows_say_so_in_their_own_label() -> None:
-    # Off Chromium these print `-`, and a `-` that means "not supported here" must not be read as
-    # a zero. The label is the only thing carrying that.
     text = source(HARNESS)
     table = section(text, "TABLE_ROWS = (", "def print_table")
     for metric in CHROMIUM_ONLY:
@@ -111,26 +109,20 @@ def test_the_longtask_api_is_recorded_as_supported_or_not() -> None:
 
 
 def test_the_stall_detector_is_a_timer_and_not_a_message_channel() -> None:
-    # Measured, not preference: the MessageChannel ping-pong halves Firefox's frame rate before
-    # any application code runs, so it changes the thing it is there to measure.
+    # Measured, not preference: the MessageChannel ping-pong halves Firefox's frame rate before any application code
+    # runs, so it changes the thing it is there to measure.
     text = source(HARNESS)
     assert "new MessageChannel(" not in text, "the recorder must not spin a port"
     assert "setTimeout(stall, 1)" in text
 
 
 def test_the_verdict_asserts_the_fixture_and_not_just_its_size() -> None:
-    # 300K characters of prose would produce a rising curve too, and would be measuring something
-    # nobody reported.
     decision = verdict()
     assert 'plan["expectedPerCycle"]' in decision
     assert 'counts.get("highlightedTokens", 0)' in decision
 
 
 def test_the_fixture_assertion_survives_deferred_fence_highlighting() -> None:
-    # A floor on the TOKEN count partly measures where the viewport is: the same unchanged fixture
-    # dropped from 3,216 tokens per cycle to 1,322. Lowering it to fit would leave the check unable
-    # to tell a deferred thread from one that stopped rendering code, which is all it is for. So
-    # the size assertion is on characters, which the deferred shell carries too.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     head = page.index("const EXPECTED_PER_CYCLE")
     expected = page[head : page.index("};", head)]
@@ -154,20 +146,19 @@ def test_the_verdict_asserts_the_keystroke_reached_the_runtime() -> None:
 
 
 def test_the_paint_floor_is_measured_and_subtracted() -> None:
-    # Two rAFs resolve no sooner than two vsync intervals, so an action that never happened still
-    # reports ~33ms. Left in a ratio, that floor compresses every axis towards 1 and lets a real
-    # regression sit under the discrimination threshold.
+    # Two rAFs resolve no sooner than two vsync intervals, so an action that never happened still reports ~33ms. Left
+    # in a ratio, that floor compresses every axis towards 1 and lets a real regression sit under the discrimination
+    # threshold.
     text = source(HARNESS)
     assert "PAINT_FLOOR_JS" in text
-    # Once per double-rAF wait the metric is clocked across, not once per metric: `menu open+close
-    # ms` is the sum of two independently floored timings and carries two floors.
+    # Once per double-rAF wait the metric is clocked across, not once per metric: `menu open+close ms` is the sum of
+    # two independently floored timings and carries two floors.
     assert 'value -= count * row["paint_floor_ms"]' in section(
         text, "def growth(", "def report_growth"
     )
 
 
 def test_the_verdict_asserts_the_reopen_really_unmounted() -> None:
-    # Without this, "re-open" is timing a thread that never left, which is free.
     decision = verdict()
     assert 'reopened["closedMs"] is None' in decision
 
@@ -199,20 +190,18 @@ def test_the_smoke_page_is_served_and_owns_its_dev_server() -> None:
 
 
 def test_the_fork_count_stub_answers_the_shape_the_endpoint_returns() -> None:
-    # `getThreadForkCounts` reads `data.counts` and builds a Map from it, and the badge renders
-    # nothing for a message the Map has no entry for. `{"counts":{}}` is therefore "no message has
-    # forks" in the endpoint's own vocabulary. A body of some other shape leaves the Map empty by
-    # accident rather than by contract, and an accident is what this stub already had once: the
-    # endpoint used to be per message and answer `{"count":n}`, the allowlist kept matching that
-    # older URL after the app stopped requesting it, and every fork-count GET went to the network
-    # instead. Before that, `{}` against the per-message endpoint left `data.count` undefined,
-    # `undefined <= 0` false, and a badge reading "undefined forks from this message" on every
-    # assistant message: measured at 25000 chars, 10 badges and 4031 DOM nodes rather than 0 and
-    # 3981. Either way the fixture stops being the thing the table says was measured.
+    # `getThreadForkCounts` reads `data.counts` and builds a Map from it, and the badge renders nothing for a message
+    # the Map has no entry for. `{"counts":{}}` is therefore "no message has forks" in the endpoint's own vocabulary.
+    # A body of some other shape leaves the Map empty by accident rather than by contract, and an accident is what
+    # this stub already had once: the endpoint used to be per message and answer `{"count":n}`, the allowlist kept
+    # matching that older URL after the app stopped requesting it, and every fork-count GET went to the network
+    # instead. Before that, `{}` against the per-message endpoint left `data.count` undefined, `undefined <= 0` false,
+    # and a badge reading "undefined forks from this message" on every assistant message: measured at 25000 chars,
+    # 10 badges and 4031 DOM nodes rather than 0 and 3981. Either way the fixture stops being the thing the table says
+    # was measured.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
-    # Pin the fork-count entry to its own body rather than scanning the whole file: other
-    # endpoints in the allowlist legitimately answer "{}", so a bare file-wide check for it
-    # would fail on them and tell us nothing about this one.
+    # Pin the fork-count entry to its own body rather than scanning the whole file: other endpoints in the allowlist
+    # legitimately answer "{}", so a bare file-wide check for it would fail on them and tell us nothing about this one.
     forks = next(
         (line for line in page.splitlines() if "forks$/" in line),
         "",
@@ -235,12 +224,11 @@ def _stub_patterns(page: str) -> list[str]:
 
 
 def test_the_stub_matches_the_fork_count_url_the_app_actually_requests() -> None:
-    # The drift this file exists to catch, checked against the app rather than against a string
-    # someone remembered to update. The fork-count endpoint moved from per message to per thread
-    # in #8992 and this allowlist was not moved with it; the harness's own stray-request check did
-    # catch it, but only in CI, and only in a job where the browser smokes reach the point of
-    # running at all. A URL the app builds and the stub does not answer is a round trip inside a
-    # timed region, so it is worth failing a unit test for.
+    # The drift this file exists to catch, checked against the app rather than against a string someone remembered to
+    # update. The fork-count endpoint moved from per message to per thread in #8992 and this allowlist was not moved
+    # with it; the harness's own stray-request check did catch it, but only in CI, and only in a job where the browser
+    # smokes reach the point of running at all. A URL the app builds and the stub does not answer is a round trip
+    # inside a timed region, so it is worth failing a unit test for.
     api = (FRONTEND / "src" / "features" / "chat" / "api" / "chat-api.ts").read_text(
         encoding = "utf-8"
     )
@@ -251,8 +239,6 @@ def test_the_stub_matches_the_fork_count_url_the_app_actually_requests() -> None
     )
     for path in fork_paths:
         # A stand-in shaped like the synthetic remoteId the local runtime hands the smoke page.
-        # `encodeURIComponent` leaves that form untouched, so the sample below is the URL the
-        # harness really does produce.
         url = re.sub(r"\$\{[^}]*\}", "__LOCALID_abc123", path)
         assert any(re.search(pattern, url) for pattern in patterns), (
             f"the smoke page's STUBBED_API allowlist answers none of {url!r}, which the chat "
@@ -261,9 +247,9 @@ def test_the_stub_matches_the_fork_count_url_the_app_actually_requests() -> None
 
 
 def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
-    # A blanket `/api/` match resolves any other request a measured interaction makes before
-    # Playwright emits it, so `measure_cell`'s listener never increments `stray_api_requests` and
-    # the API fan-out this harness claims to detect cannot reach it.
+    # A blanket `/api/` match resolves any other request a measured interaction makes before Playwright emits it, so
+    # `measure_cell`'s listener never increments `stray_api_requests` and the API fan-out this harness claims to
+    # detect cannot reach it.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     assert 'url.includes("/api/")' not in page, (
         "the fetch stub is matching every /api/ request again, which hides stray requests from "
@@ -275,10 +261,9 @@ def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
 
 
 def test_the_api_stub_is_an_allowlist_not_a_blanket_match() -> None:
-    # A blanket `/api/` match answers every request the measured interactions make before Playwright
-    # emits it, so `stray_api_requests` stays at zero and the fan-out this harness exists to detect
-    # is invisible to it. Narrowing it is what revealed the project-list and knowledge-base GETs on
-    # reopen, and the delete's own three-request sync.
+    # A blanket `/api/` match answers every request the measured interactions make before Playwright emits it, so
+    # `stray_api_requests` stays at zero and the fan-out this harness exists to detect is invisible to it. Narrowing
+    # it is what revealed the project-list and knowledge-base GETs on reopen, and the delete's own three-request sync.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     assert (
         'url.includes("/api/")' not in page
@@ -287,9 +272,9 @@ def test_the_api_stub_is_an_allowlist_not_a_blanket_match() -> None:
 
 
 def test_every_stubbed_endpoint_is_reported() -> None:
-    # Answering a request inside the page removes its round trip from the timings, which is the
-    # point, but it must not remove the request from the record. An endpoint that is answered and
-    # not counted is one nobody can see the cost of later.
+    # Answering a request inside the page removes its round trip from the timings, which is the point, but it must not
+    # remove the request from the record. An endpoint that is answered and not counted is one nobody can see the cost
+    # of later.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     assert "__stubbedApi" in page, "stubbed requests must be recorded on the page"
     harness = source("playwright_heavy_thread.py")
