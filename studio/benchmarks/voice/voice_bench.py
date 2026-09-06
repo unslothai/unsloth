@@ -594,7 +594,12 @@ def _median(vals: list[Optional[float]]) -> Optional[float]:
 
 
 _REQUIRED_METRICS = (
-    "stt_s", "llm_ttft_s", "llm_first_chunk_s", "llm_total_s", "tts_first_s", "tts_full_s"
+    "stt_s",
+    "llm_ttft_s",
+    "llm_first_chunk_s",
+    "llm_total_s",
+    "tts_first_s",
+    "tts_full_s",
 )
 
 
@@ -898,9 +903,7 @@ def main() -> int:
         print("No chat model loaded. Load one in the Studio UI, then re-run.")
         return 2
     # Refuse up front rather than 400 on every speak(): see resolve_tts_route.
-    client.tts_provider, tts_voice, route_error = resolve_tts_route(
-        args, st, client.voice_status()
-    )
+    client.tts_provider, tts_voice, route_error = resolve_tts_route(args, st, client.voice_status())
     if route_error:
         print(route_error)
         return 2

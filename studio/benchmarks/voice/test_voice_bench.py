@@ -95,7 +95,10 @@ class ChatStreamTests(unittest.TestCase):
         pieces = ["Sure", " thing,", " I", " can", " help", " you", " plan", " it", " today."]
         lines = [
             "data: " + json.dumps({"choices": [{"delta": {"content": p}}]}) for p in pieces
-        ] + ["data: " + json.dumps({"choices": [], "usage": {"completion_tokens": 9}}), "data: [DONE]"]
+        ] + [
+            "data: " + json.dumps({"choices": [], "usage": {"completion_tokens": 9}}),
+            "data: [DONE]",
+        ]
 
         class FakeResponse:
             def __enter__(self):
@@ -137,7 +140,8 @@ class ChatStreamTests(unittest.TestCase):
         client.s.post = lambda url, json, timeout: seen.update(json) or FakeResponse()
         client.speak("hello")
         self.assertEqual(
-            seen, {"input": "hello", "seed": 7, "provider_id": "p1", "model": "tts-1", "voice": "alloy"}
+            seen,
+            {"input": "hello", "seed": 7, "provider_id": "p1", "model": "tts-1", "voice": "alloy"},
         )
 
 
@@ -289,7 +293,9 @@ class FixtureTests(unittest.TestCase):
         (vb.FIXTURES / "turn_3.json").write_text("{not json")
         _, _, generated = vb.ensure_fixture(self.client, {"id": 3, "text": "t"})
         self.assertFalse(generated)
-        self.assertEqual(json.loads((vb.FIXTURES / "turn_3.json").read_text())["source"], "supplied")
+        self.assertEqual(
+            json.loads((vb.FIXTURES / "turn_3.json").read_text())["source"], "supplied"
+        )
 
 
 if __name__ == "__main__":
