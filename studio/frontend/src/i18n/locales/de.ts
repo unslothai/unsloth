@@ -1165,6 +1165,16 @@ export const de = {
         total: "{value} gesamt",
       },
       llamaBackend: {
+        exactConcurrency: {
+          label: "Exakte Nebenläufigkeit",
+          description: "Kostet Durchsatz, wenn Chats gleichzeitig laufen, und gilt ab dem nächsten Modellladen.",
+          hint: "llama-server so dekodieren lassen, dass das Ergebnis nicht von den anderen Chats im gemeinsamen KV-Cache abhängt: ein Chat erzeugt allein dieselben Tokens wie neben drei Nachbarn. Auto fragt an und läuft ohne die Garantie weiter, wenn der Server ablehnt; An fragt an und lässt das Laden stattdessen scheitern; Aus fragt nie an.",
+          auto: "Automatisch",
+          off: "Aus",
+          on: "An",
+          envLocked: "Durch die Umgebungsvariable UNSLOTH_LLAMA_EXACT_CONCURRENCY gesetzt, diese Auswahl wird daher nicht verwendet.",
+          reloadRequired: "Modell neu laden, um die neue Einstellung anzuwenden.",
+        },
         title: "GGUF-Inferenz-Engine",
         label: "Compute-Backend",
         description: "Das Backend, mit dem llama.cpp GGUF-Modelle ausführt.",

@@ -1110,6 +1110,16 @@ export const zhCN = {
         total: "共 {value}",
       },
       llamaBackend: {
+        exactConcurrency: {
+          label: "精确并发",
+          description: "多个对话同时运行时会降低吞吐，并在下次加载模型时生效。",
+          hint: "要求 llama-server 采用结果不依赖共享 KV 缓存的其他对话的解码方式：一个对话单独运行和与三个邻居一起运行会产生相同的 token。自动会提出请求，服务器拒绝时继续运行；开启会提出请求，被拒绝则让加载失败；关闭则从不请求。",
+          auto: "自动",
+          off: "关闭",
+          on: "开启",
+          envLocked: "由环境变量 UNSLOTH_LLAMA_EXACT_CONCURRENCY 设置，因此此处的选择不会生效。",
+          reloadRequired: "重新加载模型以应用新设置。",
+        },
         title: "GGUF 推理引擎",
         label: "计算后端",
         description: "llama.cpp 运行 GGUF 模型所用的后端。",

@@ -26,6 +26,14 @@ import {
   visibleLlamaBackendOptions,
 } from "../api/llama-backend";
 import {
+  EXACT_CONCURRENCY_SETTINGS,
+  type ExactConcurrencySetting,
+  type ExactConcurrencySettings,
+  isExactConcurrencySetting,
+  loadExactConcurrencySettings,
+  updateExactConcurrencySettings,
+} from "../api/exact-concurrency";
+import {
   type LlamaCppPathSettings,
   loadLlamaCppPathSettings,
   updateLlamaCppPathSettings,
@@ -211,6 +219,126 @@ function LlamaCppPathRow({ onChanged }: { onChanged: () => void }) {
   );
 }
 
+const EXACT_CONCURRENCY_LABELS: Record<
+  ExactConcurrencySetting,
+  TranslationKey
+> = {
+  auto: "settings.resources.llamaBackend.exactConcurrency.auto",
+  off: "settings.resources.llamaBackend.exactConcurrency.off",
+  on: "settings.resources.llamaBackend.exactConcurrency.on",
+};
+
+/**
+ * llama.cpp exposes exact concurrency through an environment variable alone: no flag, no
+ * --help entry and nothing in /props. This row is the whole discoverable interface.
+ */
+function ExactConcurrencyRow() {
+  const t = useT();
+  const [settings, setSettings] = useState<ExactConcurrencySettings | null>(
+    null,
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void loadExactConcurrencySettings()
+      .then((next) => {
+        if (!active) return;
+        setSettings(next);
+        setError(null);
+      })
+      .catch((reason) => {
+        if (!active) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const save = async (next: ExactConcurrencySetting) => {
+    setSaving(true);
+    setError(null);
+    try {
+      setSettings(await updateExactConcurrencySettings(next));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // The environment pins the machine, so show what it pins rather than a stored value
+  // that is not being used. Nothing stored falls back to what the backend reports as its
+  // own default, which is `off`.
+  const shown =
+    settings?.envOverride ?? settings?.stored ?? settings?.fallback ?? null;
+  const value = shown !== null && isExactConcurrencySetting(shown) ? shown : "";
+  const envLocked = settings?.envOverride != null;
+
+  return (
+    <>
+      <SettingsRow
+        label={t("settings.resources.llamaBackend.exactConcurrency.label")}
+        description={t(
+          "settings.resources.llamaBackend.exactConcurrency.description",
+        )}
+        hint={t("settings.resources.llamaBackend.exactConcurrency.hint")}
+      >
+        <Select
+          value={value}
+          disabled={!settings || envLocked || saving}
+          onValueChange={(next) => {
+            if (isExactConcurrencySetting(next)) {
+              void save(next);
+            }
+          }}
+        >
+          <SelectTrigger
+            aria-label={t(
+              "settings.resources.llamaBackend.exactConcurrency.label",
+            )}
+            className="w-52"
+            size="sm"
+            data-testid="exact-concurrency-select"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {EXACT_CONCURRENCY_SETTINGS.map((setting) => (
+              <SelectItem key={setting} value={setting}>
+                {t(EXACT_CONCURRENCY_LABELS[setting])}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </SettingsRow>
+
+      {envLocked ? (
+        <p className="pb-3 text-xs text-amber-600 dark:text-amber-400">
+          {t("settings.resources.llamaBackend.exactConcurrency.envLocked")}
+        </p>
+      ) : null}
+
+      {!envLocked && settings?.reloadRequired ? (
+        <p className="pb-3 text-xs text-muted-foreground">
+          {t("settings.resources.llamaBackend.exactConcurrency.reloadRequired")}
+        </p>
+      ) : null}
+
+      {error ? (
+        <p
+          className="pb-3 text-xs text-destructive"
+          data-testid="exact-concurrency-error"
+        >
+          {error}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
 export function LlamaBackendSection() {
   const t = useT();
   const { status, selected, setSelected, running, apply, refresh, loadError } =
@@ -315,6 +443,8 @@ export function LlamaBackendSection() {
           void refresh(true);
         }}
       />
+
+      <ExactConcurrencyRow />
 
       {running ? (
         <div className="pb-3" data-testid="llama-backend-progress">

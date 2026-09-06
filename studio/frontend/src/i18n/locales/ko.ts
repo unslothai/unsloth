@@ -1134,6 +1134,16 @@ export const ko = {
         total: "총 {value}",
       },
       llamaBackend: {
+        exactConcurrency: {
+          label: "정확한 동시 실행",
+          description: "여러 채팅이 동시에 실행될 때 처리량이 줄며, 다음 모델 로드부터 적용됩니다.",
+          hint: "KV 캐시를 공유하는 다른 채팅에 결과가 좌우되지 않는 디코딩을 llama-server에 요청합니다. 혼자 실행하든 이웃 셋과 함께 실행하든 같은 토큰이 나옵니다. 자동은 요청하고 서버가 거부하면 그대로 진행하며, 켜기는 요청하고 거부되면 로드를 실패시키고, 끄기는 요청하지 않습니다.",
+          auto: "자동",
+          off: "끄기",
+          on: "켜기",
+          envLocked: "UNSLOTH_LLAMA_EXACT_CONCURRENCY 환경 변수로 설정되어 있어 이 선택은 사용되지 않습니다.",
+          reloadRequired: "새 설정을 적용하려면 모델을 다시 로드하세요.",
+        },
         title: "GGUF 추론 엔진",
         label: "연산 백엔드",
         description: "llama.cpp가 GGUF 모델을 실행할 때 사용하는 백엔드입니다.",
