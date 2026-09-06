@@ -1019,6 +1019,11 @@ def doctor(
     skip_parity: bool = typer.Option(
         False, "--skip-parity", help = "Do not run the cross-node parity check."
     ),
+    skip_fastpath: bool = typer.Option(
+        False,
+        "--skip-fastpath",
+        help = "Do not compare the two nodes' fast-path packages and kernels.",
+    ),
 ) -> None:
     """Measure the link and diagnose the two DGX Spark hardware faults.
 
@@ -1030,13 +1035,18 @@ def doctor(
     and has the opposite remedy: a GPU whose compute engine is dead (cuInit returns
     100, dmesg shows 0xbadf5600) needs a PLAIN REBOOT, and a module reload will not do.
 
+    It also compares the two nodes' fast-path stack. A node missing `causal_conv1d` and
+    `flash-linear-attention` ran Qwen3.5 LoRA training here at 1183 tok/s against the
+    other node's 2593, on a byte-identical cell with identical clocks and NCCL, and
+    nothing raised: the pair just moved at the slower node's pace.
+
     It also compares the two nodes' capability gates. A gate that differs between ranks
     -- `which(nvcc)` finding CUDA on one node's PATH and not the other's is the case that
     cost this project the most -- changes which collectives each rank executes, and a
     collective entered by only some ranks does not raise. It waits, for 1800 s, and then
     reports a gloo transport error that names nothing related to the cause.
     """
-    from unsloth_cli.commands.doctor import _workload_guidance, check_parity
+    from unsloth_cli.commands.doctor import _workload_guidance, check_fastpath, check_parity
 
     sc = _cluster_or_none()
     if sc is None:
@@ -1051,14 +1061,19 @@ def doctor(
     parity_rc = 0
     if peer_ip and not skip_parity:
         parity_rc = check_parity(peer_ip, deep = deep)
+    # No peer means no second node to compare against, so this stays silent rather than
+    # lecturing a single Spark about packages its own workload may not need.
+    fastpath_rc = 0
+    if peer_ip and not skip_fastpath:
+        fastpath_rc = check_fastpath(peer_ip)
     if parity_only:
         _workload_guidance()
         _kernel_banner()
-        raise typer.Exit(1 if parity_rc else 0)
+        raise typer.Exit(1 if (parity_rc or fastpath_rc) else 0)
     rc = sc.main(["doctor"])
     _workload_guidance()
     _kernel_banner()
-    raise typer.Exit(rc or (1 if parity_rc else 0))
+    raise typer.Exit(rc or (1 if (parity_rc or fastpath_rc) else 0))
 
 
 @spark_app.command("provision")

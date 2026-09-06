@@ -11,6 +11,11 @@ so and exits, costing nothing.
 It also runs a CAPABILITY-PARITY check across the two nodes, which catches a class
 of bug that nothing else here can. See `parity_probe_source` below for why an
 asymmetric capability probe is a guaranteed multi-node hang rather than an error.
+
+And a FAST-PATH parity check, for the quieter cousin of that bug: a kernel package
+installed on one node and not the other hangs nothing and raises nothing, it just runs
+that node at a fraction of the speed. See `fastpath_probe_source` for the 2.19x this
+cost before anything noticed.
 """
 
 from __future__ import annotations
@@ -193,18 +198,28 @@ def _probe_wrapper(source: str) -> str:
     return f"[ -f {act} ] && . {act}; " f"echo {blob} | base64 -d | python3 -"
 
 
-def _extract(stdout: str, stderr: str):
+def _extract(
+    stdout: str,
+    stderr: str,
+    marker: str = "UNSLOTH_PARITY",
+):
     import json
+
+    prefix = marker + " "
     for line in reversed((stdout or "").splitlines()):
-        if line.startswith("UNSLOTH_PARITY "):
+        if line.startswith(prefix):
             try:
-                return json.loads(line[len("UNSLOTH_PARITY ") :]), None
+                return json.loads(line[len(prefix) :]), None
             except ValueError as exc:
                 return None, f"unparseable probe output ({exc})"
     return None, ((stderr or "").strip().splitlines() or ["no output"])[-1][:200]
 
 
-def _run_probe_local(source: str, timeout: int = 120):
+def _run_probe_local(
+    source: str,
+    timeout: int = 120,
+    marker: str = "UNSLOTH_PARITY",
+):
     import shutil
     import subprocess
     import sys
@@ -226,13 +241,14 @@ def _run_probe_local(source: str, timeout: int = 120):
             )
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
-    return _extract(proc.stdout, proc.stderr)
+    return _extract(proc.stdout, proc.stderr, marker)
 
 
 def _run_probe_peer(
     peer_ip: str,
     source: str,
     timeout: int = 180,
+    marker: str = "UNSLOTH_PARITY",
 ):
     """Run the probe on the peer over NON-INTERACTIVE ssh, as a launch would.
 
@@ -271,7 +287,7 @@ def _run_probe_peer(
         )
     except Exception as exc:
         return None, f"{type(exc).__name__}: {exc}"
-    return _extract(proc.stdout, proc.stderr)
+    return _extract(proc.stdout, proc.stderr, marker)
 
 
 def compare_parity(local: dict, peer: dict) -> list:
@@ -385,6 +401,362 @@ def check_parity(peer_ip: str, deep: bool = False) -> int:
     return 1
 
 
+# ── Cross-node fast-path parity ──────────────────────────────────────────────
+#
+# The second-deepest bug found in this project, and the reason THIS check exists:
+#
+#   the local node was missing `causal_conv1d` and `flash-linear-attention` /
+#   `fla-core`, which the peer had
+#     -> Qwen3.5's linear-attention layers silently fell back to the torch path
+#       -> 1183 tok/s against the peer's 2593 on a byte-identical cell, and 14.02 GiB
+#          of peak memory against 10.07 GiB
+#
+# Nothing in the hardware differed: same torch 2.11.0+cu130, same transformers 5.5.0,
+# same 95 against 96 bf16 TFLOP/s, same 124 against 128 GB/s copy bandwidth, both at
+# 2392 MHz with no throttle bits, and a healthy 20.31 GB/s NCCL all-reduce. The only
+# visible sign was a "The fast path is not available" warning that one node printed and
+# the other did not, in the middle of a training log nobody reads line by line.
+#
+# Unlike the capability-parity check above, a missing fast path does not deadlock: it
+# just runs at half speed forever, and both nodes finish, so no error is ever raised.
+# That makes it strictly harder to notice, and it is invisible until somebody benchmarks
+# each node separately, which almost nobody does.
+#
+# Two rules, the same two as above:
+#   * compare, do not demand. A package missing on BOTH nodes is not this check's
+#     business -- it may simply be a model family the user never runs -- and a check
+#     that lists packages nobody needs trains people to skip it.
+#   * ask the runtime, not just the metadata. An installed `causal_conv1d` whose
+#     extension does not import is exactly as slow as an absent one and reads as
+#     present in `pip list`, so the probe imports the entry points and reports what
+#     actually resolves. If it cannot run, the answer is "unknown", never "OK".
+
+# Distributions that gate a fast path, with the aliases metadata may record them under.
+# Order is the order they are reported in.
+FASTPATH_PACKAGES = (
+    ("torch", ("torch",)),
+    ("transformers", ("transformers",)),
+    ("trl", ("trl",)),
+    ("peft", ("peft",)),
+    ("accelerate", ("accelerate",)),
+    ("bitsandbytes", ("bitsandbytes",)),
+    ("triton", ("triton", "pytorch-triton")),
+    ("flash-attn", ("flash-attn", "flash_attn")),
+    ("causal_conv1d", ("causal_conv1d", "causal-conv1d")),
+    ("flash-linear-attention", ("flash-linear-attention", "flash_linear_attention")),
+    ("fla-core", ("fla-core", "fla_core")),
+    ("xformers", ("xformers",)),
+)
+
+# What each one buys, one line, so a finding explains itself without a web search.
+FASTPATH_WHY = {
+    "causal_conv1d": "the fused causal conv1d used by linear-attention and Mamba blocks",
+    "flash-linear-attention": "the fla kernels behind Qwen3.5-style linear attention",
+    "fla-core": "the fla kernels behind Qwen3.5-style linear attention",
+    "flash-attn": "flash attention 2/3 in place of the math attention path",
+    "triton": "every Triton kernel, including Unsloth's own",
+    "xformers": "memory-efficient attention on the paths that still use it",
+    "torch": "everything; a version split here also splits every kernel below it",
+    "transformers": "which fast paths the modelling code is even willing to look for",
+    "trl": "the trainer, and which of its fast paths exist",
+    "peft": "LoRA layer implementations",
+    "accelerate": "dispatch and the memory it reserves",
+    "bitsandbytes": "4-bit and 8-bit kernels",
+}
+
+# Reinstalling these to match is not a one-liner anyone should paste unthinkingly: they
+# drag the rest of the stack with them, so the report says so rather than pretending.
+FASTPATH_HEAVY = ("torch", "triton")
+
+# The runtime probe, run as a CHILD of the parity probe on each node. Separate process on
+# purpose: importing flash-attn or a mismatched causal_conv1d extension can abort the
+# interpreter outright, and a crash there must cost the package inventory nothing.
+FASTPATH_RUNTIME_SOURCE = """
+import json
+g = {}
+
+
+def gate(name, code):
+    try:
+        exec(code, {})
+        g["gate_" + name] = True
+    except BaseException as exc:
+        g["gate_" + name] = "no (" + type(exc).__name__ + ")"
+
+
+gate("causal_conv1d_fn", "from causal_conv1d import causal_conv1d_fn")
+gate("fla_chunk_gated_delta_rule", "from fla.ops import chunk_gated_delta_rule")
+gate("flash_attn_func", "from flash_attn import flash_attn_func")
+gate("triton", "import triton")
+gate("xformers_memory_efficient_attention", "from xformers.ops import memory_efficient_attention")
+try:
+    import torch
+    g["torch_version"] = torch.__version__
+except BaseException as exc:
+    g["torch_version"] = "ERR " + type(exc).__name__
+try:
+    from transformers.utils import import_utils as iu
+    for fn in ("is_causal_conv1d_available", "is_flash_linear_attention_available",
+               "is_flash_attn_2_available", "is_flash_attn_3_available"):
+        f = getattr(iu, fn, None)
+        # transformers 4.x does not define all of these. An absent gate is not a
+        # finding: the modelling code there never consults it either.
+        if f is None:
+            continue
+        try:
+            g["tf_" + fn] = bool(f())
+        except BaseException as exc:
+            g["tf_" + fn] = "ERR " + type(exc).__name__
+except BaseException as exc:
+    g["tf_gates"] = "ERR " + type(exc).__name__
+print("UNSLOTH_FASTPATH_GATES " + json.dumps(g, sort_keys=True))
+"""
+
+
+def fastpath_probe_source(runtime: bool = True) -> str:
+    """The fast-path probe, as source, run identically on both nodes.
+
+    The inventory half reads package metadata only, so it is safe while a GPU is busy.
+    The ``runtime`` half shells out to a child interpreter that imports the entry points
+    themselves, under its own timeout, because that is the only way to tell an installed
+    package apart from a usable one.
+    """
+    import base64
+
+    lines = [
+        "import json, socket",
+        "from importlib.metadata import version, PackageNotFoundError",
+        "r = {'host': socket.gethostname()}",
+        "r['executable'] = __import__('sys').executable",
+        f"for name, aliases in {FASTPATH_PACKAGES!r}:",
+        "    found = None",
+        "    for alias in aliases:",
+        "        try:",
+        "            found = version(alias)",
+        "        except PackageNotFoundError:",
+        "            continue",
+        "        except Exception:",
+        "            found = 'ERR'",
+        "        break",
+        "    r['pkg_' + name] = found",
+    ]
+    if runtime:
+        blob = base64.b64encode(FASTPATH_RUNTIME_SOURCE.encode()).decode()
+        lines += [
+            "import base64, subprocess, sys",
+            f"inner = base64.b64decode({blob!r}).decode()",
+            "try:",
+            "    p = subprocess.run([sys.executable, '-c', inner], capture_output=True,",
+            "                       text=True, timeout=180)",
+            "    tag = 'UNSLOTH_FASTPATH_GATES '",
+            "    line = next((l for l in reversed(p.stdout.splitlines())",
+            "                 if l.startswith(tag)), None)",
+            "    if line is None:",
+            "        r['gates_error'] = ((p.stderr or '').strip().splitlines()",
+            "                            or ['no output'])[-1][:200]",
+            "    else:",
+            "        r.update(json.loads(line[len(tag):]))",
+            "except Exception as exc:",
+            "    r['gates_error'] = type(exc).__name__ + ': ' + str(exc)[:160]",
+        ]
+    lines.append("print('UNSLOTH_FASTPATH ' + json.dumps(r, sort_keys=True))")
+    return "\n".join(lines) + "\n"
+
+
+def compare_fastpath(local: dict, peer: dict) -> list:
+    """Findings, as dicts, comparing two probe results. Empty means the nodes agree.
+
+    Each finding is ``{"kind", "name", "local", "peer", "lagging"}`` where ``lagging`` is
+    ``"local"``, ``"peer"`` or ``None`` (differs, but neither side is obviously behind).
+    Nothing here raises on a malformed input: a probe that half-ran must still report.
+    """
+    findings = []
+    for name, _aliases in FASTPATH_PACKAGES:
+        key = "pkg_" + name
+        mine, theirs = local.get(key), peer.get(key)
+        # Absent on both is not a finding. Nobody has to install a package that neither
+        # node's workload has ever asked for.
+        if mine == theirs or (mine is None and theirs is None):
+            continue
+        lagging = "local" if mine is None else ("peer" if theirs is None else None)
+        findings.append(
+            {"kind": "package", "name": name, "local": mine, "peer": theirs, "lagging": lagging}
+        )
+
+    # A node whose runtime probe did not report has no gates to compare, and calling that
+    # a divergence would dress an UNKNOWN up as a finding. The caller reports it as
+    # unknown instead, which is the honest answer and still not OK.
+    if local.get("gates_error") or peer.get("gates_error"):
+        return findings
+
+    gate_keys = sorted(
+        k for k in set(local) | set(peer) if k.startswith("gate_") or k.startswith("tf_")
+    )
+    for key in gate_keys:
+        mine, theirs = local.get(key), peer.get(key)
+        if mine == theirs:
+            continue
+        lagging = "local" if mine is not True else ("peer" if theirs is not True else None)
+        findings.append(
+            {
+                "kind": "gate",
+                "name": key.split("_", 1)[1] if key.startswith("gate_") else key[3:],
+                "local": mine,
+                "peer": theirs,
+                "lagging": lagging,
+            }
+        )
+    return findings
+
+
+# Gates worth mentioning when BOTH nodes lack them, because a pip install fixes them on
+# this hardware. `is_flash_attn_3_available` is deliberately absent: FA3 is not something
+# a Spark pair can simply install, so reporting it would be noise on every healthy pair.
+FASTPATH_BOTH_SLOW_GATES = (
+    "tf_is_causal_conv1d_available",
+    "tf_is_flash_linear_attention_available",
+    "tf_is_flash_attn_2_available",
+)
+
+
+def fastpath_both_slow(local: dict, peer: dict) -> list:
+    """Fast paths that BOTH nodes lack, where transformers itself says it wanted one.
+
+    Reported as a note and never as a failure: the nodes agree, so nothing is asymmetric,
+    but a pair that is uniformly missing `causal_conv1d` is still leaving a 2x on the
+    table. Only transformers' own gates are used, because they are the one signal that
+    distinguishes "this build looks for that kernel" from "nobody here runs that model".
+    """
+    return [
+        key[3:]
+        for key in FASTPATH_BOTH_SLOW_GATES
+        if local.get(key) is False and peer.get(key) is False
+    ]
+
+
+def _ssh_login() -> str:
+    """The login a launch reaches the peer as, resolved the same way the launcher does."""
+    try:
+        from studio.spark_cluster import _ssh_user
+        return _ssh_user()
+    except Exception:
+        import os
+        return os.environ.get("USER") or os.environ.get("USERNAME") or "nvidia"
+
+
+def _install_lines(node: str, peer_ip: str, spec: str) -> list:
+    """A copy-pasteable install of one exact version, on whichever node is behind."""
+    act = _activate()
+    if node == "local":
+        return [f". {act}", f'python3 -m pip install "{spec}"']
+    inner = f'. {act}; python3 -m pip install \\"{spec}\\"'
+    return [f'ssh {_ssh_login()}@{peer_ip} "{inner}"']
+
+
+def check_fastpath(peer_ip: str, runtime: bool = True) -> int:
+    """Compare the fast-path stack across the two nodes. 0 agree, 1 divergence, 2 unknown."""
+    source = fastpath_probe_source(runtime = runtime)
+    typer.echo("")
+    typer.echo("Cross-node fast-path parity")
+    typer.echo("---------------------------")
+    typer.echo(
+        f"  comparing the fast-path stack on this Spark and {peer_ip}"
+        + (" (imports the entry points)" if runtime else " (metadata only)")
+        + " ..."
+    )
+
+    local, local_err = _run_probe_local(source, timeout = 300, marker = "UNSLOTH_FASTPATH")
+    peer, peer_err = _run_probe_peer(peer_ip, source, timeout = 360, marker = "UNSLOTH_FASTPATH")
+
+    if local is None or peer is None:
+        typer.echo("")
+        typer.echo(
+            "  UNKNOWN -- the fast-path probe could not run on "
+            + ("this Spark" if local is None else "the peer")
+            + "."
+        )
+        typer.echo(f"    reason: {local_err if local is None else peer_err}")
+        typer.echo("    Treat the pair as unequal until it can be checked. A missing fast")
+        typer.echo("    path costs 2.19x throughput and 39% more memory and raises nothing,")
+        typer.echo("    so an unrun check is not evidence that the two nodes match.")
+        return 2
+
+    findings = compare_fastpath(local, peer)
+    notes = fastpath_both_slow(local, peer)
+    unknown = [
+        node
+        for node, data in (("this Spark", local), ("the peer", peer))
+        if data.get("gates_error")
+    ]
+
+    if not findings:
+        typer.echo("")
+        typer.echo(
+            f"  OK -- {local.get('host', 'this Spark')} and {peer.get('host', peer_ip)} "
+            "run the same fast-path stack."
+        )
+    else:
+        typer.echo("")
+        typer.echo(f"  {len(findings)} DIFFERENCE(S) -- the node that is behind will train and")
+        typer.echo("  infer slower than the other one, silently, and finish without an error.")
+        for f in findings:
+            typer.echo("")
+            label = f["name"] if f["kind"] == "package" else f"{f['name']} (runtime fast path)"
+            typer.echo(f"    {label}")
+            typer.echo(f"      this Spark : {_fmt(f['local'])}")
+            typer.echo(f"      the peer   : {_fmt(f['peer'])}")
+            why = FASTPATH_WHY.get(f["name"])
+            if why:
+                typer.echo(f"      gates      : {why}")
+            if f["kind"] != "package" or f["lagging"] is None:
+                continue
+            behind, ahead = (
+                ("local", f["peer"]) if f["lagging"] == "local" else ("peer", f["local"])
+            )
+            if ahead in (None, "ERR"):
+                continue
+            where = "this Spark" if behind == "local" else "the peer"
+            typer.echo(f"      fix, on {where}:")
+            for line in _install_lines(behind, peer_ip, f"{f['name']}=={ahead}"):
+                typer.echo(f"        {line}")
+            if f["name"] in FASTPATH_HEAVY:
+                typer.echo(
+                    "      (this one pulls the rest of the stack with it -- do it deliberately.)"
+                )
+
+    for note in notes:
+        typer.echo("")
+        typer.echo(f"  NOTE -- transformers reports {note} on BOTH nodes.")
+        typer.echo("    The nodes agree, so nothing here is asymmetric, but the pair is")
+        typer.echo("    taking the slow path together. Installing the package on both is")
+        typer.echo("    worth 2x on the model families that use it.")
+
+    if unknown:
+        typer.echo("")
+        typer.echo(
+            f"  UNKNOWN -- the runtime fast-path probe did not report on {', '.join(unknown)}."
+        )
+        for node, data in (("this Spark", local), ("the peer", peer)):
+            if data.get("gates_error"):
+                typer.echo(f"    {node}: {_fmt(data['gates_error'])}")
+        typer.echo("    Package versions above were still compared; what could not be")
+        typer.echo("    checked is whether the kernels actually import.")
+
+    if findings:
+        typer.echo("")
+        typer.echo("  Why this is not cosmetic: measured on this pair, a node missing")
+        typer.echo("  causal_conv1d and flash-linear-attention ran Qwen3.5 LoRA training at")
+        typer.echo("  1183 tok/s against the other node's 2593 -- 2.19x -- and used 14.02 GiB")
+        typer.echo("  against 10.07 GiB, on a byte-identical cell with identical clocks, bf16")
+        typer.echo("  throughput, copy bandwidth and NCCL. The only sign was one line of")
+        typer.echo('  warning: "The fast path is not available".')
+        typer.echo("")
+        typer.echo("  On a multi-node run the pair moves at the slower node's pace, so this")
+        typer.echo("  halves the whole job, not just one rank.")
+        return 1
+    return 2 if unknown else 0
+
+
 def _workload_guidance() -> None:
     """Which workloads a second Spark actually helps, measured.
 
@@ -427,6 +799,11 @@ def doctor(
     skip_parity: bool = typer.Option(
         False, "--skip-parity", help = "Do not run the cross-node parity check."
     ),
+    skip_fastpath: bool = typer.Option(
+        False,
+        "--skip-fastpath",
+        help = "Do not compare the two nodes' fast-path packages and kernels.",
+    ),
 ) -> None:
     """Check the setup and report anything that would slow training down, or hang it.
 
@@ -440,7 +817,10 @@ def doctor(
       shows 0xbadf5600. That one needs a plain reboot and a power cycle is not required
       -- the same symptom class as the above, with the opposite remedy;
     * capability divergence between the two nodes, which does not slow anything down --
-      it deadlocks the job for 1800 s in a library that has nothing to do with the cause.
+      it deadlocks the job for 1800 s in a library that has nothing to do with the cause;
+    * a fast-path package present on one node and missing on the other, which deadlocks
+      nothing and raises nothing: the pair simply runs at the slower node's pace. Measured
+      here at 2.19x on Qwen3.5 LoRA training, with 39% more peak memory.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -465,10 +845,16 @@ def doctor(
         typer.echo("  No configured peer, so there are no two nodes to compare.")
         typer.echo("  (Pair one with `unsloth spark up`.)")
 
+    # Inert without a peer, by construction: there is no second node to compare against,
+    # and this check has nothing to say about one machine's own package list.
+    fastpath_rc = 0
+    if peer_ip and not skip_fastpath:
+        fastpath_rc = check_fastpath(peer_ip)
+
     if parity_only:
         _workload_guidance()
-        raise typer.Exit(1 if parity_rc else 0)
+        raise typer.Exit(1 if (parity_rc or fastpath_rc) else 0)
 
     link_rc = spark_cluster.main(["doctor"])
     _workload_guidance()
-    raise typer.Exit(link_rc or (1 if parity_rc else 0))
+    raise typer.Exit(link_rc or (1 if (parity_rc or fastpath_rc) else 0))
