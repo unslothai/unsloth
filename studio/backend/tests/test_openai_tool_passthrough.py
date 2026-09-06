@@ -5624,13 +5624,13 @@ class TestGgufVisionToolRouting:
                     current_subject = "test",
                 )
             )
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(started.wait, self._DRAIN_BUDGET_S)
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = 1.0)
+                await asyncio.wait_for(task, timeout = self._DRAIN_BUDGET_S)
 
-            assert released.is_set()
+            assert await asyncio.to_thread(released.wait, self._DRAIN_BUDGET_S)
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
@@ -8056,6 +8056,75 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    @pytest.mark.parametrize(
+        ("route", "path", "body"),
+        [
+            (openai_completions, "/v1/completions", {"prompt": "hi", "stream": False}),
+            (openai_embeddings, "/v1/embeddings", {"input": ["hi"], "model": "embed"}),
+        ],
+    )
+    def test_non_streaming_proxy_disconnect_returns_499(self, monkeypatch, route, path, body):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = path)
+                method = "POST"
+
+                def __init__(self):
+                    self.disconnected = False
+
+                async def json(self):
+                    return body
+
+                async def is_disconnected(self):
+                    return self.disconnected
+
+            class HangingCancelableClient:
+                def __init__(self):
+                    self.started = asyncio.Event()
+                    self.closed = asyncio.Event()
+
+                async def post(self, *_args, **_kwargs):
+                    self.started.set()
+                    await self.closed.wait()
+                    raise httpx.ReadError("client closed")
+
+                async def aclose(self):
+                    self.closed.set()
+
+            client = HangingCancelableClient()
+            request = Request()
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+
+            task = asyncio.create_task(route(request, current_subject = "test"))
+            await asyncio.wait_for(client.started.wait(), 0.2)
+            request.disconnected = True
+
+            with pytest.raises(HTTPException) as exc:
+                await asyncio.wait_for(task, 0.5)
+
+            assert exc.value.status_code == 499
+            assert client.closed.is_set()
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
     def test_passthrough_stream_task_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -8816,27 +8885,32 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
-    def test_passthrough_non_streaming_cancel_finalizes_monitor(self, monkeypatch):
+    def test_passthrough_non_streaming_task_cancel_propagates_and_finalizes_monitor(
+        self, monkeypatch
+    ):
         async def _run():
             import routes.inference as inf_mod
 
-            class CancellingAsyncClient:
-                async def __aenter__(self):
-                    return self
-
-                async def __aexit__(self, *_args):
-                    return False
+            class BlockingAsyncClient:
+                def __init__(self):
+                    self.started = asyncio.Event()
+                    self.closed = asyncio.Event()
 
                 async def post(self, *_args, **_kwargs):
-                    raise asyncio.CancelledError()
+                    self.started.set()
+                    await asyncio.sleep(3600)
 
+                async def aclose(self):
+                    self.closed.set()
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            client = BlockingAsyncClient()
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(
-                inf_mod,
-                "nonstreaming_client",
-                lambda: CancellingAsyncClient(),
-            )
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
             monitor_id = monitor.start(
                 endpoint = "/v1/chat/completions",
                 method = "POST",
@@ -8857,8 +8931,8 @@ class TestApiMonitorProviderAndCompletionStreams:
                 ],
             )
 
-            with pytest.raises(asyncio.CancelledError):
-                await _openai_passthrough_non_streaming(
+            task = asyncio.create_task(
+                _openai_passthrough_non_streaming(
                     SimpleNamespace(
                         base_url = "http://llama.test",
                         context_length = 4096,
@@ -8867,8 +8941,17 @@ class TestApiMonitorProviderAndCompletionStreams:
                     payload,
                     "gguf",
                     monitor_id = monitor_id,
+                    request = Request(),
+                    cancel_event = threading.Event(),
                 )
+            )
+            await asyncio.wait_for(client.started.wait(), 0.2)
+            task.cancel()
 
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert client.closed.is_set()
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
@@ -8942,9 +9025,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             await asyncio.wait_for(client.started.wait(), 0.2)
             cancel_event.set()
 
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(HTTPException) as exc:
                 await asyncio.wait_for(task, 0.5)
 
+            assert exc.value.status_code == 499
             assert client.closed.is_set()
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
@@ -9028,9 +9112,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert cancel_id in inf_mod._CANCEL_REGISTRY
             assert inf_mod._cancel_by_cancel_id_or_stash(cancel_id) == 1
 
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(HTTPException) as exc:
                 await asyncio.wait_for(task, 5.0)
 
+            assert exc.value.status_code == 499
             assert client.closed.is_set()
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
             [entry] = monitor.snapshot()
@@ -9110,9 +9195,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             await asyncio.wait_for(client.started.wait(), 0.2)
             request.disconnected = True
 
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(HTTPException) as exc:
                 await asyncio.wait_for(task, 0.5)
 
+            assert exc.value.status_code == 499
             assert client.closed.is_set()
             assert cancel_event.is_set()
             [entry] = monitor.snapshot()
