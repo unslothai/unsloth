@@ -84,10 +84,7 @@ def _hub_doubles(calls, seen):
         ):
             calls.append("upload_folder")
             seen["folder"] = folder_path
-            # Mirror huggingface_hub: fnmatchcase over repo-relative posix paths, whole
-            # tree. fnmatchcase, not fnmatch, because that is what filter_repo_objects uses
-            # -- matching is case-sensitive on every platform, so a Windows run selects the
-            # same files a Linux one does.
+            # Mirror filter_repo_objects: case-sensitive fnmatchcase over repo-relative paths.
             root = Path(folder_path)
             paths = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
             if allow_patterns is not None:
@@ -156,8 +153,6 @@ def test_gguf_hub_export_uploads_the_built_files_instead_of_reconverting(tmp_pat
     )
 
     assert success is True, message
-    # One conversion, visibility settled before anything is uploaded, and the card lands
-    # after the files it advertises.
     assert calls == [
         "convert",
         "create_repo",
@@ -230,7 +225,6 @@ def test_gguf_hub_export_uploads_only_the_export_artifacts(tmp_path, monkeypatch
 
     assert success is True, message
     assert seen["uploaded"] == ["Modelfile", "model.Q4_K_M.gguf"]
-    # Still on disk where the user put them, just not published.
     assert (Path(output_path) / "notes.txt").is_file()
     assert (Path(output_path) / "dataset.jsonl").is_file()
     assert (leftover / "model-00001-of-00002.safetensors").is_file()
@@ -285,8 +279,6 @@ def test_gguf_hub_export_allow_list_treats_gguf_names_literally(tmp_path, monkey
     )
 
     assert success is True, message
-    # The bracketed name is published rather than skipped, and "a*.gguf" is matched as a
-    # literal, so it neither misses itself nor sweeps in the earlier export's file.
     expected = ["llama-3[8b].Q4_K_M.gguf"]
     if _STAR_IN_NAME_IS_LEGAL:
         expected = ["a*.gguf"] + expected
@@ -304,7 +296,6 @@ def test_gguf_hub_export_skips_an_earlier_export_left_in_the_folder(tmp_path, mo
 
     save_dir = tmp_path / "shared-export-folder"
     save_dir.mkdir()
-    # A different model, exported here earlier. It must not ride along.
     (save_dir / "some-other-model.Q8_0.gguf").write_bytes(b"GGUF")
 
     calls: list[str] = []
@@ -345,10 +336,8 @@ def test_gguf_hub_export_skips_an_earlier_export_left_in_the_folder(tmp_path, mo
     assert success is True, message
     assert seen["uploaded"] == ["Modelfile", "model.Q4_K_M.gguf"]
     assert "some-other-model.Q8_0.gguf" not in seen["card"]
-    # Still on disk, just not republished under this repo.
     assert (Path(output_path) / "some-other-model.Q8_0.gguf").is_file()
-    # config.json comes from the merged directory, which is deleted before the upload,
-    # and it is never written into the export folder.
+    # config.json comes from the merged directory, deleted before the upload.
     assert seen["config.json"] == b'{"model_type": "llama"}'
     assert not (Path(output_path) / "config.json").exists()
     # The card advertises the files, so it must land after them.
@@ -498,7 +487,6 @@ def test_gguf_hub_export_card_carries_the_vlm_tag(tmp_path, monkeypatch, is_vlm)
 
     assert success is True, message
     assert ("- vision-language-model" in seen["card"]) is is_vlm
-    # The front matter stays valid either way.
     assert seen["card"].startswith("---\ntags:\n")
     assert (
         seen["card"]
@@ -506,7 +494,7 @@ def test_gguf_hub_export_card_carries_the_vlm_tag(tmp_path, monkeypatch, is_vlm)
         .strip()
         .endswith("vision-language-model" if is_vlm else "unsloth")
     )
-    # The Hub filters on the exact string, and upstream means to carry both spellings.
+    # The Hub filters on the exact string, so both spellings must ship.
     tags = [line[2:] for line in seen["card"].split("---")[1].strip().splitlines()[1:]]
     assert "llama.cpp" in tags
     assert "llama-cpp" in tags
@@ -554,10 +542,7 @@ def _visibility_backend(
 
 
 def test_gguf_hub_export_makes_an_existing_repo_private_before_uploading(tmp_path, monkeypatch):
-    """create_repo ignores private on a repo that already exists, so it is settled here.
-
-    Without this the GGUFs of a "private" export land in an existing public repository.
-    """
+    """create_repo ignores private on an existing repo, so a "private" export would land public."""
     _module, backend, calls, seen = _visibility_backend(
         tmp_path, monkeypatch, "test_export_gguf_hub_upload_visibility_backend"
     )
@@ -573,7 +558,6 @@ def test_gguf_hub_export_makes_an_existing_repo_private_before_uploading(tmp_pat
 
     assert success is True, message
     assert seen["visibility"] == {"repo_id": "owner/model", "private": True}
-    # Settled before a single byte is published, not after.
     assert calls.index("update_repo_settings") < calls.index("upload_folder")
 
 
@@ -607,8 +591,6 @@ def test_gguf_hub_export_refuses_to_upload_when_privacy_cannot_be_confirmed(tmp_
     assert success is False
     assert "could not be confirmed private" in message
     assert "upload_folder" not in calls
-    # The conversion did happen, so the user is pointed at the files rather than sent
-    # back to re-run it.
     assert output_path is not None
     assert Path(output_path, "model.Q4_K_M.gguf").is_file()
 
@@ -664,11 +646,7 @@ def test_gguf_hub_export_leaves_an_existing_private_repo_alone(tmp_path, monkeyp
 
 
 def test_gguf_hub_export_survives_a_model_card_failure(tmp_path, monkeypatch):
-    """The GGUFs are already committed by then; losing the card must not fail the export.
-
-    RepoCard.push_to_hub validates against a hardcoded huggingface.co, which a private
-    HF_ENDPOINT deployment cannot serve.
-    """
+    """The GGUFs are already committed by then, so losing the card must not fail the export."""
     module, backend, calls, seen = _visibility_backend(
         tmp_path, monkeypatch, "test_export_gguf_hub_upload_card_fails_backend"
     )
@@ -734,14 +712,10 @@ def test_gguf_hub_export_reports_the_local_path_when_the_upload_fails(tmp_path, 
 def test_gguf_hub_export_fails_when_only_appledouble_companions_were_produced(
     tmp_path, monkeypatch
 ):
-    """A run that produced only Finder metadata has produced nothing publishable.
-
-    The directory-wide success gate would otherwise pass on a .gguf left by an earlier
-    export, and the Hub leg would create a repo, publish no model file, and report success.
-    """
+    """A run that produced only Finder metadata has produced nothing publishable."""
     save_dir = tmp_path / "export"
     save_dir.mkdir(parents = True)
-    # An earlier export of a different model, still sitting in the reused folder.
+    # An earlier export of a different model, which the directory-wide gate would pass on.
     (save_dir / "some-other-model.Q8_0.gguf").write_bytes(b"GGUF")
 
     _module, backend, calls, seen = _visibility_backend(
@@ -763,16 +737,11 @@ def test_gguf_hub_export_fails_when_only_appledouble_companions_were_produced(
     assert success is False
     assert "AppleDouble" in message
     assert "upload_folder" not in calls
-    # The stale file is left exactly where it was, not published and not deleted.
     assert (save_dir / "some-other-model.Q8_0.gguf").is_file()
 
 
 def test_gguf_hub_export_uses_the_canonical_repo_id_the_hub_returns(tmp_path, monkeypatch):
-    """A bare repo id is namespaced by the Hub, and the card must use the resolved one.
-
-    Upstream interpolates the id it was handed, so a bare name yields an unusable
-    `llama-cli -hf model-gguf`.
-    """
+    """The card must use the Hub-resolved repo id, else it advertises `llama-cli -hf model-gguf`."""
     _install_export_backend_stubs(monkeypatch)
     export_module = _load_module(
         "test_export_gguf_hub_upload_canonical_backend", "core/export/export.py", monkeypatch
@@ -825,7 +794,6 @@ def test_gguf_hub_export_uses_the_canonical_repo_id_the_hub_returns(tmp_path, mo
     )
 
     assert success is True, message
-    # Created under the name the user gave, then everything downstream uses the resolved id.
     assert seen["repo"]["repo_id"] == "model-gguf"
     assert seen["card_repo"] == "resolved-owner/model-gguf"
     assert "# model-gguf : GGUF" in seen["card"]
@@ -836,11 +804,7 @@ def test_gguf_hub_export_uses_the_canonical_repo_id_the_hub_returns(tmp_path, mo
 def test_gguf_hub_export_reads_config_from_the_directory_the_exporter_reports(
     tmp_path, monkeypatch
 ):
-    """The merged checkpoint is not always under our temp root.
-
-    A Kaggle disk redirect or the non-PEFT "reuse the existing checkpoint" branch makes
-    unsloth report a save_directory elsewhere, and that is where config.json lives.
-    """
+    """The merged checkpoint is not always under our temp root; unsloth reports where it went."""
     _install_export_backend_stubs(monkeypatch)
     export_module = _load_module(
         "test_export_gguf_hub_upload_reported_dir_backend", "core/export/export.py", monkeypatch
@@ -942,19 +906,13 @@ def test_gguf_hub_export_uploads_a_modelfile_it_could_not_place_locally(tmp_path
     )
 
     assert success is True, message
-    # Not on disk, because it could not be placed there, but still published.
     assert not Path(output_path, "Modelfile").exists()
     assert "Modelfile" not in seen["uploaded"]
     assert seen["Modelfile"] == b"FROM ./model.Q4_K_M.gguf\n"
 
 
 def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, monkeypatch):
-    """Without a local save directory there is nothing built to upload.
-
-    The API rejects an empty save_directory today, so this pins the defensive fallback --
-    including that the token reaches it exactly once, which is why local_token_kw is kept
-    out of imatrix_kw.
-    """
+    """Nothing built to upload, so push_to_hub_gguf stands and must get the token exactly once."""
     _install_export_backend_stubs(monkeypatch)
     export_module = _load_module(
         "test_export_gguf_hub_upload_push_only_backend", "core/export/export.py", monkeypatch
@@ -1017,7 +975,6 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
 
     assert success is True, message
     assert output_path is None
-    # No local export, so no folder upload and no repo of our own making.
     assert "save_pretrained_gguf" not in calls
     assert "upload_folder" not in calls
     assert calls == ["push_to_hub_gguf"]
@@ -1033,11 +990,7 @@ def test_push_only_gguf_export_still_delegates_to_push_to_hub_gguf(tmp_path, mon
 
 @pytest.mark.parametrize("is_vision", [True, False])
 def test_gguf_hub_export_falls_back_to_studios_own_vlm_detection(tmp_path, monkeypatch, is_vision):
-    """The MLX binding returns None, so `reported` says nothing about is_vlm.
-
-    Without a fallback every Apple Silicon vision export is published untagged and drops
-    out of the Hub's vision-language-model filter.
-    """
+    """The MLX binding returns None, so without a fallback vision exports publish untagged."""
     _install_export_backend_stubs(monkeypatch)
     export_module = _load_module(
         f"test_export_gguf_hub_upload_vlm_fallback_{is_vision}_backend",
