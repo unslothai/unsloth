@@ -56,12 +56,7 @@ env:
 # at all. The accepted cost is that two main commits can race to retag :core/:latest,
 # which is self-correcting on the next push, where a cancelled run leaves that commit
 # with no image at all. Each published image is still internally coherent: the digest
-# handoff and the smoke test resolve a :core-sha-/:sha- tag rather than tags[0], and
-# then verify that the manifest behind it holds the arches THIS run pushed. That last
-# step is the load-bearing one, because the sha tag is only immutable across COMMITS:
-# a branch push and a lightweight v* tag push at one commit produce the same short
-# sha, and the concurrency group is keyed on the ref, so those two runs never wait for
-# each other and both write that name.
+# handoff and the smoke test resolve this run's own tag, not tags[0], and verify it.
 # tests/studio/test_main_runs_survive_merge_bursts.py enforces this shape.
 concurrency:
   group: docker-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
@@ -78,12 +73,29 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     outputs:
+      # computed once, so a rerun of failed jobs keeps the same date
+      pin_date: ${{ steps.pin.outputs.date }}
       llama_tag: ${{ steps.llama.outputs.tag }}
       unsloth_ref: ${{ steps.unsloth_ref.outputs.ref }}
       zoo_ref: ${{ steps.zoo_ref.outputs.ref }}
       notebooks_commit: ${{ steps.notebooks.outputs.commit }}
     steps:
+      - name: Date of this run, for the nightly pins
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # created_at is fixed at the first attempt: a late rerun cannot claim today's pin.
+          created="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq .created_at || true)"
+          case "$created" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*) ;;
+            *) echo "::error::Could not read this run's creation time (got '${created}')"; exit 1 ;;
+          esac
+          day="${created%%T*}"
+          echo "date=${day//-/.}" >> "$GITHUB_OUTPUT"
+
       - name: Resolve llama.cpp prebuilt tag
         id: llama
         env:
@@ -272,7 +284,7 @@ jobs:
 
   merge:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [prepare, build]
     timeout-minutes: 15
     permissions:
       contents: read
@@ -306,14 +318,33 @@ jobs:
             # dispatch, else a feature ref overwrites :core with non-main bits
             type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag,prefix=core-
-            type=schedule,pattern=core-nightly
-            type=sha,prefix=core-sha-,format=short
+            type=schedule,pattern=core-nightly-${{ needs.prepare.outputs.pin_date }}
+            type=raw,value=core-build-${{ github.run_id }}
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create \
-              $(jq -cr '.tags | map("-t " + .) | join(" ")' <<<"$DOCKER_METADATA_OUTPUT_JSON") \
+          # A dated pin is immutable: a rerun must not replace an existing one.
+          TAGS=""
+          for t in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+            name="${t##*:}"
+            case "$name" in
+              nightly-[0-9]*|core-nightly-[0-9]*)
+                # Only 404 frees the name; 000/429/5xx must not become an overwrite.
+                for i in 1 2 3 4 5; do
+                  code="$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}" || true)"
+                  case "$code" in 200|404) break ;; esac
+                  echo "probe of ${t} returned HTTP ${code} (attempt $i)"; sleep 15
+                done
+                case "$code" in
+                  200) echo "::notice::${t} already exists and stays as it is"; continue ;;
+                  404) ;;
+                  *) echo "::error::Cannot tell whether ${t} exists (HTTP ${code}); not risking an overwrite"; exit 1 ;;
+                esac ;;
+            esac
+            TAGS="${TAGS} -t ${t}"
+          done
+          docker buildx imagetools create ${TAGS} \
               $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
       - name: Inspect the result
@@ -327,19 +358,11 @@ jobs:
         id: manifest_digest
         working-directory: /tmp/digests
         run: |
-          # NOT tags[0]: metadata-action sorts by priority (raw=200 above sha=100), so
-          # on a main push that is the mutable :core, which an unserialised second run
-          # can retag between the manifest creation and this inspection.
-          TAG="$(jq -r '([.tags[] | select(contains(":core-sha-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          # NOT tags[0]: on a main push that is the mutable :core, retagged by racing runs.
+          TAG="$(jq -r '([.tags[] | select(contains(":core-build-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
           DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test -n "$DIGEST"
-          # :core-sha- is immutable across COMMITS, which is the only case the tag
-          # choice above defends against. It is NOT unique across REFS: a branch push
-          # and a lightweight v* tag push at the same commit produce the same short
-          # sha, and the concurrency group is keyed on the ref, so the two runs are
-          # never serialised against each other and both write this name. Confirm the
-          # manifest we are about to hand to build-studio really is the one this run
-          # pushed, because baking another run's base image is silent otherwise.
+          # Confirm it holds what this run pushed: baking another run's base is silent.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
           CHILDREN="$(docker buildx imagetools inspect --raw "$REF" | jq -r '.manifests[]?.digest')"
           # A build leg does not push a bare image manifest: with provenance and SBOM
@@ -444,7 +467,7 @@ jobs:
 
   merge-studio:
     runs-on: ubuntu-latest
-    needs: build-studio
+    needs: [prepare, build-studio]
     timeout-minutes: 15
     permissions:
       contents: read
@@ -478,14 +501,33 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag
-            type=schedule,pattern=nightly
-            type=sha,prefix=sha-,format=short
+            type=schedule,pattern=nightly-${{ needs.prepare.outputs.pin_date }}
+            type=raw,value=build-${{ github.run_id }}
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create \
-              $(jq -cr '.tags | map("-t " + .) | join(" ")' <<<"$DOCKER_METADATA_OUTPUT_JSON") \
+          # A dated pin is immutable: a rerun must not replace an existing one.
+          TAGS=""
+          for t in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+            name="${t##*:}"
+            case "$name" in
+              nightly-[0-9]*|core-nightly-[0-9]*)
+                # Only 404 frees the name; 000/429/5xx must not become an overwrite.
+                for i in 1 2 3 4 5; do
+                  code="$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}" || true)"
+                  case "$code" in 200|404) break ;; esac
+                  echo "probe of ${t} returned HTTP ${code} (attempt $i)"; sleep 15
+                done
+                case "$code" in
+                  200) echo "::notice::${t} already exists and stays as it is"; continue ;;
+                  404) ;;
+                  *) echo "::error::Cannot tell whether ${t} exists (HTTP ${code}); not risking an overwrite"; exit 1 ;;
+                esac ;;
+            esac
+            TAGS="${TAGS} -t ${t}"
+          done
+          docker buildx imagetools create ${TAGS} \
               $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
       - name: Inspect the result
@@ -499,10 +541,7 @@ jobs:
         id: studio_manifest_digest
         working-directory: /tmp/digests
         run: |
-          # Same reasoning as the base merge: :sha- is shared by every ref sitting on
-          # this commit, so resolve it once here and hand the smoke test an immutable
-          # digest rather than a name another run can retag under it.
-          TAG="$(jq -r '([.tags[] | select(contains(":sha-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          TAG="$(jq -r '([.tags[] | select(contains(":build-"))] | first) // .tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
           DIGEST="$(docker buildx imagetools inspect "$TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           test -n "$DIGEST"
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
@@ -592,11 +631,7 @@ jobs:
       # with the merge jobs' gates.
       - name: Pull and smoke-test the base image
         run: |
-          # By digest, not by name. Every ref sitting on this commit publishes the
-          # same :core-sha- tag, and those runs are in different concurrency groups,
-          # so a name resolved here can be another run's image. merge already had to
-          # resolve this digest to hand build-studio a base, and it verified that the
-          # manifest is the one it pushed.
+          # By digest: the handle tag is gone once cleanup ran.
           REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.merge.outputs.digest }}"
           echo "smoke-testing $REF"
           docker pull "$REF"
@@ -621,3 +656,55 @@ jobs:
           [ "$ok_studio"  = 1 ] || { echo "Studio /api/health never went healthy"; exit 1; }
           [ "$ok_jupyter" = 1 ] || { echo "Jupyter /login never responded"; exit 1; }
           echo "Studio + Jupyter healthy"
+
+  # Namespace-scoped route: the legacy /v2/repositories path rejects the organization
+  # token. A dispatch with an overridden input keeps its handles, its only names.
+  cleanup:
+    needs: [merge, merge-studio, hub-readme, smoke-test]
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Remove this run's handle tags, prune old nightly pins
+        env:
+          NIGHTLY_KEEP_DAYS: "60"
+        run: |
+          HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
+          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
+            -H 'Content-Type: application/json' \
+            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; handle tags of run ${{ github.run_id }} were not removed."
+            exit 1
+          fi
+          failed=0
+          drop() {
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE "${HUB}/tags/$1" -H "Authorization: Bearer ${TOKEN}")"
+            case "$code" in
+              204|404) echo "removed ${IMAGE_NAME}:$1 (HTTP ${code})" ;;
+              *) echo "::error::${IMAGE_NAME}:$1 not removed (HTTP ${code})"; failed=1 ;;
+            esac
+          }
+          drop "core-build-${{ github.run_id }}"
+          drop "build-${{ github.run_id }}"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            cutoff="$(date -u -d "-${NIGHTLY_KEEP_DAYS} days" +%Y.%m.%d)"
+            url="${HUB}/tags?page_size=100"
+            names=""
+            while [ -n "$url" ]; do
+              page="$(curl -sS "$url" -H "Authorization: Bearer ${TOKEN}")"
+              names="${names} $(jq -r '.results[]?.name' <<<"$page")"
+              url="$(jq -r '.next // empty' <<<"$page")"
+            done
+            for name in $names; do
+              case "$name" in
+                nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]|core-nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9])
+                  stamp="${name##*nightly-}"
+                  if [ "$stamp" \< "$cutoff" ]; then drop "$name"; fi ;;
+              esac
+            done
+          fi
+          test "$failed" = 0

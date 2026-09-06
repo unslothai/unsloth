@@ -10,7 +10,7 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in th
 |---|---|---|
 | `latest`, `studio` | Unsloth Studio web UI + JupyterLab + notebooks + key-only SSH | Most users. Train and chat in the browser. |
 | `core` | Training stack + JupyterLab + notebooks, no Studio | Notebooks, scripts, CI, slimmer pulls. |
-| `sha-<commit>`, `core-sha-<commit>` | The same two images, pinned to one commit of `main` | Reproducible runs. |
+| `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>` | The same two images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
 | `<version>`, `core-<version>` | Release builds | Pin a release. |
 
 `latest` and `core` move with every push to `main` and on a daily rebuild. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
@@ -23,13 +23,14 @@ Requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud
 docker run -d --gpus all --ipc=host \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   -p 8000:8000 -p 8888:8888 \
+  -e UNSLOTH_STUDIO_PASSWORD="choose-a-password" \
   -e JUPYTER_PASSWORD="choose-a-password" \
   -v "$PWD":/workspace/host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth
 ```
 
-Then open Studio at `http://localhost:8000` and JupyterLab at `http://localhost:8888`. Studio prints its first-boot admin password in `docker logs <container>`. If `JUPYTER_PASSWORD` is not set, a random one is generated and printed there too.
+`docker run -d` returns at once; follow the startup with `docker logs -f <container>`, which ends with a ready block once both services answer (Studio takes about a minute). Then open Studio at `http://localhost:8000` (user `unsloth`) and JupyterLab at `http://localhost:8888`. Leave either password variable unset and a random one is generated and printed in that log.
 
 The `docker/run.sh` helper in the repository sets these flags for you:
 
@@ -90,6 +91,7 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 
 | Variable | Effect |
 |---|---|
+| `UNSLOTH_STUDIO_PASSWORD` | Initial Studio admin password for user `unsloth`; ignored once a password is stored. Unset: generated once and printed in the logs, and Studio stops after an hour unless it is changed (`UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0` disables). |
 | `JUPYTER_PASSWORD` | JupyterLab password. Unset: generated once and printed in the logs. |
 | `JUPYTER_PORT` | JupyterLab port inside the container. Default `8888`. |
 | `SSH_KEY` or `PUBLIC_KEY` | OpenSSH public key for root login. Enables sshd on port 22. Password login is never enabled. |
