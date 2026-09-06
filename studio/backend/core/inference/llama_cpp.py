@@ -25862,7 +25862,11 @@ class LlamaCppBackend:
         self._clear_server_pid(self._pid_slot)
 
     @classmethod
-    def _record_server_pid(cls, pid: int, slot: str = "") -> None:
+    def _record_server_pid(
+        cls,
+        pid: int,
+        slot: str = "",
+    ) -> None:
         """Best-effort record of the spawned llama-server PID for orphan reaping.
 
         Stores ``pid:starttime`` so a later startup can reject a PID that has
@@ -26006,9 +26010,7 @@ class LlamaCppBackend:
             return 0
         paths = [base]
         try:
-            paths += sorted(
-                q for q in base.parent.glob(f"{base.stem}-*{base.suffix}") if q != base
-            )
+            paths += sorted(q for q in base.parent.glob(f"{base.stem}-*{base.suffix}") if q != base)
         except Exception:
             pass
         return sum(cls._reap_pidfile(q) for q in paths)
@@ -32693,6 +32695,7 @@ class LlamaCppBackend:
     # parallelizes token generation, but the codec (SNAC/BiCodec) is one shared
     # torch model on the GPU, so decodes must not overlap.
     import threading as _threading
+
     _codec_decode_lock = _threading.Lock()
     # The chat slot and the voice slot can both hold a GGUF TTS model, and they share
     # this one manager. A per-instance "I loaded it" flag is not enough to decide who
@@ -32799,7 +32802,7 @@ class LlamaCppBackend:
             cut = max(0, onset - preroll)
             if cut <= 0:
                 return wav_bytes  # already starts promptly; nothing to trim
-            trimmed = mono[cut * frame:]
+            trimmed = mono[cut * frame :]
             if trimmed.size < frame:
                 return wav_bytes
             buf = io.BytesIO()
@@ -32846,7 +32849,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _trim_leading_word(
-        wav_bytes: bytes, sample_rate: int, expected_ms: Optional[float] = None
+        wav_bytes: bytes,
+        sample_rate: int,
+        expected_ms: Optional[float] = None,
     ) -> bytes:
         """Slice the leading spoken speaker name off Orpheus audio on low quants.
 
@@ -32912,7 +32917,7 @@ class LlamaCppBackend:
             if gap_end > onset + span_cap or gap_end >= n:
                 return wav_bytes
             cut = max(name_end + 1, gap_end - f(40))
-            trimmed = mono[cut * frame:]
+            trimmed = mono[cut * frame :]
             if trimmed.size < frame:
                 return wav_bytes
             buf = io.BytesIO()
@@ -32988,9 +32993,8 @@ class LlamaCppBackend:
         # audio model (e.g. a speech-LLM chat model) can tear it down while this
         # voice slot stays loaded -- then decode() would hit None. Re-ensure our
         # codec here so the voice slot survives chat-model swaps.
-        if (
-            LlamaCppBackend._codec_mgr is None
-            or not LlamaCppBackend._codec_mgr.has_codec(audio_type)
+        if LlamaCppBackend._codec_mgr is None or not LlamaCppBackend._codec_mgr.has_codec(
+            audio_type
         ):
             self.init_audio_codec(audio_type)
 
@@ -33139,9 +33143,8 @@ class LlamaCppBackend:
         clip). Use the one-shot generate_audio_response where the name-trim matters."""
         if audio_type != "snac":
             raise RuntimeError("Streaming TTS is currently SNAC (Orpheus) only.")
-        if (
-            LlamaCppBackend._codec_mgr is None
-            or not LlamaCppBackend._codec_mgr.has_codec(audio_type)
+        if LlamaCppBackend._codec_mgr is None or not LlamaCppBackend._codec_mgr.has_codec(
+            audio_type
         ):
             self.init_audio_codec(audio_type)
 
@@ -33177,7 +33180,7 @@ class LlamaCppBackend:
         # Preference only: decode_snac_pcm pins it to where the codec actually lives.
         device = "cuda" if _torch.cuda.is_available() and not self.holds_no_vram else "cpu"
         HOLDBACK = int(0.08 * 24000)  # 80 ms right-context held back for clean seams
-        DECODE_EVERY = 56             # ~8 SNAC frames (7 tokens each) between decodes
+        DECODE_EVERY = 56  # ~8 SNAC frames (7 tokens each) between decodes
 
         ids: list = []
         state = {"emitted": 0}
@@ -33189,7 +33192,7 @@ class LlamaCppBackend:
             end = len(wave) if final else max(0, len(wave) - HOLDBACK)
             if end <= state["emitted"]:
                 return b""
-            chunk = wave[state["emitted"]:end]
+            chunk = wave[state["emitted"] : end]
             state["emitted"] = end
             pcm = _np.clip(chunk, -1.0, 1.0)
             return (pcm * 32767.0).astype("<i2").tobytes()
@@ -33198,16 +33201,14 @@ class LlamaCppBackend:
         with httpx.Client(
             timeout = httpx.Timeout(300, connect = 10), headers = self._auth_headers
         ) as client:
-            with client.stream(
-                "POST", f"{self.base_url}/completion", json = payload
-            ) as resp:
+            with client.stream("POST", f"{self.base_url}/completion", json = payload) as resp:
                 if resp.status_code != 200:
                     raise RuntimeError(f"llama-server returned {resp.status_code}")
                 for line in resp.iter_lines():
                     if not line or not line.startswith("data:"):
                         continue
                     try:
-                        obj = _json.loads(line[len("data:"):].strip())
+                        obj = _json.loads(line[len("data:") :].strip())
                     except _json.JSONDecodeError:
                         continue
                     for p in obj.get("completion_probabilities", []) or []:

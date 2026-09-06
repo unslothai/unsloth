@@ -15863,7 +15863,9 @@ class _VoiceLoadRequest(BaseModel):
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
     n_ctx: int = Field(4096, ge = 0, description = "Context length (0 = model default)")
     parallel: int = Field(
-        1, ge = 1, le = 4,
+        1,
+        ge = 1,
+        le = 4,
         description = "llama-server --parallel slots for the voice slot, i.e. how many "
         "sentences may synthesize concurrently.",
     )
@@ -16001,9 +16003,7 @@ async def voice_load_model(
     # warm-up phase absorbs it instead of freezing the user's first spoken reply.
     # Best-effort: a priming failure must never fail an otherwise-good load.
     try:
-        await asyncio.to_thread(
-            voice_backend.generate_audio_response, "Hi there.", audio_type
-        )
+        await asyncio.to_thread(voice_backend.generate_audio_response, "Hi there.", audio_type)
     except Exception as e:
         logger.warning("Voice slot warmup synth failed (first /speech may be slower): %s", e)
 

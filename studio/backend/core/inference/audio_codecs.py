@@ -171,10 +171,7 @@ class AudioCodecManager:
         device = self._codec_devices.get("snac", device)
         try:
             import torch as _torch
-
-            return self._snac_ids_to_waveform(
-                _torch.tensor([token_ids], dtype = _torch.long), device
-            )
+            return self._snac_ids_to_waveform(_torch.tensor([token_ids], dtype = _torch.long), device)
         except ValueError:
             return None
 
