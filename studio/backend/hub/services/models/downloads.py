@@ -31,7 +31,7 @@ from hub.utils.paths import (
 )
 from hub.services import snapshot_progress
 from hub.services import download_lifecycle
-from hub.services.models import cache_inventory, gguf_variants
+from hub.services.models import account_access, cache_inventory, gguf_variants
 
 logger = get_logger(__name__)
 
@@ -184,12 +184,16 @@ async def download_model_response(
     ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent
     no token, for repos named over the API rather than chosen here.
     """
+    hf_token = account_access.account_hf_token(hf_token)
+    allow_ambient_token = allow_ambient_token and not account_access.managed_account()
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.authorize_download, repo_id, "model", hf_token)
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
 
@@ -293,6 +297,7 @@ async def download_model_response(
     )
     generation = _registry.current_generation(key)
     if not claimed:
+        download_lifecycle.require_download_account(_registry, key)
         if claim_state == "admission_blocked":
             raise _load_in_flight_error(repo_id)
         if claim_state == "scope_file_mismatch":
@@ -489,6 +494,9 @@ async def get_model_transport_status_response(
     because ``hf_xet`` rewrites the destination from scratch on every
     call (network resume happens transparently via its chunk cache).
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
+        hf_token = account_access.account_hf_token(hf_token)
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return {"has_partial": False, "last_transport": None, "resumable": False}
@@ -601,6 +609,9 @@ async def get_gguf_download_progress_response(
     hf_token: Optional[str] = None,
 ) -> dict:
     """Return download progress for a specific GGUF variant."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
+        hf_token = account_access.account_hf_token(hf_token)
     expected_total = max(expected_bytes, 0)
     progress_variant = variant.strip() or None
     if progress_variant is not None and not _is_valid_gguf_variant(progress_variant):
@@ -718,6 +729,9 @@ async def get_download_progress_response(
     (or the cache repo root if no snapshot exists yet) so the UI can
     show users where the weights actually live on disk.
     """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
+        hf_token = account_access.account_hf_token(hf_token)
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "model",
         repo_id = repo_id,

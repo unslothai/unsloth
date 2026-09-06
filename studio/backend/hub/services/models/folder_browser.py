@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from hub.services.models import account_access
+from utils.paths.storage_roots import workspace_root
+
 import os
 from pathlib import Path
 from typing import Optional
@@ -39,6 +42,8 @@ def _build_browse_allowlist(
     *media_roots* / *drive_roots* let the caller pass already-probed
     removable-media and Windows drive roots so they aren't scanned again (a
     disconnected mapped drive can make each probe slow); probed here when ``None``."""
+    if account_access.managed_account():
+        return [workspace_root().resolve()]
     from hub.storage.scan_folders import list_scan_folders
 
     candidates: list[Path] = []

@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
+from hub.services.models import account_access
+
 from auth.authentication import (
     authenticated_via_api_key,
     get_current_subject,
@@ -52,7 +54,12 @@ from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
 
-router = APIRouter()
+async def _account_mcp_storage(_subject: str = Depends(get_current_subject)):
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.ensure_account_schema, mcp_servers_db)
+
+
+router = APIRouter(dependencies = [Depends(_account_mcp_storage)])
 
 # Only a UI session may define a local command; API keys keep http(s) MCP.
 # Annotated, not a Depends default: these routes are also called directly by the
