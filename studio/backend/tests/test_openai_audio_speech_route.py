@@ -1023,9 +1023,13 @@ def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
     from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 
     with pytest.raises(ValidationError):
-        routes_module._VoiceLoadRequest(model_path = "unsloth/orpheus-3b-0.1-ft-GGUF", n_ctx = MAX_REQUESTABLE_CONTEXT + 1)
+        routes_module._VoiceLoadRequest(
+            model_path = "unsloth/orpheus-3b-0.1-ft-GGUF", n_ctx = MAX_REQUESTABLE_CONTEXT + 1
+        )
     assert (
-        routes_module._VoiceLoadRequest(model_path = "unsloth/orpheus-3b-0.1-ft-GGUF", n_ctx = MAX_REQUESTABLE_CONTEXT).n_ctx
+        routes_module._VoiceLoadRequest(
+            model_path = "unsloth/orpheus-3b-0.1-ft-GGUF", n_ctx = MAX_REQUESTABLE_CONTEXT
+        ).n_ctx
         == MAX_REQUESTABLE_CONTEXT
     )
     # 0 keeps meaning "model default".
