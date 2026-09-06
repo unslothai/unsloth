@@ -49,16 +49,15 @@ from studiobench.scene.actions import ACTION_BAR_WAIT_MS, MENU_JS  # noqa: E402
 DOM_JS = Path(__file__).resolve().parents[1] / "dom.js"
 
 #: The shim mounts the bar this long after the run starts, standing in for a follow-up turn whose
-#: last chunks land just after the slot opens. Comfortably inside `ACTION_BAR_WAIT_MS` and
-#: comfortably outside anything a single sample could catch.
+#: last chunks land just after the slot opens. Comfortably inside `ACTION_BAR_WAIT_MS` and outside
+#: anything a single sample could catch.
 LATE_MOUNT_MS = 400
 
-#: The mount deadline is armed by the action's own first look (see `HARNESS_JS`), so it can only
-#: start level with or after `waitForActionButton`'s clock and `waitedMs` cannot undershoot
-#: `LATE_MOUNT_MS` by any elapsed time at all. What is left is dom.js rounding `waitedMs` to a
-#: tenth. This is an allowance for clock granularity, not a tolerance for load: the wait ends at
-#: the first sample taken at or after the bar mounts, and a slow machine can only push that sample
-#: LATER. Nothing here scales with `LATE_MOUNT_MS`.
+#: The mount deadline is armed by the action's own first look, so it can only start level with or
+#: after `waitForActionButton`'s clock and `waitedMs` cannot undershoot `LATE_MOUNT_MS` by any
+#: elapsed time. What is left is dom.js rounding `waitedMs` to a tenth: an allowance for clock
+#: granularity, not a tolerance for load.
+# See `HARNESS_JS`.
 MOUNT_CLOCK_SLACK_MS = 1
 
 HARNESS_JS = r"""
@@ -237,10 +236,9 @@ def test_a_control_that_arrives_late_is_waited_for_rather_than_reported_missing(
     """
     out = run_menu(LATE_MOUNT_MS)
     assert out["ran"] is True, out
-    # Still a liveness assertion, not a timing one: the bar was NOT there when the wait began, and
-    # the action stayed until it arrived. The bound is tight because the harness arms the mount
-    # deadline off the same clock and the same instant the action starts looking, so anything short
-    # of `LATE_MOUNT_MS` means the wait ended early -- a control that was there all along.
+    # Still a liveness assertion, not a timing one: the bar was NOT there when the wait began and the
+    # action stayed until it arrived. The bound is tight because the harness arms the mount deadline
+    # off the same clock and instant, so anything short of `LATE_MOUNT_MS` means the wait ended early.
     assert out["waitedMs"] >= LATE_MOUNT_MS - MOUNT_CLOCK_SLACK_MS, out
     assert out["waitedMs"] < ACTION_BAR_WAIT_MS, out
     # The menu really opened and closed on the control that was waited for, so the wait produced a
@@ -254,8 +252,8 @@ def test_the_wait_is_bounded_and_a_control_that_never_appears_still_reports_not_
     out = run_menu(float("inf"), wait_ms = 300)
     assert out["ran"] is False, out
     assert out["waitedMs"] >= 250, out
-    # The reason has to separate the two cases, because they are different bugs: a reply that had
-    # not settled, and a control that is not there at all.
+    # The reason has to separate the two cases, because they are different bugs: a reply that had not
+    # settled, and a control that is not there at all.
     assert "STILL GENERATING" in out["reason"], out
     assert out["running"] is True, out
 
@@ -265,6 +263,6 @@ def test_a_settled_reply_costs_the_action_nothing():
     out = run_menu(0)
     assert out["ran"] is True, out
     assert out["waitedMs"] < 50, out
-    # Hovered before the control is read: the bar unmounts on every message that is not hovered,
-    # so a read without the hover is a read of a tree the control was never in.
+    # Hovered before the control is read: the bar unmounts on every message that is not hovered, so a
+    # read without the hover is a read of a tree the control was never in.
     assert out["hovers"] >= 1, out

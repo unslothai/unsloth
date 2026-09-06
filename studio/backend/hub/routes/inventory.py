@@ -59,8 +59,8 @@ async def list_local_models(
     return await local_inventory.list_local_models_response(models_dir)
 
 
-# Plain `def` (not async): synchronous SQLite + filesystem work runs in
-# FastAPI's thread-pool instead of blocking the event loop.
+# Plain def, not async: synchronous SQLite and filesystem work runs in FastAPI's thread pool instead
+# of blocking the event loop.
 @router.get("/scan-folders", response_model = ScanFoldersResponse)
 def get_scan_folders(current_subject: str = Depends(get_current_subject)):
     return local_inventory.get_scan_folders_response()

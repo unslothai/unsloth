@@ -161,10 +161,8 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         try:
             build_config_builder(recipe)
         except ModuleNotFoundError as exc:
-            # data_designer is an optional runtime dep; static validation passed
-            # and full validation is deferred to run start, so a missing import
-            # shouldn't block the recipe. Restrict the bypass to data_designer so
-            # other ImportErrors still surface as failures.
+            # data_designer is an optional runtime dep and full validation is deferred to run start, so only ITS
+            # ImportError is bypassed; others still fail.
             if not (exc.name or "").startswith("data_designer"):
                 raise
             logger.debug(

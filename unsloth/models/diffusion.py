@@ -38,22 +38,22 @@ from .loader_utils import (
 
 __all__ = ["FastDiffusionModel", "DIFFUSION_MODEL_TYPES", "is_diffusion_model_type"]
 
-# transformers model_type strings routed to this slow path
+# transformers model_type strings routed to this slow path.
 DIFFUSION_MODEL_TYPES = ("diffusion_gemma", "diffusion_gemma4")
 
-# Default LoRA targets: standard nn.Linear modules in the shared Gemma-4 backbone. The 128 MoE experts
-# are fused 3D Parameters (gate_up_proj/down_proj), not nn.Linear, so PEFT LoRA cannot target them.
+# Default LoRA targets are the standard nn.Linear modules in the shared Gemma-4 backbone: the 128
+# MoE experts are fused 3D Parameters, not nn.Linear, so PEFT LoRA cannot target them.
 DIFFUSION_LORA_TARGETS = [
     "q_proj",
     "k_proj",
     "v_proj",
-    "o_proj",  # attention
+    "o_proj",
     "gate_proj",
     "up_proj",
-    "down_proj",  # dense (non-expert) MLP
+    "down_proj",
 ]
 
-# Vision tower uses a custom Linear with the same suffix names; exclude it so only the text path is wrapped.
+# The vision tower uses a custom Linear with the same suffix names; exclude it so only the text path is wrapped.
 DIFFUSION_LORA_EXCLUDE = r".*(vision_tower|embed_vision).*"
 
 
@@ -133,9 +133,8 @@ def _load_diffusion_config(
         from transformers import DiffusionGemma4Config
 
         aliased = DiffusionGemma4Config.from_dict(cd)
-        # Only this object knows the rewrite happened; the checkpoint on disk still says
-        # `diffusion_gemma`, so anything rebuilding the config from `model_name` -- the
-        # planner -- hits the AutoConfig failure just caught here.
+        # Only this object knows the rewrite happened: the checkpoint on disk still says diffusion_gemma,
+        # so anything rebuilding the config from model_name hits the AutoConfig failure just caught.
         aliased._unsloth_legacy_alias = True
         return aliased
 
@@ -197,8 +196,8 @@ class FastDiffusionModel:
 
         model_cls = _resolve_diffusion_model_class(config)
 
-        # Prefetch the whole repo root so the weight load is a cache hit. No subfolder: the pipeline
-        # loads every component subfolder, so narrowing would leave unet/vae/text_encoder to Xet.
+        # Prefetch the whole repo root so the weight load is a cache hit. No subfolder: the pipeline loads
+        # every component subfolder, so narrowing would leave unet/vae/text_encoder to Xet.
         maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -208,14 +207,14 @@ class FastDiffusionModel:
             fast_inference = False,
             force_download = kwargs.get("force_download", False),
             use_safetensors = kwargs.get("use_safetensors"),
-            # Forward variant (e.g. "fp16") so the warm keeps variant weights.
+            # Forward the variant (e.g. "fp16") so the warm keeps variant weights.
             variant = kwargs.get("variant"),
         )
 
-        # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
-        # them; only attention + dense MLP Linears quantize, lm_head/embeddings stay full precision.
-        # Before the plan: the skip list becomes `modules_to_not_convert`, and sizing
-        # those at 4 bits while they load in compute dtype OOMs a tight map.
+        # Optional bitsandbytes quant: the MoE experts (3D Parameters) are not nn.Linear so bnb skips
+        # them, and lm_head/embeddings stay full precision. Before the plan, since the skip list becomes
+        # modules_to_not_convert and sizing those at 4 bits while they load in compute dtype OOMs a tight
+        # map.
         qcfg = None
         if load_in_4bit or load_in_8bit:
             from transformers import BitsAndBytesConfig
@@ -236,12 +235,8 @@ class FastDiffusionModel:
             else:
                 qcfg = BitsAndBytesConfig(load_in_8bit = True)
 
-        # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth"
-        # becomes torch.device("unsloth") in transformers and raises instead of loading.
-        #
-        # A legacy `diffusion_gemma` checkpoint loads only because the config above rewrites
-        # the type in memory. The planner takes a name and rebuilds from the checkpoint, so
-        # it hits the same error and would report it as a generic planning failure.
+        # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth" becomes
+        # torch.device("unsloth") in transformers and raises instead of loading.
         device_map = resolve_unsloth_device_map(
             requested_device_map(device_map),
             model_name,
@@ -256,8 +251,8 @@ class FastDiffusionModel:
                 device_map_planner_kwargs,
                 kwargs,
             ),
-            # This leaf popped `local_files_only` off kwargs above, so the helper gets the
-            # resolved value rather than the caller's raw mapping.
+            # This leaf popped local_files_only off kwargs above, so the helper gets the resolved value rather
+            # than the caller's raw mapping.
             **planner_hub_kwargs(
                 {
                     "cache_dir": cache_dir,
@@ -291,7 +286,7 @@ class FastDiffusionModel:
         # Match the load's weight format to the warm (None/auto already matches).
         if kwargs.get("use_safetensors") is not None:
             load_kwargs["use_safetensors"] = kwargs["use_safetensors"]
-        # Forward variant to the real load so it reads the warmed variant weights.
+        # Forward the variant to the real load so it reads the warmed variant weights.
         if kwargs.get("variant") is not None:
             load_kwargs["variant"] = kwargs["variant"]
 
@@ -312,7 +307,7 @@ class FastDiffusionModel:
         if not return_tokenizer:
             return model, None
 
-        # Prefer the processor (chat template + tokenizer); fall back to a bare tokenizer. Returned as
+        # Prefer the processor (chat template plus tokenizer), falling back to a bare tokenizer, returned as
         # "tokenizer" to match the Unsloth (model, tokenizer) contract.
         try:
             tokenizer = AutoProcessor.from_pretrained(
@@ -354,10 +349,8 @@ class FastDiffusionModel:
         if target_modules is None:
             target_modules = DIFFUSION_LORA_TARGETS
 
-        # NOTE: use_dora (and any other LoraConfig kwarg outside this allowlist,
-        # e.g. use_rslora) is silently dropped here. Unsloth does not reach this
-        # path today, so it's untested/unsupported on diffusion models; add it
-        # to the allowlist below if that changes.
+        # use_dora, and any other LoraConfig kwarg outside this allowlist, is silently dropped: Unsloth does
+        # not reach this path today, so it is untested on diffusion models.
         lora_kwargs = dict(
             r = r,
             lora_alpha = lora_alpha,

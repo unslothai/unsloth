@@ -681,10 +681,19 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # loosely, so a new row that forgets it is a failure here rather than a load
     # that silently follows the default ref. #7736 added the third: the collapsed
     # single-quant GGUF row. #7880 added the fourth: the per-quant VRAM bar, which
-    # has to price the pinned snapshot rather than the default ref.
-    assert picker.count("loadId: c.load_id") == 4, (
+    # has to price the pinned snapshot rather than the default ref. #10128 put three of
+    # them behind a torn-snapshot guard, so the guard is matched rather than one spelling.
+    pins = re.findall(r"loadId:\s*(?:(\w+)\s*\?\s*undefined\s*:\s*)?c\.load_id", picker)
+    assert len(pins) == 4, (
         "a row or gear that can start a load is missing the pin, or a new one was "
         "added and this count needs to follow it"
+    )
+    # #10128: the three that can START a load withhold the pin for a part-downloaded
+    # snapshot, since audio-page.tsx reads a forwarded loadId as proof the weights are
+    # on disk. The VRAM bar only prices what is there, so it pins unconditionally.
+    assert sorted(pins) == ["", "isPartial", "isPartial", "isPartial"], (
+        "a row that can start a load lost its partial-snapshot guard, or the VRAM bar "
+        f"gained one: {sorted(pins)}"
     )
     block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
@@ -1263,7 +1272,7 @@ def test_model_config_prepares_hf_token_before_gguf_metadata_preflight():
     """Settings classification must use the same stale-token recovery as load."""
     page = _read("features/model-picker/components/model-config-page.tsx")
     assert 'import { prepareHfTokenForUse } from "@/features/hf-auth";' in page
-    effect = page.split("// Fetch GGUF header dims", 1)[1]
+    effect = page.split("  const contextFetchKey = target.isGguf", 1)[1]
     effect = effect.split("const stagedDims =", 1)[0]
     prepare = effect.index("prepareHfTokenForUse(hfToken || null)")
     metadata = effect.index("fetchGgufStagedMetadata({", prepare)
@@ -2184,9 +2193,9 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     assert "nParallel: null," in non_gguf_branch
     assert "loadedNParallel: null," in non_gguf_branch
 
-    fresh_default = adapter.split("// Nothing on the device:", 1)[1].split(
-        "showAutoLoadSuccess(\n          `Loaded ${DEFAULT_CHAT_MODEL_LABEL}", 1
-    )[0]
+    fresh_default = adapter.split(
+        "      return { loaded: false, blockedByTrustRemoteCode: false };", 1
+    )[1].split("showAutoLoadSuccess(\n          `Loaded ${DEFAULT_CHAT_MODEL_LABEL}", 1)[0]
     # The fresh-default download omits the slots, so its success state clears both,
     # or the control reads as an unapplied edit against the seeded baseline.
     assert "n_parallel" not in fresh_default.split("saveSpeculativeType", 1)[0]
@@ -2772,7 +2781,11 @@ def test_override_writes_are_ordered_per_model():
     requests with no sequencing, so the older response could commit last and resurrect
     the entry the newer one meant to replace."""
     src = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
-    assert "const writesByKey = new Map<string, Promise<void>>();" in src
+    # One in-flight promise per key is the ordering; what it resolves to is not,
+    # so pinning the old `void` failed #10160, which reordered nothing.
+    assert (
+        "const writesByKey = new Map<string, Promise<" in src
+    ), "writes are no longer serialised through one in-flight promise per model"
     # Keyed by the same override key the server stores under.
     assert (
         "const key = modelOverrideKey( normalizeModelIdentity(modelId), normalizeGgufVariantIdentity(ggufVariant), );"
@@ -2780,6 +2793,8 @@ def test_override_writes_are_ordered_per_model():
     )
     # Chained on the settled tail, so one failed write cannot cancel the next.
     assert "previous .catch(() => {}) .then(() => sendModelOverride(" in src
+    # The tail is stored, or every writer chains on the same empty slot.
+    assert "writesByKey.set(key, write);" in src
     # Only the last writer clears the slot, or a queue still building loses order.
     assert "if (writesByKey.get(key) === write) { writesByKey.delete(key); }" in src
 
@@ -3518,7 +3533,9 @@ def test_default_model_download_is_visible_and_cancellable():
     assert "loadModel(" not in helper
 
     auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
-    fallback = auto_load.split("// Nothing on the device:", 1)[1]
+    fallback = auto_load.split(
+        "      return { loaded: false, blockedByTrustRemoteCode: false };", 1
+    )[1]
     assert 'if (download !== "ready") {' in fallback
     # Cancelling leaves the user with actionable next steps, not a dead end.
     assert "Pick one from the top bar" in fallback
@@ -3626,7 +3643,7 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
     """One corrupt quant must not cost a repo that holds a valid one."""
     src = _read("features/chat/api/chat-adapter.ts")
     cascade = src.split("for (const source of sources)", 1)[1]
-    cascade = cascade.split("// Nothing on the device:", 1)[0]
+    cascade = cascade.split("    try {\n      const rt = useChatRuntimeStore.getState();", 1)[0]
     assert "while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in cascade
     assert "skippedAutoLoadCandidates.add(" in cascade
 
@@ -3664,7 +3681,9 @@ def test_sources_dedupe_on_the_load_target_alone():
     assert "filter(" not in order
     # The skip is keyed on a candidate having been resolved, not on merely visiting.
     body = src.split("const candidateResolvedFor = new Set<string>();", 1)[1]
-    body = body.split("\n    // Cap also gates", 1)[0]
+    body = body.split(
+        "\n    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {", 1
+    )[0]
     assert body.index("if (candidateResolvedFor.has(sourceKey)) continue;") < body.index(
         "candidateResolvedFor.add(sourceKey);"
     )
@@ -3802,7 +3821,7 @@ def test_the_default_is_preflighted_before_the_managed_download():
     """A refusal from the training or placement guard must not cost gigabytes
     first."""
     src = _read("features/chat/api/chat-adapter.ts")
-    fallback = src.split("// Nothing on the device:", 1)[1]
+    fallback = src.split("      return { loaded: false, blockedByTrustRemoteCode: false };", 1)[1]
     fallback = fallback.split("export function createOpenAIStreamAdapter", 1)[0]
     assert fallback.index("canAutoLoad({") < fallback.index("ensureDefaultModelDownloaded(")
     # One GPU snapshot feeds both, so the load sends what was cleared.
@@ -4005,7 +4024,7 @@ def test_the_diffusion_gpu_choices_are_memoized():
     """
     src = " ".join(_read("hooks/use-gpu-info.ts").split())
     choices = src[src.index("export function useDiffusionGpuChoices") :]
-    choices = choices[: choices.index("/** Whether device discovery")]
+    choices = choices[: choices.index("export function gpuDeviceCacheReady(")]
     assert "return useMemo(() => {" in choices
     # Keyed on the device list, which useGpuDevices only replaces when the inventory changes.
     assert "}, [devices]);" in choices

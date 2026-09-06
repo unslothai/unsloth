@@ -964,9 +964,6 @@ jobs:
           if [ "${{ inputs.studio_concurrent }}" = "false" ]; then
             STUDIO_CONCURRENT=''
           fi
-          if [ -n "$STUDIO_CONCURRENT" ]; then
-            echo "::notice title=Studio shares a card::the Studio GPU half is pinned to one T4 beside a small leg, so this run does NOT cover Studio's own choice between two cards. The report records tensor_split_over_two_cards=false rather than claiming it."
-          fi
           # A leg list REPLACES --all-kernels rather than filtering it: the
           # kernel plan and the payload count both come out of the same call,
           # so a filter applied afterwards would leave the launcher expecting
@@ -977,6 +974,34 @@ jobs:
           else
             KERNEL_SELECT="--all-kernels"
           fi
+          # STUDIO RIDES THE WIRED SET ONLY, and that is a refusal rather than a
+          # preference: build_kernel.py exits on `--with-studio` without
+          # `--all-kernels`, because --legs builds one deliberately narrowed
+          # kernel and a ten-minute Studio install defeats narrowing it.
+          #
+          # Both were emitted unconditionally, so runs 33587255856 and
+          # 33716011285 -- every scheduled run there has ever been -- died here
+          # on `--with-studio requires --all-kernels` without reaching Kaggle.
+          # Each half was guarded alone and neither guard could see the other;
+          # test_grpo_nightly.py now runs this body and parses the argv.
+          STUDIO=()
+          if [ -z "$LEG_LIST" ]; then
+            STUDIO=(--with-studio --studio-args "--max-steps 8")
+            if [ -n "$STUDIO_CONCURRENT" ]; then
+              STUDIO+=("$STUDIO_CONCURRENT")
+              echo "::notice title=Studio shares a card::the Studio GPU half is pinned to one T4 beside a small leg, so this run does NOT cover Studio's own choice between two cards. The report records tensor_split_over_two_cards=false rather than claiming it."
+            fi
+            echo "studio=true" >> "$GITHUB_OUTPUT"
+          else
+            # Said out loud: a nightly that drops Studio and one whose Studio
+            # silently stopped being packed look identical in the summary.
+            echo "::notice title=Studio is not in this kernel::this run selects legs explicitly, and the Studio payload rides the wired set only. Its coverage comes from the per-PR runs."
+            # And the reporter is told rather than left to infer it. With no
+            # `studio-gpu` report to filter to, own_verdict answers `partial`
+            # and renders "Unsloth GPU smoke: PARTIAL" carrying the NOTEBOOK
+            # kernel's reason, about a payload that was never aboard.
+            echo "studio=false" >> "$GITHUB_OUTPUT"
+          fi
           python .github/scripts/kaggle_t4_ci/build_kernel.py \
             --payload-dir tests/kaggle/t4_smoke \
             --out kernel \
@@ -984,10 +1009,8 @@ jobs:
             --unsloth-ref '${{ steps.ref.outputs.ref }}' \
             --zoo-ref '${{ steps.pins.outputs.zoo_ref }}' \
             --smoke-args "--max-steps $MAX_STEPS" \
-            --with-studio \
-            --studio-args "--max-steps 8" \
+            "${STUDIO[@]}" \
             --per-run-timeout 3900 \
-            $STUDIO_CONCURRENT \
             $SHARED_WHEELS \
             $SKIP
 
@@ -1259,8 +1282,11 @@ jobs:
       #
       # Its exit code is the same contract as the T4 reporter's: red only for a
       # payload that ran and failed its assertions.
+      # Only when the kernel carried Studio. This reporter answers an empty
+      # report set with `partial` rather than silence, so ungated it would print
+      # a PARTIAL section on every leg-list run about a payload it never ran.
       - name: Report Studio
-        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != '' && steps.build.outputs.studio == 'true'
         run: |
           python .github/scripts/kaggle_studio_ci/report.py \
             --evidence kaggle_evidence
