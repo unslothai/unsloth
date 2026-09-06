@@ -41,6 +41,7 @@ HOW TO READ THE OUTPUT
                       guards), so a split has a real one-off compile cost that a single GPU
                       does not.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -86,10 +87,10 @@ def leaf_storages(t, out):
         out.append(((id(t), t.numel()), t.numel() * t.element_size()))
 
 
-def module_bytes(module, seen=None):
+def module_bytes(module, seen = None):
     own = seen if seen is not None else set()
     total = 0
-    for t in list(module.parameters(recurse=True)) + list(module.buffers(recurse=True)):
+    for t in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
         if t is None:
             continue
         found = []
@@ -103,10 +104,10 @@ def module_bytes(module, seen=None):
 
 
 def module_device(module):
-    for t in list(module.parameters(recurse=True)) + list(module.buffers(recurse=True)):
+    for t in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
         if t is not None and t.device.type == "cuda":
             return t.device
-    for t in list(module.parameters(recurse=True)) + list(module.buffers(recurse=True)):
+    for t in list(module.parameters(recurse = True)) + list(module.buffers(recurse = True)):
         if t is not None:
             return t.device
     return None
@@ -140,7 +141,14 @@ class BoundaryTransfer:
                     machine so the no-P2P cost is a number rather than a guess.
     """
 
-    def __init__(self, name, src, dst, stage="direct", instrument=False):
+    def __init__(
+        self,
+        name,
+        src,
+        dst,
+        stage = "direct",
+        instrument = False,
+    ):
         self.name, self.src, self.dst, self.stage = name, src, dst, stage
         self.instrument = instrument
         self.bufs, self.host_bufs, self.memo = {}, {}, {}
@@ -153,7 +161,7 @@ class BoundaryTransfer:
         b = self.bufs.get(key)
         if b is None:
             with torch.inference_mode(False):
-                b = torch.empty(ref.shape, dtype=ref.dtype, device=self.dst)
+                b = torch.empty(ref.shape, dtype = ref.dtype, device = self.dst)
             self.bufs[key] = b
         return b
 
@@ -161,11 +169,15 @@ class BoundaryTransfer:
         b = self.host_bufs.get(key)
         if b is None:
             with torch.inference_mode(False):
-                b = torch.empty(ref.shape, dtype=ref.dtype, device="cpu", pin_memory=True)
+                b = torch.empty(ref.shape, dtype = ref.dtype, device = "cpu", pin_memory = True)
             self.host_bufs[key] = b
         return b
 
-    def move(self, obj, kp=()):
+    def move(
+        self,
+        obj,
+        kp = (),
+    ):
         if torch.is_tensor(obj):
             if obj.device == self.dst:
                 return obj
@@ -180,10 +192,10 @@ class BoundaryTransfer:
             self.shapes[str(kp)] = [list(obj.shape), str(obj.dtype), nb]
             if self.stage == "host":
                 h = self._host(key, obj)
-                h.copy_(obj, non_blocking=False)
-                dst.copy_(h, non_blocking=False)
+                h.copy_(obj, non_blocking = False)
+                dst.copy_(h, non_blocking = False)
             else:
-                dst.copy_(obj, non_blocking=True)
+                dst.copy_(obj, non_blocking = True)
             self.memo[id(obj)] = (obj, dst)
             return dst
         if isinstance(obj, (list, tuple)):
@@ -191,7 +203,7 @@ class BoundaryTransfer:
             vals = [self.move(o, kp + (i,)) for i, o in enumerate(obj)]
             try:
                 return kind(vals)
-            except TypeError:                       # namedtuple and friends
+            except TypeError:  # namedtuple and friends
                 return tuple(vals)
         if isinstance(obj, dict):
             return {k: self.move(v, kp + (k,)) for k, v in obj.items()}
@@ -218,7 +230,12 @@ class BoundaryTransfer:
         if torch.cuda.current_device() != self.dst.index:
             torch.cuda.set_device(self.dst)
 
-    def __call__(self, args, kwargs, leader=False):
+    def __call__(
+        self,
+        args,
+        kwargs,
+        leader = False,
+    ):
         self.n_calls += 1
         self._set_device()
         if leader:
@@ -234,7 +251,7 @@ class BoundaryTransfer:
             return self.move(args, ("a",)), self.move(kwargs, ("k",))
         # Both events on the SOURCE stream: a cross-device elapsed_time is undefined and raises.
         s = torch.cuda.current_stream(self.src)
-        e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        e0, e1 = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
         e0.record(s)
         out = (self.move(args, ("a",)), self.move(kwargs, ("k",)))
         e1.record(s)
@@ -253,14 +270,23 @@ class BoundaryTransfer:
     def stats(self):
         self.drain()
         n = max(self.n_leader or self.n_calls, 1)
-        return {"name": self.name, "src": str(self.src), "dst": str(self.dst),
-                "stage": self.stage, "calls": self.n_calls, "forwards": self.n_leader,
-                "memo_hits": self.n_memo_hits,
-                "bytes_per_forward": self.n_bytes / n, "bytes_total": self.n_bytes,
-                "ms_per_forward": self.ms / n, "instrumented": self.instrument,
-                "tensors": self.shapes,
-                "persistent_buffer_bytes": sum(b.numel() * b.element_size()
-                                               for b in self.bufs.values())}
+        return {
+            "name": self.name,
+            "src": str(self.src),
+            "dst": str(self.dst),
+            "stage": self.stage,
+            "calls": self.n_calls,
+            "forwards": self.n_leader,
+            "memo_hits": self.n_memo_hits,
+            "bytes_per_forward": self.n_bytes / n,
+            "bytes_total": self.n_bytes,
+            "ms_per_forward": self.ms / n,
+            "instrumented": self.instrument,
+            "tensors": self.shapes,
+            "persistent_buffer_bytes": sum(
+                b.numel() * b.element_size() for b in self.bufs.values()
+            ),
+        }
 
     def release(self):
         self.bufs, self.host_bufs, self.memo, self._pending = {}, {}, {}, []
@@ -313,15 +339,21 @@ class Split:
 
 def find_containers(model):
     """Every nn.ModuleList whose children are all repeated blocks, in declaration order."""
-    classes = tuple(getattr(model, "_repeated_blocks", None) or
-                    getattr(model, "_no_split_modules", None) or ())
+    classes = tuple(
+        getattr(model, "_repeated_blocks", None) or getattr(model, "_no_split_modules", None) or ()
+    )
     if not classes:
-        raise SystemExit(f"{type(model).__name__} declares neither _repeated_blocks nor "
-                         "_no_split_modules; this script cannot tell which modules repeat")
+        raise SystemExit(
+            f"{type(model).__name__} declares neither _repeated_blocks nor "
+            "_no_split_modules; this script cannot tell which modules repeat"
+        )
     out = []
     for fqn, mod in model.named_modules():
-        if isinstance(mod, nn.ModuleList) and len(mod) and all(
-                c.__class__.__name__ in classes for c in mod):
+        if (
+            isinstance(mod, nn.ModuleList)
+            and len(mod)
+            and all(c.__class__.__name__ in classes for c in mod)
+        ):
             out.append((fqn, mod))
     if not out:
         raise SystemExit(f"no nn.ModuleList of {classes} found in {type(model).__name__}")
@@ -335,14 +367,24 @@ def census(model):
     total_seen = set()
     total = module_bytes(model, total_seen)
     block_total = sum(sum(v) for v in block_bytes.values())
-    return {"class": type(model).__name__, "block_classes": list(classes),
-            "containers": [{"fqn": f, "n": len(ml), "bytes": sum(block_bytes[f])}
-                           for f, ml in containers],
-            "block_bytes": block_bytes, "containers_raw": containers,
-            "non_block_bytes": total - block_total, "total_bytes": total}
+    return {
+        "class": type(model).__name__,
+        "block_classes": list(classes),
+        "containers": [
+            {"fqn": f, "n": len(ml), "bytes": sum(block_bytes[f])} for f, ml in containers
+        ],
+        "block_bytes": block_bytes,
+        "containers_raw": containers,
+        "non_block_bytes": total - block_total,
+        "total_bytes": total,
+    }
 
 
-def plan_cut(block_bytes, fixed_a, ratio=None):
+def plan_cut(
+    block_bytes,
+    fixed_a,
+    ratio = None,
+):
     """Memory-balanced cut, or the user's own block fraction."""
     n = len(block_bytes)
     if ratio is not None:
@@ -360,13 +402,20 @@ def plan_cut(block_bytes, fixed_a, ratio=None):
     return best_k, {"policy": "balanced", "imbalance_bytes": best}
 
 
-def split_transformer(model, devices, *, ratio=None, stage="direct", boundary="hook",
-                      instrument=False):
+def split_transformer(
+    model,
+    devices,
+    *,
+    ratio = None,
+    stage = "direct",
+    boundary = "hook",
+    instrument = False,
+):
     devs = [torch.device(d) for d in devices]
     primary = devs[0]
     c = census(model)
     containers = c["containers_raw"]
-    target_fqn, target = max(containers, key=lambda t: sum(c["block_bytes"][t[0]]))
+    target_fqn, target = max(containers, key = lambda t: sum(c["block_bytes"][t[0]]))
 
     sp = Split()
     sp.boundary = boundary
@@ -375,13 +424,14 @@ def split_transformer(model, devices, *, ratio=None, stage="direct", boundary="h
     for name, child in model.named_children():
         if name != target_fqn:
             child.to(primary)
-    for p in model.parameters(recurse=False):
+    for p in model.parameters(recurse = False):
         p.data = p.data.to(primary)
-    for b in model.buffers(recurse=False):
+    for b in model.buffers(recurse = False):
         b.data = b.data.to(primary)
 
-    fixed_a = c["non_block_bytes"] + sum(sum(c["block_bytes"][f])
-                                         for f, _ in containers if f != target_fqn)
+    fixed_a = c["non_block_bytes"] + sum(
+        sum(c["block_bytes"][f]) for f, _ in containers if f != target_fqn
+    )
     bb = c["block_bytes"][target_fqn]
     k, why = plan_cut(bb, fixed_a, ratio)
     assign = [0] * k + [1] * (len(bb) - k)
@@ -405,17 +455,26 @@ def split_transformer(model, devices, *, ratio=None, stage="direct", boundary="h
             continue
         leader = starts or run_tr is None
         if leader:
-            run_tr = BoundaryTransfer(f"{target_fqn}.{i}:{prev}->{want}",
-                                      prev if starts else primary, want, stage, instrument)
+            run_tr = BoundaryTransfer(
+                f"{target_fqn}.{i}:{prev}->{want}",
+                prev if starts else primary,
+                want,
+                stage,
+                instrument,
+            )
             sp.transfers.append(run_tr)
         _install(sp, target, i, run_tr, boundary, leader)
     last = devs[assign[-1]]
     if last != primary:
-        tr = BoundaryTransfer(f"{target_fqn}.out:{last}->{primary}", last, primary, stage,
-                              instrument)
+        tr = BoundaryTransfer(
+            f"{target_fqn}.out:{last}->{primary}", last, primary, stage, instrument
+        )
         sp.transfers.append(tr)
-        sp.handles.append(target[len(assign) - 1].register_forward_hook(
-            lambda m, a, out, _t=tr: _t((out,), {}, True)[0][0]))
+        sp.handles.append(
+            target[len(assign) - 1].register_forward_hook(
+                lambda m, a, out, _t = tr: _t((out,), {}, True)[0][0]
+            )
+        )
 
     # Keep the process pointed at the first card. The boundary makes the far card current so
     # that kernels without their own device guard (flashinfer's FP4 GEMM is one) launch into the
@@ -433,7 +492,7 @@ def split_transformer(model, devices, *, ratio=None, stage="direct", boundary="h
                 torch.cuda.set_device(p0)
             return None
 
-        sp.handles.append(model.register_forward_pre_hook(_primary_guard, with_kwargs=True))
+        sp.handles.append(model.register_forward_pre_hook(_primary_guard, with_kwargs = True))
 
     per_dev, comps = {}, {}
     seen = set()
@@ -447,17 +506,24 @@ def split_transformer(model, devices, *, ratio=None, stage="direct", boundary="h
         b = module_bytes(child, seen)
         per_dev[d] = per_dev.get(d, 0) + b
         comps[name] = {"device": d, "bytes": b, "class": type(child).__name__}
-    sp.placement = {"bytes_per_device": per_dev,
-                    "gib_per_device": {kk: v / 2 ** 30 for kk, v in per_dev.items()},
-                    "components": comps, "blocks": [str(devs[a]) for a in assign],
-                    "container": target_fqn, "cut": k}
+    sp.placement = {
+        "bytes_per_device": per_dev,
+        "gib_per_device": {kk: v / 2**30 for kk, v in per_dev.items()},
+        "components": comps,
+        "blocks": [str(devs[a]) for a in assign],
+        "container": target_fqn,
+        "cut": k,
+    }
     return sp
 
 
 def _install(sp, mlist, idx, tr, boundary, leader):
     if boundary == "hook":
-        sp.handles.append(mlist[idx].register_forward_pre_hook(
-            lambda m, a, kw, _t=tr, _l=leader: _t(a, kw, _l), with_kwargs=True))
+        sp.handles.append(
+            mlist[idx].register_forward_pre_hook(
+                lambda m, a, kw, _t = tr, _l = leader: _t(a, kw, _l), with_kwargs = True
+            )
+        )
     else:
         original = mlist[idx]
         mlist[idx] = BoundaryShim(original, tr, leader)
@@ -467,17 +533,27 @@ def _install(sp, mlist, idx, tr, boundary, leader):
 # ============================================================================ device inspection
 def device_report(devices):
     devs = [torch.device(d) for d in devices]
-    out = {"devices": [], "can_access_peer": {}, "p2p_any": False,
-           "platform": platform.platform(), "python": sys.version.split()[0],
-           "torch": torch.__version__,
-           "cuda": getattr(torch.version, "cuda", None)}
+    out = {
+        "devices": [],
+        "can_access_peer": {},
+        "p2p_any": False,
+        "platform": platform.platform(),
+        "python": sys.version.split()[0],
+        "torch": torch.__version__,
+        "cuda": getattr(torch.version, "cuda", None),
+    }
     for d in devs:
         i = d.index or 0
         p = torch.cuda.get_device_properties(i)
-        out["devices"].append({"index": i, "name": p.name,
-                               "capability": f"{p.major}.{p.minor}",
-                               "total_gib": p.total_memory / 2 ** 30,
-                               "sm_count": p.multi_processor_count})
+        out["devices"].append(
+            {
+                "index": i,
+                "name": p.name,
+                "capability": f"{p.major}.{p.minor}",
+                "total_gib": p.total_memory / 2**30,
+                "sm_count": p.multi_processor_count,
+            }
+        )
     names = {d["name"] for d in out["devices"]}
     caps = {d["capability"] for d in out["devices"]}
     out["homogeneous_pair"] = len(names) == 1 and len(caps) == 1
@@ -492,15 +568,20 @@ def device_report(devices):
     return out
 
 
-def copy_bandwidth(src, dst, sizes_mib=(1, 4, 16, 64, 256), iters=20):
+def copy_bandwidth(
+    src,
+    dst,
+    sizes_mib = (1, 4, 16, 64, 256),
+    iters = 20,
+):
     s, d = torch.device(src), torch.device(dst)
     rows = {}
     for mb in sizes_mib:
         nbytes = mb << 20
         n = nbytes // 2
-        a = torch.empty(n, dtype=torch.bfloat16, device=s)
-        b = torch.empty(n, dtype=torch.bfloat16, device=d)
-        h = torch.empty(n, dtype=torch.bfloat16, device="cpu", pin_memory=True)
+        a = torch.empty(n, dtype = torch.bfloat16, device = s)
+        b = torch.empty(n, dtype = torch.bfloat16, device = d)
+        h = torch.empty(n, dtype = torch.bfloat16, device = "cpu", pin_memory = True)
 
         def timed(fn):
             for _ in range(10):
@@ -512,18 +593,20 @@ def copy_bandwidth(src, dst, sizes_mib=(1, 4, 16, 64, 256), iters=20):
             sync_all()
             return (time.perf_counter() - t0) / iters
 
-        direct = timed(lambda: b.copy_(a, non_blocking=True))
+        direct = timed(lambda: b.copy_(a, non_blocking = True))
 
         def staged():
-            h.copy_(a, non_blocking=False)
-            b.copy_(h, non_blocking=False)
+            h.copy_(a, non_blocking = False)
+            b.copy_(h, non_blocking = False)
 
         host = timed(staged)
-        rows[f"{mb}MiB"] = {"bytes": nbytes,
-                            "direct_ms": direct * 1e3,
-                            "direct_gib_s": nbytes / 2 ** 30 / direct,
-                            "host_staged_ms": host * 1e3,
-                            "host_staged_gib_s": nbytes / 2 ** 30 / host}
+        rows[f"{mb}MiB"] = {
+            "bytes": nbytes,
+            "direct_ms": direct * 1e3,
+            "direct_gib_s": nbytes / 2**30 / direct,
+            "host_staged_ms": host * 1e3,
+            "host_staged_gib_s": nbytes / 2**30 / host,
+        }
         del a, b, h
         free_all()
     return rows
@@ -532,15 +615,19 @@ def copy_bandwidth(src, dst, sizes_mib=(1, 4, 16, 64, 256), iters=20):
 # ================================================================================== the harness
 def image_array(out):
     import numpy as np
-
     img = out.images[0] if hasattr(out, "images") else out[0][0]
     return np.asarray(img).astype("int32")
 
 
 def render(pipe, args, device):
-    g = torch.Generator(device="cpu").manual_seed(args.seed)
-    kw = dict(prompt=args.prompt, num_inference_steps=args.steps,
-              generator=g, height=args.size, width=args.size)
+    g = torch.Generator(device = "cpu").manual_seed(args.seed)
+    kw = dict(
+        prompt = args.prompt,
+        num_inference_steps = args.steps,
+        generator = g,
+        height = args.size,
+        width = args.size,
+    )
     if args.guidance is not None:
         kw["guidance_scale"] = args.guidance
     if args.negative_prompt:
@@ -552,7 +639,6 @@ def render(pipe, args, device):
 def dynamo_seconds():
     try:
         from torch._dynamo.utils import cumulative_time_spent_ns
-
         return sum(cumulative_time_spent_ns.values()) / 1e9
     except Exception:
         return 0.0
@@ -565,54 +651,71 @@ def block_compile(model):
     for attr in ("recompile_limit", "cache_size_limit"):
         if hasattr(torch._dynamo.config, attr):
             setattr(torch._dynamo.config, attr, 8192)
-    fn(fullgraph=True, dynamic=True)
+    fn(fullgraph = True, dynamic = True)
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Two-GPU layer split for a diffusers transformer: correctness and cost.")
-    ap.add_argument("--repo", default="Tongyi-MAI/Z-Image-Turbo",
-                    help="diffusers repo id or local path")
-    ap.add_argument("--devices", default="0,1", help="two CUDA indices, e.g. 0,1")
-    ap.add_argument("--prompt",
-                    default="a photograph of a city street at night, neon reflections on wet "
-                            "asphalt")
-    ap.add_argument("--negative-prompt", default="")
-    ap.add_argument("--steps", type=int, default=9)
-    ap.add_argument("--size", type=int, default=1024)
-    ap.add_argument("--guidance", type=float, default=None)
-    ap.add_argument("--seed", type=int, default=11)
-    ap.add_argument("--reps", type=int, default=5, help="timed rotations per configuration")
-    ap.add_argument("--warm", type=int, default=1)
-    ap.add_argument("--ratio", type=float, default=None,
-                    help="fraction of blocks on the first card; default is memory-balanced")
-    ap.add_argument("--boundary", default="shim", choices=("hook", "shim"),
-                    help="where the boundary copy runs. 'shim' wraps the boundary block in an "
-                         "uncompiled module, so the copy stays OUTSIDE the compiled region and "
-                         "can be timed with CUDA events; 'hook' uses a forward pre-hook, which "
-                         "torch.compile traces INTO the block and which therefore cannot carry "
-                         "event instrumentation")
-    ap.add_argument("--compile", action="store_true",
-                    help="compile_repeated_blocks(fullgraph=True) before timing")
-    ap.add_argument("--configs",
-                    default="single,split,split_host,cpu_offload,seq_offload,accel_dispatch")
-    ap.add_argument("--dtype", default="bfloat16", choices=("bfloat16", "float16", "float32"))
-    ap.add_argument("--cache-dir", default=None, help="TORCHINDUCTOR_CACHE_DIR (persistent)")
-    ap.add_argument("--out", default="two_gpu_split_report.json")
-    ap.add_argument("--save-images", default=None, help="directory for the rendered PNGs")
+        description = "Two-GPU layer split for a diffusers transformer: correctness and cost."
+    )
+    ap.add_argument(
+        "--repo", default = "Tongyi-MAI/Z-Image-Turbo", help = "diffusers repo id or local path"
+    )
+    ap.add_argument("--devices", default = "0,1", help = "two CUDA indices, e.g. 0,1")
+    ap.add_argument(
+        "--prompt",
+        default = "a photograph of a city street at night, neon reflections on wet asphalt",
+    )
+    ap.add_argument("--negative-prompt", default = "")
+    ap.add_argument("--steps", type = int, default = 9)
+    ap.add_argument("--size", type = int, default = 1024)
+    ap.add_argument("--guidance", type = float, default = None)
+    ap.add_argument("--seed", type = int, default = 11)
+    ap.add_argument("--reps", type = int, default = 5, help = "timed rotations per configuration")
+    ap.add_argument("--warm", type = int, default = 1)
+    ap.add_argument(
+        "--ratio",
+        type = float,
+        default = None,
+        help = "fraction of blocks on the first card; default is memory-balanced",
+    )
+    ap.add_argument(
+        "--boundary",
+        default = "shim",
+        choices = ("hook", "shim"),
+        help = "where the boundary copy runs. 'shim' wraps the boundary block in an "
+        "uncompiled module, so the copy stays OUTSIDE the compiled region and "
+        "can be timed with CUDA events; 'hook' uses a forward pre-hook, which "
+        "torch.compile traces INTO the block and which therefore cannot carry "
+        "event instrumentation",
+    )
+    ap.add_argument(
+        "--compile",
+        action = "store_true",
+        help = "compile_repeated_blocks(fullgraph=True) before timing",
+    )
+    ap.add_argument(
+        "--configs", default = "single,split,split_host,cpu_offload,seq_offload,accel_dispatch"
+    )
+    ap.add_argument("--dtype", default = "bfloat16", choices = ("bfloat16", "float16", "float32"))
+    ap.add_argument("--cache-dir", default = None, help = "TORCHINDUCTOR_CACHE_DIR (persistent)")
+    ap.add_argument("--out", default = "two_gpu_split_report.json")
+    ap.add_argument("--save-images", default = None, help = "directory for the rendered PNGs")
     args = ap.parse_args()
 
     if args.cache_dir:
         import os
 
         p = Path(args.cache_dir)
-        p.mkdir(parents=True, exist_ok=True)
+        p.mkdir(parents = True, exist_ok = True)
         os.environ["TORCHINDUCTOR_CACHE_DIR"] = str(p / "inductor")
         os.environ["TRITON_CACHE_DIR"] = str(p / "triton")
 
     if torch.cuda.device_count() < 2:
-        print(f"NOTE: only {torch.cuda.device_count()} CUDA device(s) visible. The split rows "
-              f"need two; the single-GPU and offload rows will still run.")
+        print(
+            f"NOTE: only {torch.cuda.device_count()} CUDA device(s) visible. The split rows "
+            f"need two; the single-GPU and offload rows will still run."
+        )
     idx = [int(x) for x in args.devices.split(",")]
     devices = [f"cuda:{i}" for i in idx if i < torch.cuda.device_count()]
     if not devices:
@@ -623,41 +726,59 @@ def main():
     # Determinism BEFORE the first compile: without it inductor redraws its reduction block size
     # per compilation and a split render can differ from a single-GPU one for reasons that have
     # nothing to do with the split.
-    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.use_deterministic_algorithms(True, warn_only = True)
     torch.utils.deterministic.fill_uninitialized_memory = False
 
-    report = {"tool": "bench_two_gpu_split.py", "version": __version__, "argv": sys.argv,
-              "args": vars(args), "failures": []}
+    report = {
+        "tool": "bench_two_gpu_split.py",
+        "version": __version__,
+        "argv": sys.argv,
+        "args": vars(args),
+        "failures": [],
+    }
     report["environment"] = device_report(devices)
     print(_banner("ENVIRONMENT"))
     for d in report["environment"]["devices"]:
-        print(f"  cuda:{d['index']}  {d['name']}  sm_{d['capability'].replace('.', '')}  "
-              f"{d['total_gib']:.1f} GiB  {d['sm_count']} SMs")
-    print(f"  peer access: {report['environment']['can_access_peer']}  "
-          f"(P2P {'available' if report['environment']['p2p_any'] else 'NOT available: the '
-                'driver will stage copies through host memory'})")
-    print(f"  homogeneous pair: {report['environment']['homogeneous_pair']}"
-          + ("" if report["environment"]["homogeneous_pair"] else
-             "  <- mixed cards: bit-identity is NOT expected"))
-    print(f"  torch {torch.__version__}  cuda {getattr(torch.version, 'cuda', None)}  "
-          f"{platform.system()}")
+        print(
+            f"  cuda:{d['index']}  {d['name']}  sm_{d['capability'].replace('.', '')}  "
+            f"{d['total_gib']:.1f} GiB  {d['sm_count']} SMs"
+        )
+    print(
+        f"  peer access: {report['environment']['can_access_peer']}  "
+        f"(P2P {'available' if report['environment']['p2p_any'] else 'NOT available: the '
+                'driver will stage copies through host memory'})"
+    )
+    print(
+        f"  homogeneous pair: {report['environment']['homogeneous_pair']}"
+        + (
+            ""
+            if report["environment"]["homogeneous_pair"]
+            else "  <- mixed cards: bit-identity is NOT expected"
+        )
+    )
+    print(
+        f"  torch {torch.__version__}  cuda {getattr(torch.version, 'cuda', None)}  "
+        f"{platform.system()}"
+    )
 
     if len(devices) >= 2:
         print(_banner("COPY BANDWIDTH cuda:%d -> cuda:%d" % (idx[0], idx[1])))
         report["copy_bandwidth"] = copy_bandwidth(devices[0], devices[1])
         print(f"  {'size':>8}  {'direct':>12}  {'GiB/s':>9}  {'host-staged':>12}  {'GiB/s':>9}")
         for k, v in report["copy_bandwidth"].items():
-            print(f"  {k:>8}  {v['direct_ms']:10.3f}ms  {v['direct_gib_s']:9.1f}  "
-                  f"{v['host_staged_ms']:10.3f}ms  {v['host_staged_gib_s']:9.1f}")
+            print(
+                f"  {k:>8}  {v['direct_ms']:10.3f}ms  {v['direct_gib_s']:9.1f}  "
+                f"{v['host_staged_ms']:10.3f}ms  {v['host_staged_gib_s']:9.1f}"
+            )
 
     # ---- load ---------------------------------------------------------------------------------
     from diffusers import DiffusionPipeline
 
     print(_banner("LOADING"))
     t0 = time.perf_counter()
-    pipe = DiffusionPipeline.from_pretrained(args.repo, torch_dtype=dtype)
+    pipe = DiffusionPipeline.from_pretrained(args.repo, torch_dtype = dtype)
     pipe.to(primary)
-    pipe.set_progress_bar_config(disable=True)
+    pipe.set_progress_bar_config(disable = True)
     report["load_seconds"] = time.perf_counter() - t0
     print(f"  {args.repo} in {report['load_seconds']:.1f}s")
 
@@ -670,13 +791,14 @@ def main():
     print(f"  {c['class']}  repeated blocks {c['block_classes']}")
     for cc in c["containers"]:
         print(f"    {cc['fqn']:<20s} {cc['n']:>3d} blocks  {cc['bytes'] / 2**30:8.3f} GiB")
-    print(f"    {'non-block':<20s}     {' ':>3s}       "
-          f"{c['non_block_bytes'] / 2**30:8.3f} GiB")
+    print(f"    {'non-block':<20s}     {' ':>3s}       " f"{c['non_block_bytes'] / 2**30:8.3f} GiB")
     print(f"    {'TOTAL':<20s}     {' ':>3s}       {c['total_bytes'] / 2**30:8.3f} GiB")
     for name, comp in pipe.components.items():
         if isinstance(comp, nn.Module) and comp is not model:
-            print(f"    component {name:<16s} {module_bytes(comp) / 2**30:8.3f} GiB "
-                  f"on {module_device(comp)}")
+            print(
+                f"    component {name:<16s} {module_bytes(comp) / 2**30:8.3f} GiB "
+                f"on {module_device(comp)}"
+            )
 
     if args.compile:
         print(_banner("COMPILE"))
@@ -685,11 +807,15 @@ def main():
         block_compile(model)
         render(pipe, args, primary)
         sync_all()
-        report["compile"] = {"wall_seconds": time.perf_counter() - t0,
-                             "dynamo_seconds": dynamo_seconds() - d0}
-        print(f"  compile_repeated_blocks(fullgraph=True) + first render: "
-              f"{report['compile']['wall_seconds']:.1f}s wall, "
-              f"{report['compile']['dynamo_seconds']:.1f}s in dynamo/inductor")
+        report["compile"] = {
+            "wall_seconds": time.perf_counter() - t0,
+            "dynamo_seconds": dynamo_seconds() - d0,
+        }
+        print(
+            f"  compile_repeated_blocks(fullgraph=True) + first render: "
+            f"{report['compile']['wall_seconds']:.1f}s wall, "
+            f"{report['compile']['dynamo_seconds']:.1f}s in dynamo/inductor"
+        )
 
     # ---- configurations -----------------------------------------------------------------------
     want = [x for x in args.configs.split(",") if x]
@@ -730,7 +856,7 @@ def main():
             entry["n_pixels_differing"] = int((arr != reference).sum())
             entry["bit_identical"] = entry["max_abs_diff_vs_single"] == 0
             if args.save_images:
-                Path(args.save_images).mkdir(parents=True, exist_ok=True)
+                Path(args.save_images).mkdir(parents = True, exist_ok = True)
                 out.images[0].save(Path(args.save_images) / f"{name}.png")
             for _ in range(args.reps):
                 sync_all()
@@ -738,17 +864,22 @@ def main():
                 render(pipe, args, primary)
                 sync_all()
                 entry["seconds"].append(time.perf_counter() - t0)
-            entry["memory"] = {f"cuda:{i}": {
-                "allocated_gib": torch.cuda.memory_allocated(i) / 2 ** 30,
-                "reserved_gib": torch.cuda.memory_reserved(i) / 2 ** 30,
-                "peak_allocated_gib": torch.cuda.max_memory_allocated(i) / 2 ** 30}
-                for i in idx if i < torch.cuda.device_count()}
+            entry["memory"] = {
+                f"cuda:{i}": {
+                    "allocated_gib": torch.cuda.memory_allocated(i) / 2**30,
+                    "reserved_gib": torch.cuda.memory_reserved(i) / 2**30,
+                    "peak_allocated_gib": torch.cuda.max_memory_allocated(i) / 2**30,
+                }
+                for i in idx
+                if i < torch.cuda.device_count()
+            }
             if sp is not None:
                 entry["boundary"] = sp.transfer_stats()
             entry["p50"] = statistics.median(entry["seconds"])
             entry["min"] = min(entry["seconds"])
-            entry["stdev"] = statistics.stdev(entry["seconds"]) if len(
-                entry["seconds"]) > 1 else 0.0
+            entry["stdev"] = (
+                statistics.stdev(entry["seconds"]) if len(entry["seconds"]) > 1 else 0.0
+            )
             entry["ok"] = True
         except SkipConfig as exc:
             entry["ok"] = False
@@ -768,14 +899,16 @@ def main():
             free_all()
         results[name] = entry
         if entry.get("ok"):
-            print(f"  {name:<18s} p50 {entry['p50']:7.3f}s  min {entry['min']:7.3f}s  "
-                  f"bit-identical={entry['bit_identical']}  "
-                  f"setup {entry['setup_seconds']:6.2f}s  "
-                  f"compile {entry.get('compile_seconds', 0):6.1f}s")
+            print(
+                f"  {name:<18s} p50 {entry['p50']:7.3f}s  min {entry['min']:7.3f}s  "
+                f"bit-identical={entry['bit_identical']}  "
+                f"setup {entry['setup_seconds']:6.2f}s  "
+                f"compile {entry.get('compile_seconds', 0):6.1f}s"
+            )
 
     report["results"] = results
     _print_table(report, args)
-    Path(args.out).write_text(json.dumps(_jsonable(report), indent=2))
+    Path(args.out).write_text(json.dumps(_jsonable(report), indent = 2))
     print(f"\nwrote {Path(args.out).resolve()}")
     return 0
 
@@ -786,10 +919,14 @@ def _setup(name, pipe, model, devices, args):
         pipe.to(primary)
         return None
     if name in ("split", "split_host"):
-        return split_transformer(model, devices, ratio=args.ratio,
-                                 stage="host" if name == "split_host" else "direct",
-                                 boundary=args.boundary,
-                                 instrument=(args.boundary == "shim" or not args.compile))
+        return split_transformer(
+            model,
+            devices,
+            ratio = args.ratio,
+            stage = "host" if name == "split_host" else "direct",
+            boundary = args.boundary,
+            instrument = (args.boundary == "shim" or not args.compile),
+        )
     if name == "accel_dispatch":
         # accelerate attaches an AlignDevicesHook to every submodule in the map, and that hook is
         # decorated torch.compiler.disable, so Dynamo cannot trace through it: with regional
@@ -801,14 +938,16 @@ def _setup(name, pipe, model, devices, args):
                 "compile_repeated_blocks(fullgraph=True): its AlignDevicesHook is "
                 "torch.compiler.disable'd, so Dynamo refuses with 'Skip calling "
                 "torch.compiler.disable()d function'. Re-run without --compile to measure "
-                "this row.")
+                "this row."
+            )
         from accelerate import dispatch_model
 
         c = census(model)
         containers = c["containers_raw"]
-        fqn, target = max(containers, key=lambda t: sum(c["block_bytes"][t[0]]))
-        fixed = c["non_block_bytes"] + sum(sum(c["block_bytes"][f])
-                                           for f, _ in containers if f != fqn)
+        fqn, target = max(containers, key = lambda t: sum(c["block_bytes"][t[0]]))
+        fixed = c["non_block_bytes"] + sum(
+            sum(c["block_bytes"][f]) for f, _ in containers if f != fqn
+        )
         k, _ = plan_cut(c["block_bytes"][fqn], fixed, args.ratio)
         i0, i1 = torch.device(devices[0]).index, torch.device(devices[1]).index
         dm = {n: i0 for n, _ in model.named_children() if n != fqn}
@@ -818,16 +957,20 @@ def _setup(name, pipe, model, devices, args):
         # the model's own top-level parameters and dispatch_model refuses outright with "The
         # device_map provided does not give any device for the following parameters: ...". Ours
         # does not need this step because it moves whatever it does not cut.
-        for pname, _ in list(model.named_parameters(recurse=False)) + \
-                list(model.named_buffers(recurse=False)):
+        for pname, _ in list(model.named_parameters(recurse = False)) + list(
+            model.named_buffers(recurse = False)
+        ):
             dm[pname] = i0
-        dispatch_model(model, device_map=dm, main_device=torch.device(devices[0]))
+        dispatch_model(model, device_map = dm, main_device = torch.device(devices[0]))
         sp = Split()
-        sp.placement = {"mechanism": "accelerate.dispatch_model", "cut": k,
-                        "device_map_entries": len(dm)}
+        sp.placement = {
+            "mechanism": "accelerate.dispatch_model",
+            "cut": k,
+            "device_map_entries": len(dm),
+        }
         return sp
     if name == "cpu_offload":
-        pipe.enable_model_cpu_offload(device=primary)
+        pipe.enable_model_cpu_offload(device = primary)
         return None
     if name == "seq_offload":
         # Sequential offload and regional compile are mutually exclusive: Dynamo reaches
@@ -839,8 +982,9 @@ def _setup(name, pipe, model, devices, args):
                 "sequential CPU offload cannot be combined with "
                 "compile_repeated_blocks(fullgraph=True): accelerate's AlignDevicesHook is "
                 "torch.compiler.disable'd, so Dynamo cannot trace through it. Re-run without "
-                "--compile to measure this row.")
-        pipe.enable_sequential_cpu_offload(device=primary)
+                "--compile to measure this row."
+            )
+        pipe.enable_sequential_cpu_offload(device = primary)
         return None
     raise SystemExit(f"unknown config {name!r}")
 
@@ -856,7 +1000,7 @@ def _teardown(name, pipe, model, devices, sp):
     elif name == "accel_dispatch":
         from accelerate.hooks import remove_hook_from_module
 
-        remove_hook_from_module(model, recurse=True)
+        remove_hook_from_module(model, recurse = True)
         model.to(primary)
         if hasattr(model, "hf_device_map"):
             try:
@@ -880,9 +1024,11 @@ def _print_table(report, args):
     base = res.get("single", {})
     b50 = base.get("p50")
     print(_banner("SUMMARY"))
-    hdr = (f"  {'configuration':<18s} {'p50 s':>8s} {'min s':>8s} {'vs single':>10s} "
-           f"{'bit-id':>7s} {'compile s':>10s} {'card0 GiB':>10s} {'card1 GiB':>10s} "
-           f"{'boundary MiB/fwd':>17s} {'boundary ms/fwd':>16s}")
+    hdr = (
+        f"  {'configuration':<18s} {'p50 s':>8s} {'min s':>8s} {'vs single':>10s} "
+        f"{'bit-id':>7s} {'compile s':>10s} {'card0 GiB':>10s} {'card1 GiB':>10s} "
+        f"{'boundary MiB/fwd':>17s} {'boundary ms/fwd':>16s}"
+    )
     print(hdr)
     print("  " + "-" * (len(hdr) - 2))
     for name, e in res.items():
@@ -892,35 +1038,48 @@ def _print_table(report, args):
         mem = e.get("memory", {})
         keys = sorted(mem)
         c0 = mem.get(keys[0], {}).get("peak_allocated_gib", float("nan")) if keys else float("nan")
-        c1 = mem.get(keys[1], {}).get("peak_allocated_gib", float("nan")) if len(keys) > 1 \
+        c1 = (
+            mem.get(keys[1], {}).get("peak_allocated_gib", float("nan"))
+            if len(keys) > 1
             else float("nan")
-        bmib = sum(t["bytes_per_forward"] for t in e.get("boundary", [])) / 2 ** 20
+        )
+        bmib = sum(t["bytes_per_forward"] for t in e.get("boundary", [])) / 2**20
         bms = sum(t["ms_per_forward"] for t in e.get("boundary", []))
         ratio = (e["p50"] / b50) if b50 else float("nan")
-        print(f"  {name:<18s} {e['p50']:8.3f} {e['min']:8.3f} {ratio:9.3f}x "
-              f"{str(e['bit_identical']):>7s} {e.get('compile_seconds', 0):10.1f} "
-              f"{c0:10.3f} {c1:10.3f} {bmib:17.2f} {bms:16.3f}")
+        print(
+            f"  {name:<18s} {e['p50']:8.3f} {e['min']:8.3f} {ratio:9.3f}x "
+            f"{str(e['bit_identical']):>7s} {e.get('compile_seconds', 0):10.1f} "
+            f"{c0:10.3f} {c1:10.3f} {bmib:17.2f} {bms:16.3f}"
+        )
     steps = args.steps
     for name, e in res.items():
         if not e.get("ok") or not e.get("boundary"):
             continue
         bms = sum(t["ms_per_forward"] for t in e["boundary"])
         if bms and e["p50"]:
-            print(f"\n  {name}: boundary transfer is {bms * steps / 1000:.4f}s of a "
-                  f"{e['p50']:.3f}s render ({bms * steps / 10 / e['p50']:.2f}% of wall clock) "
-                  f"over {steps} steps")
+            print(
+                f"\n  {name}: boundary transfer is {bms * steps / 1000:.4f}s of a "
+                f"{e['p50']:.3f}s render ({bms * steps / 10 / e['p50']:.2f}% of wall clock) "
+                f"over {steps} steps"
+            )
             for t in e["boundary"]:
-                print(f"    {t['name']}: {t['bytes_per_forward'] / 2**20:8.2f} MiB/forward, "
-                      f"{t['ms_per_forward']:7.3f} ms/forward, tensors "
-                      f"{ {k: v[0] for k, v in t['tensors'].items()} }")
+                print(
+                    f"    {t['name']}: {t['bytes_per_forward'] / 2**20:8.2f} MiB/forward, "
+                    f"{t['ms_per_forward']:7.3f} ms/forward, tensors "
+                    f"{ {k: v[0] for k, v in t['tensors'].items()} }"
+                )
     if not report["environment"]["homogeneous_pair"]:
-        print("\n  NOTE: the two cards are different models. A bit-identical result is not "
-              "expected:\n        different SM counts change the tile and split-k choice inside "
-              "cuBLAS,\n        which changes the reduction order and therefore the last bits.")
+        print(
+            "\n  NOTE: the two cards are different models. A bit-identical result is not "
+            "expected:\n        different SM counts change the tile and split-k choice inside "
+            "cuBLAS,\n        which changes the reduction order and therefore the last bits."
+        )
     if not report["environment"]["p2p_any"]:
-        print("\n  NOTE: no peer-to-peer access between these cards. The 'split' row already "
-              "reflects\n        the driver's host-staged path, and 'split_host' is the explicit "
-              "version of it.")
+        print(
+            "\n  NOTE: no peer-to-peer access between these cards. The 'split' row already "
+            "reflects\n        the driver's host-staged path, and 'split_host' is the explicit "
+            "version of it."
+        )
 
 
 def _jsonable(obj):
