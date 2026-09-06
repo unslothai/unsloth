@@ -10,7 +10,7 @@
 # unsloth_cli/commands/start.py at HEAD.
 #
 # Usage: agent-guides-install.sh <agent>
-#   agent in: claude codex hermes openclaw opencode pi
+#   agent in: claude codex hermes openclaw opencode pi dsh
 set -uo pipefail
 
 AGENT="${1:?usage: agent-guides-install.sh <agent>}"
@@ -109,6 +109,10 @@ case "$AGENT" in
     # test a stale Pi against the API).
     npm_retry --ignore-scripts "@earendil-works/pi-coding-agent" \
       || install_fail "npm install -g --ignore-scripts @earendil-works/pi-coding-agent failed"
+    ;;
+  dsh)
+    # start.py install_hint: npm install -g @deepseek-ai/dsh
+    npm_retry "@deepseek-ai/dsh" || install_fail "npm install -g @deepseek-ai/dsh failed"
     ;;
   *)
     install_fail "unknown agent '$AGENT'"

@@ -92,7 +92,7 @@ def _data_parallel_world_size() -> int:
     extra rank does. XPU and MPS stay at one device there, so only CUDA counts.
 
     The larger of the two, never the sum: a distributed run forces n_gpu to 1, and a
-    model-parallel one (device_map="balanced", which is what Unsloth's own multi-GPU
+    model-parallel one (a sharding device_map, which is what Unsloth's own multi-GPU
     load uses) forces it to 1 as well. Rounding up when the model turns out to be
     sharded rather than replicated only tokenizes a larger subset of a corpus this
     bound is orders of magnitude below anyway; rounding down means the run silently
@@ -3888,16 +3888,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # stdlib multiprocessing onto "fork" never reached it; the guard now asks multiprocess.
 
     # ── 1c. On Windows, check Triton availability (must be before import torch) ──
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── 1d. Stub torchao on Windows ROCm ──
     # See core/_torchao_stub.py (no RCCL on Windows ROCm); run before transformers/unsloth_zoo.
@@ -4343,6 +4337,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
                 ),
+                hf_token = hf_token,
                 max_train_rows = max_train_rows,
                 max_train_rows_seed = max_train_rows_seed,
             )
@@ -4763,7 +4758,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             tensorboard_dir = str(resolve_tensorboard_dir(tensorboard_dir))
             ensure_dir(Path(tensorboard_dir))
 
-        # Start training directly — no inner thread, we ARE the subprocess.
+        # Start training directly - no inner thread, we ARE the subprocess.
         dataset_display = config.get("hf_dataset", "") or config.get("uploaded_file", "") or ""
         _send_status(
             event_queue,

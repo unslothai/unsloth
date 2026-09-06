@@ -197,7 +197,7 @@ class TestExternalProviderMessages:
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
         assert out[1] == {"role": "user", "content": "hi"}
 
-    def test_date_prefixes_text_inside_structured_system_content(self):
+    def test_date_prefixes_text_inside_structured_content(self):
         messages = [{"role": "system", "content": [{"type": "text", "text": "Be terse."}]}]
         out = self._prepend(messages)
         assert len(out) == 1

@@ -141,7 +141,6 @@ class TestBinaryEnvCrossPlatform:
         binary_path = bin_dir / "llama-server"
         binary_path.write_bytes(b"fake")
 
-        # Real dirs so dedupe_existing_dirs keeps them.
         custom_lib = tmp_path / "custom_lib"
         other_lib = tmp_path / "other_lib"
         custom_lib.mkdir()
@@ -374,7 +373,6 @@ class TestSetupShLogic:
         (mock_bin / "git").write_text("#!/bin/bash\nexit 0\n")
         (mock_bin / "git").chmod(0o755)
 
-        # PATH: mock_bin first, then system dirs without cmake.
         safe_dirs = [str(mock_bin)]
         for d in os.environ.get("PATH", "").split(":"):
             if d and not os.path.isfile(os.path.join(d, "cmake")):
@@ -408,7 +406,6 @@ class TestSetupShLogic:
         (mock_bin / "cmake").write_text("#!/bin/bash\nexit 0\n")
         (mock_bin / "cmake").chmod(0o755)
 
-        # PATH: mock_bin first, then system dirs without git.
         safe_dirs = [str(mock_bin)]
         for d in os.environ.get("PATH", "").split(":"):
             if d and not os.path.isfile(os.path.join(d, "git")):
@@ -635,7 +632,7 @@ class TestSourceCodePatterns:
         assert (
             '_CLONE_ARGS+=(--branch "$_RESOLVED_SOURCE_REF")' in content
         ), "_CLONE_ARGS should be extended with --branch $_RESOLVED_SOURCE_REF"
-        # --branch only when tag is not "latest".
+        # branch only when tag is not "latest".
         assert (
             '_RESOLVED_SOURCE_REF" != "latest"' in content
         ), "Should guard against literal 'latest' tag"
@@ -734,9 +731,9 @@ class TestSourceCodePatterns:
         assert all(
             "-allow-unsupported-compiler" not in line for line in cmake_args_lines
         ), "flag must not be pushed into the $CmakeArgs array"
-        # Must be scoped to the CUDA-on branch, not set for CPU-only builds. The
-        # branch also has an early GGML_CUDA=OFF (undetectable-arch CPU fallback,
-        # #5854), so anchor on GGML_CUDA=ON and the final (no-GPU) GGML_CUDA=OFF.
+        # Must be scoped to the CUDA-on branch, not set for CPU-only builds. The branch also has an early
+        # GGML_CUDA=OFF (undetectable-arch CPU fallback, #5854), so anchor on GGML_CUDA=ON and the final (no-GPU)
+        # GGML_CUDA=OFF.
         flag_idx = content.index("-allow-unsupported-compiler")
         cuda_guard_idx = content.index("if ($HasNvidiaSmi -and $NvccPath)")
         cuda_on_idx = content.index("'-DGGML_CUDA=ON'")

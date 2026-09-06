@@ -277,7 +277,7 @@ def test_vendored_module_exports_everything_unsloth_imports():
     upstream = _symbols(upstream_src, False, False)
     vendored = _symbols(_COMPAT_PATH.read_text(encoding = "utf-8"), False, False)
 
-    # Anything vendored must actually exist upstream; inventing symbols under an
-    # upstream module's name would be a silent behavioural fork.
+    # Anything vendored must actually exist upstream; inventing symbols under an upstream module's name would be a
+    # silent behavioural fork.
     invented = sorted(set(vendored) - set(upstream))
     assert invented == [], f"vendored symbols with no upstream counterpart: {invented}"

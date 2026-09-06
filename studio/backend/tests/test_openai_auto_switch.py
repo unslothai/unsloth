@@ -2113,9 +2113,9 @@ def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unload
     standard_wait = src.index("await _wait_for_model_switch_idle", standard_branch)
     standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
     standard_cancel = src.index("on_reload_confirmed(cancel = True)", standard_wait)
-    # No parens: both teardowns are asyncio.to_thread args (on-loop a 160s one would
-    # block /load's tunnel padding).
-    unload_gguf = src.index("llama_backend.unload_model", standard_wait)
+    # The helper owns both the off-loop teardown and the driver-settle wait; ordering
+    # its call here still proves no destructive GGUF work precedes the final recheck.
+    unload_gguf = src.index("_unload_llama_before_standard_load", standard_wait)
 
     assert already_loaded < gguf_wait < gguf_sidecar_check < gguf_cancel < unload_unsloth
     assert standard_branch < standard_wait < standard_sidecar_check
@@ -2576,6 +2576,52 @@ def test_build_index_survives_a_failing_scanner(tmp_path, monkeypatch):
     resolver._scan = (0.0, {})
     index = resolver._build_index()
     assert any(e.loader_id == "org/Repo-GGUF" for e in index.values())
+
+
+def test_build_index_groups_overlapping_custom_gguf_roots(tmp_path, monkeypatch):
+    import routes.models as models_route
+    from storage import studio_db
+    from utils import hf_cache_settings
+    import utils.paths as paths
+
+    root = tmp_path / "custom"
+    model = root / "publisher"
+    model.mkdir(parents = True)
+    (model / "model-Q4_K_M.gguf").write_bytes(b"x")
+    quant_dir = model / "Q8_0"
+    quant_dir.mkdir()
+    (quant_dir / "model-Q8_0.gguf").write_bytes(b"xx")
+    (quant_dir / "config.json").write_text("{}", encoding = "utf-8")
+    scan_models_dir = models_route._scan_models_dir
+    scan_lmstudio_dir = models_route._scan_lmstudio_dir
+
+    monkeypatch.setattr(
+        models_route,
+        "_scan_models_dir",
+        lambda path, **kwargs: scan_models_dir(path, **kwargs) if path in {root, quant_dir} else [],
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_scan_lmstudio_dir",
+        lambda path: scan_lmstudio_dir(path) if path in {root, quant_dir} else [],
+    )
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
+    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [])
+    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr(
+        studio_db,
+        "list_scan_folders",
+        lambda: [{"path": str(root)}, {"path": str(quant_dir)}],
+    )
+
+    index = resolver._build_index()
+
+    assert {entry.load_path for entry in index.values()} == {str(model)}
+    assert {entry.variants for entry in index.values()} == {("Q4_K_M", "Q8_0")}
 
 
 def test_non_gguf_entries_skip_gguf_sibling_revision_scans(tmp_path, monkeypatch):
@@ -3790,9 +3836,11 @@ def test_responses_and_anthropic_wire_require_vision_from_images():
     import inspect
 
     responses_src = inspect.getsource(inference_route.openai_responses)
-    assert "require_vision = _messages_have_image(" in responses_src
+    assert "_responses_has_image = _messages_have_image(" in responses_src
+    assert "require_vision = _responses_has_image" in responses_src
     anthropic_src = inspect.getsource(inference_route.anthropic_messages)
-    assert "require_vision = _anthropic_request_has_image(" in anthropic_src
+    assert "_anthropic_has_image = _anthropic_request_has_image(" in anthropic_src
+    assert "require_vision = _anthropic_has_image" in anthropic_src
     # /messages/count_tokens shares the /messages translation, so it needs the same
     # guard: an image count must not evict a vision model for a text-only target.
     count_src = inspect.getsource(inference_route.anthropic_count_tokens)
@@ -6643,6 +6691,54 @@ def test_forgetting_a_cached_repo_also_clears_its_snapshot_path_entry(override_s
     assert resp.overrides == {}
 
 
+def test_a_remove_reports_every_key_it_cleared(override_store):
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 2048)
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", remove = True, llama_extra_args = [])
+    assert resp.removed_keys == [
+        "unsloth/B-GGUF:Q4_K_M",
+        "unsloth/B-GGUF",
+        f"{_LEGACY_SNAPSHOT}:Q4_K_M",
+    ]
+    assert resp.overrides == {}
+
+
+def test_a_remove_reports_the_legacy_label_of_a_loose_gguf(override_store):
+    settings.set_model_override("/models/Qwen3-4B-Q4_K_M.gguf:q4_k_m", max_seq_length = 4096)
+
+    resp = _put("/models/Qwen3-4B-Q4_K_M.gguf", remove = True, llama_extra_args = [])
+    assert resp.removed_keys == [
+        "/models/Qwen3-4B-Q4_K_M.gguf",
+        "/models/Qwen3-4B-Q4_K_M.gguf:q4_k_m",
+    ]
+    assert resp.overrides == {}
+
+
+def test_a_remove_leaves_the_bare_row_for_a_remaining_quant_and_says_so(override_store):
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 2048)
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    settings.set_model_override("unsloth/B-GGUF:Q8_0", max_seq_length = 16384)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", remove = True, llama_extra_args = [])
+    assert resp.removed_keys == ["unsloth/B-GGUF:Q4_K_M"]
+    assert set(resp.overrides) == {"unsloth/B-GGUF", "unsloth/B-GGUF:Q8_0"}
+
+
+def test_a_save_reports_no_removed_keys(override_store):
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192)
+    assert resp.removed_keys == []
+
+
+def test_a_fill_reports_no_removed_keys(override_store):
+    # A fill retires nothing, and the browser deletes whatever a response reports.
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768, fill_absent_fields = True)
+    assert resp.removed_keys == []
+
+
 def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
     # Only the same repo and the same quant fold together: a ./models path is keyed by its path
     # alone, another quant has its own settings, and a bare entry backs every quant.
@@ -9078,7 +9174,15 @@ def test_streaming_responses_refuses_a_non_gguf_swap(monkeypatch):
         payload = _responses_payload(stream = streaming)
         with pytest.raises(RuntimeError):
             asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
-        assert captured["gguf_only"] is streaming
+        # Only the streaming branch preflights here, and it must pin GGUF. The
+        # non-streaming one delegates its preflight to the chat route, whose own
+        # switch is right NOT to pin, so it passes no gguf_only at all. Asserting
+        # the key is absent rather than falsy keeps that distinction: `.get(...,
+        # False)` would also pass if the streaming branch stopped sending it.
+        if streaming:
+            assert captured["gguf_only"] is True
+        else:
+            assert "gguf_only" not in captured
 
 
 def test_a_pickle_checkpoint_is_not_switchable(tmp_path):

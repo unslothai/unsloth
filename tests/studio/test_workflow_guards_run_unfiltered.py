@@ -36,11 +36,14 @@ LINT = REPO / ".github" / "workflows" / "workflow-trigger-lint.yml"
 # Modules that read a workflow file but cannot run in that job, each with the reason.
 # Shrinking this is the point; growing it needs a reason written here.
 EXEMPT = {
-    # Imports PIL, which that job does not install (it installs pyyaml, pytest and vermin
-    # only, deliberately, so the lint stays seconds rather than minutes).
+    # Imports PIL, which that job does not install (it installs pyyaml, pytest, pytest-xdist and vermin only,
+    # deliberately, so the lint stays seconds rather than minutes).
     "test_tauri_branding_contract.py",
     # Imports a local `utils` helper that resolves only under the full test environment.
     "test_update_release_notes.py",
+    # Spoofs the hardware stack, so it imports numpy/torch through the studio backend.
+    # It runs in the Studio backend job, which installs them; this one deliberately does not.
+    "test_mlx_context_platform_matrix.py",
 }
 
 

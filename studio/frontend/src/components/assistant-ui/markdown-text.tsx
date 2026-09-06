@@ -24,7 +24,9 @@ import {
   searchImagesSignature,
 } from "@/features/chat/search-images/search-images";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
+import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
@@ -78,6 +80,8 @@ import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
   IncrementalMarkdownCache,
+  markdownRenderKey,
+  parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
 } from "./streaming-render-schedule";
 
@@ -143,6 +147,10 @@ const STREAMDOWN_COMPONENTS = {
 const STREAMDOWN_ALLOWED_TAGS = {
   [SEARCH_IMAGE_TAG]: ["token"],
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
+
+// Module-scoped: Streamdown extends its sanitize schema only for its default pipeline, so the
+// allowed-tag merge and the data-image protocol ride on a pipeline we pass ourselves (see lib).
+const STREAMDOWN_REHYPE_PLUGINS = withDataImageSupport(STREAMDOWN_ALLOWED_TAGS);
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const ACTION_PANEL_CLASS =
@@ -746,19 +754,21 @@ const MarkdownTextImpl = () => {
     () =>
       stabilizeStreamingMarkdown(
         preprocessLaTeX(
-          rewriteSearchImageTokens(
-            placeSubjectImages(
-              // No images means nothing to hold back, not even a trailing `[`.
-              holdBackPartialSearchImageToken(
-                displayText,
-                isStreaming && searchImages.size > 0,
+          normalizeEscapedInlineMath(
+            rewriteSearchImageTokens(
+              placeSubjectImages(
+                // no images means nothing to hold back, including a trailing bracket.
+                holdBackPartialSearchImageToken(
+                  displayText,
+                  isStreaming && searchImages.size > 0,
+                ),
+                searchImages,
+                isStreaming,
+                precedingText,
+                messageTexts,
               ),
               searchImages,
-              isStreaming,
-              precedingText,
-              messageTexts,
             ),
-            searchImages,
           ),
         ),
         isStreaming,
@@ -779,6 +789,7 @@ const MarkdownTextImpl = () => {
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
+  const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
@@ -792,15 +803,19 @@ const MarkdownTextImpl = () => {
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={status.type} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
-            parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
+            parseMarkdownIntoBlocksFn={
+              incrementalRender?.parseMarkdownIntoBlocks ??
+              parseMarkdownIntoRenderableBlocks
+            }
             isAnimating={isStreaming}
             animated={STREAMDOWN_IMMEDIATE_UPDATES}
             plugins={STREAMDOWN_PLUGINS}
             components={STREAMDOWN_COMPONENTS}
             allowedTags={STREAMDOWN_ALLOWED_TAGS}
+            rehypePlugins={STREAMDOWN_REHYPE_PLUGINS}
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}

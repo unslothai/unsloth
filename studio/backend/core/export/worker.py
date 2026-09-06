@@ -451,6 +451,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 imatrix_file = cmd.get("imatrix_file"),
                 private = cmd.get("private", False),
+                gguf_shard_size = cmd.get("gguf_shard_size"),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
@@ -573,16 +574,10 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             return
 
     # ── 1b. Check Triton on Windows (must precede import torch) ──
+    # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
-        try:
-            import triton  # noqa: F401
-            logger.info("Triton available — torch.compile enabled")
-        except ImportError:
-            os.environ["TORCHDYNAMO_DISABLE"] = "1"
-            logger.warning(
-                "Triton not found on Windows — torch.compile disabled. "
-                'Install for better performance: pip install "triton-windows<3.7"'
-            )
+        from core._msvc_env import gate_torch_compile_on_windows
+        gate_torch_compile_on_windows(logger)
 
     # ── 1c. Stub torchao on Windows ROCm ──
     # See core/_torchao_stub.py: torchao crashes on Windows ROCm (RCCL absent).
@@ -650,6 +645,7 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         )
         return
 
+    # ── 4. Command loop - process commands until shutdown ──
     # ── 4. Command loop — process commands until shutdown ──
     logger.info("Export subprocess ready, entering command loop")
 

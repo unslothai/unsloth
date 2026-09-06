@@ -132,30 +132,25 @@ export type { ExternalConnectionRef } from "./model-selector/missing-external-mo
 
 interface ModelSelectorProps {
   models: ModelOption[];
-  /** Models a task-specific runtime confirms are locally loadable even when
-   * their specialized cache layout is absent from the generic Hub inventory. */
+  /** Models a task-specific runtime confirms are locally loadable even when their specialized
+   *  cache layout is absent from the generic Hub inventory. */
   additionalOnDeviceModels?: ModelOption[];
   /** Task-owned runtime residency when it is separate from Chat's main slot. */
   loadedModelIdOverride?: string;
   loraModels?: LoraModelOption[];
   externalModels?: ExternalModelOption[];
-  /**
-   * The connections behind `externalModels`, carrying each one's cached catalogue.
-   * `externalModels` lists only the models the user ticked, so it cannot tell a model the
-   * user turned off from one the provider withdrew; the catalogue can.
-   */
+  /** The connections behind `externalModels`, carrying each one's cached catalogue.
+   *  `externalModels` lists only the models the user ticked, so it cannot tell a model the user
+   *  turned off from one the provider withdrew; the catalogue can. */
   externalConnections?: ExternalConnectionRef[];
   value?: string;
   defaultValue?: string;
-  /**
-   * Whether the selection is actually resident. Omitted means "a selection is
-   * a load", which is what every caller assumed until an image or video load
-   * started evicting the chat model out from under this tick.
-   */
+  /** Whether the selection is actually resident. Omitted means "a selection is a load", which
+   *  every caller assumed until an image or video load started evicting the chat model. */
   loaded?: boolean;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
-  activeGgufContextLength?: number | null;
+  activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
@@ -178,12 +173,14 @@ interface ModelSelectorProps {
   showCloudIndicator?: boolean;
   /** Restrict the Hub tab to a pipeline task (e.g. text-to-image). */
   task?: HfTaskFilter;
-  /** Canonical model groups (Images / Video pages): collapses a model's artifact repos into one row with a format second level and device-aware routing. Undefined (chat) changes nothing. */
+  /** Canonical model groups (Images / Video pages): collapses a model's artifact repos into one
+   *  row with a format second level and device-aware routing. Undefined (chat) changes nothing. */
   catalog?: CatalogGroup[];
-  /** Also list community (non-unsloth) models for `task`. Opt-in: only pages
-   *  whose runtime loads arbitrary publishers. */
+  /** Also list community (non-unsloth) models for `task`. Opt-in: only pages whose runtime loads
+   *  arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
-  /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
+  /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
+   *  pick so it reads as separate from the chat model. */
   placeholder?: string;
 }
 
@@ -236,8 +233,8 @@ function ModelSelectorTrigger({
         {isLoaded &&
           (onEject ? (
             // Loaded status doubles as a mouse eject shortcut (checkmark at rest, eject on hover). A plain
-            // span keeps it out of the trigger button's content model; keyboard/SR users eject via the
-            // "Eject model" button. stopPropagation stops the popover toggling, and on touch (no hover)
+            // span keeps it out of the trigger button's content model; keyboard and SR users eject via
+            // the "Eject model" button. stopPropagation stops the popover toggling, and on touch
             // pointer-events-none disables it so taps open the picker instead.
             <span
               aria-hidden={true}
@@ -363,7 +360,7 @@ function ModelSelectorContent({
   value,
   activeGgufVariant,
   activeModelConfig,
-  activeGgufContextLength,
+  activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
   onSelect,
@@ -388,7 +385,7 @@ function ModelSelectorContent({
   value?: string;
   activeGgufVariant?: string | null;
   activeModelConfig?: PerModelConfig | null;
-  activeGgufContextLength?: number | null;
+  activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
@@ -449,8 +446,8 @@ function ModelSelectorContent({
     null,
   );
 
-  // The picker remounts on each open but this section state does not, so
-  // re-derive the default section on the open edge.
+  // The picker remounts on each open but this section state does not, so re-derive the default
+  // section on the open edge.
   const wasOpen = useRef(open);
   useEffect(() => {
     if (open && !wasOpen.current) {
@@ -516,7 +513,8 @@ function ModelSelectorContent({
       displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
       ggufVariant: meta.ggufVariant ?? null,
       isGguf,
-      // Ollama's models sit under a link dir the resolver skips, so mirroring their settings would advertise an impossible load.
+      // Ollama's models sit under a link dir the resolver skips, so mirroring their settings would
+      // advertise an impossible load.
       apiLoadable: isGguf && !isOllamaLinkPath(id),
       meta,
     });
@@ -542,11 +540,16 @@ function ModelSelectorContent({
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
         visibleConfigTarget
-          ? "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-y-auto px-4 pt-4 pb-4"
+          ? // The surface stays the surface: it clips to its own radius and never scrolls. Making
+            // the rounded box the scroller put the scrollbar inside it, running the full height
+            // and straight through the top and bottom right corners, which squared them off on
+            // any machine set to show scrollbars always. The padding moves in with the scroller so
+            // the bar sits beside the content instead of on the edge.
+            "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-hidden p-0"
           : cn(
               "pt-4 pb-0 pl-4",
-              // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches the
-              // pill's left gap. Widths track the controls they hold so the single-line row does not wrap.
+              // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches
+              // the pill's left gap. Widths track the controls they hold so the row does not wrap.
               hasExternal
                 ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
                 : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
@@ -564,7 +567,8 @@ function ModelSelectorContent({
         disableHoverableContent={true}
       >
         {visibleConfigTarget ? (
-          <ModelConfigPage
+          <div className="min-h-0 w-full overflow-y-auto px-4 pt-4 pb-4">
+            <ModelConfigPage
             key={`${visibleConfigTarget.id}::${visibleConfigTarget.ggufVariant ?? ""}`}
             target={visibleConfigTarget}
             onBack={() => setConfigTarget(null)}
@@ -587,7 +591,7 @@ function ModelSelectorContent({
               value === visibleConfigTarget.id &&
               (activeGgufVariant ?? null) ===
                 (visibleConfigTarget.ggufVariant ?? null)
-                ? (activeGgufContextLength ?? null)
+                ? (activeLoadedContextLength ?? null)
                 : null
             }
             initialConfig={
@@ -597,7 +601,8 @@ function ModelSelectorContent({
                 ? (selectedConfig ?? null)
                 : null
             }
-          />
+            />
+          </div>
         ) : (
           <>
             <HubModelPicker
@@ -621,6 +626,9 @@ function ModelSelectorContent({
               section={effectiveHubSection}
               sectionToggle={
                 <PillTabs
+                  // Wider tabs than the shared default. The panel reserves
+                  // --picker-tab-pad a pill, so keep the two in step.
+                  className="[&_[role=tab]]:px-[calc(0.75rem_+_var(--picker-tab-pad)/2)]"
                   ariaLabel={t("picker.hubSectionAriaLabel")}
                   tabs={hubSectionTabs}
                   value={effectiveHubSection}
@@ -651,7 +659,7 @@ export function ModelSelector({
   defaultValue,
   activeGgufVariant,
   activeModelConfig,
-  activeGgufContextLength,
+  activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
   onValueChange,
@@ -684,8 +692,8 @@ export function ModelSelector({
   const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
 
   const selected = value ?? uncontrolled;
-  // A selection is only a load when the caller has not said otherwise: the chat
-  // model can be evicted by an image or video load while the pick survives.
+  // A selection is only a load when the caller has not said otherwise: the chat model can be
+  // evicted by an image or video load while the pick survives.
   const isLoaded = selected !== "" && (loaded ?? true);
 
   const optionById = useMemo(() => {
@@ -737,18 +745,16 @@ export function ModelSelector({
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     const found = optionById.get(selected);
-    // A pick whose connection no longer offers it takes its option away and leaves the
-    // id in the checkpoint, and the generic fallback below cannot shorten an
-    // `external::` id. Name the model the user picked, and say why it is unusable: it
-    // cannot be loaded, so a tidy name on its own would hide the failure until the next
-    // send (#8405). The connections carry the cached catalogue, which is what separates a
-    // model the user unticked from one the provider withdrew.
+    // A pick whose connection no longer offers it takes its option away and leaves the id in the
+    // checkpoint, and the generic fallback cannot shorten an `external::` id. Name the model the
+    // user picked and say why it is unusable, or a tidy name would hide the failure until the
+    // next send (#8405). The connections carry the cached catalogue, which separates a model the
+    // user unticked from one the provider withdrew.
     const missingExternal = found
       ? null
       : missingExternalModel(selected, externalModels, externalConnections);
-    // No catalog entry (yet, or ever); a cached GGUF's checkpoint is a snapshot path.
-    // The leaf, not the namespaced public id (#7966), matches the catalog row that
-    // later replaces this one.
+    // No catalog entry (yet, or ever); a cached GGUF's checkpoint is a snapshot path. The leaf,
+    // not the namespaced public id (#7966), matches the catalog row that later replaces this one.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
@@ -824,15 +830,15 @@ export function ModelSelector({
         value={selected}
         activeGgufVariant={activeGgufVariant}
         activeModelConfig={activeModelConfig}
-        activeGgufContextLength={activeGgufContextLength}
+        activeLoadedContextLength={activeLoadedContextLength}
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
-        // A curated task picker (Images / Video) is self-contained, so it omits this.
-        // A community-enabled one (Audio) already lists past unsloth, so it keeps it.
+        // A curated task picker (Images / Video) is self-contained, so it omits this. A
+        // community-enabled one (Audio) already lists past unsloth, so it keeps it.
         onBrowseHub={
           task && communityModelPolicy === "none" ? undefined : handleBrowseHub
         }

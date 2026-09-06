@@ -21,12 +21,11 @@ from utils.paths import auth_db_path, ensure_dir
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
 
-# Single source for the password policy; models/auth.py ChangePasswordRequest
-# and the terminal prompt both enforce it. Keep the unsloth_cli mirror in sync.
+# Single source for the password policy; models/auth.py ChangePasswordRequest and the terminal
+# prompt both enforce it. Keep the unsloth_cli mirror in sync.
 MIN_PASSWORD_LENGTH = 8
 
-# Plaintext bootstrap password file beside auth.db, deleted on first password
-# change so the credential never lingers on disk.
+# Plaintext bootstrap password file, deleted on first password change.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 
 # In-process cache to avoid re-reading the file on every HTML serve.
@@ -81,8 +80,7 @@ def _normalise_bootstrap_file(raw: bytes, password: str) -> None:
     if raw != password.encode("utf-8"):
         return
 
-    # O_BINARY: without it Windows opens in text mode and turns the LF straight
-    # back into CRLF, the bug being fixed.
+    # O_BINARY: Windows text mode turns the LF back into CRLF, the bug being fixed.
     fd = os.open(
         _BOOTSTRAP_PW_PATH,
         os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0),
@@ -103,9 +101,7 @@ def _read_persisted_bootstrap_password() -> Optional[str]:
     if not _BOOTSTRAP_PW_PATH.is_file():
         return None
 
-    # No caller handles a raise, so an unreadable file has to mean "no bootstrap
-    # password", not a dead backend. We write UTF-8, so undecodable bytes are
-    # damage whose plaintext is worthless anyway.
+    # An unreadable file must mean "no bootstrap password"; no caller handles a raise.
     try:
         raw = _BOOTSTRAP_PW_PATH.read_bytes()
         password = raw.decode("utf-8").strip()
@@ -114,8 +110,7 @@ def _read_persisted_bootstrap_password() -> Optional[str]:
     if not password:
         return None
 
-    # Older releases wrote no terminator; best-effort, a read-only auth dir must
-    # not fail startup.
+    # Older releases wrote no terminator; a read-only auth dir must not fail startup.
     if raw != _bootstrap_file_bytes(password):
         try:
             _normalise_bootstrap_file(raw, password)
@@ -185,10 +180,7 @@ def clear_bootstrap_password() -> None:
         try:
             _BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
         except OSError as e:
-            # Removal failed (Windows AV, read-only auth dir). The hash is already
-            # committed, so don't fail the change -- but truncate the file so its
-            # stale plaintext can't be re-seeded by generate_bootstrap_password()
-            # if auth.db is ever recreated.
+            # Truncate when removal fails: stale plaintext would otherwise be re-seeded if auth.db is recreated.
             try:
                 _BOOTSTRAP_PW_PATH.write_text("", encoding = "utf-8")
                 cleared = True
@@ -202,8 +194,7 @@ def clear_bootstrap_password() -> None:
                     "cleared its contents so the old bootstrap password cannot be reused."
                 )
             else:
-                # Neither removed nor truncated: stale plaintext is still on disk
-                # and would be reused if auth.db is reset. Don't claim otherwise.
+                # Stale plaintext is still on disk and would be reused if auth.db is reset.
                 message = (
                     f"Warning: could not delete or clear {_BOOTSTRAP_PW_PATH.name} ({e}); "
                     "its old bootstrap password is still on disk. Remove it manually to "
@@ -272,21 +263,15 @@ def get_connection() -> sqlite3.Connection:
     """Get a connection to the auth database, creating tables if needed."""
     ensure_dir(DB_PATH.parent)
     conn = sqlite3.connect(DB_PATH)
-    # Keep the auth dir + DB private (they hold the JWT/identity secrets and
-    # password hashes); sqlite3.connect would otherwise create the DB 0644 under
-    # a 022 umask, letting another OS user read the identity secret and forge proofs.
+    # sqlite3.connect would create the DB 0644 under a 022 umask, exposing identity secrets and password hashes.
     for _path, _mode in ((DB_PATH.parent, 0o700), (DB_PATH, 0o600)):
         try:
             os.chmod(_path, _mode)
         except OSError:
             pass
     conn.row_factory = sqlite3.Row
-    # WAL lets token reads run concurrently with refresh-token writes;
-    # busy_timeout bounds lock waits. Matches the other Unsloth SQLite stores.
-    # Set busy_timeout first: switching journal_mode needs a lock, so if a
-    # refresh-token write already holds one, journal_mode=WAL raises SQLITE_BUSY;
-    # with busy_timeout already in effect it waits instead of failing and leaving
-    # this connection on SQLite's default zero lock wait.
+    # Set busy_timeout before journal_mode=WAL: switching journal mode needs a lock and would otherwise
+    # raise SQLITE_BUSY.
     try:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA journal_mode=WAL")
@@ -357,13 +342,8 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+# No lock needed: INSERT OR IGNORE is atomic and concurrent populations converge on the same value.
 # ── API-key PBKDF2 salt ────────────────────────────────────────────────
-#
-# Module-level cache for the persistent API-key PBKDF2 salt, populated lazily
-# via ``_get_or_create_api_key_pbkdf2_salt``. No lock needed: (a) ``INSERT OR
-# IGNORE`` is atomic at the SQLite layer and (b) concurrent populations
-# converge on the same value, so the worst case is a harmless duplicate read
-# on startup.
 _api_key_pbkdf2_salt_cache: Optional[bytes] = None
 
 
@@ -385,7 +365,7 @@ def _get_or_create_api_key_pbkdf2_salt() -> bytes:
         )
         row = cur.fetchone()
         if row is None:
-            new_value = secrets.token_hex(32)  # 32 bytes -> 64 hex chars
+            new_value = secrets.token_hex(32)
             conn.execute(
                 "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
                 ("api_key_pbkdf2_salt", new_value),
@@ -404,9 +384,7 @@ def _get_or_create_api_key_pbkdf2_salt() -> bytes:
     return salt
 
 
-# Secret answering the /api/auth/identity challenge (HMAC(secret, nonce)). Lives
-# in this same-user DB so a port squatter or remote/fake server can't forge a
-# proof. Separate from the per-user JWT secret.
+# Identity-challenge secret lives in auth.db so a port squatter cannot forge a proof; separate from the JWT secret.
 _IDENTITY_SECRET_DB_KEY = "studio_identity_secret"
 _identity_secret_cache: Optional[bytes] = None
 
@@ -441,9 +419,8 @@ def get_or_create_identity_secret() -> bytes:
     return secret
 
 
-# Dedicated AES-256 key used to encrypt Unsloth credentials in studio.db.
-# It intentionally lives in auth.db so copying studio.db alone does not expose
-# provider or Hugging Face tokens, and survives password changes/resets.
+# Dedicated AES-256 key: lives in auth.db so copying studio.db alone does not expose provider/HF
+# tokens, and survives password resets.
 _CREDENTIAL_ENCRYPTION_KEY_DB_KEY = "credential_encryption_key_v1"
 _credential_encryption_key_cache: Optional[bytes] = None
 
@@ -487,17 +464,14 @@ def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     real one, e.g. localhost resolving to ::1 while Unsloth is on 127.0.0.1) was
     computed for that other endpoint and won't match the one the client dialed."""
     try:
-        host = ipaddress.ip_address(host).compressed  # normalise 127.0.0.1 / ::1 forms
+        host = ipaddress.ip_address(host).compressed
     except ValueError:
         host = (host or "").lower()
     msg = b"|".join([nonce, host.encode(), str(int(port)).encode()])
     return hmac.new(get_or_create_identity_secret(), msg, hashlib.sha256).hexdigest()
 
 
-# Capability secret for public ``/p`` preview share links. HMAC(secret, ref)
-# turns the deterministic preview ref into an unguessable bearer capability, so a
-# guessed run/checkpoint name can't reach inference. Dedicated (not the per-user
-# JWT secret) so rotating it revokes every shared link without touching logins.
+# Dedicated secret so rotating it revokes every shared preview link without touching logins.
 _PREVIEW_LINK_SECRET_DB_KEY = "preview_link_secret"
 _preview_link_secret_cache: Optional[bytes] = None
 
@@ -579,11 +553,8 @@ def _pbkdf2_desktop_secret(raw_secret: str) -> str:
     return _pbkdf2_api_key(raw_secret)
 
 
-# Memoize the deterministic raw-key -> PBKDF2-hash derivation so the 100k-round
-# KDF runs once per key instead of on every authenticated request. Keyed by a
-# salted HMAC of the key (not the key itself); revocation/expiry are still
-# enforced by the SQLite read on every call, so a cache hit only skips the KDF.
-# Only keys present in the DB are cached, so unknown-key spam can't grow it.
+# Keyed by a salted HMAC, not the key; revocation/expiry are still enforced by the SQLite read, and
+# only known keys are cached.
 _api_key_hash_cache: dict[str, str] = {}
 # Whether each memoized key was minted internally; set once, since minting decides it.
 _api_key_internal_cache: dict[str, bool] = {}
@@ -873,9 +844,8 @@ def consume_refresh_token(token: str) -> Optional[Tuple[str, bool, str]]:
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
-        # One transaction with the delete: an unstamped legacy row has no
-        # generation to compare, so reading the credential after committing would
-        # hand a reset's new secret to a token issued before it.
+        # One transaction with the delete: an unstamped legacy row has no generation, so a later read could
+        # hand a reset's new secret to an older token.
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "DELETE FROM refresh_tokens WHERE expires_at < ?",
@@ -914,7 +884,6 @@ def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
     token_hash = _hash_token(token)
     conn = get_connection()
     try:
-        # Opportunistically clean up expired tokens
         conn.execute(
             "DELETE FROM refresh_tokens WHERE expires_at < ?",
             (datetime.now(timezone.utc).isoformat(),),
@@ -939,7 +908,6 @@ def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
             conn.commit()
             return None
 
-        # Check expiry
         expires_at = datetime.fromisoformat(row["expires_at"])
         if datetime.now(timezone.utc) > expires_at:
             conn.execute("DELETE FROM refresh_tokens WHERE id = ?", (row["id"],))
@@ -1032,18 +1000,11 @@ def clear_desktop_secret() -> None:
 
 
 # ---------------------------------------------------------------------------
-# API key management
-# ---------------------------------------------------------------------------
 
 API_KEY_PREFIX = "sk-unsloth-"
 
-# The ``name`` a workflow mints its internal key under. Unsloth mints internal
-# keys for more than one workflow and they do not carry the same authority, so
-# the name is the only thing that tells them apart after the fact. Deep Research
-# is durable: its hops outlive the session that started them, so they carry a key
-# instead of a JWT and still have to reach the saved connection the run was
-# created with. A data-recipe key is handed to a user-authored recipe subprocess
-# and needs nothing but this host's local /v1, so it must never gain that reach.
+# The name is the only thing distinguishing internal keys by authority: Deep Research keys must
+# reach the saved connection, data-recipe keys only local /v1.
 DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
 
 
@@ -1274,9 +1235,8 @@ def validate_api_key_with_credential(
             with _api_key_hash_cache_lock:
                 if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:
                     _api_key_hash_cache.clear()
-                    # is_internal_api_key sizes itself against the hash cache, so clearing one
-                    # without the other lets the origin cache grow past the bound. Deep Research
-                    # mints a fresh internal key per model call, so that adds up.
+                    # Clear both caches together: the origin cache is sized against the hash cache and would otherwise
+                    # grow past its bound.
                     _api_key_internal_cache.clear()
                 _api_key_hash_cache[cache_id] = key_hash
         if not row["is_active"]:

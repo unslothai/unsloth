@@ -25,7 +25,8 @@ _section = [0]
 _failed: list[str] = []
 _warned: list[str] = []
 
-# When 1, audit-finding assertions become hard fails. Off by default: surfaced as WARN.
+# When 1, audit-finding assertions become hard fails.
+# Off by default: surfaced as WARN.
 STRICT_AUDIT = os.environ.get("STUDIO_API_STRICT_AUDIT", "0") == "1"
 
 
@@ -114,11 +115,9 @@ def login(password: str) -> tuple[int, str | None]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 1. CORS hardening
-# ─────────────────────────────────────────────────────────────────────────
 section("CORS hardening")
 
-# Cross-origin OPTIONS preflight. Bad pattern: wildcard origin echoed alongside credentials=true.
+# Cross-origin OPTIONS preflight.
 req = urllib.request.Request(
     f"{BASE}/api/auth/login",
     method = "OPTIONS",
@@ -200,7 +199,6 @@ if code != 200 or not NEW_TOKEN:
 ok("login with NEW -> 200")
 AUTH_HEADER = {"Authorization": f"Bearer {NEW_TOKEN}"}
 
-# Re-test /api/system endpoints WITH auth.
 for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibility"):
     code, _ = http("GET", endpoint, headers = AUTH_HEADER)
     if code == 200:
@@ -208,7 +206,6 @@ for endpoint in ("/api/system", "/api/system/hardware", "/api/system/gpu-visibil
     else:
         fail(f"GET {endpoint} authenticated returned {code} (expected 200)")
 
-# Sections 5 + 7 below need a loaded model.
 section("Load the GGUF for /v1 tests")
 code, body = http(
     "POST",
@@ -229,11 +226,8 @@ ok(f"loaded {GGUF_REPO}")
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 3. Auth state machine
-# ─────────────────────────────────────────────────────────────────────────
 section("Auth state machine")
 
-# OLD bootstrap pw must now be rejected.
 code, _ = login(OLD)
 if code == 401:
     ok("login with OLD bootstrap pw -> 401")
@@ -290,8 +284,6 @@ else:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 4. JWT-expiry rejection
-# ─────────────────────────────────────────────────────────────────────────
 section("JWT expiry")
 # Forge a JWT with exp=now-1 using the install's signing secret.
 # get_user_and_secret('unsloth') returns (salt, hash, jwt_secret, must_change_pw).
@@ -310,7 +302,6 @@ try:
             / "backend"
         ),
     )
-    # Best-effort import; not all installs ship the backend at this path.
     import jwt  # type: ignore[import-not-found]
     from auth import storage  # type: ignore[import-not-found]
 
@@ -338,8 +329,6 @@ except Exception as exc:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 5. API key lifecycle E2E
-# ─────────────────────────────────────────────────────────────────────────
 section("API key lifecycle")
 
 code, body = http(
@@ -351,7 +340,8 @@ code, body = http(
 if code != 200 or not isinstance(body, dict):
     fail(f"POST /api/auth/api-keys -> {code}: {_shape(body)}")
 else:
-    # Flat "key" is the one-time bearer; the "api_key" sub-dict carries metadata.
+    # Flat "key" is the one-time bearer;
+    # the "api_key" sub-dict carries metadata.
     api_key = body.get("key")
     api_meta = body.get("api_key") if isinstance(body.get("api_key"), dict) else {}
     api_id = api_meta.get("id") or body.get("id")
@@ -359,7 +349,6 @@ else:
         fail(f"create-key missing key/id: {_shape(body)}")
     else:
         ok(f"created key id={api_id}")
-        # List must include this id.
         code, body = http("GET", "/api/auth/api-keys", headers = AUTH_HEADER)
         if code == 200 and isinstance(body, dict):
             ids = [k.get("id") for k in body.get("api_keys", body.get("keys", []))]
@@ -370,7 +359,6 @@ else:
         else:
             fail(f"GET /api/auth/api-keys -> {code}: {_shape(body)}")
 
-        # Use the key against /v1/chat/completions.
         code, body = http(
             "POST",
             "/v1/chat/completions",
@@ -388,7 +376,6 @@ else:
         else:
             fail(f"/v1/chat/completions with API key -> {code}: {_shape(body)}")
 
-        # Delete + verify rejection.
         code, _ = http(
             "DELETE",
             f"/api/auth/api-keys/{api_id}",
@@ -444,11 +431,8 @@ else:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 7. Inference lifecycle gaps
-# ─────────────────────────────────────────────────────────────────────────
 section("Inference lifecycle")
 
-# /v1/models must list the loaded model.
 code, body = http("GET", "/v1/models", headers = AUTH_HEADER)
 if code == 200 and isinstance(body, dict):
     ids = [m.get("id") for m in body.get("data", [])]
@@ -474,7 +458,6 @@ elif 400 <= code < 600 and code != 500:
 else:
     fail(f"/v1/embeddings -> {code} (expected 200 or 4xx/501)")
 
-# /v1/responses minimal request.
 code, body = http(
     "POST",
     "/v1/responses",
@@ -512,7 +495,7 @@ else:
     fail(f"bogus gguf_variant returned {code} (expected 4xx)")
 
 
-# Force-reload of the same repo: child PID must change.
+# Force-reload of the same repo: the child PID must change.
 def _llama_pid() -> int | None:
     code, body = http("GET", "/api/inference/status", headers = AUTH_HEADER)
     if code != 200 or not isinstance(body, dict):
@@ -545,8 +528,6 @@ else:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 8. Endpoint-by-endpoint auth audit
-# ─────────────────────────────────────────────────────────────────────────
 section("Endpoint auth audit")
 # Pin the EXPECTED auth posture per route; a new unlisted route fails the audit.
 PUBLIC = {
@@ -557,7 +538,6 @@ PUBLIC = {
     ("POST", "/api/auth/refresh"),
 }
 EXPECTED_AUTH_ENDPOINTS = [
-    # Auth-required (sample -- not exhaustive; covers the key surfaces)
     ("GET", "/api/inference/status"),
     ("GET", "/api/inference/models"),
     ("GET", "/v1/models"),
@@ -592,9 +572,6 @@ for method, path in PUBLIC:
         fail(f"{method} {path} public returned unexpected {code}")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Summary
-# ─────────────────────────────────────────────────────────────────────────
 os.write(1, b"\n")
 if _warned:
     _emit(

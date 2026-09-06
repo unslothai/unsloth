@@ -184,7 +184,7 @@ function subscribeToConfigChanges(onChange: () => void): () => void {
   const onStorage = (event: Event) => {
     const key = (event as StorageEvent).key;
     // A null key means the whole store was cleared, which counts.
-    if (key == null || WATCHED_STORAGE_KEYS.includes(key)) onConfigWrite();
+    if (key == null || watchedStorageKeys().includes(key)) onConfigWrite();
   };
   window.addEventListener("storage", onStorage);
   const unsubscribeStore = useChatRuntimeStore.subscribe(onChange);
@@ -195,8 +195,16 @@ function subscribeToConfigChanges(onChange: () => void): () => void {
   };
 }
 
-/** localStorage keys whose cross-tab writes change what the bar should show. */
-const WATCHED_STORAGE_KEYS = [
+/**
+ * localStorage keys whose cross-tab writes change what the bar should show.
+ *
+ * A function, not a module-scope array. This module is in an import cycle
+ * through features/chat, so it can be evaluated while chat-runtime-store is
+ * still initializing; naming these keys at module scope then reads a `const`
+ * in its temporal dead zone and throws at import time, taking the page down.
+ * By call time every module has finished loading.
+ */
+const watchedStorageKeys = () => [
   PER_MODEL_CONFIG_STORAGE_KEY,
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,

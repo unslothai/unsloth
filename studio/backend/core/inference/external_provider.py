@@ -8,11 +8,15 @@ Most providers use OpenAI-compatible /v1/chat/completions; Anthropic uses
 the native Messages API, translated in this client.
 """
 
+import asyncio
 import base64
+import io
 import json as _json
 import mimetypes
 import re
+import threading
 import time
+import wave
 from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
@@ -52,6 +56,83 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
 logger = structlog.get_logger(__name__)
+
+_MAX_CONCATENATED_WAV_BYTES = 64 * 1024 * 1024
+_MAX_CONCATENATED_WAV_SEGMENTS = 1_024
+
+
+def _merge_concatenated_wav_segments(
+    audio: bytes, cancelled: Optional[threading.Event] = None
+) -> bytes:
+    """Join a byte stream containing multiple complete WAV files into one WAV."""
+    cancelled = cancelled or threading.Event()
+    if len(audio) > _MAX_CONCATENATED_WAV_BYTES:
+        return audio
+
+    def _segment_offsets():
+        offset = 0
+        while offset < len(audio):
+            if audio[offset : offset + 4] != b"RIFF" or audio[offset + 8 : offset + 12] != b"WAVE":
+                raise ValueError("not a concatenated WAV stream")
+            segment_end = offset + 8 + int.from_bytes(audio[offset + 4 : offset + 8], "little")
+            if segment_end <= offset + 12 or segment_end > len(audio):
+                raise ValueError("invalid RIFF segment length")
+            yield offset, segment_end
+            offset = segment_end
+
+    try:
+        params = None
+        source = io.BytesIO(audio)
+        segment_count = 0
+        for segment_start, _segment_end in _segment_offsets():
+            if cancelled.is_set():
+                return audio
+            segment_count += 1
+            if segment_count > _MAX_CONCATENATED_WAV_SEGMENTS:
+                return audio
+            source.seek(segment_start)
+            with wave.open(source, "rb") as reader:
+                current = (
+                    reader.getnchannels(),
+                    reader.getsampwidth(),
+                    reader.getframerate(),
+                    reader.getcomptype(),
+                    reader.getcompname(),
+                )
+                if params is None:
+                    params = current
+                elif current != params:
+                    return audio
+        if segment_count < 2:
+            return audio
+        assert params is not None
+        output = io.BytesIO()
+        with wave.open(output, "wb") as writer:
+            writer.setnchannels(params[0])
+            writer.setsampwidth(params[1])
+            writer.setframerate(params[2])
+            writer.setcomptype(params[3], params[4])
+            for segment_start, _segment_end in _segment_offsets():
+                if cancelled.is_set():
+                    return audio
+                source.seek(segment_start)
+                with wave.open(source, "rb") as reader:
+                    expected_bytes = (
+                        reader.getnframes() * reader.getnchannels() * reader.getsampwidth()
+                    )
+                    observed_bytes = 0
+                    while frames := reader.readframes(65_536):
+                        if cancelled.is_set():
+                            return audio
+                        observed_bytes += len(frames)
+                        writer.writeframesraw(frames)
+                    if observed_bytes != expected_bytes:
+                        return audio
+        return output.getvalue()
+    except MemoryError:
+        raise
+    except Exception:
+        return audio
 
 
 def _append_provider_path(base_url: str, endpoint: str) -> str:
@@ -315,6 +396,56 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     if _OPENAI_CITE_STOP in text[last_open:]:
         return text, ""
     return text[:last_open], text[last_open:]
+
+
+def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize an OpenAI web_search_call action into card arguments.
+
+    gpt-5.x agentic search emits three action types, discriminated by
+    `action.type`: `search` carries queries, `open_page` a url, `find_in_page` a
+    url and a pattern. Reading only `action.query` renders the last two as an
+    empty `Searching ""` card. Shapes per WebSearchToolCall in
+    https://github.com/openai/openai-openapi (openapi.yaml).
+    """
+    if not isinstance(item, dict):
+        return {}
+    action = item.get("action") if isinstance(item.get("action"), dict) else {}
+    action_type = action.get("type") if isinstance(action.get("type"), str) else ""
+    # `queries` is the current field and holds every query the call ran; the
+    # singular `query` is deprecated in the spec, so it is only the fallback.
+    # Neither is required, so a search action can carry no query at all.
+    query = ""
+    for source in (action.get("queries"), item.get("queries")):
+        if isinstance(source, list):
+            joined = ", ".join(q for q in source if isinstance(q, str) and q)
+            if joined:
+                query = joined
+                break
+    if not query:
+        for legacy in (action.get("query"), item.get("query")):
+            if isinstance(legacy, str) and legacy:
+                query = legacy
+                break
+    url = action.get("url") if isinstance(action.get("url"), str) else ""
+    pattern = action.get("pattern") if isinstance(action.get("pattern"), str) else ""
+    arguments: dict[str, Any] = {}
+    if query:
+        arguments["query"] = query
+    if url:
+        arguments["url"] = url
+    if pattern:
+        arguments["pattern"] = pattern
+    if action_type:
+        arguments["action_type"] = action_type
+    return arguments
+
+
+# Families that accept `prompt_cache_retention: "24h"`. Everything else 400s
+# with "prompt_cache_retention is not supported on this model" and the turn
+# dies (openai/codex#39397), while an unmatched model just falls back to
+# in-memory caching -- so guess narrow.
+# https://developers.openai.com/api/docs/guides/prompt-caching
+_OPENAI_EXTENDED_CACHE_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?(?:[-.]|$)|gpt-4\.1$)")
 
 
 class _AnthropicThinkingSpec(NamedTuple):
@@ -5084,9 +5215,10 @@ class ExternalProviderClient:
                     break
             input_items[insert_at:insert_at] = openai_replay_items
 
-        # gpt-5.x / o3 / gpt-4.5 reject temperature/top_p (400 "Unsupported
-        # parameter"); the openai allowlist scopes the picker to these families,
-        # so never forward sampling knobs.
+        # Reasoning families reject temperature/top_p, and the UI hides both
+        # sliders for the rest (provider-capabilities.ts), so the only values
+        # arriving here are ChatCompletionRequest's 0.6/0.95 defaults, which
+        # would override OpenAI's own with a number the user never chose.
         del temperature, top_p  # accepted for API symmetry, not forwarded.
 
         body: dict[str, Any] = {
@@ -5145,9 +5277,14 @@ class ExternalProviderClient:
                 }
 
         # Opt into 24h prompt-cache retention (free, vs the default ~5-10 min).
-        # Gated on the OpenAI cloud host because ollama / llama.cpp / "custom"
-        # presets reach this path too and would 400 on the unknown field.
-        if is_openai_cloud and enable_prompt_caching is not False:
+        # Gated on the cloud host because ollama / llama.cpp / "custom" presets
+        # reach this path and 400 on the unknown field, and on the model
+        # because most cloud families reject the value itself.
+        if (
+            is_openai_cloud
+            and enable_prompt_caching is not False
+            and _OPENAI_EXTENDED_CACHE_FAMILY.match(model.strip().lower())
+        ):
             body["prompt_cache_retention"] = "24h"
 
         # Server-side context compaction (OpenAI cloud only).
@@ -5767,7 +5904,10 @@ class ExternalProviderClient:
                                 item = event.get("item", {})
                                 if isinstance(item, dict) and item.get("type") == "web_search_call":
                                     item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
-                                    web_search_calls.setdefault(item_id, {"query": ""})
+                                    web_search_calls.setdefault(
+                                        item_id,
+                                        _extract_web_search_action(item),
+                                    )
                                 # Register shell_call eagerly so out-of-order
                                 # output links back. Probe env.container_id to
                                 # emit container_ready before response.completed.
@@ -5822,26 +5962,31 @@ class ExternalProviderClient:
                                         yield _chunk_with_text(summary_text)
                                         reasoning_emitted = True
                                 elif item.get("type") == "web_search_call":
-                                    # done carries the query; emit tool_start +
+                                    # done carries the action; emit tool_start +
                                     # tool_end here. Citations are aggregated and
                                     # the last call's result is overwritten at
                                     # response.completed.
                                     item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
-                                    action = item.get("action")
-                                    query = (
-                                        action.get("query", "") if isinstance(action, dict) else ""
-                                    )
-                                    web_search_calls[item_id] = {"query": query}
+                                    # Overlay, don't replace: a partial done event
+                                    # would drop what the added event carried.
+                                    arguments = {
+                                        **web_search_calls.get(item_id, {}),
+                                        **_extract_web_search_action(item),
+                                    }
+                                    web_search_calls[item_id] = dict(arguments)
                                     yield _emit_tool_event(
                                         {
                                             "type": "tool_start",
                                             "tool_name": "web_search",
                                             "tool_call_id": item_id,
-                                            "arguments": ({"query": query} if query else {}),
+                                            "arguments": arguments,
                                         }
                                     )
                                     # Per-card text; last call gets overwritten
-                                    # with citations at response.completed.
+                                    # with citations at response.completed. The
+                                    # url variants have no query to echo, and the
+                                    # card names the page from `url` instead.
+                                    query = arguments.get("query") or ""
                                     per_call_result = f"Searching: {query}" if query else ""
                                     yield _emit_tool_event(
                                         {
@@ -6359,6 +6504,7 @@ class ExternalProviderClient:
         voice: Optional[str] = None,
         response_format: str = "wav",
         speed: Optional[float] = None,
+        instructions: Optional[str] = None,
     ) -> tuple[bytes, str]:
         """POST /audio/speech (OpenAI CreateSpeech). Returns (audio_bytes, media_type)."""
         body: dict[str, Any] = {
@@ -6370,6 +6516,8 @@ class ExternalProviderClient:
             body["voice"] = voice
         if speed is not None:
             body["speed"] = speed
+        if instructions is not None:
+            body["instructions"] = instructions
         response = await _http_client.post(
             _append_provider_path(self.base_url, "/audio/speech"),
             headers = self._auth_headers(),
@@ -6378,7 +6526,29 @@ class ExternalProviderClient:
         )
         response.raise_for_status()
         media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
-        return response.content, media_type or f"audio/{response_format}"
+        audio = response.content
+        if response_format.strip().lower() == "wav":
+            merge_cancelled = threading.Event()
+            merge_task = asyncio.create_task(
+                asyncio.to_thread(_merge_concatenated_wav_segments, audio, merge_cancelled)
+            )
+            try:
+                audio = await asyncio.shield(merge_task)
+            except asyncio.CancelledError:
+                merge_cancelled.set()
+                while not merge_task.done():
+                    try:
+                        await asyncio.shield(merge_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                try:
+                    merge_task.result()
+                except BaseException:
+                    pass
+                raise asyncio.CancelledError
+        return audio, media_type or f"audio/{response_format}"
 
     async def create_transcription(
         self,

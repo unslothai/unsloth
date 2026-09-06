@@ -95,6 +95,10 @@ def test_setup_and_the_installer_use_the_same_probe() -> None:
     assert '$llamaDirState -eq "Denied"' in SETUP_PS1
     assert '$llamaDirState -eq "Readable"' in SETUP_PS1
     assert '(Get-LlamaCppInstallReadState -Path $dir) -ne "Denied"' in INSTALL_PS1
+    assert (
+        "$llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight -StagingRoot $StageRoot"
+        in SETUP_PS1
+    )
 
 
 def test_the_probe_keeps_all_three_answers() -> None:
@@ -222,7 +226,6 @@ def test_a_tree_the_user_pointed_at_is_never_called_a_cache_we_own() -> None:
     """Preserve user-supplied wording when an override names the managed path."""
     body = _function_source(INSTALL_PS1, "Invoke-ManagedLlamaCppPreflight")
     assert "-UserSupplied:$userSupplied" in body
-    # Cover both the flag and its environment equivalent.
     assert (
         "$suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir }"
         " else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }" in body
@@ -239,6 +242,13 @@ def test_a_tree_the_user_pointed_at_is_never_called_a_cache_we_own() -> None:
 def test_the_managed_path_rule_is_not_duplicated_in_the_installer() -> None:
     """Keep managed path selection in one resolver."""
     resolver = _function_source(INSTALL_PS1, "Get-ManagedLlamaCppDir")
+    assert "param([AllowNull()][string]$StagingRoot = $null)" in resolver
+    assert 'Join-Path $StagingRoot "llama.cpp"' in resolver
+    assert "$StageRoot" not in resolver
+    preflight = _function_source(INSTALL_PS1, "Invoke-ManagedLlamaCppPreflight")
+    assert "param([AllowNull()][string]$StagingRoot = $null)" in preflight
+    assert "Get-ManagedLlamaCppDir -StagingRoot $StagingRoot" in preflight
+    assert "$StageRoot" not in preflight
     assert 'Join-Path $env:USERPROFILE ".unsloth\\llama.cpp"' in resolver
     assert 'Join-Path (Get-CanonicalDir -Path $StudioHome) "llama.cpp"' in resolver
     assert INSTALL_PS1.count('Join-Path $StudioHome "llama.cpp"') == 0
@@ -246,10 +256,8 @@ def test_the_managed_path_rule_is_not_duplicated_in_the_installer() -> None:
     # The resolver uses the single default-versus-custom predicate.
     assert "if (-not (Test-StudioHomeIsCustom)) {" in resolver
     assert "$legacyStudio" not in resolver
-    # Canonicalize both sides before comparing.
     predicate = _function_source(INSTALL_PS1, "Test-StudioHomeIsCustom")
     assert predicate.count("Get-CanonicalDir -Path") == 2
-    # Keep canonicalization in one helper.
     canonicalizer = _function_source(INSTALL_PS1, "Get-CanonicalDir")
     assert "Resolve-Path -LiteralPath $trimmedPath" in canonicalizer
     # A denied path cannot resolve, so compare lexical full paths instead.
@@ -265,7 +273,7 @@ def test_both_entrypoints_resolve_and_reuse_the_same_managed_directory() -> None
     """Both entrypoints must resolve and reuse one managed path."""
     assert '$LegacyStudioHome = Join-Path $env:USERPROFILE ".unsloth\\studio"' in SETUP_PS1
     assert "$StudioHomeIsCustom = Test-StudioHomeIsCustom" in SETUP_PS1
-    assert SETUP_PS1.count("$LlamaCppDir = Get-ManagedLlamaCppDir") == 1
+    assert SETUP_PS1.count("$LlamaCppDir = Get-ManagedLlamaCppDir -StagingRoot $StageRoot") == 1
     assert "$UnslothHome = Split-Path -Parent $LlamaCppDir" in SETUP_PS1
     for name in (
         "Get-CanonicalDir",

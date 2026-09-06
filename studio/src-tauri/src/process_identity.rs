@@ -350,6 +350,33 @@ pub(crate) fn process_start_time_secs(pid: u32) -> Option<f64> {
     process_start_time_impl(pid)
 }
 
+/// The Python side uses the same one-second window in `_pid_is_studio_backend`.
+pub(crate) const PID_START_TIME_TOLERANCE_SECS: f64 = 1.0;
+
+/// Line two of a `studio-{port}-{pid}.pid` record, written by the server as
+/// `psutil` epoch seconds. A blank or absent line means it could not say.
+pub(crate) fn recorded_pid_start_time(path: &Path) -> Option<f64> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .nth(1)?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Whether the process wearing `pid` is the one the record described.
+///
+/// A recorded start time that disagrees is proof the pid was reused, which no
+/// amount of executable evidence can override. Records outlive crashes, so
+/// without this an unrelated process inheriting the pid reads as ours.
+pub(crate) fn pid_start_time_matches(pid: u32, recorded: Option<f64>) -> bool {
+    let (Some(recorded), Some(actual)) = (recorded, process_start_time_secs(pid)) else {
+        return true;
+    };
+    (actual - recorded).abs() <= PID_START_TIME_TOLERANCE_SECS
+}
+
 #[cfg(target_os = "linux")]
 fn process_start_time_impl(pid: u32) -> Option<f64> {
     // Field 22 of /proc/{pid}/stat, in clock ticks since boot. Parsed from the

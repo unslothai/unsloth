@@ -3,16 +3,8 @@
 
 import type { GgufVariantDetail } from "@/features/hub/inventory";
 import { formatBytes } from "@/features/hub/lib/format";
-import { classifyGgufFit } from "@/lib/gguf-fit";
 import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
-
-type GgufVariantResources = {
-  gpuGb?: number;
-  systemRamGb?: number;
-  /** The saved VRAM Budget, so the sort ranks against the line the loader will
-   *  actually admit at rather than against the default. */
-  budgetFraction?: number;
-};
+import { type GgufFitInput, classifyGgufVariantFit } from "@/lib/gguf-fit";
 
 export function ggufVariantDisplayLabel(
   variant: Pick<GgufVariantDetail, "display_label" | "quant">,
@@ -51,9 +43,9 @@ export function ggufVariantTransferLabel(variant: GgufVariantTransfer): string {
 
 export function ggufVariantFitRank(
   variant: GgufVariantDetail,
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): number {
-  switch (classifyGgufFit(variant.size_bytes, resources)) {
+  switch (classifyGgufVariantFit(variant, resources)) {
     case "fits":
       return 0;
     case "marginal":
@@ -69,7 +61,7 @@ export function ggufVariantFitRank(
 export function compareGgufVariantFitAndSize(
   a: GgufVariantDetail,
   b: GgufVariantDetail,
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): number {
   const aFit = ggufVariantFitRank(a, resources);
   const bFit = ggufVariantFitRank(b, resources);
@@ -87,7 +79,7 @@ export function ggufVariantDownloadStatusRank(
 
 export function sortDownloadableGgufVariants(
   variants: readonly GgufVariantDetail[],
-  resources: GgufVariantResources,
+  resources: GgufFitInput,
 ): GgufVariantDetail[] {
   return [...variants].sort((a, b) => {
     const statusDelta =
@@ -99,7 +91,7 @@ export function sortDownloadableGgufVariants(
 
 export function sortLocalGgufVariants(
   variants: readonly GgufVariantDetail[],
-  options: GgufVariantResources & {
+  options: GgufFitInput & {
     activeGgufVariant?: string | null;
     defaultVariant?: string | null;
   },

@@ -52,6 +52,13 @@ export const ko = {
     shutdown: "종료",
   },
   shell: {
+    find: {
+      label: "페이지에서 찾기",
+      previous: "이전 결과",
+      next: "다음 결과",
+      close: "찾기 닫기",
+      truncated: "이 페이지는 너무 길어 전체를 검색할 수 없습니다.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -222,6 +229,10 @@ export const ko = {
       browserReserved:
         "브라우저가 이 조합을 가져갈 수 있습니다. 데스크톱 앱에서는 동작합니다.",
       actions: {
+        findInPage: {
+          label: "페이지에서 찾기",
+          description: "이 페이지의 텍스트를 검색합니다",
+        },
         openSettings: {
           label: "설정 열기",
           description: "설정 창을 엽니다",
@@ -481,6 +492,13 @@ export const ko = {
           "/v1/audio/transcriptions에 전송할 모델 이름입니다.",
         sttModelLabel: "음성 인식 모델",
         sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
+        sttDeviceLabel: "로드 위치",
+        sttDeviceAuto: "GPU(사용 가능할 때)",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "GPU가 있으면 GPU를, 없으면 CPU를 사용합니다.",
+        sttDeviceCpuDescription:
+          "모델을 시스템 RAM에 유지합니다. 변환은 느리지만 GPU 메모리를 쓰지 않습니다.",
         sttModelSearchPlaceholder: "모델 검색",
         sttModelSearching: "Hugging Face에서 검색 중…",
         sttModelValidating: "Whisper 호환성 확인 중…",
@@ -827,6 +845,16 @@ export const ko = {
         openError: "폴더를 열지 못했습니다",
         copyError: "경로를 복사하지 못했습니다",
       },
+      repairInstall: {
+        label: "설치 복구",
+        description:
+          "관리 환경에 대해 설치 프로그램을 다시 실행합니다. GPU가 감지되지 않거나 앱이 시작되지 않을 때 사용하세요.",
+        action: "설치 복구",
+        confirmTitle: "이 설치를 복구할까요?",
+        confirmDescription:
+          "서버를 중지하고 설치 프로그램을 다시 실행하여 이 컴퓨터의 GPU에 맞는 PyTorch를 다시 설치합니다. 채팅과 설정은 유지됩니다. 몇 분 정도 걸릴 수 있습니다.",
+        confirmAction: "지금 복구",
+      },
       resetPreferences: {
         sectionTitle: "위험 구역",
         label: "모든 로컬 환경설정 재설정",
@@ -1082,6 +1110,8 @@ export const ko = {
         currentLoad: "현재 부하",
         free: "{value} 여유",
         noGpu: "인식되는 GPU 없음",
+        gpuUnusable: "GPU 사용 불가",
+        gpuUnusableDetail: "감지되었지만 PyTorch에서 사용할 수 없습니다",
       },
       gpu: {
         title: "GPU 장치",
@@ -1090,6 +1120,12 @@ export const ko = {
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
         noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
+        noUsableGpu: "이 컴퓨터의 GPU 중 PyTorch에서 사용할 수 있는 것이 없습니다.",
+        mismatchCpuBuild:
+          "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",
+        mismatchUnavailable:
+          "PyTorch({version})가 아래 GPU를 초기화하지 못해 사용할 수 없습니다. GPU 드라이버를 확인하거나 설치를 복구하세요.",
+        unusableDevice: "사용 불가",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1210,7 +1246,7 @@ export const ko = {
       description:
         "unsloth start로 Claude Code, Codex 같은 코딩 에이전트를 로컬 모델에 연결하세요.",
       intro:
-        "명령은 Claude Code, Codex, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
+        "명령은 Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
       readDocs: "문서 보기",
       copy: "복사",
       copied: "복사됨",
@@ -1483,6 +1519,8 @@ export const ko = {
       archivedImagesDescription: "보관한 이미지를 확인하고 관리합니다.",
       archivedVideos: "보관된 동영상",
       archivedVideosDescription: "보관한 동영상을 확인하고 관리합니다.",
+      archivedAudio: "보관된 오디오",
+      archivedAudioDescription: "보관한 오디오 클립을 확인하고 관리합니다.",
       manageAction: "관리",
       manageChats: "채팅 관리",
       manageChatsDescription:
@@ -1665,7 +1703,7 @@ export const ko = {
         desktopCheckingDescription: "보통 몇 초 정도 걸립니다.",
         desktopAvailable: "데스크톱 앱 {version} 버전을 사용할 수 있습니다",
         desktopAvailableDescription:
-          "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
+          "지금 업데이트하면 백그라운드에서 준비됩니다. 계속 작업하다가 준비되면 다시 시작하세요.",
         desktopExternalServer:
           "서버를 시작한 터미널에서 `unsloth studio update`를 실행하세요.",
         desktopManualInstall:
@@ -1675,11 +1713,17 @@ export const ko = {
           "연결 상태를 확인한 후 다시 시도하세요.",
         desktopCurrent: "데스크톱 앱이 최신 버전입니다",
         desktopCurrentDescription: "Unsloth가 계속 자동으로 확인합니다.",
+        desktopPreparingDescription: "업데이트를 백그라운드에서 준비하고 있습니다. 계속 작업할 수 있습니다.",
+        desktopReadyToRestartDescription: "모두 준비되었습니다. 다시 시작하면 업데이트 설치가 완료됩니다.",
+        desktopReadyToInstallDescription: "앱 업데이트를 다운로드했습니다. 설치하려면 백엔드 업데이트를 완료하세요.",
         checkForUpdates: "업데이트 확인",
         checkAgain: "다시 확인",
         retryCheck: "다시 시도",
         checking: "확인 중...",
+        preparing: "준비 중...",
         updateNow: "지금 업데이트",
+        restartToUpdate: "다시 시작하여 업데이트",
+        finishUpdate: "업데이트 완료",
         openReleasePage: "릴리스 페이지 열기",
         unknownInstall:
           "Unsloth 설치 방식을 감지할 수 없습니다. 설치 프로그램 또는 PyPI 설치의 경우 위 명령을 사용하세요.",

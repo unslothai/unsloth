@@ -28,10 +28,8 @@ EMBEDDING_BACKEND_SETTING_KEY = "rag_embedding_backend"
 EMBEDDING_RESOLUTION_SETTING_KEY = "rag_embedding_resolution"
 MAX_EMBEDDING_MODEL_LENGTH = 512
 
-# The effective model is consulted on the embedder hot path (once per embed /
-# tokenize call during ingestion), so the stored value is cached briefly instead
-# of hitting sqlite each time. Writes invalidate immediately in-process; other
-# readers converge within the TTL.
+# Consulted on the embedder hot path once per embed/tokenize call during ingestion, so the stored value is cached
+# briefly; writes invalidate in-process, other readers converge within the TTL.
 _CACHE_TTL_S = 2.0
 # typing.Optional, not `str | None`: the future import defers annotations, but a
 # type ALIAS is evaluated at import, and PEP 604 needs 3.10 over a 3.9 floor.
@@ -39,9 +37,8 @@ _StoredState = tuple[
     Optional[str], Optional[str], Optional[str], Optional[str], bool, Optional[dict]
 ]
 # (override model, resolved model, GGUF repo, backend, download pending, raw record).
-# The raw record is carried so a conditional write compares against exactly what
-# is stored: a reconstruction never matches a record written by a build with one
-# field fewer.
+# The raw record is carried so a conditional write compares against exactly what is stored: a reconstruction never
+# matches a record written by a build with one field fewer.
 _cached: tuple[float, _StoredState] | None = None
 # Bumped on every write/invalidate. A reader captures it before the DB read and
 # only fills the cache if it is unchanged afterward, so a read that overlapped a
@@ -209,10 +206,9 @@ def clear_stored_download_pending(model: str) -> bool:
         return False
     from storage.studio_db import compare_and_set_app_setting
 
-    # Conditional, not a plain upsert: a save for another model committing between
-    # the read and this write would otherwise be reverted onto this resolution.
-    # Comparing the record as read, rather than a rebuilt one, keeps that guard
-    # working across a record whose field set this build does not know about.
+    # Conditional, not a plain upsert, or a save for another model committing between the read and
+    # this write is reverted. Compared as read, not rebuilt, so the guard survives fields this
+    # build does not know about.
     if not compare_and_set_app_setting(
         EMBEDDING_RESOLUTION_SETTING_KEY, expected, {**expected, "download_pending": False}
     ):
@@ -280,9 +276,8 @@ def _get_stored_state() -> _StoredState:
     raw = resolution if isinstance(resolution, dict) else None
     value: _StoredState = (override, resolved_model, repo, backend, download_pending, raw)
     with _lock:
-        # Only cache when no save landed while we were reading; otherwise this
-        # value may be pre-save, and caching it would mask the new one for the
-        # TTL. The next reader re-reads the committed value.
+        # Only cache when no save landed while reading: a pre-save value would mask the new one for the
+        # whole TTL.
         if _generation == gen:
             _cached = (time.monotonic(), value)
     return value
@@ -292,10 +287,8 @@ def get_rag_embedding_model() -> str:
     """Effective embedding model: persisted override, else env/default."""
     stored = _get_stored_state()
     model = stored[0] or default_embedding_model()
-    # Reading this is how a job pins its model, so record the resolution here: the
-    # memo only protects a pinned job if it was populated before another model's
-    # save takes the one stored record, and the repo/backend getters alone left a
-    # worker that pinned A, scanned, then embedded with nothing memoized.
+    # Reading this is how a job pins its model, so record the resolution here: the memo protects a pinned job only if it
+    # was populated before another model's save takes the stored record.
     if stored[1] == model:
         _remember_resolution(model, stored)
     return model
@@ -346,11 +339,8 @@ def reset_rag_embedding_model() -> str:
     from storage.studio_db import upsert_app_settings
 
     restored = default_embedding_model()
-    # The memo survives a reset: it is per model and consulted only when the store
-    # has nothing, so it is what a job still pinned to a model reads. The restored
-    # default is not a running job, though -- new work resolves through it too, and
-    # a process-only answer would change identity on the next restart. So write any
-    # remembered resolution for it back durably rather than leave it in memory.
+    # The memo survives a reset, but the restored default is not a running job, so write any remembered resolution back
+    # durably rather than leave a process-only answer that changes on restart.
     remembered = _remembered(restored)
     resolution = None
     # The pending flag counts as much as a repo or a backend: a default saved over

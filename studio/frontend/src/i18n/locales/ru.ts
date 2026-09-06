@@ -54,6 +54,13 @@ export const ru = {
     shutdown: "Выключить",
   },
   shell: {
+    find: {
+      label: "Поиск на странице",
+      previous: "Предыдущее совпадение",
+      next: "Следующее совпадение",
+      close: "Закрыть поиск",
+      truncated: "Эта страница слишком длинная, чтобы выполнить поиск целиком.",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -224,6 +231,10 @@ export const ru = {
       browserReserved:
         "Браузер может оставить это сочетание себе. В настольном приложении оно работает.",
       actions: {
+        findInPage: {
+          label: "Поиск на странице",
+          description: "Искать текст на этой странице",
+        },
         openSettings: {
           label: "Открыть настройки",
           description: "Открыть окно настроек",
@@ -484,6 +495,13 @@ export const ru = {
         sttModelLabel: "Модель распознавания речи",
         sttModelDescription:
           "Выберите или найдите модель STT для локального запуска.",
+        sttDeviceLabel: "Загружать в",
+        sttDeviceAuto: "GPU, если доступен",
+        sttDeviceCpu: "ОЗУ процессора",
+        sttDeviceAutoDescription:
+          "Использовать GPU, когда он есть, иначе CPU.",
+        sttDeviceCpuDescription:
+          "Держать модель в системной памяти. Расшифровка медленнее, но память GPU не занимается.",
         sttModelSearchPlaceholder: "Поиск модели",
         sttModelSearching: "Поиск на Hugging Face…",
         sttModelValidating: "Проверка совместимости с Whisper…",
@@ -835,6 +853,16 @@ export const ru = {
         openError: "Не удалось открыть папку",
         copyError: "Не удалось скопировать путь",
       },
+      repairInstall: {
+        label: "Восстановить установку",
+        description:
+          "Повторно запускает установщик для управляемой среды. Пригодится, если графический процессор не определяется или приложение не запускается.",
+        action: "Восстановить установку",
+        confirmTitle: "Восстановить эту установку?",
+        confirmDescription:
+          "Останавливает сервер и повторно запускает установщик, который переустанавливает PyTorch для графического процессора этого компьютера. Чаты и настройки сохраняются. Это может занять несколько минут.",
+        confirmAction: "Восстановить",
+      },
       resetPreferences: {
         sectionTitle: "Опасная зона",
         label: "Сбросить все локальные настройки",
@@ -1091,6 +1119,8 @@ export const ru = {
         currentLoad: "Текущая нагрузка",
         free: "{value} свободно",
         noGpu: "GPU не обнаружен",
+        gpuUnusable: "GPU недоступен",
+        gpuUnusableDetail: "Обнаружен, но PyTorch не может его использовать",
       },
       gpu: {
         title: "Устройства GPU",
@@ -1100,6 +1130,12 @@ export const ru = {
         unreadable: "Не удалось прочитать оборудование этого сервера.",
         noGpu:
           "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
+        noUsableGpu: "Ни один GPU на этой машине недоступен для PyTorch.",
+        mismatchCpuBuild:
+          "PyTorch собран только для CPU ({version}), поэтому GPU ниже использовать нельзя. Восстановите установку, чтобы вернуть поддержку GPU.",
+        mismatchUnavailable:
+          "PyTorch ({version}) не может инициализировать GPU ниже, поэтому использовать их нельзя. Проверьте драйвер видеокарты или восстановите установку.",
+        unusableDevice: "недоступен",
         unknownDevice: "Неизвестный GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -1220,7 +1256,7 @@ export const ru = {
       description:
         "Подключение кодинг-агентов, таких как Claude Code и Codex, к локальной модели с помощью unsloth start.",
       intro:
-        "подключает Claude Code, Codex, Hermes, OpenClaw, OpenCode и других агентов к модели, которую Unsloth обслуживает локально, полностью офлайн. Запускается OpenAI-совместимый сервер, а файлы конфигурации вашего агента остаются нетронутыми.",
+        "подключает Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode и других агентов к модели, которую Unsloth обслуживает локально, полностью офлайн. Запускается OpenAI-совместимый сервер, а файлы конфигурации вашего агента остаются нетронутыми.",
       readDocs: "Открыть документацию",
       copy: "Копировать",
       copied: "Скопировано",
@@ -1501,6 +1537,8 @@ export const ru = {
       archivedImagesDescription: "Просмотр и управление изображениями, которые вы архивировали.",
       archivedVideos: "Архивные видео",
       archivedVideosDescription: "Просмотр и управление видео, которые вы архивировали.",
+      archivedAudio: "Архивированные аудио",
+      archivedAudioDescription: "Просмотр и управление аудиоклипами, которые вы архивировали.",
       manageAction: "Управлять",
       manageChats: "Управление чатами",
       manageChatsDescription:
@@ -1687,7 +1725,7 @@ export const ru = {
         desktopAvailable:
           "Доступна версия {version} настольного приложения",
         desktopAvailableDescription:
-          "Установите обновление сейчас. После установки настольное приложение перезапустится.",
+          "Установите обновление сейчас, чтобы подготовить его в фоновом режиме. Вы можете продолжать работу и перезапустить приложение, когда всё будет готово.",
         desktopExternalServer:
           "Выполните `unsloth studio update` в терминале, из которого был запущен сервер.",
         desktopManualInstall:
@@ -1699,11 +1737,20 @@ export const ru = {
           "Установлена последняя версия настольного приложения",
         desktopCurrentDescription:
           "Unsloth продолжит автоматически проверять наличие обновлений.",
+        desktopPreparingDescription:
+          "Обновление готовится в фоновом режиме. Вы можете продолжать работу.",
+        desktopReadyToRestartDescription:
+          "Всё готово. Перезапустите приложение, чтобы завершить установку обновления.",
+        desktopReadyToInstallDescription:
+          "Обновление приложения загружено. Завершите обновление бэкенда, чтобы установить его.",
         checkForUpdates: "Проверить наличие обновлений",
         checkAgain: "Проверить снова",
         retryCheck: "Повторить попытку",
         checking: "Проверка…",
+        preparing: "Подготовка…",
         updateNow: "Обновить сейчас",
+        restartToUpdate: "Перезапустить для обновления",
+        finishUpdate: "Завершить обновление",
         openReleasePage: "Открыть страницу выпуска",
         unknownInstall:
           "Не удалось определить способ установки Unsloth. Для установки через установщик или PyPI используйте команды выше.",
