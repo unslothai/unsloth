@@ -3381,9 +3381,9 @@ TRAIN_MEASUREMENT = (
     "2026-09-06, unsloth/Qwen3.5-2B and -9B, LoRA r=16, seq 512, global batch 64, M=32, "
     "20 steps, seed 3407, both Sparks uncapped at ~2400 MHz"
 )
-# tok/s per arm. `one_spark` is None where no control was measured in the same clock state:
-# the 9B control straddled a thermal cap twice and an uncapped one is still outstanding, so
-# the 9B row supports the DP-versus-PP comparison but not an "x over one Spark" claim.
+# tok/s per arm. `one_spark` is None where no control was measured in the SAME clock state -
+# a control taken while the thermal guard capped the node mid-cell is not a control, and two
+# such attempts were discarded rather than reported.
 TRAIN_DP_VS_PP_TOKS: Dict[str, Dict[str, Optional[int]]] = {
     "unsloth/Qwen3.5-2B": {
         "one_spark": 2613,
@@ -3393,19 +3393,21 @@ TRAIN_DP_VS_PP_TOKS: Dict[str, Dict[str, Optional[int]]] = {
         "fsdp": 3276,
     },
     "unsloth/Qwen3.5-9B": {
-        "one_spark": None,
+        "one_spark": 850,
         "ddp": 1741,
         "dualpipev": 1525,
         "1f1b": 1505,
         "fsdp": 927,
     },
 }
-TRAIN_DP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.99}  # DDP over one Spark
-TRAIN_PP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.58}  # best PP schedule over one Spark
-TRAIN_DP_SPEEDUP_RANGE = (1.99, 1.99)
-TRAIN_PP_SPEEDUP_RANGE = (1.58, 1.58)
-# DDP over the best PP schedule on the SAME pair, which needs no single-Spark control and is
-# therefore the comparison the 9B row can also make. DP wins on both models.
+# DDP over one Spark. 2.05x at 9B is perfect scaling inside the noise, not superlinearity.
+TRAIN_DP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.99, "unsloth/Qwen3.5-9B": 2.05}
+# Best PP schedule over one Spark, same rows and loss.
+TRAIN_PP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.58, "unsloth/Qwen3.5-9B": 1.79}
+TRAIN_DP_SPEEDUP_RANGE = (1.99, 2.05)
+TRAIN_PP_SPEEDUP_RANGE = (1.58, 1.79)
+# DDP over the best PP schedule on the SAME pair. This one needs no single-Spark control at
+# all, so it survives even when a control has to be thrown away. DP wins on both models.
 TRAIN_DP_OVER_PP = {"unsloth/Qwen3.5-2B": 1.26, "unsloth/Qwen3.5-9B": 1.14}
 # Peak GiB on the fuller rank: DDP holds the whole model per node, PP half of it. That is
 # the price of the DP win and the reason the rule is size-gated rather than universal.
@@ -3413,7 +3415,7 @@ TRAIN_PEAK_GIB = {"unsloth/Qwen3.5-2B": (10.16, 9.58), "unsloth/Qwen3.5-9B": (28
 # FSDP shards the base weights instead of replicating them, which does cut resident memory
 # (9.21 against 10.16 GiB at 2B), but it gathers every layer on every microbatch and lands
 # BELOW both DDP and the pipeline schedules. It is not a recommended axis on this pair.
-TRAIN_FSDP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.25}
+TRAIN_FSDP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.25, "unsloth/Qwen3.5-9B": 1.09}
 # Which schedule when a split is forced. dualpipev edges 1f1b on both models, but by well
 # under a percent (4128 vs 4106, and 1525 vs 1505), so this is a tie-break and not a result.
 # 1f1b is much the cheaper in memory on the fuller rank (5.52 vs 9.58 GiB at 2B, 16.86 vs
@@ -3485,8 +3487,8 @@ def plan_training(
         )
         return out
     if fits:
-        lo, _hi = TRAIN_DP_SPEEDUP_RANGE
-        plo, _phi = TRAIN_PP_SPEEDUP_RANGE
+        lo, hi = TRAIN_DP_SPEEDUP_RANGE
+        plo, phi = TRAIN_PP_SPEEDUP_RANGE
         over_pp = min(TRAIN_DP_OVER_PP.values())
         out.update(
             axis = "data-parallel",
@@ -3497,11 +3499,12 @@ def plan_training(
             commands = [env, f"unsloth spark train --data-parallel {model} --run"],
             recommendation = (
                 f"{size_gib:.1f} GiB fits on one Spark ({budget:.0f} GiB budget): train it "
-                f"DATA PARALLEL, one whole model per Spark. Measured {lo:.2f}x over one "
-                f"Spark against {plo:.2f}x for a layer split of the same model on the same "
-                f"rows, and DDP beat the best schedule by {over_pp:.2f}x or more on every "
-                f"model tried. The split costs a fill/drain bubble and buys nothing here; "
-                f"it is for capacity. Budget the WHOLE model per node, not half."
+                f"DATA PARALLEL, one whole model per Spark. Measured {lo:.2f}x to {hi:.2f}x "
+                f"over one Spark against {plo:.2f}x to {phi:.2f}x for a layer split of the "
+                f"same model on the same rows, and DDP beat the best schedule by "
+                f"{over_pp:.2f}x or more on every model tried. The split costs a fill/drain "
+                f"bubble and buys nothing here; it is for capacity. Budget the WHOLE model "
+                f"per node, not half."
             ),
         )
         return out
