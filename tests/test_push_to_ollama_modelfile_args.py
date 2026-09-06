@@ -9,10 +9,8 @@ behind, so it raised `TypeError: unexpected keyword argument 'gguf_location'` be
 reached Ollama. save.py needs a GPU to import, so the function is ast-extracted the way
 tests/test_ollama_eos_token_order.py extracts its own.
 
-The stub signatures below are checked against save.py's own AST rather than trusted, so a
-later rename of a callee parameter fails here instead of drifting past a hand-copied stub.
-The last two tests run the real create_ollama_modelfile against the real template mapper
-(both are stdlib-only), so a Modelfile is actually produced rather than only asked for.
+Stubs are checked against save.py's AST, or a later rename drifts past a hand-copied one and
+leaves this green while the caller breaks again.
 """
 
 import ast
@@ -44,7 +42,7 @@ def _extract(name):
 
 
 def _params(name):
-    """save.py's real parameter names for `name`, so a stub cannot drift away from it."""
+    """save.py's real parameter names, so a stub cannot drift away from them."""
     _, tree = _parse()
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
@@ -54,7 +52,7 @@ def _params(name):
 
 
 def _mappers():
-    """ollama_template_mappers is stdlib-only, so it loads without the GPU import chain."""
+    """stdlib-only, so it loads without save.py's GPU import chain."""
     spec = importlib.util.spec_from_file_location("_ollama_mappers", _MAPPERS)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -89,7 +87,7 @@ def _load(modelfile):
 
 
 def _load_real():
-    """Same, but with save.py's own create_ollama_modelfile and the real templates."""
+    """Same, but the real create_ollama_modelfile and the real templates."""
     mappers = _mappers()
     calls = []
     namespace = {
