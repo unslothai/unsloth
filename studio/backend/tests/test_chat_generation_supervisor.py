@@ -213,10 +213,15 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     def _progress(processed):
         # The shape llama-server sends on /v1/chat/completions with
         # return_progress: a delta with no content, alongside the progress.
-        return {"choices": [{"delta": {"role": "assistant", "content": None},
-                             "finish_reason": None}],
-                "prompt_progress": {"total": 250000, "cache": 0, "processed": processed,
-                                    "time_ms": processed}}
+        return {
+            "choices": [{"delta": {"role": "assistant", "content": None}, "finish_reason": None}],
+            "prompt_progress": {
+                "total": 250000,
+                "cache": 0,
+                "processed": processed,
+                "time_ms": processed,
+            },
+        }
 
     async def body():
         for processed in (1024, 8192, 65536):
@@ -225,8 +230,9 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
         # while the model still has not emitted a token.
         await asyncio.sleep(0.35)
         sampled["progress"] = runs_db.get_progress("run-1")
-        sampled["events"] = [e["payload"] for e in runs_db.list_events("run-1")
-                             if e["type"] == "chunk"]
+        sampled["events"] = [
+            e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"
+        ]
         released.set()
         yield f"data: {json.dumps({'choices': [{'delta': {'content': 'Hi'}, 'finish_reason': 'stop'}]})}\n\n"
         yield "data: [DONE]\n\n"
