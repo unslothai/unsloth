@@ -7411,7 +7411,13 @@ def _get_shell_cmd(
         if bash:
             return [bash, "-c", command]
         if script_path:
-            return ["cmd", "/d", "/c", script_path]
+            # why call: naming the batch file as the command itself makes cmd
+            # search for it the way it searches for a program, and inside the
+            # container that search is refused ("Access is denied.") even though
+            # the file itself reads fine. Measured on hosted Windows: `type` and
+            # `call` on the same absolute path both succeed while the bare path
+            # and `dir` both fail. `call` still propagates the batch's exit code.
+            return ["cmd", "/d", "/c", "call", script_path]
         return ["cmd", "/c", command]
     return ["bash", "-c", command]
 
