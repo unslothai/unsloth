@@ -68,11 +68,16 @@ on:
 permissions:
   contents: read
 
-# Never two collectors on one account at once: both would enumerate the same
-# kernels, both would download the same evidence, and the loser of the race
-# would try to delete a kernel the winner already deleted and report the 404 as
-# a failure. Not cancel-in-progress -- a pass that is midway through
-# downloading evidence must finish, or the next pass starts from nothing.
+# Never two scheduled passes at once. This does NOT serialise against the
+# notebook and Studio jobs, which collect on their own account before they
+# dispatch and run under their own groups, so two collectors CAN see one
+# terminal kernel. That is safe by construction in collect.py rather than by
+# a lock: a kernel that vanishes under a collector (the other one deleted it)
+# is recorded as `gone` and posts nothing, an incomplete download posts
+# nothing and keeps the kernel, and a status is posted only from a complete
+# set of evidence, so the worst case is the same verdict posted twice. Not
+# cancel-in-progress -- a pass midway through downloading evidence must
+# finish, or the next pass starts from nothing.
 concurrency:
   group: kaggle-collect
   cancel-in-progress: false
@@ -113,7 +118,11 @@ jobs:
           python-version: '3.12'
 
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==1.7.4.5'
+        # The same client the GPU workflows install, for the same reason they
+        # moved to it: 1.7.4.5's authenticate() cannot read KAGGLE_API_TOKEN,
+        # the only credential this job has, so every pass on it failed to
+        # authenticate and collected nothing.
+        run: python -m pip install --quiet 'kaggle==2.2.4'
 
       - name: Collect this account's kernels
         id: collect
@@ -123,66 +132,47 @@ jobs:
           # whenever this secret is empty, and the collector would then delete
           # kernels belonging to an account it is not reporting for.
           KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        # --require-auth: this job runs with the repository's own secrets, so a
+        # failure to authenticate is a broken token and must be red, not the
+        # quiet green a fork pull request gets. --no-delete always: the
+        # kernels are released by the last step, once their statuses posted.
+        # The expected report count is read from each kernel's own evidence
+        # (the driver records it), so a five-payload kernel that lost four is
+        # judged against five, not against a flat guess.
         run: |
           python .github/scripts/kaggle_t4_ci/collect.py \
             --outdir kaggle_collected \
-            --expect 1 \
+            --require-auth \
+            --no-delete \
             --max-age-hours '${{ inputs.max_age_hours || '3' }}' \
-            --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            ${{ inputs.no_delete && '--no-delete' || '' }}
+            --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
+      # Post FIRST, delete SECOND. A verdict that does not reach GitHub leaves
+      # its kernel on Kaggle for the next pass to collect and post again;
+      # deleting before posting would make one API failure the permanent
+      # loss of a verdict, with the commit pending forever and nothing left
+      # anywhere to retry from. The poster is a script rather than a shell
+      # loop: each field reaches `gh` as its own argument, never through a
+      # shell, and the same code serves all three workflows.
       - name: Post the commit statuses
-        # `always()`, because a collector that downloaded three results and then
-        # ran out of budget still has three verdicts to publish, and the whole
-        # cost of this workflow has already been paid by the time this runs.
+        id: post
         if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python - <<'PY' > statuses.txt
-          import json, pathlib
-          data = json.loads(pathlib.Path("kaggle_collected/collect_result.json").read_text())
-          for s in data.get("statuses", []):
-              print("\t".join([s["sha"], s["state"], s["context"], s["description"], s["target_url"]]))
-          PY
-          if [ ! -s statuses.txt ]; then
-            echo "no statuses to post this pass"
-            exit 0
-          fi
-          # Read line by line rather than interpolating: a description is
-          # composed from a Kaggle payload's own failure text, and that string
-          # must never reach a shell as code.
-          #
-          # THE SHA HAS TO BE EXPANDED FIRST. The slug carries only 8 hex
-          # characters -- a full 40-character sha plus the prefix does not fit
-          # inside Kaggle's slug limit -- and the statuses API REFUSES an
-          # abbreviation:
-          #
-          #     POST /statuses/2ecb19df
-          #     422 "Sha must be a valid hex object ID"
-          #
-          # Measured against a real repository, not inferred. Without the
-          # expansion every status this workflow exists to publish 422s, the
-          # `|| echo` below turns that into a warning nobody reads, and the
-          # collection runs forever while the commit keeps a pending check.
-          # That is the precise failure this whole design is built against, so
-          # a sha that cannot be resolved is REPORTED and skipped rather than
-          # posted and lost.
-          while IFS=$'\t' read -r sha state context description target_url; do
-            [ -n "$sha" ] || continue
-            full="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" -q .sha 2>/dev/null || true)"
-            if [ -z "$full" ]; then
-              echo "::warning title=Could not resolve a collected commit::$sha is not a commit in this repository any more, so the $context result for it cannot be posted. The kernel was still collected and deleted."
-              continue
-            fi
-            echo "posting $context=$state for $full"
-            gh api "repos/$GITHUB_REPOSITORY/statuses/$full" \
-              -f state="$state" \
-              -f context="$context" \
-              -f description="$description" \
-              -f target_url="$target_url" \
-              --silent || echo "::warning title=Could not post a commit status::$context for $full"
-          done < statuses.txt
+          python .github/scripts/kaggle_t4_ci/post_statuses.py \
+            --result kaggle_collected/collect_result.json \
+            --out kaggle_collected/posted.json
+
+      - name: Release the kernels whose verdicts were delivered
+        if: always() && !inputs.no_delete && hashFiles('kaggle_collected/collect_result.json') != ''
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected \
+            --delete-collected kaggle_collected/collect_result.json \
+            --posted kaggle_collected/posted.json
 
       - name: Summarise
         if: always() && hashFiles('kaggle_collected/collect_result.json') != ''

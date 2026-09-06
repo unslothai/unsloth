@@ -43,6 +43,7 @@ sys.path.insert(0, str(CI_DIR))
 
 import collect  # noqa: E402
 import launch  # noqa: E402
+import post_statuses  # noqa: E402
 
 
 def _wf(path: Path) -> dict:
@@ -599,53 +600,385 @@ def test_the_reporters_wait_for_an_EXECUTED_NOTEBOOK_not_just_a_directory():
             )
 
 
-def test_an_abbreviated_sha_is_EXPANDED_before_a_status_is_posted():
+def _fake_gh(monkeypatch, resolve_to = None, post_ok = True):
+    """Stand in for `gh`, recording every call. `resolve_to` is what
+    `repos/../commits/<sha>` answers; None means the commit is gone."""
+    calls: list[list[str]] = []
+
+    def _gh(args):
+        calls.append(list(args))
+        if "/commits/" in args[1]:
+            return (0, resolve_to) if resolve_to else (1, "")
+        return (0 if post_ok else 1, "")
+
+    monkeypatch.setattr(post_statuses, "_gh", _gh)
+    return calls
+
+
+_STATUS = {
+    "sha": "2ecb19df",
+    "state": "success",
+    "context": "kaggle-t4-notebook",
+    "description": "pass: all 5 payload(s) passed",
+    "target_url": "https://example/run/1",
+    "slug": "me/unsloth-t4-ci-n2ecb19df-1111",
+    "slugs": ["me/unsloth-t4-ci-n2ecb19df-1111"],
+}
+
+
+def test_an_abbreviated_sha_is_EXPANDED_before_a_status_is_posted(monkeypatch):
     """MEASURED AGAINST THE REAL API, and it fails closed in the worst way.
 
         POST /repos/{o}/{r}/statuses/2ecb19df
         422 "Sha must be a valid hex object ID"
 
-    The slug can only carry 8 hex characters: a full 40-character sha plus the
-    `unsloth-t4-ci-` prefix and the uniqueness suffix does not fit inside the
-    50-character slug this repo's `_slugify` produces, so the abbreviation is
-    forced.
-
-    Every posting step therefore has to resolve it first. Without that, each
-    collected verdict 422s, the `|| echo` beside it turns that into a warning
-    nobody reads, and the commit keeps a PENDING check forever while the
-    collection quietly succeeds. That is the whole failure this file exists to
-    prevent, arriving through the one call that publishes the answer.
-
-    Asserted structurally rather than by mocking `gh`, because what has to be
-    true is that the value posted is not the value read from the slug.
+    The slug can only carry 8 hex characters, so the poster has to resolve
+    them first. Without that every collected verdict 422s and the commit keeps
+    a PENDING check forever while the collection quietly succeeds. Driven
+    through the real poster against a recording `gh`: the value posted must
+    be the resolved one, never the slug's.
     """
-    for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
-        body = path.read_text(encoding = "utf-8")
-        if "statuses.txt" not in body:
-            continue
-        assert re.search(r'gh api "repos/\$GITHUB_REPOSITORY/commits/\$sha" -q \.sha', body), (
-            f"{path.name} posts a status without expanding the 8-character sha the "
-            "slug carries; the statuses API answers that with 422"
-        )
-        assert 'statuses/$full"' in body, (
-            f"{path.name} still posts to the abbreviated sha rather than the resolved one"
-        )
-        assert 'statuses/$sha"' not in body, (
-            f"{path.name} posts to $sha somewhere, which is the abbreviation"
-        )
+    full = "2ecb19df" + "a" * 32
+    calls = _fake_gh(monkeypatch, resolve_to = full)
+    outcome = post_statuses.post_all([dict(_STATUS)], "unslothai/unsloth")
+    assert outcome["ok"] == [_STATUS["slug"]], outcome
+    posts = [c for c in calls if "/statuses/" in c[1]]
+    assert posts == [posts[0]] and posts[0][1] == f"repos/unslothai/unsloth/statuses/{full}"
+    assert not any(c[1].endswith("/statuses/2ecb19df") for c in calls)
+    # Every field is its own argument: nothing is assembled into a shell line.
+    assert "-f" in posts[0] and f"description={_STATUS['description']}" in posts[0]
 
 
-def test_a_commit_that_no_longer_exists_is_reported_not_silently_dropped():
+def test_a_commit_that_no_longer_exists_is_reported_not_silently_dropped(monkeypatch, capsys):
     """A force-push can remove the commit a running kernel was dispatched for.
+    Posting is then impossible, and that is fine, but it must SAY so, and the
+    kernel must be released rather than retried forever."""
+    calls = _fake_gh(monkeypatch, resolve_to = None)
+    outcome = post_statuses.post_all([dict(_STATUS)], "unslothai/unsloth")
+    assert outcome["unresolved"] == [_STATUS["slug"]] and outcome["failed"] == []
+    assert not any("/statuses/" in c[1] for c in calls), "posted to a commit that is gone"
+    assert "Could not resolve a collected commit" in capsys.readouterr().out
 
-    Posting is then impossible, and that is fine -- but it must SAY so. A
-    `continue` with no message is indistinguishable from a collection that
-    found nothing, which is the state this whole file is written against.
-    """
+
+def test_every_workflow_posts_through_the_shared_poster_and_none_keeps_a_shell_loop():
     for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
         body = path.read_text(encoding = "utf-8")
-        if "statuses.txt" not in body:
-            continue
-        assert "Could not resolve a collected commit" in body, (
-            f"{path.name} drops an unresolvable commit without a word"
+        assert "kaggle_t4_ci/post_statuses.py" in body, f"{path.name} does not use the poster"
+        assert "statuses.txt" not in body, f"{path.name} still carries the tab-delimited loop"
+
+
+# ---------------------------------------------- post, then delete; never the reverse
+
+
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF), ids = ("notebook", "studio", "collect"))
+def test_collection_never_deletes_and_the_release_step_comes_after_posting(path):
+    """A verdict that does not reach GitHub must leave its kernel on Kaggle
+    for the next pass. So the collect step runs --no-delete, the poster runs,
+    and only then does --delete-collected release what was delivered."""
+    body = path.read_text(encoding = "utf-8")
+    steps = [(name, step) for _job, name, step in _steps(_wf(path))]
+    collect_steps = [
+        s for _n, s in steps if "kaggle_t4_ci/collect.py" in (s.get("run") or "") and "--delete-collected" not in s["run"]
+    ]
+    assert collect_steps, f"{path.name} never collects"
+    for step in collect_steps:
+        assert "--no-delete" in step["run"], f"{path.name} collects with deletion on:\n{step['run']}"
+    names = [n for n, _s in steps]
+    post = next(i for i, (n, s) in enumerate(steps) if "post_statuses.py" in (s.get("run") or ""))
+    release = next(i for i, (n, s) in enumerate(steps) if "--delete-collected" in (s.get("run") or ""))
+    assert release > post, f"{path.name} releases kernels before posting: {names[release]!r} before {names[post]!r}"
+    assert "--posted kaggle_collected/posted.json" in steps[release][1]["run"]
+
+
+def test_a_kernel_whose_status_did_not_post_is_KEPT_for_the_next_pass(tmp_path, monkeypatch):
+    deleted: list[str] = []
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug: deleted.append(slug) or True)
+    result = tmp_path / "collect_result.json"
+    result.write_text(
+        json.dumps(
+            {
+                "kernels": [
+                    {"slug": "me/ok", "verdict": "pass", "deleted": False},
+                    {"slug": "me/refused", "verdict": "fail", "deleted": False},
+                    {"slug": "me/legacy", "verdict": "reaped", "deleted": False},
+                    {"slug": "me/running", "verdict": "pending", "deleted": False},
+                ],
+                "statuses": [],
+            }
         )
+    )
+    posted = tmp_path / "posted.json"
+    posted.write_text(json.dumps({"ok": ["me/ok"], "failed": ["me/refused"], "unresolved": []}))
+    assert collect.delete_collected(result, posted) == 0
+    assert deleted == ["me/ok", "me/legacy"], deleted
+    outcome = json.loads((tmp_path / "delete_result.json").read_text())
+    assert outcome["kept"] == ["me/refused"]
+
+
+def test_no_delivery_record_at_all_keeps_every_kernel_that_had_something_to_post(tmp_path, monkeypatch):
+    """The poster never ran (the job died between the two steps). Deleting
+    then would lose every verdict of the pass."""
+    deleted: list[str] = []
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug: deleted.append(slug) or True)
+    result = tmp_path / "collect_result.json"
+    result.write_text(
+        json.dumps(
+            {
+                "kernels": [
+                    {"slug": "me/a", "verdict": "pass", "deleted": False},
+                    {"slug": "me/nothing-to-post", "verdict": "infra", "deleted": False},
+                ],
+                "statuses": [{"slug": "me/a", "slugs": ["me/a"]}],
+            }
+        )
+    )
+    collect.delete_collected(result, tmp_path / "posted.json")
+    assert deleted == ["me/nothing-to-post"], deleted
+
+
+def test_a_refused_post_is_red_and_recorded(monkeypatch, tmp_path):
+    _fake_gh(monkeypatch, resolve_to = "2ecb19df" + "b" * 32, post_ok = False)
+    outcome = post_statuses.post_all([dict(_STATUS)], "unslothai/unsloth")
+    assert outcome["failed"] == [_STATUS["slug"]]
+    result = tmp_path / "r.json"
+    result.write_text(json.dumps({"statuses": [dict(_STATUS)]}))
+    monkeypatch.setattr(sys, "argv", ["post_statuses", "--result", str(result), "--out", str(tmp_path / "p.json"), "--repo", "o/r"])
+    assert post_statuses.main() == 1
+    assert json.loads((tmp_path / "p.json").read_text())["failed"] == [_STATUS["slug"]]
+
+
+def test_the_poster_signs_only_records_it_recognises(monkeypatch, capsys):
+    calls = _fake_gh(monkeypatch, resolve_to = "2ecb19df" + "c" * 32)
+    bad_state = dict(_STATUS, state = "green")
+    bad_context = dict(_STATUS, context = "ci/somebody-else")
+    outcome = post_statuses.post_all([bad_state, bad_context], "o/r")
+    assert outcome["invalid"] == [_STATUS["slug"], _STATUS["slug"]]
+    assert calls == [], "a malformed record reached gh"
+
+
+# ------------------------------------------------- what a status is built from
+
+
+def test_two_kernels_for_one_commit_and_context_post_ONE_status_and_a_failure_wins():
+    """Notebook slot 1 and slot 2 on one sha: two kernels, one context. Two
+    statuses would race, and the last posted would be the visible verdict."""
+    records = [
+        {"slug": "me/one", "sha": "abcdef01", "kind": "notebook", "verdict": "pass", "reason": "all passed"},
+        {"slug": "me/two", "sha": "abcdef01", "kind": "notebook", "verdict": "fail", "reason": "1 of 5 failed"},
+        {"slug": "me/other", "sha": "abcdef02", "kind": "notebook", "verdict": "pass", "reason": "all passed"},
+    ]
+    statuses = collect.statuses_from(records)
+    assert len(statuses) == 2
+    joint = next(s for s in statuses if s["sha"] == "abcdef01")
+    assert joint["state"] == "failure" and sorted(joint["slugs"]) == ["me/one", "me/two"]
+    # Order must not matter: the failure wins whichever kernel was listed first.
+    statuses = collect.statuses_from(list(reversed(records)))
+    assert next(s for s in statuses if s["sha"] == "abcdef01")["state"] == "failure"
+
+
+def test_a_description_is_one_line():
+    record = {"slug": "me/k", "sha": "abcdef01", "kind": "notebook", "verdict": "fail", "reason": "a\nb\tc"}
+    assert collect.statuses_from([record])[0]["description"] == "fail: a b c"
+
+
+# ------------------------------------ the evidence decides, and only complete evidence
+
+
+def _terminal_entry():
+    return {
+        "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+        "sha": "abcdef01",
+        "kind": "notebook",
+        "legacy": False,
+        "age_hours": 0.4,
+    }
+
+
+def test_an_incomplete_download_judges_nothing_and_keeps_the_kernel(tmp_path, monkeypatch):
+    """fetch_evidence reports a spent budget or a lost notebook by FLAG, not
+    by raising. Judging the short set would read a run that lost half its
+    notebooks as whatever the surviving half says, and deleting would make
+    that permanent."""
+    deleted: list[str] = []
+    monkeypatch.setattr(launch, "fetch_evidence", lambda slug, dest, deadline = None: {"notebooks": ["a"], "truncated": True})
+    monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug: deleted.append(slug) or True)
+    api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
+    record = collect.collect_one(api, _terminal_entry(), tmp_path, expect = 1, max_age_hours = 3.0)
+    assert record["verdict"] == "pending", record
+    assert deleted == []
+    assert collect.statuses_from([record]) == []
+
+
+def test_a_kernel_another_collector_finished_first_posts_nothing(tmp_path, monkeypatch):
+    """Three workflows collect on one account and nothing serialises them.
+    The loser of that race must not post an `infra` on top of the winner's
+    real verdict."""
+
+    def _gone(slug, dest, deadline = None):
+        raise RuntimeError("404 Client Error: Not Found for url: https://www.kaggle.com/api/v1/kernels/output")
+
+    deleted: list[str] = []
+    monkeypatch.setattr(launch, "fetch_evidence", _gone)
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug: deleted.append(slug) or True)
+    api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
+    record = collect.collect_one(api, _terminal_entry(), tmp_path, expect = 1, max_age_hours = 3.0)
+    assert record["verdict"] == "gone", record
+    assert deleted == [] and collect.statuses_from([record]) == []
+
+
+def test_an_unreadable_report_is_infra_not_a_crash(tmp_path, monkeypatch):
+    """A collector that raises here writes no result and wedges every later
+    pass on the same kernel. Nothing was learned, so it is `infra`, and the
+    kernel is released rather than retried into the same exception."""
+
+    def _boom(dest):
+        raise AttributeError("'list' object has no attribute 'get'")
+
+    monkeypatch.setattr(launch, "fetch_evidence", lambda slug, dest, deadline = None: {"notebooks": ["a"], "truncated": False})
+    monkeypatch.setattr(launch, "extract_reports", _boom)
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug: True)
+    api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
+    record = collect.collect_one(api, _terminal_entry(), tmp_path, expect = 1, max_age_hours = 3.0)
+    assert record["verdict"] == "infra" and "could not be read" in record["reason"]
+    assert record["deleted"] is True
+
+
+def test_a_malformed_report_line_is_skipped_by_the_extractor(tmp_path):
+    (tmp_path / "kernel.log").write_text(
+        'T4_SMOKE_REPORT []\nT4_SMOKE_REPORT "text"\nT4_SMOKE_REPORT {"label": "ok", "passed": true}\n',
+        encoding = "utf-8",
+    )
+    assert launch.extract_reports(tmp_path) == [{"label": "ok", "passed": True}]
+
+
+def test_the_expected_report_count_travels_inside_the_kernel(tmp_path, monkeypatch):
+    """The scheduled collector has no workflow output to read a payload count
+    from. Judging a five-payload kernel against `--expect 1` turns a run that
+    lost four of them into a pass; the driver's own sentinel is the record."""
+
+    def _fetch(slug, dest, deadline = None):
+        dest.mkdir(parents = True, exist_ok = True)
+        (dest / "kernel.log").write_text(
+            'KAGGLE_T4_CI_DRIVER_EXPECT {"reports": 5}\nT4_SMOKE_REPORT {"label": "a", "passed": true}\n',
+            encoding = "utf-8",
+        )
+        return {"notebooks": [], "log": "kernel.log", "truncated": False}
+
+    monkeypatch.setattr(launch, "fetch_evidence", _fetch)
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug: True)
+    api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
+    record = collect.collect_one(api, _terminal_entry(), tmp_path, expect = 1, max_age_hours = 3.0)
+    assert record["expected"] == 5
+    assert record["verdict"] == "partial", record
+    # And with no sentinel the caller's number stands.
+    (tmp_path / "plain").mkdir()
+    assert collect.expected_reports(tmp_path / "plain", 3) == 3
+
+
+def test_the_built_driver_records_its_own_expected_report_count():
+    sys.path.insert(0, str(CI_DIR))
+    import build_kernel
+
+    payloads = {"t4_a.ipynb": {"cells": []}, "t4_b.ipynb": {"cells": []}, "studio_install.ipynb": {"cells": []}}
+    def _source(nb):
+        return "".join("".join(cell.get("source", [])) for cell in nb["cells"])
+
+    driver = _source(build_kernel.build_driver(payloads, 60, cpu_lane = "studio_install.ipynb"))
+    assert 'KAGGLE_T4_CI_DRIVER_EXPECT " + json.dumps({"reports": 2})' in driver
+    plain = _source(build_kernel.build_driver({"t4_a.ipynb": {"cells": []}}, 60))
+    assert 'json.dumps({"reports": 1})' in plain
+
+
+def test_the_scheduled_collector_no_longer_guesses_the_payload_count():
+    body = COLLECT_WF.read_text(encoding = "utf-8")
+    assert "--expect" not in body, "the scheduled collector still applies one flat --expect to every kernel"
+
+
+# ------------------------------------------------------------- the reaper's reach
+
+
+def test_a_kernel_far_past_the_ceiling_is_still_seen(monkeypatch):
+    """A scheduled pass delayed six hours by an outage or a deep queue arrives
+    to find the wedge it exists for. Ageing it out of the listing would leave
+    it billing to Kaggle's own 12-hour kill and its commit pending forever."""
+    from datetime import datetime, timedelta
+
+    now = datetime(2026, 9, 6, 12, 0, 0)
+    old = _StubKernel("me/unsloth-t4-ci-nabcdef01-1111", last_run_time = now - timedelta(hours = 30))
+    api = _StubApi([old], {})
+    found = collect.find_ours(api, now = now, max_age_hours = 3.0)
+    assert [f["slug"] for f in found] == ["me/unsloth-t4-ci-nabcdef01-1111"]
+    assert found[0]["age_hours"] == pytest.approx(30.0)
+
+
+# ------------------------------------------------------- who is allowed to be quiet
+
+
+def test_the_scheduled_collector_fails_loudly_when_it_cannot_authenticate(tmp_path, monkeypatch, capsys):
+    """Its token is the repository's own. A green pass that collected nothing
+    would hide an expired credential while every dispatched kernel bills to
+    its ceiling and every commit stays pending."""
+
+    def _no(*a, **k):
+        raise OSError("Could not find kaggle.json")
+
+    monkeypatch.setattr(launch, "_api", _no)
+    monkeypatch.setattr(sys, "argv", ["collect", "--outdir", str(tmp_path), "--require-auth"])
+    assert collect.main() == 1
+    assert "Kaggle authentication failed" in capsys.readouterr().out
+    monkeypatch.setattr(sys, "argv", ["collect", "--outdir", str(tmp_path)])
+    assert collect.main() == 0, "a fork job with the secret withheld is still a skip"
+
+
+def test_the_scheduled_workflow_asks_for_that():
+    body = COLLECT_WF.read_text(encoding = "utf-8")
+    assert "--require-auth" in body
+
+
+def test_the_collector_installs_the_client_the_gpu_workflows_install():
+    """1.7.4.5 cannot read KAGGLE_API_TOKEN at all (#9535), so a scheduled
+    pass on it authenticated nothing and, before --require-auth, said so to
+    nobody."""
+    pins = {}
+    for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
+        found = re.findall(r"pip install [^\n]*'kaggle==([0-9][^']*)'", path.read_text(encoding = "utf-8"))
+        assert found, f"{path.name} pins no kaggle client"
+        pins[path.name] = set(found)
+    assert len(set().union(*pins.values())) == 1, f"the workflows disagree on the kaggle client: {pins}"
+
+
+# -------------------------------------------------- what a dispatch is allowed to be
+
+
+def test_dispatch_refuses_a_ref_that_is_not_a_commit(monkeypatch, capsys):
+    """`slug_name` falls back to the legacy unattributable form for anything
+    that is not hex, so a branch here would push a kernel that runs, bills,
+    and reports to nobody."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["launch", "--notebook", "k.ipynb", "--outdir", "out", "--dispatch", "--kind", "studio", "--commit-sha", "main"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        launch.main()
+    assert exc.value.code == 2
+    assert "hex commit id" in capsys.readouterr().err
+
+
+def test_the_studio_workflow_resolves_its_ref_to_a_commit_before_dispatching():
+    """workflow_dispatch accepts any `unsloth_ref`; the notebook workflow
+    already resolved it, the Studio one passed it straight through."""
+    for path in (NOTEBOOK_WF, STUDIO_WF):
+        step = next(s for _j, n, s in _steps(_wf(path)) if n == "Resolve the ref under test")
+        run = step["run"]
+        assert "git ls-remote" in run and "[0-9a-f]{40}" in run, f"{path.name} does not resolve refs"
+        assert "exit 1" in run, f"{path.name} dispatches on an unresolved ref"
+
+
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+def test_pending_is_posted_only_for_a_kernel_that_was_actually_dispatched(path):
+    """launch.py exits 0 on every infrastructure stand-down. A pending status
+    for a kernel that does not exist is one no collector can ever replace."""
+    step = next(s for _j, n, s in _steps(_wf(path)) if n == "Mark the dispatch pending on this commit")
+    assert step.get("if") == "steps.launch.outputs.verdict == 'dispatched'", step.get("if")

@@ -401,15 +401,44 @@ jobs:
       # head SHA, so the kernel exercises the proposed code and not the merge
       # base. Pinned to a SHA rather than a branch so a push landing mid-run
       # cannot change what was tested.
+      # To a COMMIT, never a ref. The commit goes into the kernel's slug, which
+      # is the only record a later collector has of what the result is about;
+      # a branch or tag there cannot be encoded, launch.py refuses it, and
+      # before it did the kernel ran, billed, and reported to nobody.
       - name: Resolve the ref under test
         id: ref
+        env:
+          UNSLOTH_REF: ${{ inputs.unsloth_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          REF='${{ inputs.unsloth_ref }}'
-          if [ -z "$REF" ]; then
-            REF='${{ github.event.pull_request.head.sha || github.sha }}'
+          if [ -z "$UNSLOTH_REF" ]; then
+            echo "ref=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+            echo "testing unslothai/unsloth@$HEAD_SHA"
+            exit 0
           fi
-          echo "ref=$REF" >> "$GITHUB_OUTPUT"
-          echo "testing unslothai/unsloth@$REF"
+          if printf '%s' "$UNSLOTH_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            RESOLVED="$UNSLOTH_REF"
+          else
+            RESOLVED=''
+            for attempt in 1 2 3; do
+              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" || true)"
+              PEELED="$(printf '%s\n' "$LS" | grep '\^{}$' | head -n1 | cut -f1)"
+              if [ -n "$PEELED" ]; then
+                RESOLVED="$PEELED"
+              else
+                RESOLVED="$(printf '%s\n' "$LS" | head -n1 | cut -f1)"
+              fi
+              if [ -n "$RESOLVED" ]; then break; fi
+              echo "ls-remote attempt $attempt resolved nothing"
+              sleep 10
+            done
+          fi
+          if [ -z "$RESOLVED" ]; then
+            echo "::error title=Could not resolve the requested unsloth ref::'$UNSLOTH_REF' names no branch, tag or full commit on unslothai/unsloth, so there is no commit to dispatch or to report against."
+            exit 1
+          fi
+          echo "ref=$RESOLVED" >> "$GITHUB_OUTPUT"
+          echo "testing unslothai/unsloth@$RESOLVED (from '$UNSLOTH_REF')"
 
       - name: Build the kernel notebook
         env:
@@ -495,38 +524,36 @@ jobs:
             --expect 1 \
             --sha '${{ steps.ref.outputs.ref }}' \
             --kind studio \
+            --no-delete \
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
+      # Post FIRST, delete SECOND. The collector above ran with --no-delete, so
+      # a verdict that fails to reach GitHub (an API outage, a token problem)
+      # leaves its kernel on Kaggle for the next pass to collect and post
+      # again. Deleting before posting would make that failure permanent: the
+      # commit stays pending and nothing anywhere remembers the verdict. The
+      # poster is a script shared by all three workflows; it expands the
+      # slug's 8-character sha (the statuses API 422s an abbreviation) and
+      # hands every field to `gh` as its own argument, never through a shell.
       - name: Post the collected verdicts as commit statuses
+        id: post
         if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python - <<'PY' > statuses.txt
-          import json, pathlib
-          data = json.loads(pathlib.Path("kaggle_collected/collect_result.json").read_text())
-          for s in data.get("statuses", []):
-              print("\t".join([s["sha"], s["state"], s["context"], s["description"], s["target_url"]]))
-          PY
-          # Read rather than interpolate: a description carries a payload's own
-          # failure text, which must never reach a shell as code.
-          #
-          # The slug carries 8 hex characters and the statuses API refuses an
-          # abbreviation with 422 "Sha must be a valid hex object ID", measured.
-          # So it is expanded first; otherwise every collected verdict 422s into
-          # a warning and the commit keeps a pending check forever.
-          while IFS=$'\t' read -r sha state context description target_url; do
-            [ -n "$sha" ] || continue
-            full="$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" -q .sha 2>/dev/null || true)"
-            if [ -z "$full" ]; then
-              echo "::warning title=Could not resolve a collected commit::$sha is no longer a commit here, so its $context result cannot be posted."
-              continue
-            fi
-            gh api "repos/$GITHUB_REPOSITORY/statuses/$full" \
-              -f state="$state" -f context="$context" \
-              -f description="$description" -f target_url="$target_url" \
-              --silent || echo "::warning title=Could not post a commit status::$context for $full"
-          done < statuses.txt
+          python .github/scripts/kaggle_t4_ci/post_statuses.py \
+            --result kaggle_collected/collect_result.json \
+            --out kaggle_collected/posted.json
+
+      - name: Release the kernels whose verdicts were delivered
+        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected \
+            --delete-collected kaggle_collected/collect_result.json \
+            --posted kaggle_collected/posted.json
 
       - name: Note that this commit is already running on Kaggle
         if: steps.recheck.outputs.should_run == 'true' && steps.collect.outputs.in_flight == 'true'
@@ -560,8 +587,13 @@ jobs:
             --kind studio \
             --commit-sha '${{ steps.ref.outputs.ref }}'
 
+      # Gated on the launcher's own verdict, not on its exit code: launch.py
+      # exits 0 for every infrastructure stand-down (auth failure, account
+      # mismatch, too little deadline left), and a pending status posted for a
+      # kernel that does not exist is one no collector can ever replace. The
+      # commit would sit blocked until somebody noticed.
       - name: Mark the dispatch pending on this commit
-        if: steps.launch.outcome == 'success' && steps.launch.conclusion == 'success'
+        if: steps.launch.outputs.verdict == 'dispatched'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

@@ -1,7 +1,0 @@
-{
-  "verdict": "infra",
-  "reason": "kaggle auth failed: SystemExit",
-  "slug": null,
-  "kernel_state": null,
-  "reports": []
-}

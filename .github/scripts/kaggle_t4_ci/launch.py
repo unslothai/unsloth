@@ -1115,6 +1115,12 @@ def extract_reports(outdir: Path) -> list[dict]:
                 parsed = json.loads(blob)
             except json.JSONDecodeError:
                 continue
+            # A report is an object. Anything else that parses (`[]`, a bare
+            # string) is a malformed line, and reading `.get` off it would
+            # raise out of the collector before it wrote a result, wedging
+            # every later pass on the same evidence.
+            if not isinstance(parsed, dict):
+                continue
             key = f"{parsed.get('label')}|{parsed.get('model')}"
             if key in seen:
                 continue
@@ -1295,6 +1301,17 @@ def main() -> int:
             ap.error(
                 "--dispatch requires --commit-sha and --kind: without both, the "
                 "kernel runs and no collector can attribute its result"
+            )
+        # A commit, not a ref. `slug_name` can only carry hex, and it falls
+        # back to the legacy unattributable form for anything else, so a
+        # branch or tag here would push a kernel that runs, bills, and reports
+        # to nobody. The workflows resolve refs before this point; this is the
+        # check that they did.
+        if not re.fullmatch(r"[0-9a-fA-F]{8,40}", args.commit_sha.strip()):
+            ap.error(
+                f"--commit-sha must be a hex commit id (8 to 40 characters), got "
+                f"{args.commit_sha!r}: a ref cannot be written into the slug, so "
+                "the kernel's result could never be attributed to a commit"
             )
 
     # Before the first network call, and globally: the Kaggle client has no
