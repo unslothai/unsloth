@@ -91,9 +91,7 @@ def test_the_submit_gate_and_the_disable_gate_agree_about_the_setup_token():
         "currentPassword.length < 8",
         "currentPassword === newPassword",
     ):
-        occurrences = [
-            line.strip() for line in src.splitlines() if rule in line
-        ]
+        occurrences = [line.strip() for line in src.splitlines() if rule in line]
         assert occurrences, f"the {rule!r} rule disappeared entirely"
         for line in occurrences:
             assert "!setupToken" in line, (
