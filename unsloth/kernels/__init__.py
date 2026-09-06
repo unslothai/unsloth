@@ -48,6 +48,7 @@ from .fp8 import *  # Patch FbgmemFP8Linear/FP8Linear forwards before model crea
 
 # models are covered too
 from .utils import (
+    _dequantize_for_lora,
     fast_dequantize,
     fast_gemv,
     QUANT_STATE,
