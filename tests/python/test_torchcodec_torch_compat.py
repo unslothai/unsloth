@@ -1417,9 +1417,9 @@ def test_a_chained_uninstall_does_not_swallow_the_reinstall():
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     chained = "!pip uninstall -y torchcodec && pip install torchcodec==0.10.0"
     assert nv._effective_requested_version(chained, "torchcodec", "0.11.0") == ("0.10.0", True)
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(chained, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(chained, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
 
     # A line that really does end on a removal still clears it, in either spelling.
     for removed in (
@@ -1427,7 +1427,10 @@ def test_a_chained_uninstall_does_not_swallow_the_reinstall():
         "!uv pip uninstall torchcodec",
         "!pip install torchcodec==0.10.0 && pip uninstall -y torchcodec",
     ):
-        assert nv._effective_requested_version(removed, "torchcodec", "0.11.0") == ("", True), removed
+        assert nv._effective_requested_version(removed, "torchcodec", "0.11.0") == (
+            "",
+            True,
+        ), removed
         assert nv.rule_inst_004_torchcodec_torch(removed, colab, "nb.ipynb", 0) == [], removed
 
 
@@ -1441,6 +1444,7 @@ def test_the_codec_index_follows_a_configured_pytorch_mirror(monkeypatch):
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     from studio import install_python_stack as ips
+
     ips = importlib.reload(ips)  # _PYTORCH_WHL_BASE is read at import time
     try:
         assert ips._torchcodec_index_url("2.11.0+cu128") == "https://mirror.corp.example/whl/cu128"
