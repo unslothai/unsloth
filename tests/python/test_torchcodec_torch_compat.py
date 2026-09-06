@@ -1395,9 +1395,9 @@ def test_a_chained_uninstall_does_not_swallow_the_reinstall():
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     chained = "!pip uninstall -y torchcodec && pip install torchcodec==0.10.0"
     assert nv._effective_version(chained, "torchcodec", "0.11.0") == ("0.10.0", True)
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(chained, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(chained, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
 
     # A line that really does end on a removal still clears it, in either spelling.
     for removed in (
@@ -1419,6 +1419,7 @@ def test_the_codec_index_follows_a_configured_pytorch_mirror(monkeypatch):
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     from studio import install_python_stack as ips
+
     ips = importlib.reload(ips)  # _PYTORCH_WHL_BASE is read at import time
     try:
         assert ips._torchcodec_index_url("2.11.0+cu128") == "https://mirror.corp.example/whl/cu128"
@@ -1483,6 +1484,7 @@ def test_the_provenance_hint_does_not_assert_a_cause_it_has_not_established(monk
     assert "cannot load" not in hint
     assert "FFmpeg" in hint
 
+
 def test_the_remedy_uses_the_shell_of_the_host_it_prints_on(monkeypatch):
     """PowerShell is Studio's supported Windows shell and does not expand `$NAME`, so the
     POSIX spelling pasted there produced an empty `--index-url`."""
@@ -1511,7 +1513,6 @@ def test_the_remedy_uses_the_shell_of_the_host_it_prints_on(monkeypatch):
     )
 
 
-
 def test_a_torch_range_is_replayed_before_the_pair_is_judged():
     """`pip install "torch>=2.12.0"` does not satisfy the image's 2.11, so pip upgrades torch
     while the codec stays on 0.11. Both sides have to be replayed, not just the codec."""
@@ -1525,9 +1526,10 @@ def test_a_torch_range_is_replayed_before_the_pair_is_judged():
         )
     ] == ["R-INST-004"]
     # A floor the image already satisfies moves nothing, and a removal leaves nothing to judge.
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!pip install "torch>=2.11.0"', colab, "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch('!pip install "torch>=2.11.0"', colab, "nb.ipynb", 0)
+        == []
+    )
     assert nv.rule_inst_004_torchcodec_torch("!pip uninstall -y torch", colab, "nb.ipynb", 0) == []
 
 
@@ -1539,9 +1541,7 @@ def test_each_pip_command_owns_the_packages_it_names():
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
 
-    other_package = (
-        "!pip install torch==2.10.0 torchcodec==0.12.0 && pip uninstall -y torchaudio"
-    )
+    other_package = "!pip install torch==2.10.0 torchcodec==0.12.0 && pip uninstall -y torchaudio"
     assert nv._effective_version(other_package, "torchcodec", "0.11.0") == ("0.12.0", True)
     assert nv._effective_version(other_package, "torch", "2.11.0") == ("2.10.0", True)
     assert [
