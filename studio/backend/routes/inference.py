@@ -13175,10 +13175,19 @@ def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
         source = getattr(llama_backend, "extra_args_source", None)
     except Exception:
         return None
-    if not stored or not source or not source[0]:
+    if not stored:
         return None
-    if str(source[0]).lower() != str(getattr(request, "model_path", "") or "").lower():
-        return None
+    requested = str(getattr(request, "model_path", "") or "").strip().lower()
+    stored_id = str(source[0] if source and source[0] else "").strip().lower()
+    if stored_id and requested and stored_id != requested:
+        # The stored identifier is the RESOLVED one (a local file or a bare repo name can
+        # resolve to another string), so a plain mismatch is not proof of another model;
+        # a shared stem is. Erring towards handing the extras over only costs the Spark
+        # draft depth for one load, while missing them could shadow a --spec-type the
+        # caller set. A different model's extras are cleared by the resolver anyway.
+        a, b = Path(requested).stem, Path(stored_id).stem
+        if a != b and a not in stored_id and b not in requested:
+            return None
     return list(stored)
 
 
