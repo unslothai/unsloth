@@ -710,6 +710,23 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    # How far each imported session (Cursor, Claude Code, ...) has been brought
+    # over. Deleting a message drops the only other record of it, so without
+    # this a re-import cannot tell a turn the user removed from one the tool
+    # has since appended, and would write it back. One table, keyed by source:
+    # Cursor used to have its own, and those rows are folded in below.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS external_import_sessions (
+            source TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            transcript_updated_at INTEGER NOT NULL,
+            turns_imported INTEGER NOT NULL,
+            PRIMARY KEY (source, session_id)
+        ) WITHOUT ROWID
+        """
+    )
+    _fold_cursor_import_ledger(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS prompt_entries (
@@ -2349,6 +2366,37 @@ def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -
             "UPDATE chat_threads SET forked_from_thread_id = ? WHERE id = ?",
             (source_id, row["id"]),
         )
+
+
+def lift_chat_thread_tombstone(thread_id: str) -> None:
+    """Forget a deleted thread id so a later import can recreate it.
+
+    Used when Studio has no chats left -- a clear-all, or a wiped database --
+    so Import from Cursor / Claude Code can start from a blank history. A
+    targeted delete while other chats remain is left tombstoned.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM chat_thread_tombstones WHERE id = ?", (thread_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def lift_all_chat_thread_tombstones() -> None:
+    """Forget every deleted thread id. An empty Studio is a blank slate.
+
+    Lifting one tombstone and then importing that chat would leave the rest
+    skipped: the next transcript would see a nonempty history and treat its
+    own tombstone as a targeted delete. Clearing them all first is what lets
+    Import from Cursor / Claude Code bring the whole history back.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM chat_thread_tombstones")
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _tombstone_chat_threads(conn: sqlite3.Connection, thread_ids: Iterable[str]) -> None:
@@ -4828,5 +4876,81 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
                 inserted += 1
         conn.commit()
         return len(ids), inserted
+    finally:
+        conn.close()
+
+
+def _fold_cursor_import_ledger(conn: sqlite3.Connection) -> None:
+    """Move Cursor marks onto the shared ledger, then drop the old table.
+
+    Early drafts of this feature stored Cursor's progress in its own table.
+    A machine that ran that draft still has the rows; without folding them,
+    a re-import would see no mark and refuse to write anything Cursor appended.
+    """
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "cursor_import_sessions" not in tables:
+        return
+    # VALUES upsert, not INSERT…SELECT…ON CONFLICT: older SQLite parses the
+    # latter as a syntax error, and the per-session write is the same shape
+    # record_external_import_mark already uses.
+    rows = conn.execute(
+        "SELECT session_id, transcript_updated_at, turns_imported FROM cursor_import_sessions"
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            """
+            INSERT INTO external_import_sessions
+                (source, session_id, transcript_updated_at, turns_imported)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source, session_id) DO UPDATE SET
+                transcript_updated_at = excluded.transcript_updated_at,
+                turns_imported = MAX(
+                    excluded.turns_imported, external_import_sessions.turns_imported
+                )
+            """,
+            ("cursor", row["session_id"], row["transcript_updated_at"], row["turns_imported"]),
+        )
+    conn.execute("DROP TABLE cursor_import_sessions")
+
+
+def get_external_import_mark(source: str, session_id: str) -> Optional[dict]:
+    """How far an imported session was brought over, or None if it never was."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT transcript_updated_at, turns_imported
+            FROM external_import_sessions WHERE source = ? AND session_id = ?
+            """,
+            (source, session_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "transcriptUpdatedAt": row["transcript_updated_at"],
+            "turnsImported": row["turns_imported"],
+        }
+    finally:
+        conn.close()
+
+
+def record_external_import_mark(
+    source: str, session_id: str, transcript_updated_at: int, turns: int
+) -> None:
+    """Record an imported session as brought over through its first *turns* messages."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO external_import_sessions
+                (source, session_id, transcript_updated_at, turns_imported)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source, session_id) DO UPDATE SET
+                transcript_updated_at = excluded.transcript_updated_at,
+                turns_imported = MAX(excluded.turns_imported, external_import_sessions.turns_imported)
+            """,
+            (source, session_id, int(transcript_updated_at), int(turns)),
+        )
+        conn.commit()
     finally:
         conn.close()

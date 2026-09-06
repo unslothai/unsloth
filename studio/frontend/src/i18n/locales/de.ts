@@ -1515,6 +1515,23 @@ export const de = {
       importingChats: "Chats werden importiert: bisher {count} ({percent}%)...",
       importedChatCountPartial: "{count} Unterhaltungen in Zuletzt importiert; {failed} konnten nicht gespeichert werden.",
       importFailed: "Import fehlgeschlagen.",
+      importFromCursor: "Aus Cursor importieren",
+      importFromCursorDescription:
+        "Kopieren Sie Ihre Cursor-Konversationen nach Studio, gruppiert nach Projekt.",
+      importingAction: "Wird importiert...",
+      importCursorNoChats: "Keine Cursor-Konversationen gefunden.",
+      importedCursorOneChat: "1 Konversation aus Cursor importiert.",
+      importedCursorChatCount:
+        "{count} Konversationen aus Cursor importiert.",
+      cursorUpToDate: "Die Cursor-Konversationen sind bereits aktuell.",
+      importFromClaude: "Aus Claude Code importieren",
+      importFromClaudeDescription:
+        "Kopiere deine Claude-Code-Konversationen nach Studio, gruppiert nach Projekt.",
+      importClaudeNoChats: "Keine Claude-Code-Konversationen gefunden.",
+      importedClaudeOneChat: "1 Konversation aus Claude Code importiert.",
+      importedClaudeChatCount:
+        "{count} Konversationen aus Claude Code importiert.",
+      claudeUpToDate: "Die Claude-Code-Konversationen sind bereits aktuell.",
       clearHistory: "Chatverlauf löschen",
       clearHistoryDescription: "Chatverlauf von diesem Gerät löschen.",
       clearAction: "Löschen",

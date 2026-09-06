@@ -1480,6 +1480,23 @@ export const hi = {
       importingChats: "चैट इंपोर्ट हो रही हैं: अब तक {count} ({percent}%)...",
       importedChatCountPartial: "{count} बातचीत Recents में इंपोर्ट की गईं; {failed} सेव नहीं हो सकीं।",
       importFailed: "इंपोर्ट विफल रहा।",
+      importFromCursor: "Cursor से इंपोर्ट करें",
+      importFromCursorDescription:
+        "अपने Cursor वार्तालाप प्रोजेक्ट के अनुसार समूहित करके Studio में कॉपी करें।",
+      importingAction: "इंपोर्ट हो रहा है...",
+      importCursorNoChats: "कोई Cursor वार्तालाप नहीं मिला।",
+      importedCursorOneChat: "Cursor से 1 वार्तालाप इंपोर्ट किया गया।",
+      importedCursorChatCount:
+        "Cursor से {count} वार्तालाप इंपोर्ट किए गए।",
+      cursorUpToDate: "Cursor वार्तालाप पहले से अद्यतित हैं।",
+      importFromClaude: "Claude Code से आयात करें",
+      importFromClaudeDescription:
+        "अपनी Claude Code वार्तालापों को प्रोजेक्ट के अनुसार समूहित करके Studio में कॉपी करें।",
+      importClaudeNoChats: "कोई Claude Code वार्तालाप नहीं मिली।",
+      importedClaudeOneChat: "Claude Code से 1 वार्तालाप आयात की गई।",
+      importedClaudeChatCount:
+        "Claude Code से {count} वार्तालाप आयात की गईं।",
+      claudeUpToDate: "Claude Code वार्तालाप पहले से अद्यतित हैं।",
       clearHistory: "चैट इतिहास साफ़ करें",
       clearHistoryDescription: "इस डिवाइस से चैट इतिहास हटाएं।",
       clearAction: "साफ़ करें",
