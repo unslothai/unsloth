@@ -53,8 +53,18 @@ Check "the stop scan is given the managed paths under the target" `
 # covers both. A junction is the shape a Windows user is likelier to have anyway: mklink /J
 # needs no privilege, so it is what gets reached for when moving a studio home onto another
 # volume.
+# $IsWindows only exists on PowerShell 6+; on Windows PowerShell 5.1 it is $null, and 5.1
+# runs nowhere else.
+$onWindows = if ($null -ne $IsWindows) { $IsWindows } else { $true }
+
+# A junction is a Windows-only reparse type. New-Item -ItemType Junction does NOT throw on
+# Linux pwsh -- it quietly produces a plain directory with no .Target -- so asking for one
+# there yields a row that fails every positive assertion while looking like it ran. The
+# kinds are chosen by platform rather than by catching a failure that never comes.
+$kinds = if ($onWindows) { @("Junction", "SymbolicLink") } else { @("SymbolicLink") }
+
 $ran = 0
-foreach ($kind in @("Junction", "SymbolicLink")) {
+foreach ($kind in $kinds) {
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-reparse-" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
     try {
@@ -66,6 +76,14 @@ foreach ($kind in @("Junction", "SymbolicLink")) {
             # Not a failure: the other kind carries the assertions. Reported so a run that
             # covered only one kind cannot be mistaken for a run that covered both.
             Write-Host "  SKIP  $kind is not creatable here: $($_.Exception.Message)"
+            continue
+        }
+        # Created is not the same as usable. _ManagedPathsUnderReparseTargets reads nothing
+        # but .Target, so a link without one cannot exercise anything, and treating that as a
+        # failure would blame the helper for the filesystem's answer.
+        $made = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+        if (-not $made -or [string]::IsNullOrWhiteSpace(@($made.Target)[0])) {
+            Write-Host "  SKIP  $kind produced no reparse target here"
             continue
         }
         $ran++
