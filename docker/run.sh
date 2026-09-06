@@ -129,7 +129,7 @@ elif [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
             ;;
         *)
             printf "      Install it with one command (Linux, needs sudo):\n" >&2
-            printf "      curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh | sudo -E bash\n\n" >&2
+            printf "      curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh\n\n" >&2
             ;;
     esac
 fi

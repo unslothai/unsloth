@@ -47,6 +47,9 @@ _REAL_TOOLS = (
     "dirname",
     "touch",
     "mv",
+    "cp",
+    "chmod",
+    "stat",
     "cut",
     "rm",
     "true",
@@ -74,6 +77,7 @@ def _setup(
     distro: str = "ubuntu",
     driver: bool = True,
     configured: bool = False,
+    toolkit_installed: bool | None = None,
     desktop: bool = False,
     systemctl: str = "ok",
     verify_ok: bool = True,
@@ -105,7 +109,11 @@ def _setup(
     # the installer picks the verification platform from uname -m; pin it so the
     # suite means the same thing on an arm64 runner
     _stub(bindir / "uname", 'if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi\n')
-    _stub(bindir / "nvidia-ctk", rec + f"touch {marker}\n")
+    ctk = bindir / "nvidia-ctk"
+    ctk_body = rec + f"touch {marker}\n"
+    if configured or toolkit_installed:
+        _stub(ctk, ctk_body)
+    (tmp_path / "ctk-stub-body").write_text("#!/usr/bin/env bash\n" + ctk_body, encoding = "utf-8")
     _stub(
         bindir / "docker",
         rec
@@ -131,8 +139,13 @@ def _setup(
             else 'echo "docker: could not select device driver" >&2; exit 125\n'
         ),
     )
-    for pm in ("apt-get", "dnf", "yum", "zypper", "service"):
-        _stub(bindir / pm, rec + "exit 0\n")
+    # installing the package makes nvidia-ctk appear, as it does for real
+    installs = (
+        f'case "$*" in *install*nvidia-container-toolkit*) cp {tmp_path / "ctk-stub-body"} {ctk}; chmod 755 {ctk} ;; esac\n'
+    )
+    for pm in ("apt-get", "dnf", "yum", "zypper"):
+        _stub(bindir / pm, rec + installs + "exit 0\n")
+    _stub(bindir / "service", rec + "exit 0\n")
     if systemctl == "ok":
         _stub(bindir / "systemctl", rec + "exit 0\n")
     elif systemctl == "fails":
@@ -175,13 +188,14 @@ def _setup(
 
 
 def _run(
-    env: dict,
-    script: Path = INSTALLER,
-    extra_env: dict | None = None,
+    env: dict, script: Path = INSTALLER, extra_env: dict | None = None, umask: str | None = None
 ) -> subprocess.CompletedProcess:
     e = dict(env)
     e.update(extra_env or {})
-    return subprocess.run(["bash", str(script)], capture_output = True, text = True, env = e, timeout = 60)
+    cmd = ["bash", str(script)]
+    if umask:
+        cmd = ["bash", "-c", f'umask {umask}; exec bash "$0"', str(script)]
+    return subprocess.run(cmd, capture_output = True, text = True, env = e, timeout = 60)
 
 
 def _calls(log: Path) -> list[str]:
@@ -364,6 +378,35 @@ def test_a_failed_source_list_download_keeps_the_existing_file(tmp_path: Path):
     assert not any(c.startswith("nvidia-ctk") for c in _calls(log))
 
 
+def test_an_unsupported_architecture_is_refused_before_any_install(tmp_path: Path):
+    _, log, env = _setup(tmp_path)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Linux; else echo ppc64le; fi\n')
+    res = _run(env)
+    assert res.returncode == 2
+    assert "unsupported architecture ppc64le" in res.stderr
+    assert not any(c.startswith(("apt-get", "nvidia-ctk", "docker run")) for c in _calls(log))
+
+
+def test_an_installed_toolkit_is_only_registered(tmp_path: Path):
+    """nvidia-ctk present, runtime entry gone: no repository or package work, which
+    is what an offline host needs."""
+    _, log, env = _setup(tmp_path, toolkit_installed = True)
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    calls = _calls(log)
+    assert not any(c.startswith(("apt-get", "dnf", "yum", "zypper", "curl")) for c in calls)
+    assert "nvidia-ctk runtime configure --runtime=docker" in calls
+    assert "systemctl restart docker" in calls
+
+
+def test_the_keyring_is_world_readable_under_a_strict_umask(tmp_path: Path):
+    root, _, env = _setup(tmp_path, distro = "ubuntu")
+    res = _run(env, umask = "077")
+    assert res.returncode == 0, res.stdout + res.stderr
+    key = root / "usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+    assert oct(key.stat().st_mode & 0o777) == "0o644"
+
+
 def test_a_remote_docker_endpoint_is_refused(tmp_path: Path):
     _, log, env = _setup(tmp_path, uid = 1000)
     env["DOCKER_HOST"] = "tcp://gpu-box:2376"
@@ -532,7 +575,7 @@ def test_run_sh_without_a_terminal_prints_the_one_liner_and_still_runs(tmp_path:
     log, argv, env = _run_sh_env(tmp_path, nvidia_runtime = False)
     res = _run_run_sh(env)
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "install_nvidia_toolkit.sh | sudo -E bash" in res.stderr
+    assert "-o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh" in res.stderr
     assert not any(c.startswith("sudo") for c in _calls(log))
     assert argv.exists()
 
@@ -564,5 +607,7 @@ def test_run_sh_is_quiet_when_the_runtime_is_present(tmp_path: Path):
 def test_the_docs_point_at_the_installer():
     for doc in (REPO_ROOT / "docker" / "DOCKERHUB.md", REPO_ROOT / "README.md"):
         text = doc.read_text(encoding = "utf-8")
-        assert "docker/install_nvidia_toolkit.sh | sudo -E bash" in text, doc
+        assert "install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh" in text, doc
+        assert "| sudo" not in text, "a pipe into bash masks a failed download"
+
     assert "Docker Desktop" in (REPO_ROOT / "docker" / "DOCKERHUB.md").read_text(encoding = "utf-8")

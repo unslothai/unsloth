@@ -3,7 +3,7 @@
 # `docker run --gpus all unsloth/unsloth` works. This is the host side that no image
 # can do for itself: Docker resolves --gpus in the daemon, before a container exists.
 #
-#   curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh | sudo -E bash
+#   curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh
 #
 # Follows NVIDIA's install guide (apt, dnf/yum, zypper), then
 # `nvidia-ctk runtime configure --runtime=docker`, restarts Docker and verifies with a
@@ -81,7 +81,7 @@ if [[ "$(id -u)" != 0 ]]; then
         say "Re-running with sudo."
         exec sudo -E bash "$0" "$@"
     fi
-    fail "run this as root: pipe it into 'sudo -E bash', or 'sudo -E bash docker/install_nvidia_toolkit.sh'." 2
+    fail "run this as root: sudo -E bash install_nvidia_toolkit.sh" 2
 fi
 
 # On WSL 2 the Windows driver provides nvidia-smi under /usr/lib/wsl/lib, which
@@ -102,7 +102,11 @@ driver_ok() {
 
 # explicit platform for the checks below: a cached ubuntu image of the other arch
 # would otherwise be picked and fail on "exec nvidia-smi: no such file"
-case "$(uname -m)" in aarch64|arm64) PLATFORM=linux/arm64 ;; *) PLATFORM=linux/amd64 ;; esac
+case "$(uname -m)" in
+    aarch64|arm64) PLATFORM=linux/arm64 ;;
+    x86_64|amd64)  PLATFORM=linux/amd64 ;;
+    *) fail "unsupported architecture $(uname -m): the Unsloth images are built for linux/amd64 and linux/arm64 only." 2 ;;
+esac
 
 configured() {
     command -v nvidia-ctk >/dev/null 2>&1 && docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'
@@ -110,6 +114,9 @@ configured() {
 
 if configured; then
     say "NVIDIA Container Toolkit is already installed and Docker lists the nvidia runtime."
+elif command -v nvidia-ctk >/dev/null 2>&1; then
+    # packages present, runtime entry missing: no network work, just register
+    say "nvidia-container-toolkit is installed but Docker does not list the nvidia runtime."
 else
     [[ -r "$OS_RELEASE" ]] || fail "cannot read $OS_RELEASE to pick a package manager." 2
     # shellcheck disable=SC1090
@@ -125,6 +132,7 @@ else
             keyring="${DESTDIR}/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
             list="${DESTDIR}/etc/apt/sources.list.d/nvidia-container-toolkit.list"
             curl -fsSL "${BASE}/gpgkey" | gpg --dearmor --yes -o "${keyring}.tmp"
+            chmod 0644 "${keyring}.tmp"  # apt reads Signed-By keys as _apt, so not umask 077
             mv -f "${keyring}.tmp" "$keyring"
             curl -fsSL "${BASE}/stable/deb/nvidia-container-toolkit.list" \
                 | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
@@ -157,7 +165,9 @@ else
        https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html" 2
             ;;
     esac
+fi
 
+if ! configured; then
     say "Registering the nvidia runtime with Docker."
     nvidia-ctk runtime configure --runtime=docker
     # WSL 2 distros and containers often run without systemd; `service` covers them.
