@@ -19,6 +19,7 @@ import sys
 import tempfile
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import numpy as np
@@ -190,6 +191,41 @@ class ArgTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as cm:
                     ap.parse_args(["--repeats", bad])
                 self.assertEqual(cm.exception.code, 2)
+
+
+class TokenTests(unittest.TestCase):
+    def test_loopback_detection(self):
+        for url in (
+            "http://127.0.0.1:8888",
+            "http://127.5.5.5",
+            "http://localhost:8888/",
+            "http://LOCALHOST",
+            "http://[::1]:8888",
+        ):
+            with self.subTest(url = url):
+                self.assertTrue(vb.is_loopback_url(url))
+        for url in (
+            "http://10.0.0.5:8888",
+            "http://0.0.0.0:8888",
+            "https://studio.example.com",
+            "http://[::]:8888",
+            "not a url",
+            "",
+        ):
+            with self.subTest(url = url):
+                self.assertFalse(vb.is_loopback_url(url))
+
+    def test_remote_base_url_needs_an_explicit_token(self):
+        remote = types.SimpleNamespace(base_url = "http://10.0.0.5:8888", token = None)
+        with unittest.mock.patch.dict(os.environ, {}, clear = False):
+            os.environ.pop("UNSLOTH_BENCH_TOKEN", None)
+            with self.assertRaises(ValueError):
+                vb.get_token(remote)
+            self.assertNotIn("mint_token", sys.modules)
+        with unittest.mock.patch.dict(os.environ, {"UNSLOTH_BENCH_TOKEN": "env-key"}):
+            self.assertEqual(vb.get_token(remote), "env-key")
+        remote.token = "flag-key"
+        self.assertEqual(vb.get_token(remote), "flag-key")
 
 
 class ReportPathTests(unittest.TestCase):

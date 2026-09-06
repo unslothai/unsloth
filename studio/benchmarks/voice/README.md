@@ -137,8 +137,12 @@ cd studio/benchmarks/voice
 "$PY" voice_bench.py --baseline reports/latest.json   # diff vs a previous run
 ```
 
-First run auto-mints an internal API key into `.bench_token` (gitignored). The
-first call to each stage pays a cold-start cost (Whisper load, MIOpen kernel
+First run auto-mints an internal API key into `.bench_token` (gitignored). That
+key is written straight into the **local** auth database, so it is only ever
+sent to a loopback `--base-url` (`127.0.0.1`, `::1`, `localhost`, the default);
+to benchmark a Studio on another host pass `--token` (or set
+`UNSLOTH_BENCH_TOKEN`) with a credential that server issued, or the run exits 2.
+The first call to each stage pays a cold-start cost (Whisper load, MIOpen kernel
 tuning, model warmup); that's shown separately as `cold-start` and kept out of
 the steady-state means via a warmup pass.
 

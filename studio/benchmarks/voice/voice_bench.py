@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import ipaddress
 import json
 import os
 import re
@@ -61,6 +62,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 import requests
 import soundfile as sf
@@ -886,12 +888,41 @@ def prepare_report_path(out_arg: Optional[str], stamp: str) -> Path:
     return out
 
 
+def is_loopback_url(url: str) -> bool:
+    """Whether ``url`` addresses this machine (127.0.0.0/8, ::1, or ``localhost``).
+    Anything unparseable or host-less counts as remote, so the check fails closed."""
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def get_token(args) -> str:
+    """The bearer for --base-url: --token, then UNSLOTH_BENCH_TOKEN, then (for the
+    local Studio only) a key auto-minted into the local auth database.
+
+    The minted key is a reusable secret for *this* machine's Studio; it is never
+    sent to another host, so a non-loopback --base-url needs a credential issued
+    by that server (ValueError otherwise)."""
     if args.token:
         return args.token
     env = os.environ.get("UNSLOTH_BENCH_TOKEN")
     if env:
         return env
+    if not is_loopback_url(args.base_url):
+        raise ValueError(
+            f"{args.base_url} is not this machine's Studio, so no local key is minted for it: "
+            "pass --token (or set UNSLOTH_BENCH_TOKEN) with an API key or session token issued "
+            "by that server."
+        )
     sys.path.insert(0, str(HERE))
     import mint_token
 
@@ -901,7 +932,12 @@ def get_token(args) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description = "Voice pipeline latency benchmark")
     ap.add_argument("--base-url", default = DEFAULT_BASE_URL)
-    ap.add_argument("--token", default = None, help = "Bearer token / API key (else auto-mint)")
+    ap.add_argument(
+        "--token",
+        default = None,
+        help = "Bearer token / API key for --base-url (else UNSLOTH_BENCH_TOKEN, else a key "
+        "auto-minted for the local Studio; required when --base-url is not loopback)",
+    )
     ap.add_argument("--conversation", default = str(HERE / "conversation.json"))
     ap.add_argument("--model", default = None, help = "chat model id (default: server's active model)")
     ap.add_argument("--stt-model", default = None, help = "Whisper model id (default: server default)")
@@ -949,7 +985,11 @@ def main() -> int:
     except (OSError, ValueError) as e:
         print(f"Cannot write the report: {e}")
         return 2
-    token = get_token(args)
+    try:
+        token = get_token(args)
+    except ValueError as e:
+        print(e)
+        return 2
     client = StudioClient(args.base_url, token, args.seed)
 
     # Confirm the server is up and something is loaded to talk to.
