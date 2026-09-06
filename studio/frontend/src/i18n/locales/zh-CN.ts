@@ -1557,6 +1557,7 @@ export const zhCN = {
       newTokenCreated: "新的访问 token 已创建",
       accessTokenCopied: "访问 token 已复制",
       copyAccessToken: "复制访问 token",
+      copyAccessTokenFailed: "无法自动复制。请选中 token 并手动复制。",
       copyNow: "请立即复制，此 token 不会再次显示。",
       usageExamples: "使用示例",
       usageTools: "工具",

@@ -1613,6 +1613,8 @@ export const ru = {
       newTokenCreated: "Новый токен доступа создан",
       accessTokenCopied: "Токен доступа скопирован",
       copyAccessToken: "Копировать токен доступа",
+      copyAccessTokenFailed:
+        "Не удалось скопировать автоматически. Выделите токен и скопируйте вручную.",
       copyNow: "Скопируйте сейчас: он больше не будет показан.",
       usageExamples: "Примеры использования",
       usageTools: "Инструменты",

@@ -1594,6 +1594,7 @@ export const ko = {
       newTokenCreated: "새 액세스 토큰이 생성되었습니다",
       accessTokenCopied: "액세스 토큰이 복사되었습니다",
       copyAccessToken: "액세스 토큰 복사",
+      copyAccessTokenFailed: "자동으로 복사하지 못했습니다. 토큰을 선택해 직접 복사하세요.",
       copyNow: "지금 복사하세요. 이 토큰은 다시 표시되지 않습니다.",
       usageExamples: "사용 예시",
       usageTools: "도구",

@@ -1641,6 +1641,8 @@ export const fr = {
       newTokenCreated: "Nouveau jeton d’accès créé",
       accessTokenCopied: "Jeton d’accès copié",
       copyAccessToken: "Copier le jeton d’accès",
+      copyAccessTokenFailed:
+        "Copie automatique impossible. Sélectionnez le jeton et copiez-le manuellement.",
       copyNow: "Copiez le jeton maintenant : il ne sera plus affiché.",
       usageExamples: "Exemples d'utilisation",
       usageTools: "Outils",
