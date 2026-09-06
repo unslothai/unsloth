@@ -4648,16 +4648,12 @@ def _session_config(
 def _studio_embedding_model(base: str, key: str) -> Optional[str]:
     """Studio's configured embedding model, or None when this server cannot say.
 
-    None is not a model name on purpose. Naming a model the server will not serve, and
-    pinning fallback to "none" next to it, is the one combination OpenClaw cannot degrade
-    out of: every memory request then fails against Studio with no keyword path left. The
-    caller turns None into `provider: "none"` instead, which is OpenClaw's own value for
-    keyword-only memory search -- still local, still no OpenAI, and it still returns hits.
+    Not a model name: a name this server will not serve, beside fallback "none", is the one
+    combination OpenClaw cannot degrade out of. The caller writes provider "none" instead.
     """
     try:
         info = _http_json("GET", f"{base}/api/settings/embedding-model", key, timeout = 10)
-    # A CLI abort is a decision, not a transport failure; typer.Exit is a RuntimeError
-    # subclass, so the broad catch below would otherwise turn it into a silent fallback.
+    # typer.Exit is a RuntimeError subclass: the broad catch would swallow a deliberate abort.
     except (typer.Exit, typer.Abort, click.exceptions.Exit, click.exceptions.Abort):
         raise
     except Exception:  # noqa: BLE001 - an older or unreachable server still gets a working config
@@ -4665,8 +4661,7 @@ def _studio_embedding_model(base: str, key: str) -> Optional[str]:
     name = info.get("embedding_model") if isinstance(info, dict) else None
     if not isinstance(name, str) or not name.strip():
         return None
-    # Studio stores what was typed into Settings; OpenClaw sends this string to
-    # /v1/embeddings verbatim, so strip here rather than shipping the padding.
+    # OpenClaw sends this to /v1/embeddings verbatim; Settings stores what was typed.
     return name.strip()
 
 
@@ -4701,8 +4696,8 @@ def write_openclaw_config(
         "api": "openai-completions",
         "models": [provider_model],
     }
-    # Memory search is on by default in OpenClaw and its default provider is openai, so a
-    # session meant to stay local reaches OpenAI unless this block is written.
+    # Memory search is on by default and defaults to openai, so a local session reaches
+    # OpenAI unless this block is written.
     search = _subdict(_subdict(config, "memory"), "search")
     if embedding_model:
         search.update(
@@ -4714,11 +4709,8 @@ def write_openclaw_config(
             }
         )
     else:
-        # No model name to point at (an older server, or one that would not answer). Ask
-        # for keyword-only memory search rather than for embeddings this server cannot
-        # serve: "none" is OpenClaw's documented value for that, it makes no network call,
-        # and `openclaw memory search` still returns ranked hits. Clear the remote so a
-        # reused --persist config does not keep aiming at an endpoint we just gave up on.
+        # "none" is OpenClaw's keyword-only mode: no network call, and search still returns
+        # hits. Clearing the remote stops a reused --persist config aiming at a dead endpoint.
         search.update({"provider": "none", "fallback": "none"})
         search.pop("model", None)
         search.pop("remote", None)

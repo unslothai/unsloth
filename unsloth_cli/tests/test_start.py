@@ -8755,10 +8755,8 @@ def _openclaw_without_the_settings_route(monkeypatch, exc = RuntimeError("404"))
 def test_openclaw_memory_search_asks_for_keyword_only_without_the_settings_route(
     fake_studio, tmp_path, monkeypatch
 ):
-    # A server that cannot name its embedding model cannot serve embeddings for it
-    # either. Pointing memory search at it anyway, with fallback pinned to "none",
-    # is the one shape OpenClaw cannot degrade out of. Ask for its own keyword-only
-    # mode instead: no network call, no OpenAI, and searches still return hits.
+    # A server that cannot name its embedder will not serve it either, and that name
+    # beside fallback "none" is the one shape OpenClaw cannot degrade out of.
     _openclaw_without_the_settings_route(monkeypatch)
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
@@ -8771,8 +8769,7 @@ def test_openclaw_memory_search_asks_for_keyword_only_without_the_settings_route
 def test_openclaw_memory_search_drops_a_stale_remote_when_the_route_is_gone(
     fake_studio, tmp_path, monkeypatch
 ):
-    # Downgrading Studio after a --persist run must not leave the previous run's
-    # endpoint and key behind for a provider that is no longer pointed at it.
+    # A --persist config must not keep the old endpoint and key for a dropped provider.
     _openclaw_without_the_settings_route(monkeypatch)
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
@@ -8801,8 +8798,7 @@ def test_openclaw_memory_search_drops_a_stale_remote_when_the_route_is_gone(
 
 
 def test_openclaw_memory_search_model_is_stripped(fake_studio, tmp_path, monkeypatch):
-    # OpenClaw sends memory.search.model to /v1/embeddings verbatim, so padding that
-    # Studio's Settings field happens to hold would travel all the way to the request.
+    # The model goes to /v1/embeddings verbatim, so padding would reach the request.
     real = start._http_json
 
     def padded(method, url, *args, **kwargs):
@@ -8819,8 +8815,7 @@ def test_openclaw_memory_search_model_is_stripped(fake_studio, tmp_path, monkeyp
 
 
 def test_openclaw_memory_search_does_not_swallow_a_cli_abort(fake_studio, tmp_path, monkeypatch):
-    # typer.Exit is a RuntimeError subclass, so a bare `except Exception` around the
-    # probe would turn a deliberate abort into a silently degraded config.
+    # typer.Exit is a RuntimeError subclass: a bare except would degrade the config silently.
     _openclaw_without_the_settings_route(monkeypatch, exc = typer.Exit(2))
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
