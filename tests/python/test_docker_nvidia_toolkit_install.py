@@ -439,7 +439,9 @@ def test_only_the_toolkit_cli_present_still_installs_the_full_package(tmp_path: 
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
     calls = _calls(log)
-    assert any(c.startswith("apt-get install") and c.endswith("nvidia-container-toolkit") for c in calls)
+    assert any(
+        c.startswith("apt-get install") and c.endswith("nvidia-container-toolkit") for c in calls
+    )
     assert "nvidia-ctk runtime configure --runtime=docker" in calls
 
 
