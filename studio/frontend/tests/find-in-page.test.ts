@@ -2346,6 +2346,20 @@ test("a per-node cut does not hand back half a grapheme", () => {
   assert.equal(findMatches(index, "after", 10).length, 1);
 });
 
+test("what a clip dropped cannot reach past the end of its block", () => {
+  // The clip leaves the dropped text readable so the far side of the cut can be settled from it.
+  // A block ending in between settles that junction on its own, and the dropped text belongs to
+  // the block that is over: judged against it, a Prepend at the end of the dropped suffix joined
+  // the first character of the next block and put a seam on text nothing was dropped in front of.
+  const clipped = `${"z".repeat(MAX_NODE_CHARS)}dropped\u0600`;
+  const index = buildTextIndex(
+    el("SPAN", [el("DIV", [text(clipped)]), text("a")]),
+  );
+  assert.equal(index.truncated, true);
+  assert.equal(index.text.endsWith(`${BLOCK_SEPARATOR}a`), true);
+  assert.equal(findMatches(index, "a", 5).length, 1);
+});
+
 test("a cut inside a run reads back to an anchor, not to a fixed window", () => {
   // Regional indicators pair off from the START of their run, so a fixed window is not the text
   // the segmenter would see: the last 32 code units of an ODD run read as an even one, and the

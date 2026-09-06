@@ -402,7 +402,13 @@ export function buildTextIndex(
         if (full) return;
       }
     }
-    if (block) pendingSeparator = true;
+    // Leaving a block is a boundary as much as entering one, so what a clip inside it dropped
+    // cannot reach the sibling after it. Left set, that text decided a junction the separator had
+    // already settled, and put a seam on the first character of the next block.
+    if (block) {
+      pendingSeparator = true;
+      dropped = null;
+    }
   };
 
   visit(root, false);
