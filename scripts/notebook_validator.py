@@ -606,17 +606,39 @@ def rule_inst_003_peft_torchao(
 
 
 def _requested_bounds(install_cell: str, package: str) -> tuple[str, str]:
-    """The cell's `>=` floor and `<` ceiling for `package`, each "" when absent."""
+    """The floor and ceiling of the LAST invocation that constrains `package`.
+
+    Order matters and intersecting does not: pip runs the commands in sequence, so
+    `torchcodec>=0.12.0` followed by `torchcodec<0.12.0` ends on a pre-0.12 codec, while
+    taking the highest floor and lowest ceiling across both would invent a 0.12 that was
+    never installed. Only the last command decides.
+
+    A requirement carrying a PEP 508 marker is skipped. Evaluating one needs the image's
+    interpreter, which this branch has no oracle for, and guessing against the runner would
+    move the answer between machines. Skipping leaves such a cell judged on the preinstalled
+    version, which is what it was judged on before this function existed.
+    """
     floor = ceiling = ""
     for invocation in iter_pip_invocations(install_cell):
+        current_floor = current_ceiling = ""
+        named = False
         for requirement in invocation.packages:
+            if ";" in requirement:
+                continue
             if not re.match(rf"\s*{re.escape(package)}\s*[><=!~]", requirement):
                 continue
+            named = True
             for operator, version in re.findall(r"([><=!~]=?)\s*([0-9][0-9.]*)", requirement):
-                if operator == ">=" and (not floor or cmp_versions(version, floor) > 0):
-                    floor = version
-                elif operator == "<" and (not ceiling or cmp_versions(version, ceiling) < 0):
-                    ceiling = version
+                if operator == ">=" and (
+                    not current_floor or cmp_versions(version, current_floor) > 0
+                ):
+                    current_floor = version
+                elif operator == "<" and (
+                    not current_ceiling or cmp_versions(version, current_ceiling) < 0
+                ):
+                    current_ceiling = version
+        if named:
+            floor, ceiling = current_floor, current_ceiling
     return floor, ceiling
 
 

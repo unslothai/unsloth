@@ -450,6 +450,43 @@ def test_the_two_pypi_only_rows_stay_unpinned():
     )
 
 
+def test_audio_extras_carry_the_python_ceiling_their_codec_line_has():
+    """torchcodec publishes no sdist, so an extra left open above its last cp tag makes pip
+    fail the whole install instead of skipping audio. requires-python is open-ended (>=3.9),
+    so a newer interpreter reaches these extras; the marker has to stop it.
+
+    The ceilings come from the same upstream table _TORCHCODEC_PYTHON_WINDOWS encodes: the
+    0.6/0.7 line stops at 3.13, everything from 0.9 up runs to 3.14.
+    """
+    markers = pytest.importorskip("packaging.markers")
+    text = PYPROJECT.read_text(encoding="utf-8")
+
+    # extra -> the first interpreter that must NOT select it, and one that must.
+    expected = {
+        "audio-torch211": ("3.15", "3.14"),
+        "audio-torch210": ("3.15", "3.14"),
+        "audio-torch290": ("3.15", "3.14"),
+        "audio-torch280": ("3.14", "3.13"),
+    }
+    for extra, (too_new, supported) in expected.items():
+        match = re.search(rf"^{extra} = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
+        assert match is not None, extra
+        marker_text = match.group(1).split(";", 1)[1].rsplit('"', 1)[0].strip()
+        marker = markers.Marker(marker_text)
+        env = {
+            "sys_platform": "linux",
+            "platform_machine": "x86_64",
+            "platform_system": "Linux",
+            "os_name": "posix",
+        }
+        assert not marker.evaluate({**env, "python_version": too_new}), (
+            f"{extra} still selects torchcodec on Python {too_new}, which has no wheel"
+        )
+        assert marker.evaluate({**env, "python_version": supported}), (
+            f"{extra} stopped selecting torchcodec on Python {supported}, which does"
+        )
+
+
 def test_compat_matrix_matches_the_published_upstream_table():
     """Pin the runtime guard to upstream, not merely to our own other copies of it."""
     fixes = _load_import_fixes_module()
@@ -599,6 +636,43 @@ def test_a_requested_codec_range_beats_the_preinstalled_oracle():
         assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)] == [
             "R-INST-004"
         ], cell
+
+
+def test_a_codec_range_is_read_in_order_and_only_when_unconditional():
+    """Two ways the range reader could invent a version the cell never installs.
+
+    Order: pip runs the commands in sequence, so `torchcodec>=0.12.0` then
+    `torchcodec<0.12.0` ends pre-0.12. Intersecting the bounds across both invocations
+    instead yields a 0.12 that was never installed, and the real mismatch goes unreported.
+
+    Markers: a requirement pip skips must not move anything. This branch has no oracle for
+    the image's interpreter, so a marked requirement is left alone and the cell is judged on
+    the preinstalled version, exactly as it was before the range reader existed.
+    """
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+
+    ordered = (
+        '!pip install "torchcodec>=0.12.0"\n'
+        '!pip install "torchcodec<0.12.0"\n'
+        "!pip install torch==2.12.0"
+    )
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(ordered, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"], "the later cap has to win over the earlier floor"
+
+    marked = "!pip install torch==2.12.0 \"torchcodec>=0.12.0; python_version < '3.10'\""
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(marked, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"], "a marked requirement must not raise the effective codec"
+
+    # The unconditional forms this reader exists for still resolve.
+    for cell in (
+        '!pip install torch==2.12.0 "torchcodec>=0.12.0,<0.13.0"',
+        '!pip install torch==2.10.0 "torchcodec>=0.10.0,<0.11.0"',
+    ):
+        assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == [], cell
 
 
 def test_validator_and_runtime_guard_agree_on_the_whole_matrix(monkeypatch):
