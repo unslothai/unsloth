@@ -503,7 +503,10 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
         # mirror to download.pytorch.org, and the --index-url that follows also makes
         # _install_env_for_cmd drop the inherited index configuration, so the codec install
         # fails outright wherever public PyTorch is unreachable.
-        return _explicit_torch_index_url() or f"https://download.pytorch.org/whl/{local}"
+        # _PYTORCH_WHL_BASE, not a literal: UNSLOTH_PYTORCH_MIRROR redirects every other
+        # index this module builds, and a codec fetched from the public site on a host
+        # configured for a mirror either cannot be reached or bypasses the artifact source.
+        return _explicit_torch_index_url() or f"{_PYTORCH_WHL_BASE}/{local}"
     return None
 
 

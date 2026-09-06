@@ -1406,3 +1406,77 @@ def test_the_printed_codec_index_is_redacted(monkeypatch):
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     assert 'f" from {_strip_index_url_credentials(_codec_index)}"' in source
     assert 'f" from {_codec_index}"' not in source
+
+
+def test_a_chained_uninstall_does_not_swallow_the_reinstall():
+    """`!pip uninstall -y torchcodec && pip install torchcodec==0.10.0` is one logical line,
+    so matching `uninstall` anywhere in it marked the whole thing a removal and the codec the
+    cell demonstrably ends with was thrown away. The LAST pip verb decides."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    chained = "!pip uninstall -y torchcodec && pip install torchcodec==0.10.0"
+    assert nv._effective_requested_version(chained, "torchcodec", "0.11.0") == ("0.10.0", True)
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(chained, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+    # A line that really does end on a removal still clears it, in either spelling.
+    for removed in (
+        "!pip uninstall -y torchcodec",
+        "!uv pip uninstall torchcodec",
+        "!pip install torchcodec==0.10.0 && pip uninstall -y torchcodec",
+    ):
+        assert nv._effective_requested_version(removed, "torchcodec", "0.11.0") == ("", True), removed
+        assert nv.rule_inst_004_torchcodec_torch(removed, colab, "nb.ipynb", 0) == [], removed
+
+
+def test_the_codec_index_follows_a_configured_pytorch_mirror(monkeypatch):
+    """UNSLOTH_PYTORCH_MIRROR replaces the base every other index in install_python_stack is
+    built from, so a codec pinned to the public site cannot be fetched on an air-gapped host
+    and bypasses the artifact source on a corporate one."""
+    import importlib
+
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.corp.example/whl")
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    from studio import install_python_stack as ips
+    ips = importlib.reload(ips)  # _PYTORCH_WHL_BASE is read at import time
+    try:
+        assert ips._torchcodec_index_url("2.11.0+cu128") == "https://mirror.corp.example/whl/cu128"
+        # A full URL override still wins over the mirror base.
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://other.example/pytorch/cu128")
+        assert ips._torchcodec_index_url("2.11.0+cu128") == "https://other.example/pytorch/cu128"
+    finally:
+        monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
+        importlib.reload(ips)
+
+
+def test_the_runtime_remedy_follows_a_configured_pytorch_mirror(monkeypatch):
+    """Same for the runtime warning, and by naming the variable rather than its value the
+    command still works without disclosing a mirror that may carry credentials."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.11.0")
+    _stub_torch(monkeypatch, "2.10.0+cu128")
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://user:secret@mirror.corp.example/whl")
+    hint = fixes._torchcodec_version_mismatch_hint()
+    assert '--index-url "$UNSLOTH_PYTORCH_MIRROR"/cu128' in hint
+    assert "secret" not in hint
+    assert "download.pytorch.org" not in hint
+
+    # The family names the leaf under the same mirror.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
+    assert '--index-url "$UNSLOTH_PYTORCH_MIRROR"/cu126' in (
+        fixes._torchcodec_version_mismatch_hint() or ""
+    )
+
+    # With no mirror configured the public URL comes back, family-aware as before.
+    monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR")
+    assert "--index-url https://download.pytorch.org/whl/cu126" in (
+        fixes._torchcodec_version_mismatch_hint() or ""
+    )

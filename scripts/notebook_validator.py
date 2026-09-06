@@ -647,6 +647,9 @@ def _highest_minor_below(ceiling: str) -> str:
     return f"0.{minor - 1}" if minor >= 1 else ""
 
 
+_PIP_VERB_RE = re.compile(r"\bpip\s+(install|uninstall)\b", re.IGNORECASE)
+
+
 def _version_is_excluded(version: str, exclusion: str) -> bool:
     """Whether `!=exclusion` rules `version` out (PEP 440 version exclusion).
 
@@ -688,7 +691,13 @@ def _requested_bounds(
     """
     sequence: list[tuple[str, str, str, str, bool, bool, list[str]]] = []
     for invocation in iter_pip_invocations(install_cell):
-        uninstall = re.search(r"\bpip\s+uninstall\b", invocation.raw, re.IGNORECASE) is not None
+        # The LAST pip verb on the line decides. One logical line can chain both --
+        # `pip uninstall -y torchcodec && pip install torchcodec==0.10.0` is a single
+        # invocation here -- and matching `uninstall` anywhere marked the whole thing a
+        # removal, so the reinstall on the right of the `&&` was thrown away and the rule
+        # skipped a codec the cell demonstrably ends with.
+        _verbs = _PIP_VERB_RE.findall(invocation.raw)
+        uninstall = bool(_verbs) and _verbs[-1].lower() == "uninstall"
         current_exact = current_floor = current_ceiling = current_cap = ""
         current_exclusions: list[str] = []
         floor_excludes_itself = False
