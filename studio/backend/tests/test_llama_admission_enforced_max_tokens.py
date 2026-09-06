@@ -39,7 +39,13 @@ def _chat(text = "hi", **fields):
     return _Payload(messages = [{"role": "user", "content": text}], **fields)
 
 
-def _backend(*, window, total, slots, unified = True):
+def _backend(
+    *,
+    window,
+    total,
+    slots,
+    unified = True,
+):
     # ``_kv_cache_unified`` as the real backend sets it under --kv-unified: the window is
     # offered only while preemption can reclaim, and that needs one shared pool.
     return SimpleNamespace(
