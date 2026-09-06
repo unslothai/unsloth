@@ -1253,3 +1253,98 @@ def test_the_codec_index_honours_an_explicitly_pinned_torch_mirror(monkeypatch):
     # The override does not make an untagged or rocm torch start pinning.
     assert ips._torchcodec_index_url("2.11.0") is None
     assert ips._torchcodec_index_url("2.11.0+rocm7.0") is None
+
+
+def test_the_ceiling_landing_respects_an_exclusion_that_covers_it():
+    """`>=0.8,<0.11,!=0.10.*` cannot land on 0.10, so pip drops to a lower release the index
+    names. Returning the ceiling-derived minor regardless reported a torch 2.9 mismatch
+    against a line the cell had already excluded."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    excluded_top = '!pip install torch==2.9.0 "torchcodec>=0.8,<0.11,!=0.10.*"'
+    assert nv._effective_version(excluded_top, "torchcodec", "0.11.0") == (None, True)
+    assert nv.rule_inst_004_torchcodec_torch(excluded_top, colab, "nb.ipynb", 0) == []
+
+    # An exclusion that misses the landing leaves it alone.
+    kept = '!pip install "torchcodec>=0.8,<0.11,!=0.9.*"'
+    assert nv._effective_version(kept, "torchcodec", "0.11.0") == ("0.10", True)
+
+
+def test_an_equal_strict_bound_upgrades_the_floor():
+    """`>=V` and `>V` intersect to `>V`. Keeping the inclusive one let `>=0.10,>0.10` read as
+    "0.10 is fine" when pip must move above it, suppressing a real R-INST-004."""
+    from scripts import notebook_validator as nv
+
+    combined = '!pip install torch==2.10.0 "torchcodec>=0.10,>0.10,<0.12"'
+    _exact, floor, _cap, ceiling, _excl, exclusive = nv._spec_window(
+        [(">=", "0.10"), (">", "0.10"), ("<", "0.12")]
+    )
+    assert (floor, ceiling, exclusive) == ("0.10", "0.12", True)
+
+    colab = {"torch": "2.10.0+cu128", "torchcodec": "0.10.0+cu128"}
+    assert nv._effective_version(combined, "torchcodec", "0.10.0") == ("0.11", True)
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(combined, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+    # Order does not matter, and a plain `>=` is still inclusive.
+    assert nv._spec_window([(">", "0.10"), (">=", "0.10"), ("<", "0.12")])[5] is True
+    assert nv._spec_window([(">=", "0.10"), ("<", "0.12")])[5] is False
+
+
+def test_the_runtime_remedy_honours_a_configured_torch_index(monkeypatch):
+    """A warning that tells an air-gapped or authenticated host to install from
+    download.pytorch.org either fails or bypasses the artifact source the install was
+    configured with. The mirror is where the matching build is."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.11.0")
+    _stub_torch(monkeypatch, "2.10.0+cu128")
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    assert "--index-url https://download.pytorch.org/whl/cu128" in (
+        fixes._torchcodec_version_mismatch_hint() or ""
+    )
+
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/pytorch/cu128/")
+    hint = fixes._torchcodec_version_mismatch_hint()
+    assert "--index-url https://mirror.corp.example/pytorch/cu128 " in hint
+    assert "download.pytorch.org" not in hint
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
+    assert "--index-url https://download.pytorch.org/whl/cu126" in (
+        fixes._torchcodec_version_mismatch_hint() or ""
+    )
+
+
+def test_a_mismatched_accelerator_build_is_named_when_the_codec_cannot_load(monkeypatch):
+    """A cu128 venv holding PyPI's default torchcodec has the right VERSION and still cannot
+    dlopen, so the version hint says nothing and audio used to be disabled in silence. The
+    provenance hint only speaks once the load has actually failed, so a working pairing this
+    cannot explain never warns."""
+    import sys
+    import types
+
+    fixes = _load_import_fixes_module()
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    _stub_torch(monkeypatch, "2.11.0+cu128")
+
+    codec = types.ModuleType("torchcodec")
+    codec.__version__ = "0.11.0"  # untagged: PyPI's default build
+    monkeypatch.setitem(sys.modules, "torchcodec", codec)
+    hint = fixes._torchcodec_provenance_hint()
+    assert hint is not None
+    assert "https://download.pytorch.org/whl/cu128" in hint
+    assert "audio is disabled" in hint
+
+    # Matching provenance says nothing, and neither does a rocm torch.
+    codec.__version__ = "0.11.0+cu128"
+    assert fixes._torchcodec_provenance_hint() is None
+    codec.__version__ = "0.11.0"
+    _stub_torch(monkeypatch, "2.11.0+rocm7.0")
+    assert fixes._torchcodec_provenance_hint() is None

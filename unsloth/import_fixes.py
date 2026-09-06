@@ -2475,6 +2475,24 @@ def _torchcodec_exclusive_upper(pin: str) -> str:
     return f"<{major}.{int(minor) + 1}.0"
 
 
+def _torch_index_url_for_remedy(local_tag: str) -> str:
+    """The index a torchcodec remedy should name for a `+local_tag` torch.
+
+    An explicitly configured index wins, exactly as it does in
+    install_python_stack._torchcodec_index_url: on an authenticated, corporate or
+    air-gapped host, telling the user to install from download.pytorch.org either fails
+    outright or bypasses the artifact source the install was configured with, and the
+    mirror is where the matching build actually is.
+    """
+    url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
+    if url:
+        return url.rstrip("/")
+    family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
+    if family:
+        return f"https://download.pytorch.org/whl/{family.strip('/')}"
+    return f"https://download.pytorch.org/whl/{local_tag}"
+
+
 def _torchcodec_version_mismatch_hint() -> str | None:
     """Return a user-facing hint when installed torchcodec mismatches torch."""
     try:
@@ -2516,7 +2534,7 @@ def _torchcodec_version_mismatch_hint() -> str | None:
             return ""
         local = str(getattr(torch, "__version__", "")).partition("+")[2].strip().lower()
         if local == "cpu" or re.fullmatch(r"cu\d+", local or ""):
-            return f"--index-url https://download.pytorch.org/whl/{local} "
+            return f"--index-url {_torch_index_url_for_remedy(local)} "
         return ""
 
     allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
@@ -2548,6 +2566,38 @@ def _torchcodec_version_mismatch_hint() -> str | None:
     )
 
 
+def _torchcodec_provenance_hint() -> "str | None":
+    """A remedy for a codec whose ACCELERATOR build does not match torch's, or None.
+
+    torchcodec ships one wheel per accelerator, so a cu128 venv holding PyPI's default 0.11
+    has the right VERSION and still cannot dlopen -- docker/Dockerfile pins cu128 by hand
+    for exactly this. The version hint above returns None there, since the minors agree, so
+    without this the codec is disabled with nothing said about how to repair it.
+
+    Only called once the codec has actually failed to load, so a working pairing this cannot
+    explain never produces a warning.
+    """
+    try:
+        import torch
+        import torchcodec
+    except Exception:
+        return None
+    torch_local = str(getattr(torch, "__version__", "")).partition("+")[2].strip().lower()
+    codec_local = str(getattr(torchcodec, "__version__", "")).partition("+")[2].strip().lower()
+    if torch_local == codec_local:
+        return None  # same provenance, so the failure is something this cannot name
+    if not (torch_local == "cpu" or re.fullmatch(r"cu\d+", torch_local or "")):
+        return None  # rocm and xpu publish no torchcodec under this name
+    index = _torch_index_url_for_remedy(torch_local)
+    codec_from = codec_local or "the default index"
+    return (
+        f"torchcodec {getattr(torchcodec, '__version__', '?')} was built for {codec_from} "
+        f"but torch {getattr(torch, '__version__', '?')} is a {torch_local} build, so the "
+        f"codec cannot load; audio is disabled. Reinstall the matching build with "
+        f"`pip install --force-reinstall --no-deps --index-url {index} torchcodec`."
+    )
+
+
 def disable_torchcodec_if_broken():
     """Make broken torchcodec behave as if uninstalled (#5446).
 
@@ -2573,6 +2623,17 @@ def disable_torchcodec_if_broken():
         # RuntimeError on dlopen failure; OSError covers chained libavutil.so misses.
         from torchcodec.decoders import AudioDecoder
     except (ImportError, RuntimeError, OSError):
+        if mismatch_hint is None:
+            # The versions agree, so the load failed for some other reason. A mismatched
+            # accelerator build is the one this can still name, and it is the one the
+            # installer repairs by pinning the index.
+            try:
+                provenance_hint = _torchcodec_provenance_hint()
+                if provenance_hint is not None:
+                    import warnings
+                    warnings.warn(provenance_hint, stacklevel = 2)
+            except Exception:
+                pass  # a diagnostic must never abort the disable fallback below
         # transformers: flip the flag (<5) and/or rebind the lru_cache'd func (>=5).
         try:
             import transformers.utils.import_utils as tf_import_utils
