@@ -653,9 +653,12 @@ def main() -> int:
     result["statuses"] = statuses_from(result["kernels"], args.target_url)
 
     if args.sha:
-        want = args.sha.strip().lower()[:8]
+        want = args.sha.strip().lower()
+        # Prefix match either way: slugs carry SLUG_SHA_LEN characters now and
+        # carried eight before, and both can be on the account at once.
         result["in_flight_for_sha"] = any(
-            k.get("sha") == want
+            k.get("sha")
+            and (want.startswith(k["sha"]) or k["sha"].startswith(want))
             and k.get("verdict") == "pending"
             and (not args.kind or k.get("kind") == args.kind)
             for k in result["kernels"]

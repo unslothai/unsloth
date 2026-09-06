@@ -432,6 +432,30 @@ jobs:
               sleep 10
             done
           fi
+          # A full SHA is accepted on shape alone above, and `git ls-remote`
+          # matches refs, so neither says unslothai/unsloth HAS the commit. A
+          # mistyped or force-pushed-away SHA would spend a session, fail the
+          # pending status, and be released by the collector as missing with
+          # no verdict ever posted. Fetching the object is the reachability
+          # pip needs anyway; GitHub refuses an unreachable one with exit 128.
+          if ! printf '%s' "$RESOLVED" | grep -Eq '^[0-9a-f]{40}$'; then
+            RESOLVED=''
+          fi
+          if [ -n "$RESOLVED" ]; then
+            EXISTS=''
+            for attempt in 1 2 3; do
+              if git fetch --quiet --depth=1 https://github.com/unslothai/unsloth "$RESOLVED"; then
+                EXISTS=yes
+                break
+              fi
+              echo "fetch attempt $attempt did not find $RESOLVED"
+              sleep 10
+            done
+            if [ -z "$EXISTS" ]; then
+              echo "::error title=The requested unsloth commit does not exist::unslothai/unsloth does not serve the commit $RESOLVED, so a session would be spent on a commit no status can ever be posted to."
+              exit 1
+            fi
+          fi
           if [ -z "$RESOLVED" ]; then
             echo "::error title=Could not resolve the requested unsloth ref::'$UNSLOTH_REF' names no branch, tag or full commit on unslothai/unsloth, so there is no commit to dispatch or to report against."
             exit 1

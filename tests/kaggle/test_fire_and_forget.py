@@ -67,8 +67,41 @@ def test_the_slug_carries_the_commit_and_the_workflow():
     name = launch.slug_name("notebook", "1a2b3c4d5e6f7890")
     parsed = launch.parse_slug(name)
     assert parsed is not None, f"{name} does not parse as one of ours"
-    assert parsed["sha"] == "1a2b3c4d", parsed
+    assert parsed["sha"] == "1a2b3c4d5e6f", parsed
     assert parsed["kind"] == "notebook", parsed
+
+
+def test_the_slug_carries_twelve_hex_characters_and_still_reads_eight():
+    """Eight characters is what two reachable commits can share, and a shared
+    prefix answers the commits API with a 422 on every pass, so the status
+    stays pending forever. Twelve is written; eight is still read, because
+    kernels pushed with the old form can outlive the change."""
+    assert launch.SLUG_SHA_LEN == 12
+    name = launch.slug_name("studio", "a" * 40)
+    assert launch.parse_slug(name)["sha"] == "a" * 12
+    old = launch.parse_slug("me/unsloth-t4-ci-nabcdef01-1111")
+    assert old is not None and old["sha"] == "abcdef01" and old["kind"] == "notebook"
+    # Too short to be unambiguous is not written into a slug at all: it falls
+    # back to the unattributable form rather than inventing a prefix.
+    assert launch.parse_slug(launch.slug_name("notebook", "abcdef01"))["legacy"] is True
+
+
+def test_in_flight_matches_the_old_and_the_new_slug_forms(tmp_path, monkeypatch):
+    """A kernel pushed with the eight-character form must still count as in
+    flight for its full commit, and a twelve-character one for the same."""
+    full = "abcdef0123456789" + "0" * 24
+    for slug_sha in ("abcdef01", "abcdef012345"):
+        slug = f"danielhanchen/unsloth-t4-ci-n{slug_sha}-1111"
+        api = _StubApi([_StubKernel(slug)], {slug: "RUNNING"})
+        monkeypatch.setattr(launch, "_api", lambda api = api: api)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["collect", "--outdir", str(tmp_path / slug_sha), "--sha", full, "--kind", "notebook"],
+        )
+        assert collect.main() == 0
+        result = json.loads((tmp_path / slug_sha / "collect_result.json").read_text())
+        assert result["in_flight_for_sha"] is True, (slug_sha, result)
 
 
 def test_two_dispatches_of_one_commit_do_not_collide():
@@ -1053,6 +1086,12 @@ def test_the_studio_workflow_resolves_its_ref_to_a_commit_before_dispatching():
             "git ls-remote" in run and "[0-9a-f]{40}" in run
         ), f"{path.name} does not resolve refs"
         assert "exit 1" in run, f"{path.name} dispatches on an unresolved ref"
+        # A full SHA passes the shape test whether or not the repository has
+        # it; only fetching the object says it is there. Without this the
+        # Studio leg spent a session on a commit no status could be posted to.
+        assert "git fetch --quiet --depth=1 https://github.com/unslothai/unsloth" in run, (
+            f"{path.name} dispatches a full SHA without checking the repository serves it"
+        )
 
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))

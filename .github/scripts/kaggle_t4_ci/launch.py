@@ -93,12 +93,17 @@ _STATUS_RE = re.compile(r"KernelWorkerStatus\.(?P<status>[A-Z_]+)")
 # artifact or database between them. Kaggle's kernel listing is that database,
 # and a kernel carries exactly one field we control: its name.
 #
-#   unsloth-t4-ci-n1a2b3c4d-9f8e
-#                 ^^^^^^^^^^^^^^
-#                 |||||||||  uniqueness, so two runs on one commit do not
-#                 ||||||||   collide (a re-run, or notebook slot 1 and 2)
-#                 |kind      which workflow to report against
-#                  sha8      which commit the result belongs to
+#   unsloth-t4-ci-n1a2b3c4d5e6f-9f8e
+#                 ^^^^^^^^^^^^^^^^^^
+#                 |||||||||||||  uniqueness, so two runs on one commit do not
+#                 ||||||||||||   collide (a re-run, or notebook slot 1 and 2)
+#                 |kind          which workflow to report against
+#                  sha12         which commit the result belongs to. Twelve,
+#                                not eight: two reachable commits sharing eight
+#                                hex characters would make their kernels
+#                                indistinguishable, and the commits API then
+#                                answers the prefix with a 422 on every pass,
+#                                so the status stays pending forever.
 #
 # `OWN_KERNEL_PREFIX` in gate.py is the first 14 characters and MUST keep
 # matching: it is how the gate's session survey tells our kernels from a
@@ -115,10 +120,13 @@ CODE_KINDS = {v: k for k, v in KIND_CODES.items()}
 # reaped, since kernels pushed before this change can outlive it, but they
 # carry no commit to report against. The alternation reads both rather than
 # making the collector guess from length.
+# 8 to 40 on the read side: kernels pushed with the earlier eight-character
+# form can outlive the change and must still be collected and attributed.
+SLUG_SHA_LEN = 12
 CI_SLUG_RE = re.compile(
     r"^(?:(?P<owner>[^/]+)/)?"
     + re.escape(SLUG_PREFIX)
-    + r"(?:(?P<kind>[a-z])(?P<sha>[0-9a-f]{8})-(?P<uid>[0-9a-f]{4})"
+    + r"(?:(?P<kind>[a-z])(?P<sha>[0-9a-f]{8,40})-(?P<uid>[0-9a-f]{4})"
     r"|(?P<legacy>[0-9a-f]{8}))$"
 )
 
@@ -148,8 +156,8 @@ def slug_name(kind: str = "", commit_sha: str = "") -> str:
     probe or an older workflow does. A dispatched run always names one.
     """
     code = KIND_CODES.get(kind, "")
-    sha = (commit_sha or "").strip().lower()[:8]
-    if code and len(sha) == 8 and all(c in "0123456789abcdef" for c in sha):
+    sha = (commit_sha or "").strip().lower()[:SLUG_SHA_LEN]
+    if code and len(sha) == SLUG_SHA_LEN and all(c in "0123456789abcdef" for c in sha):
         return f"{SLUG_PREFIX}{code}{sha}-{uuid.uuid4().hex[:4]}"
     return f"{SLUG_PREFIX}{uuid.uuid4().hex[:8]}"
 
@@ -1285,9 +1293,9 @@ def main() -> int:
         # the legacy unattributable form otherwise, so a branch or tag here
         # bills and reports to nobody. The workflows resolve refs first; this
         # checks that they did.
-        if not re.fullmatch(r"[0-9a-fA-F]{8,40}", args.commit_sha.strip()):
+        if not re.fullmatch(r"[0-9a-fA-F]{12,40}", args.commit_sha.strip()):
             ap.error(
-                f"--commit-sha must be a hex commit id (8 to 40 characters), got "
+                f"--commit-sha must be a hex commit id (12 to 40 characters), got "
                 f"{args.commit_sha!r}: a ref cannot be written into the slug, so "
                 "the kernel's result could never be attributed to a commit"
             )
