@@ -62,14 +62,9 @@ def mtp_precision_rank(name: str) -> int:
 def mtp_preference_key(name: str) -> tuple[int, int, str]:
     """Sort key picking the preferred MTP head by name alone.
 
-    The self-contained head wins the tie over the borrowing (``-shared-``) form.
-    llama-server's ``--fit`` budgets the draft by loading it on its own first,
-    and a head that borrows the target's token_embd/output refuses to load
-    without a target, so fit logs "failed to measure the memory of the extra
-    model, fitting without it", fills the device to its margin, and the MTP
-    context then fails to allocate (unsloth#10322, a 24 GB card with UD-Q3_K_XL
-    and UD-IQ1_M). The 1.35 GB the borrow saves at Q8_0 is not worth a launch
-    that only works when the card happens to have that much spare.
+    The self-contained head wins the tie over the borrowing (``-shared-``) form:
+    ``--fit`` budgets a draft by loading it alone, which a borrowing head cannot do,
+    so the MTP context OOMs (unsloth#10322). Worth the 1.35 GB it costs at Q8_0.
     """
     borrows = 1 if "shared" in Path(name).name.lower() else 0
     return mtp_precision_rank(name), borrows, Path(name).name.lower()

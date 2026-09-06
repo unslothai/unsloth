@@ -14365,12 +14365,9 @@ class LlamaCppBackend:
         show for the download -- and it disagreed with the local scan, which
         accepts a split drafter only when every shard is present.
 
-        ``reuse_snapshot_sibling=False`` skips only that first step, for a caller that
-        has already looked at the snapshot copy and rejected it. Without it the caller
-        cannot get past this reuse: it repeats the same lookup with the same
-        ``near_path`` and the same ``pick`` and hands the rejected file straight back,
-        so a fall-through here is a no-op. ``near_path`` is still passed, since it also
-        selects the cache directory the fetch writes into.
+        ``reuse_snapshot_sibling=False`` is for a caller that already rejected the
+        snapshot copy; without it this repeats the lookup and hands it back. ``near_path``
+        is still passed: it also selects the cache directory the fetch writes into.
 
         ``on_transient_failure`` fires when the companion was lost to a listing that
         never completed or a download that dropped, the one None worth another attempt.
@@ -14681,18 +14678,12 @@ class LlamaCppBackend:
 
         pick = _pick_mtp if allow_nested else _pick_mtp_root_only
 
-        # The borrowing head already in the snapshot, kept as the fallback: it is a
-        # working drafter, just an unmeasurable one, so a listing that never answers
-        # must not cost the load its speculation entirely.
         borrowed_cached: Optional[str] = None
         if near_path:
             cached = _companion_snapshot_sibling(near_path, pick)
             if cached and _mtp_head_borrows(cached) and not _hf_env_offline():
-                # The snapshot holds only a head the earlier picker chose, the
-                # borrowing form, which llama-server's --fit cannot measure
-                # (unsloth#10322). The live listing ranks the self-contained
-                # head above it, and hf_hub_download reuses this file if the
-                # repo turns out to publish nothing better.
+                # --fit cannot measure a borrowing head, so the MTP context OOMs
+                # (unsloth#10322). hf_hub_download reuses this file if nothing is better.
                 logger.info(
                     "Cached MTP drafter borrows the target's embeddings; checking the "
                     "repo for a self-contained head: %s",
@@ -14724,14 +14715,10 @@ class LlamaCppBackend:
             label = "MTP drafter",
             cancel_event = cancel_event,
             near_path = near_path,
-            # Suppressed only when this call is the fall-through: the helper would
-            # otherwise repeat the snapshot lookup above and return the same
-            # borrowing head before it ever lists the repo.
             reuse_snapshot_sibling = borrowed_cached is None,
         )
         if fetched is None and borrowed_cached is not None:
-            # The repo publishes nothing better, or the Hub never answered. An
-            # unmeasurable drafter still drafts; no drafter at all is the bigger loss.
+            # An unmeasurable drafter still drafts; no drafter at all is the bigger loss.
             logger.info("Keeping the cached borrowing MTP drafter: %s", borrowed_cached)
             return borrowed_cached
         return fetched

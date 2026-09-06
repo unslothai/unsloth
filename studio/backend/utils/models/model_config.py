@@ -1936,18 +1936,11 @@ def detect_mtp_file(
         return _drafter_split_is_complete(candidate)
 
     def _smallest_first(candidate: Path) -> tuple[int, int, int, int, str]:
-        # The same order the hub picker uses (mtp_preference_key), so a model
-        # reopened from its snapshot launches the head the download chose:
-        # precision first (Q8_0 drafts fastest, bf16 last), then the
-        # self-contained form over the borrowing (-shared-) one, then size,
-        # then name for stability. Split copies collapse to shard 1, so sum
-        # across their shards.
-        # The borrow tiebreak: a head that borrows the target's embeddings
-        # cannot be measured by llama-server's --fit, which loads the draft on
-        # its own; the fit then reserves nothing for it and the MTP context
-        # fails to allocate on a full card (unsloth#10322). It sits after
-        # precision so a self-contained bf16 head never displaces a shared
-        # Q8_0 one.
+        # The same order the hub picker uses (mtp_preference_key), so a snapshot
+        # reopen launches the head the download chose. --fit cannot measure a
+        # borrowing head, so it reserves nothing and the MTP context OOMs
+        # (unsloth#10322); that tiebreak sits after precision so a self-contained
+        # bf16 head never displaces a shared Q8_0 one. Sizes sum across shards.
         from utils.models.drafters.preference import mtp_precision_rank
 
         name = candidate.name.lower()

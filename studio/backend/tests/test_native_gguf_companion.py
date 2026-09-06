@@ -398,10 +398,8 @@ def test_status_provenance_survives_deleted_model_directory(tmp_path, monkeypatc
 
 
 def test_native_load_skips_rejected_mtp_candidate_for_next_one(tmp_path):
-    """MTP/ can hold several compatible copies. If the preferred one is out of
-    the grant, the next must be tried instead of disabling MTP. Both copies sit
-    at one precision, since precision ranks above size, so the smaller one is
-    the preferred candidate here."""
+    """MTP/ can hold several copies: a preferred one out of the grant must not disable
+    MTP. Both are Q8_0 here, since precision now outranks size."""
     quant_dir = tmp_path / "Q4_0"
     quant_dir.mkdir()
     weight = quant_dir / "model.gguf"

@@ -278,11 +278,6 @@ class TestDrafterDiscoveryMatchesTheLoader:
         assert got == str(q8)
 
     def test_nested_fallback_prefers_the_self_contained_head(self, tmp_path):
-        """A -shared- head borrows the target's token_embd/output and is 1.35 GB
-        smaller at Q8_0, but llama-server's --fit measures a draft by loading it
-        on its own, which the borrowing head cannot do. The fit then reserves
-        nothing for it, fills the card, and the MTP context fails to allocate
-        (unsloth#10322). So with both on disk the self-contained head wins."""
         snap = self._snapshot(tmp_path)
         main = _write_gguf(snap / "model-Q4_K_M.gguf", _MLA_NO_HEAD, arch = "qwen4exp")
         full = _write_gguf(snap / "MTP" / "mtp-model-Q8_0.gguf", _MLA_NO_HEAD)

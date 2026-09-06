@@ -789,10 +789,6 @@ def _capture_companion_download(backend):
 
 
 def test_download_mtp_refetches_when_the_cache_holds_only_a_shared_head(tmp_path, monkeypatch):
-    """An install that downloaded before the picker changed holds only the
-    borrowing head. The snapshot sibling would hand it straight back and the
-    --fit under-reservation (unsloth#10322) would survive the upgrade, so
-    online a lone shared head falls through to the live listing."""
     import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -813,8 +809,6 @@ def test_download_mtp_refetches_when_the_cache_holds_only_a_shared_head(tmp_path
 
 
 def test_download_mtp_still_reuses_a_cached_self_contained_head(tmp_path, monkeypatch):
-    """The refetch is only for the borrowing form; a self-contained head on disk
-    is exactly what the picker would download, so no listing is needed."""
     import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -839,8 +833,6 @@ def test_download_mtp_still_reuses_a_cached_self_contained_head(tmp_path, monkey
 
 
 def test_download_mtp_keeps_a_lone_shared_head_offline(tmp_path, monkeypatch):
-    """Offline there is nothing better to fetch, so the borrowing head is still
-    the drafter to launch rather than none at all."""
     import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -866,9 +858,7 @@ def _stub_hub(
     *,
     listing_fails = False,
 ):
-    """The live repo, without a network: listing plus the fetch, stubbed where
-    _download_companion_gguf really calls them, so the helper's own snapshot
-    lookup still runs against the files on disk."""
+    """The live repo without a network, stubbed below the helper's own snapshot lookup."""
     import huggingface_hub
 
     import core.inference.llama_cpp as llama_cpp_module
@@ -888,14 +878,8 @@ def _stub_hub(
 
 
 def test_download_mtp_lists_the_repo_past_the_helpers_own_snapshot_reuse(tmp_path, monkeypatch):
-    """The fall-through has to survive _download_companion_gguf.
-
-    The helper repeats _companion_snapshot_sibling with the same near_path and
-    the same pick before it lists anything, so passing the cached borrowing head
-    on to it returned that same file and the --fit under-reservation
-    (unsloth#10322) survived the upgrade untouched. Exercises the real helper
-    rather than replacing it, which is what hid this.
-    """
+    """The helper repeats _companion_snapshot_sibling before listing, so the caller's
+    fall-through returned the same borrowing head (unsloth#10322). Uses the real helper."""
     import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -927,9 +911,6 @@ def test_download_mtp_lists_the_repo_past_the_helpers_own_snapshot_reuse(tmp_pat
 def test_download_mtp_keeps_the_borrowing_head_when_the_listing_never_answers(
     tmp_path, monkeypatch
 ):
-    """Suppressing the reuse must not cost the load its drafter: an unmeasurable
-    head still drafts, and a Hub that cannot be reached says nothing about what
-    the repo publishes."""
     import utils.models.gguf_metadata as gm
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -1559,9 +1540,7 @@ def test_detect_mtp_file_skips_incomplete_split_drafter(tmp_path):
 
 def test_detect_mtp_file_ranks_split_drafter_by_total_size(tmp_path):
     """Candidates collapse to shard 1, so a split copy must be summed or it
-    outranks a smaller single file. Same precision on both sides: precision
-    now ranks above size, as it does in the hub picker, so the size rule is
-    only reachable between copies of one tier."""
+    outranks a smaller single file. Both sides are Q8_0: precision now outranks size."""
     weight = tmp_path / "model-Q4_0.gguf"
     weight.write_bytes(b"x")
     sub = tmp_path / "MTP"
@@ -1691,9 +1670,7 @@ def test_cached_mtp_lookup_ranks_nested_copies_like_the_download(tmp_path, monke
 
     Lexical order put mtp-Qwen3.8-Flash-Next-BF16.gguf first, so a cached user got
     the 7.77 GB slowest head while a fresh install downloaded the Q8_0 one. Both
-    pickers now take the self-contained Q8_0 over the borrowing shared-Q8_0:
-    llama-server's --fit cannot measure a head that needs its target to load,
-    so it reserved nothing for it and the MTP context OOMed (unsloth#10322).
+    pickers now take the self-contained head over the borrowing one (unsloth#10322).
     """
     import core.inference.llama_cpp as llama_cpp_module
 
@@ -1739,8 +1716,6 @@ def test_cached_mtp_lookup_rejects_non_drafters_parked_under_mtp(tmp_path, monke
 
 
 def test_local_scan_prefers_the_fit_measurable_head_over_the_smaller_shared_one(tmp_path):
-    """With both forms on disk the self-contained head wins even though it is
-    larger: --fit can measure it, and cannot measure the borrowing one."""
     root = tmp_path / "local"
     (root / "MTP").mkdir(parents = True)
     for i in (1, 2, 3):
@@ -1754,9 +1729,6 @@ def test_local_scan_prefers_the_fit_measurable_head_over_the_smaller_shared_one(
 
 
 def test_local_scan_keeps_precision_above_the_borrow_tiebreak(tmp_path):
-    """A self-contained bf16 head must not displace a shared Q8_0 one: the hub
-    picker ranks precision first, and reopening a downloaded model from disk
-    has to launch the same file the download chose."""
     root = tmp_path / "local"
     (root / "MTP").mkdir(parents = True)
     for i in (1, 2, 3):
