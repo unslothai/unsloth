@@ -1238,11 +1238,24 @@ def _cli_update_password(
     after commit; a failed unlink must not roll the change back.
     """
     password_salt, password_hash = _hash_password(new_password)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+    # A managed account's credentials live behind the downgrade fence (the
+    # account_* columns a build without account support never reads); the
+    # owner's row keeps the legacy columns. See auth/storage.py.
+    managed = False
+    if "account_jwt_secret" in columns:
+        row = conn.execute("SELECT role FROM auth_user WHERE username = ?", (username,)).fetchone()
+        managed = bool(row) and row[0] not in (None, "owner")
+    target_columns = (
+        "account_password_salt = ?, account_password_hash = ?, account_jwt_secret = ?"
+        if managed
+        else "password_salt = ?, password_hash = ?, jwt_secret = ?"
+    )
     with conn:
         conn.execute(
-            """
+            f"""
             UPDATE auth_user
-            SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+            SET {target_columns}, must_change_password = 0
             WHERE username = ?
             """,
             (password_salt, password_hash, secrets.token_urlsafe(64), username),

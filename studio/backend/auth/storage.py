@@ -229,9 +229,46 @@ def credential_generation(jwt_secret: str) -> str:
     return hashlib.sha256(jwt_secret.encode("utf-8")).hexdigest()
 
 
+# The downgrade fence. A managed account's real credentials live in the
+# ``account_*`` columns, which a build without account support never reads; its
+# legacy ``password_salt`` / ``password_hash`` / ``jwt_secret`` hold values that
+# can never verify, and its API key and refresh token hashes carry a prefix the
+# older build never computes. So on a build that has one shared root for
+# everyone, a managed account cannot log in, present a token, refresh a session
+# or use a key: it gets 401, not the owner's data. The owner's row and rows are
+# byte for byte what they always were, and this build reads the real value with
+# COALESCE, so nothing changes for a single-account install and an upgrade
+# brings every managed account straight back.
+_FENCE_PREFIX = "account:"
+_FENCED_HASH_SQL = "IN (?, ?)"
+_LEGACY_PASSWORD_HASH_SENTINEL = "managed-account"
+_SECRET_SQL = "COALESCE(account_jwt_secret, jwt_secret)"
+_PASSWORD_HASH_SQL = "COALESCE(account_password_hash, password_hash)"
+_PASSWORD_SALT_SQL = "COALESCE(account_password_salt, password_salt)"
+
+
+def _is_owner_name(username: str) -> bool:
+    return username == DEFAULT_ADMIN_USERNAME
+
+
+def _fenced_hash(digest: str, username: str) -> str:
+    """The stored form of a credential hash: prefixed for a managed account."""
+    return digest if _is_owner_name(username) else _FENCE_PREFIX + digest
+
+
+def _hash_candidates(digest: str) -> tuple[str, str]:
+    return digest, _FENCE_PREFIX + digest
+
+
+def _legacy_dummies() -> tuple[str, str, str]:
+    """Legacy-column values for a managed row: a salt, a hash no password
+    produces, and a signing secret nothing is ever signed with."""
+    return secrets.token_hex(16), _LEGACY_PASSWORD_HASH_SENTINEL, secrets.token_urlsafe(64)
+
+
 def _current_secret(conn: sqlite3.Connection, username: str) -> Optional[str]:
     row = conn.execute(
-        "SELECT jwt_secret FROM auth_user WHERE username = ?", (username,)
+        f"SELECT {_SECRET_SQL} AS jwt_secret FROM auth_user WHERE username = ?", (username,)
     ).fetchone()
     return row["jwt_secret"] if row else None
 
@@ -361,6 +398,11 @@ _ACCOUNT_COLUMNS = (
     ("created_at", "TEXT"),
     ("setup_code_hash", "TEXT"),
     ("setup_code_expires_at", "TEXT"),
+    # Managed credentials, unread by builds without account support (see the
+    # downgrade fence above _current_secret).
+    ("account_password_salt", "TEXT"),
+    ("account_password_hash", "TEXT"),
+    ("account_jwt_secret", "TEXT"),
 )
 
 
@@ -371,10 +413,12 @@ def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
     import uuid
 
     added = False
+    fence_added = False
     for name, decl in _ACCOUNT_COLUMNS:
         if name not in existing:
             conn.execute(f"ALTER TABLE auth_user ADD COLUMN {name} {decl}")
             added = True
+            fence_added = fence_added or name == "account_jwt_secret"
     if not added:
         return
     now = datetime.now(timezone.utc).isoformat()
@@ -390,7 +434,36 @@ def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
             (account_id, role, now, row["id"]),
         )
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS auth_user_account_id ON auth_user(account_id)")
+    if fence_added:
+        _fence_managed_credentials(conn)
     conn.commit()
+
+
+def _fence_managed_credentials(conn: sqlite3.Connection) -> None:
+    """Move managed rows written before the fence behind it. Idempotent."""
+    # Positional reads: the caller's connection may not have a row factory.
+    rows = conn.execute(
+        "SELECT id, password_salt, password_hash, jwt_secret FROM auth_user "
+        "WHERE role = 'user' AND account_jwt_secret IS NULL"
+    ).fetchall()
+    for row_id, real_salt, real_hash, real_secret in rows:
+        salt, pwd_hash, secret = _legacy_dummies()
+        conn.execute(
+            """UPDATE auth_user
+               SET account_password_salt = ?, account_password_hash = ?, account_jwt_secret = ?,
+                   password_salt = ?, password_hash = ?, jwt_secret = ?
+               WHERE id = ?""",
+            (real_salt, real_hash, real_secret, salt, pwd_hash, secret, row_id),
+        )
+    managed = "SELECT username FROM auth_user WHERE role = 'user'"
+    conn.execute(
+        f"UPDATE api_keys SET key_hash = ? || key_hash WHERE username IN ({managed}) AND key_hash NOT LIKE ?",
+        (_FENCE_PREFIX, _FENCE_PREFIX + "%"),
+    )
+    conn.execute(
+        f"UPDATE refresh_tokens SET token_hash = ? || token_hash WHERE username IN ({managed}) AND token_hash NOT LIKE ?",
+        (_FENCE_PREFIX, _FENCE_PREFIX + "%"),
+    )
 
 
 def get_user_record(username: str) -> Optional[dict]:
@@ -399,9 +472,10 @@ def get_user_record(username: str) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute(
-            """
-            SELECT username, password_salt, password_hash, jwt_secret, must_change_password,
-                   account_id, role, is_active
+            f"""
+            SELECT username, {_PASSWORD_SALT_SQL} AS password_salt,
+                   {_PASSWORD_HASH_SQL} AS password_hash, {_SECRET_SQL} AS jwt_secret,
+                   must_change_password, account_id, role, is_active
             FROM auth_user WHERE username = ?
             """,
             (username,),
@@ -513,7 +587,7 @@ def _revoke_account_credentials(conn: sqlite3.Connection, row) -> None:
     conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (row["username"],))
     conn.execute("DELETE FROM api_keys WHERE username = ?", (row["username"],))
     conn.execute(
-        "UPDATE auth_user SET jwt_secret = ? WHERE account_id = ?",
+        "UPDATE auth_user SET account_jwt_secret = ? WHERE account_id = ?",
         (secrets.token_urlsafe(64), row["account_id"]),
     )
 
@@ -539,15 +613,20 @@ def issue_account_setup_code(
             conn.execute("BEGIN IMMEDIATE")
             if username is not None:
                 account_id = uuid.uuid4().hex
+                legacy_salt, legacy_hash, legacy_secret = _legacy_dummies()
                 conn.execute(
                     """INSERT INTO auth_user
                     (username, account_id, role, is_active, created_at, password_salt,
-                     password_hash, jwt_secret, must_change_password, setup_code_hash, setup_code_expires_at)
-                    VALUES (?, ?, 'user', 1, ?, ?, ?, ?, 1, ?, ?)""",
+                     password_hash, jwt_secret, account_password_salt, account_password_hash,
+                     account_jwt_secret, must_change_password, setup_code_hash, setup_code_expires_at)
+                    VALUES (?, ?, 'user', 1, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                     (
                         username,
                         account_id,
                         now.isoformat(),
+                        legacy_salt,
+                        legacy_hash,
+                        legacy_secret,
                         salt,
                         pwd_hash,
                         secrets.token_urlsafe(64),
@@ -559,8 +638,9 @@ def issue_account_setup_code(
                 row = _managed_account(conn, account_id)
                 _revoke_account_credentials(conn, row)
                 conn.execute(
-                    """UPDATE auth_user SET password_salt = ?, password_hash = ?, must_change_password = 1,
-                       setup_code_hash = ?, setup_code_expires_at = ? WHERE account_id = ?""",
+                    """UPDATE auth_user SET account_password_salt = ?, account_password_hash = ?,
+                       must_change_password = 1, setup_code_hash = ?, setup_code_expires_at = ?
+                       WHERE account_id = ?""",
                     (salt, pwd_hash, _hash_token(code), expires_at, account_id),
                 )
             account = _public_account(_managed_account(conn, account_id))
@@ -582,7 +662,13 @@ def authenticate_account_login(
 
     conn = get_connection()
     try:
-        row = conn.execute("SELECT * FROM auth_user WHERE username = ?", (username,)).fetchone()
+        row = conn.execute(
+            f"""SELECT account_id, is_active, must_change_password, setup_code_hash,
+                       {_PASSWORD_SALT_SQL} AS password_salt, {_PASSWORD_HASH_SQL} AS password_hash,
+                       {_SECRET_SQL} AS jwt_secret
+                FROM auth_user WHERE username = ?""",
+            (username,),
+        ).fetchone()
         if row is None or not row["is_active"]:
             return None
         if row["must_change_password"]:
@@ -594,8 +680,8 @@ def authenticate_account_login(
             # Concurrent logins, resets or regeneration can never spend a code twice.
             with conn:
                 cursor = conn.execute(
-                    """UPDATE auth_user SET setup_code_hash = NULL, setup_code_expires_at = NULL
-                       WHERE account_id = ? AND setup_code_hash = ? AND jwt_secret = ?
+                    f"""UPDATE auth_user SET setup_code_hash = NULL, setup_code_expires_at = NULL
+                       WHERE account_id = ? AND setup_code_hash = ? AND {_SECRET_SQL} = ?
                        AND is_active = 1 AND setup_code_expires_at > ?""",
                     (
                         row["account_id"],
@@ -630,10 +716,11 @@ def update_account_password(
     try:
         with conn:
             cursor = conn.execute(
-                """UPDATE auth_user SET password_salt = ?, password_hash = ?, jwt_secret = ?,
-                   must_change_password = 0, setup_code_hash = NULL, setup_code_expires_at = NULL
+                f"""UPDATE auth_user SET account_password_salt = ?, account_password_hash = ?,
+                   account_jwt_secret = ?, must_change_password = 0,
+                   setup_code_hash = NULL, setup_code_expires_at = NULL
                    WHERE username = ? AND role = 'user' AND is_active = 1
-                   AND password_hash = ? AND jwt_secret = ?""",
+                   AND {_PASSWORD_HASH_SQL} = ? AND {_SECRET_SQL} = ?""",
                 (salt, pwd_hash, secret, username, expect_password_hash, expect_secret),
             )
             if cursor.rowcount != 1:
@@ -950,8 +1037,12 @@ def create_initial_user(
     salt, pwd_hash = hash_password(password)
     if username == DEFAULT_ADMIN_USERNAME:
         account_id, role = OWNER_ACCOUNT_ID, ROLE_OWNER
+        legacy = (salt, pwd_hash, jwt_secret)
+        fenced = (None, None, None)
     else:
         account_id, role = uuid.uuid4().hex, ROLE_USER
+        legacy = _legacy_dummies()
+        fenced = (salt, pwd_hash, jwt_secret)
     conn = get_connection()
     try:
         conn.execute(
@@ -961,18 +1052,20 @@ def create_initial_user(
                 password_salt,
                 password_hash,
                 jwt_secret,
+                account_password_salt,
+                account_password_hash,
+                account_jwt_secret,
                 must_change_password,
                 account_id,
                 role,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 username,
-                salt,
-                pwd_hash,
-                jwt_secret,
+                *legacy,
+                *fenced,
                 int(must_change_password),
                 account_id,
                 role,
@@ -1014,8 +1107,9 @@ def get_user_and_secret(username: str) -> Optional[Tuple[str, str, str, bool]]:
     conn = get_connection()
     try:
         cur = conn.execute(
-            """
-            SELECT password_salt, password_hash, jwt_secret, must_change_password
+            f"""
+            SELECT {_PASSWORD_SALT_SQL} AS password_salt, {_PASSWORD_HASH_SQL} AS password_hash,
+                   {_SECRET_SQL} AS jwt_secret, must_change_password
             FROM auth_user
             WHERE username = ?
             """,
@@ -1039,7 +1133,7 @@ def get_jwt_secret(username: str) -> Optional[str]:
     conn = get_connection()
     try:
         cur = conn.execute(
-            "SELECT jwt_secret FROM auth_user WHERE username = ?",
+            f"SELECT {_SECRET_SQL} AS jwt_secret FROM auth_user WHERE username = ?",
             (username,),
         )
         row = cur.fetchone()
@@ -1136,23 +1230,30 @@ def update_password(
 
     salt, pwd_hash = hash_password(new_password)
     jwt_secret = secrets.token_urlsafe(64)
+    # The owner's row keeps the legacy columns; a managed row is written behind
+    # the downgrade fence (see _current_secret).
+    columns = (
+        "password_salt = ?, password_hash = ?, jwt_secret = ?"
+        if _is_owner_name(username)
+        else "account_password_salt = ?, account_password_hash = ?, account_jwt_secret = ?"
+    )
     conn = get_connection()
     try:
         if expect_password_hash is None:
             cursor = conn.execute(
-                """
+                f"""
                 UPDATE auth_user
-                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+                SET {columns}, must_change_password = 0
                 WHERE username = ?
                 """,
                 (salt, pwd_hash, jwt_secret, username),
             )
         else:
             cursor = conn.execute(
-                """
+                f"""
                 UPDATE auth_user
-                SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
-                WHERE username = ? AND password_hash = ?
+                SET {columns}, must_change_password = 0
+                WHERE username = ? AND {_PASSWORD_HASH_SQL} = ?
                 """,
                 (salt, pwd_hash, jwt_secret, username, expect_password_hash),
             )
@@ -1184,7 +1285,7 @@ def save_refresh_token(
     current one, and callers that already verified a credential must pass the
     version they verified rather than let this re-read a rotated one.
     """
-    token_hash = _hash_token(token)
+    token_hash = _fenced_hash(_hash_token(token), username)
     conn = get_connection()
     try:
         if secret_gen is None:
@@ -1222,12 +1323,12 @@ def consume_refresh_token(token: str) -> Optional[Tuple[str, bool, str]]:
             (now,),
         )
         cur = conn.execute(
-            """
+            f"""
             DELETE FROM refresh_tokens
-            WHERE token_hash = ? AND expires_at >= ?
+            WHERE token_hash {_FENCED_HASH_SQL} AND expires_at >= ?
             RETURNING username, is_desktop, secret_gen
             """,
-            (token_hash, now),
+            (*_hash_candidates(token_hash), now),
         )
         row = cur.fetchone()
         if row is None:
@@ -1261,11 +1362,11 @@ def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
         conn.commit()
 
         cur = conn.execute(
-            """
+            f"""
             SELECT id, username, expires_at, is_desktop, secret_gen FROM refresh_tokens
-            WHERE token_hash = ?
+            WHERE token_hash {_FENCED_HASH_SQL}
             """,
-            (token_hash,),
+            _hash_candidates(token_hash),
         )
         row = cur.fetchone()
         if row is None:
@@ -1398,7 +1499,7 @@ def create_api_key(
     cannot mint a key that outlives it. Raises ``CredentialRotated`` if it moved.
     """
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
-    key_hash = _pbkdf2_api_key(raw_key)
+    key_hash = _fenced_hash(_pbkdf2_api_key(raw_key), username)
     key_prefix = raw_key[len(API_KEY_PREFIX) : len(API_KEY_PREFIX) + 8]
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1515,7 +1616,8 @@ def is_internal_api_key(raw_key: str) -> bool:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT is_internal FROM api_keys WHERE key_hash = ?", (key_hash,)
+            f"SELECT is_internal FROM api_keys WHERE key_hash {_FENCED_HASH_SQL}",
+            _hash_candidates(key_hash),
         ).fetchone()
     finally:
         conn.close()
@@ -1554,8 +1656,8 @@ def internal_api_key_name(raw_key: str) -> Optional[str]:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT name FROM api_keys WHERE key_hash = ? AND is_internal = 1 AND is_active = 1",
-            (key_hash,),
+            f"SELECT name FROM api_keys WHERE key_hash {_FENCED_HASH_SQL} AND is_internal = 1 AND is_active = 1",
+            _hash_candidates(key_hash),
         ).fetchone()
     finally:
         conn.close()
@@ -1608,13 +1710,14 @@ def validate_api_key_account(
         if touch:
             conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
-            """
+            f"""
             SELECT k.id, k.username, k.is_active, k.expires_at,
-                   u.account_id, u.role, u.is_active AS account_active, u.jwt_secret
+                   u.account_id, u.role, u.is_active AS account_active,
+                   COALESCE(u.account_jwt_secret, u.jwt_secret) AS jwt_secret
             FROM api_keys k JOIN auth_user u ON u.username = k.username
-            WHERE k.key_hash = ?
+            WHERE k.key_hash {_FENCED_HASH_SQL}
             """,
-            (key_hash,),
+            _hash_candidates(key_hash),
         )
         row = cur.fetchone()
         if row is None:

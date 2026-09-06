@@ -26,7 +26,7 @@ def summarize(samples: list[float]) -> dict:
     }
 
 
-def measure_cost(operation) -> dict:
+def measure_cost(operation, warm = None) -> dict:
     counters = Counter(connections = 0, queries = 0, statements = 0, mkdir_calls = 0, directories_created = 0)
     connect, mkdir = sqlite3.connect, os.mkdir
 
@@ -47,6 +47,11 @@ def measure_cost(operation) -> dict:
         counters["directories_created"] += 1
         return result
 
+    # Warm right before the measured call: the keyless-access settings cache
+    # revalidates after one second of idle, and a scheduler pause between the
+    # warm-up loop and this call would count that revalidation as hot-path cost.
+    if warm is not None:
+        warm()
     with (
         patch.object(sqlite3, "connect", open_connection),
         patch.object(os, "mkdir", create_directory),
@@ -99,8 +104,12 @@ def main() -> None:
         assert len(listing.json()["threads"]) == 100
         if args.mode == "cost":
             measurements = {
-                "status": measure_cost(lambda: get("/api/auth/status")),
-                "authenticated_get": measure_cost(lambda: get("/account-probe")),
+                "status": measure_cost(
+                    lambda: get("/api/auth/status"), warm = lambda: get("/api/auth/status")
+                ),
+                "authenticated_get": measure_cost(
+                    lambda: get("/account-probe"), warm = lambda: get("/account-probe")
+                ),
                 "workspace_1000": measure_cost(lambda: [workspace_root() for _ in range(1000)]),
             }
         else:

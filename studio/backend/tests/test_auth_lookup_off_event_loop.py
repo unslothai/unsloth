@@ -58,16 +58,11 @@ def _jwt_case(monkeypatch, threads):
 
 
 def _api_key_case(monkeypatch, threads):
+    # One read returns the key's account identity with its secret; no second lookup.
     monkeypatch.setattr(
         authentication,
-        "validate_api_key_with_credential",
-        _record_thread(threads, (SUBJECT, SECRET)),
-    )
-    # The account binding is one more auth.db read, and it too stays off the loop.
-    monkeypatch.setattr(
-        authentication,
-        "get_user_record",
-        _record_thread(threads, _record(SECRET)),
+        "validate_api_key_account",
+        _record_thread(threads, (_record(SECRET), SECRET)),
     )
     return authentication.get_current_subject(_credentials(f"{API_KEY_PREFIX}key"))
 
