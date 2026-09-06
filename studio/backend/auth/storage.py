@@ -409,34 +409,56 @@ _ACCOUNT_COLUMNS = (
 def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
     """Add the identity columns and backfill them. Idempotent, additive only, so
     an older build reading this database sees columns it ignores."""
+    if all(name in existing for name, _decl in _ACCOUNT_COLUMNS):
+        return
+    # Two connections opened at the same moment both saw the columns missing.
+    # Take the write lock first, so the second waits here and then re-reads the
+    # table; an ALTER that still loses is the other side's, not an error.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+        added = False
+        fence_added = False
+        for name, decl in _ACCOUNT_COLUMNS:
+            if name in existing:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE auth_user ADD COLUMN {name} {decl}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+                continue
+            added = True
+            fence_added = fence_added or name == "account_jwt_secret"
+        if added:
+            _backfill_account_columns(conn, fence_added)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
+def _backfill_account_columns(conn: sqlite3.Connection, fence_added: bool) -> None:
     from utils.account_context import OWNER_ACCOUNT_ID, ROLE_OWNER, ROLE_USER
     import uuid
 
-    added = False
-    fence_added = False
-    for name, decl in _ACCOUNT_COLUMNS:
-        if name not in existing:
-            conn.execute(f"ALTER TABLE auth_user ADD COLUMN {name} {decl}")
-            added = True
-            fence_added = fence_added or name == "account_jwt_secret"
-    if not added:
-        return
     now = datetime.now(timezone.utc).isoformat()
-    for row in conn.execute("SELECT id, username, account_id FROM auth_user").fetchall():
-        if row["account_id"]:
+    for row_id, username, account_id in conn.execute(
+        "SELECT id, username, account_id FROM auth_user"
+    ).fetchall():
+        if account_id:
             continue
-        if row["username"] == DEFAULT_ADMIN_USERNAME:
+        if username == DEFAULT_ADMIN_USERNAME:
             account_id, role = OWNER_ACCOUNT_ID, ROLE_OWNER
         else:
             account_id, role = uuid.uuid4().hex, ROLE_USER
         conn.execute(
             "UPDATE auth_user SET account_id = ?, role = ?, created_at = COALESCE(created_at, ?) WHERE id = ?",
-            (account_id, role, now, row["id"]),
+            (account_id, role, now, row_id),
         )
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS auth_user_account_id ON auth_user(account_id)")
     if fence_added:
         _fence_managed_credentials(conn)
-    conn.commit()
 
 
 def _fence_managed_credentials(conn: sqlite3.Connection) -> None:
