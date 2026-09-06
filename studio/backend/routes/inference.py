@@ -7925,8 +7925,9 @@ async def _resolve_last_local_model_for_cold_start(
     """Resolve the per-user last-local-model record for a cold API start.
 
     The Studio UI records every successful load via ``PUT /api/settings/last-local-model``
-    and auto-loads it before chat. OpenAI-compatible clients (PocketPal, etc.) hit
-    ``/v1`` directly, so mirror that behavior when nothing is resident yet.
+    and auto-loads it before chat. Credentialed OpenAI-compatible clients (PocketPal
+    with a key, etc.) hit ``/v1`` directly, so mirror that behavior when nothing is
+    resident yet. A keyless caller never reaches this path.
     """
     from routes.settings import _read_last_local_model
     from core.inference.local_model_resolver import resolve_local_gguf
@@ -8077,11 +8078,19 @@ async def _maybe_auto_switch_model(
             ),
         )
 
+    from auth.authentication import request_admitted_without_credential
+
+    keyless_caller = request_admitted_without_credential(fastapi_request)
+
     # configured, not effective: residency zeroes the TTL, and the stash still has to restore.
     cold_start = not await _resident_model_is_loaded()
     cold_start_load = False
     if not auto_switch_on and not idle_unload_is_configured():
-        if not cold_start:
+        # A keyless caller never causes a load: the dialog only offers what is
+        # already resident. Credentialed /v1 clients (PocketPal with a key) have
+        # no pre-chat /api/inference/load, so a cold start still loads a
+        # downloaded request model or the last-local record.
+        if not cold_start or keyless_caller:
             # No switching to do, but a named model must still not be answered by another.
             # Reject first: a request that is turned away here must not claim the slot.
             await _reject_unservable_model(requested_model, fastapi_request)
@@ -8089,9 +8098,8 @@ async def _maybe_auto_switch_model(
             if claim_resident:
                 _claim_slot_for_non_preview(fastapi_request)
             return
-        # API cold-start: the browser loads via /api/inference/load before chat; PocketPal
-        # and other OpenAI clients hit /v1 directly, so load a downloaded request model
-        # (or the last model the user loaded in Studio) without the auto-switch toggle.
+        # API cold-start for a credentialed caller only. Auto-switch stays opt-in
+        # for swapping a model that is already serving.
         cold_start_load = True
         auto_switch_on = True
 
@@ -8104,11 +8112,8 @@ async def _maybe_auto_switch_model(
             _claim_slot_for_non_preview(fastapi_request)
         return
 
-    from auth.authentication import request_admitted_without_credential
-
-    keyless_caller = request_admitted_without_credential(fastapi_request)
     # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
-    if auto_switch_on and keyless_caller and not cold_start:
+    if auto_switch_on and keyless_caller:
         auto_switch_on = False
         if not idle_unload_is_configured():
             await _reject_unservable_model(requested_model, fastapi_request)
@@ -8161,7 +8166,7 @@ async def _maybe_auto_switch_model(
                     await asyncio.to_thread(get_inference_backend), "active_model_name", None
                 )
             ):
-                if reload_only and cold_start:
+                if reload_only and cold_start and not keyless_caller:
                     resolved = await _resolve_last_local_model_for_cold_start(current_subject)
                 if resolved is None:
                     # Unknown name, model already resident: the non-preview call uses it,

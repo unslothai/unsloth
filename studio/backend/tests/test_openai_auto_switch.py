@@ -222,6 +222,88 @@ def test_cold_start_reload_only_loads_last_local_model(monkeypatch):
     assert rec.calls[0].model_path == "unsloth/A-GGUF"
 
 
+def test_keyless_cold_start_does_not_load_named_model(monkeypatch):
+    import auth.authentication as authentication
+
+    backend = _FakeBackend(loaded_id = None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert excinfo.value.status_code == 404
+    assert rec.calls == []
+
+
+def test_keyless_cold_start_does_not_load_even_when_auto_switch_on(monkeypatch):
+    import auth.authentication as authentication
+
+    backend = _FakeBackend(loaded_id = None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert excinfo.value.status_code == 404
+    assert rec.calls == []
+
+
+def test_keyless_cold_start_reload_only_does_not_load_last_local(monkeypatch):
+    import auth.authentication as authentication
+    from routes import settings as settings_route
+
+    backend = _FakeBackend(loaded_id = None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = ("unsloth/A-GGUF", "Q4_K_M", "unsloth/A-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("_B", (), {"active_model_name": None})(),
+    )
+    monkeypatch.setattr(
+        settings_route,
+        "_read_last_local_model",
+        lambda _s: {"id": "unsloth/A-GGUF", "kind": "gguf", "gguf_variant": "Q4_K_M"},
+    )
+    monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                inference_route._RELOAD_ONLY_MODEL, object(), "tester"
+            )
+        )
+    assert excinfo.value.status_code == 404
+    assert rec.calls == []
+
+
 def test_unknown_model_falls_through(monkeypatch):
     backend = _FakeBackend("unsloth/A-GGUF")
     rec = _LoadRecorder(backend)
