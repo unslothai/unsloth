@@ -192,6 +192,39 @@ class ArgTests(unittest.TestCase):
                 self.assertEqual(cm.exception.code, 2)
 
 
+class ConversationTests(unittest.TestCase):
+    def test_shipped_conversation_is_valid(self):
+        convo = vb.load_conversation(Path(vb.HERE) / "conversation.json")
+        self.assertEqual([t["id"] for t in convo["turns"]], [1, 2, 3, 4])
+
+    def test_unusable_conversations_are_rejected_before_any_request(self):
+        cases = {
+            "not an object": [],
+            "no turns key": {"system": "s"},
+            "empty turns": {"turns": []},
+            "turns not a list": {"turns": {"id": 1, "text": "x"}},
+            "turn without id": {"turns": [{"text": "x"}]},
+            "non-integer id": {"turns": [{"id": "1", "text": "x"}]},
+            "blank text": {"turns": [{"id": 1, "text": "   "}]},
+            "missing text": {"turns": [{"id": 1}]},
+            "duplicate id": {"turns": [{"id": 1, "text": "a"}, {"id": 1, "text": "b"}]},
+        }
+        for name, convo in cases.items():
+            with self.subTest(case = name):
+                with self.assertRaises(ValueError):
+                    vb.validate_conversation(convo)
+
+    def test_load_rejects_empty_turns_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.json"
+            p.write_text(json.dumps({"turns": []}), encoding = "utf-8")
+            with self.assertRaises(ValueError):
+                vb.load_conversation(p)
+            p.write_text("{not json", encoding = "utf-8")
+            with self.assertRaises(ValueError):
+                vb.load_conversation(p)
+
+
 class TtsRouteTests(unittest.TestCase):
     @staticmethod
     def _args(**kw):

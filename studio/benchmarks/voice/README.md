@@ -77,8 +77,11 @@ Latency is worthless if the answers get worse, so each run also reports:
 - The actual transcripts and replies are printed so you can eyeball them.
 
 Exit status: `0` valid run, `1` run measured but invalid (incomplete or
-determinism failed; the report is still written), `2` could not run (Studio
-unreachable, no chat model, no usable TTS route).
+determinism failed; the report is still written), `2` could not run (an unusable
+`--conversation` file, Studio unreachable, no chat model, no usable TTS route).
+A conversation must have at least one turn, each with an integer `id` and a
+non-empty `text`, and no repeated ids (the fixture cache is keyed on the id);
+that is checked before any model request.
 
 ## Determinism
 

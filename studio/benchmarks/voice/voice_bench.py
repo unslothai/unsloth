@@ -843,6 +843,36 @@ def positive_int(value: str) -> int:
     return n
 
 
+def validate_conversation(convo: object) -> None:
+    """Refuse a conversation the run could not measure, before any model request.
+
+    An empty ``turns`` list would otherwise crash the determinism check (it
+    re-runs turn 1) or, under --no-determinism, summarize zero turns as a
+    complete run with null totals and exit 0. The fixture cache is keyed on the
+    turn id, so duplicate ids would silently share one recording."""
+    if not isinstance(convo, dict):
+        raise ValueError("the conversation must be a JSON object")
+    turns = convo.get("turns")
+    if not isinstance(turns, list) or not turns:
+        raise ValueError('the conversation has no turns ("turns" must be a non-empty list)')
+    seen: set = set()
+    for i, turn in enumerate(turns, 1):
+        if not isinstance(turn, dict) or not isinstance(turn.get("id"), int):
+            raise ValueError(f'turn #{i} needs an integer "id"')
+        if not isinstance(turn.get("text"), str) or not turn["text"].strip():
+            raise ValueError(f"turn {turn['id']} needs a non-empty \"text\"")
+        if turn["id"] in seen:
+            raise ValueError(f"turn id {turn['id']} is used twice")
+        seen.add(turn["id"])
+
+
+def load_conversation(path: Path) -> dict:
+    """Read and validate a conversation file; ValueError/OSError on anything unusable."""
+    convo = json.loads(path.read_text(encoding = "utf-8"))
+    validate_conversation(convo)
+    return convo
+
+
 def get_token(args) -> str:
     if args.token:
         return args.token
@@ -896,7 +926,11 @@ def main() -> int:
     except (AttributeError, ValueError):
         pass
 
-    convo = json.loads(Path(args.conversation).read_text(encoding = "utf-8"))
+    try:
+        convo = load_conversation(Path(args.conversation))
+    except (OSError, ValueError) as e:
+        print(f"Cannot use conversation {args.conversation}: {e}")
+        return 2
     token = get_token(args)
     client = StudioClient(args.base_url, token, args.seed)
 
