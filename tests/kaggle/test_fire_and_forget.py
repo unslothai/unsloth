@@ -1327,6 +1327,6 @@ def test_no_kaggle_workflow_checkout_persists_the_job_token():
     for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
         for _job, _name, step in _steps(_wf(path)):
             if str(step.get("uses", "")).startswith("actions/checkout@"):
-                assert (step.get("with") or {}).get("persist-credentials") is False, (
-                    f"{path.name}: a checkout persists the job token"
-                )
+                assert (step.get("with") or {}).get(
+                    "persist-credentials"
+                ) is False, f"{path.name}: a checkout persists the job token"
