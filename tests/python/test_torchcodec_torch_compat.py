@@ -1227,9 +1227,9 @@ def test_an_open_floor_is_a_floor_not_a_landing():
     # The floor is still usable where every version at or above it gives the same answer:
     # torch 2.10 cannot take any 0.12+ codec, so this one is still reported.
     too_old = '!pip install "torch==2.10.0" "torchcodec>=0.12.0"'
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(too_old, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(too_old, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
 
 
 def test_versions_are_compared_with_pep440_zero_padding():

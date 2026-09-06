@@ -807,9 +807,7 @@ def _apply_requested_bounds(
     return landing, not landing
 
 
-def _effective_requested_version(
-    install_cell: str, package: str, oracle: str
-) -> tuple[str, bool]:
+def _effective_requested_version(install_cell: str, package: str, oracle: str) -> tuple[str, bool]:
     """What pip actually leaves installed, when the cell's range rules the oracle out.
 
     resolved_set only overrides the oracle on an exact `==` pin, so a range such as
