@@ -95,10 +95,21 @@ def load_studio_run_module(monkeypatch):
     startup_banner.stdout_supports_color = lambda: False
     monkeypatch.setitem(sys.modules, "startup_banner", startup_banner)
 
+    # run.py exports UNSLOTH_STUDIO_HOME and UNSLOTH_LLAMA_CPP_PATH at module scope, and this
+    # helper execs it in-process, so those would otherwise outlive the test and be inherited by
+    # every later one in the session. monkeypatch restores whatever the runner really had.
+    for _leaked in ("UNSLOTH_STUDIO_HOME", "UNSLOTH_LLAMA_CPP_PATH"):
+        monkeypatch.setenv(_leaked, os.environ.get(_leaked, ""))
+        monkeypatch.delenv(_leaked)
+
     paths = types.ModuleType("utils.paths")
     paths.__path__ = []
     storage_roots = types.ModuleType("utils.paths.storage_roots")
     storage_roots.studio_root = lambda: PACKAGE_ROOT / ".studio-test-root"
+    # Imported at module scope too, so the stub has to carry it. None keeps these tests on
+    # the legacy-default path they were written for: a master root would make run.py export
+    # UNSLOTH_STUDIO_HOME and pin a llama.cpp path, neither of which this file is about.
+    storage_roots.unsloth_home = lambda: None
     paths.storage_roots = storage_roots
     monkeypatch.setitem(sys.modules, "utils.paths", paths)
     monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", storage_roots)

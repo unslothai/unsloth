@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -319,3 +321,105 @@ def test_diffusion_loader_calls_pin_the_cache_dir():
                 assert (
                     "cache_dir" in window or "kwargs" in window
                 ), f"{rel}:{index} calls {call} without a pinned cache_dir"
+
+
+# _stored_cache_home skips the database read when nothing uses one, so `unsloth train` does not
+# build a studio.db on a machine that never opened Studio. Only a positively observed absence may
+# license that skip; every other outcome falls through to the read. Driven in a subprocess: the
+# skip needs storage.studio_db absent from sys.modules, which pytest has already imported.
+_GUARD_PROBE = """
+import json, os, sys
+
+sys.path.insert(0, os.environ["FAKE_STORAGE"])
+sys.path.insert(1, os.environ["BACKEND_DIR"])
+from utils import hf_cache_settings
+
+assert "storage.studio_db" not in sys.modules, "the probe must exercise the skip"
+stored = hf_cache_settings._stored_cache_home()
+print(json.dumps({"stored": None if stored is None else str(stored)}))
+"""
+
+_FAKE_STUDIO_DB = """
+import os
+from pathlib import Path
+
+
+def get_app_setting(key, fallback = None):
+    Path(os.environ["READ_WITNESS"]).write_text("read", encoding = "utf-8")
+    if key == "hugging_face_cache_home":
+        return os.environ["STORED_CACHE_HOME"]
+    return fallback
+"""
+
+
+def _run_guard_probe(tmp_path, studio_home: Path, stored: Path) -> tuple[str | None, bool]:
+    """Return (_stored_cache_home() answer, whether the database was read)."""
+    fake = tmp_path / "fake_storage"
+    (fake / "storage").mkdir(parents = True, exist_ok = True)
+    (fake / "storage" / "__init__.py").write_text("", encoding = "utf-8")
+    (fake / "storage" / "studio_db.py").write_text(_FAKE_STUDIO_DB, encoding = "utf-8")
+    witness = tmp_path / "read_witness"
+    witness.unlink(missing_ok = True)
+
+    environment = dict(os.environ)
+    environment.update(
+        BACKEND_DIR = _BACKEND_DIR,
+        FAKE_STORAGE = str(fake),
+        READ_WITNESS = str(witness),
+        STORED_CACHE_HOME = str(stored),
+        UNSLOTH_STUDIO_HOME = str(studio_home),
+        PYTHONPATH = "",
+    )
+    for key in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_XET_CACHE"):
+        environment.pop(key, None)
+    result = subprocess.run(
+        [sys.executable, "-c", _GUARD_PROBE],
+        capture_output = True,
+        text = True,
+        env = environment,
+        timeout = 120,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])["stored"], witness.exists()
+
+
+def test_absent_studio_db_skips_the_database_read(tmp_path):
+    # The skip 912024e84 added must survive the tightening below: a Studio root with no studio.db
+    # answers None WITHOUT a connection, which is what stops the CLI creating a 250 KB database.
+    studio_home = tmp_path / "root" / "studio"
+    studio_home.mkdir(parents = True)
+
+    answer, was_read = _run_guard_probe(tmp_path, studio_home, tmp_path / "chosen")
+
+    assert answer is None
+    assert not was_read, "an absent database must not be opened"
+
+
+@pytest.mark.parametrize("fixture", ["not_a_directory", "symlink_loop", "unreadable_parent"])
+def test_uninspectable_studio_db_keeps_the_stored_cache_home(tmp_path, fixture):
+    # Path.exists reports ENOTDIR and ELOOP as absence on every release we support, and from 3.14
+    # swallows EACCES too. Treating any of them as "no database" discards the cache home the user
+    # chose in Settings and re-routes downloads to the default root.
+    chosen = tmp_path / "chosen"
+    studio_home = tmp_path / "root" / "studio"
+    if fixture == "not_a_directory":
+        studio_home.parent.mkdir(parents = True)
+        studio_home.write_text("", encoding = "utf-8")
+    elif fixture == "symlink_loop":
+        studio_home.parent.mkdir(parents = True)
+        studio_home.symlink_to(studio_home)
+    else:
+        studio_home.mkdir(parents = True)
+        (studio_home / "studio.db").write_bytes(b"")
+        os.chmod(studio_home, 0o000)
+
+    try:
+        answer, was_read = _run_guard_probe(tmp_path, studio_home, chosen)
+    finally:
+        if fixture == "unreadable_parent":
+            os.chmod(studio_home, 0o755)
+
+    # unreadable_parent is the case 3.14 newly breaks: below it Path.exists still RAISED, which
+    # the outer handler already turned into this fall-through. The other two hold on every release.
+    assert was_read, "a database we could not inspect must still be read"
+    assert answer == str(chosen)

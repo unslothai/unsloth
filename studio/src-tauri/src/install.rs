@@ -580,8 +580,12 @@ fn spawn_script(
 
     // Tauri only does default-root installs; install.sh / install.ps1 reject
     // these under --tauri. Scrub so an inherited value can't trip the guard.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
+    // The one managed spawn that does not go through apply_managed_cli_context,
+    // so the list is applied here by hand: setup.sh assigns UNSLOTH_HOME itself
+    // before using it, but the Python it starts reads whatever is exported.
+    for name in crate::process::MANAGED_CHILD_SCRUBBED_ENV {
+        cmd.env_remove(name);
+    }
     cmd.env(
         "UNSLOTH_DESKTOP_BACKEND_VERSION",
         crate::preflight::expected_backend_version(),
