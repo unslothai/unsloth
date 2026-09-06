@@ -186,10 +186,10 @@ def test_enforce_spacing_noop_when_already_spaced():
     assert out == src
 
 
+# Rule D:
+
 # ── Rule D: def one-per-line iff >= 3 params AND a default ──────────────────
 # add comma -> force one-per-line; strip comma -> stay collapsible.
-
-# Comma must be ADDED: >= 3 params, has a default, no trailing comma yet.
 _DEF_ADD = {
     "three_with_default": "def f(a, b, c=1):\n    return a\n",
     "four_with_default": "def f(a, b, c, d=1):\n    return a\n",
@@ -257,9 +257,6 @@ def test_def_comma_exact_output_strip_and_add():
         normalize_def_trailing_comma("def f(\n    a,\n    b,\n    c,\n):\n    return a\n")[0]
         == "def f(\n    a,\n    b,\n    c\n):\n    return a\n"
     )
-
-
-# ── Rule C: merge adjacent same-line string literals ───────────────────────
 
 
 @pytest.mark.parametrize(
@@ -349,8 +346,6 @@ def test_fstring_fold_applied_inside_large_multiline_call():
 
 # ── collapse_short_asserts: strip the magic comma holding a short assert open ──
 # Strips the trailing comma so ruff joins the assert onto one line; AST unchanged.
-
-
 @pytest.mark.parametrize(
     "name,src",
     [
@@ -403,7 +398,6 @@ def test_collapse_short_assert_strips_trailing_comma(name, src):
             '        "alpha": 11111111,\n        "beta": 22222222,\n'
             '        "gamma": 33333333,\n        "delta": 44444444,\n    }\n',
         ),
-        # already one line: nothing to do.
         ("one_line", 'def t():\n    assert got == {"a": 1, "b": 2}\n'),
     ],
 )

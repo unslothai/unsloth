@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
 import sys as _sys
 from pathlib import Path as _Path
 

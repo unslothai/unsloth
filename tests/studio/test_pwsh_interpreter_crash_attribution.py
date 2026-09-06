@@ -24,16 +24,14 @@ import pytest
 
 from unsloth_pwsh_runner import PWSH, PwshInterpreterCrash, run_pwsh
 
-# A SIGABRT is forged with Python rather than pwsh: the real trigger is a .NET startup
-# stack overflow we cannot summon on demand, and the helper keys on the signal, not on who
-# sent it, so `os.abort()` reproduces exactly the condition CI hit.
-#
-# PR_SET_DUMPABLE = 0 first, per tests/test_deliberate_crashes_suppress_cores.py. The
-# child still dies of SIGABRT, so every verdict below is unchanged; what goes away is
-# apport reading a multi-MB core before the child is reaped, on each of the several
-# aborts these tests spend. Linux-only, and deliberately not fatal elsewhere: Windows
-# has no CDLL(None) and pipes no core anywhere, so failing to arm it there would turn a
-# no-op into a lost test.
+# A SIGABRT is forged with Python rather than pwsh: the real trigger is a .NET startup stack overflow we cannot summon
+# on demand, and the helper keys on the signal, not on who sent it, so `os.abort()` reproduces exactly the condition CI
+# hit.
+# PR_SET_DUMPABLE = 0 first, per tests/test_deliberate_crashes_suppress_cores.py. The child still dies of SIGABRT, so
+# every verdict below is unchanged; what goes away is apport reading a multi-MB core before the child is reaped, on
+# each of the several aborts these tests spend.
+# Linux-only, and deliberately not fatal elsewhere: Windows has no CDLL(None) and pipes no core anywhere, so failing to
+# arm it there would turn a no-op into a lost test.
 _ABORT = [
     sys.executable,
     "-c",
@@ -60,8 +58,8 @@ def test_a_clean_run_with_the_wrong_answer_still_fails_with_its_own_message():
     assert proc.returncode == 3
     assert proc.stdout.strip() == "WRONG"
 
-    # ...and `check` still raises the ordinary CalledProcessError a caller expects, so
-    # migrating a `subprocess.run(..., check = True)` call site changes no failure text.
+    # ...and `check` still raises the ordinary CalledProcessError a caller expects, so migrating a `subprocess.run(...,
+    # check = True)` call site changes no failure text.
     with pytest.raises(subprocess.CalledProcessError):
         run_pwsh(_CLEAN_WRONG_ANSWER, check = True, capture_output = True, text = True)
 
@@ -105,13 +103,12 @@ def test_the_startup_cache_is_redirected_without_disturbing_the_callers_env():
     assert "XDG_CACHE_HOME" in child, sorted(child)
     assert child["HOME"] == "/nonexistent", "the caller's hermetic HOME was overwritten"
     assert child["PATH"] == "/usr/bin:/bin"
-    # The whole point of a hermetic dict: nothing ambient may reach the child. (CPython's
-    # own PEP 538 locale coercion can add LC_CTYPE, which is why this probes for a named
-    # leak rather than asserting an exact key set.)
+    # The whole point of a hermetic dict: nothing ambient may reach the child.
+    # (CPython's own PEP 538 locale coercion can add LC_CTYPE, which is why this probes for a named leak rather than
+    # asserting an exact key set.)
     assert marker not in child, "the ambient environment leaked past a hermetic env dict"
 
-    # env = None must still mean inherit, or every call site that relies on the ambient
-    # PATH silently loses it.
+    # env = None must still mean inherit, or every call site that relies on the ambient PATH silently loses it.
     inherited = json.loads(run_pwsh(dump, capture_output = True, text = True).stdout)
     assert inherited["XDG_CACHE_HOME"] == child["XDG_CACHE_HOME"]
     assert inherited.get("PATH") == os.environ.get("PATH")

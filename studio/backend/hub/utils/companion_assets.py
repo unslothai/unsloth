@@ -333,8 +333,9 @@ def _family_bases(repo_id: str, gguf_filename: Optional[str] = None) -> set[str]
     bases = {resolve_base_repo(fam, None)}
     bases |= _curated_variant_bases(fam, repo_id, gguf_filename)
     # The NATIVE engine never reads the diffusers base: it fetches a single-file VAE and text encoder
-    # from their own repos, so a pre-existing native GGUF with no recorded link would have had its
-    # encoder listed as unused and removed underneath it.
+    # from their own repos, and those repos are offerable for deletion, so a pre-existing native GGUF
+    # with no recorded link would have had its encoder listed as unused and removed underneath it. The
+    # recorded links cover a load that has happened since; this covers the install that predates them.
     bases |= {repo for repo, _file in _sd_cpp_component_specs(fam, repo_id, gguf_filename)}
     return _with_mirrors(bases)
 
