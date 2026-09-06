@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 FRONTEND = Path(__file__).resolve().parents[2] / "studio" / "frontend"
 _LIVE_SERVERS: list[subprocess.Popen[str]] = []
@@ -386,10 +386,21 @@ def recover_or_replace_page(
 # ─────────────────────────────────────────────────────────────────────
 
 
+# The endpoint the first-boot change-password form submits to. It depends on what
+# the backend put in the page: a seeded password means /change-password, a one-time
+# setup token means /link-initial-password, which takes no current password. A
+# driver must accept either, so it works against both an older and a newer backend
+# and does not have to know which one it is talking to.
+PASSWORD_CHANGE_ENDPOINTS = (
+    "/api/auth/change-password",
+    "/api/auth/link-initial-password",
+)
+
+
 def click_and_wait_for_response(
     page: Any,
     *,
-    url_substr: str,
+    url_substr: "str | Sequence[str]",
     method: str = "POST",
     do_click: Callable[[], None],
     timeout_ms: int = 30_000,
@@ -397,10 +408,14 @@ def click_and_wait_for_response(
 ) -> tuple[int | None, Exception | None]:
     """Click + wait for the matching XHR/fetch response; (status, None) on success
     or (None, exception) on capture failure. Falls back to a fire-and-forget click
-    so the outer retry loop runs. Callers check `status >= 400`."""
+    so the outer retry loop runs. Callers check `status >= 400`.
+
+    *url_substr* may be one substring or several, in which case any of them
+    matches."""
+    wanted = (url_substr,) if isinstance(url_substr, str) else tuple(url_substr)
     try:
         with page.expect_response(
-            lambda r: url_substr in r.url and r.request.method == method,
+            lambda r: any(u in r.url for u in wanted) and r.request.method == method,
             timeout = timeout_ms,
         ) as resp_info:
             do_click()

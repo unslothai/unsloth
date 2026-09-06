@@ -19,6 +19,7 @@ from playwright.sync_api import expect, sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
+    PASSWORD_CHANGE_ENDPOINTS,
     click_and_wait_for_response,
     install_view_transition_killer,
     install_wall_clock_watchdog,
@@ -220,7 +221,7 @@ with sync_playwright() as p:
             shoot("01-change-password-filled")
             status, _ = click_and_wait_for_response(
                 page,
-                url_substr = "/api/auth/change-password",
+                url_substr = PASSWORD_CHANGE_ENDPOINTS,
                 method = "POST",
                 do_click = lambda: page.locator('button[type="submit"]').click(),
                 timeout_ms = 30_000,
