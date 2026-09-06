@@ -18,11 +18,18 @@ import {
   hasExpired,
 } from "../bootstrap-deadline";
 
-// Bootstrap credentials injected into index.html by the backend (only present
-// while default admin must_change_password is true)
+// One-time setup token injected into index.html by the backend (only present
+// while default admin must_change_password is true). This used to carry the
+// seeded password itself; it now carries a single-use, short-TTL link token
+// that can do nothing but set the first password. `password` is kept optional
+// so an older backend paired with this bundle still works.
 declare global {
   interface Window {
-    __UNSLOTH_BOOTSTRAP__?: { username: string; password: string };
+    __UNSLOTH_BOOTSTRAP__?: {
+      username: string;
+      link_token?: string;
+      password?: string;
+    };
   }
 }
 
@@ -185,10 +192,12 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   }, [statusLoading]);
 
   // Seed password from bootstrap credentials injected into HTML by web CLI.
+  // Only an older backend still sends one; the current one sends a link token,
+  // which the submit handler exchanges instead.
   useEffect(() => {
     function loadBootstrap() {
       const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
-      if (bootstrap && !isLoginMode && !password) {
+      if (bootstrap?.password && !isLoginMode && !password) {
         setPassword(bootstrap.password);
       }
     }
@@ -218,17 +227,23 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const switchLinkTo = "/login";
   const switchLinkText = "Back to login";
   const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
-  // On first boot the backend injects __UNSLOTH_BOOTSTRAP__ and we silently
-  // reuse that password; the Current password input is only rendered for the
-  // admin-forced must_change_password path where no bootstrap is available.
-  const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
+  // On first boot the backend injects __UNSLOTH_BOOTSTRAP__ and setup runs off
+  // it, so the Current password input is only rendered for the admin-forced
+  // must_change_password path where no bootstrap is available. Unchanged from
+  // when the injected value was the password itself: the rendered form is the
+  // same either way, only what backs it differs.
+  const setupToken = window.__UNSLOTH_BOOTSTRAP__?.link_token;
+  const hasBootstrapPassword = Boolean(
+    setupToken || window.__UNSLOTH_BOOTSTRAP__?.password,
+  );
   const invalidChangePasswordForm =
     !isLoginMode &&
-    (currentPassword.length < 8 ||
+    // The setup token stands in for the current password, so do not require one.
+    ((!setupToken && currentPassword.length < 8) ||
       newPassword.length < 8 ||
       /\s/.test(newPassword) ||
       newPassword !== confirmPassword ||
-      currentPassword === newPassword);
+      (!setupToken && currentPassword === newPassword));
   const showWhitespaceWarning = !isLoginMode && /\s/.test(newPassword);
   const showPasswordMismatchWarning =
     !isLoginMode &&
@@ -274,6 +289,39 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
       if (isLoginMode) {
         token = await loginWithPassword(username, password);
+      } else if (setupToken) {
+        // First-boot setup. Burn the one-time token for a session, then set the
+        // first password through the route that does not ask for the current
+        // one -- the operator never had it. Same two fields on screen as before.
+        const exchange = await fetch(apiUrl("/api/auth/link-exchange"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ link_token: setupToken }),
+        });
+        if (!exchange.ok) {
+          throw new Error(
+            "This setup link has expired or was already used. Reload the page to get a new one.",
+          );
+        }
+        const exchanged = (await exchange.json()) as TokenResponse;
+
+        const response = await fetch(apiUrl("/api/auth/link-initial-password"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${exchanged.access_token}`,
+          },
+          body: JSON.stringify({ new_password: newPassword }),
+        });
+        if (!response.ok) {
+          let message = "Password update failed.";
+          const errorPayload = (await response
+            .json()
+            .catch(() => null)) as { detail?: string } | null;
+          if (errorPayload?.detail) message = errorPayload.detail;
+          throw new Error(message);
+        }
+        token = (await response.json()) as TokenResponse;
       } else {
         let accessToken = getAuthToken();
 
