@@ -539,3 +539,49 @@ def test_batch_script_lock_is_windows_only_and_never_raises(tmp_path, monkeypatc
 
 def _raise_oserror(*args, **kwargs):
     raise OSError("no WinDLL on this host")
+
+
+def test_a_replaced_python_script_is_refused_before_anything_runs(tmp_path):
+    # Both tool calls of one chat share a workdir the sandboxed process can
+    # write, so a second call could swap the first call's script between the
+    # write and the interpreter opening it, and the wrong code would run under
+    # the first call's tier and grant.
+    script = tmp_path / "studio_exec_victim.py"
+    script.write_text("print('victim')", encoding = "utf-8")
+    handle, identity = tools._seal_scratch_script(str(script))
+    try:
+        assert not tools._scratch_script_was_swapped(str(script), identity)
+        # Rewriting the same bytes in place is not a swap.
+        script.write_text("print('victim')", encoding = "utf-8")
+        assert not tools._scratch_script_was_swapped(str(script), identity)
+        if sys.platform == "win32":
+            # Windows prevents it outright: the handle denies delete and write.
+            assert handle is not None
+            with pytest.raises(PermissionError):
+                os.replace(str(tmp_path / "attacker.py"), str(script))
+        else:
+            # POSIX cannot prevent it, so it is detected: a replacement gets a
+            # new inode and the launch is refused.
+            assert identity is not None
+            attacker = tmp_path / "attacker.py"
+            attacker.write_text("print('attacker')", encoding = "utf-8")
+            os.replace(str(attacker), str(script))
+            assert tools._scratch_script_was_swapped(str(script), identity)
+        # A script that vanished entirely is a swap too, never a silent pass.
+    finally:
+        tools._release_batch_script(handle)
+    os.unlink(str(script))
+    assert tools._scratch_script_was_swapped(str(script), identity)
+
+
+def test_the_python_launch_checks_the_script_after_preparing_it(tmp_path):
+    # The check has to sit between prepare_tool_launch and the spawn: earlier
+    # and a swap during preparation is missed, later and the child is already
+    # running someone else's code.
+    source = Path(tools.__file__).read_text(encoding = "utf-8")
+    body = source.split("def _python_exec(", 1)[1].split("def ", 1)[0]
+    seal = body.index("_seal_scratch_script(")
+    check = body.index("_scratch_script_was_swapped(")
+    prepare = body.index("prepare_tool_launch(")
+    spawn = body.index("popen_kwargs = dict(")
+    assert seal < prepare < check < spawn

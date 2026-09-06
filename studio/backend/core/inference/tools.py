@@ -7512,6 +7512,76 @@ def _release_batch_script(handle: "object | None") -> None:
         pass
 
 
+def _seal_scratch_script(path: str) -> "tuple[object | None, tuple[int, int] | None]":
+    """Make the written script unswappable, or at least detectably swapped.
+
+    Both tool calls of one chat share a workdir that the sandboxed process can
+    write, so a second call can replace the first call's script between the
+    write and the interpreter opening it, and the wrong code runs under the
+    first call's tier and grant. The Terminal path solves this by creating the
+    batch file through a handle that denies writers; Python cannot, because the
+    file must stay readable by name for tracebacks and for the download route.
+
+    On Windows a second handle with FILE_SHARE_READ refuses every open that asks
+    for write or delete, so the swap is prevented. POSIX has no mandatory
+    locking, so the file's identity is recorded instead and checked again just
+    before the spawn: a replacement (the usual shape, since writing in place
+    over a file opened by another launch is what an editor avoids doing) changes
+    the inode and is refused. A truncate and rewrite in place is not caught, and
+    that is stated here rather than implied.
+    """
+    if sys.platform == "win32":
+        return _lock_scratch_script_for_reading(path), None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None, None
+    return None, (stat.st_dev, stat.st_ino)
+
+
+def _scratch_script_was_swapped(path: str, identity: "tuple[int, int] | None") -> bool:
+    if identity is None:
+        return False
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return True
+    return (stat.st_dev, stat.st_ino) != identity
+
+
+def _lock_scratch_script_for_reading(path: str) -> "object | None":
+    """Open ``path`` denying writers, for a file that already exists.
+
+    Unlike the batch script this cannot create the file, so it is best effort:
+    the Python script is written by the ordinary text path first. A host that
+    refuses the open leaves the launch to the identity check above.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.CreateFileW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        handle = kernel32.CreateFileW(
+            path, _GENERIC_READ_ACCESS, _FILE_SHARE_READ, None, 3, _FILE_ATTRIBUTE_NORMAL, None
+        )
+    except (OSError, AttributeError, ImportError):
+        return None
+    if not handle or ctypes.c_ssize_t(handle).value == _INVALID_HANDLE_VALUE:
+        return None
+    return handle
+
+
 def _reserve_isolated_batch_script(workdir: str) -> str:
     """Pick the batch file's path without creating it yet.
 
@@ -16744,6 +16814,8 @@ def _python_exec(
     spill_scope = _spill_scope(session_id, thread_id)
     spill_dir = workdir if session_id else None
     call_token = _call_started(workdir)
+    script_handle = None
+    script_identity = None
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
     try:
@@ -16757,6 +16829,10 @@ def _python_exec(
             _active_scratch.add(_scratch_name)
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
+        # Held until the finally on Windows, recorded for the check below
+        # elsewhere: another call in the same chat workdir must not be able to
+        # swap this script between the write and the interpreter opening it.
+        script_handle, script_identity = _seal_scratch_script(tmp_path)
 
         safe_env = _build_bypass_env(workdir) if full_access else _build_safe_env(workdir)
         if full_access:
@@ -16797,6 +16873,13 @@ def _python_exec(
         launch_timeout = prepared_launch.timeout_seconds
         if launch_timeout is None and timeout is not None:
             launch_timeout = timeout
+        if _scratch_script_was_swapped(tmp_path, script_identity):
+            # Refusing beats running someone else's code under this call's
+            # tier and grant. Nothing has been spawned yet.
+            raise RuntimeError(
+                "the script for this call was replaced before it could run; "
+                "nothing was executed"
+            )
         if effective_execution_mode == "limited" and sys.platform != "win32":
             # Validate in the parent so configuration failures remain actionable;
             # the child repeats this immediately before exec and applies them.
@@ -16966,6 +17049,9 @@ def _python_exec(
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
+        # Before the unlink below: on Windows the file cannot be removed while
+        # this handle denies delete access.
+        _release_batch_script(script_handle)
         _forget_tool_pid(locals().get("proc"))
         if run_marker is not None:
             _sweep_marked_descendants(run_marker)
