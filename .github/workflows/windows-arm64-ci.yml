@@ -1,0 +1,221 @@
+# The native Windows on ARM install path, run on Windows on ARM.
+#
+# Everything this repository knows about win_arm64 -- the wheelhouse and its
+# PyPI-deference guard, the uv index policy, the torch index persistence, the
+# uninstaller -- was until now tested only on ubuntu-latest and windows-latest,
+# both x64. That is the wrong machine for all of it. Several of the bugs found on
+# real hardware could not have failed anywhere else:
+#
+#   - The purge builds its owned prefix with Join-Path, which uses the HOST
+#     separator, so a test hardcoding a POSIX home compared "C:\...\woa" against
+#     ".../woa" and never matched. Eleven tests passed on Linux and failed on
+#     Windows for a reason that had nothing to do with the purge.
+#   - A uv config file naming an exclusive index has to be parsed by a subset
+#     parser, because Windows PowerShell 5.1 ships no TOML reader. Six shapes of
+#     config were read wrongly, every one of them answering "PyPI is reachable"
+#     for a config that had taken PyPI out of the resolve.
+#   - The uninstaller's ownership gate refused genuinely old installs, leaving a
+#     user's tree and studio.db on disk while calling their own install a
+#     non-Unsloth path.
+#
+# None of that needs a GPU, CUDA, or a compiler, which is what makes this leg
+# cheap: it is arithmetic over wheel tags, path handling, and PowerShell parsing.
+# A full install or a Tauri build would need much more and is deliberately out of
+# scope here.
+#
+# NOTE for whoever adds a build leg later: GitHub is moving the windows-11-arm
+# image to Visual Studio 2026, rolling out from 2026-09-21 and completing
+# 2026-09-30, and windows-11-vs2026-arm already exists to opt in early. This job
+# invokes no compiler, so the change cannot affect it. A leg that builds
+# studio/src-tauri would be affected, and would additionally need clang on PATH,
+# because ring and aws-lc-sys assemble their aarch64 sources through cc-rs, which
+# calls clang rather than cl.exe.
+name: Windows ARM64 CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'install.ps1'
+      - 'scripts/uninstall.ps1'
+      - 'scripts/uninstall.sh'
+      - 'studio/install_python_stack.py'
+      - 'studio/setup.ps1'
+      - 'studio/backend/requirements/single-env/constraints.txt'
+      - 'tests/studio/install/test_woa_wheelhouse_prefers_pypi.py'
+      - 'tests/studio/install/test_woa_wheelhouse_guard_behaviour.py'
+      - 'tests/studio/install/test_woa_torch_index_persistence.py'
+      - 'tests/studio/install/test_diffusers_pin.py'
+      - 'tests/python/test_windows_arm64_wheelhouse_tags.py'
+      - 'tests/studio/test_uninstall_arg_guard.ps1'
+      - 'tests/studio/test_uninstall_dual_install_icon.ps1'
+      - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
+      - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - 'tests/studio/test_uninstall_legacy_layout_gate.ps1'
+      - '.github/workflows/windows-arm64-ci.yml'
+  pull_request:
+    paths:
+      - 'install.ps1'
+      - 'scripts/uninstall.ps1'
+      - 'scripts/uninstall.sh'
+      - 'studio/install_python_stack.py'
+      - 'studio/setup.ps1'
+      - 'studio/backend/requirements/single-env/constraints.txt'
+      - 'tests/studio/install/test_woa_wheelhouse_prefers_pypi.py'
+      - 'tests/studio/install/test_woa_wheelhouse_guard_behaviour.py'
+      - 'tests/studio/install/test_woa_torch_index_persistence.py'
+      - 'tests/studio/install/test_diffusers_pin.py'
+      - 'tests/python/test_windows_arm64_wheelhouse_tags.py'
+      - 'tests/studio/test_uninstall_arg_guard.ps1'
+      - 'tests/studio/test_uninstall_dual_install_icon.ps1'
+      - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
+      - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - 'tests/studio/test_uninstall_legacy_layout_gate.ps1'
+      - '.github/workflows/windows-arm64-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  woa:
+    # Free for public repositories since 2025-08-07. Private repositories need an
+    # eligible plan, so a fork on a private plan will see this job fail to start
+    # rather than run somewhere else.
+    runs-on: windows-11-arm
+    # Generous on purpose. Almost all of the wall time is PowerShell process
+    # startup -- these suites launch hundreds of short-lived shells -- and the
+    # standard arm64 runner has 4 vCPU. The same selection takes about five
+    # minutes on a GB10 workstation, so this leaves room for a slower runner
+    # without turning a slow day into a red board.
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both shells, because they are not interchangeable and each is what
+        # something real uses. pwsh 7 is what CI has always run. Windows
+        # PowerShell 5.1 is what the CLI actually launches setup.ps1 with, and it
+        # is the only shell present on a stock Windows box -- so a developer on
+        # this hardware runs 5.1 whether anyone planned for it or not. The repo
+        # already keeps a 5.1 row in cross-platform-parity-ci for #8335, where 7
+        # answers `.Count = 1` for the single CimInstance 5.1 answers `$null` for.
+        powershell: [pwsh-7, windows-powershell-5.1]
+    name: woa (${{ matrix.powershell }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The whole point of the job is the architecture, so it is asserted rather
+      # than assumed. A leg that silently ran on x64 would be worse than no leg:
+      # it would report green for exactly the platform it does not cover.
+      - name: The runner really is ARM64
+        shell: pwsh
+        run: |
+          $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          $proc = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+          # Machine scope, because an x64-emulated process reports AMD64 in its own
+          # environment block while the machine underneath is ARM64.
+          $machine = [Environment]::GetEnvironmentVariable(
+            "PROCESSOR_ARCHITECTURE", [EnvironmentVariableTarget]::Machine)
+          Write-Host "OSArchitecture=$arch ProcessArchitecture=$proc machine=$machine"
+          if ("$arch" -ne "Arm64") {
+            Write-Host "::error::this job is not running on ARM64 (OSArchitecture=$arch)"
+            exit 1
+          }
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+          # Required, not cosmetic: the image ships an x64 Python that runs under
+          # emulation, and sysconfig on that interpreter reports win-amd64. Half
+          # the assertions here are about wheel tags, so an emulated interpreter
+          # would quietly test the wrong platform.
+          architecture: 'arm64'
+
+      - name: The interpreter really is ARM64
+        shell: pwsh
+        run: |
+          python -c "import platform, sysconfig, sys; print(sys.version); print('machine', platform.machine()); print('platform', sysconfig.get_platform())"
+          python -c "import sysconfig, sys; p = sysconfig.get_platform(); sys.exit(0 if p == 'win-arm64' else (print(f'::error::sysconfig reports {p}, expected win-arm64') or 1))"
+
+      # Only what these files import. They shell out to PowerShell and assert over
+      # wheel names and installer source; no torch, no CUDA, nothing heavy.
+      - run: python -m pip install -U pip pytest packaging
+
+      # Windows PowerShell 5.1 has no `pwsh` on PATH, and the suites locate their
+      # shell with shutil.which("pwsh"), so without this they would silently SKIP
+      # and the 5.1 row would report green having run nothing. A copy is used
+      # rather than a .cmd shim because CreateProcess will not launch a .cmd
+      # without a shell, which is how Python starts them.
+      - name: Put Windows PowerShell 5.1 on PATH as pwsh
+        if: matrix.powershell == 'windows-powershell-5.1'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "wps51"
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $src = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+          if (-not (Test-Path -LiteralPath $src)) {
+            Write-Host "::error::Windows PowerShell 5.1 was not found at $src"
+            exit 1
+          }
+          Copy-Item -LiteralPath $src -Destination (Join-Path $dir "pwsh.exe") -Force
+          "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Which PowerShell the suites will use
+        shell: pwsh
+        run: |
+          $exe = (Get-Command pwsh).Source
+          $ver = & $exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          Write-Host "pwsh resolves to $exe (version $ver)"
+          $wanted = if ("${{ matrix.powershell }}" -eq "pwsh-7") { "7" } else { "5" }
+          if (-not $ver.StartsWith($wanted)) {
+            Write-Host "::error::expected PowerShell $wanted.x for this row, got $ver"
+            exit 1
+          }
+
+      # -rs so a case that silently stopped running on the row it exists for
+      # cannot report green.
+      - name: WoA installer and wheelhouse tests
+        env:
+          UNSLOTH_NO_TORCH: '1'
+        run: >-
+          python -m pytest
+          tests/studio/install/test_woa_wheelhouse_prefers_pypi.py
+          tests/studio/install/test_woa_wheelhouse_guard_behaviour.py
+          tests/studio/install/test_woa_torch_index_persistence.py
+          tests/studio/install/test_diffusers_pin.py
+          tests/python/test_windows_arm64_wheelhouse_tags.py
+          -q -rs
+
+      # These parse scripts/uninstall.ps1 with the AST and execute only the helper
+      # under test, so nothing is uninstalled here. The reparse one creates a real
+      # directory link: a junction needs no privilege, and a symlink does, so on a
+      # runner that is an administrator both kinds are covered.
+      - name: Uninstaller tests
+        shell: pwsh
+        run: |
+          $failed = @()
+          foreach ($t in @(
+            "test_uninstall_arg_guard",
+            "test_uninstall_dual_install_icon",
+            "test_uninstall_prebuilt_parity",
+            "test_uninstall_reparse_stop_roots",
+            "test_uninstall_legacy_layout_gate"
+          )) {
+            $path = "tests/studio/$t.ps1"
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            Write-Host "::group::$t"
+            & (Get-Command pwsh).Source -NoProfile -File $path
+            $code = $LASTEXITCODE
+            Write-Host "::endgroup::"
+            if ($code -ne 0) { $failed += "$t (exit $code)" }
+          }
+          if ($failed.Count -gt 0) {
+            Write-Host "::error::failing uninstaller tests: $($failed -join ', ')"
+            exit 1
+          }
