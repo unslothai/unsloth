@@ -6,6 +6,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 
+import pytest
+
 from auth import policy
 
 
@@ -109,3 +111,16 @@ def test_invalidation_racing_a_stale_count_does_not_poison_cache(isolated_auth, 
         assert pending.result(timeout = 10) == "single"
     monkeypatch.setattr(isolated_auth, "count_active_accounts", real_count)
     assert policy.login_mode() == "multi"
+
+
+@pytest.mark.xfail(strict = True, reason = "worker 01")
+def test_deactivated_account_cannot_keep_using_a_previously_issued_api_key(isolated_auth, accounts, account_client):
+    raw_key, _ = isolated_auth.create_api_key("alice", name = "before-deactivation")
+    headers = {"Authorization": f"Bearer {raw_key}"}
+    assert account_client.get("/account-probe", headers = headers).status_code == 200
+    with closing(sqlite3.connect(isolated_auth.DB_PATH)) as conn:
+        conn.execute("UPDATE auth_user SET is_active=0 WHERE username='alice'")
+        conn.commit()
+    policy.invalidate_account_cache()
+    response = account_client.get("/account-probe", headers = headers)
+    assert response.status_code == 401, response.text

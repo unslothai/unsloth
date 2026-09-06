@@ -9,7 +9,9 @@ python tests/studio/multi_account/perf/compare.py --output artifacts/perf.json
 
 import argparse
 import json
+import platform
 import statistics
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -34,6 +36,7 @@ def main() -> None:
     parser.add_argument("--output", type = Path, default = REPO / "artifacts/perf.json")
     args = parser.parse_args()
     assert args.rounds >= 1
+    assert args.output.resolve().is_relative_to(REPO), "Benchmark artifacts must stay in this clone"
     sys.path.insert(0, str(REPO / "studio/backend/tests/multi_account"))
     from perf_utils import materialize_revision, run_probe
 
@@ -61,6 +64,14 @@ def main() -> None:
         }
     results["rounds"] = series
     results["base_ref"] = args.base_ref
+    results["base_commit"] = subprocess.check_output(
+        ["git", "rev-parse", f"{args.base_ref}^{{commit}}"], cwd = REPO, text = True
+    ).strip()
+    results["head_commit"] = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd = REPO, text = True
+    ).strip()
+    results["python"] = platform.python_version()
+    results["platform"] = platform.platform()
     failures = regressions(results)
     results["passed"] = not failures
     results["failures"] = failures

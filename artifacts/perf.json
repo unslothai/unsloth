@@ -1,0 +1,111 @@
+{
+  "base": {
+    "status": {
+      "samples": 2000,
+      "p50_ms": 2.582534,
+      "p95_ms": 3.031748
+    },
+    "history": {
+      "samples": 200,
+      "p50_ms": 4.088900000000001,
+      "p95_ms": 4.725714
+    }
+  },
+  "head": {
+    "status": {
+      "samples": 2000,
+      "p50_ms": 2.6475679999999997,
+      "p95_ms": 3.121512
+    },
+    "history": {
+      "samples": 200,
+      "p50_ms": 4.0533365,
+      "p95_ms": 4.860296
+    }
+  },
+  "rounds": {
+    "base": [
+      {
+        "history": {
+          "p50_ms": 4.2234,
+          "p95_ms": 4.916006,
+          "samples": 200
+        },
+        "status": {
+          "p50_ms": 2.2403760000000004,
+          "p95_ms": 3.01969,
+          "samples": 2000
+        }
+      },
+      {
+        "history": {
+          "p50_ms": 4.088900000000001,
+          "p95_ms": 4.725714,
+          "samples": 200
+        },
+        "status": {
+          "p50_ms": 2.6925879999999998,
+          "p95_ms": 3.083801,
+          "samples": 2000
+        }
+      },
+      {
+        "history": {
+          "p50_ms": 3.9832185,
+          "p95_ms": 4.627467,
+          "samples": 200
+        },
+        "status": {
+          "p50_ms": 2.582534,
+          "p95_ms": 3.031748,
+          "samples": 2000
+        }
+      }
+    ],
+    "head": [
+      {
+        "history": {
+          "p50_ms": 4.136126,
+          "p95_ms": 4.887267,
+          "samples": 200
+        },
+        "status": {
+          "p50_ms": 2.5417905000000003,
+          "p95_ms": 3.097492,
+          "samples": 2000
+        }
+      },
+      {
+        "history": {
+          "p50_ms": 4.026554,
+          "p95_ms": 4.709393,
+          "samples": 200
+        },
+        "status": {
+          "p50_ms": 2.6475679999999997,
+          "p95_ms": 3.121512,
+          "samples": 2000
+        }
+      },
+      {
+        "history": {
+          "p50_ms": 4.0533365,
+          "p95_ms": 4.860296,
+          "samples": 200
+        },
+        "status": {
+          "p50_ms": 2.7200515000000003,
+          "p95_ms": 3.179231,
+          "samples": 2000
+        }
+      }
+    ]
+  },
+  "base_ref": "mu/base~1",
+  "base_commit": "cc0cdab40eeff4bfd627cca6a2068515d8d78311",
+  "head_commit": "4bfec187e7570ca1b36f7c12caf0af3cfd1b64c2",
+  "python": "3.13.12",
+  "platform": "Linux-6.17.0-1007-aws-x86_64-with-glibc2.39",
+  "passed": true,
+  "failures": []
+}
