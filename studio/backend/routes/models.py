@@ -5703,7 +5703,9 @@ def _export_size_cached(
     """
     # Keyed per managed account: a relative model name is private to a workspace, and
     # a cache hit must not hand another account the size and source recorded for it.
-    cache_key = (account_access.current_account_id(), model) if account_access.managed_account() else model
+    cache_key = (
+        (account_access.current_account_id(), model) if account_access.managed_account() else model
+    )
     cached = _EXPORT_SIZE_CACHE.get(cache_key)
     if cached is not None:
         return cached

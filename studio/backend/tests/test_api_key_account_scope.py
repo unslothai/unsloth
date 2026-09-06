@@ -44,7 +44,9 @@ def test_namesake_keys_stay_apart(auth_db):
     # The old request sees nothing of the namesake and cannot revoke its key.
     assert storage.list_api_keys("alice", account_id = old_id) == []
     assert not storage.revoke_api_key("alice", new_row["id"], account_id = old_id)
-    assert [row["name"] for row in storage.list_api_keys("alice", account_id = new_id)] == ["NEW-PRIVATE"]
+    assert [row["name"] for row in storage.list_api_keys("alice", account_id = new_id)] == [
+        "NEW-PRIVATE"
+    ]
     assert storage.revoke_api_key("alice", new_row["id"], account_id = new_id)
 
 
@@ -59,8 +61,12 @@ def test_existing_managed_rows_are_pinned_on_upgrade(auth_db):
     alice = _alice()
     conn = sqlite3.connect(storage.DB_PATH)
     try:
-        conn.execute("INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at) VALUES ('alice', 'p', 'h1', 'k', 'now')")
-        conn.execute("INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at) VALUES ('unsloth', 'p', 'h2', 'k', 'now')")
+        conn.execute(
+            "INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at) VALUES ('alice', 'p', 'h1', 'k', 'now')"
+        )
+        conn.execute(
+            "INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at) VALUES ('unsloth', 'p', 'h2', 'k', 'now')"
+        )
         conn.commit()
         storage._ensure_account_api_keys(conn, set())
         rows = dict(conn.execute("SELECT key_hash, account_id FROM api_keys").fetchall())

@@ -439,9 +439,7 @@ def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
         raise
 
 
-_ACCOUNT_API_KEY_COLUMNS = (
-    "username, key_prefix, key_hash, name, created_at, expires_at, is_active, is_internal, account_id"
-)
+_ACCOUNT_API_KEY_COLUMNS = "username, key_prefix, key_hash, name, created_at, expires_at, is_active, is_internal, account_id"
 
 
 _account_keys_synced: set[str] = set()
@@ -1647,7 +1645,9 @@ def create_api_key(
 
 
 def list_api_keys(
-    username: str, include_internal: bool = False, account_id: Optional[str] = None
+    username: str,
+    include_internal: bool = False,
+    account_id: Optional[str] = None,
 ) -> list:
     """Return API keys for *username*. Internal workflow keys are hidden
     by default so they do not clutter user-facing UIs. ``account_id`` narrows a
@@ -1697,7 +1697,11 @@ def _key_scope(username: str, account_id: Optional[str]) -> Tuple[str, tuple]:
     return "username = ? AND account_id = ?", (username, account_id)
 
 
-def revoke_api_key(username: str, key_id: int, account_id: Optional[str] = None) -> bool:
+def revoke_api_key(
+    username: str,
+    key_id: int,
+    account_id: Optional[str] = None,
+) -> bool:
     """Soft-delete an API key.  Returns True if a matching row was found."""
     conn = get_connection()
     try:

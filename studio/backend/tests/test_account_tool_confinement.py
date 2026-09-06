@@ -229,7 +229,11 @@ def test_landlock_rules_cover_own_roots_only(tmp_path):
         not p.startswith(str((tmp_path / "studio").resolve()) + os.sep) or p.startswith(alice_root)
         for p, _ in rules
     )
-    read_only = [p for p, access in rules if access not in (handled, handled & ~tool_confinement._FS_MAKE_SYM)]
+    read_only = [
+        p
+        for p, access in rules
+        if access not in (handled, handled & ~tool_confinement._FS_MAKE_SYM)
+    ]
     assert any(
         p.startswith(os.path.realpath(sys.prefix)) or os.path.realpath(sys.prefix).startswith(p)
         for p in read_only
@@ -253,7 +257,9 @@ def test_managed_child_cannot_plant_a_link_in_its_own_tree(tmp_path):
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
-@pytest.mark.skipif(tool_confinement.landlock_abi() < 6, reason = "signal scoping needs Landlock ABI 6")
+@pytest.mark.skipif(
+    tool_confinement.landlock_abi() < 6, reason = "signal scoping needs Landlock ABI 6"
+)
 def test_managed_child_cannot_signal_another_accounts_process(tmp_path):
     """Two accounts' tools run as one Unix user; signals stay inside the
     child's own domain, so it can stop its own descendants and nothing else."""

@@ -60,7 +60,14 @@ class _ImmediateThread:
     """Runs the watcher inline. The watcher is pinned to an account, so the
     positional arguments (account, target) must reach it."""
 
-    def __init__(self, *, target, args = (), kwargs = None, **_kwargs):
+    def __init__(
+        self,
+        *,
+        target,
+        args = (),
+        kwargs = None,
+        **_kwargs,
+    ):
         self.target = target
         self.args = args
         self.kwargs = kwargs or {}

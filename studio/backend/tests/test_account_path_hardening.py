@@ -159,7 +159,9 @@ def test_a_managed_account_directory_replaced_by_a_link_is_refused(tmp_path):
     bob_root = run_as(BOB, storage_roots.workspace_root)
     bob_root.mkdir(parents = True, exist_ok = True)
     (bob_root / "images").symlink_to(alice_images, target_is_directory = True)
-    (bob_root / "outputs").symlink_to(run_as(ALICE, storage_roots.outputs_root), target_is_directory = True)
+    (bob_root / "outputs").symlink_to(
+        run_as(ALICE, storage_roots.outputs_root), target_is_directory = True
+    )
     (bob_root / "studio.db").symlink_to(run_as(ALICE, storage_roots.studio_db_path))
     with pytest.raises(ValueError, match = "escapes the account workspace"):
         run_as(BOB, image_gallery.gallery_dir)
@@ -209,7 +211,14 @@ def test_download_watcher_is_pinned_to_the_requesting_account(monkeypatch):
     captured = {}
 
     class _Thread:
-        def __init__(self, *, target, args = (), kwargs = None, **_kw):
+        def __init__(
+            self,
+            *,
+            target,
+            args = (),
+            kwargs = None,
+            **_kw,
+        ):
             captured["target"], captured["args"] = target, args
 
         def start(self):
@@ -231,7 +240,7 @@ def test_external_provider_cancel_keys_are_scoped_like_every_lookup():
 
     source = inspect.getsource(inference._proxy_to_external_provider)
     registration = source.index("cancel_keys = tuple(")
-    assert "_account_cancel_key(key)" in source[registration:registration + 200]
+    assert "_account_cancel_key(key)" in source[registration : registration + 200]
     assert "_PENDING_CANCELS.pop(_account_cancel_key(payload.cancel_id), None)" in source
 
 
@@ -244,8 +253,28 @@ def test_export_size_cache_is_keyed_per_managed_account(monkeypatch):
     monkeypatch.setattr(models, "is_local_path", lambda model: False)
     import utils.hardware.hardware as hardware
 
-    monkeypatch.setattr(hardware, "estimate_fp16_model_size_bytes", lambda model, hf_token = None: (1000, "ALICE-SOURCE"))
-    assert run_as(ALICE, models._export_size_cached, "my-finetune", None) == (1000, 500, "ALICE-SOURCE")
-    monkeypatch.setattr(hardware, "estimate_fp16_model_size_bytes", lambda model, hf_token = None: (2000, "BOB-SOURCE"))
-    assert run_as(BOB, models._export_size_cached, "my-finetune", None) == (2000, 1000, "BOB-SOURCE")
-    assert run_as(ALICE, models._export_size_cached, "my-finetune", None) == (1000, 500, "ALICE-SOURCE")
+    monkeypatch.setattr(
+        hardware,
+        "estimate_fp16_model_size_bytes",
+        lambda model, hf_token = None: (1000, "ALICE-SOURCE"),
+    )
+    assert run_as(ALICE, models._export_size_cached, "my-finetune", None) == (
+        1000,
+        500,
+        "ALICE-SOURCE",
+    )
+    monkeypatch.setattr(
+        hardware,
+        "estimate_fp16_model_size_bytes",
+        lambda model, hf_token = None: (2000, "BOB-SOURCE"),
+    )
+    assert run_as(BOB, models._export_size_cached, "my-finetune", None) == (
+        2000,
+        1000,
+        "BOB-SOURCE",
+    )
+    assert run_as(ALICE, models._export_size_cached, "my-finetune", None) == (
+        1000,
+        500,
+        "ALICE-SOURCE",
+    )

@@ -245,7 +245,11 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
     return rules
 
 
-def _landlock_preexec(handled: int, rules: list[tuple[str, int]], scoped: int = 0) -> None:
+def _landlock_preexec(
+    handled: int,
+    rules: list[tuple[str, int]],
+    scoped: int = 0,
+) -> None:
     """Runs in the forked child: no imports, no allocation beyond ctypes."""
     libc = _libc
     attr = _ScopedRulesetAttr(handled, 0, scoped) if scoped else _RulesetAttr(handled)
