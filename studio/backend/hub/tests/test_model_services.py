@@ -4011,7 +4011,7 @@ def test_gguf_progress_recovers_the_windows_shaped_stale_download_card(monkeypat
         lambda: SimpleNamespace(hub_cache = str(hub_cache)),
     )
     # A manifest as an older build filed it: hashed from the unresolved spelling, and with no sha256
-    # because HF metadata was already unreachable when the worker recorded it.
+    # because HF metadata was already unreachable when the worker recorded it from the finished snapshot.
     legacy = state_dir.manifest_path(
         "model",
         "Org/Model-GGUF",

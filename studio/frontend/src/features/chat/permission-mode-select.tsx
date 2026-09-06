@@ -33,10 +33,8 @@ import {
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 
-/**
- * Permission levels for tool calls. Full access stays last because it disables
- * both approval prompts and the code sandbox.
- */
+/** Permission levels for tool calls. Full access stays last because it disables both approval
+ *  prompts and the code sandbox. */
 export const PERMISSION_MODE_OPTIONS: readonly {
   value: PermissionMode;
   label: string;
@@ -84,9 +82,8 @@ export function permissionModeOption(mode: PermissionMode) {
   );
 }
 
-/** The option rows shared by every permission dropdown/submenu. Non-full
- *  levels apply directly; picking Full access must go through the caller's
- *  danger confirmation, so it's a separate callback. */
+/** The option rows shared by every permission dropdown or submenu. Non-full levels apply
+ *  directly; picking Full access must go through the caller's danger confirmation. */
 export function PermissionModeMenuItems({
   onRequestFullAccess,
 }: {
@@ -138,8 +135,8 @@ export function PermissionModeMenuItems({
   );
 }
 
-/** Danger confirmation shown before Full access turns on. Self-contained so
- *  the dropdown works outside the chat page (e.g. the Settings dialog). */
+/** Danger confirmation shown before Full access turns on. Self-contained so the dropdown works
+ *  outside the chat page (e.g. the Settings dialog). */
 export function FullAccessConfirmDialog({
   open,
   onOpenChange,
@@ -176,10 +173,8 @@ export function FullAccessConfirmDialog({
   );
 }
 
-/**
- * Select-style dropdown (like the MCP composer menu) for picking the
- * permission level. Used in General settings and the chat settings sheet.
- */
+/** Select-style dropdown (like the MCP composer menu) for picking the permission level. Used in
+ *  General settings and the chat settings sheet. */
 export function PermissionModeDropdown({
   side = "bottom",
   align = "end",
@@ -227,8 +222,8 @@ export function PermissionModeDropdown({
             How should tool calls be approved?
           </DropdownMenuLabel>
           <PermissionModeMenuItems
-            // Defer past the menu-close focus restoration so the dialog's
-            // focus trap isn't broken by the dropdown grabbing focus back.
+            // Defer past the menu-close focus restoration so the dialog's focus trap is not broken by the
+            // dropdown grabbing focus back.
             onRequestFullAccess={() =>
               setTimeout(() => setConfirmOpen(true), 0)
             }
@@ -243,13 +238,10 @@ export function PermissionModeDropdown({
   );
 }
 
-/**
- * Composer pill (mirrors the MCP pill) showing the current permission level
- * in the chat box; clicking opens the level dropdown. Danger-styled while
- * Full access is on. The Full access pick routes through the store-driven
- * BypassPermissionsConfirmDialog mounted at the chat-page root, so the
- * warning survives this menu unmounting.
- */
+/** Composer pill showing the current permission level in the chat box; clicking opens the level
+ *  dropdown. Danger-styled while Full access is on. The Full access pick routes through the
+ *  store-driven confirm dialog mounted at the chat-page root, so the warning survives this
+ *  menu unmounting. */
 export function PermissionModeComposerPill({
   side = "bottom",
 }: {

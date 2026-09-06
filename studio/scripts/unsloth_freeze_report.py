@@ -75,7 +75,8 @@ LIVENESS = re.compile(r"/api/liveness")
 SESSION = re.compile(r"/api/auth/(?:status|login|logout|refresh)\b")
 # Printed by the desktop shell (main.rs) before anything else, through a stderr logger
 SHELL_STARTED = re.compile(r"Unsloth desktop app starting")
-# `{reason}; set VAR=1 VAR2=1 for WebKitGTK compatibility`, the app's own record
+# `{reason}; set VAR=1 VAR2=1 for WebKitGTK compatibility`, the app's own record of the renderer workaround it chose for
+# itself.
 RENDERER_APPLIED = re.compile(r"set ((?:[A-Za-z_][A-Za-z_0-9]*=1\s*)+)for WebKitGTK compatibility")
 
 # Overridable so CI can exercise this script end to end in a couple of minutes.
@@ -213,7 +214,14 @@ def is_executable(path) -> bool:
 
 def sh(args, timeout = 20):
     try:
-        r = subprocess.run(args, capture_output = True, text = True, timeout = timeout)
+        r = subprocess.run(
+            args,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = timeout,
+        )
         return (r.stdout or r.stderr).strip()
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -484,7 +492,8 @@ def classify(
         return f"CRASHED: the app exited on its own (code {exited})"
 
     if n_mon == 0 and n_live == 0:
-        # Do not guess the cause: the preflight line the app already printed says
+        # Do not guess the cause: the preflight line the app already printed says which of the two it is, and naming the
+        # wrong one sends the user off fixing nothing.
         if not preflight and not shell_started:
             reason = (
                 "the desktop shell never started. If you launched `unsloth studio`, that "
@@ -520,7 +529,13 @@ def classify(
             "this started"
         )
 
-    # Did the interface stop polling partway through while the watchdog carried on?
+    # Did the interface stop polling partway through while the watchdog carried on? That is the reported
+    # symptom, and a total that looks healthy can still hide it.
+    # Only after the warmup boundary: on a cold launch the native watchdog is answering before the webview
+    # has finished loading, so the very first samples always show a still interface count and a rising
+    # watchdog count, and comparing them reported healthy runs as FROZE at the moment they finished starting.
+    # A freeze does not recover, so a gap the interface polls its way out of is a delayed request rather
+    # than the symptom.
     post = [s for s in samples if s[0] >= warmup]
     resumed_at = _last_rise(post, 1)
     watchdog_last = _last_rise(post, 2)

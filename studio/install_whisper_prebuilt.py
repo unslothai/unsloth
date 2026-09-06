@@ -446,16 +446,59 @@ def llama_runtime_pairs(
     return commit is not None and commit == _llama_ggml_commit(required_tag)
 
 
-def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
-    """Whether a paired Windows llama runtime carries a GPU ggml backend module.
+def _ships_gpu_ggml_module(llama_bin_dir: Path, os_key: str) -> bool:
+    """Whether a paired llama runtime carries a GPU ggml backend module.
     Only the cpu bundle links ggml against libomp, and bundle_profile cannot tell
     the two apart: it is absent on both the published rocm artifacts and every
     upstream-sourced install, so the files on disk decide."""
     for backend, per_os in SLIM_BACKEND_MODULE_GLOBS.items():
-        glob = per_os.get("windows")
-        if backend != "cpu" and glob and any(llama_bin_dir.glob(glob)):
+        glob = per_os.get(os_key)
+        # is_file(): a versioned alias still counts, a directory or dangling link does not.
+        if backend != "cpu" and glob and any(path.is_file() for path in llama_bin_dir.glob(glob)):
             return True
     return False
+
+
+def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
+    """Windows spelling of _ships_gpu_ggml_module; kept for call-site clarity."""
+    return _ships_gpu_ggml_module(llama_bin_dir, "windows")
+
+
+def _is_linux_libomp_soname(name: str) -> bool:
+    """LLVM's OpenMP runtime: bundled, so it can go missing. Not host-provided libgomp,
+    and not libomptarget, which a prefix match would sweep up."""
+    lowered = name.lower()
+    return lowered == "libomp.so" or lowered.startswith("libomp.so.")
+
+
+def _ggml_stack_imports_libomp(llama_bin_dir: Path, backend: str) -> bool | None:
+    """Whether the ggml libraries whisper will load actually import LLVM's libomp.
+
+    True on the first import found; False only once every relevant library was inspected
+    and none imported it; None when any could not be inspected.
+
+    The selected backend module is inspected alongside the core: it is dlopen'd after
+    startup, so a dependency living only there is invisible to a --help smoke test.
+    """
+    patterns = ["libggml-base.so*", "libggml.so*"]
+    module_glob = SLIM_BACKEND_MODULE_GLOBS.get(backend, {}).get("linux")
+    if module_glob:
+        patterns.append(module_glob)
+
+    inspected_any = False
+    inspected_all = True
+    for pattern in patterns:
+        for path in sorted(llama_bin_dir.glob(pattern)):
+            if not path.is_file():
+                continue
+            needed = _elf_needed(path)
+            if needed is None:
+                inspected_all = False
+                continue
+            inspected_any = True
+            if any(_is_linux_libomp_soname(dep) for dep in needed):
+                return True
+    return False if inspected_any and inspected_all else None
 
 
 def slim_pairing_for_artifact(
@@ -498,6 +541,20 @@ def slim_pairing_for_artifact(
             for name in required_sonames
             if not (name.lower().startswith("libomp") and name.lower().endswith(".dll"))
         ]
+    if (
+        host.whisper_os == "linux"
+        and host.whisper_arch == "arm64"
+        and _ships_gpu_ggml_module(llama_bin_dir, "linux")
+        and _ggml_stack_imports_libomp(llama_bin_dir, backend) is False
+    ):
+        # Same shape as the Windows case above: the arm64 manifest names libomp only because
+        # the cpu bundle's ggml links it, so CUDA (GNU libgomp) was rejected for a file it
+        # never needs. Evidence, not arch -- the arm64 Vulkan bundle really does import it.
+        # `is False`, not `is not True`: dropping this on no evidence is unrecoverable, since
+        # the sidecar sends the loader error to DEVNULL and serving never falls back.
+        # arm64 only: linux-x64 ggml really imports its bundled libomp
+        # (test_linux_slim_still_requires_manifest_libomp).
+        required_sonames = [name for name in required_sonames if not _is_linux_libomp_soname(name)]
     missing = [name for name in required_sonames if not (llama_bin_dir / name).is_file()]
     if missing:
         log(f"slim_selection: {asset} skipped: llama runtime missing {', '.join(missing)}")
@@ -789,6 +846,8 @@ def _validate_staged_server(staged_root: Path, host: HostInfo) -> None:
             [str(server), "--help"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 60,
             env = env,
             **llama.windows_hidden_subprocess_kwargs(),
@@ -812,7 +871,12 @@ def _elf_needed(path: Path) -> set[str] | None:
     for command in commands:
         try:
             result = subprocess.run(
-                [*command, str(path)], capture_output = True, text = True, timeout = 10
+                [*command, str(path)],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
             )
         except (OSError, subprocess.SubprocessError):
             continue

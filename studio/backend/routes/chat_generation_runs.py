@@ -353,6 +353,7 @@ async def chat_generation_events(
                 # A bare keep-alive proves only that the CONNECTION is healthy, so a follower rearming its no-progress
                 # deadline on one could never settle a wedged run while the socket stayed up, the one case that fallback
                 # exists for.
+                # Comment framing, so _SSEDecoder still drops it and no client parsing it as an event is affected.
                 yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
     return StreamingResponse(

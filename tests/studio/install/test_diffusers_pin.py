@@ -60,15 +60,11 @@ def test_only_the_pin_file_names_diffusers():
     for path in sorted(REQ_ROOT.rglob("*.txt")):
         if path == PIN_FILE:
             continue
-        # install_python_stack._filter_requirements writes `.{stem}-filtered-XXXX.txt`
-        # BESIDE the source on purpose, so relative -r/-c includes still resolve, and it
-        # does not delete it. So a copy of the pin file can be sitting here while this
-        # runs -- transiently under pytest-xdist, where another worker is exercising that
-        # function, and durably on any machine that has run a real install. It is a
-        # generated temp, not a second source of the pin.
-        # Matched by that exact shape rather than by "starts with a dot": a checked-in
-        # hidden file such as .constraints.txt is a real requirements file and a real
-        # place the pin could be overridden from, so it stays in the scan.
+        # install_python_stack._filter_requirements writes `.{stem}-filtered-XXXX.txt` BESIDE the source on purpose, so
+        # relative -r/-c includes still resolve, and it does not delete it.
+        # Matched by that exact shape rather than by "starts with a dot": a checked-in hidden file such as
+        # .constraints.txt is a real requirements file and a real place the pin could be overridden from, so it stays in
+        # the scan.
         if _GENERATED_FILTER.fullmatch(path.name):
             continue
         named = [line for line in _requirements(path) if line.lower().startswith("diffusers")]

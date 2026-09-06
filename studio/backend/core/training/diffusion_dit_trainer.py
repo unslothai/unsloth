@@ -1289,7 +1289,8 @@ def _ltx2_collate(
 ):
     import torch
 
-    # encode_prompt pads to max_sequence_length, so every connector embed is [1, 1024, 3840]
+    # encode_prompt pads to max_sequence_length, so every connector embed is [1, 1024, 3840] and a plain concat batches
+    # them; ``pad_to`` is moot.
     video = torch.cat([e[0] for e in entries]).to(device = device, dtype = weight_dtype)
     audio = torch.cat([e[1] for e in entries]).to(device = device, dtype = weight_dtype)
     mask = torch.cat([e[2] for e in entries]).to(device)
@@ -2371,7 +2372,8 @@ def _train_dit(
             retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
         elif not resumed_here:
             # A stop-with-save on a fresh retrain is a LOWER step than the earlier run's leftovers, and resume-
-            # by-directory picks the newest by step, so those would outrank the partial just saved.
+            # by-directory picks the newest by step, so those would outrank the partial just saved and continue
+            # the wrong training. A run that RESUMED here instead keeps what it found.
             discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)
     else:
         # save_steps writes bundles as the run goes, so without this a discard leaves up to
@@ -2396,7 +2398,7 @@ def _train_dit(
         steps_run = done if cfg.train_steps else 0,
         wall_seconds = round(time.time() - t_start, 1),
         resumed_from_step = resumed or None,
-        # "Stop without saving" discards the run, so its own periodic checkpoints must not keep
+        # "Stop without saving" discards the run, so its own periodic checkpoints must not keep offering to continue it.
         discarded = bool(stopped and not _save_on_stop()),
     )
     return str(out_dir)

@@ -51,12 +51,9 @@ XFORMERS_WHEEL_MATRIX: dict[tuple[str, str], str] = {
     ("cu130", "2100"): "0.0.34",
 }
 
-# torch 2.11 publishes no xFormers wheel on any index yet, and the Windows torch
-# pin in install.ps1 is torch<2.11.0 for exactly that kind of reason. Assert the
-# absence so a future 2.11 row has to be added deliberately (with a live wheel)
-# rather than inherited from 2.10 -- xFormers' extension ABI does not survive a
-# torch minor bump, so reusing the 2.10 wheel there would reintroduce this bug.
-TORCH_RELEASES_WITHOUT_XFORMERS_WHEELS = ("2110",)
+# Torch releases with no xFormers wheel on any index; naming one in an extra would resolve
+# a wheel built for a different torch. Empty: 0.0.35 is stable-ABI and loads under 2.11 up.
+TORCH_RELEASES_WITHOUT_XFORMERS_WHEELS: tuple[str, ...] = ()
 
 
 def _tomllib():

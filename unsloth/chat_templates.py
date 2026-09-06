@@ -27,6 +27,8 @@ __all__ = [
     "test_construct_chat_template",
 ]
 
+from transformers import ProcessorMixin
+
 from transformers.utils import logging
 try:
     from torch import LongTensor, FloatTensor
@@ -1894,7 +1896,6 @@ def get_chat_template(
     is_mlx_backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None) == "mlx"
     if use_zoo_tokenizer_patch is None:
         use_zoo_tokenizer_patch = is_mlx_backend
-    old_tokenizer = tokenizer
 
     # mlx-lm's TokenizerWrapper._tokenizer is the HF tokenizer, not the Rust backend the vocab-edit
     # paths below need; unwrap here, re-wrap before return.
@@ -1904,6 +1905,21 @@ def get_chat_template(
         if _inner_tokenizer is not None and hasattr(_inner_tokenizer, "is_fast"):
             _mlx_tokenizer_wrapper = tokenizer
             tokenizer = _inner_tokenizer
+
+    # Multimodal checkpoints (gemma-4-E2B, Llava, Qwen-VL, ...) load as a processor,
+    # which carries the text tokenizer in `.tokenizer` -- the same unwrap the save and
+    # loader paths do. Everything below needs the tokenizer itself: the processor never
+    # has the Rust backend the vocab edits use, nor, on MLX, a padding_side of its own.
+    # Match the processor type rather than the attribute: MistralCommonBackend is itself
+    # a tokenizer but also exposes its non-HF backend as `.tokenizer`.
+    _processor = None
+    if isinstance(tokenizer, ProcessorMixin):
+        _processor = tokenizer
+        tokenizer = tokenizer.tokenizer
+
+    # Bind after unwrapping: the pad/bos/unk restore below reads it, and a
+    # processor answers None for all three.
+    old_tokenizer = tokenizer
 
     IS_GEMMA = False
     if tokenizer.__class__.__name__.startswith("Gemma"):
@@ -2115,9 +2131,22 @@ def get_chat_template(
         if old_pad_token != new_pad_token: tokenizer.pad_token = old_pad_token
 
 
+    # Hand the processor back, not the tokenizer it was carrying: it renders chat
+    # templates off its own attribute, and the vocab edits above may have rebuilt the
+    # tokenizer and remapped eos. The loader mirrors these onto the processor
+    # (models/vision.py), so refresh them here or that copy goes stale.
+    if _processor is not None:
+        _processor.tokenizer = tokenizer
+        _processor.chat_template = chat_template
+        for _token in ("bos_token", "eos_token", "pad_token",):
+            if hasattr(tokenizer, _token):
+                setattr(_processor, _token, getattr(tokenizer, _token))
+                setattr(_processor, _token + "_id", getattr(tokenizer, _token + "_id"))
+        tokenizer = _processor
+
     if patch_saving and not is_mlx_backend:
         from .save import patch_saving_functions
-        tokenizer = patch_saving_functions(tokenizer)
+        tokenizer = patch_saving_functions(tokenizer, vision = _processor is not None)
 
     tokenizer._ollama_modelfile = ollama_modelfile
     tokenizer._system_message   = system_message
@@ -2342,8 +2371,15 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     added_tokens_decoder = tokenizer.added_tokens_decoder.values()
     added_tokens_decoder = [str(x) for x in added_tokens_decoder]
 
-    # Remove added_tokens_decoder duplicates
-    added_tokens_decoder = list(set(added_tokens_decoder) - set(extra_eos_tokens))
+    # Longest first, never through a set: the collapse below rewrites joined_text as it goes,
+    # so a family member must be seen before any shorter token sharing its prefix (`<unused0>`
+    # before `<unk>`), and set() order over strings varies with PYTHONHASHSEED.
+    skip_eos_tokens = set(extra_eos_tokens)
+    added_tokens_decoder = sorted(
+        (x for x in dict.fromkeys(added_tokens_decoder) if x not in skip_eos_tokens),
+        key = len,
+        reverse = True,
+    )
 
     # Remove BOS
     if getattr(tokenizer, "bos_token", None) is not None:
@@ -2412,6 +2448,14 @@ extra_eos_tokens = None,
     chat_template = chat_template.lstrip()
 
     assert(tokenizer is not None)
+
+    # A multimodal checkpoint hands over a processor, which carries the text tokenizer
+    # in `.tokenizer`. Everything below is tokenizer-shaped -- get_vocab, name_or_path,
+    # calling it on a string -- and this returns a template, never the tokenizer, so
+    # unwrap one way and there is nothing to re-attach. Match ProcessorMixin explicitly:
+    # tokenizer backends such as MistralCommonBackend also expose `.tokenizer`.
+    if isinstance(tokenizer, ProcessorMixin):
+        tokenizer = tokenizer.tokenizer
 
     if extra_eos_tokens is None: extra_eos_tokens = []
     elif type(extra_eos_tokens) is str: extra_eos_tokens = [extra_eos_tokens,]
