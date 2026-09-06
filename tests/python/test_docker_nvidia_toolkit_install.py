@@ -140,9 +140,7 @@ def _setup(
         ),
     )
     # installing the package makes nvidia-ctk appear, as it does for real
-    installs = (
-        f'case "$*" in *install*nvidia-container-toolkit*) cp {tmp_path / "ctk-stub-body"} {ctk}; chmod 755 {ctk} ;; esac\n'
-    )
+    installs = f'case "$*" in *install*nvidia-container-toolkit*) cp {tmp_path / "ctk-stub-body"} {ctk}; chmod 755 {ctk} ;; esac\n'
     for pm in ("apt-get", "dnf", "yum", "zypper"):
         _stub(bindir / pm, rec + installs + "exit 0\n")
     _stub(bindir / "service", rec + "exit 0\n")
@@ -188,7 +186,10 @@ def _setup(
 
 
 def _run(
-    env: dict, script: Path = INSTALLER, extra_env: dict | None = None, umask: str | None = None
+    env: dict,
+    script: Path = INSTALLER,
+    extra_env: dict | None = None,
+    umask: str | None = None,
 ) -> subprocess.CompletedProcess:
     e = dict(env)
     e.update(extra_env or {})
@@ -607,7 +608,10 @@ def test_run_sh_is_quiet_when_the_runtime_is_present(tmp_path: Path):
 def test_the_docs_point_at_the_installer():
     for doc in (REPO_ROOT / "docker" / "DOCKERHUB.md", REPO_ROOT / "README.md"):
         text = doc.read_text(encoding = "utf-8")
-        assert "install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh" in text, doc
+        assert (
+            "install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh"
+            in text
+        ), doc
         assert "| sudo" not in text, "a pipe into bash masks a failed download"
 
     assert "Docker Desktop" in (REPO_ROOT / "docker" / "DOCKERHUB.md").read_text(encoding = "utf-8")
