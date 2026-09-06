@@ -136,6 +136,10 @@ export interface FindTextIndex {
   /** Sorted by `start`, gapped wherever a separator was written. */
   segments: TextSegment[];
   truncated: boolean;
+  /** Offsets where the walk dropped text, so what the document does across them cannot be read
+   *  here. Nothing indexed says whether a grapheme carries on past a cut, so a match is not
+   *  allowed to end on one: the alternative is accepting an edge that the page does not draw. */
+  seams: ReadonlySet<number>;
   /** Where the portaled surfaces begin. The whole length when none are open. */
   rootLength: number;
   /** Stable portal roots and the offsets occupied by their searchable text. */
@@ -146,6 +150,7 @@ export const EMPTY_TEXT_INDEX: FindTextIndex = {
   text: "",
   segments: [],
   truncated: false,
+  seams: new Set<number>(),
   rootLength: 0,
   surfaces: [],
 };
@@ -289,6 +294,13 @@ export function buildTextIndex(
   const segments: TextSegment[] = [];
 
   const surfaces: IndexedSurface[] = [];
+  const seams = new Set<number>();
+  /** The end of what has been indexed, kept short: enough context for `joinsAcross`, no more. */
+  let tail = "";
+  /** The tail of text a cut dropped, while the separator standing for it is still pending. The
+   *  far side of a cut is a boundary only if the dropped text does not run on into it, and this
+   *  is the only place that text is still readable. Null at a real block boundary. */
+  let dropped: string | null = null;
   let length = 0;
   let truncated = false;
   /** The ceiling, the only thing that stops the walk. */
@@ -306,7 +318,11 @@ export function buildTextIndex(
     // The tag set answers `<br>`, whose display is inline; layout catches two stacked `span.block`.
     const block =
       BLOCK_TAGS.has(element.tagName) || isBlockDisplay(style?.display);
-    if (block) pendingSeparator = true;
+    if (block) {
+      // A real boundary: nothing dropped earlier can reach across it.
+      pendingSeparator = true;
+      dropped = null;
+    }
     const preserved =
       style?.whiteSpace === undefined
         ? inherited
@@ -326,15 +342,29 @@ export function buildTextIndex(
         // `slice(0, negative)` takes all but the last character of the next node.
         if (length >= ceiling) {
           truncated = true;
+          // The node is still there to be read, so the junction is settled rather than assumed:
+          // its first code point says whether what the index ends on is a boundary.
+          if (!pendingSeparator && joinsAcross(tail, firstPointOf(data))) {
+            seams.add(length);
+          }
           full = true;
           return;
         }
+        let separated = false;
         if (pendingSeparator) {
           pendingSeparator = false;
           if (length > 0) {
             parts.push(BLOCK_SEPARATOR);
             length += 1;
+            tail = BLOCK_SEPARATOR;
+            separated = true;
           }
+        }
+        // The far side of a cut, settled by the text the cut dropped, which is readable here and
+        // nowhere later.
+        if (dropped !== null) {
+          if (joinsAcross(dropped, firstPointOf(data))) seams.add(length);
+          dropped = null;
         }
         // A share, not all: one huge node given the rest leaves out everything after it.
         let take = Math.min(ceiling - length, MAX_NODE_CHARS);
@@ -345,6 +375,9 @@ export function buildTextIndex(
           take -= 1;
         if (take <= 0) {
           truncated = true;
+          if (!separated && joinsAcross(tail, firstPointOf(data))) {
+            seams.add(length);
+          }
           full = true;
           return;
         }
@@ -352,9 +385,16 @@ export function buildTextIndex(
         parts.push(raw);
         segments.push({ node, start: length, length: raw.length, preserved });
         length += raw.length;
+        tail = (tail + raw).slice(-JOIN_CONTEXT);
         // What was dropped must leave a boundary, or a match across the seam paints over the gap.
         if (raw.length < data.length) {
           truncated = true;
+          // The whole node is still here, so both edges of the cut can be settled from it: what
+          // was dropped next says whether the kept text ended on a boundary, and the tail of what
+          // was dropped will say the same for whatever the walk reaches after the separator.
+          if (joinsAcross(raw, firstPointOf(data.slice(take))))
+            seams.add(length);
+          dropped = data.slice(-JOIN_CONTEXT);
           pendingSeparator = true;
         }
       } else if (child.nodeType === ELEMENT_NODE) {
@@ -378,6 +418,7 @@ export function buildTextIndex(
     // Its own surface, so a boundary whatever the last root ended on, and whatever tags either of
     // them happen to use: nothing dropped back there can reach into what a portal paints.
     pendingSeparator = true;
+    dropped = null;
     const firstSegment = segments.length;
     visit(extra, false);
     if (segments.length > firstSegment) {
@@ -393,6 +434,7 @@ export function buildTextIndex(
     text: foldText(parts.join("")),
     segments,
     truncated,
+    seams,
     rootLength,
     surfaces,
   };
@@ -683,6 +725,40 @@ function segmenterSeeksBoundaries(platform: {
   return seeksBoundaries;
 }
 
+/** How much context a junction is decided on. A cluster longer than this is one nobody typed. */
+const JOIN_CONTEXT = 32;
+
+/** The first whole code point of `text`, or "" when there is none. */
+function firstPointOf(text: string): string {
+  return text.length === 0
+    ? ""
+    : String.fromCodePoint(text.codePointAt(0) as number);
+}
+
+/**
+ * Whether the grapheme `before` ends on runs on into `point`.
+ *
+ * The one question a cut has to answer, asked of the platform over a short window rather than
+ * derived from a table of ranges. False without a segmenter, which leaves the cut a boundary and
+ * so leaves the search where it is today.
+ */
+function joinsAcross(before: string, point: string): boolean {
+  if (before.length === 0 || point.length === 0) return false;
+  const platform = graphemeSegmenter();
+  if (platform === null) return false;
+  const window = before.slice(-JOIN_CONTEXT);
+  const at = window.length;
+  const body = window + point;
+  if (segmenterSeeksBoundaries(platform)) {
+    return platform.segment(body).containing(at)?.index !== at;
+  }
+  for (const { index: start } of platform.segment(body)) {
+    if (start === at) return false;
+    if (start > at) break;
+  }
+  return true;
+}
+
 /**
  * True when `[start, end)` begins and ends where a grapheme does.
  *
@@ -697,6 +773,14 @@ function alignsToGraphemes(
   end: number,
 ): boolean {
   const text = index.text;
+  // Before the cheap test, which reads the text either side of an edge and so cannot see a cut:
+  // at the end of a truncated index there is no `text[end]` to look at at all.
+  if (
+    index.seams.size > 0 &&
+    (index.seams.has(start) || index.seams.has(end))
+  ) {
+    return false;
+  }
   // Almost every match is in text that cannot join at either edge, and asking the segmenter costs
   // far more than looking. Nothing below U+0300 joins: the lowest combining mark is U+0300, the
   // lowest spacing mark U+0903, Prepend starts at U+0600, Hangul Jamo at U+1100, and everything

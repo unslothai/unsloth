@@ -1986,7 +1986,8 @@ test("the seek probe is asked once, on a fixture the spec settles", () => {
   // The fixture is the case that separates the two readings, and its answer is not a matter of
   // opinion: `containing(1)` over a code unit and a surrogate pair is the start of the pair.
   assert.match(source, /probe\.containing\(1\)\?\.index === 1/);
-  assert.equal((source.match(/segmenterSeeksBoundaries\(/g) ?? []).length, 2);
+  // The definition, the seek in `startsGrapheme`, and the junction check a cut asks.
+  assert.equal((source.match(/segmenterSeeksBoundaries\(/g) ?? []).length, 3);
 });
 
 test("a query that needs no pattern is not given one", () => {
@@ -2330,6 +2331,32 @@ test("a CRLF is one grapheme, which the fast path has to know about", () => {
   withStyles(new Map([[alone, { whiteSpace: "pre" }]]), () => {
     assert.equal(findMatches(buildTextIndex(alone), "\n", 10).length, 1);
   });
+});
+
+test("a per-node cut does not hand back half a grapheme", () => {
+  // MAX_NODE_CHARS lands wherever the node's length puts it, which can be between a letter and
+  // the mark that belongs to it. The index ends on the letter and the mark is dropped, so the
+  // text alone says the letter is whole; the page it came from says otherwise.
+  const node = text(`${"z".repeat(MAX_NODE_CHARS - 1)}Q\u0301tail`);
+  const index = buildTextIndex(el("DIV", [el("P", [node, text(" after")])]));
+  assert.equal(index.truncated, true);
+  assert.equal(index.text[MAX_NODE_CHARS - 1], "q");
+  assert.deepEqual(findMatches(index, "Q", 10), []);
+  // The far side of the same cut, settled from the text the cut dropped rather than assumed.
+  assert.equal(findMatches(index, "after", 10).length, 1);
+});
+
+test("the end of a truncated index is not a boundary by default", () => {
+  // The ceiling is reached between a letter and the mark that joins it. `at === text.length` is
+  // the one offset with nothing after it to read, so it used to be accepted unconditionally.
+  const kids = [];
+  for (let i = 0; i < 39; i += 1) kids.push(text("z".repeat(MAX_NODE_CHARS)));
+  kids.push(text(`${"z".repeat(MAX_NODE_CHARS - 1)}Q`));
+  kids.push(text("\u0301rest"));
+  const index = buildTextIndex(el("DIV", [el("P", kids)]));
+  assert.equal(index.text.length, MAX_INDEX_CHARS);
+  assert.equal(index.truncated, true);
+  assert.deepEqual(findMatches(index, "Q", 10), []);
 });
 
 test("a node left out entirely still says whether the end was a boundary", () => {
