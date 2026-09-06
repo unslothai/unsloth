@@ -53,14 +53,9 @@ enum RenderingWorkaround {
     /// returns before mode.add(SharedMemory), so FORCE_DMABUF stands that check down and
     /// lets selection reach FORCE_SHM. Unpatched libraries ignore the variable.
     ForceSharedMemoryOnNvidia,
-    /// Only for an AppImage whose host probe confirmed NVIDIA on X11. Keep the existing
-    /// nonempty shared-memory transport beside turning compositing off to avoid leaking
-    /// one NVIDIA sync-file descriptor per redraw. WebKitGTK 2.50.4 disables
-    /// the accelerated-compositing preference before the backing-store path can run; the
-    /// transport remains selected as the previous safe fallback for a library that ignores
-    /// the compositing switch. On a patched library isNVIDIA() returns before
-    /// mode.add(SharedMemory), so FORCE_DMABUF stands that check down so selection reaches
-    /// FORCE_SHM. Unpatched libraries ignore the variable.
+    /// NVIDIA X11 AppImage only: its accelerated path retains one sync-file descriptor
+    /// per redraw. Keeps the two variables above so a library that ignores the compositing
+    /// switch still lands on the shared-memory transport rather than the empty set.
     DisableCompositingOnNvidiaX11,
     DisableDmabuf,
     /// Not a transport at all. The others choose how buffers reach the compositor; this
@@ -231,14 +226,10 @@ fn rendering_plan(
     //   Wayland  DISABLE_DMABUF. The failure is the explicit-sync disconnect, and
     //            FORCE_SHM routes every commit down the wl_shm path that trips it
     //            (bug 315436). It is also the switch reported to fix Error 71.
-    //   X11      FORCE_SHM. The released AppImage additionally turns compositing off:
-    //            its accelerated path leaks a sync-file fd per redraw until WebKit
-    //            reaches its descriptor limit. The native 2.52.6 library on the same
-    //            host releases its temporary sync files, so keep acceleration there.
-    //            In the bundled 2.50.4 library the switch disables the web preference,
-    //            so the web process never enters accelerated compositing and the null
-    //            backing store below is unreachable. FORCE_SHM preserves the previous
-    //            safe transport as a fallback if another library ignores that switch.
+    //   X11      FORCE_SHM. The AppImage also turns compositing off: its accelerated
+    //            path leaks a sync-file fd per redraw until WebKit hits its descriptor
+    //            limit, while the native 2.52.6 library releases them. That switch clears
+    //            the web preference too, so the null backing store below is unreachable.
     // The empty set is not just slower: DISABLE_DMABUF returns before the SharedMemory
     // add, so checkRequirements() is false, AcceleratedBackingStore::create() returns
     // nullptr, and webkitWebViewBaseEnterAcceleratedCompositingMode() dereferences it
@@ -246,12 +237,11 @@ fn rendering_plan(
     // X11, on the same iGPU-presenting topology the probe below over-triggers on.
     //
     // That probe is module presence, not the GPU that will render, so a PRIME laptop on
-    // its iGPU takes a workaround it does not need. The AppImage compositing rule accepts
-    // that broader scope: the packaged runtime is fixed while a fence leak is terminal,
-    // and this path already selects the CPU-copying shared-memory transport. Deliberate:
+    // its iGPU takes a workaround it does not need. The compositing rule accepts that
+    // scope: a fence leak is terminal and this path already CPU-copies. Deliberate:
     // reading the rendering GPU needs a GL context and this runs before GTK init so that
-    // none exists. Those hosts opt out with WEBKIT_DISABLE_DMABUF_RENDERER=0, or only
-    // restore compositing with UNSLOTH_WEBKIT_DISABLE_COMPOSITING=0.
+    // none exists. Those hosts opt out with WEBKIT_DISABLE_DMABUF_RENDERER=0, or keep
+    // compositing alone with UNSLOTH_WEBKIT_DISABLE_COMPOSITING=0.
     if nvidia_driver_loaded && !force_dmabuf {
         let missing_appimage_gles = is_appimage && !gles_usable;
         let reason = if missing_appimage_gles {
@@ -271,9 +261,7 @@ fn rendering_plan(
         {
             RenderingWorkaround::DisableDmabuf
         } else if !is_appimage || requested("0") {
-            // Keep the crash-safe transport from before the automatic compositing
-            // fallback. Native WebKit releases its temporary fences on the measured
-            // host; the setting lets an AppImage operator restore that path too.
+            // Native WebKit releases its fences, and =0 puts an AppImage back here.
             RenderingWorkaround::ForceSharedMemoryOnNvidia
         } else {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
@@ -631,8 +619,8 @@ mod tests {
 
     #[test]
     fn native_nvidia_x11_keeps_the_crash_safe_accelerated_transport() {
-        // The measured system WebKit releases its temporary sync files, so the native
-        // package retains acceleration and only avoids the empty backing-store set.
+        // The system WebKit releases its sync files, so the native package keeps
+        // acceleration and only avoids the empty backing-store set.
         assert_eq!(
             plan_on_nvidia(&[]),
             RenderingPlan::Apply(
@@ -889,9 +877,8 @@ mod tests {
     #[test]
     fn the_nvidia_x11_fallback_keeps_a_nonempty_transport() {
         // isNVIDIA() returns before mode.add(SharedMemory) on 2.50.4 and 2.52.6, so
-        // FORCE_SHM on its own is never read there and the set is empty regardless. Keep
-        // both transport variables alongside the compositing workaround so a WebKit that
-        // ignores the latter still gets the previous crash-safe transport.
+        // FORCE_SHM on its own is never read there and the set is empty regardless, so
+        // both must survive beside the compositing switch a WebKit may ignore.
         assert_eq!(
             RenderingWorkaround::DisableCompositingOnNvidiaX11.variables(),
             &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
@@ -1297,10 +1284,8 @@ mod tests {
 
     #[test]
     fn nvidia_x11_appimage_takes_its_dedicated_compositing_fallback() {
-        // In the AppImage, repeated redraws exhaust WebKit's descriptor limit with one
-        // retained NVIDIA sync file per frame. WebKit disables the accelerated preference
-        // before entering the backing-store path; the nonempty transport remains the safe
-        // fallback for a library that ignores the compositing switch.
+        // Repeated redraws exhaust WebKit's descriptor limit, one retained sync file per
+        // frame, and the nonempty transport stays as the fallback.
         let x11: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
         assert_eq!(
             plan_on_graphics(x11, true, false, false),
