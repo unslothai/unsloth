@@ -431,6 +431,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
 
+      # The AST tests pin which menus are non-modal; only a browser answers what that then
+      # does to a scroll behind an open menu, to the click that dismisses it, and to focus.
+      # Chromium because that is what this job installs; PW_ENGINE=firefox or webkit runs
+      # the same checks on the other two. The page mounts one still-modal menu as a
+      # control, so a shared result is Radix rather than the wrapper.
+      - name: Browser checks for the non-modal dropdown wrapper
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_nonmodal_menus.py
+
       # The settings panels are fetched on first view, so only a browser can answer whether
       # every tab renders and deep-opens land (and abandoned ones do not come back).
       - name: Browser smoke for the settings tab panels
