@@ -490,3 +490,69 @@ def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch
     monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, ("Q4_K_M",)))
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True
+
+
+def test_embeddings_proxy_monitor_prefers_loaded_public_id(monkeypatch):
+    """API monitor rows must show the resolved public id, not the raw client alias."""
+    from types import SimpleNamespace
+
+    import httpx
+    from core.inference.api_monitor import ApiMonitor
+
+    async def _run():
+        class Request:
+            state = SimpleNamespace()
+            url = SimpleNamespace(path = "/v1/embeddings")
+            method = "POST"
+
+            async def json(self):
+                return {"input": "hello", "model": "UNSLOTH-bge-m3"}
+
+            async def is_disconnected(self):
+                return False
+
+        class FakeAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            async def aclose(self):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return httpx.Response(
+                    200,
+                    json = {
+                        "data": [{"embedding": [0.1]}],
+                        "usage": {"prompt_tokens": 1, "total_tokens": 1},
+                    },
+                )
+
+        class _Llama:
+            is_loaded = True
+            base_url = "http://llama.test"
+            context_length = 4096
+            model_identifier = "/cache/models--org--bge-m3/snapshots/abc"
+            hf_variant = "q8_0"
+            _openai_advertised_id = "bge-m3"
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf, "api_monitor", monitor)
+        monkeypatch.setattr(inf, "_cancelable_nonstreaming_client", lambda: FakeAsyncClient())
+        monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _Llama())
+        monkeypatch.setattr(inf, "_automatic_model_load_may_run", lambda: False)
+
+        async def _passthrough(request, _subject):
+            return await request.json()
+
+        monkeypatch.setattr(inf, "_auto_switch_from_request_body", _passthrough)
+
+        response = await inf.openai_embeddings(Request(), current_subject = "test")
+        assert response.status_code == 200
+        [entry] = monitor.snapshot()
+        assert entry["model"] == "bge-m3:q8_0"
+        assert entry["model"] != "UNSLOTH-bge-m3"
+
+    asyncio.run(_run())
