@@ -3985,7 +3985,11 @@ def _confirm_gate_has_no_channel(payload, ui_events: bool) -> bool:
     return _confirm_gate_needs_stream(payload)
 
 
-def _reject_confirm_gate_without_channel(payload, ui_events: bool, monitor_id = None) -> None:
+def _reject_confirm_gate_without_channel(
+    payload,
+    ui_events: bool,
+    monitor_id = None,
+) -> None:
     """Refuse a request whose confirm gate would have nowhere to ask.
 
     Called with the SELECTED catalog in hand, never on intent: mcp_enabled with no MCP

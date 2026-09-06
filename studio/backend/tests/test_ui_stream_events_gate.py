@@ -251,9 +251,12 @@ def test_the_bundled_api_examples_are_still_runnable():
     src = _USAGE_EXAMPLES.read_text(encoding = "utf-8")
     tool_branches = src.count("enable_tools")
     assert tool_branches, "the tool variants disappeared from the examples"
-    assert src.count('permission_mode": "off"') + src.count("permission_mode = \"off\"") + src.count(
-        'permission_mode: "off"'
-    ) == tool_branches, "every example that enables tools must pick a permission mode"
+    assert (
+        src.count('permission_mode": "off"')
+        + src.count('permission_mode = "off"')
+        + src.count('permission_mode: "off"')
+        == tool_branches
+    ), "every example that enables tools must pick a permission mode"
 
     # And the shape they now send is one the gate admits.
     example = _gate_payload(
@@ -262,9 +265,12 @@ def test_the_bundled_api_examples_are_still_runnable():
     )
     assert _confirm_gate_has_no_channel(example, False) is False
     # Without the mode it would not be, which is what the snippets guard against.
-    assert _confirm_gate_has_no_channel(
-        _gate_payload(enabled_tools = ["web_search", "python", "terminal"]), False
-    ) is True
+    assert (
+        _confirm_gate_has_no_channel(
+            _gate_payload(enabled_tools = ["web_search", "python", "terminal"]), False
+        )
+        is True
+    )
 
 
 def test_a_structured_type_field_does_not_crash_the_relay():
