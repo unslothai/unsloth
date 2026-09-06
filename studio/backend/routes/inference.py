@@ -28027,13 +28027,11 @@ def _anthropic_selects_server_tools(
 def _guard_anthropic_client_tool_catalog(
     openai_client_tools, openai_tool_choice, server_tools, llama_backend
 ) -> None:
-    """400 a live client catalogue the loaded template would drop.
-
-    Otherwise the caller gets prose where it asked for a tool_use block. Narrower than the
-    OpenAI gate, which also rejects replayed history: _sanitize_anthropic_openai_messages
-    already folded that history for this same template, so a history-only turn has no
-    catalogue to drop and still answers. Shared with the token counter so a count can never
-    describe a request the completion rejects.
+    """400 a live client catalogue the loaded template would drop, else the caller gets prose
+    where it asked for a tool_use block. Narrower than the OpenAI gate, which also rejects
+    replayed history: _sanitize_anthropic_openai_messages already folded that history for this
+    same template, so a history-only turn has no catalogue to drop and still answers. Shared
+    with the token counter so a count never describes a request the completion rejects.
     """
     if server_tools or not openai_client_tools or openai_tool_choice == "none":
         return
@@ -28780,8 +28778,6 @@ async def anthropic_count_tokens(
         for tool in anthropic_tools_to_openai(payload.tools or [])
         if tool.get("function", {}).get("name") not in _count_studio_tools
     ]
-    # Reject exactly what /messages rejects: a count that priced a request the completion
-    # refuses would hand an SDK a budget it can never spend.
     _guard_anthropic_client_tool_catalog(
         _count_openai_client_tools,
         anthropic_tool_choice_to_openai(payload.tool_choice) or "auto",
@@ -29083,8 +29079,8 @@ async def anthropic_messages(
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
     server_tools = _selects_server_tools and llama_backend.supports_tools and not _has_image
-    # Left as one short-circuiting chain: a backend whose supports_tools raises (the
-    # folding gate has a test for it) must not turn a plain no-tools turn into a 500.
+    # One short-circuiting chain: a backend whose supports_tools raises must not turn a plain
+    # no-tools turn into a 500.
     client_tools = (
         not server_tools
         and len(openai_client_tools) > 0

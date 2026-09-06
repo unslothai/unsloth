@@ -2665,9 +2665,8 @@ class TestAnthropicMessagesToolRouting:
         assert path == "plain"
 
     def test_a_plain_turn_survives_a_backend_whose_supports_tools_raises(self, monkeypatch):
-        # The gate must stay inside the short-circuit: reading the passthrough flag on a
-        # turn that sent no tools would 500 the half-ready backend the folding gate
-        # already tolerates (test_folding_gate_prefers_passthrough_even_when_supports_tools_raises).
+        # Reading the passthrough flag on a turn that sent no tools would 500 the half-ready
+        # backend test_folding_gate_prefers_passthrough_even_when_supports_tools_raises covers.
         from routes.inference import anthropic_count_tokens
 
         import routes.inference as inf_mod
@@ -2765,12 +2764,9 @@ class TestAnthropicMessagesToolRouting:
     def _v1_client(self, monkeypatch, backend):
         """Mount the real router with the production error handlers installed.
 
-        Every other test here reads ``HTTPException.detail`` directly, which is the
-        dict BEFORE install_api_error_handlers has had a chance to shape it. What an
-        SDK actually parses is the response body, and the two are only the same while
-        the handler keeps passing a fully-formed envelope through untouched. The
-        OpenAI sibling gate is asserted at this level already
-        (test_openai_tool_passthrough.py::test_client_tools_rejected_when_gguf_template_has_no_tool_support).
+        Every other test here reads ``HTTPException.detail``, the dict BEFORE
+        install_api_error_handlers shapes it; an SDK parses the response body, and the two
+        agree only while the handler passes a fully-formed envelope through untouched.
         """
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -2793,11 +2789,9 @@ class TestAnthropicMessagesToolRouting:
     def test_the_rejection_reaches_the_client_as_an_anthropic_error(
         self, monkeypatch, path, stream
     ):
-        # A `detail` wrapper here would be an OpenAI-shaped body on an Anthropic route:
-        # the SDKs raise on the missing `error` key rather than surfacing the reason,
-        # which is the failure this whole change exists to remove. Streaming is covered
-        # too because the gate sits before the generator opens, so the caller must get
-        # JSON rather than a 200 SSE stream that carries the error inside a frame.
+        # A `detail` wrapper would make the SDKs raise on the missing `error` key instead of
+        # surfacing the reason. Streaming too: the gate precedes the generator, so the caller
+        # must get JSON, not a 200 SSE stream carrying the error in a frame.
         backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
         client = self._v1_client(monkeypatch, backend)
 
