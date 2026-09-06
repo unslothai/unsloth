@@ -32,6 +32,7 @@ class _LocalGgufEntry:
     load_path: str
     variants: tuple[str, ...]  # local quant labels; () for a standalone .gguf
     is_gguf: bool = True  # False routes the load to the inference orchestrator
+    repo_level_companions: bool = False
 
 
 _CACHE_TTL_S = 5.0
@@ -104,7 +105,96 @@ def _resolve_load_dir(p):
     return p
 
 
-def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
+def _resolve_gguf_load_snapshot(p):
+    """Newest complete snapshot in this exact cache repo, or the selector fallback.
+
+    A later Hub revision can contain only a newly fetched companion such as an
+    MTP drafter or mmproj while the complete model weights remain in an older
+    snapshot. The generic resolver intentionally picks the newest snapshot, but
+    doing that for GGUF discovery makes the repo disappear from ``/v1/models``.
+    """
+    snapshots = p / "snapshots"
+    try:
+        if not snapshots.is_dir():
+            return p
+    except OSError:
+        return None
+
+    # Reuse the Hub inventory's selection rule, scoped to the row's exact repo
+    # directory so case-colliding repos cannot cross-load or trigger another root scan.
+    from hub.utils.gguf import select_gguf_cache_snapshot_for_repo_dir
+
+    selected = select_gguf_cache_snapshot_for_repo_dir(p)
+    if selected is None:
+        return None
+    return selected
+
+
+def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> tuple[str, ...]:
+    """Trusted sibling snapshots for a repo-level HF cache resolution.
+
+    The selected snapshot remains first so a colocated companion wins. Other
+    revisions are returned newest first for the case where a later download
+    contains only a compatible mmproj. Exact revision paths and paths outside
+    an exact ``models--*`` cache-repo layout never widen their companion search.
+    """
+    from pathlib import Path
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
+    if not repo_level:
+        return ()
+    selected = Path(load_path)
+    snapshots = selected.parent
+    repo = snapshots.parent
+    if snapshots.name != "snapshots" or not repo.name.startswith("models--"):
+        return ()
+    try:
+        if not selected.is_dir():
+            return ()
+    except OSError:
+        return ()
+    siblings = []
+    try:
+        for path in snapshots.iterdir():
+            if path == selected:
+                continue
+            try:
+                if path.is_dir():
+                    siblings.append(path)
+            except OSError as exc:
+                logger.debug("Skipping unreadable companion snapshot %s: %s", path, exc)
+    except OSError as exc:
+        logger.debug("Stopping at unreadable companion snapshots dir %s: %s", snapshots, exc)
+    siblings.sort(key = snapshot_selection_key, reverse = True)
+    return (str(selected), *(str(path) for path in siblings))
+
+
+def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
+    """File metadata for trusted snapshots, including newly completed companions."""
+    from pathlib import Path
+
+    state = []
+    for root in roots:
+        try:
+            for path in sorted(Path(root).rglob("*")):
+                if path.suffix.lower() != ".gguf":
+                    continue
+                try:
+                    stat = path.stat()
+                    state.append((str(path), stat.st_size, stat.st_mtime_ns))
+                except OSError:
+                    state.append((str(path), -1, -1))
+        except OSError:
+            state.append((root, -1, -1))
+    return tuple(state)
+
+
+def _local_gguf_entry(
+    loader_id: str,
+    info,
+    *,
+    exact_snapshot: bool = False,
+) -> Optional[_LocalGgufEntry]:
     """Build an entry only when GGUF quants are on disk (not Transformers/
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
     path so /load resolves the variant locally and never fetches a remote one."""
@@ -126,8 +216,53 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             if p.suffix.lower() != ".gguf" or detect_gguf_model(str(p)) is None:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
-        load_dir = _resolve_load_dir(p)
-        variants, _ = list_local_gguf_variants(str(load_dir))
+        cache_repo_dir = None
+        if getattr(info, "source", None) == "hf_cache":
+            try:
+                if p.name.startswith("models--") and (p / "snapshots").is_dir():
+                    cache_repo_dir = p
+            except OSError:
+                return None
+            if (
+                cache_repo_dir is None
+                and p.parent.name == "snapshots"
+                and p.parent.parent.name.startswith("models--")
+            ):
+                cache_repo_dir = p.parent.parent
+        if cache_repo_dir is not None:
+            selected = _resolve_gguf_load_snapshot(cache_repo_dir)
+            if selected is None:
+                load_dir = p
+                variants, _ = list_local_gguf_variants(str(load_dir))
+            else:
+                selected_variants, _has_vision, complete, load_dir = selected
+                variants, _ = list_local_gguf_variants(str(load_dir))
+                if complete:
+                    complete_keys = {str(quant).casefold() for quant in complete}
+                    complete_files = {
+                        str(variant.filename).casefold()
+                        for variant in selected_variants
+                        if getattr(variant, "filename", None)
+                        and getattr(variant, "quant", None)
+                        and str(variant.quant).casefold() in complete_keys
+                    }
+                    variants = [
+                        variant
+                        for variant in variants
+                        if getattr(variant, "filename", None)
+                        and str(variant.filename).casefold() in complete_files
+                    ]
+        else:
+            load_dir = p
+            variants, _ = list_local_gguf_variants(str(load_dir))
+        if exact_snapshot:
+            from hub.utils.gguf import list_local_gguf_variants as inventory_variants
+            from hub.utils.inventory_scan import complete_snapshot_variants
+
+            complete = complete_snapshot_variants(str(load_dir))
+            offered, _ = inventory_variants(str(load_dir))
+            complete_files = {str(v.filename).casefold() for v in offered if v.quant in complete}
+            variants = [v for v in variants if str(v.filename).casefold() in complete_files]
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None
@@ -146,7 +281,12 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         best = preferred_quant(unqualified or quants)
         if best and quants[0] != best:
             quants = (best, *(q for q in quants if q != best))
-        return _LocalGgufEntry(loader_id, str(load_dir), quants)
+        return _LocalGgufEntry(
+            loader_id,
+            str(load_dir),
+            quants,
+            repo_level_companions = cache_repo_dir is not None,
+        )
     except Exception:
         return None
 
@@ -483,16 +623,26 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         entry = _local_servable_entry(loader_id, info)
         if entry is None:
             continue
-        # index every alias (including the path) so a client can resolve by any of them, even though only the non-path
-        # loader_id is advertised
-        for key in (
-            raw_id,
-            getattr(info, "model_id", None),
-            getattr(info, "display_name", None),
-            public_model_id(raw_id),
+        # Repo and display aliases intentionally select across revisions. An inactive-cache row's absolute id and
+        # basename name one exact revision instead: index them only when that revision has its own complete weights.
+        path_alias_entry = entry
+        if entry.repo_level_companions and _is_abs_path_id(raw_id):
+            from types import SimpleNamespace
+            path_alias_entry = _local_gguf_entry(
+                loader_id, SimpleNamespace(path = raw_id), exact_snapshot = True
+            )
+        snapshot_name = (
+            Path(raw_id).name if entry.repo_level_companions and _is_abs_path_id(raw_id) else None
+        )
+        for key, alias_entry in (
+            (raw_id, path_alias_entry),
+            (snapshot_name, path_alias_entry),
+            (getattr(info, "model_id", None), entry),
+            (getattr(info, "display_name", None), entry),
+            (public_model_id(raw_id), path_alias_entry),
         ):
-            if key:
-                index.setdefault(key.strip().lower(), entry)
+            if key and alias_entry is not None:
+                index.setdefault(key.strip().lower(), alias_entry)
         # Other revisions of the same repo resolve to their own weights, so a pin on one keeps working after Hugging
         # Face writes a newer snapshot.
         if entry.is_gguf:
@@ -642,7 +792,9 @@ def index_is_built() -> bool:
     return _scan[0] > 0.0
 
 
-def resolve_trusted_cached_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str]]:
+def resolve_trusted_cached_local_gguf(
+    requested: str, *, include_companion_scope: bool = False
+) -> Optional[tuple]:
     """Resolve a positive cache hit only when its snapshot is safe to trust.
 
     A snapshot is trustworthy while fresh, or after an explicit additions-only
@@ -650,9 +802,16 @@ def resolve_trusted_cached_local_gguf(requested: str) -> Optional[tuple[str, Opt
     must be rebuilt before it can trigger a model switch. The identity checks close
     the race where invalidation publishes a different snapshot during resolution or
     while the trust state is being evaluated.
+
+    With ``include_companion_scope=True``, append whether sibling snapshots belong
+    to this repo-level resolution and may be searched for compatible companions.
     """
     snapshot = _scan
-    resolved = _resolve_from_index(requested, snapshot[1])
+    resolved = _resolve_from_index(
+        requested,
+        snapshot[1],
+        include_companion_scope = include_companion_scope,
+    )
     if resolved is None or _scan is not snapshot:
         return None
     trusted = _snapshot_is_trusted(snapshot[0], time.monotonic())
@@ -705,8 +864,11 @@ def warm_index_soon() -> None:
 
 
 def resolve_local_gguf(
-    requested: str, *, allow_scan: bool = True
-) -> Optional[tuple[str, Optional[str], str]]:
+    requested: str,
+    *,
+    allow_scan: bool = True,
+    include_companion_scope: bool = False,
+) -> Optional[tuple]:
     """Return ``(load_path, gguf_variant, loader_id)`` for a local match, else None.
 
     ``load_path`` is the concrete on-disk path to hand /load (so it never fetches
@@ -720,13 +882,19 @@ def resolve_local_gguf(
     ``allow_scan=False`` answers from the last built index and never rebuilds. It is
     a raw snapshot read for callers that separately decide whether the snapshot is
     trustworthy; use :func:`resolve_trusted_cached_local_gguf` for model switching.
+    With ``include_companion_scope=True``, append whether sibling snapshots belong
+    to this repo-level resolution and may be searched for compatible companions.
     """
     if not isinstance(requested, str) or not requested.strip():
         return None
     requested = requested.strip()
     try:
         index = _index() if allow_scan else _scan[1]
-        return _resolve_from_index(requested, index)
+        return _resolve_from_index(
+            requested,
+            index,
+            include_companion_scope = include_companion_scope,
+        )
     except Exception:
         # Best-effort: any resolver failure falls through to the loaded model, so a malformed name can never turn a
         # servable request into a 500.
@@ -734,14 +902,22 @@ def resolve_local_gguf(
 
 
 def _resolve_from_index(
-    requested: str, index: dict[str, _LocalGgufEntry]
-) -> Optional[tuple[str, Optional[str], str]]:
+    requested: str,
+    index: dict[str, _LocalGgufEntry],
+    *,
+    include_companion_scope: bool = False,
+) -> Optional[tuple]:
     """Resolve *requested* against one immutable published index mapping."""
     try:
+
+        def _result(entry: _LocalGgufEntry, variant: Optional[str]) -> tuple:
+            result = (entry.load_path, variant, entry.loader_id)
+            return (*result, entry.repo_level_companions) if include_companion_scope else result
+
         entry = index.get(requested.lower())
         if entry is not None:
             variant = entry.variants[0] if entry.variants else None
-            return entry.load_path, variant, entry.loader_id
+            return _result(entry, variant)
 
         base, sep, variant = requested.rpartition(":")
         if not sep:
@@ -752,14 +928,14 @@ def _resolve_from_index(
         wanted = variant.strip().lower()
         for v in entry.variants:
             if v.lower() == wanted:
-                return entry.load_path, v, entry.loader_id
+                return _result(entry, v)
         from core.inference.openai_auto_download import looks_like_quant
 
         if looks_like_quant(variant):
             return None
         # ":latest" or ":8b" names no file, so it means the repo; a real quant that is not on disk still misses, or a
         # swap would serve the wrong weights.
-        return entry.load_path, (entry.variants[0] if entry.variants else None), entry.loader_id
+        return _result(entry, entry.variants[0] if entry.variants else None)
     except Exception:
         return None
 
