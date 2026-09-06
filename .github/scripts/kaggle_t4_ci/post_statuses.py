@@ -105,8 +105,32 @@ def valid(status: dict) -> str | None:
     return None
 
 
+def merge_by_commit(resolved: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+    """One status per (full sha, context), failure winning, every slug named.
+
+    Merged HERE and not in the collector, because only a resolved sha says
+    whether two slugs name one commit: an eight-character slug and a
+    twelve-character one for the same commit resolve to one full sha, and two
+    commits that merely share eight characters resolve to two.
+    """
+    out: dict[tuple[str, str], dict] = {}
+    for full, status in resolved:
+        key = (full, status["context"])
+        prior = out.get(key)
+        if prior is None:
+            out[key] = dict(status, slugs = list(status.get("slugs") or [status.get("slug")]))
+            continue
+        slugs = prior["slugs"] + list(status.get("slugs") or [status.get("slug")])
+        if status["state"] == "failure" and prior["state"] != "failure":
+            out[key] = dict(status, slugs = slugs)
+        else:
+            prior["slugs"] = slugs
+    return [(k[0], s) for k, s in out.items()]
+
+
 def post_all(statuses: list[dict], repo: str) -> dict:
     outcome: dict[str, list[str]] = {"ok": [], "failed": [], "unresolved": [], "invalid": []}
+    resolved: list[tuple[str, dict]] = []
     for status in statuses:
         slugs = list(status.get("slugs") or [status.get("slug")])
         why = valid(status)
@@ -130,6 +154,9 @@ def post_all(statuses: list[dict], repo: str) -> dict:
             )
             outcome["failed"].extend(slugs)
             continue
+        resolved.append((full, status))
+    for full, status in merge_by_commit(resolved):
+        slugs = status["slugs"]
         print(f"posting {status['context']}={status['state']} for {full}")
         if post_one(repo, full, status):
             outcome["ok"].extend(slugs)

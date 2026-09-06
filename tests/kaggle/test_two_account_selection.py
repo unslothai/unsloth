@@ -498,10 +498,16 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
     assert gate.in_flight_for_commit(own, sha, "") is None
     assert gate.in_flight_for_commit(["someone/unsloth-probe-x (RUNNING)"], sha, "notebook") is None
     source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
-    loop = source.split("for account_id in order:", 1)[1]
-    assert (
-        "in_flight_for_commit(survey" in loop.split("concurrency_verdict(", 1)[0]
-    ), "the gate does not ask each surveyed account whether this commit is already running"
+    main = source[source.index("def main(") :]
+    # Every candidate account is asked BEFORE any is chosen: the first loop over
+    # `order` is the in-flight sweep and the selection loop comes after it, or
+    # a preferred account free again is picked without the other being looked at.
+    sweep, selection = main.split("for account_id in order:", 2)[1:]
+    assert "in_flight_for_commit(survey" in sweep and "concurrency_verdict(" not in sweep
+    assert "concurrency_verdict(" in selection and "in_flight_for_commit(" not in selection
+    assert "_survey(account_id)" in sweep and "_survey(account_id)" in selection, (
+        "surveys are not shared between the sweep and the selection"
+    )
     for path, kind in ((NOTEBOOK_WF, "notebook"), (STUDIO_WF, "studio")):
         gate_steps = [
             s
@@ -511,3 +517,86 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
         assert gate_steps, path.name
         for step in gate_steps:
             assert f"--kind {kind}" in step["run"], f"{path.name}: the gate is not told its kind"
+
+
+def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
+    monkeypatch, tmp_path
+):
+    """The sampled account is FREE and the other one holds a kernel for this
+    commit, which is what a retry looks like after the first run handed the
+    commit over. A gate that only asks the account it is about to pick finds
+    it clear and dispatches a duplicate session."""
+    sha = "abcdef0123456789" + "0" * 24
+    sampled = gate.weighted_pick(sha, {"1": 60.0, "2": 30.0})[0]
+    other = "2" if sampled == "1" else "1"
+    apis = {"1": object(), "2": object()}
+
+    def probe(account_id, env_name, **_kw):
+        quota = {"total_hours": 60.0 if account_id == "1" else 30.0, "remaining_hours": 50.0}
+        return (
+            {
+                "account": account_id,
+                "env": env_name,
+                "outcome": "ok",
+                "user": f"user{account_id}",
+                "quota": quota,
+                "total_hours": quota["total_hours"],
+                "remaining_hours": 50.0,
+                "reserve_hours": 1.0,
+            },
+            apis[account_id],
+        )
+
+    surveys_asked: list[str] = []
+
+    def survey(api, *a, **k):
+        account_id = next(i for i, obj in apis.items() if obj is api)
+        surveys_asked.append(account_id)
+        own = [f"user{other}/unsloth-t4-ci-n{sha[:12]}-1111 (RUNNING)"] if account_id == other else []
+        return {
+            "busy": list(own),
+            "own": own,
+            "foreign": [],
+            "complete": True,
+            "out_of_budget": False,
+            "surveyed": len(own),
+            "unreadable": 0,
+            "gone": 0,
+            "window_hours": 12,
+        }
+
+    monkeypatch.setattr(gate, "probe_account", probe)
+    monkeypatch.setattr(gate, "survey_kernels", survey)
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "x")
+    monkeypatch.setenv("KAGGLE_API_TOKEN_2", "y")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "gate.py",
+            "--budget-hours",
+            "1",
+            "--reserve-hours",
+            "1",
+            "--force",
+            "true",
+            "--head-sha",
+            sha,
+            "--kind",
+            "notebook",
+            "--run-id",
+            "7",
+        ],
+    )
+    code = gate.main()
+    outputs = dict(
+        line.split("=", 1) for line in (tmp_path / "out.txt").read_text().splitlines() if "=" in line
+    )
+    assert code == 0
+    assert outputs["should_run"] == "false", outputs["reason"]
+    assert f"account {other}" in outputs["reason"] and "already running" in outputs["reason"]
+    assert set(surveys_asked) == {"1", "2"}, "the account holding the kernel was never asked"
+    # One survey per account, reused by the selection loop.
+    assert len(surveys_asked) == 2, surveys_asked

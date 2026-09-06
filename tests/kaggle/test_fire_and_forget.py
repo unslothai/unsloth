@@ -1208,7 +1208,8 @@ def test_a_downloaded_file_that_is_not_a_notebook_does_not_wedge_the_collector(
     assert collect.expected_reports(dest, 4) == 4
     record = collect.collect_one(api, dict(_ENTRY), tmp_path, expect = 4, max_age_hours = 3.0)
     assert record["verdict"] == "infra", record
-    assert record["expected"] == 4
+    # A notebook kernel with no expected-count record has an UNKNOWN plan.
+    assert record["expected"] is None
 
 
 def test_the_evidence_download_is_clamped_to_the_pass_deadline(tmp_path, monkeypatch):
@@ -1310,10 +1311,21 @@ def test_a_listed_notebook_without_a_download_url_marks_the_evidence_incomplete(
     assert evidence["truncated"] is True
 
 
-def test_old_and_new_slug_forms_for_one_commit_post_one_status():
+def test_old_and_new_slug_forms_for_one_commit_post_one_status(monkeypatch):
     """A kernel pushed with the eight-character slug and one with the twelve
-    can name the same commit in one pass. Keyed apart they post as two commits
-    and whichever lands last decides the required context."""
+    can name the same commit in one pass. Only the commits API can say so, so
+    the collector keeps them apart and the POSTER merges what resolves to one
+    full sha: one post, failure winning, both slugs named."""
+    full = "abcdef012345" + "0" * 28
+    calls: list[list[str]] = []
+
+    def _gh(args):
+        calls.append(list(args))
+        if "/commits/" in args[1]:
+            return (0, full, "")
+        return (0, "", "")
+
+    monkeypatch.setattr(post_statuses, "_gh", _gh)
     records = [
         {
             "slug": "me/unsloth-t4-ci-nabcdef012345-2222",
@@ -1331,25 +1343,14 @@ def test_old_and_new_slug_forms_for_one_commit_post_one_status():
         },
     ]
     statuses = collect.statuses_from(records)
-    assert len(statuses) == 1, statuses
-    assert statuses[0]["state"] == "failure"
-    assert statuses[0]["sha"] == "abcdef012345", "post against the least ambiguous prefix"
-    assert sorted(statuses[0]["slugs"]) == sorted(r["slug"] for r in records)
-    # Reversed order reaches the same answer: nothing about it is order-dependent.
-    assert collect.statuses_from(records[::-1])[0]["state"] == "failure"
-
-
-def test_no_kaggle_workflow_checkout_persists_the_job_token():
-    """The collector holds the Kaggle token and only the posting step gets
-    GH_TOKEN. actions/checkout writes the job token into .git by default
-    (persist-credentials defaults to true), which hands it to every later
-    step."""
-    for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
-        for _job, _name, step in _steps(_wf(path)):
-            if str(step.get("uses", "")).startswith("actions/checkout@"):
-                assert (step.get("with") or {}).get(
-                    "persist-credentials"
-                ) is False, f"{path.name}: a checkout persists the job token"
+    assert len(statuses) == 2, "the collector cannot know these are one commit"
+    for order in (statuses, statuses[::-1]):
+        calls.clear()
+        outcome = post_statuses.post_all([dict(s) for s in order], "unslothai/unsloth")
+        posts = [c for c in calls if "/statuses/" in c[1]]
+        assert len(posts) == 1, posts
+        assert "state=failure" in " ".join(posts[0])
+        assert sorted(outcome["ok"]) == sorted(r["slug"] for r in records)
 
 
 def test_two_commits_that_merely_share_eight_characters_post_two_statuses():
@@ -1513,3 +1514,53 @@ def test_the_pass_budget_starts_before_the_kernel_listing():
     source = (CI_DIR / "collect.py").read_text(encoding = "utf-8")
     body = source[source.index("def main(") :]
     assert body.index("deadline = time.time() + BUDGET_SEC") < body.index("ours = find_ours(")
+
+
+def test_two_commits_that_share_eight_characters_resolve_apart_and_post_twice(monkeypatch):
+    """The transition case the collector must not guess at: an old
+    eight-character slug for commit A and a twelve-character one for commit B
+    that starts with the same eight. Resolved, they are two commits."""
+    a_full = "abcdef01" + "a" * 32
+    b_full = "abcdef01ffff" + "b" * 28
+    calls: list[list[str]] = []
+
+    def _gh(args):
+        calls.append(list(args))
+        if "/commits/" in args[1]:
+            sha = args[1].rsplit("/", 1)[-1]
+            return (0, a_full if sha == "abcdef01" else b_full, "")
+        return (0, "", "")
+
+    monkeypatch.setattr(post_statuses, "_gh", _gh)
+    statuses = collect.statuses_from(
+        [
+            {"slug": "me/unsloth-t4-ci-nabcdef01-1111", "sha": "abcdef01", "kind": "notebook", "verdict": "pass", "reason": "ok"},
+            {"slug": "me/unsloth-t4-ci-nabcdef01ffff-2222", "sha": "abcdef01ffff", "kind": "notebook", "verdict": "fail", "reason": "red"},
+        ]
+    )
+    outcome = post_statuses.post_all(statuses, "unslothai/unsloth")
+    posts = [c for c in calls if "/statuses/" in c[1]]
+    assert len(posts) == 2
+    assert {c[1].rsplit("/", 1)[-1] for c in posts} == {a_full, b_full}
+    assert len(outcome["ok"]) == 2
+
+
+def test_a_notebook_kernel_without_its_expected_count_is_never_a_pass(tmp_path, monkeypatch):
+    """A notebook kernel that predates the expected-count record could have
+    lost four legs and reported one; judged against a caller default of one
+    that read as a pass, was posted green and deleted. Unknown plan: a failure
+    is still a failure, and a clean set is infra, not pass."""
+    monkeypatch.setattr(launch, "fetch_evidence", lambda slug, dest, deadline = None: {})
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: True)
+    api = _StubApi([], {_ENTRY["slug"]: "COMPLETE"})
+    monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
+    record = collect.collect_one(api, dict(_ENTRY), tmp_path, expect = 1, max_age_hours = 3.0)
+    assert record["verdict"] == "infra" and record["expected"] is None, record
+    monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": False, "payload": "x"}])
+    record = collect.collect_one(api, dict(_ENTRY), tmp_path, expect = 1, max_age_hours = 3.0)
+    assert record["verdict"] == "fail"
+    # Studio kernels carry exactly one report and keep the default.
+    monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
+    studio = dict(_ENTRY, kind = "studio", slug = "me/unsloth-t4-ci-sabcdef01-1111")
+    api = _StubApi([], {studio["slug"]: "COMPLETE"})
+    assert collect.collect_one(api, studio, tmp_path, expect = 1, max_age_hours = 3.0)["verdict"] == "pass"

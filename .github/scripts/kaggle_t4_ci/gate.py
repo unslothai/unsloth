@@ -926,6 +926,33 @@ def main() -> int:
     # expensive call here.
     order = [sampled_account] + [i for i in probes if i != sampled_account]
     handovers: list[str] = []
+    surveys: dict[str, dict] = {}
+
+    def _survey(account_id: str) -> dict:
+        if account_id not in surveys:
+            surveys[account_id] = survey_kernels(clients[account_id])
+        return surveys[account_id]
+
+    # EVERY candidate account first, for THIS commit, before any is chosen. An
+    # earlier run can have handed this commit to the other account; a retry
+    # that finds the preferred account free again would otherwise pick it and
+    # never look at the account whose kernel is still running.
+    if args.head_sha and args.kind:
+        for account_id in order:
+            if not account_id or probes[account_id]["outcome"] != "ok":
+                continue
+            try:
+                survey = _survey(account_id)
+            except Exception:  # noqa: BLE001
+                continue  # reported below, where the account is considered
+            already = in_flight_for_commit(survey["own"], args.head_sha, args.kind)
+            if already:
+                return _decide(
+                    False,
+                    f"a {args.kind} kernel for this commit is already running on account "
+                    f"{account_id} ({already}); its result arrives as the commit status, so "
+                    "nothing is dispatched",
+                )
 
     for account_id in order:
         if not account_id:
@@ -935,9 +962,8 @@ def main() -> int:
             handovers.append(f"account {account_id} {record['outcome']}")
             continue
 
-        api = clients[account_id]
         try:
-            survey = survey_kernels(api)
+            survey = _survey(account_id)
         except Exception as exc:  # noqa: BLE001
             record["outcome"] = "capacity_unreadable"
             record["error"] = type(exc).__name__
@@ -957,15 +983,6 @@ def main() -> int:
             ),
             flush = True,
         )
-
-        already = in_flight_for_commit(survey["own"], args.head_sha, args.kind)
-        if already:
-            return _decide(
-                False,
-                f"a {args.kind} kernel for this commit is already running on account "
-                f"{account_id} ({already}); its result arrives as the commit status, so "
-                "nothing is dispatched",
-            )
 
         clear, why_not = concurrency_verdict(survey, args.kernels, args.allow_foreign_in_flight)
         if not clear:

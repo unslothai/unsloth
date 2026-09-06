@@ -255,7 +255,7 @@ def _evidence_lines(dest: Path):
         yield from launch.flatten_kernel_log(raw).splitlines()
 
 
-def expected_reports(dest: Path, default: int) -> int:
+def expected_reports(dest: Path, default: int, kind: str = "") -> int | None:
     """How many payload reports this kernel was built to produce.
 
     Read off the kernel's own evidence, the only record that survives dispatch.
@@ -272,6 +272,12 @@ def expected_reports(dest: Path, default: int) -> int:
         reports = parsed.get("reports") if isinstance(parsed, dict) else None
         if isinstance(reports, int) and reports > 0:
             return reports
+    # A notebook kernel carries several payloads and only its own record says
+    # how many. Without it the plan is UNKNOWN, not the caller's default: a
+    # scheduled pass that assumed one would read a kernel that lost four legs
+    # and reported one as a pass. Studio kernels always carry exactly one.
+    if kind == "notebook":
+        return None
     return default
 
 
@@ -408,9 +414,20 @@ def collect_one(
         record["report_error"] = f"{type(exc).__name__}: {exc}"[:200]
         _log(f"unreadable report in {slug}: {type(exc).__name__}")
     record["reports"] = len(reports)
-    expect = expected_reports(dest, expect)
+    expect = expected_reports(dest, expect, record.get("kind") or "")
     record["expected"] = expect
-    verdict, reason = verdict_of(reports, expect)
+    if expect is None:
+        # Plan unknown: a failure is still a failure, but nothing here can say
+        # the set is complete, so no pass is claimed.
+        verdict, reason = verdict_of(reports, len(reports))
+        if verdict == "pass":
+            verdict, reason = "infra", (
+                f"{len(reports)} payload report(s) read, but the kernel predates the "
+                "record of how many it was built to produce, so completeness cannot be "
+                "judged and no pass is claimed"
+            )
+    else:
+        verdict, reason = verdict_of(reports, expect)
     if record.get("report_error") and verdict == "infra":
         reason = (
             f"the evidence downloaded but its report could not be read ({record['report_error']})"
@@ -462,29 +479,19 @@ def statuses_from(records: list[dict], target_url: str = "") -> list[dict]:
         # of the same sha) must not race to post last: a failure wins whichever
         # kernel found it, and both are named as owners so the delete step
         # releases both.
-        # Merged only with a status whose sha is the same commit: equal, or one
-        # a prefix of the other, which is what an old eight-character slug and
-        # a twelve-character one for one commit look like. Two commits that
-        # merely share eight characters stay apart, or one of them would lose
-        # its verdict and have its kernel deleted as delivered.
-        key = next(
-            (
-                k
-                for k, s in out.items()
-                if k[1] == context and (s["sha"].startswith(sha) or sha.startswith(s["sha"]))
-            ),
-            None,
-        )
-        if key is None:
-            out[(sha, context)] = status
+        # Keyed on the sha exactly as the slug carries it. Whether an old
+        # eight-character slug and a twelve-character one name the same commit
+        # is a question only the commits API can answer, so the poster resolves
+        # every sha to its full form and merges there (post_statuses.merge_by_commit).
+        key = (sha, context)
+        prior = out.get(key)
+        if prior is None:
+            out[key] = status
             continue
-        prior = out[key]
         prior["slugs"].append(record["slug"])
-        longest = max(prior["sha"], sha, key = len)
         if state == "failure" and prior["state"] != "failure":
             status["slugs"] = prior["slugs"]
             out[key] = status
-        out[key]["sha"] = longest
     return list(out.values())
 
 
