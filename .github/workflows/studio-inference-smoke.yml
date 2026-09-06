@@ -566,6 +566,13 @@ jobs:
                   headers = {
                       "Authorization": f"Bearer {KEY}",
                       "Content-Type": "application/json",
+                      # A server-side tool leaves no OpenAI-spec trace: no
+                      # delta.tool_calls, no finish_reason "tool_calls". The
+                      # tool_start/tool_end envelopes _tool_invoked looks for are
+                      # Unsloth's own control frames, which /v1/chat/completions
+                      # only sends to a caller that asks for them. This helper
+                      # exists to prove the tool path ran, so it asks.
+                      "X-Unsloth-Events": "1",
                   },
               )
               for attempt in range(retries + 1):

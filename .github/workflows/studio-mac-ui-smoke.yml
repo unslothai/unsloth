@@ -975,6 +975,11 @@ jobs:
                   headers = {
                       "Authorization": f"Bearer {KEY}",
                       "Content-Type": "application/json",
+                      # Unsloth's tool loop is not an OpenAI-spec feature, and its
+                      # frames (and the confirm gate's prompt) only go to a caller
+                      # that asks for them, as the Studio UI does. Ask, so this probe
+                      # exercises the same path a user takes.
+                      "X-Unsloth-Events": "1",
                   },
               )
               for attempt in range(retries + 1):
