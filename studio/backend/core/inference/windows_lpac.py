@@ -1,14 +1,66 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Source-only Windows Less-Privileged AppContainer launcher for Studio tools."""
+"""Source-only Windows Less-Privileged AppContainer launcher for Studio tools.
+
+Identity model
+--------------
+One AppContainer profile is used per (user, Studio installation), named
+``unsloth.studio.sandbox.<16 hex>`` where the digest covers the interpreter
+path, the account and the profile root. ``DeriveAppContainerSidFromAppContainerName``
+maps that name to the same package SID every time, so the SID is stable across
+launches and across Studio restarts even if the profile folder is deleted and
+recreated. The profile is created on the first launch of the process
+(``ERROR_ALREADY_EXISTS`` means reuse) and is kept for the lifetime of the
+process; it is not created and deleted per launch.
+
+The reason is cost, measured on hosted windows-2022 and windows-latest runners
+with CPython 3.12 in ``C:\\hostedtoolcache``: granting a fresh package SID
+read+execute on the interpreter tree costs about 14 s of
+``SetNamedSecurityInfoW`` propagation over thousands of files, revoking it and
+deleting the profile costs about another 11 s, and validating the tree costs
+about 2 s. That was paid on every Python or Terminal call. With a stable SID
+the interpreter tree is granted once per installation, recorded in a persistent
+manifest, and never revoked at launch cleanup, so only the first launch after
+an install or an interpreter upgrade pays it. Later launches pay one DACL read
+per runtime root plus the per-launch workdir work.
+
+What a stable SID changes
+-------------------------
+* The AppContainer named-object namespace
+  (``\\Sessions\\<n>\\AppContainerNamedObjects\\<SID>``) is now shared by every
+  launch of the same installation, so two concurrent tool calls can see each
+  other's named objects instead of being in separate namespaces.
+* Both launches also share the container profile directory, so one launch's
+  private temp directory is reachable by a concurrent launch of the same
+  installation. The private temp is still a fresh random subdirectory per
+  launch and is deleted at cleanup, so it is not reachable by a *later* launch.
+* While two launches run at once, each one's workdir carries the shared SID, so
+  a tool call in one Studio chat can reach another chat's workdir for as long as
+  that other call is running. The grant is released when the last launch holding
+  it finishes.
+* A file a launch leaves in its workdir stays readable by the next launch in the
+  same workdir. That was already true: the workdir is per chat session, not per
+  launch, and it is the directory the user asked the tool to work in.
+These are disclosed as ``concurrent_launches_share_the_container``.
+
+What it does not change
+-----------------------
+Everything outside the granted roots and the workdir stays denied, the network
+stays denied, other processes stay unreachable, the container still carries zero
+capabilities, and the token is still a Less-Privileged AppContainer (or the
+plain AppContainer the live probe fell back to). The per-launch state that
+enforced none of the above and only paid for it - the profile creation and
+deletion - is the only thing that was removed.
+"""
 
 from __future__ import annotations
 
 import ctypes
 from contextlib import ExitStack, contextmanager
 from ctypes import wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -21,7 +73,11 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import threading
+import time
 from typing import Any
+
+from loggers import get_logger
 
 from .os_sandbox import (
     PreparedSandboxLaunch,
@@ -31,7 +87,18 @@ from .os_sandbox import (
 )
 
 
+logger = get_logger(__name__)
+
 _PROFILE_PREFIX = "unsloth.studio."
+# One profile per (user, installation); one manifest per launch of it.
+_INSTALL_PREFIX = _PROFILE_PREFIX + "sandbox."
+_LAUNCH_PREFIX = _PROFILE_PREFIX + "launch."
+_MANIFEST_KIND_LAUNCH = "lpac-launch"
+_MANIFEST_KIND_PERSISTENT = "lpac-persistent"
+# Manifests written before the stable identity: one random profile per launch,
+# named after its own moniker and owning the profile it must delete.
+_MANIFEST_KIND_SINGLE_USE = "lpac-single-use"
+_ORPHAN_TEMPORARY_MANIFEST_SECONDS = 300.0
 _PROFILE_ID = "windows-lpac-preview-v1"
 _APPCONTAINER_PROFILE_ID = "windows-appcontainer-preview-v1"
 _PROFILE_LPAC = "lpac"
@@ -47,6 +114,11 @@ _LIMITATION_IPV6 = "ipv6_unavailable_on_host"
 # open(os.devnull) and multiprocessing.Pipe() raise PermissionError. Code that
 # needs them (multiprocessing, torch through dill) runs in Limited or Full mode.
 _LIMITATION_NULL_DEVICE_PIPES = "null_device_and_named_pipes_denied"
+# One AppContainer identity per installation, so concurrent launches of that
+# installation share the container's named-object namespace, its profile
+# directory (and therefore each other's private temp), and each other's workdir
+# grant for as long as both are running. See the module docstring.
+_LIMITATION_SHARED_CONTAINER = "concurrent_launches_share_the_container"
 _STATUS_ACCESS_DENIED = -1073741790
 _STATUS_DLL_NOT_FOUND = -1073741515
 _ERROR_ACCESS_DENIED = 5
@@ -54,6 +126,7 @@ _SCAN_ENTRY_LIMIT = 100_000
 _RUNTIME_SCAN_ENTRY_LIMIT = 1_000_000
 
 _ERROR_INSUFFICIENT_BUFFER = 122
+_HRESULT_ALREADY_EXISTS = 0x800700B7  # HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)
 _ERROR_NOT_SUPPORTED = 50
 _ERROR_INVALID_PARAMETER = 87
 _SE_FILE_OBJECT = 1
@@ -279,6 +352,11 @@ def _api() -> _WinApi:
     userenv.CreateAppContainerProfile.restype = ctypes.c_long
     userenv.DeleteAppContainerProfile.argtypes = [wintypes.LPCWSTR]
     userenv.DeleteAppContainerProfile.restype = ctypes.c_long
+    userenv.DeriveAppContainerSidFromAppContainerName.argtypes = [
+        wintypes.LPCWSTR,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    userenv.DeriveAppContainerSidFromAppContainerName.restype = ctypes.c_long
     userenv.GetAppContainerFolderPath.argtypes = [
         wintypes.LPCWSTR,
         ctypes.POINTER(wintypes.LPWSTR),
@@ -492,6 +570,123 @@ def _profile_folder(api: _WinApi, sid_string: str) -> str:
         api.ole32.CoTaskMemFree(value)
 
 
+def _derive_container_sid(moniker: str) -> ctypes.c_void_p:
+    """The package SID of ``moniker``, whether or not its profile exists.
+
+    The SID is a hash of the name, so it survives deleting and recreating the
+    profile. Freed with ``FreeSid``, as the profile SID is.
+    """
+    api = _api()
+    sid = ctypes.c_void_p()
+    result = api.userenv.DeriveAppContainerSidFromAppContainerName(moniker, ctypes.byref(sid))
+    if result != 0 or not sid:
+        raise _hresult_error("DeriveAppContainerSidFromAppContainerName", result)
+    return sid
+
+
+def _is_container_sid_text(text: Any) -> bool:
+    """Whether ``text`` is the SID of a parent AppContainer profile.
+
+    ``S-1-15-2`` with seven further sub-authorities (the documented count of 8
+    includes the base RID) is what ``DeriveAppContainerSidFromAppContainerName``
+    produces. The well-known ambient package SIDs ``S-1-15-2-1`` and
+    ``S-1-15-2-2`` have one, so they can never name a manifest: nothing in this
+    module may drive an ACL revoke against them.
+    """
+    if not isinstance(text, str) or not text.startswith("S-1-15-2-"):
+        return False
+    parts = text.split("-")[4:]
+    return len(parts) == 7 and all(
+        part.isdigit() and 0 <= int(part) <= 0xFFFFFFFF for part in parts
+    )
+
+
+def _install_moniker() -> str:
+    """One AppContainer name per (user, Studio installation), stable across restarts.
+
+    ``CreateAppContainerProfile`` accepts up to 64 characters of
+    ``[-_. A-Za-z0-9]``; this is 39 and uses only dots, hyphens and hex.
+    """
+    try:
+        user = os.getlogin()
+    except OSError:
+        user = ""
+    if not user:
+        user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    profile_root = os.environ.get("LOCALAPPDATA") or ""
+    if profile_root:
+        profile_root = os.path.realpath(profile_root)
+    parts = (
+        os.path.normcase(os.path.realpath(sys.executable)),
+        os.path.normcase(user),
+        os.path.normcase(platform.node()),
+        os.path.normcase(profile_root),
+    )
+    digest = hashlib.sha256("\0".join(parts).encode("utf-8", "surrogatepass")).hexdigest()
+    return _INSTALL_PREFIX + digest[:16]
+
+
+@dataclass(frozen = True)
+class _InstallProfile:
+    """The AppContainer identity shared by every launch of this installation."""
+
+    moniker: str
+    sid: ctypes.c_void_p
+    sid_string: str
+    profile_folder: str
+
+
+_INSTALL_PROFILE: _InstallProfile | None = None
+_INSTALL_PROFILE_LOCK = threading.Lock()
+
+
+def _install_profile() -> _InstallProfile:
+    """Create the installation's profile once, then reuse it for the process lifetime.
+
+    ``ERROR_ALREADY_EXISTS`` is the ordinary outcome from the second Studio start
+    onwards and means "reuse"; the SID is then derived from the name, which
+    returns the same value the first ``CreateAppContainerProfile`` returned.
+    """
+    global _INSTALL_PROFILE
+    with _INSTALL_PROFILE_LOCK:
+        if _INSTALL_PROFILE is not None:
+            return _INSTALL_PROFILE
+        api = _api()
+        moniker = _install_moniker()
+        for last_attempt in (False, True):
+            sid = ctypes.c_void_p()
+            result = ctypes.c_uint32(
+                api.userenv.CreateAppContainerProfile(
+                    moniker,
+                    "Unsloth Studio tool",
+                    "Zero-capability Studio tool container",
+                    None,
+                    0,
+                    ctypes.byref(sid),
+                )
+            ).value
+            if result == _HRESULT_ALREADY_EXISTS:
+                sid = _derive_container_sid(moniker)
+            elif result != 0 or not sid:
+                raise _hresult_error("CreateAppContainerProfile", result)
+            try:
+                sid_text = _sid_string(api, sid)
+                profile_folder = _profile_folder(api, sid_text)
+            except BaseException:
+                api.advapi32.FreeSid(sid)
+                raise
+            if os.path.isdir(profile_folder) or last_attempt:
+                break
+            # Registered, but its storage was deleted behind Windows' back. Only
+            # CreateAppContainerProfile puts the package ACL on that directory, so
+            # recreating it by hand would leave the container unable to read its
+            # own profile. Drop the registration and let the next pass build it.
+            api.advapi32.FreeSid(sid)
+            api.userenv.DeleteAppContainerProfile(moniker)
+        _INSTALL_PROFILE = _InstallProfile(moniker, sid, sid_text, profile_folder)
+        return _INSTALL_PROFILE
+
+
 def _process_identity(pid: int | None = None) -> tuple[int, int] | None:
     api = _api()
     close_handle = pid is not None
@@ -550,13 +745,16 @@ def _validated_private_temp(profile_folder: str, private_temp: str) -> str:
     expected_parent = os.path.join(os.path.realpath(profile_folder), "Temp")
     spelled = os.path.abspath(private_temp)
     name = os.path.basename(spelled)
-    current = os.path.normcase(spelled) == os.path.normcase(expected_parent)
-    # Older manifests owned a random child of Temp. Retain their cleanup path.
-    legacy = (
+    # A launch owns a random child of Temp, never Temp itself: the profile is
+    # shared by every launch of this installation, so deleting Temp would delete
+    # a concurrent launch's directory. Single-use manifests owned Temp itself and
+    # keep their cleanup path.
+    current = (
         os.path.normcase(os.path.dirname(spelled)) == os.path.normcase(expected_parent)
         and len(name) == 24
         and all(character in "0123456789abcdef" for character in name.lower())
     )
+    legacy = os.path.normcase(spelled) == os.path.normcase(expected_parent)
     if not (current or legacy):
         raise SandboxUnavailableError("an LPAC private temp path is outside its profile")
     for root in {expected_parent, spelled}:
@@ -691,6 +889,125 @@ def _existing_access(path: str, sids: tuple[ctypes.c_void_p, ...], required: int
     finally:
         if descriptor:
             api.kernel32.LocalFree(descriptor)
+
+
+_ACCESS_MEMO: dict[tuple[str, int, str, str], tuple[int, bool]] = {}
+_ACCESS_MEMO_LOCK = threading.Lock()
+
+
+def _root_stamp(path: str) -> int:
+    """The directory modification time a memoized access answer is pinned to."""
+    try:
+        return int(os.stat(path).st_mtime_ns)
+    except OSError:
+        return -1
+
+
+def _memoized_existing_access(
+    path: str,
+    sids: tuple[ctypes.c_void_p, ...],
+    required: int,
+    *,
+    sid_text: str,
+    ambient_text: str,
+) -> bool:
+    """``_existing_access`` for a grant that is never revoked while this process lives.
+
+    Only the persistent runtime grants use this. A per-launch ACE is revoked at
+    cleanup, so an answer about one may not be carried into the next launch. The
+    entry is pinned to the root's modification time, so an interpreter upgrade
+    that writes into the root directory forces a fresh DACL read, and a failed
+    ``stat`` is never memoized.
+    """
+    key = (os.path.normcase(path), int(required), sid_text, ambient_text)
+    stamp = _root_stamp(path)
+    if stamp != -1:
+        with _ACCESS_MEMO_LOCK:
+            entry = _ACCESS_MEMO.get(key)
+        if entry is not None and entry[0] == stamp:
+            return entry[1]
+    result = _existing_access(path, sids, required)
+    _memoize_access(path, required, sid_text, ambient_text, result, stamp = stamp)
+    return result
+
+
+def _memoize_access(
+    path: str,
+    required: int,
+    sid_text: str,
+    ambient_text: str,
+    value: bool,
+    *,
+    stamp: int | None = None,
+) -> None:
+    if stamp is None:
+        stamp = _root_stamp(path)
+    if stamp == -1:
+        return
+    with _ACCESS_MEMO_LOCK:
+        _ACCESS_MEMO[(os.path.normcase(path), int(required), sid_text, ambient_text)] = (
+            stamp,
+            value,
+        )
+
+
+_SHARED_GRANTS: dict[str, int] = {}
+_SHARED_GRANTS_LOCK = threading.Lock()
+# One thread at a time reads the persistent manifest, decides what is missing and
+# writes it back, so two concurrent first launches cannot each drop the other's
+# roots from the record (or each pay the same propagation).
+_PERSISTENT_GRANT_LOCK = threading.RLock()
+
+
+def _hold_shared_grants(paths: tuple[str, ...]) -> None:
+    """Record that one more live launch of this installation needs these ACEs.
+
+    Every launch of an installation now carries the same SID, so a per-launch
+    revoke would remove an ACE a concurrent launch is still using. The count is
+    per process; a launch left behind by a crashed Studio is reconciled from its
+    manifest instead.
+    """
+    with _SHARED_GRANTS_LOCK:
+        for path in paths:
+            key = os.path.normcase(path)
+            _SHARED_GRANTS[key] = _SHARED_GRANTS.get(key, 0) + 1
+
+
+def _held_shared_grants() -> frozenset[str]:
+    """The paths a live launch of this process is relying on right now."""
+    with _SHARED_GRANTS_LOCK:
+        return frozenset(key for key, count in _SHARED_GRANTS.items() if count > 0)
+
+
+def _release_shared_grants(paths: tuple[str, ...]) -> set[str]:
+    """Drop this launch's hold and return the paths no live launch needs any more."""
+    released: set[str] = set()
+    with _SHARED_GRANTS_LOCK:
+        for path in paths:
+            key = os.path.normcase(path)
+            remaining = _SHARED_GRANTS.get(key, 1) - 1
+            if remaining > 0:
+                _SHARED_GRANTS[key] = remaining
+                continue
+            _SHARED_GRANTS.pop(key, None)
+            released.add(key)
+    return released
+
+
+def _container_owned(path: str, profile_folder: str) -> bool:
+    """Whether Windows, and not this module, put the package SID on ``path``.
+
+    ``CreateAppContainerProfile`` builds ``...\\Packages\\<moniker>`` with an ACE
+    for the package SID, and everything under it inherits that ACE. Granting
+    there is unnecessary, and revoking there would strip the container's access
+    to its own storage, so those paths never enter a revoke list. The profile
+    used to be deleted at every launch, which hid this.
+    """
+    package = os.path.dirname(os.path.realpath(profile_folder))
+    drive, tail = os.path.splitdrive(package)
+    if not package or tail in ("", "\\", "/"):
+        return False
+    return _is_within(path, package)
 
 
 def _machine_wide(path: str) -> bool:
@@ -1042,13 +1359,33 @@ class _InvocationIdentity:
     cleaned: bool = False
     profile: str = _PROFILE_LPAC
     unverified_access: tuple[str, ...] = ()
+    workdir: str = ""
+    launch_id: str = ""
+    # Paths whose ACE another live launch of this installation may still need.
+    shared_roots: tuple[str, ...] = ()
+    # Only a single-use profile, the shape that predates the stable identity,
+    # is deleted and has its SID freed by whoever reconciles its manifest.
+    delete_profile: bool = False
+    free_sid: bool = False
+    _released: set[str] | None = field(default = None, repr = False, compare = False)
 
     def cleanup(self) -> None:
         if self.cleaned:
             return
         errors: list[str] = []
+        targets = self.granted_roots
+        if self.shared_roots:
+            if self._released is None:
+                self._released = _release_shared_grants(self.shared_roots)
+            shared = {os.path.normcase(path) for path in self.shared_roots}
+            targets = tuple(
+                path
+                for path in self.granted_roots
+                if os.path.normcase(path) not in shared
+                or os.path.normcase(path) in self._released
+            )
         traverse = {os.path.normcase(path) for path in self.traverse_roots}
-        for path in reversed(self.granted_roots):
+        for path in reversed(targets):
             try:
                 _revoke_sid(path, self.sid, exact = os.path.normcase(path) in traverse)
             except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
@@ -1062,85 +1399,432 @@ class _InvocationIdentity:
             errors.append(f"temp {self.private_temp}: {exc}")
         if errors:
             raise OSError("; ".join(errors))
-        result = _api().userenv.DeleteAppContainerProfile(self.moniker)
-        unsigned_result = ctypes.c_uint32(result).value
-        if unsigned_result not in (0, 0x80070002):
-            raise OSError(f"DeleteAppContainerProfile: 0x{unsigned_result:08x}")
+        if self.delete_profile:
+            result = _api().userenv.DeleteAppContainerProfile(self.moniker)
+            unsigned_result = ctypes.c_uint32(result).value
+            if unsigned_result not in (0, 0x80070002):
+                raise OSError(f"DeleteAppContainerProfile: 0x{unsigned_result:08x}")
         try:
             os.unlink(self.manifest_path)
         except FileNotFoundError:
             pass
         except OSError as exc:
             raise OSError(f"manifest: {exc}") from exc
-        _api().advapi32.FreeSid(self.sid)
-        self.sid = ctypes.c_void_p()
+        if self.free_sid:
+            _api().advapi32.FreeSid(self.sid)
+            self.sid = ctypes.c_void_p()
         self.cleaned = True
 
 
+def _atomic_write_manifest(path: str, payload: dict[str, Any]) -> None:
+    """Replace ``path`` with ``payload``, leaving either the old file or the new one.
+
+    The temporary name carries its own random suffix. The persistent manifest has
+    a fixed name, and an interrupted write must not make every later write fail
+    with ``FileExistsError``; the leftover is swept by the next reconciliation.
+    """
+    temporary = f"{path}.{secrets.token_hex(8)}.tmp"
+    try:
+        with open(temporary, "x", encoding = "utf-8") as stream:
+            json.dump(payload, stream, sort_keys = True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 def _write_manifest(identity: _InvocationIdentity) -> None:
+    """Record what one launch owns, before it is granted anything."""
     payload = {
         "version": 1,
+        "kind": _MANIFEST_KIND_LAUNCH,
         "moniker": identity.moniker,
+        "launch_id": identity.launch_id,
         "sid": identity.sid_string,
         "profile_folder": identity.profile_folder,
         "private_temp": identity.private_temp,
+        "workdir": identity.workdir,
         "granted_roots": list(identity.granted_roots),
         "traverse_roots": list(identity.traverse_roots),
         "owner_pid": identity.owner_pid,
         "owner_created": identity.owner_created,
     }
-    temporary = identity.manifest_path + ".tmp"
-    with open(temporary, "x", encoding = "utf-8") as stream:
-        json.dump(payload, stream, sort_keys = True)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, identity.manifest_path)
+    _atomic_write_manifest(identity.manifest_path, payload)
 
 
-def _create_identity(granted_roots: tuple[str, ...]) -> _InvocationIdentity:
-    api = _api()
-    moniker = _PROFILE_PREFIX + secrets.token_hex(16)
-    sid = ctypes.c_void_p()
-    result = api.userenv.CreateAppContainerProfile(
-        moniker,
-        "Unsloth Studio tool",
-        "Transient zero-capability Studio LPAC",
-        None,
-        0,
-        ctypes.byref(sid),
+def _persistent_manifest_path(moniker: str) -> str:
+    return os.path.join(_manifest_root(), moniker + ".json")
+
+
+def _write_persistent_manifest(
+    install: _InstallProfile,
+    granted_roots: tuple[str, ...],
+    traverse_roots: tuple[str, ...],
+) -> None:
+    """Record the installation-wide grants, before they are made.
+
+    No owning process is recorded on purpose: the grant outlives the process that
+    made it and is released by ``remove_persistent_grants`` or by a reconciliation
+    that finds the recorded interpreter gone.
+    """
+    payload = {
+        "version": 1,
+        "kind": _MANIFEST_KIND_PERSISTENT,
+        "moniker": install.moniker,
+        "sid": install.sid_string,
+        "profile_folder": install.profile_folder,
+        "interpreter": os.path.realpath(sys.executable),
+        "granted_roots": list(granted_roots),
+        "traverse_roots": list(traverse_roots),
+    }
+    _atomic_write_manifest(_persistent_manifest_path(install.moniker), payload)
+
+
+def _is_hex(value: Any, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
     )
-    if result != 0 or not sid:
-        raise _hresult_error("CreateAppContainerProfile", result)
+
+
+def _absolute_string_list(value: Any) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(path, str) and os.path.isabs(path) for path in value
+    )
+
+
+def _is_ancestor_of_any(path: str, targets: tuple[str, ...]) -> bool:
+    normalized = os.path.normcase(os.path.abspath(path))
+    for target in targets:
+        current = os.path.normcase(os.path.abspath(target))
+        parent = os.path.dirname(current)
+        while parent != current:
+            current = parent
+            if current == normalized:
+                return True
+            parent = os.path.dirname(current)
+    return False
+
+
+def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
+    """The validated payload of a manifest, or ``None`` when it is not one of ours.
+
+    Reconciliation revokes an ACE on every path a manifest names, so a manifest
+    this process did not write must not be able to name an arbitrary path or an
+    arbitrary principal. Two invariants bound that. The SID must be a parent
+    AppContainer SID, and the caller checks it against the SID derived from the
+    moniker, which is constrained to the ``unsloth.studio.`` namespace: no real
+    application package, and no account, can be named that way. And a launch
+    manifest may only name its workdir, its private temp, and their ancestors.
+    """
+    try:
+        payload = json.loads(manifest.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return None
+    moniker = payload.get("moniker")
+    roots = payload.get("granted_roots")
+    traverse = payload.get("traverse_roots", [])
+    private_temp = payload.get("private_temp")
+    profile_folder = payload.get("profile_folder")
+    kind = payload.get("kind", _MANIFEST_KIND_SINGLE_USE)
+    if (
+        not isinstance(moniker, str)
+        or not moniker.startswith(_PROFILE_PREFIX)
+        or not _is_container_sid_text(payload.get("sid"))
+        or not _absolute_string_list(roots)
+        or not _absolute_string_list(traverse)
+        or not isinstance(profile_folder, str)
+        or not os.path.isabs(profile_folder)
+    ):
+        return None
+    if kind == _MANIFEST_KIND_PERSISTENT:
+        interpreter = payload.get("interpreter")
+        if (
+            not moniker.startswith(_INSTALL_PREFIX)
+            or manifest.name != moniker + ".json"
+            or not isinstance(interpreter, str)
+            or not os.path.isabs(interpreter)
+        ):
+            return None
+        return {**payload, "kind": kind, "traverse_roots": traverse}
+    if (
+        not isinstance(private_temp, str)
+        or not os.path.isabs(private_temp)
+        or not isinstance(payload.get("owner_pid"), int)
+        or not isinstance(payload.get("owner_created"), int)
+    ):
+        return None
+    if kind == _MANIFEST_KIND_LAUNCH:
+        workdir = payload.get("workdir")
+        if (
+            not moniker.startswith(_INSTALL_PREFIX)
+            or not _is_hex(payload.get("launch_id"), 32)
+            or manifest.name != _LAUNCH_PREFIX + payload["launch_id"] + ".json"
+            or not isinstance(workdir, str)
+            or not os.path.isabs(workdir)
+            # A launch owns a random child of the container's Temp, never Temp
+            # itself: reconciling one must not delete a concurrent launch's
+            # directory. Only a single-use manifest may name Temp.
+            or not _is_hex(os.path.basename(private_temp), 24)
+            or os.path.normcase(os.path.dirname(private_temp))
+            != os.path.normcase(os.path.join(profile_folder, "Temp"))
+        ):
+            return None
+        # A launch grants, and so revokes, its workdir and the ancestors it had
+        # to make traversable. Its private temp is deleted rather than revoked,
+        # and is pinned to the profile the SID resolves to by the caller.
+        if {os.path.normcase(path) for path in roots} != {os.path.normcase(workdir)} | {
+            os.path.normcase(path) for path in traverse
+        }:
+            return None
+        if any(not _is_ancestor_of_any(path, (workdir, private_temp)) for path in traverse):
+            return None
+        return {**payload, "kind": kind, "traverse_roots": traverse}
+    if kind == _MANIFEST_KIND_SINGLE_USE:
+        # Written before the stable identity: one random profile per launch, its
+        # manifest named after that moniker, and the profile is its to delete.
+        if (
+            "kind" in payload
+            or moniker.startswith(_INSTALL_PREFIX)
+            or moniker.startswith(_LAUNCH_PREFIX)
+            or manifest.name != moniker + ".json"
+        ):
+            return None
+        return {**payload, "kind": kind, "traverse_roots": traverse}
+    return None
+
+
+def _remove_orphan_temporary_manifests(root: str) -> None:
+    """Delete what a crash between ``open`` and ``os.replace`` left behind."""
+    for temporary in Path(root).glob(_PROFILE_PREFIX + "*.tmp"):
+        try:
+            if time.time() - temporary.stat().st_mtime <= _ORPHAN_TEMPORARY_MANIFEST_SECONDS:
+                continue
+            temporary.unlink()
+        except OSError:
+            logger.warning(
+                "Could not remove the orphaned LPAC manifest %s", temporary, exc_info = True
+            )
+
+
+@dataclass(frozen = True)
+class _PersistentGrants:
+    """What the installation already holds, so a launch does not repeat it."""
+
+    paths: frozenset[str]
+    unverified: tuple[str, ...]
+
+
+def _read_persistent_manifest(moniker: str) -> dict[str, Any] | None:
+    manifest = Path(_persistent_manifest_path(moniker))
+    if not manifest.is_file():
+        return None
+    payload = _parse_manifest(manifest)
+    if payload is None or payload["kind"] != _MANIFEST_KIND_PERSISTENT:
+        return None
+    return payload if payload["moniker"] == moniker else None
+
+
+def _ensure_persistent_grants(
+    install: _InstallProfile, roots: tuple[str, ...], profile: str
+) -> _PersistentGrants:
+    """Grant read+execute on the runtime roots once per installation, and keep it.
+
+    This is the 14 s that used to be paid on every tool call: propagating a fresh
+    package SID over the interpreter tree. The SID is now stable, so the grant is
+    made only when the DACL does not already carry it, is recorded in a manifest
+    no launch cleanup touches, and is released only by ``remove_persistent_grants``
+    or by a reconciliation that finds the recorded interpreter gone. A launch that
+    needs a runtime root the installation has not seen (a Terminal call reaching
+    Git bash after a Python call) pays for that root once and appends it.
+    """
+    temp_root = os.path.join(install.profile_folder, "Temp")
+    traverse = tuple(
+        path
+        for path in _traverse_ancestors((*roots, temp_root))
+        if not _container_owned(path, install.profile_folder)
+    )
+    ambient_text = _ambient_sid_text(profile)
+    read_execute = _FILE_GENERIC_READ | _FILE_GENERIC_EXECUTE
+    unverified: list[str] = []
+    with _PERSISTENT_GRANT_LOCK, _well_known_sid(ambient_text) as ambient:
+        recorded = _read_persistent_manifest(install.moniker) or {}
+        sids = (install.sid, ambient)
+
+        def resolved(path: str, required: int) -> bool:
+            return _memoized_existing_access(
+                path,
+                sids,
+                required,
+                sid_text = install.sid_string,
+                ambient_text = ambient_text,
+            )
+
+        missing_roots = tuple(path for path in roots if not resolved(path, read_execute))
+        missing_traverse = tuple(path for path in traverse if not resolved(path, _FILE_TRAVERSE))
+        granted_all = tuple(dict.fromkeys((*recorded.get("granted_roots", ()), *missing_roots)))
+        traverse_all = tuple(
+            dict.fromkeys((*recorded.get("traverse_roots", ()), *missing_traverse))
+        )
+        if missing_roots or missing_traverse:
+            if missing_roots:
+                # Only a tree that is about to receive a propagating ACE is
+                # walked. A tree this installation already granted is not walked
+                # again: nothing is written to it, so a reparse point planted
+                # afterwards cannot redirect an ACE that is not being applied.
+                # A traverse ACE is exact and applies to the directory alone.
+                _validate_runtime_trees(missing_roots)
+            _write_persistent_manifest(install, granted_all, traverse_all)
+            for path, grant, required in (
+                *((path, _grant_read_execute, read_execute) for path in missing_roots),
+                *((path, _grant_traverse, _FILE_TRAVERSE) for path in missing_traverse),
+            ):
+                try:
+                    grant(path, install.sid)
+                except OSError as exc:
+                    if exc.errno == _ERROR_ACCESS_DENIED and _machine_wide(path):
+                        # Windows owns this tree and already ACLs it for
+                        # application packages. Record the refusal once instead of
+                        # re-walking and re-attempting it on every later launch.
+                        unverified.append(path)
+                        _memoize_access(path, required, install.sid_string, ambient_text, True)
+                        continue
+                    raise
+                _memoize_access(path, required, install.sid_string, ambient_text, True)
+    return _PersistentGrants(
+        frozenset(os.path.normcase(path) for path in (*granted_all, *traverse_all)),
+        tuple(unverified),
+    )
+
+
+def _revoke_persistent_manifest(manifest: Path, payload: dict[str, Any]) -> None:
+    """Revoke every grant a persistent manifest records, then delete the manifest."""
+    sid = _derive_container_sid(payload["moniker"])
+    try:
+        if _sid_string(_api(), sid) != payload["sid"]:
+            raise SandboxUnavailableError(
+                "the LPAC persistent manifest SID does not match its profile name"
+            )
+        traverse = {os.path.normcase(path) for path in payload["traverse_roots"]}
+        errors: list[str] = []
+        for path in (*payload["granted_roots"], *payload["traverse_roots"]):
+            try:
+                _revoke_sid(path, sid, exact = os.path.normcase(path) in traverse)
+            except Exception as exc:  # noqa: BLE001 - keep revoking the rest
+                errors.append(f"ACL {path}: {exc}")
+        if errors:
+            raise OSError("; ".join(errors))
+    finally:
+        _api().advapi32.FreeSid(sid)
+    try:
+        manifest.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _remove_persistent_grants(*, all_installations: bool = False) -> tuple[str, ...]:
+    """Revoke the installation-wide grants and delete its container profile.
+
+    For uninstall or a deliberate reset. The next launch recreates the profile and
+    pays the interpreter grant once more; the SID is unchanged, because it is
+    derived from the profile name.
+    """
+    global _INSTALL_PROFILE
+    root = _manifest_root()
+    moniker = _install_moniker()
+    removed: list[str] = []
+    for manifest in sorted(Path(root).glob(_INSTALL_PREFIX + "*.json")):
+        payload = _parse_manifest(manifest)
+        if payload is None or payload["kind"] != _MANIFEST_KIND_PERSISTENT:
+            continue
+        if not all_installations and payload["moniker"] != moniker:
+            continue
+        _revoke_persistent_manifest(manifest, payload)
+        result = ctypes.c_uint32(
+            _api().userenv.DeleteAppContainerProfile(payload["moniker"])
+        ).value
+        if result not in (0, 0x80070002):
+            raise OSError(f"DeleteAppContainerProfile: 0x{result:08x}")
+        removed.append(payload["moniker"])
+    with _INSTALL_PROFILE_LOCK:
+        if _INSTALL_PROFILE is not None and (
+            all_installations or _INSTALL_PROFILE.moniker == moniker
+        ):
+            # The SID is deliberately not freed: a launch of this process may
+            # still hold it. Deriving the name again returns the same value.
+            _INSTALL_PROFILE = None
+    with _ACCESS_MEMO_LOCK:
+        _ACCESS_MEMO.clear()
+    return tuple(removed)
+
+
+def _create_identity(
+    install: _InstallProfile, workdir: str, *, already_granted: frozenset[str]
+) -> _InvocationIdentity:
+    """The per-launch state inside the installation's container.
+
+    A random private temp directory, a write-ahead manifest, and a hold on every
+    ACE this launch shares with concurrent launches of the same installation.
+    """
+    launch_id = secrets.token_hex(16)
     private_temp = ""
     manifest_path = ""
+    granted_roots: tuple[str, ...] = ()
+    held = False
     try:
-        sid_text = _sid_string(api, sid)
-        profile_folder = _profile_folder(api, sid_text)
-        # Windows redirects TEMP/TMP to this exact directory. The profile itself
-        # has a new random identity for every invocation; it is never reused.
-        private_temp = os.path.join(profile_folder, "Temp")
-        os.makedirs(private_temp, mode = 0o700, exist_ok = True)
-        _validated_private_temp(profile_folder, private_temp)
-        manifest_path = os.path.join(_manifest_root(), moniker + ".json")
-        permission_roots = (*granted_roots, private_temp)
+        temp_root = os.path.join(install.profile_folder, "Temp")
+        os.makedirs(temp_root, mode = 0o700, exist_ok = True)
+        # A fresh child of Temp, never Temp itself: the profile is shared with
+        # every concurrent launch, and TEMP/TMP point at this directory alone.
+        private_temp = os.path.join(temp_root, secrets.token_hex(12))
+        os.makedirs(private_temp, mode = 0o700)
+        _validated_private_temp(install.profile_folder, private_temp)
+        manifest_path = os.path.join(_manifest_root(), _LAUNCH_PREFIX + launch_id + ".json")
+        traverse_roots = tuple(
+            path
+            for path in _traverse_ancestors((workdir, private_temp))
+            if os.path.normcase(path) not in already_granted
+            and not _container_owned(path, install.profile_folder)
+        )
+        # The private temp is granted but not listed: it is deleted at cleanup,
+        # and it is inside the package directory Windows ACLs for the container.
+        granted_roots = (workdir, *traverse_roots)
+        # The private temp is held too, so that a manifest naming it cannot make
+        # a reconciliation delete a running launch's directory.
+        shared_roots = (*granted_roots, private_temp)
         owner = _process_identity()
         if owner is None:
             raise SandboxUnavailableError("LPAC could not record its owning process identity")
+        _hold_shared_grants(shared_roots)
+        held = True
         identity = _InvocationIdentity(
-            moniker,
-            sid,
-            sid_text,
-            profile_folder,
+            install.moniker,
+            install.sid,
+            install.sid_string,
+            install.profile_folder,
             private_temp,
             manifest_path,
-            (*permission_roots, *_traverse_ancestors(permission_roots)),
-            _traverse_ancestors(permission_roots),
+            granted_roots,
+            traverse_roots,
             owner[0],
             owner[1],
+            workdir = workdir,
+            launch_id = launch_id,
+            shared_roots = shared_roots,
         )
         _write_manifest(identity)
         return identity
     except Exception:
+        if held:
+            _release_shared_grants((*granted_roots, private_temp))
         if manifest_path:
             try:
                 os.unlink(manifest_path)
@@ -1148,8 +1832,6 @@ def _create_identity(granted_roots: tuple[str, ...]) -> _InvocationIdentity:
                 pass
         if private_temp:
             shutil.rmtree(private_temp, ignore_errors = True)
-        api.userenv.DeleteAppContainerProfile(moniker)
-        api.advapi32.FreeSid(sid)
         raise
 
 
@@ -1797,7 +2479,11 @@ class WindowsLpacBackend:
                     available = True,
                     protection_state = "preview",
                     profile_id = _PROFILE_ID,
-                    limitations = (_LIMITATION_NULL_DEVICE_PIPES, *self._last_probe_limitations),
+                    limitations = (
+                        _LIMITATION_NULL_DEVICE_PIPES,
+                        _LIMITATION_SHARED_CONTAINER,
+                        *self._last_probe_limitations,
+                    ),
                 )
             returncode, reason = outcome
             if returncode in (_STATUS_ACCESS_DENIED, _STATUS_DLL_NOT_FOUND):
@@ -1819,6 +2505,7 @@ class WindowsLpacBackend:
                         limitations = (
                             _LIMITATION_AMBIENT_READ,
                             _LIMITATION_NULL_DEVICE_PIPES,
+                            _LIMITATION_SHARED_CONTAINER,
                             *self._last_probe_limitations,
                         ),
                     )
@@ -1938,26 +2625,23 @@ class WindowsLpacBackend:
         argv = _canonical_inner_argv(spec.argv, spec.env)
         runtime_roots = _runtime_roots(workdir, argv)
         acl_runtime_roots = tuple(path for path in runtime_roots if _needs_explicit_acl(path))
-        _validate_runtime_trees(acl_runtime_roots)
-        identity = _create_identity((*acl_runtime_roots, workdir))
+        install = _install_profile()
+        # The runtime grant belongs to the installation and survives this launch;
+        # only the workdir, the private temp and their remaining ancestors are
+        # granted and revoked here.
+        persistent = _ensure_persistent_grants(install, acl_runtime_roots, profile)
+        identity = _create_identity(install, workdir, already_granted = persistent.paths)
         identity.profile = profile
         try:
-            unverified: list[str] = []
+            unverified: list[str] = list(persistent.unverified)
             with _well_known_sid(_ambient_sid_text(profile)) as ambient:
                 sids = (identity.sid, ambient)
-                for root in acl_runtime_roots:
-                    if _existing_access(root, sids, _FILE_GENERIC_READ | _FILE_GENERIC_EXECUTE):
-                        continue
-                    try:
-                        _grant_read_execute(root, identity.sid)
-                    except OSError as exc:
-                        if exc.errno == _ERROR_ACCESS_DENIED and _machine_wide(root):
-                            unverified.append(root)
-                            continue
-                        raise
                 _grant_modify(workdir, identity.sid)
                 _grant_modify(identity.private_temp, identity.sid)
                 for root in identity.traverse_roots:
+                    # Deliberately not memoized: this ACE is revoked when the last
+                    # launch holding it finishes, so an answer from an earlier
+                    # launch would be stale.
                     if _existing_access(root, sids, _FILE_TRAVERSE):
                         continue
                     try:
@@ -1989,81 +2673,101 @@ class WindowsLpacBackend:
             identity.cleanup()
             raise
 
+    def remove_persistent_grants(self, *, all_installations: bool = False) -> tuple[str, ...]:
+        """Release everything this installation holds outside a single launch.
+
+        The interpreter tree grant and the container profile itself. Intended for
+        uninstall or a deliberate reset; a launch pays the grant again afterwards.
+        Returns the profile names that were released.
+        """
+        return _remove_persistent_grants(all_installations = all_installations)
+
     def reconcile_stale_manifests(self) -> None:
+        """Release what a crashed Studio left behind, and nothing that is still in use.
+
+        Per-launch grants of a dead owner are revoked and their private temps
+        removed. The installation-wide grant has no owning process by design: it
+        is kept while the interpreter it was made for still exists, and revoked
+        when it does not, which is what an uninstalled or relocated runtime looks
+        like from here.
+        """
         root = _manifest_root()
-        for manifest in Path(root).glob(_PROFILE_PREFIX + "*.json"):
+        _remove_orphan_temporary_manifests(root)
+        for manifest in sorted(Path(root).glob(_PROFILE_PREFIX + "*.json")):
             try:
-                payload = json.loads(manifest.read_text(encoding = "utf-8"))
-                moniker = payload.get("moniker")
-                sid_text = payload.get("sid")
-                roots = payload.get("granted_roots")
-                traverse_roots = payload.get("traverse_roots", [])
-                private_temp = payload.get("private_temp")
-                profile_folder = payload.get("profile_folder")
-                owner_pid = payload.get("owner_pid")
-                owner_created = payload.get("owner_created")
-                if (
-                    payload.get("version") != 1
-                    or not isinstance(moniker, str)
-                    or not moniker.startswith(_PROFILE_PREFIX)
-                    or manifest.name != moniker + ".json"
-                    or not isinstance(sid_text, str)
-                    or not sid_text.startswith("S-1-15-2-")
-                    or not isinstance(roots, list)
-                    or not all(isinstance(path, str) and os.path.isabs(path) for path in roots)
-                    or not isinstance(traverse_roots, list)
-                    or not all(
-                        isinstance(path, str) and os.path.isabs(path) for path in traverse_roots
-                    )
-                    or not isinstance(private_temp, str)
-                    or not os.path.isabs(private_temp)
-                    or not isinstance(profile_folder, str)
-                    or not os.path.isabs(profile_folder)
-                    or not isinstance(owner_pid, int)
-                    or not isinstance(owner_created, int)
-                ):
+                payload = _parse_manifest(manifest)
+                if payload is None:
                     continue
-                if _process_identity(owner_pid) == (owner_pid, owner_created):
+                if payload["kind"] == _MANIFEST_KIND_PERSISTENT:
+                    if os.path.exists(payload["interpreter"]):
+                        continue
+                    _revoke_persistent_manifest(manifest, payload)
                     continue
-                sid = ctypes.c_void_p()
-                derive = _api().userenv.DeriveAppContainerSidFromAppContainerName
-                derive.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
-                derive.restype = ctypes.c_long
-                result = derive(moniker, ctypes.byref(sid))
-                if result != 0 or not sid:
+                owner = (payload["owner_pid"], payload["owner_created"])
+                if _process_identity(owner[0]) == owner:
                     continue
-                if _sid_string(_api(), sid) != sid_text:
-                    _api().advapi32.FreeSid(sid)
-                    continue
-                try:
-                    derived_profile = _profile_folder(_api(), sid_text)
-                    if os.path.normcase(os.path.realpath(profile_folder)) != os.path.normcase(
-                        derived_profile
-                    ):
-                        raise SandboxUnavailableError(
-                            "the LPAC manifest profile folder does not match its SID"
-                        )
-                    _validated_private_temp(derived_profile, private_temp)
-                except BaseException:
-                    _api().advapi32.FreeSid(sid)
-                    raise
-                identity = _InvocationIdentity(
-                    moniker,
-                    sid,
-                    sid_text,
-                    derived_profile,
-                    private_temp,
-                    str(manifest),
-                    tuple(roots),
-                    tuple(traverse_roots),
-                    owner_pid,
-                    owner_created,
-                )
-                identity.cleanup()
+                self._reconcile_launch_manifest(manifest, payload)
             except Exception:
                 # A stale record is retained for the next startup; never delete
                 # evidence or reuse its identity after partial reconciliation.
+                logger.warning(
+                    "Could not reconcile the LPAC manifest %s", manifest, exc_info = True
+                )
                 continue
+
+    def _reconcile_launch_manifest(self, manifest: Path, payload: dict[str, Any]) -> None:
+        """Revoke one dead launch's grants and remove its private temp.
+
+        A path a live launch of this process is holding is left alone: launches
+        of one installation share a SID, and a workdir is per chat session, so a
+        crashed Studio's manifest can name the directory a running call is using.
+        That launch revokes it when it finishes, and a manifest that names a
+        running launch's private temp is skipped entirely. The same overlap
+        between two live Studio processes of one installation is not visible from
+        here, and the ACE is then restored by the next launch that needs it.
+        """
+        single_use = payload["kind"] == _MANIFEST_KIND_SINGLE_USE
+        held = _held_shared_grants()
+        if os.path.normcase(payload["private_temp"]) in held:
+            return  # a running launch of this process owns it
+        granted_roots = tuple(
+            path for path in payload["granted_roots"] if os.path.normcase(path) not in held
+        )
+        sid = _derive_container_sid(payload["moniker"])
+        try:
+            if _sid_string(_api(), sid) != payload["sid"]:
+                raise SandboxUnavailableError("the LPAC manifest SID does not match its moniker")
+            derived_profile = _profile_folder(_api(), payload["sid"])
+            if os.path.normcase(os.path.realpath(payload["profile_folder"])) != os.path.normcase(
+                derived_profile
+            ):
+                raise SandboxUnavailableError(
+                    "the LPAC manifest profile folder does not match its SID"
+                )
+            _validated_private_temp(derived_profile, payload["private_temp"])
+            identity = _InvocationIdentity(
+                payload["moniker"],
+                sid,
+                payload["sid"],
+                derived_profile,
+                payload["private_temp"],
+                str(manifest),
+                granted_roots,
+                tuple(payload["traverse_roots"]),
+                payload["owner_pid"],
+                payload["owner_created"],
+                workdir = payload.get("workdir", ""),
+                launch_id = payload.get("launch_id", ""),
+                # The owner is gone, so no live launch of this process shares
+                # these ACEs; the profile is this manifest's to delete only when
+                # the manifest is one of the single-use ones.
+                delete_profile = single_use,
+                free_sid = True,
+            )
+        except BaseException:
+            _api().advapi32.FreeSid(sid)
+            raise
+        identity.cleanup()
 
 
 __all__ = ["WindowsLpacBackend", "WindowsLpacProcess"]

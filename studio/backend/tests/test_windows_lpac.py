@@ -14,6 +14,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import socket
 import statistics
 import subprocess
@@ -381,7 +382,11 @@ def test_native_shell_temp_matches_launch_plan_and_is_removed(tmp_path):
         finally:
             prepared.cleanup()
         assert not prepared.cleanup_diagnostics
-        assert not private.exists() and not profile.exists() and not manifest.exists()
+        assert not private.exists() and not manifest.exists()
+        # The container is per installation now, so its profile outlives the
+        # launch; only what the launch owns inside it is removed.
+        assert identity.moniker == windows_lpac._install_moniker()
+        assert profile.is_dir()
         previous = private
 
 
@@ -577,8 +582,11 @@ def test_revoke_present_sid_preserves_another_invocation_grant(tmp_path):
         assert not _path_contains_sid(tmp_path, second)
 
 
-def test_identity_cleanup_is_lifo_and_removes_only_its_sid(monkeypatch):
-    events: list[tuple[object, ...]] = []
+_CONTAINER_SID = "S-1-15-2-11-22-33-44-55-66-77"
+_INSTALL_MONIKER = "unsloth.studio.sandbox.0123456789abcdef"
+
+
+def _cleanup_recorder(monkeypatch, events):
     sid = ctypes.c_void_p(1234)
     api = SimpleNamespace(
         userenv = SimpleNamespace(
@@ -587,6 +595,7 @@ def test_identity_cleanup_is_lifo_and_removes_only_its_sid(monkeypatch):
         advapi32 = SimpleNamespace(FreeSid = lambda value: events.append(("sid", value.value))),
     )
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
+    monkeypatch.setattr(windows_lpac, "_SHARED_GRANTS", {})
     monkeypatch.setattr(
         windows_lpac,
         "_revoke_sid",
@@ -597,102 +606,198 @@ def test_identity_cleanup_is_lifo_and_removes_only_its_sid(monkeypatch):
     )
     monkeypatch.setattr(windows_lpac.os, "unlink", lambda path: events.append(("manifest", path)))
     monkeypatch.setattr(windows_lpac, "_validated_private_temp", lambda _profile, private: private)
+    return sid
+
+
+def test_launch_cleanup_is_lifo_and_leaves_the_shared_profile_and_sid_alone(monkeypatch):
+    events: list[tuple[object, ...]] = []
+    sid = _cleanup_recorder(monkeypatch, events)
     identity = windows_lpac._InvocationIdentity(
-        "unsloth.studio.test",
+        _INSTALL_MONIKER,
         sid,
-        "S-1-15-2-1234",
+        _CONTAINER_SID,
         "profile",
         "private",
         "owned.json",
-        ("runtime", "work", "ancestor"),
+        ("work", "private", "ancestor"),
         ("ancestor",),
         100,
         200,
+        workdir = "work",
+        launch_id = "a" * 32,
+        shared_roots = ("work", "private", "ancestor"),
     )
+    windows_lpac._hold_shared_grants(identity.shared_roots)
 
     identity.cleanup()
 
     assert events == [
         ("acl", "ancestor", 1234, True),
+        ("acl", "private", 1234, False),
+        ("acl", "work", 1234, False),
+        ("temp", "private"),
+        ("manifest", "owned.json"),
+    ]
+    # The profile and its SID belong to the installation, not to this launch.
+    assert identity.cleaned is True
+    assert identity.sid.value == 1234
+    assert not windows_lpac._SHARED_GRANTS
+
+
+def test_a_single_use_identity_still_deletes_its_profile_and_frees_its_sid(monkeypatch):
+    events: list[tuple[object, ...]] = []
+    sid = _cleanup_recorder(monkeypatch, events)
+    identity = windows_lpac._InvocationIdentity(
+        "unsloth.studio.deadbeef",
+        sid,
+        _CONTAINER_SID,
+        "profile",
+        "private",
+        "owned.json",
+        ("runtime", "work"),
+        (),
+        100,
+        200,
+        delete_profile = True,
+        free_sid = True,
+    )
+
+    identity.cleanup()
+
+    assert events == [
         ("acl", "work", 1234, False),
         ("acl", "runtime", 1234, False),
         ("temp", "private"),
-        ("profile", "unsloth.studio.test"),
+        ("profile", "unsloth.studio.deadbeef"),
         ("manifest", "owned.json"),
         ("sid", 1234),
     ]
     assert identity.cleaned is True
 
 
-def test_reconciliation_accepts_only_owned_well_formed_manifests(monkeypatch, tmp_path):
-    sid_text = "S-1-15-2-4242"
-    valid = tmp_path / "unsloth.studio.valid.json"
-    invalid = tmp_path / "unsloth.studio.forged.json"
-    escaped = tmp_path / "unsloth.studio.escaped.json"
-    active = tmp_path / "unsloth.studio.active.json"
+def _manifest_payloads(tmp_path):
     profile = tmp_path / "profile"
-    payload = {
+    work = tmp_path / "work"
+    single_use = {
         "version": 1,
         "moniker": "unsloth.studio.valid",
-        "sid": sid_text,
+        "sid": _CONTAINER_SID,
         "profile_folder": str(profile),
         "private_temp": str(profile / "Temp" / ("a" * 24)),
-        "granted_roots": [str(tmp_path / "work")],
+        "granted_roots": [str(work)],
         "traverse_roots": [str(tmp_path)],
         "owner_pid": 111,
         "owner_created": 222,
     }
-    valid.write_text(json.dumps(payload), encoding = "utf-8")
-    invalid.write_text(json.dumps({**payload, "moniker": "foreign.profile"}), encoding = "utf-8")
-    escaped.write_text(
-        json.dumps(
-            {
-                **payload,
-                "moniker": "unsloth.studio.escaped",
-                "private_temp": str(tmp_path / ("b" * 24)),
-            }
-        ),
-        encoding = "utf-8",
-    )
-    active.write_text(
-        json.dumps(
-            {**payload, "moniker": "unsloth.studio.active", "owner_pid": 333, "owner_created": 444}
-        ),
-        encoding = "utf-8",
-    )
+    launch = {
+        "version": 1,
+        "kind": "lpac-launch",
+        "moniker": _INSTALL_MONIKER,
+        "launch_id": "b" * 32,
+        "sid": _CONTAINER_SID,
+        "profile_folder": str(profile),
+        "private_temp": str(profile / "Temp" / ("c" * 24)),
+        "workdir": str(work),
+        "granted_roots": [str(work), str(tmp_path)],
+        "traverse_roots": [str(tmp_path)],
+        "owner_pid": 111,
+        "owner_created": 222,
+    }
+    return single_use, launch
+
+
+def test_reconciliation_accepts_only_owned_well_formed_manifests(monkeypatch, tmp_path):
+    single_use, launch = _manifest_payloads(tmp_path)
+    written = {
+        "unsloth.studio.valid.json": single_use,
+        f"unsloth.studio.launch.{'b' * 32}.json": launch,
+        # A moniker outside the Studio namespace, so its SID is not ours to revoke.
+        "foreign.profile.json": {**single_use, "moniker": "foreign.profile"},
+        # A private temp outside the profile the SID resolves to.
+        "unsloth.studio.escaped.json": {
+            **single_use,
+            "moniker": "unsloth.studio.escaped",
+            "private_temp": str(tmp_path / ("b" * 24)),
+        },
+        # A live owner.
+        "unsloth.studio.active.json": {
+            **single_use,
+            "moniker": "unsloth.studio.active",
+            "owner_pid": 333,
+            "owner_created": 444,
+        },
+        # An account SID, which the reconciler must never revoke anything for.
+        "unsloth.studio.account.json": {
+            **single_use,
+            "moniker": "unsloth.studio.account",
+            "sid": "S-1-5-21-1-2-3-1001",
+        },
+        # A launch manifest naming a path that is neither its workdir, its
+        # private temp, nor an ancestor of either.
+        f"unsloth.studio.launch.{'d' * 32}.json": {
+            **launch,
+            "launch_id": "d" * 32,
+            "granted_roots": [*launch["granted_roots"], str(tmp_path / "victim")],
+        },
+        # A launch manifest whose file name does not match its launch id.
+        f"unsloth.studio.launch.{'e' * 32}.json": launch,
+    }
+    for name, payload in written.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding = "utf-8")
 
     class Derive:
-        argtypes = None
-        restype = None
-
         def __call__(self, _moniker, output):
             output._obj.value = 4242
             return 0
 
     api = SimpleNamespace(
-        userenv = SimpleNamespace(DeriveAppContainerSidFromAppContainerName = Derive())
+        userenv = SimpleNamespace(DeriveAppContainerSidFromAppContainerName = Derive()),
+        advapi32 = SimpleNamespace(FreeSid = lambda _value: None),
     )
-    cleaned: list[str] = []
+    cleaned: list[tuple[str, bool, bool]] = []
     monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path))
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
-    monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: sid_text)
+    monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: _CONTAINER_SID)
     monkeypatch.setattr(
         windows_lpac, "_process_identity", lambda pid = None: (333, 444) if pid == 333 else None
     )
     monkeypatch.setattr(
-        windows_lpac, "_profile_folder", lambda _api, _sid: payload["profile_folder"]
+        windows_lpac, "_profile_folder", lambda _api, _sid: single_use["profile_folder"]
     )
     monkeypatch.setattr(
         windows_lpac._InvocationIdentity,
         "cleanup",
-        lambda self: cleaned.append(self.moniker),
+        lambda self: cleaned.append((self.moniker, self.delete_profile, self.free_sid)),
     )
 
     windows_lpac.WindowsLpacBackend().reconcile_stale_manifests()
 
-    assert cleaned == ["unsloth.studio.valid"]
-    assert invalid.exists() and escaped.exists() and active.exists()
+    # The single-use manifest owns the profile it names; the launch manifest
+    # shares the installation's, so only the first deletes one.
+    assert sorted(cleaned) == [
+        (_INSTALL_MONIKER, False, True),
+        ("unsloth.studio.valid", True, True),
+    ]
+    for name in written:
+        if name not in ("unsloth.studio.valid.json", f"unsloth.studio.launch.{'b' * 32}.json"):
+            assert (tmp_path / name).exists()
 
+
+def test_orphan_temporary_manifests_are_swept_by_age(monkeypatch, tmp_path):
+    fresh = tmp_path / "unsloth.studio.sandbox.0123456789abcdef.json.1234.tmp"
+    stale = tmp_path / f"unsloth.studio.launch.{'b' * 32}.json.5678.tmp"
+    unrelated = tmp_path / "other.json.tmp"
+    for path in (fresh, stale, unrelated):
+        path.write_text("{}", encoding = "utf-8")
+    old = time.time() - windows_lpac._ORPHAN_TEMPORARY_MANIFEST_SECONDS - 60
+    os.utime(stale, (old, old))
+    os.utime(unrelated, (old, old))
+
+    windows_lpac._remove_orphan_temporary_manifests(str(tmp_path))
+
+    assert fresh.exists()
+    assert not stale.exists()
+    assert unrelated.exists()
 
 
 def _sid_bytes(*subauthorities: int) -> bytes:
@@ -794,35 +899,88 @@ def test_ambient_sid_matches_the_container_kind():
     assert windows_lpac._ambient_sid_text("appcontainer") == "S-1-15-2-1"
 
 
+class _FakeCreateProfile:
+    """``CreateAppContainerProfile`` recording its calls and its queued results."""
+
+    def __init__(self, events, results = None):
+        self._events = events
+        self._results = list(results or [])
+
+    def __call__(self, moniker, _display, _description, _capabilities, _count, output):
+        self._events.append(("create-profile", moniker))
+        result = self._results.pop(0) if self._results else 0
+        if result == 0:
+            output._obj.value = 4242
+        return result
+
+
+class _FakeDeriveSid:
+    def __init__(self, events):
+        self._events = events
+
+    def __call__(self, moniker, output):
+        self._events.append(("derive-sid", moniker))
+        output._obj.value = 4242
+        return 0
+
+
 @contextmanager
-def _prepared_with_fakes(monkeypatch, tmp_path, *, events, existing, denied, ancestors):
-    """Drive WindowsLpacBackend._prepare with every Windows API replaced by recorders."""
-    workdir = tmp_path / "work"
-    workdir.mkdir()
+def _lpac_fakes(
+    monkeypatch,
+    tmp_path,
+    *,
+    events,
+    existing = (),
+    denied = (),
+    create_results = None,
+):
+    """Drive the real prepare and cleanup paths with every Windows API recorded.
+
+    The install profile, the persistent grant bookkeeping, the manifests and the
+    private temp are real; only the Win32 calls and the tree validators are fakes.
+    """
+    monkeypatch.setattr(windows_lpac, "_INSTALL_PROFILE", None)
+    monkeypatch.setattr(windows_lpac, "_ACCESS_MEMO", {})
+    monkeypatch.setattr(windows_lpac, "_SHARED_GRANTS", {})
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    manifests = tmp_path / "manifests"
+    manifests.mkdir()
+    # The layout Windows builds for a profile: the package directory it ACLs for
+    # the container, with the AC storage inside it.
+    profile = tmp_path / "Packages" / windows_lpac._install_moniker() / "AC"
+    profile.mkdir(parents = True)
     runtime = str(tmp_path / "Program Files" / "Python")
     os.makedirs(runtime)
-    sid = ctypes.c_void_p(4242)
-    identity = windows_lpac._InvocationIdentity(
-        "unsloth.studio.test",
-        sid,
-        "S-1-15-2-4242",
-        str(tmp_path / "profile"),
-        str(tmp_path / "profile" / "Temp"),
-        str(tmp_path / "owned.json"),
-        (runtime, str(workdir), *ancestors),
-        tuple(ancestors),
-        1,
-        2,
+    sid_text = "S-1-15-2-11-22-33-44-55-66-77"
+    api = SimpleNamespace(
+        userenv = SimpleNamespace(
+            CreateAppContainerProfile = _FakeCreateProfile(events, create_results),
+            DeriveAppContainerSidFromAppContainerName = _FakeDeriveSid(events),
+            DeleteAppContainerProfile = lambda moniker: (
+                events.append(("delete-profile", moniker)) or 0
+            ),
+        ),
+        advapi32 = SimpleNamespace(
+            FreeSid = lambda value: events.append(("free-sid", getattr(value, "value", value)))
+        ),
+        kernel32 = SimpleNamespace(LocalFree = lambda _value: None),
     )
+    monkeypatch.setattr(windows_lpac, "_api", lambda: api)
+    monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: sid_text)
+    monkeypatch.setattr(windows_lpac, "_profile_folder", lambda _api, _sid: str(profile))
+    monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(manifests))
+    monkeypatch.setattr(windows_lpac, "_process_identity", lambda pid = None: (1, 2))
     monkeypatch.setattr(windows_lpac, "_validate_workdir", lambda value: value)
     monkeypatch.setattr(windows_lpac, "_canonical_inner_argv", lambda argv, env: tuple(argv))
     monkeypatch.setattr(windows_lpac, "_runtime_roots", lambda _workdir, _argv: (runtime,))
     monkeypatch.setattr(windows_lpac, "_needs_explicit_acl", lambda _path: True)
-    monkeypatch.setattr(windows_lpac, "_validate_runtime_trees", lambda _roots: None)
-    monkeypatch.setattr(windows_lpac, "_create_identity", lambda _roots: identity)
+    monkeypatch.setattr(
+        windows_lpac,
+        "_validate_runtime_trees",
+        lambda roots: events.append(("validate-runtime", tuple(roots))),
+    )
     monkeypatch.setattr(windows_lpac, "_machine_wide", lambda path: "Program Files" in path)
     monkeypatch.setattr(windows_lpac, "_safe_environment", lambda env, *_a: dict(env))
-    monkeypatch.setattr(identity, "cleanup", lambda: events.append(("cleanup",)))
 
     @contextmanager
     def fake_well_known(text):
@@ -830,82 +988,385 @@ def _prepared_with_fakes(monkeypatch, tmp_path, *, events, existing, denied, anc
         yield ctypes.c_void_p(7)
 
     monkeypatch.setattr(windows_lpac, "_well_known_sid", fake_well_known)
-    monkeypatch.setattr(
-        windows_lpac,
-        "_existing_access",
-        lambda path, sids, required: events.append(("check", path, required)) or path in existing,
-    )
+    # A small model of the DACL: a grant makes the later access check succeed, a
+    # revoke undoes it, and revoking a SID no ACE names is the no-op _revoke_sid
+    # short-circuits to.
+    acl: dict[tuple[str, int], bool] = {}
 
-    def grant(kind):
+    def check(path, _sids, required):
+        events.append(("check", path, required))
+        return path in existing or acl.get((path, int(required)), False)
+
+    monkeypatch.setattr(windows_lpac, "_existing_access", check)
+
+    def grant(kind, required):
         def _grant(path, value, **_kwargs):
             events.append((kind, path))
             if path in denied:
                 raise OSError(5, f"SetFileSecurityW({path}): Access is denied.")
+            acl[(path, required)] = True
 
         return _grant
 
-    monkeypatch.setattr(windows_lpac, "_grant_read_execute", grant("read_execute"))
-    monkeypatch.setattr(windows_lpac, "_grant_modify", grant("modify"))
-    monkeypatch.setattr(windows_lpac, "_grant_traverse", grant("traverse"))
-    yield windows_lpac.WindowsLpacBackend(), _spec(workdir), identity, runtime
+    read_execute = windows_lpac._FILE_GENERIC_READ | windows_lpac._FILE_GENERIC_EXECUTE
+    monkeypatch.setattr(windows_lpac, "_grant_read_execute", grant("read_execute", read_execute))
+    monkeypatch.setattr(windows_lpac, "_grant_modify", grant("modify", read_execute))
+    monkeypatch.setattr(
+        windows_lpac, "_grant_traverse", grant("traverse", windows_lpac._FILE_TRAVERSE)
+    )
+
+    def revoke(path, _value, *, exact = False):
+        held = [key for key in acl if key[0] == path]
+        if not held:
+            events.append(("revoke-absent", path))
+            return
+        for key in held:
+            acl.pop(key)
+        events.append(("revoke", path, exact))
+
+    monkeypatch.setattr(windows_lpac, "_revoke_sid", revoke)
+    workdir = tmp_path / "chats" / "work"
+    workdir.mkdir(parents = True)
+    yield SimpleNamespace(
+        backend = windows_lpac.WindowsLpacBackend(),
+        spec = _spec(workdir),
+        workdir = str(workdir),
+        runtime = runtime,
+        manifests = manifests,
+        profile = profile,
+        sid_text = sid_text,
+    )
+
+
+def _kinds(events, *names):
+    return [event for event in events if event[0] in set(names)]
+
+
+def test_install_moniker_is_stable_and_within_the_appcontainer_name_rules():
+    first = windows_lpac._install_moniker()
+    assert first == windows_lpac._install_moniker()
+    assert first.startswith("unsloth.studio.sandbox.")
+    assert len(first) <= 64
+    assert re.fullmatch(r"[-_. A-Za-z0-9]+", first)
+    digest = first[len("unsloth.studio.sandbox.") :]
+    assert len(digest) == 16 and set(digest) <= set("0123456789abcdef")
+
+
+def test_install_moniker_follows_the_interpreter_and_the_account(monkeypatch):
+    baseline = windows_lpac._install_moniker()
+    monkeypatch.setattr(windows_lpac.sys, "executable", str(Path(sys.executable).parent / "other"))
+    assert windows_lpac._install_moniker() != baseline
+    monkeypatch.undo()
+    monkeypatch.setattr(windows_lpac.os, "getlogin", lambda: "somebody-else")
+    assert windows_lpac._install_moniker() != baseline
+
+
+def test_container_sid_text_accepts_only_derived_profile_sids():
+    assert windows_lpac._is_container_sid_text("S-1-15-2-11-22-33-44-55-66-77")
+    # The ambient package groups and any account SID must never name a manifest.
+    assert not windows_lpac._is_container_sid_text("S-1-15-2-1")
+    assert not windows_lpac._is_container_sid_text("S-1-15-2-2")
+    assert not windows_lpac._is_container_sid_text("S-1-5-21-1-2-3-1001")
+    assert not windows_lpac._is_container_sid_text("S-1-15-2-11-22-33-44-55-66-77-88")
+    assert not windows_lpac._is_container_sid_text("S-1-15-2-a-b-c-d-e-f-g")
+    assert not windows_lpac._is_container_sid_text(None)
+
+
+def test_two_launches_in_one_process_share_the_profile_name_and_sid(monkeypatch, tmp_path):
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        first = fakes.backend.prepare(fakes.spec)
+        second = fakes.backend.prepare(fakes.spec)
+        one = first.spawn_callback._lpac_identity
+        two = second.spawn_callback._lpac_identity
+        assert one.moniker == two.moniker == windows_lpac._install_moniker()
+        assert one.sid_string == two.sid_string == fakes.sid_text
+        assert one.sid.value == two.sid.value
+        # Per launch and never shared: the manifest and the private temp.
+        assert one.manifest_path != two.manifest_path
+        assert one.private_temp != two.private_temp
+        assert Path(one.private_temp).parent == Path(two.private_temp).parent
+        assert Path(one.private_temp).is_dir() and Path(two.private_temp).is_dir()
+        first.cleanup()
+        second.cleanup()
+        assert first.cleanup_diagnostics == [] and second.cleanup_diagnostics == []
+    assert [event for event in events if event[0] == "create-profile"] == [
+        ("create-profile", one.moniker)
+    ]
+    # The profile outlives both launches.
+    assert not [event for event in events if event[0] == "delete-profile"]
+    assert not Path(one.private_temp).exists()
+    assert not Path(one.manifest_path).exists()
+
+
+def test_an_existing_profile_is_reused_through_the_derived_sid(monkeypatch, tmp_path):
+    events: list[tuple] = []
+    with _lpac_fakes(
+        monkeypatch,
+        tmp_path,
+        events = events,
+        create_results = [windows_lpac._HRESULT_ALREADY_EXISTS],
+    ) as fakes:
+        prepared = fakes.backend.prepare(fakes.spec)
+        identity = prepared.spawn_callback._lpac_identity
+        prepared.cleanup()
+    assert ("derive-sid", identity.moniker) in events
+    assert identity.sid_string == fakes.sid_text
+    assert not [event for event in events if event[0] == "delete-profile"]
+
+
+def test_the_interpreter_is_granted_once_and_the_workdir_on_every_launch(monkeypatch, tmp_path):
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        first = fakes.backend.prepare(fakes.spec)
+        first_events = list(events)
+        first.cleanup()
+        second = fakes.backend.prepare(fakes.spec)
+        second.cleanup()
+        runtime = fakes.runtime
+        workdir = fakes.workdir
+    assert ("read_execute", runtime) in first_events
+    assert ("validate-runtime", (runtime,)) in first_events
+    # The second launch does not touch the runtime tree at all: no DACL read, no
+    # walk, no SetNamedSecurityInfoW.
+    after_first = events[len(first_events) :]
+    assert not [event for event in after_first if event[0] in {"read_execute", "validate-runtime"}]
+    assert not [event for event in after_first if len(event) > 1 and event[1] == runtime]
+    assert [event for event in events if event[0] == "modify" and event[1] == workdir] == [
+        ("modify", workdir)
+    ] * 2
+    assert [event for event in events if event[0] == "revoke" and event[1] == workdir] == [
+        ("revoke", workdir, False)
+    ] * 2
+    # The interpreter grant is never revoked.
+    assert not [event for event in events if event[0] == "revoke" and event[1] == runtime]
+
+
+def test_the_persistent_manifest_is_written_before_the_grant_and_kept_by_reconcile(
+    monkeypatch, tmp_path
+):
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        manifest = fakes.manifests / (windows_lpac._install_moniker() + ".json")
+
+        def watched_grant(path, _value, **_kwargs):
+            events.append(("read_execute", path, manifest.is_file()))
+
+        monkeypatch.setattr(windows_lpac, "_grant_read_execute", watched_grant)
+        prepared = fakes.backend.prepare(fakes.spec)
+        prepared.cleanup()
+        assert ("read_execute", fakes.runtime, True) in events
+        payload = json.loads(manifest.read_text(encoding = "utf-8"))
+        assert payload["kind"] == "lpac-persistent"
+        assert payload["moniker"] == windows_lpac._install_moniker()
+        assert payload["interpreter"] == os.path.realpath(sys.executable)
+        assert fakes.runtime in payload["granted_roots"]
+        assert "owner_pid" not in payload
+
+        fakes.backend.reconcile_stale_manifests()
+
+        assert manifest.is_file()
+        assert not [event for event in events if event[0] == "revoke" and event[1] == fakes.runtime]
+
+
+def test_a_persistent_manifest_whose_interpreter_is_gone_is_revoked(monkeypatch, tmp_path):
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        prepared = fakes.backend.prepare(fakes.spec)
+        prepared.cleanup()
+        manifest = fakes.manifests / (windows_lpac._install_moniker() + ".json")
+        payload = json.loads(manifest.read_text(encoding = "utf-8"))
+        payload["interpreter"] = str(tmp_path / "removed" / "python.exe")
+        manifest.write_text(json.dumps(payload), encoding = "utf-8")
+        events.clear()
+
+        fakes.backend.reconcile_stale_manifests()
+
+        assert ("revoke", fakes.runtime, False) in events
+        assert ("free-sid", 4242) in events
+        assert not manifest.exists()
+        # A persistent manifest owns no profile and no private temp.
+        assert not [event for event in events if event[0] == "delete-profile"]
+
+
+def test_remove_persistent_grants_revokes_everything_and_drops_the_profile(monkeypatch, tmp_path):
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        prepared = fakes.backend.prepare(fakes.spec)
+        prepared.cleanup()
+        manifest = fakes.manifests / (windows_lpac._install_moniker() + ".json")
+        assert manifest.is_file()
+        events.clear()
+
+        removed = fakes.backend.remove_persistent_grants()
+
+        assert removed == (windows_lpac._install_moniker(),)
+        assert ("revoke", fakes.runtime, False) in events
+        assert ("delete-profile", windows_lpac._install_moniker()) in events
+        assert not manifest.exists()
+        assert windows_lpac._INSTALL_PROFILE is None
+        # A later launch builds the profile again and pays the grant once more.
+        again = fakes.backend.prepare(fakes.spec)
+        again.cleanup()
+        assert ("read_execute", fakes.runtime) in events
+        assert manifest.is_file()
+
+
+def test_a_concurrent_launch_keeps_the_shared_workdir_grant(monkeypatch, tmp_path):
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        first = fakes.backend.prepare(fakes.spec)
+        second = fakes.backend.prepare(fakes.spec)
+        events.clear()
+        first.cleanup()
+        # Every launch of this installation carries the same SID, so the first
+        # cleanup must not revoke an ACE the second launch is still using.
+        assert not [event for event in events if event[1] == fakes.workdir]
+        second.cleanup()
+        assert ("revoke", fakes.workdir, False) in events
+
+
+def test_a_stale_launch_manifest_is_reconciled_without_deleting_the_profile(monkeypatch, tmp_path):
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        live = fakes.backend.prepare(fakes.spec)
+        identity = live.spawn_callback._lpac_identity
+        manifest = Path(identity.manifest_path)
+        assert manifest.name.startswith("unsloth.studio.launch.")
+        payload = json.loads(manifest.read_text(encoding = "utf-8"))
+        assert payload["kind"] == "lpac-launch"
+        assert set(payload["granted_roots"]) == {identity.workdir, *payload["traverse_roots"]}
+        assert identity.private_temp not in payload["granted_roots"]
+
+        # What a Studio that crashed mid-launch left behind: the same workdir, a
+        # private temp of its own, and an owner that is gone.
+        stale_temp = fakes.profile / "Temp" / ("d" * 24)
+        stale_temp.mkdir(parents = True)
+        stale = fakes.manifests / f"unsloth.studio.launch.{'e' * 32}.json"
+        stale.write_text(
+            json.dumps(
+                {
+                    **payload,
+                    "launch_id": "e" * 32,
+                    "private_temp": str(stale_temp),
+                    "owner_pid": 99,
+                }
+            ),
+            encoding = "utf-8",
+        )
+        monkeypatch.setattr(
+            windows_lpac, "_process_identity", lambda pid = None: None if pid == 99 else (1, 2)
+        )
+        events.clear()
+
+        fakes.backend.reconcile_stale_manifests()
+
+        # The crashed launch's own state is gone.
+        assert not stale.exists()
+        assert not stale_temp.exists()
+        # A profile shared with this installation is never deleted, and the
+        # workdir ACE a live launch is still using is not revoked with it.
+        assert not [event for event in events if event[0] == "delete-profile"]
+        assert not [event for event in events if event[0] == "revoke"]
+        assert manifest.is_file()
+        assert Path(identity.private_temp).is_dir()
+        assert ("free-sid", 4242) in events
+
+        # A manifest that names a running launch's private temp is left whole.
+        impostor = fakes.manifests / f"unsloth.studio.launch.{'f' * 32}.json"
+        impostor.write_text(
+            json.dumps({**payload, "launch_id": "f" * 32, "owner_pid": 99}),
+            encoding = "utf-8",
+        )
+        fakes.backend.reconcile_stale_manifests()
+        assert impostor.is_file()
+        assert Path(identity.private_temp).is_dir()
+
+        live.cleanup()
+        assert ("revoke", identity.workdir, False) in events
+        assert not manifest.exists()
+
+
+def test_a_live_owner_keeps_its_launch_manifest(monkeypatch, tmp_path):
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        prepared = fakes.backend.prepare(fakes.spec)
+        identity = prepared.spawn_callback._lpac_identity
+        events.clear()
+
+        fakes.backend.reconcile_stale_manifests()
+
+        assert Path(identity.manifest_path).is_file()
+        assert not [event for event in events if event[0] == "revoke"]
+        prepared.cleanup()
 
 
 def test_prepare_skips_grants_the_dacl_already_covers(monkeypatch, tmp_path):
     events: list[tuple] = []
-    ancestors = (r"C:\Users", r"C:\Program Files")
-    with _prepared_with_fakes(
-        monkeypatch,
-        tmp_path,
-        events = events,
-        existing = {r"C:\Program Files"},
-        denied = set(),
-        ancestors = ancestors,
-    ) as (backend, spec, identity, runtime):
-        prepared = backend.prepare(spec)
-    kinds = [event for event in events if event[0] in {"read_execute", "traverse", "modify"}]
-    assert ("read_execute", runtime) in kinds
-    assert ("traverse", r"C:\Users") in kinds
-    assert ("traverse", r"C:\Program Files") not in kinds
-    assert events[0] == ("ambient", "S-1-15-2-2")
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        monkeypatch.setattr(
+            windows_lpac,
+            "_existing_access",
+            lambda path, sids, required: events.append(("check", path, required))
+            or path == str(tmp_path),
+        )
+        prepared = fakes.backend.prepare(fakes.spec)
+        identity = prepared.spawn_callback._lpac_identity
+        prepared.cleanup()
+    kinds = _kinds(events, "read_execute", "traverse", "modify")
+    assert ("read_execute", fakes.runtime) in kinds
+    assert ("traverse", str(tmp_path / "Program Files")) in kinds
+    # USERPROFILE is already covered, so it is neither granted nor revoked.
+    assert ("traverse", str(tmp_path)) not in kinds
+    assert not [event for event in events if event[0] == "revoke" and event[1] == str(tmp_path)]
+    ambient = [event for event in events if event[0] == "ambient"]
+    assert ambient[0] == ("ambient", "S-1-15-2-2")
     assert identity.unverified_access == ()
     assert identity.profile == "lpac"
     assert prepared.backend == "windows-lpac"
 
 
-def test_prepare_records_access_denied_on_machine_wide_paths_instead_of_failing(monkeypatch, tmp_path):
+def test_prepare_records_access_denied_on_machine_wide_paths_instead_of_failing(
+    monkeypatch, tmp_path
+):
     events: list[tuple] = []
-    with _prepared_with_fakes(
-        monkeypatch,
-        tmp_path,
-        events = events,
-        existing = set(),
-        denied = {r"C:\Program Files", "RUNTIME"},
-        ancestors = (r"C:\Program Files",),
-    ) as (backend, spec, identity, runtime):
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        runtime = fakes.runtime
         monkeypatch.setattr(
             windows_lpac,
             "_grant_read_execute",
             lambda path, value, **_k: (_ for _ in ()).throw(OSError(5, "denied")),
         )
-        backend._profile = "appcontainer"
-        prepared = backend.prepare(spec)
-    assert set(identity.unverified_access) == {runtime, r"C:\Program Files"}
-    assert identity.profile == "appcontainer"
-    assert events[0] == ("ambient", "S-1-15-2-1")
-    assert ("cleanup",) not in events
-    assert prepared.spawn_callback._lpac_identity is identity
+        monkeypatch.setattr(
+            windows_lpac,
+            "_grant_traverse",
+            lambda path, value, **_k: events.append(("traverse", path))
+            or (
+                (_ for _ in ()).throw(OSError(5, "denied"))
+                if "Program Files" in path
+                else None
+            ),
+        )
+        fakes.backend._profile = "appcontainer"
+        prepared = fakes.backend.prepare(fakes.spec)
+        identity = prepared.spawn_callback._lpac_identity
+        assert set(identity.unverified_access) == {runtime, str(tmp_path / "Program Files")}
+        assert identity.profile == "appcontainer"
+        ambient = [event for event in events if event[0] == "ambient"]
+        assert ambient[0] == ("ambient", "S-1-15-2-1")
+        assert prepared.spawn_callback._lpac_identity is identity
+        # A refusal Windows owns is recorded once, not retried on every launch.
+        events.clear()
+        second = fakes.backend.prepare(fakes.spec)
+        assert not [event for event in events if event[0] in {"read_execute", "validate-runtime"}]
+        assert second.spawn_callback._lpac_identity.unverified_access == ()
+        prepared.cleanup()
+        second.cleanup()
 
 
 def test_prepare_still_fails_when_a_user_owned_grant_is_denied(monkeypatch, tmp_path):
     events: list[tuple] = []
-    with _prepared_with_fakes(
-        monkeypatch,
-        tmp_path,
-        events = events,
-        existing = set(),
-        denied = set(),
-        ancestors = (),
-    ) as (backend, spec, identity, runtime):
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
         monkeypatch.setattr(windows_lpac, "_machine_wide", lambda _path: False)
         monkeypatch.setattr(
             windows_lpac,
@@ -913,8 +1374,25 @@ def test_prepare_still_fails_when_a_user_owned_grant_is_denied(monkeypatch, tmp_
             lambda path, value, **_k: (_ for _ in ()).throw(OSError(5, "denied")),
         )
         with pytest.raises(OSError, match = "denied"):
-            backend.prepare(spec)
-    assert ("cleanup",) in events
+            fakes.backend.prepare(fakes.spec)
+        # The failure is before any per-launch state exists, so nothing is held.
+        assert not windows_lpac._SHARED_GRANTS
+        assert not list(fakes.manifests.glob("unsloth.studio.launch.*"))
+
+
+def test_prepare_releases_its_hold_when_the_workdir_grant_fails(monkeypatch, tmp_path):
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        monkeypatch.setattr(
+            windows_lpac,
+            "_grant_modify",
+            lambda path, value, **_k: (_ for _ in ()).throw(OSError(5, "denied")),
+        )
+        with pytest.raises(OSError, match = "denied"):
+            fakes.backend.prepare(fakes.spec)
+        assert not windows_lpac._SHARED_GRANTS
+        assert not list(fakes.manifests.glob("unsloth.studio.launch.*"))
+        assert not list((fakes.profile / "Temp").iterdir())
 
 
 def test_probe_falls_back_to_appcontainer_when_lpac_cannot_start_python(monkeypatch):
@@ -939,7 +1417,11 @@ def test_probe_falls_back_to_appcontainer_when_lpac_cannot_start_python(monkeypa
     assert capability.available is True and capability.qualified is True
     assert capability.protection_state == "preview"
     assert capability.profile_id == "windows-appcontainer-preview-v1"
-    assert capability.limitations == ("all_application_packages_ambient_read", "null_device_and_named_pipes_denied")
+    assert capability.limitations == (
+        "all_application_packages_ambient_read",
+        "null_device_and_named_pipes_denied",
+        "concurrent_launches_share_the_container",
+    )
     assert "AppContainer fallback passed" in capability.reason
     assert backend.active_profile == "appcontainer"
     assert backend.active_profile_id() == "windows-appcontainer-preview-v1"
@@ -988,7 +1470,11 @@ def test_probe_success_under_lpac_keeps_the_strong_profile(monkeypatch):
     monkeypatch.setattr(backend, "_probe_profile", lambda profile: None)
     capability = backend.probe()
     assert capability.profile_id == "windows-lpac-preview-v1"
-    assert capability.limitations == ("null_device_and_named_pipes_denied", "ipv6_unavailable_on_host")
+    assert capability.limitations == (
+        "null_device_and_named_pipes_denied",
+        "concurrent_launches_share_the_container",
+        "ipv6_unavailable_on_host",
+    )
     assert backend.active_profile == "lpac"
     assert backend.profile_id == "windows-lpac-preview-v1"
 
@@ -1162,41 +1648,71 @@ def _acl_text(path: Path) -> str:
     return result.stdout
 
 
-def test_live_profiles_sids_acl_and_owned_artifacts_are_per_invocation(live_lpac_backend, tmp_path):
+def test_live_launches_share_one_profile_and_own_their_manifest_and_temp(
+    live_lpac_backend, tmp_path
+):
     workdir = tmp_path / "work"
     workdir.mkdir()
     first = live_lpac_backend.prepare(_spec(workdir))
     second = live_lpac_backend.prepare(_spec(workdir))
     one = first.spawn_callback._lpac_identity
     two = second.spawn_callback._lpac_identity
+    profile_folder = Path(one.profile_folder)
     try:
-        assert one.moniker != two.moniker
-        assert one.sid_string != two.sid_string
-        assert Path(one.manifest_path).is_file()
-        assert Path(two.manifest_path).is_file()
-        assert Path(one.private_temp).is_dir()
-        assert Path(two.private_temp).is_dir()
-        acl = _acl_text(workdir)
-        assert one.sid_string in acl and two.sid_string in acl
+        # One identity per installation, so the interpreter grant is made once.
+        assert one.moniker == two.moniker == windows_lpac._install_moniker()
+        assert one.sid_string == two.sid_string
+        # Everything a single launch owns is still its own.
+        assert one.manifest_path != two.manifest_path
+        assert one.private_temp != two.private_temp
+        assert Path(one.private_temp).parent == Path(two.private_temp).parent
+        assert Path(one.manifest_path).is_file() and Path(two.manifest_path).is_file()
+        assert Path(one.private_temp).is_dir() and Path(two.private_temp).is_dir()
+        assert one.sid_string in _acl_text(workdir)
         first.cleanup()
         assert first.cleanup_diagnostics == [], first.cleanup_diagnostics
         assert not Path(one.manifest_path).exists()
         assert not Path(one.private_temp).exists()
-        # DeleteAppContainerProfile reports S_OK again for a profile whose folder
-        # is already gone, so both outcomes mean "no profile left behind".
-        deleted = windows_lpac._api().userenv.DeleteAppContainerProfile(one.moniker)
-        assert ctypes.c_uint32(deleted).value in (0, 0x80070002)
         assert Path(two.manifest_path).is_file()
         assert Path(two.private_temp).is_dir()
-        acl = _acl_text(workdir)
-        assert one.sid_string not in acl and two.sid_string in acl
+        # The second launch is still live, so the shared workdir grant stays.
+        assert two.sid_string in _acl_text(workdir)
+        assert profile_folder.is_dir()
     finally:
         first.cleanup()
         second.cleanup()
-    acl = _acl_text(workdir)
-    assert one.sid_string not in acl and two.sid_string not in acl
-    deleted = windows_lpac._api().userenv.DeleteAppContainerProfile(two.moniker)
+    assert two.sid_string not in _acl_text(workdir)
+    assert not Path(two.private_temp).exists()
+    # The profile and the interpreter grant outlive every launch of it.
+    assert profile_folder.is_dir()
+    assert Path(windows_lpac._persistent_manifest_path(one.moniker)).is_file()
+    deleted = windows_lpac._api().userenv.DeleteAppContainerProfile(one.moniker)
     assert ctypes.c_uint32(deleted).value in (0, 0x80070002)
+    # Deleting the profile does not change the identity: it is derived from the
+    # name, so the next launch recreates the same container.
+    windows_lpac._INSTALL_PROFILE = None
+    assert windows_lpac._install_profile().sid_string == one.sid_string
+
+
+def test_live_consecutive_launches_reuse_the_grant_and_stay_fast(
+    live_lpac_backend, tmp_path, record_property
+):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    install = windows_lpac._install_profile()
+    _first, first_elapsed = _run_native(live_lpac_backend, workdir, "pass")
+    _second, second_elapsed = _run_native(live_lpac_backend, workdir, "pass")
+
+    record_property("windows_lpac_first_launch_s", f"{first_elapsed:.3f}")
+    record_property("windows_lpac_second_launch_s", f"{second_elapsed:.3f}")
+    # Propagating a fresh package SID over the interpreter tree, then revoking it
+    # and deleting the profile, cost 25 to 45 s per call on these runners. The
+    # grant is now made once per installation, so a later launch pays only the
+    # workdir work and the DACL reads.
+    assert second_elapsed < 8.0, (first_elapsed, second_elapsed)
+    assert windows_lpac._install_profile() is install
+    assert Path(install.profile_folder).is_dir()
+    assert Path(windows_lpac._persistent_manifest_path(install.moniker)).is_file()
 
 
 def test_live_workdir_home_runtime_native_extension_and_fresh_temp(live_lpac_backend, tmp_path):
@@ -1576,3 +2092,7 @@ def test_live_twenty_startup_samples(live_lpac_backend, tmp_path, record_propert
     record_property("windows_lpac_startup_p95_ms", f"{p95:.3f}")
     assert median > 0
     assert p95 >= median
+    # Every sample here is a later launch of one installation, so none of them
+    # pays the interpreter grant. Before the stable identity the median of this
+    # loop was 25 s and over on the hosted runners.
+    assert median < 8000, samples

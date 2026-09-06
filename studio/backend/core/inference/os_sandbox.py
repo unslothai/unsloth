@@ -1440,7 +1440,7 @@ class LinuxBubblewrapBackend:
         for path in _LINUX_ETC_FILES:
             argv.extend(("--ro-bind-try", path, path))
         if spec.network_policy == "allowlist":
-            for path in (*_LINUX_CA_TRUST_PATHS, *tls_trust_paths()):
+            for path in _LINUX_CA_TRUST_PATHS:
                 argv.extend(("--ro-bind-try", path, path))
         argv.extend(("--ro-bind", passwd, "/etc/passwd"))
         argv.extend(("--ro-bind", group, "/etc/group"))
@@ -1454,6 +1454,20 @@ class LinuxBubblewrapBackend:
                 private_tmp_runtime_paths.append(path)
                 continue
             argv.extend(("--ro-bind", path, path))
+        if spec.network_policy == "allowlist":
+            # OpenSSL's default store and certifi, only where an existing bind does
+            # not already cover them: on Debian /usr/lib/ssl sits under /usr/lib and
+            # certifi under the runtime tree, and mounting again on top of a bound
+            # tree (through /usr/lib/ssl/certs, a symlink into /etc/ssl) made
+            # bwrap exit before the wrapper ran (staging round 8). Bound after the
+            # runtime paths so a later bind cannot shadow them.
+            covered = (*_LINUX_SYSTEM_ROOTS, *_LINUX_CA_TRUST_PATHS, "/nix/store", *runtime_paths)
+            for path in tls_trust_paths():
+                if any(_lexically_contained(path, root) for root in covered):
+                    continue
+                if _lexically_contained(path, "/tmp"):
+                    continue
+                argv.extend(("--ro-bind-try", path, path))
         empty_mask = os.path.join(identity_dir, "empty")
         try:
             with open(empty_mask, "wb"):
@@ -1689,6 +1703,12 @@ class MacOSSeatbeltBackend:
                 proxy_port = proxy_port,
             )
             env = _sanitize_macos_environment(spec.env, workdir, private_tmp)
+            developer_paths = _macos_developer_paths()
+            if developer_paths and "DEVELOPER_DIR" not in env:
+                # xcselect honours DEVELOPER_DIR before it reads the xcode_select
+                # link, so the /usr/bin shims (git, make, python3) resolve the real
+                # tool without depending on the link being readable.
+                env["DEVELOPER_DIR"] = developer_paths[0]
             if proxy is not None:
                 env.update(proxy_environment(proxy.port, proxy.credential))
                 env.update(tls_trust_environment(env))

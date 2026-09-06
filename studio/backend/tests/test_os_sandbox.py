@@ -2520,7 +2520,9 @@ def test_linux_allowlist_policy_argv_adds_control_fd_bridge_and_proxy(monkeypatc
         "tls_trust_environment",
         lambda base = None: {"SSL_CERT_FILE": "/fake/certifi/cacert.pem"},
     )
-    monkeypatch.setattr(os_sandbox, "tls_trust_paths", lambda: ("/fake/openssl",))
+    # One store outside every bound tree (kept), one under /etc/ssl (already bound,
+    # skipped: mounting again on a bound tree made bwrap exit on staging).
+    monkeypatch.setattr(os_sandbox, "tls_trust_paths", lambda: ("/fake/openssl", "/etc/ssl/certs"))
     plan = os_sandbox.replace(
         _spec(workdir, sys.executable, "-c", "pass"), network_policy = "allowlist"
     )
@@ -2547,6 +2549,9 @@ def test_linux_allowlist_policy_argv_adds_control_fd_bridge_and_proxy(monkeypatc
         # The CA bundles ride along, or TLS through the proxy fails verification.
         for path in (*os_sandbox._LINUX_CA_TRUST_PATHS, "/fake/openssl"):
             assert argv[argv.index(path) - 1] == "--ro-bind-try"
+        assert "/etc/ssl/certs" not in argv
+        # The uncovered store is bound after the runtime paths so nothing shadows it.
+        assert argv.index("/fake/openssl") > argv.index("/etc/ssl")
     finally:
         prepared.cleanup()
     # Cleanup closed both socketpair ends and the proxy.
