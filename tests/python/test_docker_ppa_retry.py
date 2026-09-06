@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""Launchpad answers `add-apt-repository ppa:deadsnakes/ppa` with a 504 now and then,
-and every push to main builds the image, so a short outage turned into a red publish
-twice in one day. Both apt stages retry the call; the loop is cut out of the
-Dockerfile and run with a stubbed add-apt-repository.
-"""
+"""Both apt stages must retry `add-apt-repository ppa:deadsnakes/ppa`, since Launchpad
+intermittently 504s and every push to main builds the image."""
 
 from __future__ import annotations
 
@@ -22,7 +19,7 @@ DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile"
 
 def _retry_loops() -> list[str]:
     text = DOCKERFILE.read_text(encoding = "utf-8")
-    joined = re.sub(r"\\\n\s*", " ", text)  # backslash continuations into one line
+    joined = re.sub(r"\\\n\s*", " ", text)
     loops = re.findall(
         r"for i in [^;]*; do add-apt-repository -y ppa:deadsnakes/ppa .*?; done", joined
     )
