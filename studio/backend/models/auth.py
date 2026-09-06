@@ -79,6 +79,16 @@ class DesktopInitialPasswordRequest(BaseModel):
     )
 
 
+class LinkInitialPasswordRequest(BaseModel):
+    """Set the seeded admin's first real password from a link-token session."""
+
+    new_password: str = Field(
+        ...,
+        min_length = MIN_PASSWORD_LENGTH,
+        description = f"Replacement password (minimum {MIN_PASSWORD_LENGTH} characters)",
+    )
+
+
 class ChangePasswordRequest(BaseModel):
     """Change the current user's password, typically on first login."""
 

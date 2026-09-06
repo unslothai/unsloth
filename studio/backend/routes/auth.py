@@ -27,6 +27,7 @@ from models.auth import (
     CreateApiKeyResponse,
     DesktopInitialPasswordRequest,
     DesktopLoginRequest,
+    LinkInitialPasswordRequest,
     LinkTokenRequest,
     RefreshTokenRequest,
 )
@@ -34,6 +35,7 @@ from models.users import Token
 from auth import storage, hashing
 from auth.authentication import (
     authenticated_via_desktop_jwt,
+    authenticated_via_link_jwt,
     authenticated_without_credential,
     create_access_token,
     create_refresh_token,
@@ -565,7 +567,11 @@ def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
             detail = "Invalid, expired, or already-used link token",
         )
     username, secret_at_exchange = exchanged
-    access_token = create_access_token(subject = username)
+    # link = True marks this session as link-minted so it may set the FIRST password
+    # without presenting the seeded one (see /link-initial-password). Deliberately
+    # not stamped on the refresh token: the claim must not outlive the exchange, so
+    # refreshing drops the privilege and leaves an ordinary session.
+    access_token = create_access_token(subject = username, link = True)
     refresh_token = create_refresh_token(subject = username)
     # Bind session issuance to the JWT secret the link token validated against. A
     # concurrent password change rotates that secret (and revokes refresh tokens)
@@ -678,6 +684,78 @@ async def set_desktop_initial_password(
         pass
     access_token = create_access_token(subject = current_subject, desktop = True, secret = new_secret)
     refresh_token = create_refresh_token(subject = current_subject, desktop = True, secret = new_secret)
+    return Token(
+        access_token = access_token,
+        refresh_token = refresh_token,
+        token_type = "bearer",
+        must_change_password = False,
+    )
+
+
+@router.post("/link-initial-password", response_model = Token)
+async def set_link_initial_password(
+    payload: LinkInitialPasswordRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+    is_link: bool = Depends(authenticated_via_link_jwt),
+) -> Token:
+    """Set the first real password from a one-time link-token session.
+
+    Same authority argument as /desktop-initial-password: the caller proved
+    possession of an out-of-band secret (there, .desktop_secret; here, a
+    single-use link token the server placed only where the operator could reach
+    it) rather than the account password, so it may set the FIRST password while
+    the seeded credential is still in place. It cannot change an existing one --
+    that stays with /change-password, which verifies the current password.
+
+    Narrow on purpose. A link session has no other extra power, the route refuses
+    once must_change_password is clear, and the write is a compare-and-set on the
+    credential just read so a concurrent /change-password or reset-password cannot
+    be clobbered by a caller that verified no password at all.
+    """
+    if not is_link:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "This action requires a one-time setup link.",
+        )
+
+    record = storage.get_user_and_secret(current_subject)
+    if record is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "User session is invalid",
+        )
+
+    _salt, pwd_hash, _jwt_secret, must_change_password = record
+    if not must_change_password:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "A password is already set. Change it instead.",
+        )
+    if any(ch.isspace() for ch in payload.new_password):
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "New password cannot contain spaces",
+        )
+
+    new_secret = storage.update_password(
+        current_subject,
+        payload.new_password,
+        revoke_refresh_tokens = True,
+        expect_password_hash = pwd_hash,
+    )
+    if new_secret is None:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "The password changed while this request was in flight. Try again.",
+        )
+    try:
+        request.app.state.bootstrap_password = None
+    except AttributeError:
+        pass
+    # Ordinary session from here on: the link privilege is spent.
+    access_token = create_access_token(subject = current_subject, secret = new_secret)
+    refresh_token = create_refresh_token(subject = current_subject, secret = new_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,

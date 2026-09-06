@@ -236,6 +236,7 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None,
     *,
     desktop: bool = False,
+    link: bool = False,
     secret: Optional[str] = None,
 ) -> str:
     """
@@ -248,6 +249,11 @@ def create_access_token(
     to_encode = {"sub": subject}
     if desktop:
         to_encode["desktop"] = True
+    if link:
+        # Marks a session minted from a one-time link token. It is NOT a general
+        # privilege: its only extra power is /link-set-password, and only while
+        # must_change_password is still set. See is_link_access_token.
+        to_encode["link"] = True
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes = ACCESS_TOKEN_EXPIRE_MINUTES)
     )
@@ -279,6 +285,34 @@ def is_desktop_access_token(token: str) -> bool:
         return False
 
     return payload.get("sub") == subject and payload.get("desktop") is True
+
+
+def is_link_access_token(token: str) -> bool:
+    """Return true only for a valid JWT minted by a one-time link-token exchange.
+
+    Mirrors is_desktop_access_token. The claim is checked only after the
+    signature verifies against the subject's current JWT secret, so a password
+    rotation (which rotates that secret) invalidates it along with every other
+    session.
+    """
+    if token.startswith(API_KEY_PREFIX):
+        return False
+
+    subject = _decode_subject_without_verification(token)
+    if subject is None:
+        return False
+
+    record = get_user_and_secret(subject)
+    if record is None:
+        return False
+
+    _salt, _pwd_hash, jwt_secret, _must_change_password = record
+    try:
+        payload = jwt.decode(token, jwt_secret, algorithms = [ALGORITHM])
+    except jwt.InvalidTokenError:
+        return False
+
+    return payload.get("sub") == subject and payload.get("link") is True
 
 
 def create_refresh_token(
@@ -608,6 +642,18 @@ async def authenticated_via_desktop_jwt(
     with a local secret rather than the account password.
     """
     return await run_in_threadpool(is_desktop_access_token, credentials.credentials)
+
+
+async def authenticated_via_link_jwt(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> bool:
+    """True when the caller's session came from a one-time link-token exchange.
+
+    Same shape as authenticated_via_desktop_jwt: the caller proved possession of
+    an out-of-band secret rather than the account password, so a route may accept
+    that in place of the current password for the first-login write only.
+    """
+    return await run_in_threadpool(is_link_access_token, credentials.credentials)
 
 
 async def get_current_subject_allow_password_change(
