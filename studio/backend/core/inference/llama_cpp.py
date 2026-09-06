@@ -17221,6 +17221,25 @@ class LlamaCppBackend:
         return discrete if 0 < len(discrete) < len(_selected) else []
 
     @staticmethod
+    def _without_flag_pairs(cmd: list[str], pairs: list[str]) -> list[str]:
+        """Remove flag/value pairs THIS process appended, by exact token match.
+
+        Only ever called with tokens the cache tuning emitted itself, every one of them
+        a flag followed by its value, so the two-token step cannot swallow a following
+        user extra the way it would for a valueless flag (the reason the mlock path
+        refuses to strip at all). A pair that is no longer present is skipped rather
+        than searched for again, so a repeated call is a no-op.
+        """
+        out = list(cmd)
+        for index in range(0, len(pairs) - 1, 2):
+            flag, value = pairs[index], pairs[index + 1]
+            for at in range(len(out) - 1):
+                if out[at] == flag and out[at + 1] == value:
+                    del out[at : at + 2]
+                    break
+        return out
+
+    @staticmethod
     def _without_tensor_split(cmd: list[str]) -> Optional[list[str]]:
         """Return cmd with ``--tensor-split``/``-ts`` removed (both spellings and the
         ``--tensor-split=1,2`` form), or None when it carries none.
@@ -22455,17 +22474,41 @@ class LlamaCppBackend:
                 # reads torch on the non-Vulkan path, and a Linux, macOS or
                 # partial-offload launch never reaches this block, so asking would
                 # spend a device probe to answer a question with no consumer.
+                #
+                # gpu_indices is the picker's answer, not always the child's. When
+                # gpu_ids is None the picker does not own placement, so a user
+                # --device in the extras is NOT stripped and is appended after the
+                # generated pin, where llama.cpp's last-wins parsing makes it the real
+                # target. Rather than re-derive that target from argv, decline: the
+                # failure that matters is emitting --cache-ram 0 against a shared pool,
+                # and keeping the prompt cache on a discrete card only forgoes a
+                # tuning. Same direction as the helper's own fail-closed contract.
+                # The exact tokens the tuning appended, so the arch-crash respawn can
+                # take them back off when it lands on a different device class.
+                _cache_flags_emitted: list[str] = []
+                _cache_target_unknown = gpu_ids is None and bool(
+                    _extra_args_set_any_flag(_mem_extras, _DEVICE_FLAGS)
+                )
                 _shared_memory_offload = (
                     sys.platform == "win32"
                     and full_offload_tuning_active
-                    and self._offload_target_shares_system_memory(
-                        is_vulkan_backend = is_vulkan_backend,
-                        shared_gpu_ids = _shared_gpu_ids,
-                        detected_gpus = _detected_gpus,
-                        gpu_indices = gpu_indices,
+                    and (
+                        _cache_target_unknown
+                        or self._offload_target_shares_system_memory(
+                            is_vulkan_backend = is_vulkan_backend,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            detected_gpus = _detected_gpus,
+                            gpu_indices = gpu_indices,
+                        )
                     )
                 )
-                if _shared_memory_offload:
+                if _cache_target_unknown and sys.platform == "win32" and full_offload_tuning_active:
+                    logger.info(
+                        "Keeping the llama-server prompt cache: a user --device in the extra "
+                        "arguments overrides the automatic placement, so the offload target "
+                        "this tuning would be chosen against is not the one the child gets."
+                    )
+                elif _shared_memory_offload:
                     logger.info(
                         "Keeping the llama-server prompt cache: this load offloads to a GPU "
                         "that shares system memory, so --cache-ram 0 and --ctx-checkpoints 0 "
@@ -22479,15 +22522,16 @@ class LlamaCppBackend:
                     if cache_ram is not None:
                         pass
                     elif server_caps.get("supports_cache_ram"):
-                        cmd.extend(["--cache-ram", "0"])
+                        _cache_flags_emitted.extend(["--cache-ram", "0"])
                     else:
                         unsupported_cache_flags.append("--cache-ram")
                     if ctx_checkpoints is not None:
                         pass
                     elif server_caps.get("ctx_checkpoints_flag"):
-                        cmd.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])
+                        _cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])
                     else:
                         unsupported_cache_flags.append("--ctx-checkpoints")
+                    cmd.extend(_cache_flags_emitted)
                     if unsupported_cache_flags:
                         logger.info(
                             "Skipping unsupported Windows cache flags for llama-server: %s",
@@ -24118,6 +24162,49 @@ class LlamaCppBackend:
                         self._kill_process()
                         gpu_indices = _remaining
                         _unified_gpu_indices = _remaining
+                        # The Windows full-offload cache tuning was decided against the
+                        # devices that just crashed. This respawn reuses `cmd`, so a
+                        # discrete-to-APU retry would carry --cache-ram 0 onto a shared
+                        # pool -- the prefix-reprocessing regression this tuning exists
+                        # to avoid -- and the reverse retry would reach a discrete card
+                        # without it. Re-decide against the devices actually retried.
+                        if sys.platform == "win32" and full_offload_tuning_active:
+                            _retry_shared = _cache_target_unknown or (
+                                self._offload_target_shares_system_memory(
+                                    is_vulkan_backend = is_vulkan_backend,
+                                    shared_gpu_ids = _shared_gpu_ids,
+                                    detected_gpus = _retry_rows or _detected_gpus,
+                                    gpu_indices = _remaining,
+                                )
+                            )
+                            if _retry_shared and _cache_flags_emitted:
+                                # Exactly the tokens this policy appended, each a flag
+                                # with its value, so the strip cannot eat a user extra
+                                # the way a valueless flag would.
+                                cmd = self._without_flag_pairs(cmd, _cache_flags_emitted)
+                                _cache_flags_emitted = []
+                                logger.info(
+                                    "Retry lands on a GPU that shares system memory: dropped "
+                                    "--cache-ram 0 and --ctx-checkpoints 0 so the prompt cache "
+                                    "survives."
+                                )
+                            elif not _retry_shared and not _cache_flags_emitted:
+                                _retry_flags: list[str] = []
+                                if cache_ram is None and server_caps.get("supports_cache_ram"):
+                                    _retry_flags.extend(["--cache-ram", "0"])
+                                if ctx_checkpoints is None and server_caps.get(
+                                    "ctx_checkpoints_flag"
+                                ):
+                                    _retry_flags.extend(
+                                        [str(server_caps["ctx_checkpoints_flag"]), "0"]
+                                    )
+                                if _retry_flags:
+                                    cmd.extend(_retry_flags)
+                                    _cache_flags_emitted = list(_retry_flags)
+                                    logger.info(
+                                        "Retry lands on a GPU with its own memory: applied the "
+                                        "Windows full-offload cache tuning."
+                                    )
                         # GGML_CUDA_ENABLE_UNIFIED_MEMORY was decided for the CRASHED
                         # set. The canonical #7624 shape crashes on the APU and retries
                         # on the dGPU, where it is harmful, so withdraw it, but only

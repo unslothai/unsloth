@@ -199,3 +199,37 @@ def test_a_cuda_host_is_answered_without_touching_the_device(monkeypatch):
         )
         is False
     )
+
+
+# ── _without_flag_pairs: the strip the arch-crash respawn uses ──
+
+
+def test_only_the_pairs_this_policy_emitted_are_stripped():
+    """The respawn reuses the argv it already built, so taking the tuning back off has
+    to be an exact-token removal. Every pair is a flag with its value, which is what
+    makes the two-token step safe: a valueless flag would swallow the user extra that
+    follows it, which is why the mlock path refuses to strip at all."""
+    cmd = [
+        "llama-server",
+        "--cache-ram",
+        "0",
+        "--ctx-checkpoints",
+        "0",
+        "--cache-ram",
+        "4096",
+        "--verbose",
+    ]
+    out = LlamaCppBackend._without_flag_pairs(cmd, ["--cache-ram", "0", "--ctx-checkpoints", "0"])
+    # The user's own --cache-ram 4096 survives; only the emitted zeros go.
+    assert out == ["llama-server", "--cache-ram", "4096", "--verbose"]
+
+
+def test_stripping_a_pair_that_is_gone_is_a_no_op():
+    cmd = ["llama-server", "--verbose"]
+    assert LlamaCppBackend._without_flag_pairs(cmd, ["--cache-ram", "0"]) == cmd
+
+
+def test_a_trailing_flag_without_its_value_is_left_alone():
+    # Defensive: an odd-length pair list would otherwise index past the end.
+    cmd = ["llama-server", "--cache-ram"]
+    assert LlamaCppBackend._without_flag_pairs(cmd, ["--cache-ram"]) == cmd
