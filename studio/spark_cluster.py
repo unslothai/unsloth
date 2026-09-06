@@ -3386,14 +3386,22 @@ TRAIN_MEASUREMENT = (
 # the 9B row supports the DP-versus-PP comparison but not an "x over one Spark" claim.
 TRAIN_DP_VS_PP_TOKS: Dict[str, Dict[str, Optional[int]]] = {
     "unsloth/Qwen3.5-2B": {
-        "one_spark": 2613, "ddp": 5203, "dualpipev": 4128, "1f1b": 4106, "fsdp": 3276,
+        "one_spark": 2613,
+        "ddp": 5203,
+        "dualpipev": 4128,
+        "1f1b": 4106,
+        "fsdp": 3276,
     },
     "unsloth/Qwen3.5-9B": {
-        "one_spark": None, "ddp": 1741, "dualpipev": 1525, "1f1b": 1505, "fsdp": 927,
+        "one_spark": None,
+        "ddp": 1741,
+        "dualpipev": 1525,
+        "1f1b": 1505,
+        "fsdp": 927,
     },
 }
-TRAIN_DP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.99}    # DDP over one Spark
-TRAIN_PP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.58}    # best PP schedule over one Spark
+TRAIN_DP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.99}  # DDP over one Spark
+TRAIN_PP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.58}  # best PP schedule over one Spark
 TRAIN_DP_SPEEDUP_RANGE = (1.99, 1.99)
 TRAIN_PP_SPEEDUP_RANGE = (1.58, 1.58)
 # DDP over the best PP schedule on the SAME pair, which needs no single-Spark control and is
@@ -3411,8 +3419,7 @@ TRAIN_FSDP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.25}
 # 1f1b is much the cheaper in memory on the fuller rank (5.52 vs 9.58 GiB at 2B, 16.86 vs
 # 24.13 at 9B), which is what actually decides a model that only just fits.
 TRAIN_PP_SCHEDULE = "dualpipev"
-TRAIN_PP_SCHEDULE_MARGIN = 0.005   # dualpipev over 1f1b; below noise, prefer 1f1b for memory
-
+TRAIN_PP_SCHEDULE_MARGIN = 0.005  # dualpipev over 1f1b; below noise, prefer 1f1b for memory
 
 
 def plan_training(

@@ -1872,8 +1872,8 @@ def test_training_planner_constants_are_measured_and_consistent() -> None:
     assert "__" not in sc.TRAIN_MEASUREMENT and "2026" in sc.TRAIN_MEASUREMENT
     for name, arms in sc.TRAIN_DP_VS_PP_TOKS.items():
         best_pp = max(arms["dualpipev"], arms["1f1b"])
-        assert arms["ddp"] > best_pp, name          # the whole point of the rule
-        assert arms["fsdp"] < arms["ddp"], name     # sharding the base weights costs speed
+        assert arms["ddp"] > best_pp, name  # the whole point of the rule
+        assert arms["fsdp"] < arms["ddp"], name  # sharding the base weights costs speed
         assert abs(sc.TRAIN_DP_OVER_PP[name] - arms["ddp"] / best_pp) < 0.01, name
         one = arms["one_spark"]
         if one is None:
@@ -1886,10 +1886,12 @@ def test_training_planner_constants_are_measured_and_consistent() -> None:
         # DP replicates, PP halves: the memory price must be visible in the table.
         assert ddp_gib > pp_gib > 0, name
     assert sc.TRAIN_DP_SPEEDUP_RANGE == (
-        min(sc.TRAIN_DP_SPEEDUP.values()), max(sc.TRAIN_DP_SPEEDUP.values())
+        min(sc.TRAIN_DP_SPEEDUP.values()),
+        max(sc.TRAIN_DP_SPEEDUP.values()),
     )
     assert sc.TRAIN_PP_SPEEDUP_RANGE == (
-        min(sc.TRAIN_PP_SPEEDUP.values()), max(sc.TRAIN_PP_SPEEDUP.values())
+        min(sc.TRAIN_PP_SPEEDUP.values()),
+        max(sc.TRAIN_PP_SPEEDUP.values()),
     )
     assert sc.TRAIN_PP_SCHEDULE in ("dualpipev", "1f1b")
     # The schedule is a tie-break, not a result; if the margin ever grows past a percent

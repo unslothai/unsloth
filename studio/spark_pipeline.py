@@ -1751,7 +1751,6 @@ def apply_lora(model, r: int):
     """The one LoRA configuration every arm trains, so that a layer split and a data
     parallel replica of the same model train the same adapters."""
     from peft import LoraConfig, get_peft_model
-
     return get_peft_model(
         model,
         LoraConfig(
@@ -1868,10 +1867,7 @@ def _main_data_parallel(args) -> int:
     no_sync = None
     if mode == "ddp":
         from torch.nn.parallel import DistributedDataParallel
-
-        model = DistributedDataParallel(
-            model, device_ids = None if use_cpu else [device.index or 0]
-        )
+        model = DistributedDataParallel(model, device_ids = None if use_cpu else [device.index or 0])
         no_sync = model.no_sync
     elif mode == "fsdp":
         try:
