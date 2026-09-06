@@ -382,3 +382,74 @@ def test_uv_missing_never_marks_the_environment(monkeypatch):
     monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
     assert mr.attempt_mlx_repair() is False
     assert mr._environment_mutated is False
+
+
+# ── Concurrent first-import race (#9120) ──────────────────────────────────────
+
+
+class _FakeImportWithRace:
+    """import_module that raises the partial-import ImportError N times for one
+    module (the shape another startup thread mid-`import transformers` produces),
+    then succeeds."""
+
+    def __init__(self, racing_module: str, failures: int):
+        self._racing_module = racing_module
+        self._failures_left = failures
+        self.calls: list[str] = []
+
+    def __call__(self, module: str):
+        self.calls.append(module)
+        if module == self._racing_module and self._failures_left > 0:
+            self._failures_left -= 1
+            raise ImportError(
+                "cannot import name 'AutoTokenizer' from 'transformers' "
+                "(/venv/site-packages/transformers/__init__.py)"
+            )
+        return None
+
+
+def test_concurrent_partial_import_is_retried_not_reported(monkeypatch):
+    # The #9120 shape: a healthy stack whose first mlx_lm import races another
+    # startup thread's first transformers import. One retry must clear it —
+    # reporting it greyed out Train/Export for the whole process lifetime.
+    fake = _FakeImportWithRace("mlx_lm", failures = 1)
+    monkeypatch.setattr(mr.importlib, "import_module", fake)
+    sleeps: list[float] = []
+    monkeypatch.setattr(mr.time, "sleep", sleeps.append)
+
+    assert mr._mlx_runtime_import_blocker() is None
+    assert fake.calls.count("mlx_lm") == 2, "the race must be retried, not reported"
+
+
+def test_broken_install_import_is_reported_on_the_first_attempt(monkeypatch):
+    # A missing module is a real install problem, never the race: no retries,
+    # no added latency before the chat-only verdict.
+    fake = _FakeImportWithRace("mlx_lm", failures = 99)
+    fake_bad = fake.__call__
+
+    def strict(module: str):
+        fake.calls.append(module)
+        if module == "mlx_lm":
+            raise ImportError("No module named 'mlx_lm'")
+        return None
+
+    monkeypatch.setattr(mr.importlib, "import_module", strict)
+    monkeypatch.setattr(mr.time, "sleep", lambda _s: pytest.fail("no retry expected"))
+
+    blocker = mr._mlx_runtime_import_blocker()
+    assert blocker is not None and "No module named 'mlx_lm'" in blocker
+    assert fake.calls.count("mlx_lm") == 1
+
+
+def test_persistent_partial_import_reports_after_exhausting_retries(monkeypatch):
+    # If the signature persists past the retries it is not a race after all:
+    # the verdict must still name it instead of looping or passing.
+    fake = _FakeImportWithRace("mlx_lm", failures = 99)
+    monkeypatch.setattr(mr.importlib, "import_module", fake)
+    sleeps: list[float] = []
+    monkeypatch.setattr(mr.time, "sleep", sleeps.append)
+
+    blocker = mr._mlx_runtime_import_blocker()
+    assert blocker is not None and "cannot import name" in blocker
+    assert fake.calls.count("mlx_lm") == 3
+    assert len(sleeps) == 2, "backoff between attempts, none after the last"

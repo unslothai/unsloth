@@ -1656,7 +1656,11 @@ export function ChatSettingsPanel({
                       {["{{$date}}", "{{$time}}", "{{$now}}"].map((token) => (
                         <span
                           key={token}
-                          title={`${token} is replaced automatically when you send`}
+                          title={
+                      token === "{{$now}}" || token === "{{$time}}"
+                        ? `${token} is replaced automatically when you send. Second precision: it changes every request and defeats prefix caching. Prefer {{$date}}.`
+                        : `${token} is replaced automatically when you send`
+                    }
                           className="rounded-full bg-muted px-2 py-0.5 font-mono text-ui-10 text-muted-foreground"
                         >
                           {token}
@@ -1701,6 +1705,17 @@ export function ChatSettingsPanel({
               className="min-h-[20rem] max-h-[48dvh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
               rows={14}
             />
+            {promptUsesHighPrecisionTimeVariables(systemPromptDraft) ? (
+              <p
+                role="note"
+                className="px-1 text-ui-11 text-amber-600 dark:text-amber-400"
+              >
+                This prompt uses {"{{$now}}"} or {"{{$time}}"}: the value is
+                re-filled every request, so the prompt prefix changes each
+                turn and prefix caching never matches — every message pays a
+                full re-process. Use {"{{$date}}"} or remove the variable.
+              </p>
+            ) : null}
           </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
             <Button
