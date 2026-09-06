@@ -1004,3 +1004,102 @@ class TestThePublicIndexClaimNeedsTheIndex:
         monkeypatch.setenv("UV_OFFLINE", "1")
         ips._find_links_wheel_versions.cache_clear()
         assert "librosa" in ips._windows_arm64_skip_packages()
+
+
+class TestUvConfigurationFilesDecideWherePyPIIs:
+    """Only environment variables were read, and uv also discovers uv.toml, pyproject [tool.uv],
+    and the user and system files. A no-index or exclusive default-index set there still
+    unblocked librosa and then failed the extras resolve on a numba the configured source
+    does not carry."""
+
+    @pytest.fixture(autouse = True)
+    def _clean(self, monkeypatch, tmp_path):
+        for var in ("UV_OFFLINE", "PIP_NO_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL",
+                    "UV_NO_CONFIG", "UV_CONFIG_FILE", "APPDATA", "PROGRAMDATA"):
+            monkeypatch.delenv(var, raising = False)
+        (tmp_path / "proj").mkdir()
+        (tmp_path / "xdg").mkdir()
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        monkeypatch.chdir(tmp_path / "proj")
+        self.tmp = tmp_path
+
+    def _write(self, rel, body):
+        p = self.tmp / rel
+        p.parent.mkdir(parents = True, exist_ok = True)
+        p.write_text(body, encoding = "utf-8")
+
+    def test_nothing_configured_is_pypi(self, ips):
+        assert ips._public_pypi_is_reachable() is True
+
+    @pytest.mark.parametrize(
+        "rel, body, why",
+        [
+            ("proj/uv.toml", "no-index = true\n", "no-index"),
+            ("proj/uv.toml", 'default-index = "https://pypi.corp.test/simple"\n', "exclusive default-index"),
+            ("proj/uv.toml", 'index-url = "https://pypi.corp.test/simple"\n', "the older spelling"),
+            ("proj/uv.toml", "[pip]\nno-index = true\n", "under [pip]"),
+            ("proj/uv.toml", '[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n', "[[index]] default = true"),
+            ("proj/uv.toml", 'index = [{ url = "https://pypi.corp.test/simple", default = true }]\n', "inline table"),
+            ("proj/pyproject.toml", "[tool.uv]\nno-index = true\n", "pyproject [tool.uv]"),
+            ("proj/pyproject.toml", '[tool.uv.pip]\nindex-url = "https://pypi.corp.test/simple"\n', "pyproject [tool.uv.pip]"),
+            ("uv.toml", "no-index = true\n", "a parent directory"),
+            ("xdg/uv/uv.toml", "no-index = true\n", "the user file"),
+        ],
+    )
+    def test_a_configured_exclusive_source_is_not_pypi(self, ips, rel, body, why):
+        self._write(rel, body)
+        assert ips._public_pypi_is_reachable() is False, why
+
+    def test_an_extra_index_leaves_pypi_in_play(self, ips):
+        self._write("proj/uv.toml", '[[index]]\nurl = "https://pypi.corp.test/simple"\n')
+        assert ips._public_pypi_is_reachable() is True
+
+    def test_a_pyproject_without_tool_uv_is_ignored(self, ips):
+        self._write("proj/pyproject.toml", '[project]\nname = "x"\n')
+        assert ips._public_pypi_is_reachable() is True
+
+    def test_project_outranks_user_for_a_scalar(self, ips):
+        self._write("proj/uv.toml", "no-index = false\n")
+        self._write("xdg/uv/uv.toml", "no-index = true\n")
+        assert ips._public_pypi_is_reachable() is True
+
+    def test_uv_toml_beats_pyproject_in_the_same_directory(self, ips):
+        self._write("proj/uv.toml", "no-index = false\n")
+        self._write("proj/pyproject.toml", "[tool.uv]\nno-index = true\n")
+        assert ips._public_pypi_is_reachable() is True
+
+    def test_uv_no_config_discovers_nothing(self, ips, monkeypatch):
+        self._write("proj/uv.toml", "no-index = true\n")
+        monkeypatch.setenv("UV_NO_CONFIG", "1")
+        assert ips._public_pypi_is_reachable() is True
+
+    def test_uv_config_file_names_the_one_file_read(self, ips, monkeypatch):
+        self._write("proj/uv.toml", "no-index = false\n")
+        self._write("other.toml", "no-index = true\n")
+        monkeypatch.setenv("UV_CONFIG_FILE", str(self.tmp / "other.toml"))
+        assert ips._public_pypi_is_reachable() is False
+
+    def test_the_environment_outranks_every_file(self, ips, monkeypatch):
+        self._write("proj/uv.toml", "no-index = true\n")
+        monkeypatch.setenv("UV_DEFAULT_INDEX", "https://pypi.org/simple")
+        assert ips._public_pypi_is_reachable() is True
+
+    def test_an_unreadable_file_is_not_guessed_at(self, ips):
+        self._write("proj/uv.toml", "this is = not [ toml\n")
+        assert ips._public_pypi_is_reachable() is False
+
+
+class TestSqliteVecIsAnExplicitOptionalToo:
+    """Marker-excluded on ARM64 in pyproject.toml and studio.txt alike, and the one
+    unconditional line lives in no-torch-runtime.txt, which the torch install never applies:
+    a staged wheel was ignored and RAG stayed unavailable."""
+
+    def test_it_is_in_the_explicit_install_map(self, ips):
+        assert "sqlite-vec" in ips.WINDOWS_ARM64_WHEELHOUSE_OPTIONALS
+
+    def test_no_torch_requirement_reaches_it_on_the_torch_path(self):
+        """The premise: without an explicit install nothing asks for it."""
+        for name in ("pyproject.toml", "studio/backend/requirements/studio.txt"):
+            text = (REPO_ROOT / name).read_text(encoding = "utf-8")
+            rows = [l for l in text.splitlines() if "sqlite-vec" in l and not l.strip().startswith("#")]
+            assert rows and all("ARM64" in r for r in rows), name

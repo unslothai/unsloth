@@ -1926,6 +1926,9 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
                 f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
                 "$script:WoaWheelhouse = $null",
                 _function_source(text, "Test-WoaWheelTags"),
+                _function_source(text, "Test-WoaWheelTagsUsable"),
+                _function_source(text, "Test-WoaVersionAtLeast"),
+                _function_source(text, "Test-WoaPyPIWheel"),
                 _function_source(text, "Test-WoaWheelAvailable"),
                 f"Write-Output (Test-WoaWheelAvailable -Project 'av' -PythonMinor '{minor}' -AbiTag '{abi}')",
             ]
@@ -1948,6 +1951,9 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
                 "function Invoke-RestMethod { param([Parameter(ValueFromRemainingArguments=$true)]$a) throw 'offline' }",
                 "$script:WoaWheelhouse = $null",
                 _function_source(text, "Test-WoaWheelTags"),
+                _function_source(text, "Test-WoaWheelTagsUsable"),
+                _function_source(text, "Test-WoaVersionAtLeast"),
+                _function_source(text, "Test-WoaPyPIWheel"),
                 _function_source(text, "Test-WoaWheelAvailable"),
                 "Write-Output (Test-WoaWheelAvailable -Project 'av' -PythonMinor '3.13' -AbiTag 'cp313t')",
             ]
@@ -3768,6 +3774,7 @@ class TestThePypiPyarrowWheelIsPinnedToo:
                 "function Test-WoaWheelhouseIsLocal { $false }",
                 f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
                 "$script:WoaWheelhouse = ''",
+                "function Test-WoaResolveReachesPyPI { $true }",
                 _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
                 _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
                 '$script:WoaPyarrowFloor = "21.0.0"',
@@ -4128,8 +4135,9 @@ class TestTheCompanionWheelsArePairedWithTorch:
             ("2.15.0.dev20260101+cu134", "0.26.0.dev20260101+cu134", True, "same stamp and tag"),
             ("2.15.0.dev20260101+cu134", "0.26.0.dev20260102+cu134", False, "staggered nightly"),
             ("2.15.0.dev20260101+cu134", "0.26.0+cu134", False, "a release is not that build"),
-            ("2.14.0+cu134", "0.25.0+cu134", True, "GA: the local tag is the whole pairing"),
-            ("2.14.0+cu134", "0.25.0+cu130", False, "a different CUDA build"),
+            ("2.14.0+cu134", "0.29.0+cu134", True, "GA: torchvision 0.(M+15) pairs with torch 2.M"),
+            ("2.14.0+cu134", "0.25.0+cu134", False, "GA, same tag, another release line: not a pair"),
+            ("2.14.0+cu134", "0.29.0+cu130", False, "a different CUDA build"),
             ("2.14.0+cu134", "", False, "nothing to pair with"),
         ],
     )
@@ -4282,7 +4290,7 @@ class TestTheOverrideFileDoesNotOutrankTheTorchPin:
 
     def test_it_is_applied_around_the_native_install_only(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        swap = text.index("$env:UV_OVERRIDE = New-WoaTorchStepOverrideValue")
+        swap = text.index("$_woaStep = New-WoaTorchStepOverrideValue -Value $_woaOverrideSaved")
         guard = text.rindex(
             'if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64" -and $env:UV_OVERRIDE) {',
             0,
@@ -4293,8 +4301,8 @@ class TestTheOverrideFileDoesNotOutrankTheTorchPin:
     def test_the_original_value_is_restored(self):
         """The later unsloth resolve still needs the drop list."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        swap = text.index("$env:UV_OVERRIDE = New-WoaTorchStepOverrideValue")
-        tail = text[swap : swap + 900]
+        swap = text.index("$_woaStep = New-WoaTorchStepOverrideValue -Value $_woaOverrideSaved")
+        tail = text[swap : swap + 1200]
         assert "} finally {" in tail
         assert "if ($_woaOverrideSwapped) { $env:UV_OVERRIDE = $_woaOverrideSaved }" in tail
 
@@ -4325,11 +4333,12 @@ class TestTheOverrideFileDoesNotOutrankTheTorchPin:
         src.write_text("\n".join(lines) + "\n", encoding = "utf-8")
         script = "\n".join(
             [
+                "function Get-UvSafePath { param([string]$Path) return $Path }",
                 _ps_function(INSTALL_PS1, "Get-WoaRequirementEntries"),
                 _ps_function(INSTALL_PS1, "Resolve-WoaOverrideLine"),
                 _ps_function(INSTALL_PS1, "New-WoaTorchStepOverrideValue"),
-                f"$v = New-WoaTorchStepOverrideValue -Value '{src}'",
-                "Get-Content -LiteralPath ($v.Trim('\"')) | ForEach-Object { Write-Output $_ }",
+                f"$v = (New-WoaTorchStepOverrideValue -Value '{src}' -Dir '{tmp_path}').Value",
+                "Get-Content -LiteralPath $v | ForEach-Object { Write-Output $_ }",
             ]
         )
         done = subprocess.run(
@@ -4364,12 +4373,231 @@ class TestATransientProbeFailureKeepsTheCudaBundle:
         claim to be NVIDIA evidence."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         start = text.index("$_nvidiaEvidence = ")
-        assert (
-            "Test-WoaPersistableIndex $WinArm64EffectiveTorchIndexUrl" in text[start : start + 400]
-        )
+        assert "Test-WoaPersistableIndex $_woaEvidenceIndex" in text[start : start + 400]
 
     def test_rocm_still_wins_the_branch(self):
         """The ROCm arm is first and unchanged: this only widens the NVIDIA one."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         line = [l for l in text.splitlines() if "$expectedKinds = if (" in l][0]
         assert line.index("$HasROCm") < line.index("$_nvidiaEvidence")
+
+
+class TestStableCompanionsPairByReleaseLine:
+    """Every stable release has an empty dev stamp, so the CUDA tag alone paired a companion
+    from any release the index still served, and the exact-pin install then asked for a pair
+    that does not exist. torchvision 0.(M+15) requires torch 2.M exactly (PyPI metadata:
+    0.25.0 -> torch==2.10.0, 0.19.0 -> torch==2.4.0); torchaudio agrees on major.minor.
+    """
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "project, torch_v, other_v, pairs, why",
+        [
+            ("torchvision", "2.10.0+cu134", "0.25.0+cu134", True, "the PyPI-documented pair"),
+            ("torchvision", "2.10.0+cu134", "0.26.0+cu134", False, "the next GA, published early"),
+            ("torchvision", "2.10.0+cu134", "0.24.0+cu134", False, "the previous one, still served"),
+            ("torchaudio", "2.10.0+cu134", "2.10.1+cu134", True, "audio: major.minor"),
+            ("torchaudio", "2.14.0+cu134", "2.11.0+cu134", False, "the GA mismatch round 9 found"),
+            ("torchvision", "2.15.0.dev20260101+cu134", "0.30.0.dev20260101+cu134", True, "nightly: the stamp still decides"),
+            ("torchvision", "2.15.0.dev20260101+cu134", "0.26.0.dev20260101+cu134", True, "nightly: the release offset is NOT applied to a stamped build"),
+        ],
+    )
+    def test_the_pairing(self, project, torch_v, other_v, pairs, why):
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Test-WoaWheelPairsWithTorch"),
+                f"Write-Output (Test-WoaWheelPairsWithTorch -TorchVersion '{torch_v}'"
+                f" -OtherVersion '{other_v}' -Project '{project}')",
+            ]
+        )
+        done = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+                              capture_output = True, text = True, timeout = 120)
+        assert done.returncode == 0, done.stderr
+        assert (done.stdout.strip().splitlines()[-1] == "True") is pairs, why
+
+    def test_the_probe_passes_the_project_through(self):
+        for path, fn in ((INSTALL_PS1, "Test-WoaWheelPairsWithTorch"), (SETUP_PS1, "Test-WoaPairsWithTorchParity")):
+            text = path.read_text(encoding = "utf-8")
+            assert f"{fn} -TorchVersion $PairWith -OtherVersion $version -Project $Project" in text, path.name
+
+
+class TestTheFilteredOverrideIsUvSafeAndShortLived:
+    """GetTempFileName() lands in %TEMP%, which follows the profile: a spaced one produced a
+    quoted path in UV_OVERRIDE, and this file documents that uv rejects quoting there, so the
+    torch command failed before installing anything. And the copies were never deleted: every
+    native run made at least one, and a flattened caller file can carry an authenticated URL.
+    """
+
+    @requires_pwsh
+    def test_the_copy_lands_in_the_given_directory_and_is_reported(self, tmp_path):
+        src = tmp_path / "ovr.txt"
+        src.write_text("torch>=2.4\nhf-transfer ; platform_machine == \"AMD64\"\n", encoding = "utf-8")
+        woa = tmp_path / "woa"; woa.mkdir()
+        script = "\n".join(
+            [
+                "function Get-UvSafePath { param([string]$Path) return $Path }",
+                _ps_function(INSTALL_PS1, "Get-WoaRequirementEntries"),
+                _ps_function(INSTALL_PS1, "Resolve-WoaOverrideLine"),
+                _ps_function(INSTALL_PS1, "New-WoaTorchStepOverrideValue"),
+                f"$r = New-WoaTorchStepOverrideValue -Value '{src}' -Dir '{woa}'",
+                "Write-Output ('VALUE=' + $r.Value)",
+                "Write-Output ('TEMPS=' + ($r.Temps -join ';'))",
+            ]
+        )
+        done = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+                              capture_output = True, text = True, timeout = 120)
+        assert done.returncode == 0, done.stderr
+        out = dict(l.split("=", 1) for l in done.stdout.strip().splitlines() if "=" in l)
+        assert out["TEMPS"], "the created copy is not reported, so nothing can delete it"
+        assert out["TEMPS"].startswith(str(woa)), "the copy must live under the uv-safe directory"
+        assert out["VALUE"] == out["TEMPS"]
+
+    def test_every_path_goes_through_the_uv_safe_helper(self):
+        body = _ps_function(INSTALL_PS1, "New-WoaTorchStepOverrideValue")
+        assert "$safe = foreach ($f in $files) { Get-UvSafePath $f }" in body
+
+    def test_the_caller_deletes_the_copies_on_every_exit(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        swap = text.index("New-WoaTorchStepOverrideValue -Value $_woaOverrideSaved -Dir $script:WoaDir")
+        tail = text[swap : swap + 1200]
+        fin = tail.index("} finally {")
+        assert "foreach ($_woaTmp in $_woaOverrideTemps) { Remove-Item -LiteralPath $_woaTmp" in tail[fin:]
+
+    def test_the_woa_directory_is_published_to_script_scope(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        assert "$script:WoaDir = $WoaDir" in text
+
+
+class TestSetupSwapsTheOverrideAroundItsOwnTorchInstall:
+    """Restore-WoaResolverEnvironment puts the generated overrides.txt back before setup's CUDA
+    trio is installed, so the same floors undid the same exact pins there."""
+
+    def test_the_swap_wraps_the_install_and_restores_in_finally(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        restore = text.index("\nRestore-WoaResolverEnvironment")
+        swap = text.index("New-WoaTorchStepOverrideValueParity -Value $_woaStepSaved")
+        assert restore < swap, "the swap must come after the overrides are restored, or it swaps nothing"
+        tail = text[swap : swap + 1600]
+        assert "Fast-Install @_cudaTrio" in tail
+        fin = tail.index("} finally {")
+        assert "if ($_woaStepSwapped) { $env:UV_OVERRIDE = $_woaStepSaved }" in tail[fin:]
+        assert "foreach ($_woaTmp in $_woaStepTemps) { Remove-Item -LiteralPath $_woaTmp" in tail[fin:]
+
+    def test_only_a_native_venv_swaps(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "if ($WinArm64Venv -and $env:UV_OVERRIDE) {" in text
+
+    @requires_pwsh
+    def test_the_parity_helper_drops_the_trio(self, tmp_path):
+        src = tmp_path / "ovr.txt"
+        src.write_text("torch>=2.4\ntorchvision>=0.19\npyarrow==21.0.0\n", encoding = "utf-8")
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        script = "\n".join(
+            [
+                "function Get-UvSafePath { param([string]$Path) return $Path }",
+                _function_source(text, "Get-RequirementEntries"),
+                _function_source(text, "Resolve-WoaOverrideLine"),
+                _function_source(text, "New-WoaTorchStepOverrideValueParity"),
+                f"$r = New-WoaTorchStepOverrideValueParity -Value '{src}' -Dir '{tmp_path}'",
+                "Get-Content -LiteralPath $r.Value | ForEach-Object { Write-Output $_ }",
+            ]
+        )
+        done = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+                              capture_output = True, text = True, timeout = 120)
+        assert done.returncode == 0, done.stderr
+        lines = [l for l in done.stdout.splitlines() if l.strip()]
+        assert lines == ["pyarrow==21.0.0"], lines
+
+
+class TestNvidiaEvidenceSurvivesTheFastPath:
+    """When the manifest verifies, $SkipPythonDeps skips the whole dependency block, so
+    $WinArm64EffectiveTorchIndexUrl is never set and the llama.cpp check read "no evidence":
+    a transient nvidia-smi failure on a no-op update then deleted the working CUDA bundle."""
+
+    def test_the_index_is_read_at_the_check_when_the_pass_did_not_run(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        start = text.index("$_woaEvidenceIndex = if ($WinArm64EffectiveTorchIndexUrl)")
+        block = text[start : text.index("$_nvidiaEvidence = ", start)]
+        assert "Get-PinnedTorchIndexUrl" in block
+        assert "Get-PersistedWoaTorchIndex -VenvPath $VenvDir" in block
+        assert "Get-WoaTorchIndexMarker" in block
+        assert block.index("Get-PinnedTorchIndexUrl") < block.index("Get-PersistedWoaTorchIndex") < block.index("Get-WoaTorchIndexMarker"), "same order as the dependency pass"
+
+    def test_the_evidence_uses_that_index(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "(Test-WinArm64Venv) -and $_woaEvidenceIndex -and" in text
+        assert "Test-WoaPersistableIndex $_woaEvidenceIndex" in text
+
+    def test_the_check_sits_outside_the_dependency_guard(self):
+        """The premise: if it were inside, the fast path would never reach it at all."""
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        guard = text.index("\nif (-not $SkipPythonDeps) {")
+        depth = 0
+        for i in range(guard + 1, len(text)):
+            depth += (text[i] == "{") - (text[i] == "}")
+            if depth == 0:
+                break
+        assert text.index("$_nvidiaEvidence = ") > i
+
+
+class TestThePyPIProbeHonoursUvConfiguration:
+    """A direct HTTP probe can see pypi.org while uv, under a uv.toml with no-index or an
+    exclusive default-index, cannot. "pypi" then skipped a usable wheelhouse wheel for one the
+    resolve would never fetch."""
+
+    def test_the_pyarrow_probe_is_gated(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        probe = text.index('Invoke-RestMethod -Uri "https://pypi.org/simple/pyarrow/"')
+        assert "if (Test-WoaResolveReachesPyPI) { try {" in text[probe - 400 : probe]
+
+    @staticmethod
+    def _reaches(tmp_path, files: dict, env: dict) -> str:
+        for name, body in files.items():
+            (tmp_path / name).parent.mkdir(parents = True, exist_ok = True)
+            (tmp_path / name).write_text(body, encoding = "utf-8")
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        setenv = "\n".join(f"$env:{k} = '{v}'" for k, v in env.items())
+        script = "\n".join(
+            [
+                "foreach ($n in 'UV_OFFLINE','PIP_NO_INDEX','UV_DEFAULT_INDEX','UV_INDEX_URL','PIP_INDEX_URL','UV_NO_CONFIG','UV_CONFIG_FILE') { Remove-Item Env:$n -ErrorAction SilentlyContinue }",
+                f"$env:APPDATA = '{tmp_path / 'appdata'}'",
+                f"$env:ProgramData = '{tmp_path / 'programdata'}'",
+                f"Set-Location -LiteralPath '{tmp_path / 'proj'}'",
+                setenv,
+                _ps_function(INSTALL_PS1, "Read-WoaUvTomlIndexKeys"),
+                _ps_function(INSTALL_PS1, "Get-WoaUvConfigIndexPolicy"),
+                _ps_function(INSTALL_PS1, "Test-WoaResolveReachesPyPI"),
+                "Write-Output (Test-WoaResolveReachesPyPI)",
+            ]
+        )
+        (tmp_path / "proj").mkdir(exist_ok = True)
+        done = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+                              capture_output = True, text = True, timeout = 120)
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip().splitlines()[-1]
+
+    @requires_pwsh
+    @pytest.mark.parametrize(
+        "files, env, expected, why",
+        [
+            ({}, {}, "True", "nothing configured: PyPI"),
+            ({"proj/uv.toml": "no-index = true\n"}, {}, "False", "project uv.toml no-index"),
+            ({"proj/uv.toml": 'default-index = "https://pypi.corp.test/simple"\n'}, {}, "False", "exclusive default-index"),
+            ({"proj/uv.toml": 'index-url = "https://pypi.corp.test/simple"\n'}, {}, "False", "the older spelling"),
+            ({"proj/uv.toml": '[pip]\nno-index = true\n'}, {}, "False", "under [pip], which uv pip reads"),
+            ({"proj/uv.toml": '[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n'}, {}, "False", "an [[index]] with default = true replaces PyPI"),
+            ({"proj/uv.toml": '[[index]]\nurl = "https://pypi.corp.test/simple"\n'}, {}, "True", "an extra index leaves PyPI in play"),
+            ({"proj/pyproject.toml": '[tool.uv]\nno-index = true\n'}, {}, "False", "pyproject [tool.uv]"),
+            ({"proj/pyproject.toml": '[project]\nname = "x"\n'}, {}, "True", "a pyproject without [tool.uv] is ignored"),
+            ({"uv.toml": "no-index = true\n"}, {}, "False", "found in a parent directory"),
+            ({"appdata/uv/uv.toml": "no-index = true\n"}, {}, "False", "the user file"),
+            ({"proj/uv.toml": "no-index = false\n", "appdata/uv/uv.toml": "no-index = true\n"}, {}, "True", "project outranks user for a scalar"),
+            ({"proj/uv.toml": "no-index = true\n"}, {"UV_NO_CONFIG": "1"}, "True", "UV_NO_CONFIG discovers nothing"),
+            ({"proj/uv.toml": "no-index = true\n"}, {"UV_DEFAULT_INDEX": "https://pypi.org/simple"}, "True", "an index in the environment outranks every file"),
+            ({"other.toml": "no-index = true\n"}, {"UV_CONFIG_FILE": "__TMP__/other.toml"}, "False", "UV_CONFIG_FILE names the one file read"),
+            ({"proj/uv.toml": 'index = [{ url = "https://pypi.corp.test/simple", default = true }]\n'}, {}, "False", "an inline table this parser does not model is not guessed at"),
+        ],
+    )
+    def test_where_the_resolve_will_look(self, tmp_path, files, env, expected, why):
+        env = {k: v.replace("__TMP__", str(tmp_path)) for k, v in env.items()}
+        assert self._reaches(tmp_path, files, env) == expected, why

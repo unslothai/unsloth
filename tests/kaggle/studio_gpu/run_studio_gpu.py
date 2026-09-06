@@ -2880,6 +2880,12 @@ class Payload:
         # home's state is not a configuration anybody ships. assert_chat_ui
         # ends by stopping the server, so by here the port is free, the card is
         # empty, and the VRAM delta below measures this launch alone.
+        # Stopped here, not only at the end of assert_chat_ui: with --skip-ui that driver never
+        # runs, so the Studio server and its llama-server were still alive when assert_cli_run
+        # took its before-launch listing. On parts that report [N/A] per process, that pid read
+        # as a co-tenant, the device-delta fallback was refused, and a GPU-backed run came back
+        # "unmeasured rather than proven". Idempotent when assert_chat_ui already stopped it.
+        self.stop_server()
         self.assert_cli_run()
 
         # LAST of all, and the only thing here that touches the public

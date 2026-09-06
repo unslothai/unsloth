@@ -5661,6 +5661,10 @@ WINDOWS_ARM64_BLOCKER_FLOORS: "dict[str, tuple[str, str, str]]" = {
 WINDOWS_ARM64_WHEELHOUSE_OPTIONALS = {
     "hf-transfer": "",
     "xformers": ">=0.0.22.post7",
+    # Excluded by marker in pyproject.toml and studio.txt both; the one unconditional line is
+    # in no-torch-runtime.txt, which the torch install never applies. Without this a staged
+    # wheel was ignored and RAG stayed unavailable.
+    "sqlite-vec": "",
 }
 
 
@@ -5742,6 +5746,94 @@ WINDOWS_ARM64_PUBLIC_INDEX_WHEELS: "dict[str, dict[str, str]]" = {
 }
 
 
+def _uv_config_files() -> "list[tuple[Path, str]]":
+    """The persistent configuration uv would discover, most specific first, as (path, table).
+
+    uv reads uv.toml or pyproject.toml [tool.uv] from the current directory or the nearest
+    parent (uv.toml wins over pyproject.toml in the same directory), then the user file
+    (%APPDATA%\\uv\\uv.toml on Windows, $XDG_CONFIG_HOME/uv/uv.toml elsewhere), then the
+    system file (%PROGRAMDATA%\\uv\\uv.toml, /etc/uv/uv.toml). UV_CONFIG_FILE names one file
+    instead of discovering; UV_NO_CONFIG discovers nothing. `table` is the prefix the index
+    keys sit under: "" for uv.toml, "tool.uv" for pyproject.toml.
+    """
+    if os.environ.get("UV_NO_CONFIG", "").strip().lower() not in ("", "0", "false"):
+        return []
+    explicit = os.environ.get("UV_CONFIG_FILE", "").strip()
+    if explicit:
+        return [(Path(explicit), "")]
+    found: "list[tuple[Path, str]]" = []
+    here = Path.cwd()
+    for d in (here, *here.parents):
+        uv_toml = d / "uv.toml"
+        if uv_toml.is_file():
+            found.append((uv_toml, ""))
+            break
+        pyproject = d / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                text = pyproject.read_text(encoding = "utf-8")
+            except OSError:
+                text = ""
+            if re.search(r"(?m)^\s*\[+tool\.uv(\.|\])", text):
+                found.append((pyproject, "tool.uv"))
+                break
+    if IS_WINDOWS:
+        user = os.environ.get("APPDATA", "")
+        system = os.environ.get("PROGRAMDATA", "")
+        if user:
+            found.append((Path(user) / "uv" / "uv.toml", ""))
+        if system:
+            found.append((Path(system) / "uv" / "uv.toml", ""))
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME", "") or str(Path.home() / ".config")
+        found.append((Path(xdg) / "uv" / "uv.toml", ""))
+        found.append((Path("/etc/uv/uv.toml"), ""))
+    return [(p, table) for p, table in found if p.is_file()]
+
+
+def _uv_config_index_policy() -> "dict[str, object]":
+    """{no_index, default_index, unreadable} from uv's discovered configuration.
+
+    Project outranks user outranks system for a scalar, so the first file that sets a key
+    decides it. Only the keys that decide where a resolve looks are read: no-index and
+    default-index (index-url is the older spelling), at the top level and under [pip], and
+    an [[index]] entry carrying default = true. A file this cannot parse is reported rather
+    than guessed at.
+    """
+    policy: "dict[str, object]" = {"no_index": None, "default_index": None, "unreadable": False}
+    try:
+        import tomllib
+    except ImportError:  # 3.10: the native path is 3.11+, so only the x64 fallback lands here
+        policy["unreadable"] = bool(_uv_config_files())
+        return policy
+    for path, table in _uv_config_files():
+        try:
+            with open(path, "rb") as fh:
+                data = tomllib.load(fh)
+        except (OSError, ValueError):
+            policy["unreadable"] = True
+            continue
+        section = data
+        for part in [p for p in table.split(".") if p]:
+            section = section.get(part, {}) if isinstance(section, dict) else {}
+        if not isinstance(section, dict):
+            continue
+        scopes = [section, section.get("pip", {}) if isinstance(section.get("pip"), dict) else {}]
+        for scope in scopes:
+            if policy["no_index"] is None and isinstance(scope.get("no-index"), bool):
+                policy["no_index"] = scope["no-index"]
+            for key in ("default-index", "index-url"):
+                if policy["default_index"] is None and isinstance(scope.get(key), str):
+                    policy["default_index"] = scope[key]
+        indexes = section.get("index")
+        if isinstance(indexes, list) and policy["default_index"] is None:
+            for entry in indexes:
+                if isinstance(entry, dict) and entry.get("default") is True and isinstance(entry.get("url"), str):
+                    policy["default_index"] = entry["url"]
+                    break
+    return policy
+
+
 def _public_pypi_is_reachable() -> bool:
     """Can this resolution actually reach public PyPI?
 
@@ -5750,15 +5842,23 @@ def _public_pypi_is_reachable() -> bool:
     are neither cached nor served: unblocking librosa there drops the skip and then fails the
     whole extras pass on an unavailable numba, which is exactly what the skip prevents.
     UV_INDEX_URL / UV_DEFAULT_INDEX REPLACE the default index; --extra-index-url adds to it,
-    so a configured extra leaves PyPI in play and is not consulted here.
+    so a configured extra leaves PyPI in play and is not consulted here. Environment outranks
+    uv's configuration files, so an index set there decides on its own; otherwise the files
+    do. Doubt resolves to False: that answer keeps the skip, the other fails the extras pass.
     """
     if _uv_is_offline():
         return False
+    if os.environ.get("PIP_NO_INDEX", "").strip().lower() not in ("", "0", "false"):
+        return False
     for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL"):
         value = os.environ.get(var, "").strip()
-        if value and "pypi.org" not in value:
-            return False
-    if os.environ.get("PIP_NO_INDEX", "").strip().lower() not in ("", "0", "false"):
+        if value:
+            return "pypi.org" in value
+    policy = _uv_config_index_policy()
+    if policy["unreadable"] or policy["no_index"] is True:
+        return False
+    default = policy["default_index"]
+    if isinstance(default, str) and "pypi.org" not in default:
         return False
     return True
 

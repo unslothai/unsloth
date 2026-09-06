@@ -3814,7 +3814,7 @@ function Test-WoaWheelTagsParity {
 }
 
 function Test-WoaPairsWithTorchParity {
-    param([string]$TorchVersion, [string]$OtherVersion)
+    param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision")
     if (-not $TorchVersion -or -not $OtherVersion) { return $false }
     $stamp = {
         param($v)
@@ -3827,7 +3827,58 @@ function Test-WoaPairsWithTorchParity {
         if ($parts.Count -eq 2) { return $parts[1].ToLowerInvariant() } else { return "" }
     }
     if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
-    return ((& $local $TorchVersion) -eq (& $local $OtherVersion))
+    if ((& $local $TorchVersion) -ne (& $local $OtherVersion)) { return $false }
+    if (& $stamp $TorchVersion) { return $true }
+    # Stable: every release has an empty stamp, so the tag alone would pair a companion from
+    # any release the index still serves. Release lines pair by a fixed offset instead:
+    # torchvision 0.(M+15) requires torch 2.M exactly (PyPI: 0.25.0 -> torch==2.10.0,
+    # 0.19.0 -> torch==2.4.0), and torchaudio agrees with torch on major.minor.
+    $rel = {
+        param($v)
+        $m = [regex]::Match($v, '^(\d+)\.(\d+)')
+        if ($m.Success) { return @([int]$m.Groups[1].Value, [int]$m.Groups[2].Value) } else { return $null }
+    }
+    $t = & $rel $TorchVersion; $o = & $rel $OtherVersion
+    if (-not $t -or -not $o) { return $false }
+    switch (($Project -replace '[-_.]+', '-').ToLowerInvariant()) {
+        "torchvision" { return (($t[0] -eq 2) -and ($o[0] -eq 0) -and ($o[1] -eq ($t[1] + 15))) }
+        "torchaudio"  { return (($o[0] -eq $t[0]) -and ($o[1] -eq $t[1])) }
+        default       { return $true }
+    }
+}
+
+# The same swap install.ps1 makes around its torch command, for the same reason: uv's overrides
+# replace a version even for a requirement named on the command line, and by the time the CUDA
+# trio is installed below Restore-WoaResolverEnvironment has put the generated overrides.txt,
+# with its torch and torchvision floors, back into UV_OVERRIDE. Drop only the trio, only for that
+# command, under the WoA directory (already uv-safe), and delete the copy afterwards.
+function New-WoaTorchStepOverrideValueParity {
+    param([string]$Value, [string]$Dir = "")
+    $result = @{ Value = $null; Temps = @() }
+    if (-not $Value) { return $result }
+    $files = @()
+    foreach ($entry in ($Value -split '\s+' | Where-Object { $_ })) {
+        $path = $entry.Trim('"').Trim("'")
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+        $kept = @()
+        $dropped = $false
+        foreach ($line in (Get-RequirementEntries -Path $path)) {
+            $name = ((($line.Line -split '[\s<>=!~;@\[]', 2)[0]).Trim() -replace '[-_.]+', '-').ToLowerInvariant()
+            if (@("torch", "torchvision", "torchaudio") -contains $name) { $dropped = $true; continue }
+            $kept += (Resolve-WoaOverrideLine -Line $line.Line -BaseDir $line.BaseDir)
+        }
+        if (-not $dropped) { $files += $path; continue }
+        $tmp = if ($Dir -and (Test-Path -LiteralPath $Dir -PathType Container)) {
+            Join-Path $Dir ("torch-step-" + [System.IO.Path]::GetRandomFileName() + ".txt")
+        } else { [System.IO.Path]::GetTempFileName() }
+        [System.IO.File]::WriteAllLines($tmp, [string[]]$kept, (New-Object System.Text.UTF8Encoding($false)))
+        $result.Temps += $tmp
+        $files += $tmp
+    }
+    if (-not $files) { $result.Value = ""; return $result }
+    $safe = foreach ($f in $files) { Get-UvSafePath $f }
+    $result.Value = (($safe | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join " ")
+    return $result
 }
 
 function Get-WoaCudaWheelVersionParity {
@@ -3849,7 +3900,7 @@ function Get-WoaCudaWheelVersionParity {
         if (-not (Test-WoaWheelTagsParity -Name $name -PyTag $PyTag -AbiTag $AbiTag)) { continue }
         if ($name -notmatch '\+cu[0-9]+') { continue }
         $version = ($name -split '-')[1]
-        if ($PairWith -and -not (Test-WoaPairsWithTorchParity -TorchVersion $PairWith -OtherVersion $version)) { continue }
+        if ($PairWith -and -not (Test-WoaPairsWithTorchParity -TorchVersion $PairWith -OtherVersion $version -Project $Project)) { continue }
         $release = ($version -split '\+', 2)[0]
         $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
         $key = $null
@@ -5570,13 +5621,27 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
                          elseif ($WinArm64TorchIndexUrl) { $WinArm64TorchIndexUrl }
                          else { $TorchInstallIndexUrl }
         $_effectiveTorchIndexUrl = $_cudaIndexUrl
-        if ($script:UnslothVerbose) {
-            Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $_cudaIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
-            $torchInstallExit = $LASTEXITCODE
-            $output = ""
-        } else {
-            $output = Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $_cudaIndexUrl | Out-String
-            $torchInstallExit = $LASTEXITCODE
+        # The exact WoA pins are only worth sending if the override file cannot undo them.
+        $_woaStepSaved = $null; $_woaStepSwapped = $false; $_woaStepTemps = @()
+        if ($WinArm64Venv -and $env:UV_OVERRIDE) {
+            $_woaStepSaved = $env:UV_OVERRIDE
+            $_woaStep = New-WoaTorchStepOverrideValueParity -Value $_woaStepSaved -Dir (Join-Path $StudioHome "woa")
+            $env:UV_OVERRIDE = $_woaStep.Value
+            $_woaStepTemps = @($_woaStep.Temps)
+            $_woaStepSwapped = $true
+        }
+        try {
+            if ($script:UnslothVerbose) {
+                Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $_cudaIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                $torchInstallExit = $LASTEXITCODE
+                $output = ""
+            } else {
+                $output = Fast-Install @_cudaTrio @cudaForce @WinArm64IndexArgs --index-url $_cudaIndexUrl | Out-String
+                $torchInstallExit = $LASTEXITCODE
+            }
+        } finally {
+            if ($_woaStepSwapped) { $env:UV_OVERRIDE = $_woaStepSaved }
+            foreach ($_woaTmp in $_woaStepTemps) { Remove-Item -LiteralPath $_woaTmp -Force -ErrorAction SilentlyContinue }
         }
         if ($torchInstallExit -eq 0 -or -not $_cudaKeptActive) { break }
         substep "[WARN] torch==$($env:UNSLOTH_KEPT_TORCH) not installable from this CUDA index -- using the supported release" "Yellow"
@@ -6272,8 +6337,22 @@ if ($LocalLlamaCppLinked) {
                 # the selector with no NVIDIA evidence, which installs the CPU bundle. The WoA CUDA
                 # index this venv is on says the same thing nvidia-smi would have, and only
                 # NVIDIA's own channels are ever persisted, so it cannot be a CPU pin.
-                $_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv) -and $WinArm64EffectiveTorchIndexUrl -and
-                    (Test-WoaPersistableIndex $WinArm64EffectiveTorchIndexUrl))
+                # Read here, not taken from the dependency pass: when the manifest verifies,
+                # $SkipPythonDeps skips that whole block and $WinArm64EffectiveTorchIndexUrl is
+                # never set, which read as "no evidence" and deleted a working CUDA install on
+                # exactly the no-op update that should touch nothing. Same order as the pass:
+                # pin, then manifest, then marker.
+                $_woaEvidenceIndex = if ($WinArm64EffectiveTorchIndexUrl) { $WinArm64EffectiveTorchIndexUrl }
+                    else {
+                        $_p = Get-PinnedTorchIndexUrl
+                        if ($_p) { ([string]$_p).Trim().TrimEnd('/') }
+                        else {
+                            $_m = Get-PersistedWoaTorchIndex -VenvPath $VenvDir
+                            if ($_m) { $_m } else { Get-WoaTorchIndexMarker }
+                        }
+                    }
+                $_nvidiaEvidence = $HasNvidiaSmi -or ((Test-WinArm64Venv) -and $_woaEvidenceIndex -and
+                    (Test-WoaPersistableIndex $_woaEvidenceIndex))
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."

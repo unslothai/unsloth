@@ -2758,3 +2758,20 @@ class TestTheSamplesAreScopedToTheVisibleCard:
             with mock.patch.object(run_studio_gpu, "run", explode):
                 assert run_studio_gpu.nvidia_used_mib() is None
                 assert run_studio_gpu.nvidia_compute_apps_listing() is None
+
+
+class TestTheServerIsStoppedBeforeTheCliBaselineRegardlessOfSkipUi:
+    """assert_chat_ui ends by stopping the Studio server, so with --skip-ui nothing did, and
+    the still-running llama-server sat in assert_cli_run's before-launch listing. On parts that
+    report [N/A] per process that pid read as a co-tenant, the device-delta fallback was
+    refused, and a GPU-backed run came back "unmeasured rather than proven"."""
+
+    def test_stop_server_precedes_the_cli_assertion_unconditionally(self):
+        text = Path(run_studio_gpu.__file__).read_text(encoding = "utf-8")
+        ui = text.index("if not self.args.skip_ui:\n            self.assert_chat_ui()")
+        cli = text.index("        self.assert_cli_run()", ui)
+        between = text[ui:cli]
+        stop = between.rindex("self.stop_server()")
+        # At the method's own indentation, i.e. not inside the skip_ui branch.
+        line_start = between.rfind("\n", 0, stop) + 1
+        assert between[line_start:stop] == "        ", "stop_server must not sit inside the skip_ui guard"

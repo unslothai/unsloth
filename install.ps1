@@ -512,15 +512,105 @@ function Install-UnslothStudio {
     # UV_INDEX_URL and UV_DEFAULT_INDEX REPLACE the default index (--extra-index-url adds to
     # it, so an extra leaves PyPI in play and is not consulted here). Offline or pointed at an
     # exclusive mirror, dropping our wheel would leave the package obtainable from nowhere.
+    # The keys that decide where a uv resolve looks, read from one uv.toml or pyproject.toml:
+    # no-index, default-index, index-url (top level and under [pip]), and an [[index]] entry
+    # carrying default = true. A subset parser on purpose: PowerShell 5.1 has no TOML reader,
+    # and these are the only keys that matter here. $null when the file cannot be read, and
+    # an inline-table `index = [...]` is reported the same way rather than guessed at.
+    function Read-WoaUvTomlIndexKeys {
+        param([string]$Path, [string]$Top)
+        try { $lines = [System.IO.File]::ReadAllLines($Path) } catch { return $null }
+        $out = @{ NoIndex = $null; DefaultIndex = $null }
+        $section = ""
+        $inIndex = $false; $idxUrl = $null; $idxDefault = $false
+        $indexTable = if ($Top) { "$Top.index" } else { "index" }
+        $pipTable = if ($Top) { "$Top.pip" } else { "pip" }
+        $flush = {
+            if ($inIndex -and $idxDefault -and $idxUrl -and -not $out.DefaultIndex) { $out.DefaultIndex = $idxUrl }
+        }
+        foreach ($raw in $lines) {
+            $line = ($raw -replace '(^|\s)#.*$', '').Trim()
+            if (-not $line) { continue }
+            if ($line -match '^\[\[(.+?)\]\]$') {
+                & $flush
+                $section = $Matches[1].Trim(); $inIndex = ($section -eq $indexTable); $idxUrl = $null; $idxDefault = $false
+                continue
+            }
+            if ($line -match '^\[(.+?)\]$') { & $flush; $section = $Matches[1].Trim(); $inIndex = $false; continue }
+            if ($line -notmatch '^([A-Za-z0-9_.-]+)\s*=\s*(.+)$') { continue }
+            $key = $Matches[1].Trim(); $val = $Matches[2].Trim()
+            $str = if ($val -match '^"(.*)"$' -or $val -match "^'(.*)'$") { $Matches[1] } else { $null }
+            $bool = if ($val -match '^(true|false)$') { $val -eq 'true' } else { $null }
+            if ($inIndex) {
+                if ($key -eq 'url' -and $str) { $idxUrl = $str }
+                if ($key -eq 'default' -and $null -ne $bool) { $idxDefault = $bool }
+                continue
+            }
+            if ($section -eq $Top -or $section -eq $pipTable) {
+                if ($key -eq 'no-index' -and $null -ne $bool -and $null -eq $out.NoIndex) { $out.NoIndex = $bool }
+                if (($key -eq 'default-index' -or $key -eq 'index-url') -and $str -and -not $out.DefaultIndex) { $out.DefaultIndex = $str }
+                if ($key -eq 'index') { return $null }
+            }
+        }
+        & $flush
+        return $out
+    }
+
+    # uv reads persistent configuration too, and environment variables outrank it: uv.toml in
+    # the current directory or the nearest parent (uv.toml beats pyproject [tool.uv] in the same
+    # directory), then the user file (%APPDATA%\uv\uv.toml), then the system one
+    # (%PROGRAMDATA%\uv\uv.toml). UV_CONFIG_FILE names one file instead of discovering;
+    # UV_NO_CONFIG discovers nothing. Project outranks user outranks system for a scalar, so
+    # the first file that sets a key decides it.
+    function Get-WoaUvConfigIndexPolicy {
+        $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false }
+        $noCfg = [string](Get-Item Env:UV_NO_CONFIG -ErrorAction SilentlyContinue).Value
+        if ($noCfg -and ($noCfg.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $result }
+        $files = @()
+        $cfgFile = [string](Get-Item Env:UV_CONFIG_FILE -ErrorAction SilentlyContinue).Value
+        if ($cfgFile) {
+            $files += @{ Path = $cfgFile; Top = "" }
+        } else {
+            $dir = (Get-Location).Path
+            while ($dir) {
+                $u = Join-Path $dir "uv.toml"; $pp = Join-Path $dir "pyproject.toml"
+                if (Test-Path -LiteralPath $u -PathType Leaf) { $files += @{ Path = $u; Top = "" }; break }
+                if (Test-Path -LiteralPath $pp -PathType Leaf) {
+                    $txt = try { [System.IO.File]::ReadAllText($pp) } catch { "" }
+                    if ($txt -match '(?m)^\s*\[+tool\.uv(\.|\])') { $files += @{ Path = $pp; Top = "tool.uv" }; break }
+                }
+                $parent = Split-Path -Parent $dir
+                if (-not $parent -or $parent -eq $dir) { break }
+                $dir = $parent
+            }
+            if ($env:APPDATA) { $files += @{ Path = (Join-Path $env:APPDATA "uv\uv.toml"); Top = "" } }
+            if ($env:ProgramData) { $files += @{ Path = (Join-Path $env:ProgramData "uv\uv.toml"); Top = "" } }
+        }
+        $noIndexSet = $false
+        foreach ($f in $files) {
+            if (-not (Test-Path -LiteralPath $f.Path -PathType Leaf)) { continue }
+            $policy = Read-WoaUvTomlIndexKeys -Path $f.Path -Top $f.Top
+            if ($null -eq $policy) { $result.Unreadable = $true; continue }
+            if (-not $noIndexSet -and $null -ne $policy.NoIndex) { $result.NoIndex = $policy.NoIndex; $noIndexSet = $true }
+            if (-not $result.DefaultIndex -and $policy.DefaultIndex) { $result.DefaultIndex = $policy.DefaultIndex }
+        }
+        return $result
+    }
+
     function Test-WoaResolveReachesPyPI {
         foreach ($name in @("UV_OFFLINE", "PIP_NO_INDEX")) {
             $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
             if ($flag -and ($flag.Trim().ToLowerInvariant() -notin @("", "0", "false"))) { return $false }
         }
+        # An index set in the environment outranks every file, so it decides on its own.
         foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL")) {
             $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
-            if ($url -and ($url.Trim()) -and ($url -notlike "*pypi.org*")) { return $false }
+            if ($url -and ($url.Trim())) { return ($url -like "*pypi.org*") }
         }
+        # Doubt resolves to "not PyPI": that answer keeps a wheel, the other loses the package.
+        $cfg = Get-WoaUvConfigIndexPolicy
+        if ($cfg.Unreadable -or $cfg.NoIndex) { return $false }
+        if ($cfg.DefaultIndex -and ($cfg.DefaultIndex -notlike "*pypi.org*")) { return $false }
         return $true
     }
 
@@ -647,8 +737,9 @@ function Install-UnslothStudio {
     # best-match then takes PyPI's newer CPU wheel. Drop ONLY the trio, and only for that one
     # command: everything else the caller set still has to apply to torch's own dependencies.
     function New-WoaTorchStepOverrideValue {
-        param([string]$Value)
-        if (-not $Value) { return $null }
+        param([string]$Value, [string]$Dir = "")
+        $result = @{ Value = $null; Temps = @() }
+        if (-not $Value) { return $result }
         $files = @()
         foreach ($entry in ($Value -split '\s+' | Where-Object { $_ })) {
             $path = $entry.Trim('"').Trim("'")
@@ -662,13 +753,22 @@ function Install-UnslothStudio {
             }
             if (-not $dropped) { $files += $path; continue }
             # Flattened, because dropping a line from an include means the include cannot come
-            # along by reference. Every remaining path was rebased above.
-            $tmp = [System.IO.Path]::GetTempFileName()
+            # along by reference. Every remaining path was rebased above. Under the WoA
+            # directory when there is one: that path already passed the uv space check, while
+            # %TEMP% follows the profile, and a spaced path would need quoting, which uv
+            # rejects in this variable (see Get-UvSafePath). Recorded so the caller can delete
+            # it: a flattened caller file can carry an authenticated URL.
+            $tmp = if ($Dir -and (Test-Path -LiteralPath $Dir -PathType Container)) {
+                Join-Path $Dir ("torch-step-" + [System.IO.Path]::GetRandomFileName() + ".txt")
+            } else { [System.IO.Path]::GetTempFileName() }
             [System.IO.File]::WriteAllLines($tmp, [string[]]$kept, (New-Object System.Text.UTF8Encoding($false)))
+            $result.Temps += $tmp
             $files += $tmp
         }
-        if (-not $files) { return "" }
-        return (($files | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join " ")
+        if (-not $files) { $result.Value = ""; return $result }
+        $safe = foreach ($f in $files) { Get-UvSafePath $f }
+        $result.Value = (($safe | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join " ")
+        return $result
     }
 
     function Get-WoaRequirementEntries {
@@ -722,7 +822,10 @@ function Install-UnslothStudio {
                 substep "windows on arm: UNSLOTH_PYARROW_WHEEL does not exist -- ignoring it." "Yellow"
             }
         }
-        try {
+        # Only where the resolve will look at PyPI: this probe can see pypi.org directly while a
+        # uv.toml with no-index or an exclusive default-index means the dependency pass cannot,
+        # and "pypi" then skips a usable wheelhouse wheel for one uv will never fetch.
+        if (Test-WoaResolveReachesPyPI) { try {
             $body = [string](Invoke-RestMethod -Uri "https://pypi.org/simple/pyarrow/" -UseBasicParsing -TimeoutSec 20)
             foreach ($match in [regex]::Matches($body, 'pyarrow-[^"''<>\s]*?win_arm64\.whl')) {
                 if (Test-WoaPyarrowWheelUsable -Name $match.Value -PyTag $tag -AbiTag $AbiTag) {
@@ -732,7 +835,7 @@ function Install-UnslothStudio {
                     return "pypi"
                 }
             }
-        } catch {}
+        } catch {} }
         if (Test-WoaWheelhouseIsLocal $script:WoaWheelhouse) {
             # Opened, not just named. This wheel is MANDATORY (staging writes an exact pyarrow==
             # override from it), so a truncated file selected native and then failed the resolve.
@@ -816,9 +919,9 @@ function Install-UnslothStudio {
     # A companion belongs to a torch BUILD, not a release line: nightly publishes each project on
     # its own schedule and nightly torchvision pins its exact torch, so maximizing the two
     # independently yields an unresolvable pair. The .dev stamp and +cuXXX tag identify the build;
-    # the release lines differ by design (torch 2.15 / vision 0.26).
+    # the release lines differ by design (torch 2.x beside torchvision 0.x).
     function Test-WoaWheelPairsWithTorch {
-        param([string]$TorchVersion, [string]$OtherVersion)
+        param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision")
         if (-not $TorchVersion -or -not $OtherVersion) { return $false }
         $stamp = {
             param($v)
@@ -831,7 +934,24 @@ function Install-UnslothStudio {
             if ($parts.Count -eq 2) { return $parts[1].ToLowerInvariant() } else { return "" }
         }
         if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
-        return ((& $local $TorchVersion) -eq (& $local $OtherVersion))
+        if ((& $local $TorchVersion) -ne (& $local $OtherVersion)) { return $false }
+        if (& $stamp $TorchVersion) { return $true }
+        # Stable: every release has an empty stamp, so the tag alone would pair a companion from
+        # any release the index still serves. Release lines pair by a fixed offset instead:
+        # torchvision 0.(M+15) requires torch 2.M exactly (PyPI: 0.25.0 -> torch==2.10.0,
+        # 0.19.0 -> torch==2.4.0), and torchaudio agrees with torch on major.minor.
+        $rel = {
+            param($v)
+            $m = [regex]::Match($v, '^(\d+)\.(\d+)')
+            if ($m.Success) { return @([int]$m.Groups[1].Value, [int]$m.Groups[2].Value) } else { return $null }
+        }
+        $t = & $rel $TorchVersion; $o = & $rel $OtherVersion
+        if (-not $t -or -not $o) { return $false }
+        switch (($Project -replace '[-_.]+', '-').ToLowerInvariant()) {
+            "torchvision" { return (($t[0] -eq 2) -and ($o[0] -eq 0) -and ($o[1] -eq ($t[1] + 15))) }
+            "torchaudio"  { return (($o[0] -eq $t[0]) -and ($o[1] -eq $t[1])) }
+            default       { return $true }
+        }
     }
 
     function Get-WoaCudaWheelVersion {
@@ -855,7 +975,7 @@ function Install-UnslothStudio {
             if (-not (Test-WoaWheelTags -Name $name -PyTag $tag -AbiTag $AbiTag)) { continue }
             if ($name -notmatch '\+cu[0-9]+') { continue }
             $version = ($name -split '-')[1]
-            if ($PairWith -and -not (Test-WoaWheelPairsWithTorch -TorchVersion $PairWith -OtherVersion $version)) { continue }
+            if ($PairWith -and -not (Test-WoaWheelPairsWithTorch -TorchVersion $PairWith -OtherVersion $version -Project $Project)) { continue }
             # Numeric release only: a .dev suffix must not make a newer line look older.
             $release = ($version -split '\+', 2)[0]
             $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
@@ -5151,6 +5271,7 @@ exit 0
     }
     if ($script:WoaNativeCudaTorch) {
         $WoaDir = Join-Path $StudioHome "woa"
+        $script:WoaDir = $WoaDir
         $WoaWheelDir = Join-Path $WoaDir "wheels"
         try {
             New-Item -ItemType Directory -Force -Path $WoaWheelDir -ErrorAction Stop | Out-Null
@@ -6976,15 +7097,19 @@ exit 0
                 # Only where an exact pin is at stake; every other host keeps the overrides it had.
                 $_woaOverrideSaved = $null
                 $_woaOverrideSwapped = $false
+                $_woaOverrideTemps = @()
                 if ($script:WoaNativeCudaTorch -and $VenvPlatform -eq "win-arm64" -and $env:UV_OVERRIDE) {
                     $_woaOverrideSaved = $env:UV_OVERRIDE
-                    $env:UV_OVERRIDE = New-WoaTorchStepOverrideValue -Value $_woaOverrideSaved
+                    $_woaStep = New-WoaTorchStepOverrideValue -Value $_woaOverrideSaved -Dir $script:WoaDir
+                    $env:UV_OVERRIDE = $_woaStep.Value
+                    $_woaOverrideTemps = @($_woaStep.Temps)
                     $_woaOverrideSwapped = $true
                 }
                 try {
                     $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { & $script:UvExe pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl @_torchExtraArgs }
                 } finally {
                     if ($_woaOverrideSwapped) { $env:UV_OVERRIDE = $_woaOverrideSaved }
+                    foreach ($_woaTmp in $_woaOverrideTemps) { Remove-Item -LiteralPath $_woaTmp -Force -ErrorAction SilentlyContinue }
                 }
             }
             if ($torchInstallExit -ne 0) {
