@@ -84,7 +84,11 @@ def _setup(
             '    case "${DOCKER_HOST:-}" in *docker.sock) echo "name=rootless,name=seccomp" ;; *) echo "name=seccomp" ;; esac; exit 0\n'
             "  fi\n"
             if rootless == "via_sudo_uid"
-            else ('  if [ "$2" = "--format" ]; then echo "name=rootless,name=seccomp"; exit 0; fi\n' if rootless else "")
+            else (
+                '  if [ "$2" = "--format" ]; then echo "name=rootless,name=seccomp"; exit 0; fi\n'
+                if rootless
+                else ""
+            )
         )
         + f'  if [ -e {marker} ]; then echo " Runtimes: io.containerd.runc.v2 nvidia runc"; else echo " Runtimes: io.containerd.runc.v2 runc"; fi\n'
         + "  exit 0\nfi\n"
@@ -337,7 +341,9 @@ def test_a_non_root_run_of_the_file_re_executes_itself_under_sudo(tmp_path: Path
     _, log, env = _setup(tmp_path, uid = 1000)
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
-    assert [c for c in _calls(log) if not c.startswith("docker info")] == [f"sudo -E bash {INSTALLER}"]
+    assert [c for c in _calls(log) if not c.startswith("docker info")] == [
+        f"sudo -E bash {INSTALLER}"
+    ]
 
 
 def test_a_non_root_pipe_cannot_re_execute_and_says_so(tmp_path: Path):
