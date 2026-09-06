@@ -530,4 +530,10 @@ test("every Full entry and exit and the Limited grant close the network allowlis
     runtimeStore,
     /limitedToolGrant: grant,\n\s*toolExecutionMode: "limited",\n(\s*\/\/.*\n)*\s*toolNetworkPolicy: "deny" as ToolNetworkPolicy,/,
   );
+  // setBypassPermissions(false) and setToolExecutionMode are the other two ways in and
+  // out of Full; both close the network too.
+  assert.equal(
+    (runtimeStore.match(/toolNetworkPolicy: "deny" as ToolNetworkPolicy,/g) ?? []).length,
+    7,
+  );
 });

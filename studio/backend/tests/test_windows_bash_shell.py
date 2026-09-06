@@ -481,3 +481,22 @@ def test_os_isolated_description_names_cmd_only_on_windows_with_bash(monkeypatch
     assert swapped[1] is tools.PYTHON_TOOL
     # The module constants are never mutated.
     assert "The shell is cmd" not in bash_tools[0]["function"]["description"]
+
+
+def test_batch_script_lock_is_windows_only_and_never_raises(tmp_path, monkeypatch):
+    # The lock keeps a concurrent call in the same workdir from swapping the script
+    # between the write and cmd opening it. Off Windows it is a no-op, and a host
+    # where the API is unavailable still runs the launch.
+    script = tmp_path / "studio_exec_x.cmd"
+    script.write_text("@echo off\r\necho hi\r\n", newline = "")
+    monkeypatch.setattr(tools.sys, "platform", "linux")
+    assert tools._lock_batch_script_for_reading(str(script)) is None
+    tools._release_batch_script(None)
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    monkeypatch.setattr(tools.ctypes, "WinDLL", _raise_oserror, raising = False)
+    assert tools._lock_batch_script_for_reading(str(script)) is None
+    tools._release_batch_script(object())
+
+
+def _raise_oserror(*args, **kwargs):
+    raise OSError("no WinDLL on this host")

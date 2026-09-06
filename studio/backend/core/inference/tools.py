@@ -7416,6 +7416,63 @@ def _get_shell_cmd(
     return ["bash", "-c", command]
 
 
+_GENERIC_READ_ACCESS = 0x80000000
+_FILE_SHARE_READ = 0x00000001
+_OPEN_EXISTING = 3
+_FILE_ATTRIBUTE_NORMAL = 0x80
+_INVALID_HANDLE_VALUE = -1
+
+
+def _lock_batch_script_for_reading(path: str) -> "object | None":
+    """Hold the script open so nothing can rewrite it before cmd reads it.
+
+    The file lives in the session workdir, which the sandboxed process may also
+    write, so a concurrent tool call in the same chat could otherwise replace the
+    script between the write and cmd opening it. A handle opened with
+    ``FILE_SHARE_READ`` only lets cmd read the file and refuses every open that
+    asks for write or delete access for as long as the launch lasts. Returns the
+    handle to close afterwards, or None when the API is unavailable (the launch
+    still runs; the window is small and inside one sandbox).
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.CreateFileW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        handle = kernel32.CreateFileW(
+            path,
+            _GENERIC_READ_ACCESS,
+            _FILE_SHARE_READ,
+            None,
+            _OPEN_EXISTING,
+            _FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+    except (OSError, AttributeError):
+        return None
+    if not handle or ctypes.c_ssize_t(handle).value == _INVALID_HANDLE_VALUE:
+        return None
+    return handle
+
+
+def _release_batch_script(handle: "object | None") -> None:
+    if handle is None or sys.platform != "win32":
+        return
+    try:
+        ctypes.WinDLL("kernel32", use_last_error = True).CloseHandle(ctypes.c_void_p(handle))
+    except (OSError, AttributeError):
+        pass
+
+
 def _write_isolated_batch_script(command: str, workdir: str) -> str:
     """Write ``command`` as a batch file in the workdir for the isolated cmd launch.
 
@@ -7423,7 +7480,8 @@ def _write_isolated_batch_script(command: str, workdir: str) -> str:
     sandbox, and it is registered as this call's scratch so the created-file
     report skips it. ``@echo off`` keeps cmd from echoing every line into the
     tool output; CRLF line endings because cmd mis-parses a bare LF at the end
-    of a label or a parenthesised block.
+    of a label or a parenthesised block. The caller holds the file open for
+    reading while the launch runs, see _lock_batch_script_for_reading.
     """
     fd, path = tempfile.mkstemp(suffix = ".cmd", prefix = "studio_exec_", dir = workdir)
     body = "@echo off\r\n" + command.replace("\r\n", "\n").replace("\n", "\r\n")
@@ -16765,7 +16823,15 @@ def _python_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            ended += _network_denied_trailer(prepared_launch)
+            # Cleanup before the trailers, as on the success path: a revoke or a
+            # temp removal that failed is reported instead of only logged. It is
+            # idempotent, so the finally's call is a no-op.
+            if prepared_launch is not None:
+                prepared_launch.cleanup()
+            ended += _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "python_exec")
+            )
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -16773,9 +16839,13 @@ def _python_exec(
             )
 
         if cancel_event is not None and cancel_event.is_set():
-            # A cancelled `pip install` still has to say the host was refused.
+            # A cancelled `pip install` still has to say the host was refused, and
+            # an unfinished cleanup is reported here too.
+            if prepared_launch is not None:
+                prepared_launch.cleanup()
             cancelled = "Execution cancelled." + _defuse_sentinels(
                 _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "python_exec")
             )
             return cancelled + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
@@ -16905,6 +16975,7 @@ def _bash_exec(
     prepared_launch = None
     run_marker = None
     script_path = None
+    script_handle = None
     _scratch_name = None
     try:
         workdir = _get_workdir(session_id)
@@ -16926,6 +16997,9 @@ def _bash_exec(
             _scratch_name = os.path.basename(script_path)
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
+            # Held until the finally: a concurrent call in the same chat workdir
+            # cannot swap the script under cmd.
+            script_handle = _lock_batch_script_for_reading(script_path)
         launch_argv = tuple(
             _get_shell_cmd(command, os_isolated = os_isolated, script_path = script_path)
         )
@@ -17036,15 +17110,27 @@ def _bash_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            ended += _network_denied_trailer(prepared_launch)
+            # Cleanup before the trailers, as on the success path: a revoke or a
+            # temp removal that failed is reported instead of only logged. It is
+            # idempotent, so the finally's call is a no-op.
+            if prepared_launch is not None:
+                prepared_launch.cleanup()
+            ended += _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "bash_exec")
+            )
             return ended + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )
 
         if cancel_event is not None and cancel_event.is_set():
-            # Cancelling does not make a refused host any less worth reporting.
+            # Cancelling does not make a refused host, or an unfinished cleanup,
+            # any less worth reporting.
+            if prepared_launch is not None:
+                prepared_launch.cleanup()
             cancelled = "Execution cancelled." + _defuse_sentinels(
                 _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "bash_exec")
             )
             return cancelled + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
@@ -17081,6 +17167,7 @@ def _bash_exec(
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
+        _release_batch_script(script_handle)
         if script_path and os.path.exists(script_path):
             try:
                 os.remove(script_path)

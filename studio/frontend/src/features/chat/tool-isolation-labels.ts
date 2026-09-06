@@ -20,7 +20,7 @@ export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = 
   all_application_packages_ambient_read:
     "This Windows AppContainer can read files shared with all application packages, such as Program Files and Windows. The user profile, the network and other processes stay out of reach.",
   concurrent_launches_share_the_container:
-    "Tool calls running at the same time on Windows share one sandbox container, so they can see each other's temporary files and named objects while both run. Everything outside the sandbox stays out of reach.",
+    "Tool calls running at the same time on Windows share one sandbox container, so while both run they can see each other's temporary files and named objects, and each other's chat working folders. Everything outside those stays out of reach.",
   null_device_and_named_pipes_denied:
     "Inside the Windows sandbox, Python cannot open NUL or create named pipes, so multiprocessing and imports that need them (such as torch) fail; use Limited or Full access for that work.",
   user_profile_readable:

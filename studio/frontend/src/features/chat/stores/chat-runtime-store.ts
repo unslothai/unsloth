@@ -5306,6 +5306,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         bypassPermissions,
         permissionMode,
         toolExecutionMode: "os_isolation_required" as ToolExecutionMode,
+        // Same reset as setPermissionMode: the allowlist is a per-decision grant
+        // and does not survive a trip through Full.
+        toolNetworkPolicy: "deny" as ToolNetworkPolicy,
         limitedToolGrant: null,
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
@@ -5336,6 +5339,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return {
         toolExecutionMode,
+        // Every entry to and exit from Full closes the network again, whichever
+        // setter got there.
+        toolNetworkPolicy: "deny" as ToolNetworkPolicy,
         limitedToolGrant: null,
         toolIsolationError: null,
       };
