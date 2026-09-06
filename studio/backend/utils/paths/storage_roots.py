@@ -519,6 +519,16 @@ def within_account(path: Path) -> bool:
     return False
 
 
+def own_entry(path: Path) -> bool:
+    """``path.exists()`` as the acting account sees it.
+
+    The owner gets the plain check. For a managed account the entry must also
+    really sit inside its roots, so a scanner walking the account's tree does
+    not read metadata through a link planted there.
+    """
+    return path.exists() and within_account(path)
+
+
 def require_within_account(path: Path) -> Path:
     if not within_account(path):
         raise ValueError(f"path escapes the account workspace: {path!s}")

@@ -5,7 +5,7 @@
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-from utils.paths.storage_roots import within_account
+from utils.paths.storage_roots import own_entry, within_account
 from utils.paths import (
     normalize_path,
     is_local_path,
@@ -3342,7 +3342,7 @@ def scan_exported_models(
 
             # Two-level: {run}/{checkpoint}/
             for checkpoint_dir in run_dir.iterdir():
-                if not checkpoint_dir.is_dir():
+                if not checkpoint_dir.is_dir() or not within_account(checkpoint_dir):
                     continue
 
                 adapter_config = checkpoint_dir / "adapter_config.json"
@@ -3356,18 +3356,18 @@ def scan_exported_models(
                 base_model = None
                 export_type = None
 
-                if adapter_config.exists():
+                if own_entry(adapter_config):
                     export_type = "lora"
                     try:
                         cfg = json.loads(adapter_config.read_text(encoding = "utf-8-sig"))
                         base_model = cfg.get("base_model_name_or_path")
                     except Exception:
                         pass
-                elif config_file.exists() and has_weights:
+                elif own_entry(config_file) and has_weights:
                     export_type = "merged"
                     export_meta = checkpoint_dir / "export_metadata.json"
                     try:
-                        if export_meta.exists():
+                        if own_entry(export_meta):
                             meta = json.loads(export_meta.read_text(encoding = "utf-8-sig"))
                             base_model = meta.get("base_model")
                     except Exception:
@@ -3379,7 +3379,7 @@ def scan_exported_models(
                     for meta_dir in (checkpoint_dir, run_dir):
                         export_meta = meta_dir / "export_metadata.json"
                         try:
-                            if export_meta.exists():
+                            if own_entry(export_meta):
                                 meta = json.loads(export_meta.read_text(encoding = "utf-8-sig"))
                                 base_model = meta.get("base_model")
                                 if base_model:
@@ -3399,7 +3399,7 @@ def scan_exported_models(
                 if not base_model:
                     outputs_adapter_cfg = resolve_output_dir(run_dir.name) / "adapter_config.json"
                     try:
-                        if outputs_adapter_cfg.exists():
+                        if own_entry(outputs_adapter_cfg):
                             cfg = json.loads(outputs_adapter_cfg.read_text(encoding = "utf-8-sig"))
                             base_model = cfg.get("base_model_name_or_path")
                     except Exception:

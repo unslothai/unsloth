@@ -20,7 +20,7 @@ from hub.schemas.datasets import (
 from hub.utils.paths import dataset_uploads_root, ensure_dir, recipe_datasets_root
 from utils.upload_limits import get_upload_limit_mb, upload_limit_bytes, upload_limit_label
 from utils.paths.lazy import LazyPath
-from utils.paths.storage_roots import within_account
+from utils.paths.storage_roots import own_entry, within_account
 from utils.paths.path_utils import (
     any_not_appledouble_metadata,
     drop_appledouble_metadata,
@@ -149,7 +149,7 @@ def _build_recipe_dataset_items() -> list[LocalDatasetItem]:
         rows = None
         metadata_summary = None
         metadata_path = entry / "metadata.json"
-        if metadata_path.exists():
+        if own_entry(metadata_path):
             metadata_payload = _safe_read_metadata(metadata_path)
             rows = _safe_read_rows_from_metadata(metadata_payload)
             metadata_summary = _safe_read_metadata_summary(metadata_payload)

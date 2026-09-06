@@ -16,7 +16,7 @@ from utils.training_runs import (
     model_segment_from_default_output_dir_name,
 )
 from utils.paths import outputs_root, resolve_output_dir
-from utils.paths.storage_roots import within_account
+from utils.paths.storage_roots import own_entry, within_account
 
 logger = get_logger(__name__)
 
@@ -127,7 +127,7 @@ def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     """Read loss from the last log_history entry of trainer_state.json, or None."""
     trainer_state = checkpoint_path / "trainer_state.json"
-    if not trainer_state.exists():
+    if not own_entry(trainer_state):
         return None
     try:
         with open(trainer_state, encoding = "utf-8-sig") as f:
@@ -173,23 +173,23 @@ def scan_checkpoints(
             config_file = item / "config.json"
             adapter_config = item / "adapter_config.json"
 
-            if not (config_file.exists() or adapter_config.exists()):
+            if not (own_entry(config_file) or own_entry(adapter_config)):
                 continue
 
             # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
             try:
-                if adapter_config.exists():
+                if own_entry(adapter_config):
                     cfg = json.loads(adapter_config.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("base_model_name_or_path")
                     metadata["peft_type"] = cfg.get("peft_type")
                     metadata["lora_rank"] = cfg.get("r")
-                elif config_file.exists():
+                elif own_entry(config_file):
                     cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("_name_or_path")
 
                 # Detect BNB quantization from config.json
-                if config_file.exists():
+                if own_entry(config_file):
                     if "cfg" not in dir():
                         cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     quant_cfg = cfg.get("quantization_config")
@@ -227,9 +227,11 @@ def scan_checkpoints(
             for sub in item.iterdir():
                 if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
                     continue
+                if not within_account(sub):
+                    continue
                 sub_config = sub / "config.json"
                 sub_adapter = sub / "adapter_config.json"
-                if sub_config.exists() or sub_adapter.exists():
+                if own_entry(sub_config) or own_entry(sub_adapter):
                     valid_checkpoints.append(sub)
 
             intermediate_checkpoints = []

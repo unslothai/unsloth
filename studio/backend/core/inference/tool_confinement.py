@@ -55,6 +55,7 @@ _FS_EXECUTE = 1 << 0
 _FS_WRITE_FILE = 1 << 1
 _FS_READ_FILE = 1 << 2
 _FS_READ_DIR = 1 << 3
+_FS_MAKE_SYM = 1 << 12
 _FS_REFER = 1 << 13  # ABI 2
 _FS_TRUNCATE = 1 << 14  # ABI 3
 _FS_IOCTL_DEV = 1 << 15  # ABI 5
@@ -225,8 +226,12 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
         rules.append((path, read))
     for path in _existing((_DEVICE_ROOT,)):
         rules.append((path, device))
+    # Everything but creating links: a link planted in the account's own tree
+    # and pointing outside it is the one thing the server, which follows links
+    # for the owner, must never find there.
+    writable = handled & ~_FS_MAKE_SYM
     for path in _writable_roots():
-        rules.append((path, handled))
+        rules.append((path, writable))
     return rules
 
 

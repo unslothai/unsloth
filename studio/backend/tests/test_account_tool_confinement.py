@@ -221,7 +221,7 @@ def test_landlock_rules_cover_own_roots_only(tmp_path):
     run_as(ALICE, tools._get_workdir, "chat")
     rules = run_as(ALICE, tool_confinement._landlock_rules, 3, tools._SANDBOX_SITE_DIR)
     handled = tool_confinement._handled_mask(3)
-    writable = [p for p, access in rules if access == handled]
+    writable = [p for p, access in rules if access == handled & ~tool_confinement._FS_MAKE_SYM]
     alice_root = str((tmp_path / "studio" / "accounts" / "alice-id").resolve())
     assert alice_root in writable
     assert str((tmp_path / "studio").resolve()) not in [p for p, _ in rules]
@@ -229,8 +229,24 @@ def test_landlock_rules_cover_own_roots_only(tmp_path):
         not p.startswith(str((tmp_path / "studio").resolve()) + os.sep) or p.startswith(alice_root)
         for p, _ in rules
     )
-    read_only = [p for p, access in rules if access != handled]
+    read_only = [p for p, access in rules if access not in (handled, handled & ~tool_confinement._FS_MAKE_SYM)]
     assert any(
         p.startswith(os.path.realpath(sys.prefix)) or os.path.realpath(sys.prefix).startswith(p)
         for p in read_only
     )
+
+
+@pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
+def test_managed_child_cannot_plant_a_link_in_its_own_tree(tmp_path):
+    """The server follows links for the owner, so a managed child gets no way to make one."""
+    files = _seed(tmp_path)
+    bob_dir = Path(run_as(BOB, tools._get_workdir, "chat"))
+    out = run_as(
+        BOB,
+        tools._bash_exec,
+        f"ln -s {files['alice'].parent} linked; echo rc=$?; mkdir made && echo made > made/f && cat made/f",
+        session_id = "chat",
+    )
+    assert "rc=0" not in out
+    assert not (bob_dir / "linked").is_symlink()
+    assert "made" in out
