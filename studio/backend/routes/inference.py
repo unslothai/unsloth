@@ -7989,470 +7989,489 @@ async def _maybe_auto_switch_model(
     :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
     non-GGUF image count and byte validation.
     """
-    if account_access.managed_account():
-        if requested_model:
-            await asyncio.to_thread(account_access.require_model_access, requested_model)
-        elif account_access.resident_hidden("chat", _loaded_slot_ident()):
-            raise HTTPException(status_code = 404, detail = "Model not found")
-    from utils.openai_auto_switch_settings import (
-        get_openai_auto_switch_enabled,
-        get_model_override,
-        idle_unload_is_configured,
-        model_override_load_kwargs,
-    )
-    from core.inference.local_model_resolver import (
-        local_target_is_gguf,
-        resolve_local_gguf,
-        resolve_trusted_cached_local_gguf,
-        warm_index_soon,
-    )
-    from core.inference.llama_keepwarm import (
-        get_last_unloaded_model,
-        inference_lifecycle_gate,
-        note_admitted_inference,
-        preview_swapped_since_entry,
-    )
-
-    generation_cancel_event = getattr(
-        getattr(fastapi_request, "state", None),
-        "generation_cancel_event",
-        None,
-    )
-
-    def _raise_if_generation_cancelled() -> None:
-        if generation_cancel_event is not None and generation_cancel_event.is_set():
-            raise HTTPException(status_code = 409, detail = "Generation cancelled")
-
-    # Passed auth and reached local inference, so count it in the admitted-inference tally
-    # the preview busy guard uses instead of raw _inflight (no-op for preview scopes).
-    _swap_scope = getattr(fastapi_request, "scope", None)
-    note_admitted_inference(_swap_scope)
-    # A preview swapped a different checkpoint in since this request entered; running now
-    # would serve the preview's model to Unsloth, so reject and let the client retry. Covers a
-    # request that waited on the gate through the swap AND one that passed the gate before it
-    # but is still pre-admission. Deferred here (not a middleware 503) so an external-provider
-    # request that untracks and returns before this hook is never rejected for a swap it never
-    # touched; over-rejecting a local request is acceptable, serving the wrong checkpoint is not.
-    if preview_swapped_since_entry(_swap_scope):
-        raise HTTPException(
-            status_code = 503,
-            detail = "A preview is loading a model. Please retry shortly.",
-            headers = {"Retry-After": "1"},
+    async def _switch() -> None:
+        if account_access.managed_account():
+            if requested_model:
+                await asyncio.to_thread(account_access.require_model_access, requested_model)
+            elif account_access.resident_hidden("chat", _loaded_slot_ident()):
+                raise HTTPException(status_code = 404, detail = "Model not found")
+        from utils.openai_auto_switch_settings import (
+            get_openai_auto_switch_enabled,
+            get_model_override,
+            idle_unload_is_configured,
+            model_override_load_kwargs,
+        )
+        from core.inference.local_model_resolver import (
+            local_target_is_gguf,
+            resolve_local_gguf,
+            resolve_trusted_cached_local_gguf,
+            warm_index_soon,
+        )
+        from core.inference.llama_keepwarm import (
+            get_last_unloaded_model,
+            inference_lifecycle_gate,
+            note_admitted_inference,
+            preview_swapped_since_entry,
         )
 
-    # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
-    # absent so it falls through instead of raising in the membership checks below.
-    if not isinstance(requested_model, str) or not requested_model:
-        # Omitted/default model on a non-preview call runs against the resident model,
-        # so claim it for Unsloth (a preview keeps its own ownership).
-        if claim_resident:
-            _claim_slot_for_non_preview(fastapi_request)
-        return
-    # The public preview route opts out so a caller cannot switch away from the
-    # pinned preview checkpoint it just loaded.
-    scope = getattr(fastapi_request, "scope", None)
-    if isinstance(scope, dict) and scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY):
-        return
-    auto_switch_on = get_openai_auto_switch_enabled()
-
-    def _refuse_non_gguf_endpoint() -> None:
-        """Refuse a switch target this endpoint cannot serve.
-
-        Raised only for a target the resolver found and that is not already serving:
-        a resident non-GGUF model reaches the handler's own error instead, since no
-        swap is pending to refuse.
-        """
-        message = (
-            f"This endpoint serves GGUF models only, and '{requested_model}' is not one. "
-            "Use /v1/chat/completions for this model."
-        )
-        # error_body_for_path, not the OpenAI shape: the Anthropic routes reach this too
-        # and the global handler passes an already-formatted body through as is.
-        path = getattr(getattr(fastapi_request, "url", None), "path", None)
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                error_body_for_path(path, message, status = 400, code = "invalid_value", param = "model")
-                if isinstance(path, str)
-                else message
-            ),
+        generation_cancel_event = getattr(
+            getattr(fastapi_request, "state", None),
+            "generation_cancel_event",
+            None,
         )
 
-    # configured, not effective: residency zeroes the TTL, and the stash still has to restore.
-    if not auto_switch_on and not idle_unload_is_configured():
-        # No switching to do, but a named model must still not be answered by another.
-        # Reject first: a request that is turned away here must not claim the slot.
-        await _reject_unservable_model(requested_model, fastapi_request)
-        # Auto-switch off: this non-preview turn uses the resident model, claim it.
-        if claim_resident:
-            _claim_slot_for_non_preview(fastapi_request)
-        return
+        def _raise_if_generation_cancelled() -> None:
+            if generation_cancel_event is not None and generation_cancel_event.is_set():
+                raise HTTPException(status_code = 409, detail = "Generation cancelled")
 
-    # The common Unsloth path names the model that is already serving. Resolve that
-    # from resident state before consulting the filesystem index: rebuilding a stale
-    # multi-root index here used to hold the request for seconds before streaming.
-    if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
-        warm_index_soon()
-        if claim_resident:
-            _claim_slot_for_non_preview(fastapi_request)
-        return
-
-    from auth.authentication import request_admitted_without_credential
-
-    keyless_caller = request_admitted_without_credential(fastapi_request)
-    # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
-    if auto_switch_on and keyless_caller:
-        auto_switch_on = False
-        if not idle_unload_is_configured():
-            await _reject_unservable_model(requested_model, fastapi_request)
-            return
-
-    async def _resolve_and_switch() -> None:
-        from core.inference.openai_auto_download import looks_like_quant, split_model_ref
-
-        _raise_if_generation_cancelled()
-        # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
-        # With auto-switch off (or an omitted-model reload-only request), skip the
-        # resolve so only the reload-stash path runs and no name is ever matched.
-        reload_only = requested_model == _RELOAD_ONLY_MODEL
-        resolved = None
-        if auto_switch_on and not reload_only:
-            # Fresh hits and entries retained across an additions-only download are
-            # safe to use immediately. An expired/config-invalidated hit, a cold
-            # cache, and every miss must refresh before an unrelated resident model
-            # can answer or an entry from a removed scan root can trigger a switch.
-            resolved = resolve_trusted_cached_local_gguf(requested_model)
-            if resolved is not None:
-                warm_index_soon()
-            else:
-                resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
-        if resolved is None:
-            # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
-            if auto_switch_on and not reload_only:
-                await _maybe_auto_download_model(
-                    requested_model,
-                    fastapi_request,
-                    # GGUF carries both from one mmproj, so the download guard takes
-                    # either need; splitting them here would fetch a text-only repo.
-                    require_vision = require_vision or require_audio_input,
-                    current_subject = current_subject,
-                )
-            # Idle-unload may have freed the model; reload exactly what it freed
-            # (path + quant + advertised id) so an alias/unknown name stays servable
-            # and keeps the override keyed by the advertised id, not the load path.
-            last = get_last_unloaded_model()
-            # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload leaves the
-            # GGUF slot empty but is the live model; don't resurrect the stale GGUF over it
-            # (that load would tear the active model down).
-            if (
-                not last
-                or get_llama_cpp_backend().is_loaded
-                or getattr(
-                    await asyncio.to_thread(get_inference_backend), "active_model_name", None
-                )
-            ):
-                # Unknown name, model already resident: the non-preview call uses it,
-                # so claim it for Unsloth.
-                if claim_resident:
-                    _claim_slot_for_non_preview(fastapi_request)
-                return
-            if len(last) == 3:
-                target_id, variant, override_id = last
-            else:  # pre-3-tuple stash: fall back to the path as the override key
-                target_id, variant = last
-                override_id = target_id
-            # A credential-less caller may restore only the model it explicitly
-            # named (or the reload-only sentinel used when the model is omitted).
-            # Check before loading so an unrelated name cannot trigger an expensive
-            # stash restore and only then receive the normal mismatch response.
-            if keyless_caller and not reload_only:
-                requested_base, requested_variant = split_model_ref(requested_model)
-                if not _matches_any(
-                    requested_base, (target_id, override_id, public_model_id(target_id))
-                ) or (
-                    looks_like_quant(requested_variant)
-                    and (not variant or requested_variant.lower() != variant.lower())
-                ):
-                    return
-        else:
-            # load_path is a concrete local path (never the bare repo id), so /load
-            # takes the local branch and cannot trigger a download. override_id is the
-            # advertised repo id, the launch-override key and the public model id.
-            target_id, variant, override_id = resolved
-        # Not inferred from the quant: a GGUF loaded from a local directory carries none.
-        target_is_gguf = await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
-        # no orchestrator means nothing non-GGUF is resident, so the cold build only precedes a 400.
-        if (
-            gguf_only
-            and not target_is_gguf
-            and resolved is not None
-            and _peek_inference_backend() is None
-        ):
-            _refuse_non_gguf_endpoint()
-        # Resolved once, off the loop: a cold orchestrator build waits on hardware detection.
-        target_backend = (
-            get_llama_cpp_backend()
-            if target_is_gguf
-            else await asyncio.to_thread(get_inference_backend)
-        )
-        backend = get_llama_cpp_backend()
-        # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
-        # repo, so it never reloads a different local quant that already serves it.
-        # A tag that names no quant (":latest", ":8b") means the repo, as
-        # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
-        # a serving Q8 to load the preferred Q4 for a request either satisfies.
-        _, _requested_variant = split_model_ref(requested_model)
-        bare = not looks_like_quant(_requested_variant)
-
-        def _already_serving() -> bool:
-            # Match against both the concrete load path and the advertised repo id,
-            # so a model loaded manually by repo id (identifier = repo id) and one
-            # loaded by auto-switch (identifier = path, advertised = repo id) both
-            # count as already serving rather than triggering a needless reswap.
-            if not target_is_gguf:
-                active = getattr(target_backend, "active_model_name", None)
-                if not active:
-                    return False
-                # _matches_any, not a lowercased set: two scan roots differing only by
-                # case are different weights on a case-sensitive filesystem, and a false
-                # match here records the alias on the wrong resident model.
-                loaded_keys = [active, getattr(target_backend, "_openai_advertised_id", None)]
-                if _matches_any(target_id, loaded_keys):
-                    return True
-                # two scan roots can advertise one basename, so it cannot vouch for a path.
-                if _looks_like_local_path(target_id) and _looks_like_local_path(active):
-                    return False
-                return _matches_any(override_id, loaded_keys)
-            if not backend.is_loaded or not backend.model_identifier:
-                return False
-            loaded_keys = {backend.model_identifier.lower()}
-            advertised = getattr(backend, "_openai_advertised_id", None)
-            if advertised:
-                loaded_keys.add(advertised.lower())
-            if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
-                return False
-            if bare:
-                return True
-            if variant:
-                loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
-                return loaded_variant == variant.lower()
-            return True
-
-        def _record_serving_alias() -> None:
-            # When an advertised alias already resolves to the loaded model (e.g. loaded by
-            # local path, requested by its repo/LM Studio id), record the alias as the public
-            # id so /v1/models and responses report it (marked loaded) instead of the path
-            # basename. Resolver branch only: the reload-stash override_id can be a bare path.
-            # Lock-free is safe: an in-flight request blocks any concurrent swap (single-slot
-            # busy guard), so the loaded model can't change under this.
-            if resolved is None or not override_id:
-                return
-            if getattr(target_backend, "_openai_advertised_id", None) != override_id:
-                target_backend._openai_advertised_id = override_id
-
-        if _already_serving():
-            # A non-preview request adopting this model claims it for Unsloth, so a later
-            # preview can't swap it out from under an active OpenAI caller.
-            if claim_resident:
-                _set_preview_resident(None)
-            _record_serving_alias()
-            return
-        # Below both resident fast paths: serving the shared model adds no
-        # account-policy lookup, registry scan, or retry-hint work.
-        from core.inference.gpu_arbiter import require_no_foreign_generations
-
-        switch_path = getattr(getattr(fastapi_request, "url", None), "path", None)
-        require_no_foreign_generations(path = switch_path)
-        # Loading a non-GGUF model unloads the resident GGUF, and these endpoints read
-        # llama.cpp alone, so the swap would strand them with nothing to serve.
-        if gguf_only and not target_is_gguf and resolved is not None:
-            _refuse_non_gguf_endpoint()
-        # An image/audio request naming a different text-only target would load it
-        # here and only 400 below, evicting the working model. Reject before the
-        # swap. Only the resolver branch (an explicit new target); the reload-stash
-        # path just restores the model the request was already using. The probe hits
-        # the filesystem, so run it off the loop like the resolver above.
-        target_requires_image = require_image
-        if require_audio_input and not target_is_gguf and audio_preflight is not None:
-            target_requires_image = bool(audio_preflight.get("has_image"))
-        if (
-            (require_vision or require_audio_input)
-            and resolved is not None
-            and not await asyncio.to_thread(
-                _target_accepts_request_input,
-                target_id,
-                target_is_gguf,
-                require_vision,
-                require_audio_input,
-                variant,
-                target_requires_image,
-                require_video,
+        # Passed auth and reached local inference, so count it in the admitted-inference tally
+        # the preview busy guard uses instead of raw _inflight (no-op for preview scopes).
+        _swap_scope = getattr(fastapi_request, "scope", None)
+        note_admitted_inference(_swap_scope)
+        # A preview swapped a different checkpoint in since this request entered; running now
+        # would serve the preview's model to Unsloth, so reject and let the client retry. Covers a
+        # request that waited on the gate through the swap AND one that passed the gate before it
+        # but is still pre-admission. Deferred here (not a middleware 503) so an external-provider
+        # request that untracks and returns before this hook is never rejected for a swap it never
+        # touched; over-rejecting a local request is acceptable, serving the wrong checkpoint is not.
+        if preview_swapped_since_entry(_swap_scope):
+            raise HTTPException(
+                status_code = 503,
+                detail = "A preview is loading a model. Please retry shortly.",
+                headers = {"Retry-After": "1"},
             )
-        ):
+
+        # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
+        # absent so it falls through instead of raising in the membership checks below.
+        if not isinstance(requested_model, str) or not requested_model:
+            # Omitted/default model on a non-preview call runs against the resident model,
+            # so claim it for Unsloth (a preview keeps its own ownership).
+            if claim_resident:
+                _claim_slot_for_non_preview(fastapi_request)
+            return
+        # The public preview route opts out so a caller cannot switch away from the
+        # pinned preview checkpoint it just loaded.
+        scope = getattr(fastapi_request, "scope", None)
+        if isinstance(scope, dict) and scope.get(_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY):
+            return
+        auto_switch_on = get_openai_auto_switch_enabled()
+
+        def _refuse_non_gguf_endpoint() -> None:
+            """Refuse a switch target this endpoint cannot serve.
+
+            Raised only for a target the resolver found and that is not already serving:
+            a resident non-GGUF model reaches the handler's own error instead, since no
+            swap is pending to refuse.
+            """
+            message = (
+                f"This endpoint serves GGUF models only, and '{requested_model}' is not one. "
+                "Use /v1/chat/completions for this model."
+            )
+            # error_body_for_path, not the OpenAI shape: the Anthropic routes reach this too
+            # and the global handler passes an already-formatted body through as is.
+            path = getattr(getattr(fastapi_request, "url", None), "path", None)
             raise HTTPException(
                 status_code = 400,
-                detail = openai_error_body(
-                    f"The requested model does not support the {modality_label} input in this request.",
-                    status = 400,
-                    code = "invalid_value",
-                    param = "model",
+                detail = (
+                    error_body_for_path(path, message, status = 400, code = "invalid_value", param = "model")
+                    if isinstance(path, str)
+                    else message
                 ),
             )
-        # resolver branch only, like the probe above: a reload-stash restore changes no format.
-        if audio_preflight is not None and resolved is not None:
-            await _preflight_audio_for_switch(audio_preflight, target_is_gguf)
-        if (
-            image_preflight is not None
-            and resolved is not None
-            and (target_is_gguf or not require_audio_input)
-        ):
-            await _preflight_image_for_switch(image_preflight, target_is_gguf)
-        key = _switch_key(override_id, variant)
-        _note_switch_waiter(key, 1)
-        waiter_noted = True
-        try:
-            async with _auto_switch_lock():
-                # The asyncio lock is per loop; add a process-wide gate so a swap on
-                # another loop in this process can't race the single slot.
-                await _acquire_swap_gate()
-                try:
-                    # Hold the keep-warm gate across the swap so no new inference can
-                    # start on the model while it is being torn down and replaced.
-                    async with inference_lifecycle_gate():
-                        if _already_serving():
-                            if claim_resident:
-                                _set_preview_resident(None)
-                            _record_serving_alias()
-                            return
-                        require_no_foreign_generations(path = switch_path)
-                        # Apply the saved launch config so an API swap loads as the picker
-                        # would. Order: variant-qualified keys before bare ids, and the
-                        # load path before the advertised id, since the settings UI keys
-                        # local rows by that path while override_id is a derived alias, so
-                        # reading the alias first let an older entry shadow a fresh save. A
-                        # cached repo has no path entry and resolves on the second try; an
-                        # early build keyed a loose .gguf by its filename label, so
-                        # "<path>:LABEL" is read too, after the bare path used today.
-                        from utils.openai_auto_switch_settings import (
-                            resolve_override_for_load,
-                        )
 
-                        # The candidate order above, kept in one place so the panel
-                        # showing a user what a load will apply reads the same row.
-                        _override_key, override = resolve_override_for_load(
-                            target_id, override_id, variant
-                        )
-                        load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-                        load_kwargs.update(
-                            model_override_load_kwargs(override, is_gguf = target_is_gguf)
-                        )
-                        saved_gpu_ids = load_kwargs.get("gpu_ids")
-                        if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
-                            saved_gpu_ids
-                        ):
-                            # Stale pin (GPU removed, another host): drop the one dead
-                            # field rather than 400 the whole load.
-                            load_kwargs.pop("gpu_ids", None)
-                            logger.warning(
-                                "Dropping saved gpu_ids %s for %s: not available here.",
-                                saved_gpu_ids,
-                                override_id,
+        # configured, not effective: residency zeroes the TTL, and the stash still has to restore.
+        if not auto_switch_on and not idle_unload_is_configured():
+            # No switching to do, but a named model must still not be answered by another.
+            # Reject first: a request that is turned away here must not claim the slot.
+            await _reject_unservable_model(requested_model, fastapi_request)
+            # Auto-switch off: this non-preview turn uses the resident model, claim it.
+            if claim_resident:
+                _claim_slot_for_non_preview(fastapi_request)
+            return
+
+        # The common Unsloth path names the model that is already serving. Resolve that
+        # from resident state before consulting the filesystem index: rebuilding a stale
+        # multi-root index here used to hold the request for seconds before streaming.
+        if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+            warm_index_soon()
+            if claim_resident:
+                _claim_slot_for_non_preview(fastapi_request)
+            return
+
+        from auth.authentication import request_admitted_without_credential
+
+        keyless_caller = request_admitted_without_credential(fastapi_request)
+        # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
+        if auto_switch_on and keyless_caller:
+            auto_switch_on = False
+            if not idle_unload_is_configured():
+                await _reject_unservable_model(requested_model, fastapi_request)
+                return
+
+        async def _resolve_and_switch() -> None:
+            from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+            _raise_if_generation_cancelled()
+            # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
+            # With auto-switch off (or an omitted-model reload-only request), skip the
+            # resolve so only the reload-stash path runs and no name is ever matched.
+            reload_only = requested_model == _RELOAD_ONLY_MODEL
+            resolved = None
+            if auto_switch_on and not reload_only:
+                # Fresh hits and entries retained across an additions-only download are
+                # safe to use immediately. An expired/config-invalidated hit, a cold
+                # cache, and every miss must refresh before an unrelated resident model
+                # can answer or an entry from a removed scan root can trigger a switch.
+                resolved = resolve_trusted_cached_local_gguf(requested_model)
+                if resolved is not None:
+                    warm_index_soon()
+                else:
+                    resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
+            if resolved is None:
+                # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
+                if auto_switch_on and not reload_only:
+                    await _maybe_auto_download_model(
+                        requested_model,
+                        fastapi_request,
+                        # GGUF carries both from one mmproj, so the download guard takes
+                        # either need; splitting them here would fetch a text-only repo.
+                        require_vision = require_vision or require_audio_input,
+                        current_subject = current_subject,
+                    )
+                # Idle-unload may have freed the model; reload exactly what it freed
+                # (path + quant + advertised id) so an alias/unknown name stays servable
+                # and keeps the override keyed by the advertised id, not the load path.
+                last = get_last_unloaded_model()
+                # A non-GGUF (Unsloth/Transformers) model loaded after the idle-unload leaves the
+                # GGUF slot empty but is the live model; don't resurrect the stale GGUF over it
+                # (that load would tear the active model down).
+                if (
+                    not last
+                    or get_llama_cpp_backend().is_loaded
+                    or getattr(
+                        await asyncio.to_thread(get_inference_backend), "active_model_name", None
+                    )
+                ):
+                    # Unknown name, model already resident: the non-preview call uses it,
+                    # so claim it for Unsloth.
+                    if claim_resident:
+                        _claim_slot_for_non_preview(fastapi_request)
+                    return
+                if len(last) == 3:
+                    target_id, variant, override_id = last
+                else:  # pre-3-tuple stash: fall back to the path as the override key
+                    target_id, variant = last
+                    override_id = target_id
+                # A credential-less caller may restore only the model it explicitly
+                # named (or the reload-only sentinel used when the model is omitted).
+                # Check before loading so an unrelated name cannot trigger an expensive
+                # stash restore and only then receive the normal mismatch response.
+                if keyless_caller and not reload_only:
+                    requested_base, requested_variant = split_model_ref(requested_model)
+                    if not _matches_any(
+                        requested_base, (target_id, override_id, public_model_id(target_id))
+                    ) or (
+                        looks_like_quant(requested_variant)
+                        and (not variant or requested_variant.lower() != variant.lower())
+                    ):
+                        return
+            else:
+                # load_path is a concrete local path (never the bare repo id), so /load
+                # takes the local branch and cannot trigger a download. override_id is the
+                # advertised repo id, the launch-override key and the public model id.
+                target_id, variant, override_id = resolved
+            # Not inferred from the quant: a GGUF loaded from a local directory carries none.
+            target_is_gguf = await asyncio.to_thread(local_target_is_gguf, target_id, override_id)
+            # no orchestrator means nothing non-GGUF is resident, so the cold build only precedes a 400.
+            if (
+                gguf_only
+                and not target_is_gguf
+                and resolved is not None
+                and _peek_inference_backend() is None
+            ):
+                _refuse_non_gguf_endpoint()
+            # Resolved once, off the loop: a cold orchestrator build waits on hardware detection.
+            target_backend = (
+                get_llama_cpp_backend()
+                if target_is_gguf
+                else await asyncio.to_thread(get_inference_backend)
+            )
+            backend = get_llama_cpp_backend()
+            # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
+            # repo, so it never reloads a different local quant that already serves it.
+            # A tag that names no quant (":latest", ":8b") means the repo, as
+            # _loaded_satisfies and the resolver read it. Treating it as a quant tears down
+            # a serving Q8 to load the preferred Q4 for a request either satisfies.
+            _, _requested_variant = split_model_ref(requested_model)
+            bare = not looks_like_quant(_requested_variant)
+
+            def _already_serving() -> bool:
+                # Match against both the concrete load path and the advertised repo id,
+                # so a model loaded manually by repo id (identifier = repo id) and one
+                # loaded by auto-switch (identifier = path, advertised = repo id) both
+                # count as already serving rather than triggering a needless reswap.
+                if not target_is_gguf:
+                    active = getattr(target_backend, "active_model_name", None)
+                    if not active:
+                        return False
+                    # _matches_any, not a lowercased set: two scan roots differing only by
+                    # case are different weights on a case-sensitive filesystem, and a false
+                    # match here records the alias on the wrong resident model.
+                    loaded_keys = [active, getattr(target_backend, "_openai_advertised_id", None)]
+                    if _matches_any(target_id, loaded_keys):
+                        return True
+                    # two scan roots can advertise one basename, so it cannot vouch for a path.
+                    if _looks_like_local_path(target_id) and _looks_like_local_path(active):
+                        return False
+                    return _matches_any(override_id, loaded_keys)
+                if not backend.is_loaded or not backend.model_identifier:
+                    return False
+                loaded_keys = {backend.model_identifier.lower()}
+                advertised = getattr(backend, "_openai_advertised_id", None)
+                if advertised:
+                    loaded_keys.add(advertised.lower())
+                if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
+                    return False
+                if bare:
+                    return True
+                if variant:
+                    loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
+                    return loaded_variant == variant.lower()
+                return True
+
+            def _record_serving_alias() -> None:
+                # When an advertised alias already resolves to the loaded model (e.g. loaded by
+                # local path, requested by its repo/LM Studio id), record the alias as the public
+                # id so /v1/models and responses report it (marked loaded) instead of the path
+                # basename. Resolver branch only: the reload-stash override_id can be a bare path.
+                # Lock-free is safe: an in-flight request blocks any concurrent swap (single-slot
+                # busy guard), so the loaded model can't change under this.
+                if resolved is None or not override_id:
+                    return
+                if getattr(target_backend, "_openai_advertised_id", None) != override_id:
+                    target_backend._openai_advertised_id = override_id
+
+            if _already_serving():
+                # A non-preview request adopting this model claims it for Unsloth, so a later
+                # preview can't swap it out from under an active OpenAI caller.
+                if claim_resident:
+                    _set_preview_resident(None)
+                _record_serving_alias()
+                return
+            # Below both resident fast paths: serving the shared model adds no
+            # account-policy lookup, registry scan, or retry-hint work.
+            from core.inference.gpu_arbiter import require_no_foreign_generations
+
+            switch_path = getattr(getattr(fastapi_request, "url", None), "path", None)
+            require_no_foreign_generations(path = switch_path)
+            # Loading a non-GGUF model unloads the resident GGUF, and these endpoints read
+            # llama.cpp alone, so the swap would strand them with nothing to serve.
+            if gguf_only and not target_is_gguf and resolved is not None:
+                _refuse_non_gguf_endpoint()
+            # An image/audio request naming a different text-only target would load it
+            # here and only 400 below, evicting the working model. Reject before the
+            # swap. Only the resolver branch (an explicit new target); the reload-stash
+            # path just restores the model the request was already using. The probe hits
+            # the filesystem, so run it off the loop like the resolver above.
+            target_requires_image = require_image
+            if require_audio_input and not target_is_gguf and audio_preflight is not None:
+                target_requires_image = bool(audio_preflight.get("has_image"))
+            if (
+                (require_vision or require_audio_input)
+                and resolved is not None
+                and not await asyncio.to_thread(
+                    _target_accepts_request_input,
+                    target_id,
+                    target_is_gguf,
+                    require_vision,
+                    require_audio_input,
+                    variant,
+                    target_requires_image,
+                    require_video,
+                )
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = openai_error_body(
+                        f"The requested model does not support the {modality_label} input in this request.",
+                        status = 400,
+                        code = "invalid_value",
+                        param = "model",
+                    ),
+                )
+            # resolver branch only, like the probe above: a reload-stash restore changes no format.
+            if audio_preflight is not None and resolved is not None:
+                await _preflight_audio_for_switch(audio_preflight, target_is_gguf)
+            if (
+                image_preflight is not None
+                and resolved is not None
+                and (target_is_gguf or not require_audio_input)
+            ):
+                await _preflight_image_for_switch(image_preflight, target_is_gguf)
+            key = _switch_key(override_id, variant)
+            _note_switch_waiter(key, 1)
+            waiter_noted = True
+            try:
+                async with _auto_switch_lock():
+                    # The asyncio lock is per loop; add a process-wide gate so a swap on
+                    # another loop in this process can't race the single slot.
+                    await _acquire_swap_gate()
+                    try:
+                        # Hold the keep-warm gate across the swap so no new inference can
+                        # start on the model while it is being torn down and replaced.
+                        async with inference_lifecycle_gate():
+                            if _already_serving():
+                                if claim_resident:
+                                    _set_preview_resident(None)
+                                _record_serving_alias()
+                                return
+                            require_no_foreign_generations(path = switch_path)
+                            # Apply the saved launch config so an API swap loads as the picker
+                            # would. Order: variant-qualified keys before bare ids, and the
+                            # load path before the advertised id, since the settings UI keys
+                            # local rows by that path while override_id is a derived alias, so
+                            # reading the alias first let an older entry shadow a fresh save. A
+                            # cached repo has no path entry and resolves on the second try; an
+                            # early build keyed a loose .gguf by its filename label, so
+                            # "<path>:LABEL" is read too, after the bare path used today.
+                            from utils.openai_auto_switch_settings import (
+                                resolve_override_for_load,
                             )
-                        # Reuse the load impl so its dedup, tensor fallback, and threading
-                        # apply. Call the impl directly: we already hold the lifecycle gate
-                        # the /load route would otherwise take, so the route would deadlock.
-                        # Deferred claim (claim_resident=False): _load_model_impl clears the
-                        # preview marker mid-load and can make the new model resident and then
-                        # raise while building the load response, so base ownership on what is
-                        # actually resident, in a finally that runs on that post-load failure
-                        # too. If the new target is resident, mark it preview-owned (a later
-                        # route 4xx leaves it evictable; a 2xx turn clears it via the claim,
-                        # and the in-flight busy guard blocks a concurrent preview swap);
-                        # otherwise restore the prior owner. claim_resident=True adopts the
-                        # model outright, so _load_model_impl's own marker clear stands.
-                        _switch_prior_marker = _get_preview_resident()
-                        _switch_loaded_ok = False
-                        try:
-                            durable_cancel_kw = (
-                                {"load_cancel_event": generation_cancel_event}
-                                if generation_cancel_event is not None
-                                else {}
+
+                            # The candidate order above, kept in one place so the panel
+                            # showing a user what a load will apply reads the same row.
+                            _override_key, override = resolve_override_for_load(
+                                target_id, override_id, variant
                             )
-                            try:
-                                await _load_model_impl(
-                                    LoadRequest(**load_kwargs),
-                                    fastapi_request,
-                                    current_subject,
-                                    current_request_counted = True,
-                                    **durable_cancel_kw,
-                                )
-                            except HTTPException as exc:
-                                # The pre-flight check cannot mirror every loader gpu_ids rule,
-                                # and a stale pin must never block a request, so retry without it.
-                                if not (
-                                    exc.status_code == 400
-                                    and load_kwargs.get("gpu_ids")
-                                    and "gpu" in str(exc.detail).lower()
-                                ):
-                                    raise
-                                logger.warning(
-                                    "Retrying %s without saved gpu_ids %s: %s",
-                                    override_id,
-                                    load_kwargs.get("gpu_ids"),
-                                    exc.detail,
-                                )
+                            load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+                            load_kwargs.update(
+                                model_override_load_kwargs(override, is_gguf = target_is_gguf)
+                            )
+                            saved_gpu_ids = load_kwargs.get("gpu_ids")
+                            if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
+                                saved_gpu_ids
+                            ):
+                                # Stale pin (GPU removed, another host): drop the one dead
+                                # field rather than 400 the whole load.
                                 load_kwargs.pop("gpu_ids", None)
-                                await _load_model_impl(
-                                    LoadRequest(**load_kwargs),
-                                    fastapi_request,
-                                    current_subject,
-                                    current_request_counted = True,
-                                    **durable_cancel_kw,
+                                logger.warning(
+                                    "Dropping saved gpu_ids %s for %s: not available here.",
+                                    saved_gpu_ids,
+                                    override_id,
                                 )
-                            _switch_loaded_ok = True
-                            # publish the completed load before a late cancellation is observed.
-                            target_backend._openai_advertised_id = override_id
-                            target_backend._loaded_by_user_action = False
-                            _raise_if_generation_cancelled()
-                        finally:
-                            if not claim_resident:
-                                if _switch_loaded_ok or _loaded_slot_ident() == target_id:
-                                    _set_preview_resident(_loaded_slot_ident())
-                                else:
-                                    _set_preview_resident(_switch_prior_marker)
-                finally:
-                    # Deregister before releasing the gate: otherwise a swap on another
-                    # loop counts this finished request as queued and unloads its model.
+                            # Reuse the load impl so its dedup, tensor fallback, and threading
+                            # apply. Call the impl directly: we already hold the lifecycle gate
+                            # the /load route would otherwise take, so the route would deadlock.
+                            # Deferred claim (claim_resident=False): _load_model_impl clears the
+                            # preview marker mid-load and can make the new model resident and then
+                            # raise while building the load response, so base ownership on what is
+                            # actually resident, in a finally that runs on that post-load failure
+                            # too. If the new target is resident, mark it preview-owned (a later
+                            # route 4xx leaves it evictable; a 2xx turn clears it via the claim,
+                            # and the in-flight busy guard blocks a concurrent preview swap);
+                            # otherwise restore the prior owner. claim_resident=True adopts the
+                            # model outright, so _load_model_impl's own marker clear stands.
+                            _switch_prior_marker = _get_preview_resident()
+                            _switch_loaded_ok = False
+                            try:
+                                durable_cancel_kw = (
+                                    {"load_cancel_event": generation_cancel_event}
+                                    if generation_cancel_event is not None
+                                    else {}
+                                )
+                                try:
+                                    await _load_model_impl(
+                                        LoadRequest(**load_kwargs),
+                                        fastapi_request,
+                                        current_subject,
+                                        current_request_counted = True,
+                                        **durable_cancel_kw,
+                                    )
+                                except HTTPException as exc:
+                                    # The pre-flight check cannot mirror every loader gpu_ids rule,
+                                    # and a stale pin must never block a request, so retry without it.
+                                    if not (
+                                        exc.status_code == 400
+                                        and load_kwargs.get("gpu_ids")
+                                        and "gpu" in str(exc.detail).lower()
+                                    ):
+                                        raise
+                                    logger.warning(
+                                        "Retrying %s without saved gpu_ids %s: %s",
+                                        override_id,
+                                        load_kwargs.get("gpu_ids"),
+                                        exc.detail,
+                                    )
+                                    load_kwargs.pop("gpu_ids", None)
+                                    await _load_model_impl(
+                                        LoadRequest(**load_kwargs),
+                                        fastapi_request,
+                                        current_subject,
+                                        current_request_counted = True,
+                                        **durable_cancel_kw,
+                                    )
+                                _switch_loaded_ok = True
+                                # publish the completed load before a late cancellation is observed.
+                                target_backend._openai_advertised_id = override_id
+                                target_backend._loaded_by_user_action = False
+                                _raise_if_generation_cancelled()
+                            finally:
+                                if not claim_resident:
+                                    if _switch_loaded_ok or _loaded_slot_ident() == target_id:
+                                        _set_preview_resident(_loaded_slot_ident())
+                                    else:
+                                        _set_preview_resident(_switch_prior_marker)
+                    finally:
+                        # Deregister before releasing the gate: otherwise a swap on another
+                        # loop counts this finished request as queued and unloads its model.
+                        _note_switch_waiter(key, -1)
+                        waiter_noted = False
+                        _auto_switch_process_lock.release()
+            finally:
+                if waiter_noted:
                     _note_switch_waiter(key, -1)
-                    waiter_noted = False
-                    _auto_switch_process_lock.release()
-        finally:
-            if waiter_noted:
-                _note_switch_waiter(key, -1)
 
-    try:
-        await _resolve_and_switch()
-    except HTTPException as exc:
-        # A foreign generation may register during load preparation, after the
-        # early guard. Preserve this endpoint's envelope for the arbiter's final
-        # refusal too, including a load retried without stale GPU placement.
-        path = getattr(getattr(fastapi_request, "url", None), "path", None)
-        if (
-            path
-            and path.startswith("/v1/")
-            and isinstance(exc.detail, dict)
-            and exc.detail.get("error") == "gpu_busy"
-        ):
-            raise HTTPException(
-                status_code = 409,
-                detail = error_body_for_path(
-                    path, exc.detail["message"], status = 409, code = "gpu_busy", param = "model"
-                ),
-                headers = exc.headers,
-            ) from exc
-        raise
-    # The switch may have missed, so refuse rather than answer as whatever is resident.
-    await _reject_unservable_model(requested_model, fastapi_request)
+        try:
+            await _resolve_and_switch()
+        except HTTPException as exc:
+            # A foreign generation may register during load preparation, after the
+            # early guard. Preserve this endpoint's envelope for the arbiter's final
+            # refusal too, including a load retried without stale GPU placement.
+            path = getattr(getattr(fastapi_request, "url", None), "path", None)
+            if (
+                path
+                and path.startswith("/v1/")
+                and isinstance(exc.detail, dict)
+                and exc.detail.get("error") == "gpu_busy"
+            ):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = error_body_for_path(
+                        path, exc.detail["message"], status = 409, code = "gpu_busy", param = "model"
+                    ),
+                    headers = exc.headers,
+                ) from exc
+            raise
+        # The switch may have missed, so refuse rather than answer as whatever is resident.
+        await _reject_unservable_model(requested_model, fastapi_request)
+
+    await _switch()
+    # A managed account may name a model it is allowed to use while another
+    # account's private model is resident. When no switch happened (auto-switch
+    # off, an unknown name, a keyless caller) the body above fell through to the
+    # resident model: the drop-in behaviour a single owner expects, but here it
+    # would run the prompt through a model this account cannot even see on the
+    # status routes. So a managed caller that named a model is served only if the
+    # resident model is its own or answers to the name it asked for.
+    if not isinstance(requested_model, str) or not requested_model:
+        return
+    if not account_access.managed_account():
+        return
+    if not account_access.resident_hidden("chat", _loaded_slot_ident()):
+        return
+    if await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+        return
+    raise HTTPException(status_code = 404, detail = "Model not found")
 
 
 async def _auto_switch_from_request_body(
