@@ -792,6 +792,7 @@ llama_tag = str(payload.get("tag") or "").strip()
 source = str(payload.get("source") or "").strip()
 binary_repo = str(payload.get("binary_repo") or "").strip()
 binary_tag = str(payload.get("binary_release_tag") or "").strip()
+backend = str(payload.get("backend") or "").strip()
 if not repo or not release_tag:
     raise SystemExit(0)
 
@@ -804,6 +805,11 @@ else:
     message = f"installed release: {repo}@{release_tag}"
     if llama_tag and llama_tag != release_tag:
         message += f" (tag {llama_tag})"
+# Name the backend. Without it a host running a Vulkan bundle and a host running a
+# ROCm one print the same line, so a bundle that has drifted away from the hardware
+# is invisible in the install log.
+if backend:
+    message += f" -- {backend} backend"
 print(message)
 PY
 }
