@@ -1011,3 +1011,22 @@ def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
             == 400
         )
         assert api_monitor.snapshot(include_details = False)[0]["model"] == requested
+
+
+def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
+    """/voice/load models its load as a chat LoadRequest for the training-coexistence
+    guard, and that model caps max_seq_length at MAX_REQUESTABLE_CONTEXT. Without the
+    same bound on n_ctx, an oversized value passed validation and then blew up inside
+    the handler as a 500, after the HF resolve, instead of a 422 up front."""
+    from pydantic import ValidationError
+
+    from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
+
+    with pytest.raises(ValidationError):
+        routes_module._VoiceLoadRequest(model_path = "unsloth/orpheus-3b-0.1-ft-GGUF", n_ctx = MAX_REQUESTABLE_CONTEXT + 1)
+    assert (
+        routes_module._VoiceLoadRequest(model_path = "unsloth/orpheus-3b-0.1-ft-GGUF", n_ctx = MAX_REQUESTABLE_CONTEXT).n_ctx
+        == MAX_REQUESTABLE_CONTEXT
+    )
+    # 0 keeps meaning "model default".
+    assert routes_module._VoiceLoadRequest(model_path = "x.gguf", n_ctx = 0).n_ctx == 0

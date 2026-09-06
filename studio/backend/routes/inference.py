@@ -108,6 +108,7 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 
 
 def _positive_int_or_none(value: Any) -> Optional[int]:
@@ -15861,7 +15862,15 @@ class _VoiceLoadRequest(BaseModel):
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
     hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
-    n_ctx: int = Field(4096, ge = 0, description = "Context length (0 = model default)")
+    # Same ceiling as LoadRequest.max_seq_length: the handler models the load as a chat
+    # LoadRequest for the training-coexistence guard, so an oversized value used to fail
+    # there as a 500 (after the HF resolve) instead of a 422 at validation.
+    n_ctx: int = Field(
+        4096,
+        ge = 0,
+        le = MAX_REQUESTABLE_CONTEXT,
+        description = "Context length (0 = model default)",
+    )
     parallel: int = Field(
         1,
         ge = 1,
@@ -17345,6 +17354,12 @@ async def openai_audio_speech_stream(
             # audio.
             logger.error("Streaming speech error: %s", e, exc_info = True)
             api_monitor.fail(monitor_id, _friendly_error(e))
+            # The route is a tracked inference path and this arm ends the stream cleanly
+            # at 200, so without the flag the keep-warm middleware would read the failed
+            # clip as a successful completion and claim a preview-owned chat slot.
+            from core.inference.llama_keepwarm import mark_current_response_failed
+
+            mark_current_response_failed()
         else:
             api_monitor.finish(monitor_id)
 
