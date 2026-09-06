@@ -96,7 +96,7 @@ _RESTRICTED_TOKEN_FLAGS = _DISABLE_MAX_PRIVILEGE | _LUA_TOKEN | _WRITE_RESTRICTE
 
 _TOKEN_GROUPS = 2
 _TOKEN_PRIVILEGES = 3
-_TOKEN_DEFAULT_DACL = 6
+_TOKEN_DEFAULT_DACL = 6  # TOKEN_INFORMATION_CLASS; the struct is _TOKEN_DEFAULT_DACL_INFO
 _TOKEN_RESTRICTED_SIDS = 11
 _TOKEN_LOGON_SID = 28
 
@@ -150,7 +150,7 @@ class _TOKEN_GROUPS_HEADER(ctypes.Structure):
     _fields_ = [("GroupCount", wintypes.DWORD), ("Groups", _SID_AND_ATTRIBUTES * 1)]
 
 
-class _TOKEN_DEFAULT_DACL(ctypes.Structure):
+class _TOKEN_DEFAULT_DACL_INFO(ctypes.Structure):
     _fields_ = [("DefaultDacl", ctypes.c_void_p)]
 
 
@@ -728,7 +728,7 @@ def _set_default_dacl(api: Any, token: wintypes.HANDLE, sid: ctypes.c_void_p) ->
     it just created.
     """
     buffer = _token_information(api, token, _TOKEN_DEFAULT_DACL)
-    current = ctypes.cast(buffer, ctypes.POINTER(_TOKEN_DEFAULT_DACL))[0].DefaultDacl
+    current = ctypes.cast(buffer, ctypes.POINTER(_TOKEN_DEFAULT_DACL_INFO))[0].DefaultDacl
     trustee = _lpac._TRUSTEE_W(
         None,
         _lpac._NO_MULTIPLE_TRUSTEE,
@@ -747,7 +747,7 @@ def _set_default_dacl(api: Any, token: wintypes.HANDLE, sid: ctypes.c_void_p) ->
     if result != 0:
         raise _lpac._winerror("SetEntriesInAclW(default DACL)", result)
     try:
-        default_dacl = _TOKEN_DEFAULT_DACL(new_acl)
+        default_dacl = _TOKEN_DEFAULT_DACL_INFO(new_acl)
         if not api.advapi32.SetTokenInformation(
             token,
             _TOKEN_DEFAULT_DACL,

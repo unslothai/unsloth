@@ -1371,26 +1371,30 @@ from ctypes import wintypes
 k = ctypes.WinDLL('kernel32', use_last_error=True)
 k.GetHandleInformation.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
 k.GetHandleInformation.restype = wintypes.BOOL
+k.SetEvent.argtypes = [wintypes.HANDLE]
+k.SetEvent.restype = wintypes.BOOL
+# The parent's handle values are only meaningful in the child if they were
+# inherited. Signalling through them and letting the parent look at its own
+# events is the definitive check: a value that happens to name some unrelated
+# handle in this process (numbering shifts with every object the launcher
+# creates) cannot signal the parent's event, so no false failure either way.
 for raw in os.environ['UNSLOTH_TEST_HANDLES'].split(','):
-    flags = wintypes.DWORD()
-    ctypes.set_last_error(0)
     try:
-        ok = k.GetHandleInformation(wintypes.HANDLE(int(raw)), ctypes.byref(flags))
-    except OSError as exc:
-        # STATUS_INVALID_HANDLE: strict handle checks turn the bad handle into an
-        # exception, which proves the same thing as ERROR_INVALID_HANDLE below.
-        assert exc.winerror == -1073741816, exc
-        continue
-    assert not ok
-    assert ctypes.get_last_error() == 6
+        k.SetEvent(wintypes.HANDLE(int(raw)))
+    except OSError:
+        pass
 print('LPAC_HANDLES_OK')
 """
         output, _elapsed = _run_native(live_lpac_backend, workdir, code, env = env)
+        assert "LPAC_HANDLES_OK" in output
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        for handle in handles:
+            # WAIT_TIMEOUT: the event is still unsignalled, so the child never held it.
+            assert kernel32.WaitForSingleObject(handle, 0) == 0x102, handle
     finally:
         for handle in handles:
             kernel32.CloseHandle(handle)
-
-    assert "LPAC_HANDLES_OK" in output
 
 
 def test_live_null_device_and_named_pipes_are_denied_and_disclosed(live_lpac_backend, tmp_path):

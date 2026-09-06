@@ -1105,7 +1105,13 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
         assert specs[0].argv[2].endswith(".py")
     else:
         # Required mode: on Windows this is cmd even when Git bash exists.
-        assert specs[0].argv == tuple(inference_tools._get_shell_cmd("printf ok", os_isolated = True))
+        if sys.platform == "win32":
+            # The isolated Terminal hands cmd a batch file written in the workdir.
+            assert specs[0].argv[:3] == ("cmd", "/d", "/c")
+            assert specs[0].argv[3].endswith(".cmd")
+            assert os.path.dirname(specs[0].argv[3]) == os.path.normpath(specs[0].workdir)
+        else:
+            assert specs[0].argv == tuple(inference_tools._get_shell_cmd("printf ok", os_isolated = True))
 
 
 def test_prepared_launch_cleanup_is_idempotent_and_records_its_failures(tmp_path):

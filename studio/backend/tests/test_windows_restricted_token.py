@@ -1361,3 +1361,49 @@ def test_live_limited_tool_call_records_the_token_launcher(live_token_backend, t
     assert "write_restricted_token" in records[0].retained_safeguards
     assert records[0].limitations == token_launcher._LIMITATIONS
     assert not Path(result.strip().splitlines()[-1]).exists()  # private temp removed after the call
+
+
+def test_token_information_class_constants_are_integers():
+    # Staging round 4: a ctypes Structure named after the TOKEN_INFORMATION_CLASS
+    # constant shadowed it, and SetTokenInformation received the type object as its
+    # class argument ("argument 2: TypeError ... cannot be interpreted as an integer"),
+    # which made every restricted-token probe fail and Limited fall back silently.
+    for name in ("_TOKEN_DEFAULT_DACL", "_TOKEN_LOGON_SID", "_TOKEN_GROUPS_CLASS", "_TOKEN_PRIVILEGES_CLASS"):
+        value = getattr(token_launcher, name, None)
+        if value is not None:
+            assert isinstance(value, int), name
+    assert token_launcher._TOKEN_DEFAULT_DACL == 6
+    assert issubclass(token_launcher._TOKEN_DEFAULT_DACL_INFO, ctypes.Structure)
+
+
+def test_set_default_dacl_passes_the_integer_class_and_frees_the_acl(monkeypatch):
+    calls: list[tuple] = []
+    # GetTokenInformation hands back a raw buffer; a zeroed one means no default DACL.
+    info = ctypes.create_string_buffer(ctypes.sizeof(token_launcher._TOKEN_DEFAULT_DACL_INFO))
+    monkeypatch.setattr(
+        token_launcher, "_token_information", lambda api, token, kind: calls.append(("query", kind)) or info
+    )
+
+    def set_entries(count, entries, old_acl, new_acl_ref):
+        calls.append(("SetEntriesInAclW", int(count), old_acl))
+        new_acl_ref._obj.value = 0x5150
+        return 0
+
+    def set_token_information(token, klass, info_ref, size):
+        calls.append(("SetTokenInformation", token, klass, int(size)))
+        return 1
+
+    api = SimpleNamespace(
+        advapi32 = SimpleNamespace(
+            SetEntriesInAclW = set_entries, SetTokenInformation = set_token_information
+        ),
+        kernel32 = SimpleNamespace(LocalFree = lambda handle: calls.append(("LocalFree", handle.value if hasattr(handle, "value") else handle))),
+    )
+    token_launcher._set_default_dacl(api, 77, ctypes.c_void_p(0x1234))
+    assert calls[0] == ("query", 6)
+    assert calls[1][:2] == ("SetEntriesInAclW", 1)
+    set_call = next(call for call in calls if call[0] == "SetTokenInformation")
+    assert set_call[1] == 77
+    assert isinstance(set_call[2], int) and set_call[2] == 6
+    assert set_call[3] == ctypes.sizeof(token_launcher._TOKEN_DEFAULT_DACL_INFO)
+    assert ("LocalFree", 0x5150) in calls
