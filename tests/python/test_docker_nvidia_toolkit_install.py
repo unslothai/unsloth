@@ -56,7 +56,7 @@ def _setup(
     if configured:
         marker.write_text("", encoding = "utf-8")
     rec = f'echo "$(basename "$0") $*" >> {log}\n'
-    _stub(bindir / "id", f'echo {uid}\n')
+    _stub(bindir / "id", f"echo {uid}\n")
     _stub(bindir / "sudo", rec + "exit 0\n")
     _stub(
         bindir / "nvidia-smi",
@@ -70,7 +70,11 @@ def _setup(
         + ('  echo " Operating System: Docker Desktop"\n' if desktop else "")
         + f'  if [ -e {marker} ]; then echo " Runtimes: io.containerd.runc.v2 nvidia runc"; else echo " Runtimes: io.containerd.runc.v2 runc"; fi\n'
         + "  exit 0\nfi\n"
-        + ("exit 0\n" if verify_ok else 'echo "docker: could not select device driver" >&2; exit 125\n'),
+        + (
+            "exit 0\n"
+            if verify_ok
+            else 'echo "docker: could not select device driver" >&2; exit 125\n'
+        ),
     )
     for pm in ("apt-get", "dnf", "yum", "zypper", "service"):
         _stub(bindir / pm, rec + "exit 0\n")
@@ -80,8 +84,7 @@ def _setup(
         _stub(bindir / "systemctl", rec + "exit 1\n")
     _stub(
         bindir / "curl",
-        rec
-        + 'case "$*" in\n'
+        rec + 'case "$*" in\n'
         '  *gpgkey) printf "FAKE-ARMORED-KEY\\n" ;;\n'
         '  *.list) printf "deb https://nvidia.github.io/libnvidia-container/stable/deb/\\$(ARCH) /\\n" ;;\n'
         '  *.repo) printf "[nvidia-container-toolkit]\\nbaseurl=https://nvidia.github.io/libnvidia-container/stable/rpm/\\$basearch\\n" ;;\n'
@@ -96,7 +99,9 @@ def _setup(
     osr.write_text(OS_RELEASE[distro], encoding = "utf-8")
     procv = tmp_path / "proc-version"
     procv.write_text(
-        "Linux version 5.15.167.4-microsoft-standard-WSL2\n" if wsl else "Linux version 6.8.0-45-generic\n",
+        "Linux version 5.15.167.4-microsoft-standard-WSL2\n"
+        if wsl
+        else "Linux version 6.8.0-45-generic\n",
         encoding = "utf-8",
     )
     env = dict(os.environ)
@@ -108,7 +113,11 @@ def _setup(
     return root, log, env
 
 
-def _run(env: dict, script: Path = INSTALLER, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+def _run(
+    env: dict,
+    script: Path = INSTALLER,
+    extra_env: dict | None = None,
+) -> subprocess.CompletedProcess:
     e = dict(env)
     e.update(extra_env or {})
     return subprocess.run(["bash", str(script)], capture_output = True, text = True, env = e, timeout = 60)
@@ -118,20 +127,30 @@ def _calls(log: Path) -> list[str]:
     return log.read_text(encoding = "utf-8").splitlines() if log.exists() else []
 
 
-def test_ubuntu_gets_the_apt_recipe_then_docker_is_configured_restarted_and_verified(tmp_path: Path):
+def test_ubuntu_gets_the_apt_recipe_then_docker_is_configured_restarted_and_verified(
+    tmp_path: Path,
+):
     root, log, env = _setup(tmp_path, distro = "ubuntu")
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
     calls = _calls(log)
     assert "apt-get update -qq" in calls
-    assert any(c.startswith("apt-get install") and c.endswith("nvidia-container-toolkit") for c in calls)
+    assert any(
+        c.startswith("apt-get install") and c.endswith("nvidia-container-toolkit") for c in calls
+    )
     key = root / "usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
     assert key.read_text(encoding = "utf-8") == "FAKE-ARMORED-KEY\n"
-    lst = (root / "etc/apt/sources.list.d/nvidia-container-toolkit.list").read_text(encoding = "utf-8")
-    assert lst.startswith("deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://")
+    lst = (root / "etc/apt/sources.list.d/nvidia-container-toolkit.list").read_text(
+        encoding = "utf-8"
+    )
+    assert lst.startswith(
+        "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://"
+    )
     assert "nvidia-ctk runtime configure --runtime=docker" in calls
     assert "systemctl restart docker" in calls
-    assert calls[-1] == "docker run --rm --gpus all --platform linux/amd64 ubuntu:24.04 nvidia-smi -L"
+    assert (
+        calls[-1] == "docker run --rm --gpus all --platform linux/amd64 ubuntu:24.04 nvidia-smi -L"
+    )
     assert not any(c.startswith(("dnf", "yum", "zypper")) for c in calls)
 
 
@@ -162,7 +181,9 @@ def test_suse_uses_zypper(tmp_path: Path):
     assert res.returncode == 0, res.stdout + res.stderr
     calls = _calls(log)
     assert any(c.startswith("zypper --non-interactive ar https://nvidia.github.io/") for c in calls)
-    assert "zypper --non-interactive --gpg-auto-import-keys install nvidia-container-toolkit" in calls
+    assert (
+        "zypper --non-interactive --gpg-auto-import-keys install nvidia-container-toolkit" in calls
+    )
     assert not any(c.startswith(("apt-get", "dnf", "yum")) for c in calls)
 
 
@@ -172,7 +193,9 @@ def test_an_unknown_distribution_stops_before_touching_anything(tmp_path: Path):
     assert res.returncode == 2
     assert "unrecognised distribution" in res.stderr
     assert "install-guide" in res.stderr
-    assert not any(c.startswith(("apt-get", "dnf", "yum", "zypper", "nvidia-ctk")) for c in _calls(log))
+    assert not any(
+        c.startswith(("apt-get", "dnf", "yum", "zypper", "nvidia-ctk")) for c in _calls(log)
+    )
 
 
 def test_no_driver_means_stop_and_say_how_to_get_one(tmp_path: Path):
@@ -203,7 +226,9 @@ def test_docker_desktop_needs_nothing(tmp_path: Path):
 
 
 @pytest.mark.parametrize("systemctl", ["missing", "fails"])
-def test_without_a_working_systemctl_the_service_command_restarts_docker(tmp_path: Path, systemctl: str):
+def test_without_a_working_systemctl_the_service_command_restarts_docker(
+    tmp_path: Path, systemctl: str
+):
     _, log, env = _setup(tmp_path, systemctl = systemctl, wsl = True)
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
@@ -236,8 +261,12 @@ def test_a_non_root_run_of_the_file_re_executes_itself_under_sudo(tmp_path: Path
 def test_a_non_root_pipe_cannot_re_execute_and_says_so(tmp_path: Path):
     _, log, env = _setup(tmp_path, uid = 1000)
     res = subprocess.run(
-        ["bash", "-s"], input = INSTALLER.read_text(encoding = "utf-8"),
-        capture_output = True, text = True, env = env, timeout = 60,
+        ["bash", "-s"],
+        input = INSTALLER.read_text(encoding = "utf-8"),
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
     )
     assert res.returncode == 2
     assert "sudo bash" in res.stderr
@@ -250,7 +279,9 @@ def _run_sh_env(tmp_path: Path, *, nvidia_runtime: bool) -> tuple[Path, Path, di
     log = tmp_path / "calls.log"
     argv = tmp_path / "argv"
     rec = f'echo "$(basename "$0") $*" >> {log}\n'
-    runtimes = "io.containerd.runc.v2 nvidia runc" if nvidia_runtime else "io.containerd.runc.v2 runc"
+    runtimes = (
+        "io.containerd.runc.v2 nvidia runc" if nvidia_runtime else "io.containerd.runc.v2 runc"
+    )
     _stub(
         bindir / "docker",
         rec + f'if [ "$1" = info ]; then echo " Runtimes: {runtimes}"; exit 0; fi\n'
@@ -273,8 +304,12 @@ def _run_sh_env(tmp_path: Path, *, nvidia_runtime: bool) -> tuple[Path, Path, di
 
 def _run_run_sh(env: dict) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", str(RUN_SH), "true"], capture_output = True, text = True, env = env,
-        stdin = subprocess.DEVNULL, timeout = 60,
+        ["bash", str(RUN_SH), "true"],
+        capture_output = True,
+        text = True,
+        env = env,
+        stdin = subprocess.DEVNULL,
+        timeout = 60,
     )
 
 
