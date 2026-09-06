@@ -56,11 +56,13 @@ def _gh(args: list[str]) -> tuple[int, str, str]:
 #     gh api repos/unslothai/unsloth/commits/deadbeef00
 #     {"message":"No commit found for SHA: deadbeef00", ..., "status":"422"}
 #
-# A 422 or 404 carrying that message is the only answer that releases the
-# kernel. Everything else a lookup can fail with (a 5xx, rate limiting, the
-# network) says nothing about the commit, and reading it as "gone" would
-# delete the only copy of the result behind a transient error.
-MISSING_MARKERS = ("no commit found", "http 404", "http 422")
+# That message is the only answer that releases the kernel. The status code
+# on its own is not enough: a 404 is also what a repository the token cannot
+# see answers, and a 422 what an ambiguous abbreviation answers, and neither
+# says the commit is gone. Everything else a lookup can fail with (a 5xx, rate
+# limiting, the network) says nothing about the commit either, and reading
+# any of it as "gone" would delete the only copy of the result.
+MISSING_MARKERS = ("no commit found",)
 
 
 def resolve_sha(repo: str, sha: str) -> tuple[str, str | None]:

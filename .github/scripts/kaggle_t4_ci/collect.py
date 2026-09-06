@@ -266,12 +266,23 @@ def _evidence_lines(dest: Path):
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
-        for cell in nb.get("cells", []) or []:
-            for output in cell.get("outputs", []) or []:
+        # Valid JSON that is not a notebook (`[]`, a bare string) is skipped,
+        # not raised on: this runs outside the report guard, and an exception
+        # here wrote no result file and wedged every later pass on the same
+        # kernel.
+        if not isinstance(nb, dict):
+            continue
+        for cell in nb.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            for output in cell.get("outputs") or []:
+                if not isinstance(output, dict):
+                    continue
                 text = output.get("text") or ""
                 if isinstance(text, list):
-                    text = "".join(text)
-                yield from text.splitlines()
+                    text = "".join(str(t) for t in text)
+                if isinstance(text, str):
+                    yield from text.splitlines()
     for log_path in sorted(dest.rglob("kernel.log")):
         raw = log_path.read_text(encoding = "utf-8", errors = "replace")
         yield from launch.flatten_kernel_log(raw).splitlines()
@@ -319,8 +330,14 @@ def collect_one(
     expect: int,
     max_age_hours: float,
     delete: bool = True,
+    deadline: float | None = None,
 ) -> dict:
-    """Read one kernel to a conclusion. Returns the record for the result file."""
+    """Read one kernel to a conclusion. Returns the record for the result file.
+
+    ``deadline`` is the whole pass's: the evidence download gets its own
+    budget, clamped to whatever is left of it, so the last kernel of a busy
+    pass cannot carry the collector past the job that runs it.
+    """
     slug = entry["slug"]
     state = _status_of(api, slug)
     record = {
@@ -369,12 +386,26 @@ def collect_one(
         record["reason"] = "the kernel no longer exists; nothing to collect"
         return record
 
+    if state not in launch.TERMINAL_OK | launch.TERMINAL_BAD:
+        # Only a KNOWN terminal state enters the path below, which downloads,
+        # judges, posts and deletes. Kaggle's enum has states this file never
+        # sees (NEW_SCRIPT) and can grow more; a kernel in one of those has no
+        # evidence yet, and judging it would post a green `infra` for a run
+        # still to come and then delete it.
+        record["verdict"] = "pending"
+        record["reason"] = f"state {state} is not one this collector judges; asked again next pass"
+        _log(f"unrecognised state {state} for {slug}; kept")
+        return record
+
     # Terminal. Evidence FIRST, delete second, and never the other way round:
     # a delete that lands before the download turns a finished run into a
     # result nobody can ever read.
     dest = outdir / slug.rsplit("/", 1)[-1]
     try:
-        evidence = launch.fetch_evidence(slug, dest, deadline = time.time() + EVIDENCE_BUDGET_SEC)
+        evidence_deadline = time.time() + EVIDENCE_BUDGET_SEC
+        if deadline is not None:
+            evidence_deadline = min(evidence_deadline, deadline)
+        evidence = launch.fetch_evidence(slug, dest, deadline = evidence_deadline)
     except Exception as exc:  # noqa: BLE001
         record["evidence"] = None
         if _gone(exc):
@@ -667,7 +698,13 @@ def main() -> int:
             break
         result["kernels"].append(
             collect_one(
-                api, entry, outdir, args.expect, args.max_age_hours, delete = not args.no_delete
+                api,
+                entry,
+                outdir,
+                args.expect,
+                args.max_age_hours,
+                delete = not args.no_delete,
+                deadline = deadline,
             )
         )
 

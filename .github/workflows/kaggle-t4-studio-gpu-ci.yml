@@ -464,49 +464,11 @@ jobs:
             --payload-args "$ARGS" \
             --per-run-timeout 3900
 
-      # WITH THE ACCOUNT SLOT IN HAND, and immediately before the push. The
-      # notebook leg has always done this and this one never has; two accounts
-      # is what makes the gap matter. A gate answer can be a whole run stale by
-      # the time the concurrency group lets this job start -- the repo queue has
-      # been measured 293 deep -- and in that window the chosen account can have
-      # spent its hours or taken its second session on another branch.
-      #
-      # --account-env narrows the recheck to the ONE account the gate chose, so
-      # it can never clear a different account from the one this job holds a
-      # slot for. --soft-fail because the run is already past the gate and only
-      # re-asking: exhaustion discovered here is a stand-down, not a red, and
-      # the step below says so.
-      - name: Recheck the Kaggle account
-        id: recheck
-        env:
-          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
-        run: |
-          python .github/scripts/kaggle_t4_ci/gate.py \
-            --force true \
-            --soft-fail \
-            --account-env KAGGLE_API_TOKEN \
-            --kernels 1 \
-            --budget-hours 2 \
-            --reserve-hours 10
-
-      # Through the environment rather than an inline expression, so nothing the
-      # Kaggle API put in that string reaches a shell.
-      - name: Report the stale approval
-        if: steps.recheck.outputs.should_run != 'true'
-        env:
-          REASON: ${{ steps.recheck.outputs.reason }}
-        run: |
-          echo "::warning title=Stood down at the second check::${REASON}"
-
-      # kernel-timeout-sec is the load-bearing budget control: Kaggle itself
-      # kills the session at that point. A runner that is cancelled cannot
-      # clean up after itself, so the ceiling has to be enforced on Kaggle's
-      # side rather than here.
-      #
-      # The launcher is shared with the notebook leg and is used unchanged:
-      # this payload prints the same T4_SMOKE_REPORT line, so the transport
-      # needed no modification.
-      # Finish what an earlier run started, before starting anything new.
+      # Finish what an earlier run started, before starting anything new, and
+      # BEFORE the recheck: this can spend up to fifteen minutes downloading,
+      # and the notebook workflow can take the account's last session in that
+      # window. The recheck is the last thing before the push, or it is not a
+      # recheck.
       #
       # Same two reasons as the notebook leg: this job already holds the right
       # account's token, so collecting a finished kernel costs seconds and
@@ -515,7 +477,6 @@ jobs:
       # stops a re-run paying for a second session.
       - name: Collect finished Kaggle runs
         id: collect
-        if: steps.recheck.outputs.should_run == 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
         run: |
@@ -555,11 +516,54 @@ jobs:
             --delete-collected kaggle_collected/collect_result.json \
             --posted kaggle_collected/posted.json
 
+      # WITH THE ACCOUNT SLOT IN HAND, and immediately before the push. The
+      # notebook leg has always done this and this one never has; two accounts
+      # is what makes the gap matter. A gate answer can be a whole run stale by
+      # the time the concurrency group lets this job start -- the repo queue has
+      # been measured 293 deep -- and in that window the chosen account can have
+      # spent its hours or taken its second session on another branch.
+      #
+      # --account-env narrows the recheck to the ONE account the gate chose, so
+      # it can never clear a different account from the one this job holds a
+      # slot for. --soft-fail because the run is already past the gate and only
+      # re-asking: exhaustion discovered here is a stand-down, not a red, and
+      # the step below says so.
+      - name: Recheck the Kaggle account
+        id: recheck
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/gate.py \
+            --force true \
+            --soft-fail \
+            --account-env KAGGLE_API_TOKEN \
+            --kernels 1 \
+            --budget-hours 2 \
+            --reserve-hours 10
+
+      # Through the environment rather than an inline expression, so nothing the
+      # Kaggle API put in that string reaches a shell.
+      - name: Report the stale approval
+        if: steps.recheck.outputs.should_run != 'true'
+        env:
+          REASON: ${{ steps.recheck.outputs.reason }}
+        run: |
+          echo "::warning title=Stood down at the second check::${REASON}"
+
       - name: Note that this commit is already running on Kaggle
         if: steps.recheck.outputs.should_run == 'true' && steps.collect.outputs.in_flight == 'true'
         run: |
           echo "::notice title=Already in flight::a Kaggle kernel for this commit is still running from an earlier run, so nothing was dispatched. Its result will arrive as the kaggle-studio-gpu commit status."
 
+      # kernel-timeout-sec is the load-bearing budget control: Kaggle itself
+      # kills the session at that point. A runner that is cancelled cannot
+      # clean up after itself, so the ceiling has to be enforced on Kaggle's
+      # side rather than here.
+      #
+      # The launcher is shared with the notebook leg and is used unchanged:
+      # this payload prints the same T4_SMOKE_REPORT line, so the transport
+      # needed no modification.
+      #
       # PUSH AND EXIT. Measured on run 33486360729, waiting here cost 18.7
       # minutes of a GitHub runner to watch Kaggle work.
       #
@@ -610,11 +614,19 @@ jobs:
       # nothing else, deliberately. The payload therefore encodes its
       # screenshots and logs into its own cell output; this puts them back.
       - name: Unpack the Playwright evidence
-        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb', 'kaggle_collected/**/*_output.ipynb') != ''
         run: |
-          python .github/scripts/kaggle_studio_ci/collect_evidence.py \
-            --evidence kaggle_evidence \
-            --outdir studio_evidence
+          # One kernel per call. The bundle is reassembled from numbered
+          # chunks, and one walk over two kernels would splice them together.
+          # Both trees: a kernel this run waited on lands in kaggle_evidence,
+          # one an earlier run dispatched and this run collected lands in
+          # kaggle_collected, and the screenshots matter most for the second.
+          for dir in kaggle_evidence/*/ kaggle_collected/*/; do
+            [ -d "$dir" ] || continue
+            python .github/scripts/kaggle_studio_ci/collect_evidence.py \
+              --evidence "$dir" \
+              --outdir "studio_evidence/$(basename "$dir")"
+          done
 
       # always(): the evidence is most valuable exactly when something went
       # wrong. Screenshots only travel on a failing run, so a passing upload

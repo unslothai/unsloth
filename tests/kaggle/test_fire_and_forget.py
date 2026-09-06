@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1120,7 +1121,145 @@ def test_resolve_sha_separates_missing_from_unknown(monkeypatch):
     answers["repos/o/r/commits/bb"] = (1, "", "gh: No commit found for SHA: bb (HTTP 422)")
     answers["repos/o/r/commits/cc"] = (1, "", "gh: HTTP 502 Bad Gateway")
     answers["repos/o/r/commits/dd"] = (1, "", "")
+    # The status code alone is not the answer: a 404 is what a repository the
+    # token cannot see says, a 422 what an ambiguous abbreviation says.
+    answers["repos/o/r/commits/ee"] = (1, "", "gh: Not Found (HTTP 404)")
+    answers["repos/o/r/commits/ff"] = (1, "", "gh: Validation Failed (HTTP 422)")
     assert post_statuses.resolve_sha("o/r", "aa") == ("ok", "a" * 40)
     assert post_statuses.resolve_sha("o/r", "bb") == ("missing", None)
-    assert post_statuses.resolve_sha("o/r", "cc") == ("error", None)
-    assert post_statuses.resolve_sha("o/r", "dd") == ("error", None)
+    for sha in ("cc", "dd", "ee", "ff"):
+        assert post_statuses.resolve_sha("o/r", sha) == ("error", None), sha
+
+
+# ------------------------------------------ the terminal path is for known states only
+
+
+_ENTRY = {
+    "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+    "sha": "abcdef01",
+    "kind": "notebook",
+    "legacy": False,
+    "age_hours": 0.4,
+}
+
+
+def test_an_unrecognised_kernel_state_is_kept_and_not_judged(tmp_path, monkeypatch):
+    """Kaggle's enum has states this collector never sees (NEW_SCRIPT) and can
+    grow more. Anything that is not a known terminal state has no evidence to
+    judge, and judging it posts a green `infra` for a run still to come and
+    then deletes the kernel."""
+    touched: list[str] = []
+    monkeypatch.setattr(
+        launch, "fetch_evidence", lambda slug, dest, deadline = None: touched.append(slug) or {}
+    )
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug: touched.append("delete") or True)
+    api = _StubApi([], {_ENTRY["slug"]: "NEW_SCRIPT"})
+    record = collect.collect_one(api, dict(_ENTRY), tmp_path, expect = 1, max_age_hours = 3.0)
+    assert record["verdict"] == "pending"
+    assert record["verdict"] not in collect.DELETABLE
+    assert collect.statuses_from([record]) == []
+    assert touched == [], "an unjudged kernel must be neither downloaded nor deleted"
+
+
+def test_a_downloaded_file_that_is_not_a_notebook_does_not_wedge_the_collector(
+    tmp_path, monkeypatch
+):
+    """`[]` is valid JSON and not a notebook. The report reader raising is
+    caught; the expected-count reader raising was not, and a collector that
+    raises writes no result and stalls on the same kernel every pass."""
+    slug = _ENTRY["slug"]
+    dest = tmp_path / slug.rsplit("/", 1)[-1]
+    dest.mkdir()
+    (dest / f"x{launch.OUTPUT_SUFFIX}").write_text("[]", encoding = "utf-8")
+    (dest / f"y{launch.OUTPUT_SUFFIX}").write_text(
+        json.dumps({"cells": ["not a cell", {"outputs": ["not an output", {"text": 7}]}]}),
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(launch, "fetch_evidence", lambda slug, dest, deadline = None: {})
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug: True)
+    api = _StubApi([], {slug: "COMPLETE"})
+    assert collect.expected_reports(dest, 4) == 4
+    record = collect.collect_one(api, dict(_ENTRY), tmp_path, expect = 4, max_age_hours = 3.0)
+    assert record["verdict"] == "infra", record
+    assert record["expected"] == 4
+
+
+def test_the_evidence_download_is_clamped_to_the_pass_deadline(tmp_path, monkeypatch):
+    """A kernel started just inside the pass budget must not be handed a fresh
+    five-minute download budget, or a fifteen-minute collector runs for twenty
+    inside a twenty-five minute job with the release step still to come."""
+    seen: list[float] = []
+
+    def _fetch(slug, dest, deadline = None):
+        seen.append(deadline)
+        return {}
+
+    monkeypatch.setattr(launch, "fetch_evidence", _fetch)
+    monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug: True)
+    api = _StubApi([], {_ENTRY["slug"]: "COMPLETE"})
+    pass_deadline = time.time() + 5.0
+    collect.collect_one(
+        api, dict(_ENTRY), tmp_path, expect = 1, max_age_hours = 3.0, deadline = pass_deadline
+    )
+    assert seen and seen[0] <= pass_deadline
+    # And the collector's own loop hands its deadline down: the parameter exists
+    # in the one call site that matters.
+    source = (CI_DIR / "collect.py").read_text(encoding = "utf-8")
+    body = source[source.index("deadline = time.time() + BUDGET_SEC") :]
+    assert "deadline = deadline," in body[: body.index("statuses_from")]
+
+
+# ---------------------------------------- collect BEFORE the recheck, never between
+
+
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+def test_collection_runs_before_the_recheck_so_the_recheck_is_last_before_the_push(path):
+    """Collection can spend up to BUDGET_SEC downloading. Sitting between the
+    recheck and the push, that gap is exactly the stale window the recheck
+    exists to close: the other GPU workflow, on its own concurrency group, can
+    take the account's last session in it."""
+    steps = [(n, s) for _j, n, s in _steps(_wf(path))]
+    names = [n for n, _s in steps]
+    collect_i = names.index("Collect finished Kaggle runs")
+    recheck_i = names.index("Recheck the Kaggle account")
+    launch_i = names.index("Dispatch to Kaggle")
+    assert collect_i < recheck_i < launch_i, names[collect_i : launch_i + 1]
+    assert "steps.recheck" not in (steps[collect_i][1].get("if") or "")
+    # Nothing that takes BUDGET_SEC sits between the recheck and the push.
+    between = [n for n in names[recheck_i + 1 : launch_i]]
+    assert not any("collect.py" in (s.get("run") or "") for n, s in steps if n in between), between
+    assert "steps.recheck.outputs.should_run == 'true'" in steps[launch_i][1]["if"]
+
+
+# ------------------------------------- collected Studio evidence is unpacked too
+
+
+@pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
+def test_the_unpack_step_reads_the_tree_a_collected_kernel_lands_in(path):
+    """Dispatch mode never writes kaggle_evidence; a kernel collected later
+    lands in kaggle_collected/<slug>. An unpack step reading only the first
+    tree could never fire on the run that actually retrieved the screenshots."""
+    step = next(s for _j, n, s in _steps(_wf(path)) if n == "Unpack the Playwright evidence")
+    assert "kaggle_collected/**/*_output.ipynb" in step["if"]
+    assert "kaggle_evidence/**/*_output.ipynb" in step["if"]
+    run = step["run"]
+    assert "kaggle_collected/*/" in run and "kaggle_evidence/*/" in run
+    # One kernel per call: chunks are numbered per bundle, and a walk over two
+    # kernels would splice their bundles together.
+    assert '--evidence "$dir"' in run and 'studio_evidence/$(basename "$dir")' in run
+
+
+def test_the_scheduled_collector_unpacks_and_uploads_what_it_collected():
+    """It is the pass that collects most Studio kernels, so it is the pass
+    that has to put the screenshots back and keep them somewhere."""
+    steps = [(n, s) for _j, n, s in _steps(_wf(COLLECT_WF))]
+    names = [n for n, _s in steps]
+    unpack = steps[names.index("Unpack the Playwright evidence")][1]
+    assert "kaggle_collected/*/" in unpack["run"] and "collect_evidence.py" in unpack["run"]
+    upload = steps[names.index("Upload evidence")][1]
+    assert upload["uses"].startswith("actions/upload-artifact@")
+    assert "kaggle_collected/**" in upload["with"]["path"]
+    assert "studio_evidence/**" in upload["with"]["path"]
+    assert upload.get("continue-on-error") is True, "an artifact outage is not a collection failure"
+    assert names.index("Upload evidence") > names.index("Post the commit statuses")

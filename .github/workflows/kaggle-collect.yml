@@ -174,6 +174,39 @@ jobs:
             --delete-collected kaggle_collected/collect_result.json \
             --posted kaggle_collected/posted.json
 
+      # The Studio payload smuggles its Playwright screenshots and logs home
+      # inside its own cell output, and this is the pass that collects most
+      # Studio kernels, so this is the pass that has to put them back. One
+      # kernel per call: the bundle is reassembled from numbered chunks, and
+      # one walk over two kernels would splice them together.
+      - name: Unpack the Playwright evidence
+        if: always() && hashFiles('kaggle_collected/**/*_output.ipynb') != ''
+        continue-on-error: true
+        run: |
+          for dir in kaggle_collected/*/; do
+            [ -d "$dir" ] || continue
+            python .github/scripts/kaggle_studio_ci/collect_evidence.py \
+              --evidence "$dir" \
+              --outdir "studio_evidence/$(basename "$dir")"
+          done
+
+      # The evidence is most valuable exactly when something went wrong, and
+      # the verdict this pass posted is a one-line status; the executed
+      # notebooks and the unpacked screenshots are what a red one is read from.
+      # continue-on-error: an artifact-service outage is not a collection
+      # failure, and the statuses above have already been delivered.
+      - name: Upload evidence
+        if: always() && hashFiles('kaggle_collected/**/*_output.ipynb') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: kaggle-collect-evidence-account-${{ matrix.account_id }}
+          path: |
+            kaggle_collected/**
+            studio_evidence/**
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: Summarise
         if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
         run: |
