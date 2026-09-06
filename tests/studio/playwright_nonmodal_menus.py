@@ -51,7 +51,12 @@ class Checks:
     def __init__(self) -> None:
         self.results: list[dict[str, object]] = []
 
-    def record(self, name: str, ok: bool, detail: object = "") -> None:
+    def record(
+        self,
+        name: str,
+        ok: bool,
+        detail: object = "",
+    ) -> None:
         self.results.append({"case": name, "ok": bool(ok), "detail": detail})
         print(f"{'PASS' if ok else 'FAIL'}  {name}  {detail}", flush = True)
 
@@ -157,9 +162,7 @@ def check_scroll_closes(page, checks: Checks) -> None:
 
     reset_list(page)
     open_row(page, 3)
-    page.evaluate(
-        "() => document.getElementById('list').scrollBy({top: 200, behavior: 'smooth'})"
-    )
+    page.evaluate("() => document.getElementById('list').scrollBy({top: 200, behavior: 'smooth'})")
     page.wait_for_timeout(600)
     checks.record("a smooth scroll closes the menu", menus_open(page) == 0)
 
