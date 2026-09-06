@@ -17,6 +17,8 @@ export interface MonitorStats {
   /** Slowest finished request, for spotting a pathological call. */
   maxDurationMs: number | null;
   totalTokens: number;
+  /** Share of the context used by the busiest running request, else the latest known request. */
+  contextUsage: number | null;
   /** Share of finished requests that failed, 0-1. Null when nothing finished. */
   errorRate: number | null;
   /** Mean completion tokens per second over requests that reported both. */
@@ -45,6 +47,14 @@ function entryTokens(entry: ApiMonitorEntry): number {
   return (entry.prompt_tokens ?? 0) + (entry.completion_tokens ?? 0);
 }
 
+function contextUsage(entry: ApiMonitorEntry): number | null {
+  const value = entry.context_usage;
+  if (value == null || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
 export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
   let active = 0;
   let completed = 0;
@@ -54,6 +64,9 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
   let durationSum = 0;
   let durationCount = 0;
   let maxDurationMs: number | null = null;
+  let activeContextUsage: number | null = null;
+  let latestContextUsage: number | null = null;
+  let latestContextUpdatedAt = Number.NEGATIVE_INFINITY;
   // Total tokens over total time: averaging rates lets one tiny request outweigh a long one.
   let generatedTokens = 0;
   let generatedDurationMs = 0;
@@ -68,6 +81,18 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
     }
     requests += 1;
     totalTokens += entryTokens(entry);
+    const usage = contextUsage(entry);
+    if (usage != null) {
+      if (entry.status === "running") {
+        activeContextUsage =
+          activeContextUsage == null ? usage : Math.max(activeContextUsage, usage);
+      }
+      // Entries arrive newest-first. Keep the first one when timestamps tie.
+      if (entry.updated_at > latestContextUpdatedAt) {
+        latestContextUpdatedAt = entry.updated_at;
+        latestContextUsage = usage;
+      }
+    }
     if (entry.status === "running") {
       active += 1;
     } else if (entry.status === "error") {
@@ -104,6 +129,7 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
     avgDurationMs: durationCount > 0 ? durationSum / durationCount : null,
     maxDurationMs,
     totalTokens,
+    contextUsage: activeContextUsage ?? latestContextUsage,
     errorRate: finished > 0 ? errors / finished : null,
     tokensPerSecond:
       generatedDurationMs > 0

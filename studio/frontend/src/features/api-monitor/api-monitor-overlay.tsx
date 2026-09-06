@@ -76,6 +76,27 @@ function formatDuration(value?: number | null): string {
   return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}s`;
 }
 
+function contextPercent(value?: number | null): number | null {
+  if (value == null || !Number.isFinite(value)) {
+    return null;
+  }
+  return Math.round(Math.max(0, Math.min(1, value)) * 100);
+}
+
+function contextTextClass(value?: number | null): string {
+  const pct = contextPercent(value);
+  if (pct == null) {
+    return "text-muted-foreground";
+  }
+  if (pct >= 90) {
+    return "text-red-600 dark:text-red-400";
+  }
+  if (pct >= 75) {
+    return "text-amber-700 dark:text-amber-500";
+  }
+  return "text-muted-foreground";
+}
+
 function statusDotClass(status: ApiMonitorEntry["status"]): string {
   switch (status) {
     case "running":
@@ -96,7 +117,7 @@ function StatCell({
 }: {
   label: string;
   value: string;
-  tone?: "error" | "active";
+  tone?: "error" | "warning" | "active";
 }): ReactElement {
   return (
     <div className="flex min-w-0 flex-col items-center gap-0.5 px-1">
@@ -104,6 +125,7 @@ function StatCell({
         className={cn(
           "truncate text-ui-15 font-semibold tabular-nums leading-none tracking-[-0.01em]",
           tone === "error" && "text-red-600 dark:text-red-400",
+          tone === "warning" && "text-amber-700 dark:text-amber-500",
           tone === "active" && "text-blue-600 dark:text-blue-400",
           !tone && "text-nav-fg",
         )}
@@ -198,6 +220,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
 
   const entries = useMemo(() => data?.entries ?? [], [data]);
   const stats = useMemo(() => computeStats(entries), [entries]);
+  const contextPct = contextPercent(stats.contextUsage);
 
   useEffect(() => {
     if (data == null) {
@@ -388,13 +411,24 @@ export function ApiMonitorOverlay(): ReactElement | null {
             </p>
 
             {/* Soft tile, as the Hub and Train pages group readouts. */}
-            <div className="grid grid-cols-4 rounded-[14px] bg-muted/45 py-2.5 dark:bg-background/45">
+            <div className="grid grid-cols-5 rounded-[14px] bg-muted/45 py-2.5 dark:bg-background/45">
               <StatCell
-                label="Live"
+                label="Live calls"
                 value={stats.active.toLocaleString()}
                 tone={stats.active > 0 ? "active" : undefined}
               />
               <StatCell label="Requests" value={stats.total.toLocaleString()} />
+              <StatCell
+                label="Context"
+                value={contextPct == null ? "--" : `${contextPct}%`}
+                tone={
+                  contextPct != null && contextPct >= 90
+                    ? "error"
+                    : contextPct != null && contextPct >= 75
+                      ? "warning"
+                      : undefined
+                }
+              />
               <StatCell
                 label="Errors"
                 value={stats.errors.toLocaleString()}
@@ -444,6 +478,17 @@ export function ApiMonitorOverlay(): ReactElement | null {
                     >
                       {entry.error ? entry.error : entry.model}
                     </span>
+                    {!isLifecycleEntry(entry) && contextPercent(entry.context_usage) != null ? (
+                      <span
+                        className={cn(
+                          "shrink-0 text-ui-11 tabular-nums",
+                          contextTextClass(entry.context_usage),
+                        )}
+                        title="Context used"
+                      >
+                        {contextPercent(entry.context_usage)}% ctx
+                      </span>
+                    ) : null}
                     <span className="shrink-0 text-ui-11 tabular-nums text-muted-foreground">
                       {formatDuration(entry.duration_ms)}
                     </span>
