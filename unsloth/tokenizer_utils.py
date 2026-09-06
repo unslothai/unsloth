@@ -678,9 +678,10 @@ def _load_correct_tokenizer(
         # Kaggle's /tmp seems to have an 80GB limit, so use it.
         cache_dir = os.path.join(KAGGLE_TMP, cache_dir)
     elif cache_dir == "huggingface_tokenizers_cache":
-        # This default name is Colab/Kaggle-only; elsewhere use the HF default cache, and keep a
-        # caller-supplied cache_dir so the tokenizer loads from the prefetch-warmed dir.
+        # This default name is Colab/Kaggle-only; elsewhere use the HF default cache.
         cache_dir = None
+    # else: keep a caller-supplied cache_dir so the tokenizer loads from the prefetch-warmed dir instead
+    # of risking an in-process Hub/Xet transfer.
 
     # Try the slow tokenizer first and fall back to fast only, mainly to solve Deepseek models with no
     # tokenizer.model file.
