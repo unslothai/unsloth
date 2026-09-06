@@ -76,11 +76,17 @@ jobs:
     permissions:
       contents: read
     outputs:
+      # the nightly pin's date; computed once so a rerun of failed jobs keeps it
+      pin_date: ${{ steps.pin.outputs.date }}
       llama_tag: ${{ steps.llama.outputs.tag }}
       unsloth_ref: ${{ steps.unsloth_ref.outputs.ref }}
       zoo_ref: ${{ steps.zoo_ref.outputs.ref }}
       notebooks_commit: ${{ steps.notebooks.outputs.commit }}
     steps:
+      - name: Date of this run, for the nightly pins
+        id: pin
+        run: echo "date=$(date -u +%Y.%m.%d)" >> "$GITHUB_OUTPUT"
+
       - name: Resolve llama.cpp prebuilt tag
         id: llama
         env:
@@ -269,7 +275,7 @@ jobs:
 
   merge:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [prepare, build]
     timeout-minutes: 15
     permissions:
       contents: read
@@ -304,15 +310,28 @@ jobs:
             type=raw,value=core,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag,prefix=core-
             # one immutable pin per daily rebuild; pruned after 60 days by cleanup
-            type=schedule,pattern=core-nightly-{{date 'YYYY.MM.DD'}}
+            type=schedule,pattern=core-nightly-${{ needs.prepare.outputs.pin_date }}
             # this run's handle for the digest handoff below; cleanup removes it
             type=raw,value=core-build-${{ github.run_id }}
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create \
-              $(jq -cr '.tags | map("-t " + .) | join(" ")' <<<"$DOCKER_METADATA_OUTPUT_JSON") \
+          # A dated pin is immutable: a rerun on the same day, or a late rerun of an
+          # older scheduled run, must not replace one that already exists.
+          TAGS=""
+          for t in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+            name="${t##*:}"
+            case "$name" in
+              nightly-[0-9]*|core-nightly-[0-9]*)
+                if [ "$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}")" = "200" ]; then
+                  echo "::notice::${t} already exists and stays as it is"
+                  continue
+                fi ;;
+            esac
+            TAGS="${TAGS} -t ${t}"
+          done
+          docker buildx imagetools create ${TAGS} \
               $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
       - name: Inspect the result
@@ -438,7 +457,7 @@ jobs:
 
   merge-studio:
     runs-on: ubuntu-latest
-    needs: build-studio
+    needs: [prepare, build-studio]
     timeout-minutes: 15
     permissions:
       contents: read
@@ -472,14 +491,27 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=raw,value=studio,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '' }}
             type=ref,event=tag
-            type=schedule,pattern=nightly-{{date 'YYYY.MM.DD'}}
+            type=schedule,pattern=nightly-${{ needs.prepare.outputs.pin_date }}
             type=raw,value=build-${{ github.run_id }}
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create \
-              $(jq -cr '.tags | map("-t " + .) | join(" ")' <<<"$DOCKER_METADATA_OUTPUT_JSON") \
+          # A dated pin is immutable: a rerun on the same day, or a late rerun of an
+          # older scheduled run, must not replace one that already exists.
+          TAGS=""
+          for t in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+            name="${t##*:}"
+            case "$name" in
+              nightly-[0-9]*|core-nightly-[0-9]*)
+                if [ "$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}")" = "200" ]; then
+                  echo "::notice::${t} already exists and stays as it is"
+                  continue
+                fi ;;
+            esac
+            TAGS="${TAGS} -t ${t}"
+          done
+          docker buildx imagetools create ${TAGS} \
               $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
       - name: Inspect the result
@@ -619,11 +651,13 @@ jobs:
   # the release tags and one dated nightly pin per image. This removes the handles
   # (namespace-scoped route: the legacy /v2/repositories path rejects the
   # organization token) and, on the daily rebuild, prunes nightly pins older than
-  # 60 days. A dispatch with overridden inputs publishes nothing durable by design,
-  # so it keeps its handles for whoever dispatched it to pull and delete.
+  # 60 days. A dispatch with an overridden input publishes nothing durable by
+  # design (the stable-tag gates above are off), so that one keeps its handles for
+  # whoever dispatched it to pull and delete; a dispatch with the defaults on the
+  # default branch published :core/:latest/:studio and is cleaned like a push.
   cleanup:
     needs: [merge, merge-studio, hub-readme, smoke-test]
-    if: ${{ always() && github.event_name != 'workflow_dispatch' }}
+    if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -656,10 +690,21 @@ jobs:
           drop "build-${{ github.run_id }}"
           if [ "${{ github.event_name }}" = "schedule" ]; then
             cutoff="$(date -u -d "-${NIGHTLY_KEEP_DAYS} days" +%Y.%m.%d)"
-            for name in $(curl -sS "${HUB}/tags?page_size=100" -H "Authorization: Bearer ${TOKEN}" \
-                          | python3 -c 'import json,sys,re; print("\n".join(t["name"] for t in json.load(sys.stdin).get("results", []) if re.fullmatch(r"(core-)?nightly-\d{4}\.\d{2}\.\d{2}", t["name"])))'); do
-              stamp="${name##*nightly-}"
-              if [ "$stamp" \< "$cutoff" ]; then drop "$name"; fi
+            # every page: the listing is newest first, so the expired pins are exactly
+            # the ones a first-page-only read would never see
+            url="${HUB}/tags?page_size=100"
+            names=""
+            while [ -n "$url" ]; do
+              page="$(curl -sS "$url" -H "Authorization: Bearer ${TOKEN}")"
+              names="${names} $(jq -r '.results[]?.name' <<<"$page")"
+              url="$(jq -r '.next // empty' <<<"$page")"
+            done
+            for name in $names; do
+              case "$name" in
+                nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]|core-nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9])
+                  stamp="${name##*nightly-}"
+                  if [ "$stamp" \< "$cutoff" ]; then drop "$name"; fi ;;
+              esac
             done
           fi
           test "$failed" = 0
