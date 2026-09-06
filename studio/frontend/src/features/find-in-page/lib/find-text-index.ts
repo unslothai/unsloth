@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The searchable text of a subtree, flattened into one string plus the map back to its text nodes.
-// Structurally typed, so `node --test` can run it against a hand-rolled DOM.
+// Flatten searchable text once and retain offsets back to its text nodes. The module is pure, so
+// the Node tests can use a hand-rolled DOM.
 
 import { FIND_SKIP_ATTRIBUTE } from "./find-attributes.ts";
 
@@ -21,7 +21,7 @@ export const MAX_MATCHES = 5_000;
 /** A log arrives as one text node and would otherwise spend the whole budget on its own. */
 export const MAX_NODE_CHARS = 100_000;
 
-/** Held back from the workspace, walked first, for the surfaces portaled in front of it. */
+/** Reserve space for visible portaled surfaces after walking the workspace. */
 export const PORTAL_RESERVE_CHARS = 100_000;
 
 /** Form controls carry their text in `value`; `SVG`/`CANVAS` content is not paintable everywhere. */
@@ -209,6 +209,12 @@ export class OffsetRuns {
   }
 }
 
+interface IndexedSurface {
+  root: FindElementLike;
+  start: number;
+  end: number;
+}
+
 export interface FindTextIndex {
   text: string;
   /** Sorted by `start`, gapped wherever a separator was written. */
@@ -222,6 +228,10 @@ export interface FindTextIndex {
    *  odd run of regional indicators leaves the run behind it pairing off one indicator early, so
    *  the flags a reader can see sit between the ones the index would find. */
   shifted: OffsetRuns;
+  /** Where the portaled surfaces begin. The whole length when none are open. */
+  rootLength: number;
+  /** Stable portal roots and the offsets occupied by their searchable text. */
+  surfaces: IndexedSurface[];
 }
 
 export const EMPTY_TEXT_INDEX: FindTextIndex = {
@@ -230,6 +240,8 @@ export const EMPTY_TEXT_INDEX: FindTextIndex = {
   truncated: false,
   unsafe: new OffsetRuns(),
   shifted: new OffsetRuns(),
+  rootLength: 0,
+  surfaces: [],
 };
 
 /** The only code point whose `toLowerCase` grows. Mapped to the Turkic fold, a bare `i`, since one
@@ -257,13 +269,24 @@ export function foldText(raw: string): string {
   return plain.replace(FINAL_SIGMA_PATTERN, "\u03c3");
 }
 
+/** Check cheap markup before resolving styles, which avoids layout work for skipped subtrees. */
+function hasClassToken(element: FindElementLike, token: string): boolean {
+  return (element.getAttribute("class") ?? "").split(/\s+/).includes(token);
+}
 function skipsByMarkup(element: FindElementLike): boolean {
   // Uppercased: SVG and MathML keep their source casing, so `<svg>` answers "svg" and walks past.
   if (SKIP_TAGS.has(element.tagName.toUpperCase())) return true;
+  if (hasClassToken(element, "katex-mathml")) return true;
   if (element.getAttribute(FIND_SKIP_ATTRIBUTE) !== null) return true;
+  // Boolean attributes, so presence is the whole signal. The shell parks an off-route workspace
+  // under `inert`; Radix marks the page `aria-hidden` behind a modal. KaTeX is the narrow exception:
+  // its painted HTML tree is deliberately aria-hidden because a clipped MathML mirror speaks it.
   if (element.getAttribute("hidden") !== null) return true;
   if (element.getAttribute("inert") !== null) return true;
-  return element.getAttribute("aria-hidden") === "true";
+  return (
+    element.getAttribute("aria-hidden") === "true" &&
+    !hasClassToken(element, "katex-html")
+  );
 }
 
 export function skipsSubtree(
@@ -358,6 +381,8 @@ export function buildTextIndex(
 ): FindTextIndex {
   const parts: string[] = [];
   const segments: TextSegment[] = [];
+
+  const surfaces: IndexedSurface[] = [];
   let length = 0;
   let truncated = false;
   /** See `FindTextIndex.unsafe`. */
@@ -526,7 +551,11 @@ export function buildTextIndex(
   };
 
   visit(root, false);
-  // The reserve, handed over: portals come last, so without it they are what gets left out.
+  // Before the surfaces and the separator joining them, so this slice is exactly the workspace.
+  // `foldText` cannot change a length, so the offset survives it.
+  const rootLength = length;
+  // The reserve, handed over. Portaled surfaces come after the workspace, so without this the one
+  // thing in front of the reader is the one left out. `truncated` stays as the workspace left it.
   ceiling = MAX_INDEX_CHARS;
   full = false;
   for (const extra of extraRoots) {
@@ -536,7 +565,15 @@ export function buildTextIndex(
     pendingSeparator = true;
     pendingClip = null;
     pendingChain = null;
+    const firstSegment = segments.length;
     visit(extra, false);
+    if (segments.length > firstSegment) {
+      surfaces.push({
+        root: extra,
+        start: segments[firstSegment].start,
+        end: length,
+      });
+    }
   }
   const joined = parts.join("");
   const shifted = new OffsetRuns();
@@ -554,8 +591,63 @@ export function buildTextIndex(
       else shifted.add(at);
     }
   }
-  // Folded once over the joined document: a fold is context-sensitive and cannot go node at a time.
-  return { text: foldText(joined), segments, truncated, unsafe, shifted };
+  // Folded once, over the joined document: see foldText for why it cannot be done a node at a time.
+  return {
+    text: foldText(joined),
+    segments,
+    truncated,
+    rootLength,
+    surfaces,
+    unsafe,
+    shifted,
+  };
+}
+
+/**
+ * True when a rebuild renumbers the match list, so the search has to re-anchor to the viewport.
+ *
+ * The index is the workspace followed by the surfaces portaled in front of it, joined at
+ * `rootLength`. A monitor stays searchable while it is up and rewrites its reading on a timer, so
+ * judged as one string every poll reads as a renumbered document and throws the reader out of the
+ * conversation behind it. What decides is whether text moved AHEAD of the reader's offset.
+ *
+ * This is the cheap half of the answer. `search` asks the exact question afterwards, by looking for
+ * a match still starting at that offset, so this only has to turn down the rebuilds where the
+ * offset would be meaningless.
+ *
+ * Here rather than beside its caller: the hook imports React and cannot run under `node --test`.
+ */
+export function renumbersMatches(
+  before: FindTextIndex,
+  after: FindTextIndex,
+  /** Where the reader's occurrence started in `before`, or null when there was none. */
+  activeStart: number | null,
+): boolean {
+  // One slice, and none at all without a surface open, where the workspace is the whole text.
+  const workspaceGrewAtTail =
+    before.rootLength <= after.rootLength &&
+    after.text.startsWith(before.text.slice(0, before.rootLength));
+  // The workspace is the prefix, so no surface can move an offset inside it. `search` re-anchors on
+  // its own when there was no occurrence to keep.
+  if (activeStart === null || activeStart < before.rootLength) {
+    return !workspaceGrewAtTail;
+  }
+  // A stable surface root tells whether another portal was inserted, removed, or reordered ahead of
+  // the occurrence. Equal-width polling within that root keeps its start and therefore the reader.
+  const beforeSurface = before.surfaces.find(
+    ({ start, end }) => start <= activeStart && activeStart < end,
+  );
+  if (beforeSurface !== undefined) {
+    const afterSurface = after.surfaces.find(
+      ({ root }) => root === beforeSurface.root,
+    );
+    return (
+      !workspaceGrewAtTail ||
+      afterSurface === undefined ||
+      afterSurface.start !== beforeSurface.start
+    );
+  }
+  return !workspaceGrewAtTail || after.rootLength !== before.rootLength;
 }
 
 /** Null when the query cannot match: empty, or carrying the separator (only a paste can). */
@@ -594,11 +686,58 @@ function canonicalVariants(needle: string, dotted: boolean): string[] {
   return variants;
 }
 
-/** Hangul first and by its own rule: NFD takes a syllable apart into Jamo, none of which are
- *  combining marks, so the general branch made three clusters of one syllable and composed none
- *  back, and every Korean query missed. */
+/**
+ * One canonical cluster. Hangul conjoining sequences can contain repeated leading, vowel, and
+ * trailing Jamo, so the whole L*V*T* run has to win before the generic character alternative.
+ */
 const CLUSTER_PATTERN =
-  /[\u1100-\u115f\ua960-\ua97c]+[\u1160-\u11a7\ud7b0-\ud7c6]*[\u11a8-\u11ff\ud7cb-\ud7fb]*|[\s\S][̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
+  // biome-ignore lint/suspicious/noMisleadingCharacterClass: Jamo and combining marks intentionally form canonical clusters.
+  /(?:[ᄀ-ᅟꥠ-꥿]+[ᅠ-ᆧힰ-ퟆ]+[ᆨ-ᇿퟋ-ퟻ]*|[\s\S])[̀-ͯ҃-҉᪰-᫿᷀-᷿⃐-⃰︠-︯]*/gu;
+
+const OPEN_HANGUL_CLUSTER_PATTERN =
+  /^[\u1100-\u115f\ua960-\ua97f]+[\u1160-\u11a7\ud7b0-\ud7c6]+$/u;
+const CLOSED_HANGUL_CLUSTER_PATTERN =
+  /^[\u1100-\u115f\ua960-\ua97f]+[\u1160-\u11a7\ud7b0-\ud7c6]+[\u11a8-\u11ff\ud7cb-\ud7fb]+$/u;
+const VOWEL_OR_TRAILING_HANGUL_JAMO_SOURCE =
+  "[\\u1160-\\u11a7\\ud7b0-\\ud7c6\\u11a8-\\u11ff\\ud7cb-\\ud7fb]";
+const TRAILING_HANGUL_JAMO_SOURCE = "[\\u11a8-\\u11ff\\ud7cb-\\ud7fb]";
+
+/** Any Hangul at all, asked first so an ASCII query pays one test and stops. */
+const HANGUL_HINT_PATTERN = /[ᄀ-ᇿꥠ-꥿가-ퟻ]/u;
+
+/**
+ * True when a cluster needs the trailing-jamo boundary, which only the pattern path writes.
+ *
+ * Extended and Old Hangul jamo have no precomposed form, so NFC and NFD spell them the same way and
+ * the single-spelling query would take the literal scan, where an open syllable prefix-matches a
+ * closed one. Modern Hangul always has two spellings and reaches the pattern anyway.
+ */
+function needsHangulBoundary(needle: string): boolean {
+  if (!HANGUL_HINT_PATTERN.test(needle)) return false;
+  for (const [cluster] of needle.normalize("NFD").matchAll(CLUSTER_PATTERN)) {
+    if (
+      OPEN_HANGUL_CLUSTER_PATTERN.test(cluster) ||
+      CLOSED_HANGUL_CLUSTER_PATTERN.test(cluster)
+    )
+      return true;
+  }
+  return false;
+}
+
+/** A closed syllable's L+V pair and everything after it. */
+const HANGUL_LVT_PATTERN =
+  /^([\u1100-\u115f\ua960-\ua97f][\u1160-\u11a7\ud7b0-\ud7c6])([\u11a8-\u11ff\ud7cb-\ud7fb][\s\S]*)$/u;
+
+/**
+ * The half-composed spelling of a closed syllable: the L+V pair precomposed, the trailing jamo left
+ * as it is. Neither NFC nor NFD writes it, so a document holding one is invisible to both.
+ */
+function partiallyComposedHangul(cluster: string): string | null {
+  const parts = HANGUL_LVT_PATTERN.exec(cluster);
+  if (!parts) return null;
+  const partial = parts[1].normalize("NFC") + parts[2];
+  return partial === cluster ? null : partial;
+}
 
 /** A trailing Jamo closing a syllable, and a leading Jamo with the vowel that makes it a syllable.
  *  The vowel is required: a bare leading Jamo is its own grapheme, not a syllable waiting to be
@@ -940,27 +1079,29 @@ function canonicalSource(needle: string, dotted: boolean): string {
     const spellings = [cluster];
     const composed = cluster.normalize("NFC");
     if (composed !== cluster) spellings.push(composed);
-    // `i` plus a combining dot has no precomposed form, so NFC cannot put it back.
+    // Hangul composes in two steps, and text can stop after the first. Joining two text nodes
+    // produces exactly that, an LV syllable in one and its trailing Jamo in the next.
+    const partial = partiallyComposedHangul(cluster);
+    if (partial !== null && !spellings.includes(partial))
+      spellings.push(partial);
+    // A decomposed dotted I folds to `i` plus a combining dot, which has no precomposed form, so
+    // NFC cannot put it back and the plain query would miss a word plainly on screen.
     if (dotted && cluster === "i") spellings.push(`i${COMBINING_DOT}`);
-    // A Hangul syllable has a third spelling: the LV part precomposed with its trailing Jamo left
-    // alone. Joining two text nodes produces exactly that, an LV syllable in one and the T in the
-    // next, and it normalizes to the same word.
-    const trailing = HANGUL_TRAILING_PATTERN.exec(cluster);
-    if (trailing !== null) {
-      const half =
-        cluster.slice(0, trailing.index).normalize("NFC") +
-        cluster.slice(trailing.index);
-      if (!spellings.includes(half)) spellings.push(half);
-    }
     // Longest first, as `canonicalVariants` is: alternation takes the first that fits, so a short
     // spelling that is a prefix of a long one wins and the rest of the cluster is left outside the
     // match: `i` before `i` plus its combining dot ended the match inside the grapheme, and the
     // boundary check threw the occurrence away rather than reaching for the longer spelling.
     if (spellings.length > 1) spellings.sort((a, b) => b.length - a.length);
-    out +=
+    const spellingSource =
       spellings.length === 1
         ? escapeForRegex(spellings[0])
         : `(?:${spellings.map(escapeForRegex).join("|")})`;
+    const boundary = OPEN_HANGUL_CLUSTER_PATTERN.test(cluster)
+      ? `(?!${VOWEL_OR_TRAILING_HANGUL_JAMO_SOURCE})`
+      : CLOSED_HANGUL_CLUSTER_PATTERN.test(cluster)
+        ? `(?!${TRAILING_HANGUL_JAMO_SOURCE})`
+        : "";
+    out += spellingSource + boundary;
   }
   return out;
 }
@@ -1137,7 +1278,12 @@ function escapeForRegex(text: string): string {
  *  while its node holds the newline; the separator is not whitespace, so blocks stay shut. */
 function matchPattern(variants: string[], needle: string): RegExp | null {
   const dotted = variants.some((variant) => variant.includes(COMBINING_DOT));
-  if (variants.length === 1 && !/\s/.test(needle)) return null;
+  if (
+    variants.length === 1 &&
+    !/\s/.test(needle) &&
+    !needsHangulBoundary(needle)
+  )
+    return null;
   try {
     const pattern = new RegExp(canonicalSource(needle, dotted), "g");
     // V8 compiles lazily, so an oversized pattern is accepted here and throws on the first `exec`,

@@ -101,8 +101,8 @@ def _selected(dtype, do_forced_float32, correct_dtype):
         # UNSLOTH_FORCE_FLOAT32: loaded bfloat16 despite the name, so flash stays on.
         (torch.bfloat16, True, None, torch.bfloat16),
         (torch.float32, True, None, torch.bfloat16),
-        # UNSLOTH_FORCE_CUSTOM_DTYPE: csm / falcon_h1 / nemotron_h load float32 and cast
-        # the projections back to correct_dtype, so attention runs in float16.
+        # UNSLOTH_FORCE_CUSTOM_DTYPE: csm / falcon_h1 / nemotron_h load float32 and cast the projections back to
+        # correct_dtype, so attention runs in float16.
         (torch.float32, False, torch.float16, torch.float16),
     ],
 )

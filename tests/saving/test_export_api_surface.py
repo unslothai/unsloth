@@ -86,7 +86,6 @@ def test_all_merged_savers_dispatch_compressed_export():
 
 
 def test_public_export_methods_are_attached():
-    # Collect every `<obj>.<attr> = ...` target name in patch_saving_functions.
     patch_fn = _func(SAVE_TREE, "patch_saving_functions")
     attached = {
         t.attr
@@ -149,11 +148,10 @@ def test_export_subprocesses_are_shell_safe():
 
 
 def test_compressed_export_propagates_variant():
-    # save_pretrained_merged(..., save_method="fp8", variant="foo") must not leave the variant on
-    # the intermediate 16bit merge - the converter subprocess reloads that dir with default weight
-    # filenames, so variant-named shards there would break the reload after the merge. The variant
-    # is popped out of the merge kwargs and forwarded via --variant, which applies it to the final
-    # compressed checkpoint. Guards this subprocess-bridged contract without a GPU.
+    # save_pretrained_merged(..., save_method="fp8", variant="foo") must not leave the variant on the intermediate 16bit
+    # merge - the converter subprocess reloads that dir with default weight filenames, so variant-named shards there
+    # would break the reload after the merge. The variant is popped out of the merge kwargs and forwarded via --variant,
+    # which applies it to the final compressed checkpoint. Guards this subprocess-bridged contract without a GPU.
     helper_src = ast.get_source_segment(
         SAVE_SRC, _func(SAVE_TREE, "_unsloth_save_compressed_tensors")
     )
@@ -171,6 +169,6 @@ def test_compressed_export_propagates_variant():
 
 
 def test_compressed_quantize_runner_parses():
-    # The standalone runner is invoked by path in a subprocess; make sure it stays importable
-    # (valid syntax) so a typo there is caught without launching the subprocess.
+    # The standalone runner is invoked by path in a subprocess; make sure it stays importable (valid syntax) so a typo
+    # there is caught without launching the subprocess.
     ast.parse(QUANT_PY.read_text(encoding = "utf-8"), filename = str(QUANT_PY))

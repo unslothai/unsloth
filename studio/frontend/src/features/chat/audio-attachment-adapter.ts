@@ -24,8 +24,8 @@ function newAttachmentId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-// Audio shares the "Add photos & files" picker. Like VisionImageAdapter,
-// unsupported models are rejected at add() time with a toast.
+// Audio shares the "Add photos & files" picker. Like VisionImageAdapter, unsupported models are
+// rejected at add() time with a toast.
 export class AudioAttachmentAdapter implements AttachmentAdapter {
   // MIME is unreliable for some containers (m4a), so also match by
   // extension. No .webm extension: it would claim video/webm files; real
@@ -48,8 +48,8 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
         ? "The last model failed to load. Check the server logs, then load a model before adding audio files."
         : "Load a model before adding audio files.";
     } else if (!activeModel?.hasAudioInput) {
-      // A connected provider's model has no row in `models`, so without the parse this
-      // named it by its raw `external::…` id (#8405).
+      // A connected provider's model has no row in `models`, so without the parse this named it by its
+      // raw `external::` id (#8405).
       const label =
         activeModel?.name ||
         externalModelLabel(checkpoint) ||

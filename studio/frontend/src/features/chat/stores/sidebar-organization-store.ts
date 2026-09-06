@@ -9,14 +9,14 @@ export type SidebarOrganizeBy = "project" | "list";
 /** How chat rows are ordered inside whichever list they land in. */
 export type SidebarChatSort = "priority" | "updated" | "manual";
 
-// Defined in a leaf module and re-exported here so existing importers are
-// unchanged: this store is in an import cycle, so a binding defined here would
-// be readable too late. See sidebar-organization-keys.ts.
+// Defined in a leaf module and re-exported here so existing importers are unchanged: this
+// store is in an import cycle, so a binding defined here would be readable too late. See
+// sidebar-organization-keys.ts.
 export { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "./sidebar-organization-keys.ts";
 import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "./sidebar-organization-keys.ts";
 
-// Manual order is per list: dragging a chat in one project must not move it in
-// another list showing the same chat. Each list gets its own key.
+// Manual order is per list: dragging a chat in one project must not move it in another list
+// showing the same chat. Each list gets its own key.
 export const RECENTS_ORDER_SCOPE = "recents";
 export const PINNED_ORDER_SCOPE = "pinned";
 // The project folders themselves, which drag regardless of the chat sort.
@@ -29,8 +29,8 @@ export function projectOrderScope(projectId: string): string {
 export interface SidebarOrganizationState {
   organizeBy: SidebarOrganizeBy;
   chatSort: SidebarChatSort;
-  // Pinned sorts on its own. Pin order already is a manual order, so it
-  // defaults to "manual" and stays put while the lists below re-sort.
+  // Pinned sorts on its own. Pin order already is a manual order, so it defaults to "manual" and
+  // stays put while the lists below re-sort.
   pinnedSort: SidebarChatSort;
   /** Scope key -> row ids, in the order the user dragged them into. */
   manualOrder: Record<string, string[]>;
@@ -40,10 +40,8 @@ export interface SidebarOrganizationState {
   setManualOrder: (scope: string, ids: string[]) => void;
 }
 
-/**
- * Moves `draggedId` into `targetId`'s slot, keeping the rest in order. Returns
- * `ids` itself when either row is missing, so a stale drop is a no-op.
- */
+/** Moves `draggedId` into `targetId`'s slot, keeping the rest in order. Returns `ids` itself
+ *  when either row is missing, so a stale drop is a no-op. */
 export function reorderIds(
   ids: string[],
   draggedId: string,
@@ -59,11 +57,8 @@ export function reorderIds(
   return next;
 }
 
-/**
- * Whether a chat belongs in Recents. With the Projects section on, a project
- * chat lives in its folder and listing it twice is noise; with it off there are
- * no folders, so Recents is the only place it can appear.
- */
+/** Whether a chat belongs in Recents. With the Projects section on, a project chat lives in its
+ *  folder and listing it twice is noise; with it off there are no folders. */
 export function showsInRecents(
   projectId: string | null | undefined,
   organizeBy: SidebarOrganizeBy,
@@ -71,11 +66,8 @@ export function showsInRecents(
   return organizeBy === "list" || !projectId;
 }
 
-/**
- * Which edge of the target row the drop indicator belongs on, matching where
- * `reorderIds` actually lands the row: after the target when dragging down,
- * before it when dragging up.
- */
+/** Which edge of the target row the drop indicator belongs on, matching where `reorderIds`
+ *  actually lands the row: after the target when dragging down, before it when dragging up. */
 export function dropEdgeFor(
   ids: string[],
   draggedId: string,
@@ -86,10 +78,8 @@ export function dropEdgeFor(
   return from !== -1 && to !== -1 && from < to ? "bottom" : "top";
 }
 
-/**
- * Moves a row one slot up or down. The menu path to the same reorder that
- * dragging does, for touch and keyboard, which never see a `dragstart`.
- */
+/** Moves a row one slot up or down. The menu path to the same reorder that dragging does, for
+ *  touch and keyboard, which never see a `dragstart`. */
 export function moveIdBy(
   ids: string[],
   id: string,
@@ -105,11 +95,9 @@ export function moveIdBy(
   return next;
 }
 
-/**
- * Applies a saved order to `items`, leaving rows it does not mention in their
- * incoming order and on top. A row the user never dragged is new to the list,
- * so it stays where the list's own rule put it rather than sinking.
- */
+/** Applies a saved order to `items`, leaving rows it does not mention in their incoming order
+ *  and on top. A row the user never dragged is new to the list, so it stays where the list's
+ *  own rule put it rather than sinking. */
 export function applyManualOrder<T>(
   items: T[],
   order: string[] | undefined,

@@ -58,7 +58,6 @@ PROMPTS = [
     "A photograph of an astronaut riding a horse on the surface of the moon, detailed, 8k",
 ]
 
-# Production defaults per family (diffusion_families.default_generation_params).
 _FAMILIES: dict[str, dict[str, Any]] = {
     "qwen-image": {"repo": "Qwen/Qwen-Image", "family": "qwen-image"},
     "flux.1-dev": {"repo": "black-forest-labs/FLUX.1-dev", "family": "flux.1"},
@@ -66,7 +65,6 @@ _FAMILIES: dict[str, dict[str, Any]] = {
     "sdxl": {"repo": "stabilityai/stable-diffusion-xl-base-1.0", "family": "sdxl"},
 }
 
-#                       te        speed       attn       cache
 _CONFIGS: dict[str, dict[str, Any]] = {
     # bit-exact reference: everything off / native / dense
     "reference": dict(te = "none", speed = "off", attn = "native", cache = "off"),
@@ -408,7 +406,6 @@ def main() -> None:
     )
     gen_peak = _peak_gb()
 
-    # Persist / score against the reference.
     lpips_vals: list[float] = []
     if args.config == "reference" and not (args.no_epc or args.unarm_cache):
         np.savez_compressed(ref_npz, *arrs)
