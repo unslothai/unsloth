@@ -58,6 +58,29 @@ type TokenResponse = {
   must_change_password: boolean;
 };
 
+type SetupExchange = { access: string | null; status: number | null };
+
+/** Redeem the one-time setup token for an access token.
+ *
+ * Never throws: a failure just means the page keeps showing the ordinary form
+ * and the operator can reload to be issued a fresh token. The status comes back
+ * with it so a failure can say what actually happened rather than guess.
+ */
+async function exchangeSetupToken(linkToken: string): Promise<SetupExchange> {
+  try {
+    const response = await fetch(apiUrl("/api/auth/link-exchange"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ link_token: linkToken }),
+    });
+    if (!response.ok) return { access: null, status: response.status };
+    const token = (await response.json()) as TokenResponse;
+    return { access: token.access_token ?? null, status: response.status };
+  } catch {
+    return { access: null, status: null };
+  }
+}
+
 async function loginWithPassword(
   username: string,
   password: string,
@@ -94,6 +117,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const username = HIDDEN_LOGIN_USERNAME;
   const [password, setPassword] = useState("");
+  // Access token from redeeming the injected one-time setup token, held in memory
+  // only: it is a first-boot credential, not a session to persist.
+  const [setupSession, setSetupSession] = useState<string | null>(null);
+  const [setupError, setSetupError] = useState<number | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -193,7 +220,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
   // Seed password from bootstrap credentials injected into HTML by web CLI.
   // Only an older backend still sends one; the current one sends a link token,
-  // which the submit handler exchanges instead.
+  // which the setup-session effect below exchanges instead.
   useEffect(() => {
     function loadBootstrap() {
       const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
@@ -202,6 +229,27 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
     }
     loadBootstrap();
+  }, []);
+
+  // Redeem the injected one-time setup token as soon as the setup page loads,
+  // rather than waiting for the operator to submit. The token is short lived and
+  // single use by design, so redeeming it seconds after it was minted is what it
+  // is built for. Doing it at submit time instead put expiry, the shared login
+  // rate limiter and any transient error on the click itself, where the failure
+  // is least recoverable and most confusing.
+  useEffect(() => {
+    const token = window.__UNSLOTH_BOOTSTRAP__?.link_token;
+    if (!token || isLoginMode) return;
+    let cancelled = false;
+    void (async () => {
+      const { access, status } = await exchangeSetupToken(token);
+      if (cancelled) return;
+      if (access) setSetupSession(access);
+      else setSetupError(status);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const blockedByState =
@@ -290,26 +338,28 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       if (isLoginMode) {
         token = await loginWithPassword(username, password);
       } else if (setupToken) {
-        // First-boot setup. Burn the one-time token for a session, then set the
-        // first password through the route that does not ask for the current
-        // one -- the operator never had it. Same two fields on screen as before.
-        const exchange = await fetch(apiUrl("/api/auth/link-exchange"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ link_token: setupToken }),
-        });
-        if (!exchange.ok) {
-          throw new Error(
-            "This setup link has expired or was already used. Reload the page to get a new one.",
-          );
+        // First-boot setup. The token was already exchanged for a session when
+        // the page loaded (see the setup-session effect above), so this only has
+        // to set the first password, through the route that does not ask for the
+        // current one. Same two fields on screen as before.
+        let setupAccess = setupSession;
+        if (!setupAccess) {
+          const retry = await exchangeSetupToken(setupToken);
+          setupAccess = retry.access;
+          if (!setupAccess) {
+            const detail = retry.status ?? setupError;
+            throw new Error(
+              "Could not start setup with the one-time link in this page" +
+                (detail ? ` (${detail})` : "") +
+                ". Reload the page to get a new one.",
+            );
+          }
         }
-        const exchanged = (await exchange.json()) as TokenResponse;
-
         const response = await fetch(apiUrl("/api/auth/link-initial-password"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${exchanged.access_token}`,
+            Authorization: `Bearer ${setupAccess}`,
           },
           body: JSON.stringify({ new_password: newPassword }),
         });
