@@ -414,3 +414,43 @@ def test_the_2_11_row_does_not_flag_an_abi_stable_codec():
         "", {"torch": "2.10.0+cu128", "torchcodec": "0.12.0"}, "nb.ipynb", 0
     )
     assert [f.rule for f in old_torch] == ["R-INST-004"]
+
+
+def test_validator_and_runtime_guard_agree_on_the_whole_matrix(monkeypatch):
+    """The two checkers must not disagree; half a rule is how they drift.
+
+    The ABI rule has two halves -- exempt 0.12+ above the floor, and reject pre-0.12 past
+    it -- and porting only the first left the validator silent on torch 2.12 with
+    torchcodec 0.11, which the runtime guard reports. Comparing them pair by pair is what
+    stops the next half-port.
+    """
+    from scripts import notebook_validator as nv
+
+    fixes = _load_import_fixes_module()
+    pairs = [
+        ("2.13.0", "0.10.0"), ("2.12.0", "0.11.1"), ("2.12.0", "0.12.0"),
+        ("2.11.0", "0.10.0"), ("2.11.0", "0.11.0"), ("2.11.0", "0.15.0"),
+        ("2.10.0", "0.10.0"), ("2.10.0", "0.12.0"), ("2.9.0", "0.8.0"),
+        ("2.4.0", "0.1.0"),
+    ]
+    for torch_v, codec_v in pairs:
+        validator_flags = bool(
+            nv.rule_inst_004_torchcodec_torch(
+                "", {"torch": torch_v, "torchcodec": codec_v}, "nb.ipynb", 0
+            )
+        )
+        guard_flags = _guard_reports(fixes, monkeypatch, torch_v, codec_v)
+        assert validator_flags == guard_flags, (
+            f"torch {torch_v} + torchcodec {codec_v}: "
+            f"validator={'reports' if validator_flags else 'silent'}, "
+            f"guard={'reports' if guard_flags else 'silent'}"
+        )
+
+
+def _guard_reports(fixes, monkeypatch, torch_version: str, codec_version: str) -> bool:
+    """Run the runtime guard against one pair, stubbed the way the cases above stub it."""
+    import importlib.metadata
+
+    _stub_torch(monkeypatch, torch_version)
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: codec_version)
+    return fixes._torchcodec_version_mismatch_hint() is not None
