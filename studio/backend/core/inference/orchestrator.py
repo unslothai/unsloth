@@ -1695,6 +1695,19 @@ class InferenceOrchestrator:
                         f"Download stalled for '{model_name}' even with "
                         f"HF_HUB_DISABLE_XET=1 -- check your network connection"
                     )
+                except RuntimeError:
+                    # cancel_load discards the marker BEFORE killing the worker, so a
+                    # missing marker means this wait died from a Stop-loading, not a
+                    # crash. A real crash keeps the marker and still raises.
+                    if model_name in self.loading_models:
+                        raise
+                    logger.info(
+                        "Load for '%s' was cancelled while waiting for 'loaded'",
+                        model_name,
+                    )
+                    self.active_model_name = None
+                    self.models.clear()
+                    return False
 
                 if resp.get("success"):
                     if model_name not in self.loading_models or (
