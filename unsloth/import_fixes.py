@@ -2484,9 +2484,12 @@ def _torch_index_url_for_remedy(local_tag: str) -> str:
     outright or bypasses the artifact source the install was configured with, and the
     mirror is where the matching build actually is.
     """
-    url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
-    if url:
-        return url.rstrip("/")
+    if os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip():
+        # The variable itself, not its value: an authenticated mirror carries credentials in
+        # its userinfo or a query token, and this string goes into a warning that lands in
+        # terminals and CI logs. The shell expands it, so the command still works verbatim
+        # for the person who configured it, and nothing is written down.
+        return '"$UNSLOTH_TORCH_INDEX_URL"'
     family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if family:
         return f"https://download.pytorch.org/whl/{family.strip('/')}"

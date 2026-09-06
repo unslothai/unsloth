@@ -1309,9 +1309,15 @@ def test_the_runtime_remedy_honours_a_configured_torch_index(monkeypatch):
         fixes._torchcodec_version_mismatch_hint() or ""
     )
 
-    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/pytorch/cu128/")
+    # The variable, not its value: a mirror URL can carry credentials and this string is
+    # warned into terminals and CI logs. The shell expands it, so the command still runs.
+    monkeypatch.setenv(
+        "UNSLOTH_TORCH_INDEX_URL", "https://user:secret@mirror.corp.example/pytorch/cu128/"
+    )
     hint = fixes._torchcodec_version_mismatch_hint()
-    assert "--index-url https://mirror.corp.example/pytorch/cu128 " in hint
+    assert '--index-url "$UNSLOTH_TORCH_INDEX_URL" ' in hint
+    assert "secret" not in hint
+    assert "mirror.corp.example" not in hint
     assert "download.pytorch.org" not in hint
 
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL")
@@ -1348,3 +1354,35 @@ def test_a_mismatched_accelerator_build_is_named_when_the_codec_cannot_load(monk
     codec.__version__ = "0.11.0"
     _stub_torch(monkeypatch, "2.11.0+rocm7.0")
     assert fixes._torchcodec_provenance_hint() is None
+
+
+def test_the_printed_codec_index_is_redacted(monkeypatch):
+    """The install status line goes straight to the terminal and the CI log, not through
+    _redact_install_output, which only covers captured pip output. An authenticated mirror
+    carries its credentials in the userinfo or a query token, so printing the configured
+    index verbatim persists them."""
+    from studio import install_python_stack as ips
+
+    monkeypatch.setenv(
+        "UNSLOTH_TORCH_INDEX_URL", "https://user:secret@mirror.corp.example/pytorch/cu128/"
+    )
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+
+    # The installer still receives the exact URL, credentials and all.
+    resolved = ips._torchcodec_index_url("2.11.0+cu128")
+    assert resolved == "https://user:secret@mirror.corp.example/pytorch/cu128"
+
+    # What gets printed does not.
+    shown = ips._strip_index_url_credentials(resolved)
+    assert shown == "https://mirror.corp.example/pytorch/cu128"
+    assert "secret" not in shown
+
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/simple?token=abc")
+    assert "abc" not in ips._strip_index_url_credentials(
+        ips._torchcodec_index_url("2.11.0+cu128")
+    )
+
+    # The status line itself uses the redacting call, not the raw variable.
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert 'f" from {_strip_index_url_credentials(_codec_index)}"' in source
+    assert 'f" from {_codec_index}"' not in source
