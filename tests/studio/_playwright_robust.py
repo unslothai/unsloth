@@ -397,6 +397,36 @@ PASSWORD_CHANGE_ENDPOINTS = (
 )
 
 
+def prepare_first_boot_form(page: Any, old_password: str | None, *, info: Callable[[str], None] | None = None) -> None:
+    """Get the first-boot change-password form ready to submit, and say what it is.
+
+    What the backend puts in the page decides which fields the form renders. A
+    one-time setup token keeps the Current password input hidden, exactly as the
+    seeded password used to; a page with neither renders it and the operator has
+    to type the seed. A driver should cope with all three rather than encode one,
+    so fill the field when it is actually shown and leave it alone when it is not.
+
+    The reported state is worth having in the log either way: a submit that never
+    fires is otherwise indistinguishable from a submit whose response was missed.
+    """
+    try:
+        injected = page.evaluate(
+            "() => { const b = window.__UNSLOTH_BOOTSTRAP__;"
+            " return b ? Object.keys(b).sort().join(',') : null; }"
+        )
+    except Exception:
+        injected = "<unreadable>"
+    current = page.locator("#current-password")
+    try:
+        shown = current.is_visible(timeout = 5_000)
+    except Exception:
+        shown = False
+    if info is not None:
+        info(f"first-boot form: __UNSLOTH_BOOTSTRAP__ keys={injected!r} current-password visible={shown}")
+    if shown and old_password:
+        current.fill(old_password, timeout = 30_000)
+
+
 def click_and_wait_for_response(
     page: Any,
     *,

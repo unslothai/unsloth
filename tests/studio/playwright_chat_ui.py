@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     PASSWORD_CHANGE_ENDPOINTS,
+    prepare_first_boot_form,
     click_and_wait_for_response,
     evaluate_fetch,
     install_view_transition_killer,
@@ -777,6 +778,7 @@ with sync_playwright() as p:
             pw_field.wait_for(state = "visible", timeout = 60_000)
             # Do NOT shoot() between wait_for and fill -- the screenshot's font-load wait can let a background poll
             # detach the form.
+            prepare_first_boot_form(page, OLD, info = lambda m: print(f"[ui]   {m}", flush = True))
             pw_field.fill(NEW, timeout = 60_000)
             page.fill("#confirm-password", NEW, timeout = 60_000)
             shoot("01-change-password-filled")
