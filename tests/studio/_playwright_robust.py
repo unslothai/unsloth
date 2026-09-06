@@ -432,6 +432,17 @@ def prepare_first_boot_form(
         )
     if shown and old_password:
         current.fill(old_password, timeout = 30_000)
+    if info is not None:
+        # The setup handshake is its own request, so a failure there is invisible
+        # to a caller waiting on the password endpoint: the click produces no
+        # matching response and looks like a dead button. Report its status.
+        def _on_response(response: Any) -> None:
+            if "/api/auth/link-exchange" in response.url:
+                info(f"link-exchange -> {response.status}")
+        try:
+            page.on("response", _on_response)
+        except Exception:
+            pass
 
 
 def click_and_wait_for_response(
