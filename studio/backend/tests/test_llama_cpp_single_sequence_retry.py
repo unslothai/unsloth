@@ -121,3 +121,16 @@ def test_a_clean_environment_reports_nothing_dropped():
 
     assert LlamaCppBackend._drop_env_single_sequence(env) is False
     assert env == {"PATH": "/usr/bin"}
+
+
+def test_the_retry_commits_the_one_slot_geometry_it_launched():
+    # The launch commits n_parallel and kv_cache_unified after the ladder, so the
+    # retry has to overwrite the locals it reverses, or Studio would advertise and
+    # admit the multi-slot geometry that llama-server just refused.
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    start = src.index('label = "-single-seq"')
+    block = src[src.rindex("cmd = _kvu_cmd", 0, start):start]
+    assert "n_parallel = 1" in block
+    assert "kv_cache_unified = False" in block

@@ -24355,6 +24355,13 @@ class LlamaCppBackend:
                                 "LLAMA_ARG_N_PARALLEL for the single-sequence retry."
                             )
                         cmd = _kvu_cmd
+                        # The geometry that launches is what gets committed below
+                        # (_commit_effective_parallel_slots, _kv_cache_unified), and
+                        # the admission controller and the slot save read it from
+                        # there. Left at the rejected values, Studio would admit
+                        # several requests at once against a server with one slot.
+                        n_parallel = 1
+                        kv_cache_unified = False
                         healthy = _spawn_and_wait(_kvu_cmd, label = "-single-seq")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU
