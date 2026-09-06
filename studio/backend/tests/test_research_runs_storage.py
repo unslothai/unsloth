@@ -15,7 +15,7 @@ from storage import studio_db
 @pytest.fixture
 def research_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "thread-1",
@@ -495,7 +495,7 @@ def test_schema_and_state_transitions(research_home):
 
 def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "shared-thread",
@@ -540,7 +540,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     finally:
         conn.close()
 
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         primary_key = [
@@ -565,7 +565,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
 
 def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "shared-thread",
@@ -607,14 +607,14 @@ def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monke
         return real_connect(path, *args, **kwargs)
 
     monkeypatch.setattr(studio_db.sqlite3, "connect", _failing_connect)
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     with pytest.raises(RuntimeError, match = "simulated crash"):
         studio_db.get_connection()
 
     # Recover: the interrupted migration left nothing half-applied, so a clean boot
     # completes the migration and preserves the original claim exactly once.
     monkeypatch.setattr(studio_db.sqlite3, "connect", real_connect)
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         primary_key = [

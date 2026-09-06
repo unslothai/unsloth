@@ -12,6 +12,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Literal
 
+from utils.account_context import current_account_id
+
 from huggingface_hub import HfApi
 from huggingface_hub.utils import build_hf_headers, get_session
 
@@ -34,9 +36,9 @@ _MAX_CACHE_ENTRIES = 4096
 _INFLIGHT_WAIT_SECONDS = 30.0
 _REMOTE_TIMEOUT_SECONDS = 10.0
 
-_attempts: dict[str, deque[float]] = {}
-_cache: dict[str, tuple[float, TokenValidationResult]] = {}
-_inflight: dict[str, threading.Event] = {}
+_attempts: dict[tuple[str, str], deque[float]] = {}
+_cache: dict[tuple[str, str], tuple[float, TokenValidationResult]] = {}
+_inflight: dict[tuple[str, str], threading.Event] = {}
 _lock = threading.Lock()
 
 
@@ -60,7 +62,7 @@ def _prune_locked(now: float) -> None:
             del _cache[key]
 
 
-def _cached_locked(fingerprint: str, now: float) -> TokenValidationResult | None:
+def _cached_locked(fingerprint: tuple[str, str], now: float) -> TokenValidationResult | None:
     cached = _cache.get(fingerprint)
     if cached is None:
         return None
@@ -75,7 +77,7 @@ def _retry_after(bucket: deque[float], now: float) -> int:
     return max(1, int(_WINDOW_SECONDS - (now - bucket[0])) + 1)
 
 
-def _reserve_attempt_locked(rate_key: str, now: float) -> TokenValidationResult | None:
+def _reserve_attempt_locked(rate_key: tuple[str, str], now: float) -> TokenValidationResult | None:
     bucket = _attempts.get(rate_key)
     if bucket is None:
         if len(_attempts) >= _MAX_BUCKETS:
@@ -146,7 +148,7 @@ def _check_remote(token: str) -> TokenValidationResult:
 
 
 def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
-    """Validate ``token`` without retaining it, sharing results across callers.
+    """Validate ``token`` without retaining it, sharing results within the acting account.
 
     Cached checks do not consume the caller's three-per-hour network budget. A
     single-flight event also prevents simultaneously mounted UI surfaces from
@@ -155,7 +157,9 @@ def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
     normalized = token.strip()
     if not normalized:
         return TokenValidationResult(status = "invalid")
-    token_fingerprint = _fingerprint(normalized)
+    account_id = current_account_id()
+    token_fingerprint = (account_id, _fingerprint(normalized))
+    account_rate_key = (account_id, rate_key)
     owner_event: threading.Event | None = None
 
     try:
@@ -167,7 +171,7 @@ def validate_hf_token(token: str, *, rate_key: str) -> TokenValidationResult:
                     return cached
                 waiting = _inflight.get(token_fingerprint)
                 if waiting is None:
-                    limited = _reserve_attempt_locked(rate_key, now)
+                    limited = _reserve_attempt_locked(account_rate_key, now)
                     if limited is not None:
                         return limited
                     owner_event = threading.Event()

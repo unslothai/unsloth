@@ -11,9 +11,11 @@ import secrets
 import sqlite3
 import threading
 import time
+from pathlib import Path
 from typing import Any, Iterable, Union
 
 from storage.studio_db import get_connection
+from utils.paths import studio_db_path
 
 ACTIVE_STATUSES = frozenset({"queued", "running", "cancelling"})
 TERMINAL_STATUSES = frozenset({"cancelled", "completed", "failed"})
@@ -23,8 +25,8 @@ _RUN_TOMBSTONE_PREFIX = "chat-generation-run-tombstone:"
 ChatGenerationEventInput = Union[tuple[str, dict[str, Any]], tuple[str, dict[str, Any], int]]
 
 # Progress lease columns live here rather than in _ensure_schema so the base table stays owned by
-# studio_db; named _schema_ready to match the flag the test harness resets.
-_schema_ready = False
+# studio_db; readiness is tracked independently for each database.
+_schema_ready: set[Path] = set()
 _schema_lock = threading.Lock()
 
 
@@ -36,15 +38,22 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def reset_schema_state_for_tests() -> None:
+    """Forget initialized database paths between tests."""
+    with _schema_lock:
+        _schema_ready.clear()
+
+
 def _connect() -> sqlite3.Connection:
     """get_connection plus the one-off progress-lease migration for this database."""
-    global _schema_ready
     conn = get_connection()
-    if _schema_ready:
+    db_path = studio_db_path()
+    if db_path in _schema_ready:
         return conn
     try:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 columns = {
                     row[1]
                     for row in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()
@@ -62,7 +71,7 @@ def _connect() -> sqlite3.Connection:
                         if "duplicate column" not in str(exc).lower():
                             raise
                 conn.commit()
-                _schema_ready = True
+                _schema_ready.add(schema_path)
     except sqlite3.OperationalError:
         # A writer holds the database, and the columns are additive, so let this call through and migrate
         # later rather than turning contention into a failed history read.

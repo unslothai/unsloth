@@ -897,7 +897,7 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(search_images, "_registry", {})
     monkeypatch.setattr(search_images, "_cleared_unservable", set())
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
@@ -978,7 +978,7 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     reaped: list[str] = []
     monkeypatch.setattr(search_images, "clear_cache", lambda only_ids = None: reaped.append("reaped"))
@@ -1034,7 +1034,7 @@ def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     reaps: list[str] = []
     reap_lock = threading.Lock()
@@ -1127,7 +1127,7 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(search_images, "_registry", {})
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
@@ -1219,7 +1219,7 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(search_images, "_registry", {})
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)
@@ -1297,7 +1297,7 @@ def test_a_plain_replay_with_nothing_outstanding_still_reaps_nothing(monkeypatch
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(search_images, "_registry", {})
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path / "thumbs")
     (tmp_path / "thumbs").mkdir(parents = True, exist_ok = True)

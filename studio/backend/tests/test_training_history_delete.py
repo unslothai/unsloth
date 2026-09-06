@@ -640,7 +640,7 @@ def test_list_other_run_output_dirs_ignores_unstamped_running_rows(monkeypatch, 
     from storage import studio_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     shared = "/tmp/outputs/shared-run"
     studio_db.create_run(
