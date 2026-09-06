@@ -41,6 +41,7 @@ activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
 activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
 replace_with_busy_retry = INSTALL_LLAMA_PREBUILT.replace_with_busy_retry
+blocked_replace_hint = INSTALL_LLAMA_PREBUILT.blocked_replace_hint
 remove_tree_logged = INSTALL_LLAMA_PREBUILT.remove_tree_logged
 prune_stale_install_side_paths = INSTALL_LLAMA_PREBUILT.prune_stale_install_side_paths
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
@@ -1047,6 +1048,74 @@ def test_replace_with_busy_retry_waits_out_a_transient_windows_lock(
 
     assert attempts["count"] == 3
     assert (destination / "payload.txt").read_text() == "payload\n"
+
+
+def test_blocked_replace_hint_only_blames_a_scanner_for_a_sharing_violation(tmp_path: Path):
+    """5 and 145 are not sharing violations and must not be reported as one.
+
+    A reporter chased a scanner that did not exist while the real cause was ACLs
+    on the install tree that denied icacls and Get-Acl themselves.
+    """
+    target = tmp_path / "llama.cpp"
+
+    sharing_violation = blocked_replace_hint(32, target)
+    assert "scanner" in sharing_violation
+    assert "takeown" not in sharing_violation
+
+    denied = blocked_replace_hint(5, target)
+    assert "scanner" not in denied
+    assert "access is denied" in denied
+    assert f'takeown /F "{target}" /R /D Y' in denied
+    assert f'icacls "{target}" /reset /T' in denied
+    # Each repair command sits on its own line so it can be pasted as-is,
+    # matching the PowerShell access-denied flow's convention.
+    command_lines = [line.strip() for line in denied.splitlines()]
+    assert f'takeown /F "{target}" /R /D Y' in command_lines
+    assert f'icacls "{target}" /reset /T' in command_lines
+
+    not_empty = blocked_replace_hint(145, target)
+    assert "scanner" not in not_empty
+    assert "not empty" in not_empty
+
+
+def test_replace_with_busy_retry_reports_denied_access_as_permissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The retry line itself has to carry the ACL hint, not just the helper."""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "payload.txt").write_text("payload\n")
+    destination = tmp_path / "dst"
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+    attempts = {"count": 0}
+
+    def access_denied(src, dst):
+        attempts["count"] += 1
+        if attempts["count"] < 2:
+            exc = OSError(errno.EACCES, "Access is denied")
+            exc.winerror = 5
+            raise exc
+        return original_replace(src, dst)
+
+    logged: list[str] = []
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", access_denied)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
+
+    replace_with_busy_retry(source, destination)
+
+    assert (destination / "payload.txt").read_text() == "payload\n"
+    retry_lines = [line for line in logged if "blocked (5)" in line]
+    assert retry_lines, logged
+    assert "takeown" in retry_lines[0]
+    assert "scanner" not in retry_lines[0]
+    # The ACL hint names the tree being renamed (src). The aside-move's dst is
+    # a freshly generated path that does not exist yet, so repairing it could
+    # never unblock the rename.
+    assert f'"{source}"' in retry_lines[0]
+    assert f'"{destination}"' not in retry_lines[0]
 
 
 def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
