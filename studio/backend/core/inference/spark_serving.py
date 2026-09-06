@@ -220,6 +220,7 @@ _GROUPS_REFUSAL_TEXT = "is not supported together with"
 _PROBE_MODEL_NAME = "unsloth-spark-pipeline-groups-probe.gguf"
 RELAUNCH_BACKOFF_S = (5.0, 15.0, 45.0)  # bounded: three attempts, then the peer stays down
 PEER_START_TIMEOUT_S = 20.0  # for the rpc-server port to accept; the model load is separate
+PEER_REUSE_TIMEOUT_S = 3.0  # a running peer has to answer this fast to be reused
 SUPERVISOR_INTERVAL_S = 1.0
 _LOG_TAIL = 60
 _GIB = 2**30
@@ -1222,7 +1223,92 @@ def extra_args_refuse_pipeline_groups(extra_args: Optional[List[str]] = None) ->
     return None
 
 
-def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> Dict[str, Any]:
+def _from_hub_repo(model_file: Optional[str]) -> bool:
+    """Whether this file came out of a hub cache snapshot, where the load can still fetch a
+    companion the directory does not have yet."""
+    parts = Path(str(model_file or "")).parts
+    return "snapshots" in parts and any(part.startswith("models--") for part in parts)
+
+
+def projector_blocks_pipeline_groups(
+    model_file: Optional[str], *, disable_vision: bool = False
+) -> Optional[str]:
+    """Why this load cannot have pipeline groups because of a multimodal projector, or None.
+
+    ``--mmproj`` is emitted by ``LlamaCppBackend`` from the model's own repo, AFTER
+    ``before_load`` has run, and the backend DOWNLOADS the projector as part of the load when
+    the repo has one and the cache does not (measured: Qwen3.6-35B-A3B-GGUF had no
+    ``mmproj-F16.gguf`` on disk before the load and llama-server was launched with one). The
+    server refuses ``--pipeline-groups N > 1`` together with a projector, and it refuses it
+    inside load_model, so the whole load fails rather than losing a flag. A directory scan
+    before the load therefore cannot clear a repo: only the load's own Vision switch can.
+
+    So the rule is the safe one. With ``disable_vision`` the backend launches with
+    ``--no-mmproj-auto`` and no projector, and the groups may be asked for -- unless the
+    projector that is already on disk is audio-only, which the switch does not drop (the same
+    rule as ``_load_keeps_a_projector`` on the route). Without it, the groups are dropped,
+    naming the projector when one is already there.
+
+    Measured on the pair: Unsloth's Qwen3.8-27B-GGUF and Qwen3.6-35B-A3B-GGUF both ship one,
+    so before this check the DEFAULT 27B split failed with
+    "--pipeline-groups > 1 is not supported together with multimodal (--mmproj)" after four
+    launch attempts, and the 35B failed the same way with NOTHING on disk beforehand.
+
+    A model resolved out of a hub repo is therefore blocked whether or not the projector is
+    cached yet; a plain local GGUF with no projector beside it is not, because nothing will
+    fetch one for it. Losing the groups costs 1.17x at 32 rows; losing the load costs
+    everything. Follow-up: the route resolves ``is_vision`` and the projector path a step
+    later, and could hand that verdict to ``before_load`` the way it already hands over the
+    inherited extras, which would let a text-only repo keep its groups with vision on."""
+    on_disk = None
+    if model_file:
+        try:
+            # NOT realpath: an HF cache snapshot is a directory of symlinks into blobs/,
+            # where the neighbours are content hashes and nothing ends in .gguf.
+            directory = osp.dirname(osp.abspath(str(model_file)))
+            found = sorted(
+                path
+                for path in glob.glob(osp.join(directory, "*.gguf"))
+                if "mmproj" in osp.basename(path).lower()
+                and not osp.basename(path).startswith("._")
+            )
+        except OSError:
+            found = []
+        if found:
+            on_disk = next((f for f in found if f.lower().endswith("-f16.gguf")), found[0])
+    if not disable_vision:
+        if on_disk:
+            return (
+                f"Studio opens this model's multimodal projector ({osp.basename(on_disk)}); "
+                f"load with vision off to get {PIPELINE_GROUPS_FLAG}"
+            )
+        if _from_hub_repo(model_file):
+            return (
+                "Studio fetches this repo's multimodal projector during the load when it has "
+                f"one, so it cannot be ruled out beforehand; load with vision off to get "
+                f"{PIPELINE_GROUPS_FLAG}"
+            )
+        return None
+    if not on_disk:
+        return None
+    try:
+        from utils.models.gguf_metadata import mmproj_accepts_image  # type: ignore
+        if mmproj_accepts_image(on_disk):
+            return None  # the Vision switch really does suppress this one
+    except Exception as exc:
+        logger.info("spark serving: could not read the projector %s: %s", on_disk, exc)
+    return (
+        f"the projector {osp.basename(on_disk)} is not an image projector, so the load's "
+        f"vision switch does not drop it"
+    )
+
+
+def pipeline_groups_plan(
+    slots: int,
+    extra_args: Optional[List[str]] = None,
+    *,
+    projector: Optional[str] = None,
+) -> Dict[str, Any]:
     """How many pipeline groups a layer-split llama-server should run, and with how
     many slots. Only ever consulted for a layer split.
 
@@ -1264,6 +1350,9 @@ def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> 
             if raw
             else f"{PIPELINE_GROUPS_FLAG} not added"
         )
+        return out
+    if projector:
+        out["reason"] = f"{PIPELINE_GROUPS_FLAG} not added: {projector}"
         return out
     refused = extra_args_refuse_pipeline_groups(extra_args)
     if refused:
@@ -1654,7 +1743,13 @@ class SparkServing:
         # The --help probe forks the bundle's llama-server (once per build; cached), so
         # it runs off the loop like every other blocking step here.
         groups = await asyncio.to_thread(
-            pipeline_groups_plan, slots, list(getattr(request, "llama_extra_args", None) or [])
+            pipeline_groups_plan,
+            slots,
+            list(getattr(request, "llama_extra_args", None) or []),
+            projector = projector_blocks_pipeline_groups(
+                local_file,
+                disable_vision = bool(getattr(request, "disable_vision", False)),
+            ),
         )
         if mtp is not None:
             reconcile_split_speculation(
@@ -1706,13 +1801,26 @@ class SparkServing:
             return request
 
         running = self.peer_process
-        if (
+        reusable = (
             self.topology == "layer_split"
             and running is not None
             and running.name == "ggml-rpc-server"
             and running.peer == peer
             and running.alive
-        ):
+        )
+        if reusable and not await wait_for_port(peer, port, PEER_REUSE_TIMEOUT_S):
+            # ``alive`` is the ssh session, not the server behind it: the session can
+            # outlive the process it carries. Reusing a peer that no longer answers made
+            # the reload of a split fail with "Failed to connect to <peer>:<port>" and
+            # then "invalid device: RPC0" (measured on the pair: every reload after a
+            # successful split), so the port is asked before the launch is told to use it.
+            logger.warning(
+                "spark serving: the peer rpc-server on %s:%s stopped answering; restarting it",
+                peer,
+                port,
+            )
+            reusable = False
+        if reusable:
             # The rpc-server is model-agnostic: the one already serving this node's
             # llama-server can serve the next load too, and a no-op reload keeps it.
             self.plan = plan

@@ -467,6 +467,7 @@ class _FakeRequest:
         # The real LoadRequest field the split's slot count travels in; a pass-through
         # -np / --parallel is refused by llama_server_args, so this is the only route.
         self.n_parallel = kw.get("n_parallel")
+        self.disable_vision = bool(kw.get("disable_vision", False))
 
     def model_copy(self, update):
         clone = _FakeRequest(
@@ -478,6 +479,7 @@ class _FakeRequest:
             speculative_type = self.speculative_type,
             spec_draft_n_max = self.spec_draft_n_max,
             n_parallel = self.n_parallel,
+            disable_vision = self.disable_vision,
         )
         for k, v in update.items():
             setattr(clone, k, v)
@@ -1696,3 +1698,93 @@ def test_the_drafter_probe_is_a_load_not_a_help(cluster, tmp_path):
         hidden_flags = ("--pipeline-groups",),
     )
     assert ss.llama_server_accepts_groups_with_drafter(2, str(no_spec)) is False
+
+
+def test_studios_own_projector_costs_the_groups_not_the_load(cluster, monkeypatch, tmp_path):
+    """Regression, found on the live product path: Unsloth's Qwen3.8-27B-GGUF ships an mmproj
+    beside the weights, the backend adds ``--mmproj`` for it AFTER before_load, and the server
+    refuses ``--pipeline-groups > 1`` together with a projector INSIDE load_model, so the
+    default 27B split died with
+
+      --pipeline-groups > 1 is not supported together with multimodal (--mmproj)
+
+    after four launch attempts. Qwen3.6-35B-A3B-GGUF failed the same way with NO projector on
+    disk: the backend downloaded one during the load. So a directory scan cannot clear a repo;
+    only the load's own Vision switch can, and the groups now wait for it."""
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    # The HF cache layout: a snapshot directory of symlinks into blobs/, so a projector is a
+    # NEIGHBOUR of the link, never of the blob the link resolves to.
+    repo = tmp_path / "hub" / "models--unsloth--Qwen3.8-27B-GGUF"
+    blobs = repo / "blobs"
+    blobs.mkdir(parents = True)
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    real = write_gguf(blobs / "0123456789", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    model = snapshot / "Qwen3.8-27B-UD-Q4_K_XL.gguf"
+    model.symlink_to(real)
+    # Nothing on disk yet, and the repo may still ship one: the groups wait for the switch.
+    why = ss.projector_blocks_pipeline_groups(str(model))
+    assert why and "vision off" in why and "fetches this repo" in why
+    assert ss.pipeline_groups_plan(32, projector = why)["pipeline_groups"] == 0
+    # Vision off: llama-server is launched with --no-mmproj-auto, so the groups may come.
+    assert ss.projector_blocks_pipeline_groups(str(model), disable_vision = True) is None
+    # A plain local GGUF outside a hub cache has nothing to fetch: it keeps its groups.
+    loose = tmp_path / "loose.gguf"
+    loose.write_bytes(b"x")
+    assert ss.projector_blocks_pipeline_groups(str(loose)) is None
+    # Once the projector IS on disk, it is named.
+    (snapshot / "mmproj-F16.gguf").write_bytes(b"x")
+    assert "mmproj-F16.gguf" in ss.projector_blocks_pipeline_groups(str(model))
+
+    _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    out = run(ss.before_load(_FakeRequest(str(model)), 32))
+    status = ss.status()
+    assert "--pipeline-groups" not in out.llama_extra_args
+    assert status["pipeline_groups"] == 0 and status["mtp"] == "enabled"
+    assert status["split_config"] == ss.SPLIT_CONFIG_SPEC
+    assert "vision off" in status["split_config_reason"]
+    run(ss.shutdown())
+    # The same repo with vision off and nothing on disk gets both.
+    (snapshot / "mmproj-F16.gguf").unlink()
+    out = run(ss.before_load(_FakeRequest(str(model), disable_vision = True), 32))
+    status = ss.status()
+    assert out.llama_extra_args[-2:] == ["--pipeline-groups", "2"]
+    assert status["split_config"] == ss.SPLIT_CONFIG_BOTH and status["pipeline_groups"] == 2
+    run(ss.shutdown())
+
+
+def test_a_peer_that_stopped_answering_is_restarted_not_reused(cluster, monkeypatch, tmp_path):
+    """Regression, found on the live product path: reloading a model on a layer split failed
+    with "Failed to connect to <peer>:50052" and then "invalid device: RPC0", because the
+    running peer process was reused on the strength of its ssh session alone. The session can
+    outlive the server it carries, so the port is asked first and a peer that does not answer
+    is replaced."""
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert len(started) == 1 and ss.status()["topology"] == "layer_split"
+    first = ss.state().peer_process
+    # A second load with the peer still answering keeps it.
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert len(started) == 1 and ss.state().peer_process is first
+    # A second load with the port dead starts a new one instead of launching against nothing.
+    monkeypatch.setattr(ss, "wait_for_port", _port_answers(False, then = True))
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert len(started) == 2, "the dead peer was reused instead of restarted"
+    assert ss.status()["topology"] == "layer_split"
+    run(ss.shutdown())
+
+
+def _port_answers(first: bool, *, then: bool):
+    """A ``wait_for_port`` that answers ``first`` once and ``then`` after."""
+    state = {"n": 0}
+
+    async def _answer(host, port, timeout):
+        state["n"] += 1
+        return first if state["n"] == 1 else then
+
+    return _answer
