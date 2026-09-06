@@ -48,7 +48,20 @@ export interface LlamaUpdateStatus {
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
   update_size_bytes: number | null;
+  // The install recorded an AUTOMATIC backend choice and detection now resolves
+  // elsewhere, so Update would move it. Independent of update_available: the release
+  // can be current while the backend has drifted, which is the only case the server
+  // reports this in.
+  backend_migration_available: boolean;
+  from_backend: string | null;
+  to_backend: string | null;
   job: LlamaUpdateJob;
+}
+
+/** Whether the banner has anything to offer: a newer release, or a backend the
+ *  install's own recorded "auto" would resolve to today. */
+export function llamaUpdateOffered(status: LlamaUpdateStatus): boolean {
+  return status.update_available || status.backend_migration_available;
 }
 
 function parseJob(value: unknown): LlamaUpdateJob {
@@ -105,6 +118,11 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       typeof details.update_size_bytes === "number"
         ? details.update_size_bytes
         : null,
+    // Always read from the top level: a backend belongs to the llama.cpp install
+    // whatever component the version fields are describing.
+    backend_migration_available: s.backend_migration_available === true,
+    from_backend: typeof s.from_backend === "string" ? s.from_backend : null,
+    to_backend: typeof s.to_backend === "string" ? s.to_backend : null,
     job: parseJob(s.job),
   };
 }
@@ -233,7 +251,7 @@ export function useLlamaUpdateCheck({
         const s = await fetchStatus();
         if (!s) return;
         setStatus(s);
-        const presentation = llamaUpdatePresentation(s.update_available, s.job);
+        const presentation = llamaUpdatePresentation(llamaUpdateOffered(s), s.job);
         setApplying(presentation.applying);
         setVisible(presentation.visible);
         if (presentation.running) return;
@@ -269,7 +287,7 @@ export function useLlamaUpdateCheck({
       if (!next) return;
       setStatus(next);
       const presentation = llamaUpdatePresentation(
-        next.update_available,
+        llamaUpdateOffered(next),
         next.job,
       );
       setApplying(presentation.applying);

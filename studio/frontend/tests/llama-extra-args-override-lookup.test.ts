@@ -19,8 +19,12 @@ import { registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
 
-const { fromApiOverride, resolveStoredExtraArgs, resolveStoredOverride } =
-  await import("../src/features/model-picker/api/model-overrides.ts");
+const {
+  fromApiOverride,
+  resolveStoredExtraArgs,
+  resolveStoredOverride,
+  toApiOverride,
+} = await import("../src/features/model-picker/api/model-overrides.ts");
 
 const ARGS = ["--numa", "distribute"];
 
@@ -261,6 +265,37 @@ test("a server physical GPU pin replaces a local Vulkan pin", () => {
   const config = fromApiOverride({ gpu_ids: [0] }, local);
   assert.deepEqual(config.selectedGpuIds, [0]);
   assert.equal(config.selectedGpuIndexKind, "physical");
+});
+
+test("a server row states which index space its pin is in", () => {
+  // The row carries the namespace now, so a Vulkan ordinal saved on one host is read
+  // back as one rather than being relabelled a physical device id.
+  const vulkan = fromApiOverride({ gpu_ids: [1], gpu_index_kind: "vulkan" });
+  assert.deepEqual(vulkan.selectedGpuIds, [1]);
+  assert.equal(vulkan.selectedGpuIndexKind, "vulkan");
+  // Absent is the legacy meaning and must stay physical, or every row written before
+  // the field would come back unusable.
+  const legacy = fromApiOverride({ gpu_ids: [1] });
+  assert.equal(legacy.selectedGpuIndexKind, "physical");
+});
+
+test("a pin travels to the server with its index space", () => {
+  const physical = toApiOverride({
+    ...fromApiOverride({}),
+    selectedGpuIds: [1],
+    selectedGpuIndexKind: "physical",
+  });
+  // Byte-identical to what a physical pin sent before the field existed.
+  assert.deepEqual(physical.gpu_ids, [1]);
+  assert.equal("gpu_index_kind" in physical, false);
+
+  const vulkan = toApiOverride({
+    ...fromApiOverride({}),
+    selectedGpuIds: [1],
+    selectedGpuIndexKind: "vulkan",
+  });
+  assert.deepEqual(vulkan.gpu_ids, [1]);
+  assert.equal(vulkan.gpu_index_kind, "vulkan");
 });
 
 test("a row that carries less than the local config does not erase the rest", () => {

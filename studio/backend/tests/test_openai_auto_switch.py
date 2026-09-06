@@ -6222,6 +6222,33 @@ def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
     assert entry == {"max_seq_length": 8192, "speculative_type": "mtp", "gpu_ids": [1, 0, 2]}
 
 
+def test_gpu_index_kind_is_stored_only_when_it_is_not_the_legacy_default():
+    # Absent means physical, so writing it back would churn every existing row for no
+    # information. Only a Vulkan pin needs a marker.
+    physical = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "physical"})
+    assert physical == {"gpu_ids": [0]}
+    assert settings.normalize_model_override({"gpu_ids": [0]}) == {"gpu_ids": [0]}
+    vulkan = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "vulkan"})
+    assert vulkan == {"gpu_ids": [0], "gpu_index_kind": "vulkan"}
+    # A kind with no ids is nothing to qualify.
+    assert settings.normalize_model_override({"gpu_index_kind": "vulkan"}) == {}
+
+
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        ({}, "physical"),
+        ({"gpu_ids": [0]}, "physical"),
+        ({"gpu_ids": [0], "gpu_index_kind": "vulkan"}, "vulkan"),
+        # A row this build cannot read is not evidence of a Vulkan pin.
+        ({"gpu_ids": [0], "gpu_index_kind": "metal"}, "physical"),
+        ({"gpu_ids": [0], "gpu_index_kind": None}, "physical"),
+    ],
+)
+def test_stored_gpu_index_kind_reads_absent_as_physical(override, expected):
+    assert settings.stored_gpu_index_kind(override) == expected
+
+
 def test_normalize_model_override_rejects_oversized_chat_template():
     small = settings.normalize_model_override({"chat_template_override": "{{ bos }}"})
     assert small["chat_template_override"] == "{{ bos }}"
@@ -6799,7 +6826,7 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
         lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
     )
 
-    async def _unusable(ids):
+    async def _unusable(ids, index_kind = "physical"):
         return False
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _unusable)
@@ -6823,7 +6850,7 @@ def test_usable_gpu_ids_are_kept(monkeypatch):
     )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -6854,9 +6881,9 @@ def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
     )
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7])) is False
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1])) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "vulkan")) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7], "vulkan")) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1], "vulkan")) is False
 
 
 def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
@@ -6865,7 +6892,41 @@ def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
 
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: None))
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "vulkan")) is True
+
+
+def test_a_pin_written_in_the_other_index_space_is_unusable(monkeypatch):
+    # The failure the availability checks cannot see: ordinal 0 exists on a Vulkan build and
+    # physical device 0 exists on a ROCm one, so a pin carried across a backend change passes
+    # every presence test while addressing a different card.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
+    )
+    for installed_is_vulkan, stored_kind in (
+        (True, "physical"),
+        (False, "vulkan"),
+    ):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: installed_is_vulkan)
+        )
+        assert (
+            asyncio.run(inference_route._override_gpu_ids_still_resolve([0], stored_kind))
+            is False
+        ), (installed_is_vulkan, stored_kind)
+
+
+def test_a_rocm_pin_survives_while_the_backend_is_still_rocm(monkeypatch):
+    # Negative control for the test above: the mismatch check must not reject a pin that
+    # never moved, or the flip would drop every stored pin on every host.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "physical")) is True
 
 
 def test_default_save_preserves_flags_instead_of_removing(override_store):
@@ -7074,7 +7135,7 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
         settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
     )
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -7113,7 +7174,7 @@ def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
     )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0]})
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)

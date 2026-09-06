@@ -42,7 +42,7 @@ try:
 except ImportError:
     FileLock = None
     FileLockTimeout = None
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Callable, Iterable, Iterator, Union
 
 # Shared component-agnostic machinery lives in prebuilt_core (same directory);
@@ -105,6 +105,21 @@ WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
 )
 # Family labels forwarded by update markers / --rocm-gfx (gfx110X.zip assets).
 WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
+
+# Integrated RDNA3.5 (Strix Point / Strix Halo). HIP builds these, so they sit ABOVE the
+# floor above and would keep ROCm; they are here because Vulkan is measurably the better
+# backend on them, not because HIP is missing. On gfx1151 Vulkan leads ROCm on both axes
+# (prefill +22.9%, decode +8.3%, each gap wider than the within-arm spread), and every ROCm
+# defect reported against these parts is a managed-memory fault -- up to a hard k_set_rows
+# HSA fault on Linux -- that Vulkan cannot reach, because it never reads
+# GGML_CUDA_ENABLE_UNIFIED_MEMORY.
+#
+# Deliberately only the integrated parts. Discrete RDNA2/3/4 trades prefill for decode in
+# public numbers and we have measured none of it. CDNA (gfx908/gfx90a) is the reason this
+# is an allowlist rather than "all AMD": ROCm ships no Vulkan ICD, so a headless MI100 box
+# routed here would enumerate zero Vulkan devices and fall to CPU -- a dead backend, not a
+# slower one. Widen only on a measurement.
+VULKAN_PREFERRED_GFX_TARGETS = frozenset({"gfx1150", "gfx1151"})
 
 # APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
 # install_python_stack.py / setup.ps1 (TestShadowingIntegratedGfxParity keeps them in step);
@@ -7664,6 +7679,110 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     return not any(_gfx_is_windows_hip_supported(target, published_repo) for target in targets)
 
 
+_VULKAN_ICD_REGISTRY_KEYS = (
+    r"SOFTWARE\Khronos\Vulkan\Drivers",
+    r"SOFTWARE\WOW6432Node\Khronos\Vulkan\Drivers",
+)
+# Manifest FILE NAMES the AMD drivers register: mesa RADV (radeon_icd.x86_64.json),
+# AMDVLK (amd_icd64.json, amd_pro_icd64.json) and the Windows proprietary ICD
+# (amdvlk64.json). Matched against the basename, never the whole path: a bare "amd"
+# anywhere in a directory name would otherwise answer for the driver.
+_AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro")
+# The loader's own search order, most specific first.
+_VULKAN_ICD_SEARCH_DIRS = (
+    Path.home() / ".local/share/vulkan/icd.d",
+    Path("/etc/vulkan/icd.d"),
+    Path("/usr/local/share/vulkan/icd.d"),
+    Path("/usr/share/vulkan/icd.d"),
+)
+
+
+def _amd_vulkan_icd_manifest_paths() -> list[str]:
+    """Vulkan ICD manifests this host has registered, by loader search order.
+
+    Cheap and in-process: the loader finds drivers through a file list or a registry key,
+    both readable without running vulkaninfo (absent on most Windows hosts) or loading
+    libvulkan (absent on a headless ROCm box, which is exactly the case being tested for).
+    """
+    if sys.platform == "win32":
+        try:
+            import winreg
+        except ImportError:
+            return []
+        paths: list[str] = []
+        for key_path in _VULKAN_ICD_REGISTRY_KEYS:
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+                    for index in range(winreg.QueryInfoKey(key)[1]):
+                        try:
+                            name, _value, _kind = winreg.EnumValue(key, index)
+                        except OSError:
+                            continue
+                        paths.append(name)
+            except OSError:
+                continue
+        return paths
+    # The loader honours these overrides ahead of the search directories, so a host that
+    # points at one ICD must be judged on that ICD and not on what is installed elsewhere.
+    for _env in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        _value = os.environ.get(_env)
+        if _value:
+            return [entry for entry in _value.split(os.pathsep) if entry]
+    paths = []
+    for directory in _VULKAN_ICD_SEARCH_DIRS:
+        try:
+            paths.extend(str(entry) for entry in sorted(directory.glob("*.json")))
+        except OSError:
+            continue
+    return paths
+
+
+def _amd_vulkan_icd_present() -> bool:
+    """Whether an AMD Vulkan driver is installed, so the Vulkan bundle has a device.
+
+    The gate that makes the integrated-GPU route safe by construction rather than by
+    hardware allowlist alone: a host with no AMD ICD keeps ROCm instead of moving onto a
+    backend that would enumerate nothing and silently run on CPU. Advisory, and it fails
+    towards the status quo -- an unreadable registry or search path leaves the install on
+    the backend it already had.
+    """
+    try:
+        return any(
+            needle in PurePath(path).name.lower()
+            for path in _amd_vulkan_icd_manifest_paths()
+            for needle in _AMD_VULKAN_ICD_NEEDLES
+        )
+    except Exception:
+        return False
+
+
+def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
+    """True when every AMD GPU here is an integrated part Vulkan serves better.
+
+    A preference, not a fallback: unlike _should_auto_vulkan_for_amd_windows these archs
+    do have a HIP prebuilt, and it works -- it is just slower and carries the
+    managed-memory faults. Both platforms are included, because the Linux HSA fault is the
+    more severe of the two.
+
+    Every guard the fallback applies is applied here for the same reasons: an unknown arch
+    is not routed, a physical NVIDIA card is not handed to a backend that ignores
+    CUDA_VISIBLE_DEVICES, a HIP device mask makes the physical inventory unknowable, and
+    the judgement is over every PHYSICAL AMD gfx rather than the active one, so a box with
+    a discrete card masked off does not move that card onto Vulkan.
+    """
+    active = _active_rocm_gfx_target(host)
+    if not active:
+        return False
+    if not (host.has_rocm and not host.has_physical_nvidia):
+        return False
+    if _hip_visible_device_mask_set():
+        return False
+    targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
+    if not all(target in VULKAN_PREFERRED_GFX_TARGETS for target in targets):
+        return False
+    return _amd_vulkan_icd_present()
+
+
 def _has_no_vulkan_prebuilt(host: HostInfo) -> bool:
     """Platforms that ship no Vulkan prebuilt at all, so routing there is pointless.
 
@@ -7735,6 +7854,8 @@ def _route_to_vulkan_prebuilt(
       * ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` /
         ``--llama-backend vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
       * Windows AMD with no HIP-prebuilt gfx arch auto-falls back to Vulkan (#7357);
+      * an AMD host whose every GPU is an integrated part Vulkan serves better prefers
+        Vulkan over the HIP bundle it could otherwise run;
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
         has_intel_gpu probe.
     Applied by BOTH the install path and the --resolve-prebuilt probe so the "is a prebuilt
@@ -7748,16 +7869,18 @@ def _route_to_vulkan_prebuilt(
     # Host-only test, so a forced Vulkan run can still tell this box would have
     # routed itself to Vulkan anyway.
     amd_no_hip_host = _should_auto_vulkan_for_amd_windows(host, published_repo)
+    amd_igpu_host = _should_prefer_vulkan_for_amd_igpu(host)
     # Auto-fall back only when the run named no accelerator: an explicit hip/cpu/cuda is
     # the opt-out. "auto" names detection itself, so it keeps both automatic routes.
     detecting = explicit_backend in (None, "auto")
     auto_no_hip = detecting and amd_no_hip_host
+    auto_igpu = detecting and amd_igpu_host
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
     auto_intel = (
         detecting and host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
     )
-    if force_cpu or not (forced or auto_intel or auto_no_hip):
+    if force_cpu or not (forced or auto_intel or auto_no_hip or auto_igpu):
         return host, published_repo, published_release_tag, None
     if host.is_macos:
         if forced:
@@ -7781,6 +7904,19 @@ def _route_to_vulkan_prebuilt(
         )
         host = _vulkan_only_host(host)
         persist_backend = "auto"
+    elif auto_igpu:
+        log(
+            "AMD integrated GPU detected "
+            f"({_active_rocm_gfx_target(host) or 'unknown'}); installing the Vulkan "
+            "llama.cpp prebuilt, which is faster on these parts than ROCm"
+        )
+        host = _vulkan_only_host(host)
+        # Automatic, so the marker keeps rocm_gfx and the updater keeps forwarding it:
+        # this is a default, and re-selecting ROCm must land on the right bundle rather
+        # than on a host the updater now reads as ROCm-less. It also keeps the Vulkan CPU
+        # crash recovery armed, which matters more here than on the #7357 hosts, since
+        # these boxes do have a working HIP bundle to fall back to.
+        persist_backend = "auto"
     elif forced:
         log(
             "Vulkan llama.cpp backend requested; installing the Vulkan "
@@ -7790,7 +7926,7 @@ def _route_to_vulkan_prebuilt(
         # A host with no HIP-capable AMD GPU routes here anyway, so the bundle is the
         # same. Persist it as automatic so pre-#8050 installs (and the --llama-backend
         # vulkan every update re-asserts) stay eligible for the CPU crash recovery.
-        persist_backend = "auto" if amd_no_hip_host else "vulkan"
+        persist_backend = "auto" if (amd_no_hip_host or amd_igpu_host) else "vulkan"
     else:
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None

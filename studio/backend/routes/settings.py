@@ -812,6 +812,9 @@ class ModelOverridePayload(BaseModel):
     gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
+    # Which index space gpu_ids is in. Absent means physical, the only thing a client
+    # written before this field could have meant.
+    gpu_index_kind: Optional[Literal["physical", "vulkan"]] = None
     # An all-default save carries no fields, like a forget; None keeps the legacy contract.
     remove: Optional[bool] = None
     # Fill in, don't replace: the backfill reads the map once then writes each model.
@@ -1801,6 +1804,7 @@ def update_openai_auto_switch_override(
                 gpu_layers = payload.gpu_layers,
                 n_cpu_moe = payload.n_cpu_moe,
                 gpu_ids = payload.gpu_ids,
+                gpu_index_kind = payload.gpu_index_kind,
                 fill_absent_fields = payload.fill_absent_fields,
             )
             # A repo cached outside the active HF cache is keyed here by its repo id

@@ -5770,8 +5770,16 @@ if ($LocalLlamaCppLinked) {
             try {
                 $existingMeta = Get-Content -LiteralPath $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
-                # ROCm hosts carry windows-rocm or -hip; CPU covers -cpu and -arm64. Inert for now.
-                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip") } elseif ($HasNvidiaSmi) { @("windows-cuda") } else { @("windows-cpu", "windows-arm64") }
+                # ROCm hosts carry windows-rocm or -hip; CPU covers -cpu and -arm64. Inert for
+                # now: write_prebuilt_metadata records "backend", never "install_kind", so
+                # $existingKind is always null and this never removes anything.
+                # windows-vulkan is in EVERY branch because every x64 Windows host can run it
+                # and any of them can end up on it: an Intel iGPU and a below-floor AMD arch
+                # route there automatically, an AMD integrated GPU is routed there by
+                # preference, and UNSLOTH_LLAMA_CPP_BACKEND=vulkan sends any host there. It is
+                # listed now rather than when the guard is repaired, because repairing the
+                # guard without it would delete a working Vulkan install on every setup run.
+                $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { @("windows-rocm", "windows-hip", "windows-vulkan") } elseif ($HasNvidiaSmi) { @("windows-cuda", "windows-vulkan") } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue

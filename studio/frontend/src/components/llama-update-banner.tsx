@@ -4,7 +4,10 @@
 import { Button } from "@/components/ui/button";
 import { LlamaUpdateChangelogPanel } from "@/components/update/llama-update-changelog-panel";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
-import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
+import {
+  llamaUpdateOffered,
+  useLlamaUpdateCheck,
+} from "@/hooks/use-llama-update-check";
 import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -12,6 +15,25 @@ import { Download } from "lucide-react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 // Creep toward this cap between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
+
+// The banner is not translated, so these mirror the settings picker's labels
+// in features/settings/lib/llama-backend-labels.ts. An unknown backend prints
+// its own identifier rather than nothing.
+const BACKEND_LABELS: Record<string, string> = {
+  auto: "Automatic",
+  cpu: "CPU",
+  cuda: "CUDA",
+  rocm: "ROCm",
+  vulkan: "Vulkan",
+  metal: "Metal",
+};
+
+function backendLabel(backend: string | null | undefined): string {
+  if (!backend) {
+    return "";
+  }
+  return BACKEND_LABELS[backend] ?? backend;
+}
 
 // Smooth coarse backend progress without freezing between milestones.
 function useSmoothedProgress(
@@ -114,13 +136,23 @@ export function LlamaUpdateBanner({
     showBannerPref &&
     visible &&
     status != null &&
-    (status.update_available || applying);
+    (llamaUpdateOffered(status) || applying);
   const sizeBytes = status?.update_size_bytes ?? null;
   const component = status?.component ?? "llama.cpp";
   const latestTag = status?.latest_tag ?? null;
   const installedTag = status?.installed_tag ?? null;
+  // A backend migration re-applies the install's own automatic choice, so it can
+  // be offered at a release the machine already has. When it is, the tags are
+  // equal and the version line has nothing to say; the backend pair replaces it.
+  const backendChange =
+    status?.backend_migration_available && status.to_backend
+      ? `${backendLabel(status.from_backend)} \u2192 ${backendLabel(status.to_backend)}`
+      : null;
+  const versionChanged = Boolean(
+    installedTag && latestTag && installedTag !== latestTag,
+  );
   const changelogKey =
-    component === "llama.cpp" && installedTag && latestTag
+    component === "llama.cpp" && versionChanged
       ? `${installedTag}\0${latestTag}`
       : null;
   const changelogAvailable = Boolean(changelogKey && !status?.source_build);
@@ -200,17 +232,33 @@ export function LlamaUpdateBanner({
             <p className="font-heading text-base font-medium text-foreground">
               {applying
                 ? `Updating ${component}...`
-                : `New ${component} update`}
+                : backendChange && !versionChanged
+                  ? `New ${component} backend`
+                  : `New ${component} update`}
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {status?.installed_tag ?? "unknown"} &rarr;{" "}
-              <span className="font-medium text-foreground">
-                {status?.latest_tag ?? ""}
-              </span>
+              {versionChanged || !backendChange ? (
+                <>
+                  {installedTag ?? "unknown"} &rarr;{" "}
+                  <span className="font-medium text-foreground">
+                    {latestTag ?? ""}
+                  </span>
+                </>
+              ) : (
+                <>
+                  {backendLabel(status?.from_backend)} &rarr;{" "}
+                  <span className="font-medium text-foreground">
+                    {backendLabel(status?.to_backend)}
+                  </span>
+                </>
+              )}
             </p>
             <p className="mt-1 text-ui-11 text-muted-foreground/70">
-              {sizeLabel ? `${sizeLabel} download · ` : ""}No restart needed
-              after update
+              {sizeLabel ? `${sizeLabel} download · ` : ""}
+              {versionChanged && backendChange
+                ? `${backendChange} backend · `
+                : ""}
+              No restart needed after update
             </p>
           </div>
         </div>

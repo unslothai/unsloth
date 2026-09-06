@@ -97,7 +97,12 @@ def _patch_llama_installer(
     # Only intercept the installer invocation: importing routes.inference inside
     # the worker can Popen unrelated host probes (ldconfig etc).
     def _popen(cmd, **kw):
-        is_installer = any("install_llama_prebuilt" in str(part) for part in cmd)
+        parts = [str(part) for part in cmd]
+        # The read-only resolvers run the same script; faking them would answer the
+        # status poll's backend-drift probe with an install's canned output.
+        is_installer = any("install_llama_prebuilt" in part for part in parts) and not any(
+            part.startswith("--resolve-") for part in parts
+        )
         return _FakeInstallerPopen(
             cmd,
             returncode = returncode if is_installer else 0,
@@ -157,6 +162,7 @@ def _clean_state(monkeypatch, tmp_path):
     wfresh.reset_caches()
     upd._reset_job_for_tests()
     upd._resolve_memo.clear()
+    upd._backends_memo.clear()
     wupd._resolve_memo.clear()
     monkeypatch.setattr(freshness, "_cache_dir", lambda: tmp_path / ".llama_cache")
     monkeypatch.setattr(wfresh, "_cache_dir", lambda: tmp_path / ".whisper_cache")
@@ -175,6 +181,7 @@ def _clean_state(monkeypatch, tmp_path):
     wfresh.reset_caches()
     upd._reset_job_for_tests()
     upd._resolve_memo.clear()
+    upd._backends_memo.clear()
     wupd._resolve_memo.clear()
 
 

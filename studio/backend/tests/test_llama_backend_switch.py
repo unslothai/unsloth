@@ -144,6 +144,110 @@ def _await_job(state = ("success", "error")) -> dict:
     raise AssertionError(f"job never reached {state}: {upd.get_update_status()['job']}")
 
 
+# ── The automatic choice drifting ──
+
+
+def _drifted(monkeypatch, resolved_backend = "vulkan"):
+    """Detection now resolves somewhere other than what the marker records."""
+    monkeypatch.setattr(
+        upd,
+        "_resolve_backends_for_host",
+        lambda install_dir, **kwargs: {
+            "backends": [
+                {
+                    "backend": backend,
+                    "available": True,
+                    "resolved_backend": (
+                        resolved_backend if backend == "auto" else backend
+                    ),
+                    "asset": f"app-b9596-mix-abc-linux-x64-{backend}.tar.gz",
+                }
+                for backend in ("auto", "cpu", "cuda", "rocm", "vulkan")
+            ]
+        },
+    )
+
+
+def test_a_drifted_automatic_install_is_offered_as_an_update(monkeypatch, tmp_path):
+    # The install still works, so nothing else surfaces it: the release is current and
+    # the Settings page is the only place that knows. Surfacing it on the banner is the
+    # point of the field.
+    _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
+    _drifted(monkeypatch)
+    status = upd.get_update_status()
+    assert status["update_available"] is False
+    assert status["backend_migration_available"] is True
+    assert (status["from_backend"], status["to_backend"]) == ("rocm", "vulkan")
+
+
+def test_a_deliberate_backend_choice_is_never_offered_a_migration(monkeypatch, tmp_path):
+    # The installer records a concrete choice only on an install that honoured it, so
+    # this is the user's decision and re-applying detection would undo it.
+    _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "rocm")
+    _drifted(monkeypatch)
+    status = upd.get_update_status()
+    assert status["backend_migration_available"] is False
+    assert status["to_backend"] is None
+
+
+def test_an_undrifted_automatic_install_is_offered_nothing(monkeypatch, tmp_path):
+    # Negative control. Without it, a field that is always true reads the same as one
+    # that works.
+    _install(monkeypatch, tmp_path, backend = "cuda", backend_request = "auto")
+    status = upd.get_update_status()
+    assert status["backend_migration_available"] is False
+
+
+def test_an_environment_override_suppresses_the_migration_offer(monkeypatch, tmp_path):
+    # The environment owns the backend, so the offer could not be applied.
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "rocm")
+    _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
+    _drifted(monkeypatch)
+    assert upd.get_update_status()["backend_migration_available"] is False
+
+
+def test_applying_a_migration_re_applies_auto_and_stays_an_update(monkeypatch, tmp_path):
+    # "auto", not "vulkan": naming the backend would store a deliberate choice the user
+    # never made, which would drop rocm_gfx from the marker and stop later updates
+    # re-detecting. And the operation stays "update", because an update is what the
+    # banner offered -- a "switch" is hidden by the banner on purpose.
+    install_dir = _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
+    _drifted(monkeypatch)
+    seen: dict = {}
+
+    def _on_start(cmd, kwargs):
+        seen["cmd"] = cmd
+        seen["env"] = kwargs.get("env") or {}
+        _write_install(
+            install_dir,
+            asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
+            install_kind = "linux-vulkan",
+            backend = "vulkan",
+            backend_request = "auto",
+        )
+
+    _patch_installer(monkeypatch, on_start = _on_start)
+
+    assert upd.start_update()["started"] is True
+    job = _await_job()
+
+    assert job["state"] == "success", job
+    assert job["operation"] == "update"
+    assert job["requested_backend"] == "auto"
+    assert seen["cmd"][seen["cmd"].index("--llama-backend") + 1] == "auto"
+    # The release is current, so the migration re-installs it rather than moving it.
+    assert seen["cmd"][seen["cmd"].index("--published-release-tag") + 1] == "b9596-mix-abc"
+
+
+def test_an_up_to_date_install_with_no_drift_still_refuses(monkeypatch, tmp_path):
+    # The other half of the control: the migration must not turn every up-to-date
+    # Update press into an install.
+    _install(monkeypatch, tmp_path, backend = "cuda", backend_request = "auto")
+    result = upd.start_update()
+    assert result["started"] is False
+    assert result["reason"] == "up_to_date"
+
+
 # ── Applying ──
 
 

@@ -509,6 +509,21 @@ def _llama_only_status(
         except Exception as exc:  # pragma: no cover - network defensive
             logger.debug("llama update: size lookup failed", error = str(exc))
 
+    # An automatic install whose detection now resolves elsewhere. Read here rather
+    # than only on the Settings page because the user has no reason to look there: the
+    # install still works, it is just no longer the backend this host would be given
+    # today. Skipped while the job runs, like get_backend_status, since the tree is
+    # being replaced underneath the answer, and skipped when a release update is
+    # already offered, which is both what _plan_llama_phase does and why: that update
+    # runs the installer with no --llama-backend, so it re-detects and lands the same
+    # bundle a migration would. The drift only needs its own offer when nothing else
+    # would move the install.
+    to_backend = (
+        None
+        if job_running or update_available
+        else _pending_backend_migration(binary, marker)
+    )
+
     with _job_lock:
         job = dict(_job)
 
@@ -523,6 +538,9 @@ def _llama_only_status(
         "age_days": freshness.get("age_days"),
         "source_build": False,
         "update_size_bytes": update_size_bytes,
+        "backend_migration_available": to_backend is not None,
+        "from_backend": marker_backend(marker) if to_backend else None,
+        "to_backend": to_backend,
         "job": job,
     }
 
@@ -617,6 +635,47 @@ def _selection_applied(
         return True
     resolved = auto.get("resolved_backend")
     return resolved is None or installed_backend is None or resolved == installed_backend
+
+
+def _pending_backend_migration(
+    binary: Optional[str], marker: Optional[dict], *, force_refresh: bool = False
+) -> Optional[str]:
+    """The backend a re-applied AUTOMATIC selection would install, when it differs.
+
+    The one drift an install can develop without anyone touching it: "auto" recorded
+    what detection chose at install time, and detection can resolve elsewhere later --
+    a driver appears, or a default changes (an AMD integrated GPU is now routed to the
+    Vulkan prebuilt, which measures faster on those parts than ROCm). The install keeps
+    working, so nothing else surfaces it.
+
+    Deliberately NOT computed for a concrete recorded choice: the installer records
+    "rocm" only on an install that honoured it, so re-selecting a backend by hand is a
+    decision this must never offer to undo. That is also what makes the offer
+    self-limiting -- taking it re-applies "auto", and declining it by picking a backend
+    in Settings stores that choice and ends the drift for good.
+
+    Returns None on anything unresolved: an offer nobody can verify is worse than
+    silence. Shares _backends_memo with get_backend_status, so the poll costs a
+    subprocess once a day rather than once a poll.
+    """
+    if marker is None or _switch_support(binary, marker) is not None:
+        return None
+    if _env_backend_override() is not None:
+        # The environment owns the backend; an offer here could not be applied.
+        return None
+    if marker_backend_request(marker) != "auto":
+        return None
+    repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
+    resolved = _resolve_backends_for_host(
+        _install_dir_for(binary), force_refresh = force_refresh, published_repo = repo
+    )
+    if not resolved:
+        return None
+    options = _backend_options(resolved)
+    if _selection_applied("auto", marker_backend(marker), options):
+        return None
+    auto = next((option for option in options if option["backend"] == "auto"), None)
+    return (auto or {}).get("resolved_backend")
 
 
 def get_backend_status(*, force_refresh: bool = False) -> dict:
@@ -955,6 +1014,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         # start an install when the latest is not actually newer (force a fresh
         # check so a stale 24h cache can't wrongly block a real update either).
         # A switch replaces the backend at the same release.
+        migration = False
         status = (
             {}
             if backend_request is not None
@@ -964,14 +1024,29 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             )
         )
         if backend_request is None and not status.get("update_available"):
-            return {
-                "skip_reason": "up_to_date",
-                "refusal": {
-                    "started": False,
-                    "reason": "up_to_date",
-                    "message": "The installed llama.cpp build is already at the latest prebuilt.",
-                },
-            }
+            # Nothing newer to install, but an install can still be out of date in the
+            # other axis: "auto" recorded what detection chose then, and detection can
+            # resolve elsewhere now. Re-apply it rather than refusing, which is what the
+            # banner offered. Asking for "auto" rather than for the new backend by name
+            # keeps the install automatic, so the marker keeps its rocm_gfx, later
+            # updates keep re-detecting, and the Vulkan CPU crash recovery stays armed.
+            #
+            # Only needed when the release is current: an update at a NEWER release
+            # already runs the installer with no --llama-backend, so it re-detects and
+            # lands the same bundle this branch asks for.
+            if _pending_backend_migration(binary, marker) is None:
+                return {
+                    "skip_reason": "up_to_date",
+                    "refusal": {
+                        "started": False,
+                        "reason": "up_to_date",
+                        "message": (
+                            "The installed llama.cpp build is already at the latest prebuilt."
+                        ),
+                    },
+                }
+            backend_request = "auto"
+            migration = True
         install_dir = _install_dir_for(binary)
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
@@ -1045,6 +1120,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         # No pin: source-build detection resolves via --resolve-prebuilt latest,
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
+        migration = False
 
     if install_dir is None:
         return {
@@ -1066,6 +1142,10 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             "llama_backend": llama_backend,
             "rocm_gfx": rocm_gfx,
             "backend_request": backend_request,
+            # An update that re-applies "auto" because detection drifted. Named so the
+            # caller can keep presenting it as the update it is, rather than as the
+            # backend switch its backend_request would otherwise make it look like.
+            "migration": migration,
         }
     }
 
@@ -1220,12 +1300,22 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
             }
 
     handed_to_worker = False
+    migration = False
     try:
         # The operation reservation starts before any marker read or resolver
         # call. A second update/switch cannot change the install between this
         # plan and the worker that applies it.
         llama_plan = _plan_llama_phase(backend_request)
         llama_spec = llama_plan.get("spec")
+        if llama_spec is not None and llama_spec.get("migration"):
+            # The planner turned an up-to-date update into a re-application of "auto".
+            # Adopt its request here so the verification, the whisper re-pair and the
+            # installer all see it; the claimed operation stays "update", which is what
+            # the banner offered and what the job's watchers are waiting for.
+            migration = True
+            backend_request = llama_spec["backend_request"]
+            with _job_lock:
+                _job.update(requested_backend = backend_request)
         if backend_request is not None and llama_spec is not None:
             resolved = _resolve_backends_for_host(
                 llama_spec["install_dir"],
@@ -1296,7 +1386,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 "weight": _LLAMA_PHASE_WEIGHT,
                 "failure_message": (
                     f"Could not switch llama.cpp to {backend_request}."
-                    if backend_request is not None
+                    if backend_request is not None and not migration
                     else "llama.cpp update failed."
                 ),
                 "skip_reason": llama_plan.get("skip_reason"),
