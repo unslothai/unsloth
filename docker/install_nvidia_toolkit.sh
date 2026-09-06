@@ -54,7 +54,8 @@ fi
 # 3. a CLI pointed at another machine: everything below edits THIS machine
 # DOCKER_CONTEXT overrides DOCKER_HOST, which overrides the selected context
 if [[ -n "${DOCKER_CONTEXT:-}" || -z "${DOCKER_HOST:-}" ]]; then
-    endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+    endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" \
+        || fail "cannot inspect the Docker context '${DOCKER_CONTEXT:-current}' (it may exist only in the invoking user's Docker config); refusing to guess which daemon to configure." 2
 else
     endpoint="$DOCKER_HOST"
 fi
@@ -94,6 +95,11 @@ fi
 NVSMI="$(command -v nvidia-smi 2>/dev/null || true)"
 [[ -z "$NVSMI" && -x "${WSL_LIB_DIR}/nvidia-smi" ]] && NVSMI="${WSL_LIB_DIR}/nvidia-smi"
 if [[ -z "$NVSMI" ]] || ! "$NVSMI" -L 2>/dev/null | grep -q '^GPU'; then
+    if grep -qi microsoft "$PROC_VERSION" 2>/dev/null; then
+        fail "no NVIDIA GPU is visible in this WSL 2 distro. Install a current NVIDIA Windows driver
+       from nvidia.com (never a Linux driver inside WSL), restart WSL (wsl --shutdown), then run
+       this again. Unsloth images need driver 570.26 or newer." 2
+    fi
     fail "no NVIDIA driver found (nvidia-smi lists no GPU). Install the driver first, with your
        distribution's packages (Ubuntu: 'sudo ubuntu-drivers install'; RHEL/Fedora: the
        nvidia-driver module from the CUDA repository), reboot, then run this again.
@@ -120,8 +126,9 @@ configured() {
 
 if configured; then
     say "Docker already lists the nvidia runtime; nothing to install."
-elif command -v nvidia-ctk >/dev/null 2>&1; then
-    # packages present, runtime entry missing: no network work, just register
+elif command -v nvidia-ctk >/dev/null 2>&1 && command -v nvidia-container-runtime >/dev/null 2>&1; then
+    # full toolkit present (nvidia-container-toolkit-base alone ships only the CLI),
+    # runtime entry missing: no network work, just register
     say "nvidia-container-toolkit is installed but Docker does not list the nvidia runtime."
 else
     [[ -r "$OS_RELEASE" ]] || fail "cannot read $OS_RELEASE to pick a package manager." 2

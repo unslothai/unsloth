@@ -110,14 +110,16 @@ def _setup(
     # suite means the same thing on an arm64 runner
     _stub(bindir / "uname", 'if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi\n')
     ctk = bindir / "nvidia-ctk"
+    runtime = bindir / "nvidia-container-runtime"
     ctk_body = rec + f"touch {marker}\n"
     if configured or toolkit_installed:
         _stub(ctk, ctk_body)
+        _stub(runtime, "exit 0\n")
     (tmp_path / "ctk-stub-body").write_text("#!/usr/bin/env bash\n" + ctk_body, encoding = "utf-8")
     _stub(
         bindir / "docker",
         rec
-        + 'if [ "$1" = context ]; then case "${DOCKER_CONTEXT:-}" in remote*) echo "tcp://gpu-box:2376" ;; *) echo "unix:///var/run/docker.sock" ;; esac; exit 0; fi\n'
+        + 'if [ "$1" = context ]; then case "${DOCKER_CONTEXT:-}" in remote*) echo "tcp://gpu-box:2376" ;; missing*) echo "context not found" >&2; exit 1 ;; *) echo "unix:///var/run/docker.sock" ;; esac; exit 0; fi\n'
         + 'if [ "$1" = info ]; then\n'
         + ('  echo " Operating System: Docker Desktop"\n' if desktop else "")
         + (
@@ -140,7 +142,10 @@ def _setup(
         ),
     )
     # installing the package makes nvidia-ctk appear, as it does for real
-    installs = f'case "$*" in *install*nvidia-container-toolkit*) cp {tmp_path / "ctk-stub-body"} {ctk}; chmod 755 {ctk} ;; esac\n'
+    installs = (
+        f'case "$*" in *install*nvidia-container-toolkit*) cp {tmp_path / "ctk-stub-body"} {ctk}; chmod 755 {ctk};'
+        f' printf "#!/usr/bin/env bash\\nexit 0\\n" > {runtime}; chmod 755 {runtime} ;; esac\n'
+    )
     for pm in ("apt-get", "dnf", "yum", "zypper"):
         _stub(bindir / pm, rec + installs + "exit 0\n")
     _stub(bindir / "service", rec + "exit 0\n")
@@ -406,6 +411,36 @@ def test_the_keyring_is_world_readable_under_a_strict_umask(tmp_path: Path):
     assert res.returncode == 0, res.stdout + res.stderr
     key = root / "usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
     assert oct(key.stat().st_mode & 0o777) == "0o644"
+
+
+def test_an_uninspectable_context_is_an_error_not_the_local_daemon(tmp_path: Path):
+    _, log, env = _setup(tmp_path)
+    env["DOCKER_CONTEXT"] = "missing-in-root-config"
+    res = _run(env)
+    assert res.returncode == 2
+    assert "cannot inspect the Docker context 'missing-in-root-config'" in res.stderr
+    assert not any(c.startswith(("apt-get", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
+def test_no_gpu_on_wsl_points_at_the_windows_driver(tmp_path: Path):
+    _, log, env = _setup(tmp_path, driver = False, wsl = True)
+    res = _run(env)
+    assert res.returncode == 2
+    assert "NVIDIA Windows driver" in res.stderr and "never a Linux driver" in res.stderr
+    assert "ubuntu-drivers" not in res.stderr
+    assert not any(c.startswith("apt-get") for c in _calls(log))
+
+
+def test_only_the_toolkit_cli_present_still_installs_the_full_package(tmp_path: Path):
+    """nvidia-container-toolkit-base ships nvidia-ctk without the runtime binary; a
+    registration on its own would be unusable."""
+    _, log, env = _setup(tmp_path, toolkit_installed = True)
+    (tmp_path / "bin" / "nvidia-container-runtime").unlink()
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    calls = _calls(log)
+    assert any(c.startswith("apt-get install") and c.endswith("nvidia-container-toolkit") for c in calls)
+    assert "nvidia-ctk runtime configure --runtime=docker" in calls
 
 
 def test_a_remote_docker_endpoint_is_refused(tmp_path: Path):
