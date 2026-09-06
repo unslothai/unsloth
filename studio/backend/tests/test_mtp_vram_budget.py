@@ -674,7 +674,8 @@ class TestExtraArgsMtpDetection:
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # env-aware: also honors the inherited LLAMA_ARG_N_GPU_LAYERS_DRAFT.
         assert (
-            "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=os.environ)" in compact
+            "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu("
+            "_draft_placement_extras,env=_draft_placement_env,)" in compact
         )
         assert "if_draft_on_cpu:_mtp_draft_for_budget=None" in compact
         # flat reserve suppressed for a CPU drafter that is the one being launched
