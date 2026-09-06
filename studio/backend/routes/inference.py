@@ -19358,7 +19358,7 @@ async def _proxy_to_external_provider(
             status_code = 400,
             detail = openai_error_body(
                 "confirm_tool_calls requires stream=true and the X-Unsloth-Events: 1 "
-                "header for local tool execution; set permission_mode to \"off\" to "
+                'header for local tool execution; set permission_mode to "off" to '
                 "run tools without confirmation.",
                 status = 400,
                 code = "invalid_request_error",
@@ -20633,20 +20633,17 @@ async def produce_openai_chat_completions(
         _studio_local_tool_loop = bool(_use_tools_intent) and (
             _explicit_studio_tool_loop_requested(payload) or not _client_tool_passthrough
         )
-        if (
-            (_confirm_gate_has_no_channel(payload, _ui_events) and _studio_local_tool_loop)
-            or (
-                payload.confirm_tool_calls is True
-                and _client_tool_passthrough
-                and not payload.bypass_permissions
-                and not (payload.stream and _ui_events)
-            )
+        if (_confirm_gate_has_no_channel(payload, _ui_events) and _studio_local_tool_loop) or (
+            payload.confirm_tool_calls is True
+            and _client_tool_passthrough
+            and not payload.bypass_permissions
+            and not (payload.stream and _ui_events)
         ):
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
                     "confirm_tool_calls requires stream=true and the X-Unsloth-Events: 1 "
-                    "header for local tool execution; set permission_mode to \"off\" to "
+                    'header for local tool execution; set permission_mode to "off" to '
                     "run tools without confirmation.",
                     status = 400,
                     code = "invalid_request_error",
@@ -21550,7 +21547,7 @@ async def produce_openai_chat_completions(
                     400,
                     openai_error_body(
                         "confirm_tool_calls requires stream=true and the X-Unsloth-Events: 1 "
-                        "header for local tool execution; set permission_mode to \"off\" to "
+                        'header for local tool execution; set permission_mode to "off" to '
                         "run tools without confirmation.",
                         status = 400,
                         code = "invalid_request_error",
@@ -23306,7 +23303,7 @@ async def produce_openai_chat_completions(
                 400,
                 openai_error_body(
                     "confirm_tool_calls requires stream=true and the X-Unsloth-Events: 1 "
-                    "header for local tool execution; set permission_mode to \"off\" to "
+                    'header for local tool execution; set permission_mode to "off" to '
                     "run tools without confirmation.",
                     status = 400,
                     code = "invalid_request_error",

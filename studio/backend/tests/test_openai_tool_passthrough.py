@@ -4027,7 +4027,9 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(ui_events = True), current_subject = "test")
+            openai_chat_completions(
+                payload, request = self._Request(ui_events = True), current_subject = "test"
+            )
         )
         self._consume_response(response)
 
@@ -4074,7 +4076,9 @@ class TestGgufVisionToolRouting:
         )
 
         response = self._drive(
-            openai_chat_completions(payload, request = self._Request(ui_events = True), current_subject = "test")
+            openai_chat_completions(
+                payload, request = self._Request(ui_events = True), current_subject = "test"
+            )
         )
         self._consume_response(response)
 
@@ -4315,9 +4319,7 @@ class TestGgufVisionToolRouting:
         )
         with pytest.raises(HTTPException) as exc:
             self._drive(
-                openai_chat_completions(
-                    payload, request = self._Request(), current_subject = "test"
-                )
+                openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
         assert exc.value.status_code == 400
         message = exc.value.detail["error"]["message"]

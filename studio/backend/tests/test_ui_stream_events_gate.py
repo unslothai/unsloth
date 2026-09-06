@@ -149,8 +149,15 @@ def test_every_gated_frame_falls_back_to_a_keepalive():
 def test_control_frame_lines_are_recognised_by_type():
     # The vocabulary lives in sse_control_frames so the passthrough relay and the local
     # gate cannot drift apart when a frame type is added.
-    for frame in ("tool_start", "tool_end", "tool_output", "tool_args",
-                  "tool_status", "diffusion_frame", "reasoning_summary"):
+    for frame in (
+        "tool_start",
+        "tool_end",
+        "tool_output",
+        "tool_args",
+        "tool_status",
+        "diffusion_frame",
+        "reasoning_summary",
+    ):
         assert is_ui_control_sse_line('data: {"type": "%s"}' % frame) is True, frame
 
 
@@ -189,9 +196,10 @@ def test_confirm_gate_needs_both_a_stream_and_the_frames():
     # Non-streaming keeps the reading it has always had: an unset mode stays lenient
     # there (a health check must not 400), an explicit one has nowhere to prompt.
     assert _confirm_gate_has_no_channel(_gate_payload(stream = False), True) is False
-    assert _confirm_gate_has_no_channel(
-        _gate_payload(stream = False, permission_mode = "ask"), True
-    ) is True
+    assert (
+        _confirm_gate_has_no_channel(_gate_payload(stream = False, permission_mode = "ask"), True)
+        is True
+    )
     # An explicit opt-out of the gate needs no channel at all.
     assert _confirm_gate_has_no_channel(_gate_payload(bypass_permissions = True), False) is False
     assert _confirm_gate_has_no_channel(_gate_payload(permission_mode = "off"), False) is False
@@ -207,19 +215,18 @@ def test_a_streaming_request_that_can_never_prompt_is_not_refused():
     # As is an omitted selection, which resolves to every built-in tool.
     assert _confirm_gate_has_no_channel(_gate_payload(enabled_tools = None), False) is True
     # An explicit ask never converges on auto's leniency.
-    assert _confirm_gate_has_no_channel(
-        _gate_payload(permission_mode = "ask", enabled_tools = []), False
-    ) is True
+    assert (
+        _confirm_gate_has_no_channel(_gate_payload(permission_mode = "ask", enabled_tools = []), False)
+        is True
+    )
 
 
 def test_external_provider_relay_drops_control_frames_too():
     # The provider proxy returns before the local producer's per-yield gates and relays
     # stream_with_studio_tools' frames verbatim, so it filters the same vocabulary.
     src = inspect.getsource(_proxy_to_external_provider)
-    relays = [
-        line for line in src.splitlines() if line.strip() == 'yield f"{line}\\n\\n"'
-    ]
+    relays = [line for line in src.splitlines() if line.strip() == 'yield f"{line}\\n\\n"']
     assert relays, "the provider relay yields disappeared"
-    assert src.count("is_ui_control_sse_line(line)") == len(relays), (
-        "every provider relay must hold control frames back from a non-opt-in caller"
-    )
+    assert src.count("is_ui_control_sse_line(line)") == len(
+        relays
+    ), "every provider relay must hold control frames back from a non-opt-in caller"
