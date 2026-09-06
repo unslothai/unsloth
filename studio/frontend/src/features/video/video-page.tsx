@@ -3406,6 +3406,7 @@ function VideoGenerator({
 
           <Field label="Prompt">
             <Textarea
+              data-type-to-activate="prompt"
               rows={4}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}

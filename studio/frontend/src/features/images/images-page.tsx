@@ -3932,6 +3932,7 @@ export function ImagesPage({
 
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
               <Textarea
+                data-type-to-activate="prompt"
                 rows={4}
                 placeholder={
                   workflow === "edit" ? "Describe the edit, e.g. make the sky sunset orange" : undefined
