@@ -136,9 +136,8 @@ export interface FindTextIndex {
   /** Sorted by `start`, gapped wherever a separator was written. */
   segments: TextSegment[];
   truncated: boolean;
-  /** Offsets where the walk dropped text, so what the document does across them cannot be read
-   *  here. Nothing indexed says whether a grapheme carries on past a cut, so a match is not
-   *  allowed to end on one: the alternative is accepting an edge that the page does not draw. */
+  /** Offsets where the walk dropped text and the page runs on across the gap. A match may not
+   *  end on one: nothing indexed says where the grapheme it cuts through ends. */
   seams: ReadonlySet<number>;
   /** Where the portaled surfaces begin. The whole length when none are open. */
   rootLength: number;
@@ -295,11 +294,9 @@ export function buildTextIndex(
 
   const surfaces: IndexedSurface[] = [];
   const seams = new Set<number>();
-  /** The end of what has been indexed, kept short: enough context for `joinsAcross`, no more. */
+  /** The end of what has been indexed, kept to what `joinsAcross` reads. */
   let tail = "";
-  /** The tail of text a cut dropped, while the separator standing for it is still pending. The
-   *  far side of a cut is a boundary only if the dropped text does not run on into it, and this
-   *  is the only place that text is still readable. Null at a real block boundary. */
+  /** What a cut dropped, readable here and nowhere later: it settles that cut's far side. */
   let dropped: string | null = null;
   let length = 0;
   let truncated = false;
@@ -319,7 +316,6 @@ export function buildTextIndex(
     const block =
       BLOCK_TAGS.has(element.tagName) || isBlockDisplay(style?.display);
     if (block) {
-      // A real boundary: nothing dropped earlier can reach across it.
       pendingSeparator = true;
       dropped = null;
     }
@@ -342,8 +338,7 @@ export function buildTextIndex(
         // `slice(0, negative)` takes all but the last character of the next node.
         if (length >= ceiling) {
           truncated = true;
-          // The node is still there to be read, so the junction is settled rather than assumed:
-          // its first code point says whether what the index ends on is a boundary.
+          // The node is still there to be read, so its first code point settles the junction.
           if (!pendingSeparator && joinsAcross(tail, firstPointOf(data))) {
             seams.add(length);
           }
@@ -360,8 +355,7 @@ export function buildTextIndex(
             separated = true;
           }
         }
-        // The far side of a cut, settled by the text the cut dropped, which is readable here and
-        // nowhere later.
+        // The far side of a cut, settled by what it dropped.
         if (dropped !== null) {
           if (joinsAcross(dropped, firstPointOf(data))) seams.add(length);
           dropped = null;
@@ -389,9 +383,7 @@ export function buildTextIndex(
         // What was dropped must leave a boundary, or a match across the seam paints over the gap.
         if (raw.length < data.length) {
           truncated = true;
-          // The whole node is still here, so both edges of the cut can be settled from it: what
-          // was dropped next says whether the kept text ended on a boundary, and the tail of what
-          // was dropped will say the same for whatever the walk reaches after the separator.
+          // Both edges settle from the node: the next code point here, the dropped tail later.
           if (joinsAcross(raw, firstPointOf(data.slice(take))))
             seams.add(length);
           dropped = data.slice(-JOIN_CONTEXT);
@@ -402,9 +394,7 @@ export function buildTextIndex(
         if (full) return;
       }
     }
-    // Leaving a block is a boundary as much as entering one, so what a clip inside it dropped
-    // cannot reach the sibling after it. Left set, that text decided a junction the separator had
-    // already settled, and put a seam on the first character of the next block.
+    // As on the way in: what a clip inside this block dropped cannot reach the sibling after it.
     if (block) {
       pendingSeparator = true;
       dropped = null;
@@ -705,16 +695,9 @@ function graphemeSegmenter() {
 /**
  * Whether this engine's `containing` agrees with its own iterator about where a segment starts.
  *
- * WebKit's does not. Asked about the first code unit of a cluster that follows an astral one, it
- * answers with the cluster that ENDS there rather than the one that starts there: over `x` and a
- * thumbs up it reads 0, 0, 1 where Chromium and Firefox both read 0, 1, 1. Every interior boundary
- * then answers "not a boundary", so on Safari the fence would have thrown away every match beside
- * an emoji or an accent -- and only until a search went over its seek budget, after which the
- * table below is built from the iterator and the answers silently change back.
- *
- * One fixture, once per process, whose answer the spec fixes: `containing(1)` over "x" and a
- * surrogate pair is the start of the pair. Where it is wrong, boundaries are tabulated instead,
- * which is the same answer by a slower route rather than a second implementation of UAX 29.
+ * WebKit's answers the segment that ENDS at the offset: over `x` and a thumbs up it reads 0, 0, 1
+ * where Chromium and Firefox read 0, 1, 1, so every interior boundary comes back "not a boundary".
+ * Where it is wrong the boundaries are tabulated instead, which is the same answer more slowly.
  */
 let seeksBoundaries: boolean | undefined;
 function segmenterSeeksBoundaries(platform: {
@@ -731,20 +714,11 @@ function segmenterSeeksBoundaries(platform: {
   return seeksBoundaries;
 }
 
-/** How far back a junction is read for an anchor. A cluster longer than this is one nobody typed,
- *  and a run longer than it cannot be read from here at all. */
 const JOIN_CONTEXT = 32;
 
-/**
- * As much of the end of `before` as can be read on its own, or null when none of it can.
- *
- * A window cut at an arbitrary offset is not the same text the segmenter would see. Parity is the
- * case that proves it: a run of regional indicators pairs off from its START, so the last 32 code
- * units of an odd run read as an even one and the next indicator looks like a fresh flag. Reading
- * back to a character below U+0300 fixes that, because such a character can neither extend nor be
- * extended -- the sweep in the tests checks every one of them -- so it always begins a cluster and
- * the window from it segments exactly as the whole string does.
- */
+/** As much of the end of `before` as segments the same alone as in the whole string: back to a
+ *  character below U+0300, which always begins a cluster. A fixed-size window would not do, since
+ *  regional indicators pair off from the START of a run and an odd tail reads as even. */
 function exactTail(before: string): string | null {
   const from = Math.max(0, before.length - JOIN_CONTEXT);
   for (let at = before.length - 1; at >= from; at -= 1) {
@@ -760,20 +734,14 @@ function firstPointOf(text: string): string {
     : String.fromCodePoint(text.codePointAt(0) as number);
 }
 
-/**
- * Whether the grapheme `before` ends on runs on into `point`.
- *
- * The one question a cut has to answer, asked of the platform over an anchored window rather than
- * derived from a table of ranges. False without a segmenter, which leaves the cut a boundary and
- * so leaves the search where it is today.
- */
+/** Whether the grapheme `before` ends on runs on into `point`: the one question a cut has to
+ *  answer. False without a segmenter, which leaves the search where it is today. */
 function joinsAcross(before: string, point: string): boolean {
   if (before.length === 0 || point.length === 0) return false;
   const platform = graphemeSegmenter();
   if (platform === null) return false;
   const window = exactTail(before);
-  // Nothing to anchor on, so the junction is unknown rather than open: a match is not allowed to
-  // end on it. Costs the one occurrence that ends exactly at a cut inside an unbroken run.
+  // No anchor, so unknown rather than open: costs an occurrence ending exactly inside a run.
   if (window === null) return true;
   const at = window.length;
   const body = window + point;
@@ -801,8 +769,7 @@ function alignsToGraphemes(
   end: number,
 ): boolean {
   const text = index.text;
-  // Before the cheap test, which reads the text either side of an edge and so cannot see a cut:
-  // at the end of a truncated index there is no `text[end]` to look at at all.
+  // Before the cheap test: at the end of a truncated index there is no `text[end]` to read.
   if (
     index.seams.size > 0 &&
     (index.seams.has(start) || index.seams.has(end))
@@ -826,14 +793,9 @@ function alignsToGraphemes(
   return startsGrapheme(index, start) && startsGrapheme(index, end);
 }
 
-/**
- * True when a grapheme starts at `at`.
- *
- * True as well where there is no segmenter to ask, which is every candidate taken unchecked, as
- * before this fence existed. Firefox shipped `Intl.Segmenter` in 125 and is the last engine to;
- * enumerating UAX 29 by hand for the ones behind it is a second implementation to keep current
- * with Unicode, and the alternative is only that those readers keep today's behaviour.
- */
+/** True when a grapheme starts at `at`, and true where there is no segmenter to ask: Firefox
+ *  shipped one in 125, and hand-rolling UAX 29 for the versions behind it is a second Unicode
+ *  implementation to keep current, against those readers keeping today's behaviour. */
 function startsGrapheme(index: FindTextIndex, at: number): boolean {
   const text = index.text;
   if (at === 0 || at === text.length) return true;

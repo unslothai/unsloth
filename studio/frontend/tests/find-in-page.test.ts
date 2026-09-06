@@ -1903,11 +1903,8 @@ test("the grapheme boundary is the platform's answer, not a list of ranges", () 
 });
 
 test("an engine whose `containing` is off by one is not trusted with it", () => {
-  // WebKit's answers the segment that ENDS at an offset rather than the one that starts there:
-  // over `x` and a thumbs up it reads 0, 0, 1 where Chromium and Firefox both read 0, 1, 1. Taken
-  // at face value every interior boundary is "not a boundary", so on Safari the fence threw away
-  // every match beside an emoji or an accent -- and only until a search went over its seek budget,
-  // after which the table is built from the iterator and the answers change back on their own.
+  // WebKit reads 0, 0, 1 over `x` and a thumbs up where Chromium and Firefox read 0, 1, 1, and
+  // the seek budget hides it: past the budget the table comes from the iterator instead.
   const body = `x${"\u{1f44d}"} and caf\u00e9`;
   const withReal = buildTextIndex(el("DIV", [el("P", [text(body)])]));
   const correct = findMatches(withReal, "x", 10);
@@ -1969,8 +1966,7 @@ test("an engine whose `containing` is off by one is not trusted with it", () => 
 });
 
 test("the seek probe is asked once, on a fixture the spec settles", () => {
-  // Once per process, not once per index or once per candidate: a probe on the hot path is the
-  // cost the budget exists to avoid.
+  // Once per process: a probe on the hot path is the cost the budget exists to avoid.
   const source = readFileSync(
     new URL(
       "../src/features/find-in-page/lib/find-text-index.ts",
@@ -1983,8 +1979,7 @@ test("the seek probe is asked once, on a fixture the spec settles", () => {
     source,
     /if \(seeksBoundaries !== undefined\) return seeksBoundaries;/,
   );
-  // The fixture is the case that separates the two readings, and its answer is not a matter of
-  // opinion: `containing(1)` over a code unit and a surrogate pair is the start of the pair.
+  // `containing(1)` over a code unit and a surrogate pair is the start of the pair, per the spec.
   assert.match(source, /probe\.containing\(1\)\?\.index === 1/);
   // The definition, the seek in `startsGrapheme`, and the junction check a cut asks.
   assert.equal((source.match(/segmenterSeeksBoundaries\(/g) ?? []).length, 3);
@@ -2334,9 +2329,7 @@ test("a CRLF is one grapheme, which the fast path has to know about", () => {
 });
 
 test("a per-node cut does not hand back half a grapheme", () => {
-  // MAX_NODE_CHARS lands wherever the node's length puts it, which can be between a letter and
-  // the mark that belongs to it. The index ends on the letter and the mark is dropped, so the
-  // text alone says the letter is whole; the page it came from says otherwise.
+  // The cut can land between a letter and its mark, where the text says the letter is whole.
   const node = text(`${"z".repeat(MAX_NODE_CHARS - 1)}Q\u0301tail`);
   const index = buildTextIndex(el("DIV", [el("P", [node, text(" after")])]));
   assert.equal(index.truncated, true);
@@ -2347,10 +2340,7 @@ test("a per-node cut does not hand back half a grapheme", () => {
 });
 
 test("what a clip dropped cannot reach past the end of its block", () => {
-  // The clip leaves the dropped text readable so the far side of the cut can be settled from it.
-  // A block ending in between settles that junction on its own, and the dropped text belongs to
-  // the block that is over: judged against it, a Prepend at the end of the dropped suffix joined
-  // the first character of the next block and put a seam on text nothing was dropped in front of.
+  // A Prepend at the end of the dropped suffix joined the next block's first character.
   const clipped = `${"z".repeat(MAX_NODE_CHARS)}dropped\u0600`;
   const index = buildTextIndex(
     el("SPAN", [el("DIV", [text(clipped)]), text("a")]),
@@ -2361,10 +2351,7 @@ test("what a clip dropped cannot reach past the end of its block", () => {
 });
 
 test("a cut inside a run reads back to an anchor, not to a fixed window", () => {
-  // Regional indicators pair off from the START of their run, so a fixed window is not the text
-  // the segmenter would see: the last 32 code units of an ODD run read as an even one, and the
-  // next indicator looks like a fresh flag instead of the back half of this one. Reading back to
-  // a character below U+0300 fixes it, and where there is none the junction is unknown.
+  // Indicators pair off from the START of a run, so an ODD run's last 32 units read as even.
   const ri = (n: number) => String.fromCodePoint(0x1f1e6 + n);
   const [a, b, c] = [ri(0), ri(1), ri(2)];
   const node = `x${a.repeat(49_998)}${b}${c}tail`;
@@ -2385,8 +2372,7 @@ test("a cut inside a run reads back to an anchor, not to a fixed window", () => 
 });
 
 test("the end of a truncated index is not a boundary by default", () => {
-  // The ceiling is reached between a letter and the mark that joins it. `at === text.length` is
-  // the one offset with nothing after it to read, so it used to be accepted unconditionally.
+  // `at === text.length` is the one offset with nothing after it to read, and was accepted flat.
   const kids = [];
   for (let i = 0; i < 39; i += 1) kids.push(text("z".repeat(MAX_NODE_CHARS)));
   kids.push(text(`${"z".repeat(MAX_NODE_CHARS - 1)}Q`));
