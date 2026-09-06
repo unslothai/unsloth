@@ -289,9 +289,8 @@ EOF
         printf 'INDEX=<installer exited %s>\n' "$?"
 }
 
-# run_installer unsets UNSLOTH_ROCM_GFX_ARCH inside the generated script, so exporting it
-# around a call does nothing. This variant re-applies an assignment AFTER that unset, for
-# the cases that are specifically about a stale declared arch.
+# run_installer unsets UNSLOTH_ROCM_GFX_ARCH inside the generated script, so this variant
+# re-applies it AFTER that unset, for the stale-declared-arch cases.
 run_installer_env() {   # $1 = "VAR=value", $2 = _ARCH
     run_installer "${2:-x86_64}" >/dev/null 2>&1 || true
     sed -i "s|^_ARCH=|export $1\n_ARCH=|" "$_ROOT/run.sh"
@@ -494,11 +493,10 @@ assert_eq "gfx1030 + gfx1032 still take the shared gfx103X-all index" \
 fedora_no_version_host gfx1033
 assert_eq "a lone gfx1033 does not reroute" "$_BASE/cpu" "$(run_index)"
 
-# A stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Deck. _infer_linux_amd_gfx_arch returns
-# the override, so the arm that tested only the inferred value let it walk the cpu index
-# the gate had just chosen back to gfx103X-all. A READABLE ROCm version is what makes this
-# distinct from the no-version cases above: it takes the plain inferred-gfx arm, which
-# maps the override through _amd_arch_index_family_for_gfx and never consults the probe.
+# A stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Deck: _infer_linux_amd_gfx_arch returns
+# the override, so an arm testing only the inferred value walked the gate's cpu index back
+# to gfx103X-all. A READABLE ROCm version makes this take the plain inferred-gfx arm,
+# which never consults the probe.
 readable_version_host() {   # $@ = gfx arches
     reset_host
     mock_rocminfo "$@"

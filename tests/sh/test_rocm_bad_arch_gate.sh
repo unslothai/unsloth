@@ -4,21 +4,10 @@
 #
 # Guards the "arch computes incorrectly under ROCm" gate in get_torch_index_url.
 #
-# History: the ROCm wheel index was keyed purely off the ROCm runtime VERSION, never off
-# the GPU's gfx arch. gfx1033 (Van Gogh, the Steam Deck APU) is mapped to gfx103X-all in
-# _GFX_TO_AMD_INDEX_ARCH, so a Deck with any ROCm runtime present was routed to ROCm
-# wheels -- which install and then return wrong answers rather than refusing: training
-# diverges to a negative MSE loss and then NaN, and torch.autograd.gradcheck fails in
-# float64, reproduced on rocm7.1/torch 2.10, rocm7.2/torch 2.11 and AMD's own native
-# gfx1033 build. Forward math matches CPU. See studio/ROCM_RDNA2_APU.md.
-#
-# The contract: gfx1033 routes to the cpu index; every other arch is untouched.
-#
-# Scope note, and the reason this is not gated on AMD's hardware support table: unsloth
-# deliberately serves archs AMD does not list -- gfx906 (MI50) via the rocm6.3 legacy
-# index, verified there with torch 2.7.0, and gfx1031-gfx1036 via gfx103X-all (#7277).
-# A table-wide gate would drop support that is known to work, so this list holds only
-# archs measured to be wrong.
+# Contract: gfx1033 routes to the cpu index; every other arch is untouched. The index used
+# to key off the ROCm runtime VERSION alone, so a Deck was routed to ROCm wheels that
+# install and then compute wrong answers (studio/ROCM_RDNA2_APU.md). Not gated on AMD's
+# support table, because unsloth deliberately serves gfx906 and gfx1031-gfx1036 (#7277).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -42,10 +31,8 @@ assert_eq() {
 # every ROCm case to cpu). So exercise the real case block lifted from the function.
 _FN_FILE=$(mktemp)
 trap 'rm -f "$_FN_FILE"' EXIT
-# Delimited by an explicit end marker rather than by the block's own closing `fi`: the
-# gate grew a second `if` at the same indent (the unspoofed re-probe), and a structural
-# end would have silently truncated the extract to the first of them, taking every
-# gfx1033 case below with it.
+# Delimited by an explicit end marker, not the block's closing `fi`: the gate has a second
+# `if` at the same indent, so a structural end would truncate the extract.
 awk '/# Archs measured to compute INCORRECTLY under ROCm/,/^        # end of the miscomputing-arch gate/' \
     "$INSTALL_SH" > "$_FN_FILE"
 
@@ -55,10 +42,8 @@ if ! grep -q 'gfx1033' "$_FN_FILE"; then
 fi
 
 _SH="${BASH:-/bin/bash}"
-# Build a real function whose BODY is the extracted block, then call it. Sourcing the
-# block instead would not do: `return` in a dot-script unwinds the source, not the caller,
-# so execution would fall through to the trailing echo and print both lines. Embedding it
-# reproduces exactly how `return` behaves inside get_torch_index_url.
+# Build a real function whose BODY is the extracted block, then call it: `return` in a
+# dot-script unwinds the source, not the caller, so sourcing would print both lines.
 _GATE_FILE=$(mktemp)
 {
     echo '_gate() {'
@@ -96,13 +81,9 @@ assert_eq "garbage not intercepted"       "rocm" "$(_route 'not-a-gfx')"
 assert_eq "gfx10330 is not gfx1033"       "rocm" "$(_route gfx10330)"
 
 echo "=== A mixed host takes the cpu index too: presence, not selection ==="
-# The gate asks only whether a prohibited arch is PRESENT. A healthy dGPU beside the APU
-# no longer keeps the host on ROCm, because deciding that correctly means resolving which
-# device the runtime will select -- per-device identity, the ROCr/HIP mask layering,
-# ordinals and UUIDs -- which a flat token list cannot do and which
-# _runtime_gfx_target() in install_python_stack.py already does properly. Such a host is
-# vanishingly rare, keeps UNSLOTH_TORCH_INDEX_URL, and _ensure_rocm_torch() can still
-# give it ROCm on a later run from the layer that can resolve the target.
+# PRESENCE only: a healthy dGPU beside the APU no longer keeps the host on ROCm, because
+# resolving which device the runtime selects needs per-device identity and mask layering,
+# which _runtime_gfx_target() does and a token list cannot.
 assert_eq "gfx1033 + gfx1100 -> cpu"   "https://download.pytorch.org/whl/cpu" "$(_route 'gfx1033
 gfx1100')"
 assert_eq "gfx1100 + gfx1033 -> cpu"   "https://download.pytorch.org/whl/cpu" "$(_route 'gfx1100
@@ -116,11 +97,9 @@ assert_eq "mixed case gfx1033 -> cpu" \
 GFX1033')"
 
 echo "=== The runtime-less reroute honours the same gate ==="
-# get_torch_index_url's gate is not enough on its own. The reroute below it fires when
-# UNSLOTH_ROCM_GFX_ARCH is set, takes that value as the inferred arch, and rewrites a
-# */cpu index to the arch family index -- so setting UNSLOTH_ROCM_GFX_ARCH=gfx1033 sent
-# a Deck straight back to gfx103X-all, undoing the gate. The documented escape hatch is
-# UNSLOTH_TORCH_INDEX_URL, which returns long before either point.
+# The gate is not enough on its own: the reroute below it takes UNSLOTH_ROCM_GFX_ARCH as
+# the inferred arch and rewrites */cpu to the family index, undoing the gate. The
+# documented escape hatch is UNSLOTH_TORCH_INDEX_URL, which returns long before either.
 _REROUTE_FILE=$(mktemp)
 trap 'rm -f "$_FN_FILE" "$_GATE_FILE" "$_REROUTE_FILE"' EXIT
 {
@@ -150,13 +129,10 @@ assert_eq "gfx1030 override still reroutes"    "gfx103X-all"  "$(_reroute_family
 assert_eq "gfx1151 override still reroutes"    "gfx1151"      "$(_reroute_family gfx1151)"
 
 echo "=== The rejected override is not forwarded to llama.cpp either ==="
-# Keeping PyTorch on CPU while leaving UNSLOTH_ROCM_GFX_ARCH exported splits the host in
-# two: setup.sh copies the value into --rocm-gfx and _apply_host_overrides reads any
-# forwarded gfx as proof of ROCm, which skips the AMD-without-ROCm Vulkan branch (112.8
-# tok/s measured, vs 49.8 for the CPU bundle) and asks a Deck with no ROCm for a ROCm
-# prebuilt or a HIP source build. A rejected arch must leave nothing behind; every other
-# arch must still be handed on, or the runtime-less hosts this reroute exists for get AMD
-# wheels for torch and a CPU llama.cpp.
+# Leaving UNSLOTH_ROCM_GFX_ARCH exported splits the host in two: setup.sh forwards it as
+# --rocm-gfx and _apply_host_overrides reads any forwarded gfx as proof of ROCm, skipping
+# the Vulkan branch (112.8 tok/s vs 49.8 CPU). A rejected arch must leave nothing behind;
+# every other arch must still be handed on.
 _forwarded_gfx() {  # UNSLOTH_ROCM_GFX_ARCH -> what survives for setup.sh, or <unset>
     "$_SH" -c "
         UNSLOTH_ROCM_GFX_ARCH='$1'; export UNSLOTH_ROCM_GFX_ARCH
@@ -171,13 +147,10 @@ assert_eq "gfx1030 override still forwarded" "gfx1030" "$(_forwarded_gfx gfx1030
 assert_eq "gfx1151 override still forwarded" "gfx1151" "$(_forwarded_gfx gfx1151)"
 
 echo "=== End to end: the REAL get_torch_index_url against a REAL rocminfo shape ==="
-# Everything above feeds the gate a hand-built one-token _amd_gfx_probe, which is not
-# what the probe produces. _probe_amd_gfx_arch keeps every `grep -oE` hit and rocminfo
-# names each GPU agent TWICE -- once as the agent's own "Name: gfx1033" and once in its
-# ISA Info block as "amdgcn-amd-amdhsa--gfx1033" -- so a single-GPU Steam Deck already
-# yields "gfx1033\ngfx1033". A gate that compares the whole probe as one string matches
-# neither, and the Deck falls through to the version-keyed ROCm index carrying exactly
-# the wheels this gate exists to avoid. Drive the real function to catch that.
+# Everything above feeds a hand-built one-token probe, which is not what the real one
+# produces: rocminfo names each GPU agent TWICE (its "Name:" and its ISA Info line), so a
+# single-GPU Deck already yields "gfx1033\ngfx1033" and a whole-string compare matches
+# neither. Drive the real function to catch that.
 _E2E_DIR=$(mktemp -d)
 _E2E_FUNCS="$_E2E_DIR/funcs.sh"
 _FAKE_SMI_DIR=$(mktemp -d)
@@ -185,9 +158,9 @@ _FAKE_ROCM_DIR=$(mktemp -d)
 _TOOLS_DIR=$(mktemp -d)
 trap 'rm -rf "$_FN_FILE" "$_GATE_FILE" "$_REROUTE_FILE" "$_E2E_DIR" "$_FAKE_SMI_DIR" "$_FAKE_ROCM_DIR" "$_TOOLS_DIR"' EXIT
 
-# Same extraction contract as tests/sh/test_get_torch_index_url.sh: miss a helper and
-# the ROCm branch hits an undefined command and silently answers cpu, which would make
-# these assertions pass for the wrong reason -- so the ROCm assertion below is the guard.
+# Same extraction contract as tests/sh/test_get_torch_index_url.sh: a missed helper makes
+# the ROCm branch answer cpu, so these would pass for the wrong reason. The ROCm
+# assertion below is the guard against that.
 {
     for _fn in _run_bounded _cvd_hides_nvidia _has_amd_rocm_gpu _has_usable_nvidia_gpu \
                _ensure_rocm_probe_env _probe_amd_gfx_arch _amd_gfx_select_ordinals \
@@ -211,8 +184,8 @@ done
 
 _make_rocminfo_host() {  # $1 = gfx arch -> a dir holding rocminfo + hipconfig mocks
     _mk_dir=$(mktemp -d)
-    # Verbatim shape of a real single-GPU APU host: a CPU agent with no ISA, then the
-    # GPU agent whose arch appears in BOTH its Name and its ISA Info Name.
+    # Real single-GPU APU shape: a CPU agent with no ISA, then the GPU agent whose arch
+    # appears in BOTH its Name and its ISA Info Name.
     cat > "$_mk_dir/rocminfo" <<ROCMINFO
 #!/bin/sh
 cat <<'OUT'
@@ -321,8 +294,7 @@ assert_eq "two-agent host + UUID mask -> cpu (unchanged)" \
 echo "=== HSA_OVERRIDE_GFX_VERSION=10.3.0, the circulated Van Gogh workaround ==="
 # ROCr applies the override in USERLAND while building agent names, so with it set the
 # real rocminfo on a Deck answers gfx1030 and the gate saw no bad token on the one host
-# it exists for: ROCm wheels selected, ROCm backend exported, wrong numbers. This mock is
-# that behaviour -- the same host, answering differently depending on the variable.
+# it exists for. This mock is that behaviour: one host, two answers.
 _make_spoofing_host() {  # -> a dir whose rocminfo honours HSA_OVERRIDE_GFX_VERSION
     _sp_real=$(_make_rocminfo_host gfx1033)
     _sp_spoofed=$(_make_rocminfo_host gfx1030)
@@ -374,11 +346,9 @@ assert_eq "spoofed gfx1030 host keeps rocm" \
     "$(export HSA_OVERRIDE_GFX_VERSION=10.3.0; _index_for_rocminfo_host gfx1030)"
 
 echo "=== KFD answers when the probe cannot, so a spoof cannot fill the gap ==="
-# The fallback chain ends at _amd_gfx_probe, which was collected WITH the override in
-# force. On a Deck with no amd-smi and an older ROCr that cannot re-enumerate once
-# HSA_OVERRIDE_GFX_VERSION is stripped, the physical read is empty and that fallback
-# reports the spoofed gfx1030 -- letting an environment variable answer a presence test.
-# amdkfd is the kernel's own table and no runtime variable reaches it.
+# The fallback chain ends at _amd_gfx_probe, collected WITH the override in force, so on
+# a host whose ROCr cannot re-enumerate once it is stripped that fallback reports the
+# spoofed arch. amdkfd is the kernel's own table and no runtime variable reaches it.
 _make_kfd_only_host() {  # rocminfo that answers ONLY while the override is set
     _ko_dir=$(mktemp -d)
     _ko_spoof=$(_make_rocminfo_host gfx1030)
@@ -417,9 +387,8 @@ assert_eq "KFD names gfx1030 -> rocm" \
     "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_kfd_host gfx1030)"
 
 echo "=== An override nothing can verify is not evidence of a healthy arch ==="
-# Older ROCr that answers only while the override is set, no amd-smi, and no KFD: the
-# fallback chain used to end at the spoofed probe, so gfx1030 stood as proof the host was
-# safe. Absence of evidence is not evidence of absence -- take the cpu index and say so.
+# Older ROCr that answers only while the override is set, no amd-smi, no KFD: the chain
+# used to end at the spoofed probe. Absence of evidence is not evidence of absence.
 _index_unverifiable_override() {  # $1 = the env assignment to apply
     _iuo_dir=$(_make_kfd_only_host)
     _iuo_stub=$(mktemp -d)
@@ -440,9 +409,8 @@ assert_eq "HSA override with no verifiable source -> cpu" \
     "https://download.pytorch.org/whl/cpu" \
     "$(_index_unverifiable_override HSA_OVERRIDE_GFX_VERSION=10.3.0)"
 # UNSLOTH_ROCM_GFX_ARCH is a DECLARED arch, not a spoof: it renames nothing, and a
-# tool-blind host is exactly the runtime-less #7301 population the per-arch reroute
-# serves. Treating it as unverifiable would strand every legitimate gfx1151 install on
-# the cpu index, so it must still defer to the reroute.
+# tool-blind host is the runtime-less #7301 population the reroute serves. Treating it as
+# unverifiable would strand every legitimate gfx1151 install on the cpu index.
 # Both reach the cpu index, so the INDEX alone cannot tell the spoof refusal apart from
 # the ordinary no-version deferral. Assert on which branch spoke.
 _stderr_unverifiable_override() {  # $1 = env assignment -> stderr only
@@ -476,11 +444,8 @@ assert_eq "no override and no probe is not treated as a spoof" \
     "rocm" "$(_route '')"
 
 echo "=== A declared arch must not answer for the silicon ==="
-# UNSLOTH_ROCM_GFX_ARCH is an arch HINT for routing, not a wheel pin, and it is short-
-# circuited at the top of _probe_amd_gfx_arch. A stale gfx1030 on a real Van Gogh -- the
-# same value HSA_OVERRIDE_GFX_VERSION=10.3.0 spoofs to -- therefore answered the gate with
-# a healthy arch and restored the ROCm path this whole gate exists to close. "physical"
-# mode now skips it, so the probe reports the silicon.
+# UNSLOTH_ROCM_GFX_ARCH short-circuits the top of _probe_amd_gfx_arch, so a stale gfx1030
+# on a real Van Gogh answered the gate with a healthy arch. "physical" mode skips it.
 _index_for_declared_arch() {  # $1 = real silicon, $2 = UNSLOTH_ROCM_GFX_ARCH
     _ida_dir=$(_make_rocminfo_host "$1")
     PATH="$_ida_dir:$_TOOLS_DIR" "$_SH" -c "

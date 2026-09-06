@@ -373,9 +373,8 @@ class HostInfo:
     has_usable_nvidia: bool
     has_rocm: bool = False
     has_intel_gpu: bool = False
-    # An AMD GPU is present but ROCm is not usable. Linux only, and only probed when
-    # there is no usable NVIDIA and no ROCm, so the ROCm branches still own every host
-    # where ROCm actually works.
+    # AMD GPU present but ROCm unusable. Linux only, probed only when there is no usable
+    # NVIDIA and no ROCm, so the ROCm branches still own every host where ROCm works.
     has_amd_gpu_without_rocm: bool = False
     rocm_gfx_target: str | None = None
     rocm_gfx_targets: list[str] = field(default_factory = list)
@@ -1131,24 +1130,11 @@ def direct_upstream_release_plan(
         # ROCm hosts are excluded: this ggml-org path ships no per-gfx ROCm
         # asset, so they fall through to the empty-attempts raise (HIP source
         # build) rather than silently getting a CPU binary on a GPU host.
-        # Intel or AMD GPU with no usable ROCm: use the Vulkan prebuilt. The elif
-        # already excludes usable NVIDIA and ROCm; also require no PHYSICAL NVIDIA so a
-        # CUDA-hidden card isn't reached through Vulkan (CPU below).
-        #
-        # Widening this from Intel-only is safe because the Vulkan bundle is a SUPERSET
-        # of the CPU bundle: it ships the same libggml-cpu-*.so variants next to
-        # libggml-vulkan.so, and with no usable Vulkan device it enumerates zero devices
-        # and runs on the CPU backend (verified: `--list-devices` with the ICD removed
-        # lists nothing and exits 0). So a host that turns out to have no working Vulkan
-        # lands exactly where it does today, and one that does gets the GPU.
-        #
-        # ROCm does not support most AMD parts -- APUs least of all -- and many distros
-        # ship Mesa/RADV without ROCm ever being installed, so this population is large
-        # and was previously getting a CPU-only binary on a GPU host. Measured on a Steam
-        # Deck (Van Gogh gfx1033, Qwen2.5-0.5B Q4_0, llama-bench): Vulkan 112.8 tok/s
-        # generation vs 49.8 CPU, and 17.5 for a ROCm build coaxed into running via
-        # HSA_OVERRIDE_GFX_VERSION. Such a host also resolves to the cpu torch index, so
-        # it ends up with the CPU training stack plus Vulkan inference.
+        # Intel or AMD GPU with no usable ROCm: use the Vulkan prebuilt. Require no
+        # PHYSICAL NVIDIA so a CUDA-hidden card isn't reached through Vulkan. Widening
+        # from Intel-only is safe: the Vulkan bundle is a superset of the CPU bundle and
+        # falls back to the CPU backend when no Vulkan device enumerates. Measured on a
+        # Steam Deck (gfx1033, Qwen2.5-0.5B Q4_0): Vulkan 112.8 tok/s vs 49.8 CPU.
         if (host.has_intel_gpu or host.has_amd_gpu_without_rocm) and not host.has_physical_nvidia:
             vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-x64.tar.gz"
             vulkan_url = assets.get(vulkan_asset)
@@ -1182,16 +1168,10 @@ def direct_upstream_release_plan(
         # selector returned 0 attempts and the installer fell back to a
         # source build on every Linux ARM64 host (DGX Spark, Ampere
         # Altra, GitHub-hosted ubuntu-24.04-arm runners, etc.).
-        # Intel (or other non-NVIDIA/non-AMD) GPU: prefer the Vulkan prebuilt.
-        # Upstream ships bin-ubuntu-vulkan-arm64.
-        # No physical NVIDIA: don't reach a CUDA-hidden card through Vulkan.
-        #
-        # Deliberately NOT has_amd_gpu_without_rocm, which the x86_64 branch above does
-        # take: that widening was measured on one machine (a Steam Deck, x86_64), and the
-        # PR claiming it verified 72 routing cells all on x86_64. An ARM64 Linux host with
-        # a discrete AMD GPU and no ROCm would very likely be better off on Vulkan too,
-        # but nobody has run it, so it keeps the CPU archive it gets today. Widen this
-        # once someone has the hardware to measure, not before.
+        # Intel GPU: prefer the Vulkan prebuilt (bin-ubuntu-vulkan-arm64). No physical
+        # NVIDIA: don't reach a CUDA-hidden card through Vulkan. Deliberately NOT
+        # has_amd_gpu_without_rocm, unlike x86_64 above: that widening was only measured
+        # on x86_64. Widen once someone has ARM64 AMD hardware to measure.
         if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
             vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-arm64.tar.gz"
             vulkan_url = assets.get(vulkan_asset)
@@ -2766,37 +2746,23 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         # since the HIP SDK can be installed without an AMD GPU.
 
     # Detect an Intel or AMD GPU; gates the Vulkan prebuilt. Linux reads the DRM sysfs
-    # vendor ids (0x8086 Intel, 0x1002 AMD); Windows reads the display-adapter registry
-    # class, then falls back to the WMI video controller list. Only probed with no
-    # usable NVIDIA and no ROCm (matching the Vulkan branches), keeping the probe
-    # (notably the Windows powershell call) off that path -- which is also why
-    # has_amd_gpu_without_rocm carries "without ROCm" in its name by construction.
+    # vendor ids (0x8086 Intel, 0x1002 AMD); Windows reads the display-adapter registry,
+    # then the WMI video controller list. Only probed with no usable NVIDIA and no ROCm,
+    # matching the Vulkan branches -- hence "without_rocm" holds by construction.
     has_intel_gpu = False
     has_amd_gpu_without_rocm = False
     if not has_usable_nvidia and not has_rocm:
         # ROCR_VISIBLE_DEVICES set means the caller asked for GPU isolation, and Vulkan
-        # honours none of the HIP masks (it selects through GGML_VK_VISIBLE_DEVICES), so
-        # auto-routing there would hand llama.cpp the very GPU that request hid -- what
-        # _should_auto_vulkan_for_amd_windows already refuses on Windows, and what the
-        # has_physical_nvidia gate refuses for CUDA_VISIBLE_DEVICES. The request is
-        # honoured on its own terms, not only where a ROCm inventory tool happens to be
-        # installed: nobody exports this variable except to steer ROCm, and a container
-        # that sets it over a driver-only image would otherwise be handed the hidden card.
-        #
-        # ROCR_VISIBLE_DEVICES alone, not the three _hip_visible_device_mask_set() reads.
-        # It filters the HSA runtime's agent list, so it removes GPUs from rocminfo's own
-        # output; HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias filter the HIP
-        # runtime's device list, and rocminfo is an HSA tool, not a HIP application (AMD's
-        # GPU-isolation docs, and the split guidance to use ROCR_VISIBLE_DEVICES on Linux
-        # and HIP_VISIBLE_DEVICES on Windows). Counting the other two cost the Vulkan
-        # bundle to any AMD host that merely had CUDA_VISIBLE_DEVICES exported, which is a
-        # common shell default and exactly the host this widening exists for. Windows
-        # keeps reading all three, because its probe is hipinfo, itself a HIP application.
-        # Intel is not addressed by HIP masks and keeps its plain detection.
+        # honours no HIP mask (it selects via GGML_VK_VISIBLE_DEVICES), so auto-routing
+        # would hand llama.cpp the very GPU that request hid. ROCR alone, not the three
+        # _hip_visible_device_mask_set() reads: it filters the HSA agent list, while
+        # HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias filter HIP's device list
+        # (AMD GPU-isolation docs). Counting those would cost the Vulkan bundle to any
+        # host that merely exported CUDA_VISIBLE_DEVICES. Windows reads all three because
+        # its probe is hipinfo, a HIP application. Intel is unaffected by HIP masks.
         _amd_hidden_by_mask = os.environ.get("ROCR_VISIBLE_DEVICES") is not None
         if is_linux:
-            # No early break: both vendors matter, and a laptop can pair an Intel iGPU
-            # with an AMD dGPU. This is a handful of sysfs reads.
+            # No early break: a laptop can pair an Intel iGPU with an AMD dGPU.
             for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
                 try:
                     with open(_vendor_file, encoding = "utf-8") as _vf:
@@ -3605,20 +3571,15 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 "falling back to source build with HIP support"
             )
 
-        # Intel or AMD GPU with no usable ROCm: use the Vulkan prebuilt. No physical
-        # NVIDIA (not just no usable one): a CUDA-hidden card must not be reached through
-        # Vulkan, which ignores CUDA_VISIBLE_DEVICES. The AMD ROCm branch above still wins
-        # whenever ROCm can run; this only rescues hosts falling through to CPU, and the
-        # Vulkan bundle carries CPU backends so it degrades to today's behaviour when
-        # there is no usable Vulkan device.
+        # Intel or AMD GPU with no usable ROCm: use the Vulkan prebuilt. No PHYSICAL
+        # NVIDIA, since Vulkan ignores CUDA_VISIBLE_DEVICES. The ROCm branch above still
+        # wins whenever ROCm can run; this only rescues hosts falling through to CPU.
         if (
             (host.has_intel_gpu or host.has_amd_gpu_without_rocm)
             and not host.has_physical_nvidia
             and not host.has_rocm
         ):
-            # Name the vendor actually found: this branch now also covers AMD, and
-            # "Intel GPU detected" on a Radeon box is exactly the line users paste
-            # into AMD bug reports.
+            # Name the vendor actually found: this branch now also covers AMD.
             vendor = "Intel GPU" if host.has_intel_gpu else "AMD GPU without usable ROCm"
             vulkan_name = f"llama-{llama_tag}-bin-ubuntu-vulkan-x64.tar.gz"
             if vulkan_name in upstream_assets:
@@ -6458,13 +6419,9 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         if published_rocm is not None:
             attempts.append(published_rocm)
     else:
-        # Same condition as the upstream-filename path in direct_upstream_release_plan
-        # and resolve_upstream_asset_choice. It has to be stated in all three: this is
-        # the branch that actually runs when a published bundle exists, which is the
-        # normal case, so gating Vulkan on has_intel_gpu here left every AMD host
-        # without usable ROCm on the CPU bundle no matter what the other two said.
-        # Measured on a Steam Deck (gfx1033): Vulkan 121 tok/s generation vs 49.8 CPU.
-        # Reaching here already means not has_rocm -- it is the else of that branch.
+        # Same condition as direct_upstream_release_plan and resolve_upstream_asset_choice;
+        # it must be stated in all three, and this is the branch that runs in the normal
+        # published-bundle case. Reaching here already means not has_rocm (it is the else).
         if (host.has_intel_gpu or host.has_amd_gpu_without_rocm) and not host.has_physical_nvidia:
             vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
             if vulkan_choice is not None:

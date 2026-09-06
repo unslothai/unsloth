@@ -157,19 +157,16 @@ def test_drm_vendor_detection(monkeypatch, tmp_path, vendor_ids, expect_amd, exp
     "env, expect_amd",
     [
         ({}, True),  # the target host: driver-only AMD, no mask
-        # ROCR_VISIBLE_DEVICES is a request for GPU isolation, and Vulkan honours none of
-        # the HIP masks, so auto-routing there would hand llama.cpp the card that request
-        # hid. Honoured on its own terms: no ROCm inventory tool has to be installed for
-        # the request to be real, and a container setting it over a driver-only image is
-        # the case where none is.
+        # ROCR_VISIBLE_DEVICES is a request for GPU isolation and Vulkan honours no HIP
+        # mask, so auto-routing would hand llama.cpp the card that request hid. Honoured
+        # on its own terms: no ROCm inventory tool has to be installed for it to be real.
         ({"ROCR_VISIBLE_DEVICES": ""}, False),
         ({"ROCR_VISIBLE_DEVICES": "-1"}, False),
         ({"ROCR_VISIBLE_DEVICES": "0"}, False),
-        # Only ROCR_VISIBLE_DEVICES can empty an HSA agent list, and only it is the Linux
-        # isolation control. HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias filter
-        # the HIP runtime, which rocminfo is not a client of. Counting them denied the
-        # Vulkan bundle to any AMD host that merely had CUDA_VISIBLE_DEVICES exported --
-        # a common shell default, on exactly the host this widening exists for.
+        # Only ROCR_VISIBLE_DEVICES empties an HSA agent list; HIP_VISIBLE_DEVICES and its
+        # CUDA_VISIBLE_DEVICES alias filter the HIP runtime, which rocminfo is not a client
+        # of. Counting them denied the Vulkan bundle to any host that merely exported
+        # CUDA_VISIBLE_DEVICES, a common shell default.
         ({"HIP_VISIBLE_DEVICES": "-1"}, True),
         ({"CUDA_VISIBLE_DEVICES": ""}, True),
         ({"CUDA_VISIBLE_DEVICES": "0"}, True),

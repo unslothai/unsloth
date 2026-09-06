@@ -2872,10 +2872,9 @@ class TestInstallShStructure:
             "amd-smi list 2>/dev/null) | grep -oE 'gfx" in helper
         ), "probe must read gfx from amd-smi"
         # The probe clears ROCR/HIP_VISIBLE_DEVICES so a container mask
-        # (ROCR_VISIBLE_DEVICES=-1) can't blind the env-independent KFD detection. Both
-        # halves are asserted: the names in the strip list, and the list reaching unset.
-        # The literal `unset ROCR... HIP...` stopped existing when the helper gained its
-        # "physical" mode, which appends HSA_OVERRIDE_GFX_VERSION to the same list.
+        # (ROCR_VISIBLE_DEVICES=-1) can't blind the env-independent KFD detection. Assert
+        # both halves: the names in the strip list, and the list reaching unset. The
+        # literal `unset ROCR... HIP...` went away when "physical" mode was added.
         assert (
             '_pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES"' in helper
         ), "the gfx probe must clear the visibility masks so a mask can't force CPU"

@@ -2,31 +2,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# Guards the shell-rc PATH append in install.sh (_persist_login_path_dir, and the fish
-# drop-in arm _persist_fish_path_dir it delegates to).
-#
-# History: the append was three unguarded `echo ... >> "$_SHELL_PROFILE"` lines. With
-# `set -e` at the top of install.sh, an rc file that could not be written aborted the
-# installer at its very last cosmetic step -- after the venv, llama.cpp and the shim were
-# already in place -- so the user saw "Unsloth Studio Installed" followed by a hard
-# failure, and the Tauri/AppImage path reported the whole install as failed. Immutable
-# and managed homes hit this every time: NixOS / home-manager symlink ~/.bashrc into the
-# read-only Nix store, and chezmoi / stow / yadm do the same.
-#
-# The contract now:
-#   * a writable rc gets the export appended and a normal "path" step;
-#   * an rc that already mentions .local/bin is left alone (idempotent re-runs);
-#   * an empty rc path is a no-op (no shell rc was found);
-#   * a NON-WRITABLE rc warns, prints the line to add by hand, and still returns 0 so
-#     `set -e` cannot kill a successful install;
-#   * the three lines go in as ONE redirect, so a partial write cannot leave a dangling
-#     "# Added by Unsloth installer" comment with no export under it.
-#
-# The helper was later generalised from _persist_local_bin_on_path (one hardcoded directory,
-# rc file as $1) to _persist_login_path_dir (any directory, rc file as the optional $5) and
-# grew a fish arm. Every clause above is a property of the append itself, not of that
-# signature, so they all still apply -- including to fish, whose conf.d drop-in lives under a
-# home directory that is just as likely to be read-only.
+# Guards the shell-rc PATH append in install.sh (_persist_login_path_dir and the fish
+# drop-in arm _persist_fish_path_dir). Under `set -e`, an unwritable rc used to abort the
+# installer at its last cosmetic step; immutable homes (NixOS/home-manager, chezmoi) hit
+# this every time. Contract: writable rc gets the export; an rc already mentioning
+# .local/bin is untouched; no rc is a no-op; an unwritable rc warns, prints the manual
+# line and returns 0; the lines go in as ONE redirect so no partial write is possible.
+# All of it applies to the fish arm too, whose conf.d lives under the same home.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -58,8 +40,8 @@ assert_not_contains() {
     fi
 }
 
-# ── Extract the functions under test ──
-# The POSIX arm delegates to the fish arm and reads _PATH_LINE_RE, so all three come along.
+# Extract the functions under test. The POSIX arm delegates to the fish arm and reads
+# _PATH_LINE_RE, so all three come along.
 _FN_FILE=$(mktemp)
 {
     grep '^_PATH_LINE_RE=' "$INSTALL_SH"
@@ -88,19 +70,15 @@ HARNESS
 
 _SH="${BASH:-/bin/bash}"
 
-# `set -e` inside the runner mirrors install.sh: if the function returns non-zero the
-# runner dies before echoing RC, which is exactly the regression being guarded.
-# $5 pins the profile file, so the rc-selection cascade (zsh / .bashrc / .profile) stays out
-# of what is being measured here. SHELL is forced to a non-fish value for the same reason:
-# the POSIX arm hands off to fish before it looks at anything else, and a developer running
-# this suite under fish would otherwise silently exercise the wrong arm.
+# `set -e` mirrors install.sh: a non-zero return kills the runner before it echoes RC,
+# which is the regression being guarded. $5 pins the profile file so the rc-selection
+# cascade stays out of it; SHELL is forced non-fish so the POSIX arm is what runs.
 _run() {  # $1 = rc path
     # LC_ALL=C so the raw-diagnostic assertions below can match the shell's own wording.
     ( LC_ALL=C SHELL=/bin/bash "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir \"\$HOME/.local/bin\" '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin' '$1'; echo \"RC=\$?\"" 2>&1 )
 }
 
-# The fish arm picks its own file under $HOME, so it is steered by HOME rather than by an
-# argument.
+# The fish arm picks its own file under $HOME, so steer it with HOME, not an argument.
 _run_fish() {  # $1 = HOME
     ( LC_ALL=C HOME="$1" SHELL=/usr/bin/fish "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir \"\$HOME/.local/bin\" '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin'; echo \"RC=\$?\"" 2>&1 )
 }
@@ -130,15 +108,13 @@ else
 fi
 
 echo "=== no home at all (nothing to write to): no-op ==="
-# The old shape took an empty rc path; the current one derives the file, so the equivalent
-# "there is nowhere to persist to" input is an unset HOME.
+# The current shape derives the file, so "nowhere to persist to" means an unset HOME.
 _out=$( env -u HOME "$_SH" -c "set -e; . '$_HARNESS'; . '$_FN_FILE'; _persist_login_path_dir '/x/.local/bin' '\$HOME/.local/bin' '~/.local/bin' '\\.local/bin'; echo \"RC=\$?\"" 2>&1 )
 assert_contains     "returns 0"  "$_out" "RC=0"
 assert_not_contains "no step"    "$_out" "STEP path"
 
 echo "=== READ-ONLY rc: warns, does not fail the install ==="
-# The NixOS / home-manager / chezmoi shape. Root ignores the write bit, so skip there
-# rather than reporting a false pass.
+# The NixOS / home-manager / chezmoi shape. Root ignores the write bit, so skip there.
 _rc3="$_TMP/.bashrc_ro"; : > "$_rc3"; chmod 0444 "$_rc3"
 if [ "$(id -u)" = "0" ] || { echo x >> "$_rc3"; } 2>/dev/null; then
     echo "  SKIP: cannot make a file unwritable as this user (running as root?)"
@@ -150,11 +126,9 @@ else
     assert_contains     "prints the manual line"      "$_out" 'export PATH="$HOME/.local/bin:$PATH"'
     assert_contains     "reassures install is fine"   "$_out" "only the PATH line is missing"
     assert_not_contains "does not claim success"      "$_out" "added ~/.local/bin to PATH in"
-    # The shell prints its own "Permission denied" for a failed open on the CURRENT
-    # stderr, so `>> file 2>/dev/null` silences nothing: the redirections apply left to
-    # right and stderr is still the terminal when the append fails. Only `2>/dev/null`
-    # placed first makes the guard quiet, and a raw diagnostic here is exactly what this
-    # branch exists to replace.
+    # `>> file 2>/dev/null` silences nothing: redirections apply left to right, so
+    # stderr is still the terminal when the append fails. Only 2>/dev/null placed first
+    # is quiet, and a raw diagnostic is exactly what this branch exists to replace.
     assert_not_contains "no raw shell diagnostic"     "$_out" "Permission denied"
     if [ ! -s "$_rc3" ]; then
         echo "  PASS: read-only file left empty (no partial write)"; PASS=$((PASS + 1))
