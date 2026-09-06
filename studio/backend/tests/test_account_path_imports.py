@@ -10,6 +10,8 @@ import pytest
 
 _BACKEND = Path(__file__).resolve().parents[1]
 _PATH_MODULES = ("utils.paths", "hub.utils.paths")
+# Shared by every account, so a value captured at import cannot leak between them.
+_INSTALL_WIDE = ("studio_root", "auth_db_path", "bin_root", "cache_root", "logs_root")
 
 
 def import_time_path_calls(source: str, module: str = "") -> list[tuple[int, str]]:
@@ -40,7 +42,11 @@ def import_time_path_calls(source: str, module: str = "") -> list[tuple[int, str
     class AtImport(ast.NodeVisitor):
         def visit_Call(self, node):
             name = target(node.func)
-            if name.startswith(tuple(f"{prefix}." for prefix in _PATH_MODULES)) and name.endswith(("_root", "_path")):
+            if (
+                name.startswith(tuple(f"{prefix}." for prefix in _PATH_MODULES))
+                and name.endswith(("_root", "_path"))
+                and name.rsplit(".", 1)[-1] not in _INSTALL_WIDE
+            ):
                 found.append((node.lineno, name))
             self.generic_visit(node)
 

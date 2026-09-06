@@ -103,7 +103,7 @@ def seed_resource(factory: Factory, account) -> dict[str, str]:
     if factory.name == "mcp":
         from storage import mcp_servers_db
         run_as(
-            account, mcp_servers_db.create_server, SERVER_ID, SENTINEL, "http://127.0.0.1:9/mcp",
+            account, mcp_servers_db.create_server, SERVER_ID, SENTINEL, "http://8.8.8.8:9/mcp",
             headers_json = None, is_enabled = False, use_oauth = False,
         )
     return params

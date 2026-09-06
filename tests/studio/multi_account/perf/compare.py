@@ -31,14 +31,19 @@ def regressions(results: dict, *, tolerance: float = 0.05) -> list[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description = __doc__)
-    parser.add_argument("--base-ref", default = "mu/base~1")
+    parser.add_argument("--base-ref", default = None, help = "defaults to the merge base with origin/main")
     parser.add_argument("--rounds", type = int, default = 3)
     parser.add_argument("--output", type = Path, default = REPO / "artifacts/perf.json")
     args = parser.parse_args()
     assert args.rounds >= 1
     assert args.output.resolve().is_relative_to(REPO), "Benchmark artifacts must stay in this clone"
     sys.path.insert(0, str(REPO / "studio/backend/tests/multi_account"))
-    from perf_utils import materialize_revision, run_probe
+    from perf_utils import baseline_ref, materialize_revision, run_probe
+
+    if args.base_ref is None:
+        args.base_ref = baseline_ref()
+        if args.base_ref is None:
+            raise SystemExit("no baseline commit reachable; pass --base-ref")
 
     scratch_parent = REPO / ".tmp"
     scratch_parent.mkdir(exist_ok = True)

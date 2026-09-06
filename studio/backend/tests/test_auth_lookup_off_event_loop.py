@@ -58,13 +58,11 @@ def _api_key_case(monkeypatch, threads):
         "validate_api_key_with_credential",
         _record_thread(threads, (SUBJECT, SECRET)),
     )
-    from utils.account_context import AccountContext
-
     # The account binding is one more auth.db read, and it too stays off the loop.
     monkeypatch.setattr(
         authentication,
-        "get_account",
-        _record_thread(threads, AccountContext("acct-test", SUBJECT, "user")),
+        "get_user_record",
+        _record_thread(threads, _record(SECRET)),
     )
     return authentication.get_current_subject(_credentials(f"{API_KEY_PREFIX}key"))
 

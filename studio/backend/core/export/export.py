@@ -449,13 +449,15 @@ class ExportBackend:
             return False
 
     def scan_checkpoints(
-        self, outputs_dir: str = str(outputs_root())
+        self, outputs_dir: Optional[str] = None
     ) -> List[Tuple[str, List[Tuple[str, str]]]]:
         """
         Scan outputs folder for training runs and their checkpoints.
 
         Returns: [(model_name, [(display_name, checkpoint_path), ...]), ...]
         """
+        if outputs_dir is None:
+            outputs_dir = str(outputs_root())
         from utils.models.checkpoints import scan_checkpoints
         return scan_checkpoints(outputs_dir = outputs_dir)
 

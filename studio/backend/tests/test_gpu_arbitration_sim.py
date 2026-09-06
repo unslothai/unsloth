@@ -442,6 +442,8 @@ def chat_switch(route, monkeypatch):
     monkeypatch.setattr(route, "_auto_switch_waiters", {})
     monkeypatch.setattr(route, "_loaded_identity_satisfies", lambda name: backend.model_identifier == name)
     monkeypatch.setattr(route, "_claim_slot_for_non_preview", lambda *_args: None)
+    # Visibility is decided by the account model grants, tested on their own.
+    monkeypatch.setattr(route.account_access, "require_model_access", lambda *_args, **_kwargs: None)
 
     async def load(request, *_args, **_kwargs):
         loads.append(request.model_path)

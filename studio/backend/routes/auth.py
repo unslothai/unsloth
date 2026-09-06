@@ -553,6 +553,10 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
             detail = "Invalid or expired refresh token",
         )
     username, is_desktop, jwt_secret = consumed
+    if is_desktop:
+        # Only the installation owner runs inside the desktop shell.
+        account = storage.get_account(username)
+        is_desktop = account is not None and account.is_owner
     new_access_token = create_access_token(subject = username, desktop = is_desktop, secret = jwt_secret)
     new_refresh_token = create_refresh_token(
         subject = username, desktop = is_desktop, secret = jwt_secret

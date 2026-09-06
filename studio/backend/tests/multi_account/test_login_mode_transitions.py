@@ -113,7 +113,6 @@ def test_invalidation_racing_a_stale_count_does_not_poison_cache(isolated_auth, 
     assert policy.login_mode() == "multi"
 
 
-@pytest.mark.xfail(strict = True, reason = "worker 01")
 def test_deactivated_account_cannot_keep_using_a_previously_issued_api_key(isolated_auth, accounts, account_client):
     raw_key, _ = isolated_auth.create_api_key("alice", name = "before-deactivation")
     headers = {"Authorization": f"Bearer {raw_key}"}

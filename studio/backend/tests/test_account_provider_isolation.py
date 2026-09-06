@@ -30,7 +30,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     # The owner has already initialized these modules: each new DB must still get its schema.
     for module in (credential_secrets, mcp_servers_db, providers_db):
-        monkeypatch.setattr(module, "_schema_ready", True)
+        monkeypatch.setattr(module, "_schema_ready", set())
     monkeypatch.setattr(access, "_schema_paths", set())
     monkeypatch.setattr(credential_secrets, "get_or_create_credential_encryption_key", lambda: b"k" * 32)
     monkeypatch.setattr(providers, "current_credential_write", lambda credential: nullcontext())
@@ -78,7 +78,7 @@ def test_provider_object_routes_and_saved_keys_are_private(account, other):
 @pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
 def test_mcp_server_ids_are_scoped_before_session_or_tool_access(account, other, monkeypatch):
     with client_for(account) as client:
-        created = client.post("/mcp/", json = {"display_name": "Private MCP", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer private"}})
+        created = client.post("/mcp/", json = {"display_name": "Private MCP", "url": "https://8.8.8.8/mcp", "headers": {"Authorization": "Bearer private"}})
         assert created.status_code == 201, created.text
         server_id = created.json()["id"]
     calls = []

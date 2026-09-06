@@ -13,6 +13,32 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[4]
 PROBE = REPO / "tests/studio/multi_account/perf/probe.py"
+SCRATCH = REPO / "temp" / "multi_account_perf"
+
+
+def baseline_ref() -> str | None:
+    """The pre-account commit to measure against, or None when no local ref names it.
+
+    UNSLOTH_STUDIO_PERF_BASE_REF wins; otherwise the merge base with the upstream
+    main branch, which is what a pull request is measured against."""
+    explicit = os.environ.get("UNSLOTH_STUDIO_PERF_BASE_REF")
+    candidates = [explicit] if explicit else []
+    for upstream in ("origin/main", "upstream/main", "main"):
+        candidates.append(f"merge-base:{upstream}")
+    for candidate in candidates:
+        if candidate.startswith("merge-base:"):
+            command = ["git", "merge-base", "HEAD", candidate.split(":", 1)[1]]
+        else:
+            command = ["git", "rev-parse", "--verify", f"{candidate}^{{commit}}"]
+        result = subprocess.run(command, cwd = REPO, capture_output = True, text = True)
+        revision = result.stdout.strip()
+        if result.returncode == 0 and revision and revision != _head():
+            return revision
+    return None
+
+
+def _head() -> str:
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd = REPO, text = True).strip()
 
 
 def materialize_revision(ref: str, destination: Path) -> Path:

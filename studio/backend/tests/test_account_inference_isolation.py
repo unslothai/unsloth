@@ -93,8 +93,9 @@ def test_foreign_generation_returns_retryable_409_without_cancelling_it(path, bo
         with client_for(ALICE) as client:
             response = client.post(f"/api/inference/{path}", json = body)
         assert response.status_code == 409
-        assert response.json() == {"error": "gpu_busy", "retry_after": 1}
-        assert response.headers["retry-after"] == "1"
+        body = response.json()
+        assert body["error"] == "gpu_busy"
+        assert body["retry_after"] == int(response.headers["retry-after"])
         assert not event.is_set()
 
 
@@ -105,7 +106,9 @@ def test_chat_load_and_raw_arbiter_error_use_the_same_retry_response(monkeypatch
     with client_for(ALICE) as client:
         response = client.post("/api/inference/load", json = {"model_path": "org/public"})
     assert response.status_code == 409
-    assert response.json() == {"error": "gpu_busy", "retry_after": 1}
+    body = response.json()
+    assert body["error"] == "gpu_busy"
+    assert body["retry_after"] == int(response.headers["retry-after"])
 
 
 def test_forced_swap_cancels_only_callers_registrations():

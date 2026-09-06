@@ -3,19 +3,29 @@
 
 """Compare actual warm-path I/O against pre-contract code in an isolated process."""
 
+import shutil
+import uuid
+
 import pytest
 
-from .perf_utils import REPO, materialize_revision, run_probe
+from .perf_utils import REPO, SCRATCH, baseline_ref, materialize_revision, run_probe
 
 
 @pytest.fixture(scope = "module")
-def measured_costs(tmp_path_factory):
-    scratch = tmp_path_factory.mktemp("account-cost")
-    baseline = materialize_revision("mu/base~1", scratch / "baseline")
-    return (
-        run_probe(baseline, scratch / "baseline-home", mode = "cost"),
-        run_probe(REPO / "studio/backend", scratch / "head-home", mode = "cost"),
-    )
+def measured_costs():
+    ref = baseline_ref()
+    if ref is None:
+        pytest.skip("no pre-account baseline commit is reachable from this clone")
+    scratch = SCRATCH / uuid.uuid4().hex
+    scratch.mkdir(parents = True)
+    try:
+        baseline = materialize_revision(ref, scratch / "baseline")
+        yield (
+            run_probe(baseline, scratch / "baseline-home", mode = "cost"),
+            run_probe(REPO / "studio/backend", scratch / "head-home", mode = "cost"),
+        )
+    finally:
+        shutil.rmtree(scratch, ignore_errors = True)
 
 
 @pytest.mark.parametrize("operation,connections,queries,mkdir_calls", [

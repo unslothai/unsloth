@@ -203,7 +203,11 @@ async def _bind_for(username: str) -> None:
     if username == OWNER.username:
         bind_account(OWNER)
         return
-    account = await run_in_threadpool(get_account, username)
+    record = await run_in_threadpool(get_user_record, username)
+    account = (
+        AccountContext(record["account_id"], record["username"], record["role"])
+        if record and record.get("is_active", 1) else None
+    )
     if account is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
@@ -282,7 +286,10 @@ def is_desktop_access_token(token: str) -> bool:
     except jwt.InvalidTokenError:
         return False
 
-    return payload.get("sub") == subject and payload.get("desktop") is True
+    if payload.get("sub") != subject or payload.get("desktop") is not True:
+        return False
+    account = get_account(subject)
+    return account is not None and account.is_owner
 
 
 def create_refresh_token(
@@ -546,7 +553,9 @@ async def _get_current_credential(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = "Invalid token payload",
             )
-        is_desktop = payload.get("desktop") is True
+        # The desktop shell signs in as the owner; a managed token carrying the
+        # marker is not entitled to the owner's password-change bypass.
+        is_desktop = payload.get("desktop") is True and record.get("role") == "owner"
         if must_change_password and not allow_password_change and not is_desktop:
             raise HTTPException(
                 status_code = status.HTTP_403_FORBIDDEN,

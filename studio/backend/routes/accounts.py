@@ -48,6 +48,14 @@ def retire_account_roots(account: AccountContext) -> None:
     if account.is_owner or account.account_id == "owner":
         raise ValueError("The installation owner cannot be retired")
     active_generations.cancel_all(account.account_id)
+    # Long-running services, MCP sessions and tool caches hold this account's
+    # paths open; stop them before the rename so nothing recreates a root.
+    from core.inference.mcp_client import close_mcp_sessions, invalidate_tool_cache
+    from core.training.account_jobs import retire_account_jobs
+
+    retire_account_jobs(account)
+    run_as(account, close_mcp_sessions)
+    run_as(account, invalidate_tool_cache)
     roots = {
         run_as(account, root).absolute()
         for root in (storage_roots.workspace_root, storage_roots.project_workspaces_root, storage_roots.tmp_root)

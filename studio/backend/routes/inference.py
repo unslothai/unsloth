@@ -3874,6 +3874,17 @@ def _passthrough_client_tools(payload):
     return payload.tools or None
 
 
+def _admit_tool_access(payload) -> None:
+    """Refuse full access at the door, before a stream opens and 400 is no longer
+    possible. The loops check again for non-HTTP callers."""
+    from state.tool_policy import require_tool_access
+    require_tool_access(
+        getattr(payload, "permission_mode", None),
+        bypass_permissions = bool(getattr(payload, "bypass_permissions", False)),
+        disable_sandbox = bool(getattr(payload, "disable_sandbox", False)),
+    )
+
+
 def _permission_mode_confirm(payload) -> bool:
     """Effective confirm-gate intent for Unsloth's own local tool loop.
 
@@ -12821,7 +12832,6 @@ def _raise_or_cancel_active_generations(
     run ahead of preflight checks that can still reject the load (see
     _load_model_impl).
     """
-    account_access.require_idle_other_accounts()
     scope = account_access.account_scope()
     if not active_generations.count(scope):
         return 0
@@ -20549,6 +20559,7 @@ async def openai_chat_completions(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    _admit_tool_access(payload)
     from auth.authentication import request_admitted_without_credential
     if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
         request
@@ -28145,6 +28156,7 @@ async def openai_responses(
     internally, and returns a response matching the Responses API schema
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
+    _admit_tool_access(payload)
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
@@ -29076,6 +29088,7 @@ async def anthropic_messages(
     responses in Anthropic Messages API format (streaming SSE or non-streaming
     JSON).
     """
+    _admit_tool_access(payload)
     llama_backend = get_llama_cpp_backend()
 
     # Default-off parity: with no automatic load possible and nothing loaded, 503

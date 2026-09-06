@@ -77,7 +77,6 @@ def test_owner_can_still_use_own_resource(case, accounts):
     assert response.status_code == factory.success, response.text
 
 
-@pytest.mark.xfail(strict = True, reason = "worker 02")
 def test_first_database_use_in_each_account_initializes_its_schema(accounts):
     for account in accounts.values():
         assert run_as(account, studio_db.list_chat_threads) == []

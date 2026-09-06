@@ -39,7 +39,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(tools, "_legacy_sandbox_migrated", True)
     monkeypatch.setattr(tools, "_start_detached_sweep", lambda: None)
     monkeypatch.setattr(tools, "_legacy_sandbox_root", lambda: str(tmp_path / "legacy"))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     if hasattr(mcp_servers_db, "_account_schema_ready"):
         monkeypatch.setattr(mcp_servers_db, "_account_schema_ready", set())
     monkeypatch.setattr(mcp_client, "_tool_cache", {})

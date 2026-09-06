@@ -88,19 +88,22 @@ def hidden_resident_response():
     return JSONResponse(content = {"loaded": True, "yours": False})
 
 
-def gpu_busy_error() -> HTTPException:
-    return HTTPException(
-        status_code = 409,
-        detail = {"error": "gpu_busy", "retry_after": 1},
-        headers = {"Retry-After": "1"},
+def gpu_busy_error(path: str | None = None) -> HTTPException:
+    """The arbiter's refusal, so every surface carries one shape and one retry hint."""
+    from core.inference import gpu_arbiter
+    from state import active_generations
+    account_id = current_account_id()
+    error = gpu_arbiter.GpuBusyForAnotherAccountError(
+        gpu_arbiter.current_owner() or gpu_arbiter.CHAT,
+        active_generations.foreign_count(account_id),
     )
+    return error.as_http_exception(path)
 
 
-def require_idle_other_accounts() -> None:
+def require_idle_other_accounts(path: str | None = None) -> None:
     if policy.installation_is_multi_user():
-        from state import active_generations
-        if active_generations.foreign_count(current_account_id()):
-            raise gpu_busy_error()
+        from core.inference.gpu_arbiter import require_no_foreign_generations
+        require_no_foreign_generations(current_account_id(), path = path)
 
 
 def require_resident_control(modality: str, reference: str | None = None) -> None:

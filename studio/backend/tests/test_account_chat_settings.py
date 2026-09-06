@@ -54,8 +54,8 @@ def account_databases(monkeypatch):
     # Worker 02 owns schema-cache partitioning. Initialize each database through
     # existing public entry points so these route tests do not depend on its merge.
     for account in ACCOUNTS.values():
-        monkeypatch.setattr(studio_db, "_schema_ready", False)
-        monkeypatch.setattr(chat_generation_runs_db, "_schema_ready", False)
+        monkeypatch.setattr(studio_db, "_schema_ready", set())
+        monkeypatch.setattr(chat_generation_runs_db, "_schema_ready", set())
         run_as(account, chat_generation_runs_db.get_run, "initialize-schema")
     active_generations.reset_for_tests()
     keyless_api_access._reset_scope_cache()
