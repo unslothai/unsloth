@@ -3081,6 +3081,7 @@ print(json.dumps({{"status": status, "echo": echo, "denied": denied, "ip_denied"
         thread.join(timeout = 5)
 
 
+@pytest.mark.skipif(os.name != "posix", reason = "the fake xcode-select path is POSIX shaped")
 def test_macos_developer_paths_include_the_enclosing_app_bundle(monkeypatch, tmp_path):
     developer = tmp_path / "Xcode_16.4.app" / "Contents" / "Developer"
     developer.mkdir(parents = True)
