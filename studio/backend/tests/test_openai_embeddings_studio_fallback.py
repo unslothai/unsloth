@@ -196,6 +196,47 @@ def test_embedder_failure_is_502(studio_embedder):
     assert _http_error({"input": "alpha"}).status_code == 502
 
 
+@pytest.mark.parametrize(
+    "exc,fragment",
+    [
+        (
+            rag_embeddings.EmbeddingModelDownloadRequiredError(
+                "Embedding model 'unsloth/bge-small-en-v1.5' is not downloaded yet. "
+                "Finish its Settings download before indexing documents."
+            ),
+            "not downloaded yet",
+        ),
+        (
+            rag_embeddings.UnsafeEmbeddingModelError(
+                "Embedding model 'evil/model' requires remote code execution."
+            ),
+            "remote code",
+        ),
+    ],
+)
+def test_actionable_embedder_errors_keep_their_message(studio_embedder, exc, fragment):
+    """The caller can fix these two, but only if it is told what they are.
+
+    Picking a model in Settings and querying before its download finishes is the common
+    one, and it reaches this route through `unsloth start openclaw`: the generated
+    openclaw.json points memory search here, so this detail string is the entire
+    diagnosis the user sees. Routed through _friendly_error -- written for llama-server
+    transport faults -- it became a 502 "An internal error occurred", which says nothing
+    and suggests the wrong owner.
+    """
+    def boom(*_args, **_kwargs):
+        raise exc
+
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "encode", boom)
+    error = _http_error({"input": "alpha"})
+    assert error.status_code == 409
+    assert fragment in error.detail
+    assert "An internal error occurred" not in error.detail
+
+
 def test_studio_embedder_requests_are_admission_limited(studio_embedder):
     lock = threading.Lock()
     gate = threading.Event()

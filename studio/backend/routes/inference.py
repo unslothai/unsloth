@@ -26082,6 +26082,18 @@ async def _studio_embeddings(
     except HTTPException as exc:
         api_monitor.fail(monitor_id, str(exc.detail))
         raise
+    # The two conditions the caller can actually act on, and only those. Both carry a
+    # message written for a human ("...is not downloaded yet. Finish its Settings
+    # download..."), which _friendly_error -- written for llama-server transport faults --
+    # flattens to "An internal error occurred". Behind an agent's memory search that is
+    # the whole diagnosis the user gets, so pass the model's own words through with a 409:
+    # the request is fine, the server is not ready to serve it yet.
+    except (
+        rag_embeddings.EmbeddingModelDownloadRequiredError,
+        rag_embeddings.UnsafeEmbeddingModelError,
+    ) as exc:
+        api_monitor.fail(monitor_id, str(exc))
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except Exception as exc:
         api_monitor.fail(monitor_id, _friendly_error(exc))
         raise HTTPException(
