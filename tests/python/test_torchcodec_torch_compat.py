@@ -1529,3 +1529,28 @@ def test_a_torch_range_is_replayed_before_the_pair_is_judged():
         '!pip install "torch>=2.11.0"', colab, "nb.ipynb", 0
     ) == []
     assert nv.rule_inst_004_torchcodec_torch("!pip uninstall -y torch", colab, "nb.ipynb", 0) == []
+
+
+def test_each_pip_command_owns_the_packages_it_names():
+    """A chained line carries several verbs, and a package must be attributed to the command
+    that names it: an uninstall of a THIRD package must not clear the pair an earlier install
+    on the same line put in place."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+
+    other_package = (
+        "!pip install torch==2.10.0 torchcodec==0.12.0 && pip uninstall -y torchaudio"
+    )
+    assert nv._effective_version(other_package, "torchcodec", "0.11.0") == ("0.12.0", True)
+    assert nv._effective_version(other_package, "torch", "2.11.0") == ("2.10.0", True)
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(other_package, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+    reinstalled = "!pip uninstall -y torchcodec && pip install torchcodec==0.10.0"
+    assert nv._effective_version(reinstalled, "torchcodec", "0.11.0") == ("0.10.0", True)
+
+    removed = "!pip install torchcodec==0.10.0 && pip uninstall -y torchcodec"
+    assert nv._effective_version(removed, "torchcodec", "0.11.0") == (None, True)
+    assert nv.rule_inst_004_torchcodec_torch(removed, colab, "nb.ipynb", 0) == []
