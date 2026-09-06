@@ -57,6 +57,23 @@ def _write_gguf(path: Path) -> Path:
     return path
 
 
+def _write_drafter_gguf(path: Path, *, with_token_embd: bool = True) -> Path:
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), "qwen35")
+    names = ["output.weight", "blk.64.nextn.eh_proj.weight"]
+    if with_token_embd:
+        names += ["token_embd.weight", "output_norm.weight"]
+    for name in names:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
 def _backend(
     tmp_path: Path,
     *,
@@ -75,7 +92,7 @@ def _backend(
     backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
     mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf")
-    drafter = _write_gguf(tmp_path / "mtp.gguf")
+    drafter = _write_drafter_gguf(tmp_path / "mtp.gguf")
 
     def read_metadata(_path):
         backend._context_length = native_ctx
@@ -1620,3 +1637,18 @@ def test_a_gpu_drafter_holds_the_deferred_pin_back(tmp_path):
 
     assert "--mmproj" in cmd
     assert "--no-mmproj-offload" not in cmd
+
+
+def test_an_unloadable_drafter_is_not_charged_before_it_is_dropped(tmp_path):
+    """Judged after the fit, the drafter's 2 GiB would push model + drafter + projector
+    past this 10550 MiB budget and pin the projector for a file that is dropped anyway."""
+    backend, gguf = _drafter_backend(tmp_path, [(0, 12_470, 24_000)])
+    _write_drafter_gguf(tmp_path / "mtp.gguf", with_token_embd = False)
+    # The harness resolver re-supplies the drafter whatever the load decided.
+    del backend._resolve_launch_mtp_path
+
+    cmd = _launch_with_drafter(backend, gguf, tmp_path)
+
+    assert "--model-draft" not in cmd
+    assert "--no-mmproj-offload" not in cmd
+    assert backend.mtp_draft_suppressed_path == str(tmp_path / "mtp.gguf")

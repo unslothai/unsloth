@@ -3760,3 +3760,34 @@ def test_the_dspark_gate_uses_the_probe_it_is_given():
     # No sidecar on disk and an incapable binary: the fetch is skipped, which is exactly
     # the degraded launch the accumulator has to remember.
     assert result is None
+
+
+def test_a_drafter_dropped_as_unloadable_does_not_reload_to_refetch_it():
+    """Refetching returns the same file, so the retry rule must stand down."""
+    sidecar = "/cache/snapshots/abc/mtp-gemma-4-12b-it.gguf"
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+        _mtp_draft_path = None,
+        _mtp_draft_suppressed_path = sidecar,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            mtp_draft_path = sidecar,
+            compare_mtp_draft = True,
+        )
+        is True
+    )
