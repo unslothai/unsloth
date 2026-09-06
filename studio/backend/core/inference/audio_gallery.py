@@ -22,7 +22,7 @@ from core.inference import gallery_flags
 from loggers import get_logger
 from utils.account_context import is_owner_context
 from utils.paths import ensure_dir, studio_root
-from utils.paths.storage_roots import workspace_root
+from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
 
@@ -31,8 +31,9 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 def gallery_dir() -> Path:
-    root = studio_root() if is_owner_context() else workspace_root()
-    return ensure_dir(root / "audio")
+    if is_owner_context():
+        return ensure_dir(studio_root() / "audio")
+    return ensure_dir(account_path("audio"))
 
 
 def save(wav_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:

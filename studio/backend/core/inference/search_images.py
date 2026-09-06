@@ -296,8 +296,8 @@ def strip_images_suffix(result: str) -> str:
 
 def _cache_dir() -> Path:
     from utils.paths import ensure_dir
-    from utils.paths.storage_roots import workspace_root
-    return ensure_dir(workspace_root() / _CACHE_DIRNAME)
+    from utils.paths.storage_roots import account_path
+    return ensure_dir(account_path(_CACHE_DIRNAME))
 
 
 def _cache_path(image_id: str) -> Path:

@@ -358,12 +358,12 @@ def _oauth_store():
     if not is_owner_context():
         from key_value.aio._utils.sanitization import AlwaysHashStrategy
         from key_value.aio.stores.filetree import FileTreeStore
-        from utils.paths.storage_roots import ensure_dir, workspace_root
+        from utils.paths.storage_roots import account_path, ensure_dir
 
         account_id = current_account_id()
         if account_id not in _account_oauth_token_stores:
             _account_oauth_token_stores[account_id] = FileTreeStore(
-                data_directory = ensure_dir(workspace_root() / "mcp-oauth-tokens"),
+                data_directory = ensure_dir(account_path("mcp-oauth-tokens")),
                 key_sanitization_strategy = AlwaysHashStrategy(),
                 collection_sanitization_strategy = AlwaysHashStrategy(),
             )

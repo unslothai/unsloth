@@ -50,8 +50,9 @@ def cache_disabled() -> bool:
 
 
 def _store_path():
-    root = storage_roots.studio_root() if is_owner_context() else storage_roots.workspace_root()
-    return root / "security" / "remote_code_approvals.json"
+    if is_owner_context():
+        return storage_roots.studio_root() / "security" / "remote_code_approvals.json"
+    return storage_roots.account_path("security/remote_code_approvals.json")
 
 
 def _env_offline() -> bool:

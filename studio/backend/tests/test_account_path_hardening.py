@@ -148,3 +148,53 @@ def test_monitor_hides_a_foreign_load_row_from_managed_accounts():
         assert run_as(BOB, monitor._visible, entry, "bob")
     finally:
         policy.installation_is_multi_user = monkeypatch_single
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "symlinks need privileges on Windows")
+def test_a_managed_account_directory_replaced_by_a_link_is_refused(tmp_path):
+    from core.inference import audio_gallery, image_gallery, video_gallery
+
+    alice_images = run_as(ALICE, image_gallery.gallery_dir)
+    (alice_images / "secret.png").write_bytes(b"ALICE-PNG")
+    bob_root = run_as(BOB, storage_roots.workspace_root)
+    bob_root.mkdir(parents = True, exist_ok = True)
+    (bob_root / "images").symlink_to(alice_images, target_is_directory = True)
+    (bob_root / "outputs").symlink_to(run_as(ALICE, storage_roots.outputs_root), target_is_directory = True)
+    (bob_root / "studio.db").symlink_to(run_as(ALICE, storage_roots.studio_db_path))
+    with pytest.raises(ValueError, match = "escapes the account workspace"):
+        run_as(BOB, image_gallery.gallery_dir)
+    with pytest.raises(ValueError, match = "escapes the account workspace"):
+        run_as(BOB, image_gallery.list_images)
+    with pytest.raises(ValueError, match = "escapes the account workspace"):
+        run_as(BOB, storage_roots.outputs_root)
+    with pytest.raises(ValueError, match = "escapes the account workspace"):
+        run_as(BOB, storage_roots.studio_db_path)
+    # Untouched entries of the same account still resolve.
+    assert run_as(BOB, audio_gallery.gallery_dir) == bob_root / "audio"
+    assert run_as(BOB, video_gallery.gallery_dir) == bob_root / "videos"
+    assert run_as(BOB, storage_roots.exports_root) == bob_root / "exports"
+    # The owner's install may point its directories anywhere, as before.
+    owner_root = run_as(OWNER, storage_roots.workspace_root)
+    owner_root.mkdir(parents = True, exist_ok = True)
+    (owner_root / "images").symlink_to(tmp_path / "other-drive-images", target_is_directory = True)
+    (tmp_path / "other-drive-images").mkdir()
+    assert run_as(OWNER, image_gallery.gallery_dir) == owner_root / "images"
+
+
+def test_tool_stream_worker_runs_as_the_calling_account():
+    from core.inference.tool_stream_exec import stream_tool_execution
+    from utils.account_context import current_account
+
+    def consume(fn):
+        gen = stream_tool_execution(lambda callback: fn(), tool_name = "python")
+        try:
+            while True:
+                next(gen)
+        except StopIteration as stop:
+            return stop.value
+
+    assert run_as(BOB, consume, lambda: current_account().account_id) == "bob-id"
+    assert run_as(BOB, consume, lambda: str(storage_roots.studio_db_path())) == str(
+        run_as(BOB, storage_roots.studio_db_path)
+    )
+    assert run_as(OWNER, consume, lambda: current_account().account_id) == OWNER.account_id

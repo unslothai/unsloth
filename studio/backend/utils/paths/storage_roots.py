@@ -94,28 +94,43 @@ def studio_bin_root() -> Path:
     return studio_root() / "bin"
 
 
+def account_path(relative: str) -> Path:
+    """``workspace_root() / relative`` for the acting account.
+
+    The owner gets the plain join, exactly as before. For a managed account the
+    entry must really live inside its own workspace: one of its directories
+    replaced by a link to another account's tree would otherwise carry every
+    reader and writer of that directory into the other account. Checked here,
+    once per resolution, rather than in each of the callers.
+    """
+    path = workspace_root() / relative
+    if not is_owner_context() and not within_account(path):
+        raise ValueError(f"path escapes the account workspace: {path!s}")
+    return path
+
+
 def assets_root() -> Path:
-    return workspace_root() / "assets"
+    return account_path("assets")
 
 
 def datasets_root() -> Path:
-    return assets_root() / "datasets"
+    return account_path("assets/datasets")
 
 
 def dataset_uploads_root() -> Path:
-    return datasets_root() / "uploads"
+    return account_path("assets/datasets/uploads")
 
 
 def recipe_datasets_root() -> Path:
-    return datasets_root() / "recipes"
+    return account_path("assets/datasets/recipes")
 
 
 def outputs_root() -> Path:
-    return workspace_root() / "outputs"
+    return account_path("outputs")
 
 
 def exports_root() -> Path:
-    return workspace_root() / "exports"
+    return account_path("exports")
 
 
 def auth_root() -> Path:
@@ -127,12 +142,12 @@ def auth_db_path() -> Path:
 
 
 def studio_db_path() -> Path:
-    return workspace_root() / "studio.db"
+    return account_path("studio.db")
 
 
 def rag_root() -> Path:
     """Root directory for retrieval-augmented-generation state (db + uploads)."""
-    return workspace_root() / "rag"
+    return account_path("rag")
 
 
 def rag_db_path() -> Path:
@@ -225,7 +240,7 @@ def tmp_root() -> Path:
 
 
 def seed_uploads_root() -> Path:
-    return datasets_root() / "seed-uploads"
+    return account_path("assets/datasets/seed-uploads")
 
 
 def unstructured_seed_cache_root() -> Path:
@@ -233,7 +248,7 @@ def unstructured_seed_cache_root() -> Path:
 
 
 def unstructured_uploads_root() -> Path:
-    return datasets_root() / "unstructured-uploads"
+    return account_path("assets/datasets/unstructured-uploads")
 
 
 def oxc_validator_tmp_root() -> Path:
@@ -241,7 +256,7 @@ def oxc_validator_tmp_root() -> Path:
 
 
 def tensorboard_root() -> Path:
-    return workspace_root() / "runs"
+    return account_path("runs")
 
 
 def ensure_dir(path: Path) -> Path:

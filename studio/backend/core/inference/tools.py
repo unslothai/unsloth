@@ -7436,8 +7436,8 @@ def _orphan_records_dir() -> str:
     from anything else.
     """
     try:
-        from utils.paths.storage_roots import workspace_root
-        return os.path.join(str(workspace_root()), "orphaned-projects")
+        from utils.paths.storage_roots import account_path
+        return str(account_path("orphaned-projects"))
     except Exception:
         # Only if the studio home cannot be resolved at all: beside the sandbox
         # root, whose parent an administrator may have made read-only.
@@ -8168,8 +8168,8 @@ def sandbox_root() -> str:
             return os.path.join(root, "accounts", current_account_id())
         return root
     try:
-        from utils.paths.storage_roots import workspace_root
-        return os.path.join(str(workspace_root()), "sandbox")
+        from utils.paths.storage_roots import account_path
+        return str(account_path("sandbox"))
     except Exception:
         if not is_owner_context():
             raise
@@ -14933,8 +14933,8 @@ def _spill_records_dir() -> str:
     beside the other records this file already keeps outside the sandboxes.
     """
     try:
-        from utils.paths.storage_roots import workspace_root  # noqa: PLC0415
-        return os.path.join(str(workspace_root()), "tool-output-records")
+        from utils.paths.storage_roots import account_path  # noqa: PLC0415
+        return str(account_path("tool-output-records"))
     except Exception:
         return os.path.join(
             os.path.dirname(os.path.realpath(sandbox_root())), "tool-output-records"
