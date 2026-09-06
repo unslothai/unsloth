@@ -7542,6 +7542,41 @@ class TestRocmMiscomputingArchDemotion:
             monkeypatch.delenv(_var, raising = False)
         assert stack_mod._rocm_miscomputing_host() is False
 
+    def test_a_mixed_host_that_selects_the_bad_apu_demotes_rather_than_declines(
+        self, monkeypatch
+    ):
+        """Declining to INSTALL ROCm is not enough when the venv already holds it.
+
+        _rocm_miscomputing_host() needs EVERY physical AMD arch to be miscomputing, so a
+        healthy dGPU beside a gfx1033 APU makes it False. If a device mask then selects the
+        APU, _ensure_rocm_torch returns saying it is keeping CPU torch while the ROCm build
+        stays installed, and the selected APU keeps computing wrong results under it. The
+        verdict has to reach _ensure_cpu_torch, which runs straight afterwards.
+        """
+        monkeypatch.setattr(stack_mod, "NO_TORCH", False)
+        monkeypatch.setattr(stack_mod, "_explicit_cpu_torch_index_url", lambda: None)
+        # The mixed host: the inventory gate says no, because the dGPU is fine.
+        monkeypatch.setattr(stack_mod, "_rocm_miscomputing_host", lambda: False)
+        monkeypatch.setattr(
+            stack_mod, "_probe_torch_runtime", lambda: (True, True, "2.9.0+rocm6.4", "6.4", "")
+        )
+        calls = []
+        monkeypatch.setattr(stack_mod, "pip_install", lambda *a, **k: calls.append(a))
+        monkeypatch.setattr(stack_mod, "_safe_print", lambda *a, **k: None)
+
+        # Without the selected-target verdict nothing demotes, which was the bug.
+        monkeypatch.setattr(stack_mod, "_ROCM_DECLINED_FOR_TARGET", "")
+        stack_mod._ensure_cpu_torch()
+        assert calls == [], "demoted a mixed host that never selected the bad arch"
+
+        monkeypatch.setattr(stack_mod, "_ROCM_DECLINED_FOR_TARGET", "gfx1033")
+        stack_mod._ensure_cpu_torch()
+        assert calls, "a selected gfx1033 left the ROCm build installed"
+        assert any(
+            "download.pytorch.org/whl/cpu" in str(arg) for arg in calls[0]
+        ), f"demoted somewhere other than the CPU index: {calls[0]}"
+
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
