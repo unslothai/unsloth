@@ -20,8 +20,9 @@ from playwright.sync_api import expect, sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
-    PASSWORD_CHANGE_ENDPOINTS,
-    prepare_first_boot_form,
+    FIRST_BOOT_SUBMIT_ENDPOINTS,
+    fill_current_password_if_shown,
+    report_first_boot_form,
     click_and_wait_for_response,
     evaluate_fetch,
     install_view_transition_killer,
@@ -778,7 +779,8 @@ with sync_playwright() as p:
             pw_field.wait_for(state = "visible", timeout = 60_000)
             # Do NOT shoot() between wait_for and fill -- the screenshot's font-load wait can let a background poll
             # detach the form.
-            prepare_first_boot_form(page, OLD, info = lambda m: print(f"[ui]   {m}", flush = True))
+            report_first_boot_form(page, info = lambda m: print(f"[ui]   {m}", flush = True))
+            fill_current_password_if_shown(page, OLD)
             pw_field.fill(NEW, timeout = 60_000)
             page.fill("#confirm-password", NEW, timeout = 60_000)
             shoot("01-change-password-filled")
@@ -786,7 +788,7 @@ with sync_playwright() as p:
             # surfaces now, not at the next composer.wait_for.
             status, _ = click_and_wait_for_response(
                 page,
-                url_substr = PASSWORD_CHANGE_ENDPOINTS,
+                url_substr = FIRST_BOOT_SUBMIT_ENDPOINTS,
                 method = "POST",
                 do_click = lambda: page.locator('button[type="submit"]').click(),
                 timeout_ms = 30_000,
