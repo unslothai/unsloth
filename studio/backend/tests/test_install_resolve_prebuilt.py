@@ -1964,7 +1964,7 @@ def test_amd_vulkan_icd_probe_scans_the_loader_search_directories(monkeypatch, t
         monkeypatch.delenv(_env, raising = False)
     icd_dir = tmp_path / "usr/share/vulkan/icd.d"
     icd_dir.mkdir(parents = True)
-    monkeypatch.setattr(ilp, "_VULKAN_ICD_SEARCH_DIRS", (icd_dir,))
+    monkeypatch.setattr(ilp, "_vulkan_icd_search_dirs", lambda: [icd_dir])
     (icd_dir / "nvidia_icd.json").write_text("{}", encoding = "utf-8")
     assert ilp._amd_vulkan_icd_present() is False
     (icd_dir / "radeon_icd.x86_64.json").write_text("{}", encoding = "utf-8")
@@ -2439,3 +2439,25 @@ def test_the_forced_cpu_guard_is_not_vacuous():
         llama_backend = "vulkan",
     )
     assert out_repo != repo or persist == "vulkan"
+
+
+def test_the_icd_search_path_is_built_per_call_not_at_import(monkeypatch):
+    """A host with no resolvable home directory must still be able to INSTALL.
+
+    ``Path.home()`` raises rather than returning a default when it cannot resolve one
+    (a Windows service account with no USERPROFILE, HOMEDRIVE or HOMEPATH). Evaluating
+    it at module scope would take the whole installer down at import, on every platform,
+    over a directory only the Vulkan probe ever reads. The user-visible failure would not
+    mention Vulkan at all, which is what makes it worth a test rather than a comment.
+    """
+
+    def _no_home():
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(ilp.Path, "home", staticmethod(_no_home))
+    dirs = ilp._vulkan_icd_search_dirs()
+    assert dirs, "the system search directories must survive an unresolvable home"
+    assert all("icd.d" in str(entry) for entry in dirs)
+    # And the probe on top of it answers instead of propagating.
+    monkeypatch.setattr(ilp.sys, "platform", "linux")
+    assert _REAL_AMD_VULKAN_ICD_PRESENT() in (True, False)

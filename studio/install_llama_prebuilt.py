@@ -7688,13 +7688,25 @@ _VULKAN_ICD_REGISTRY_KEYS = (
 # (amdvlk64.json). Matched against the basename, never the whole path: a bare "amd"
 # anywhere in a directory name would otherwise answer for the driver.
 _AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro")
-# The loader's own search order, most specific first.
-_VULKAN_ICD_SEARCH_DIRS = (
-    Path.home() / ".local/share/vulkan/icd.d",
-    Path("/etc/vulkan/icd.d"),
-    Path("/usr/local/share/vulkan/icd.d"),
-    Path("/usr/share/vulkan/icd.d"),
-)
+# The loader's own search order, most specific first. Built per call rather than at
+# import: Path.home() RAISES when no home directory can be resolved (a Windows service
+# account with no USERPROFILE, HOMEDRIVE or HOMEPATH), and at module level that would
+# fail the import of the whole installer, on every host, over a directory only the
+# Vulkan probe ever reads.
+def _vulkan_icd_search_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    try:
+        dirs.append(Path.home() / ".local/share/vulkan/icd.d")
+    except Exception:
+        pass
+    dirs.extend(
+        (
+            Path("/etc/vulkan/icd.d"),
+            Path("/usr/local/share/vulkan/icd.d"),
+            Path("/usr/share/vulkan/icd.d"),
+        )
+    )
+    return dirs
 
 
 def _amd_vulkan_icd_manifest_paths() -> list[str]:
@@ -7729,7 +7741,7 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
         if _value:
             return [entry for entry in _value.split(os.pathsep) if entry]
     paths = []
-    for directory in _VULKAN_ICD_SEARCH_DIRS:
+    for directory in _vulkan_icd_search_dirs():
         try:
             paths.extend(str(entry) for entry in sorted(directory.glob("*.json")))
         except OSError:
