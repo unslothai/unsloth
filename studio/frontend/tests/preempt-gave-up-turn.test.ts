@@ -17,6 +17,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import type { ContextTruncation } from "../src/features/chat/utils/context-truncation.ts";
 import {
   PREEMPT_GAVE_UP_REASON,
   incompleteLabel,
@@ -36,7 +37,10 @@ test("the give-up signal is read off the truncation event", () => {
 test("an ordinary fit is not a give-up", () => {
   // The same event carries real fits, several per turn on a compacting thread. Reading one
   // of those as a give-up would relabel a healthy turn as paused.
-  assert.equal(isPreemptGaveUp({ fits: false, dropped_messages: 4 }), false);
+  // Typed as the event the backend really sends, so the case is checked against the shape
+  // the reader is handed rather than against a two-field stand-in for it.
+  const fit: ContextTruncation = { fits: false, dropped_messages: 4 };
+  assert.equal(isPreemptGaveUp(fit), false);
   assert.equal(isPreemptGaveUp({}), false);
   assert.equal(isPreemptGaveUp(null), false);
   assert.equal(isPreemptGaveUp(undefined), false);
