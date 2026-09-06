@@ -9090,7 +9090,7 @@ class LlamaCppBackend:
                 return set()
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return set()
-            from core.training.worker import _rocm_classify_unified_memory
+            from utils.rocm_topology import _rocm_classify_unified_memory
 
             # Map visible ordinal -> physical id via the active ROCm mask (HIP,
             # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
@@ -9129,7 +9129,7 @@ class LlamaCppBackend:
                 return None
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return None
-            from core.training.worker import _rocm_classify_unified_memory
+            from utils.rocm_topology import _rocm_classify_unified_memory
 
             wanted = None if gpu_indices is None else set(gpu_indices)
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
@@ -9204,7 +9204,7 @@ class LlamaCppBackend:
                 return arch_by_id
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return arch_by_id
-            from core.training.worker import _rocm_classify_unified_memory
+            from utils.rocm_topology import _rocm_classify_unified_memory
 
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             for ordinal in range(torch.cuda.device_count()):
@@ -9355,7 +9355,7 @@ class LlamaCppBackend:
             rocm_classifier = None
             rocm_arch_overridden = False
             if is_rocm:
-                from core.training.worker import _rocm_classify_unified_memory
+                from utils.rocm_topology import _rocm_classify_unified_memory
                 rocm_classifier = _rocm_classify_unified_memory
                 # HSA_OVERRIDE_GFX_VERSION rewrites the reported arch for kernel
                 # compatibility, not topology: a gfx1035 APU presents as gfx1030.
@@ -23976,6 +23976,25 @@ class LlamaCppBackend:
                         return None
                     if int(getattr(layout, "lm_head_bytes", 0) or 0):
                         need -= int(getattr(layout, "token_embd_bytes", 0) or 0)
+                    # per_layer_token_embd is host-pinned for the same reason and,
+                    # unlike token_embd, UNCONDITIONALLY: both map to
+                    # LLM_TENSOR_LAYER_INPUT in llama.cpp's LLM_TENSOR_INFOS, but
+                    # nothing duplicates the per-layer table onto the device the way
+                    # a tied file re-creates the vocabulary matrix as the output, so
+                    # there is no branch on lm_head here.
+                    #
+                    # Leaving it in overstates what the carve-out must hold by the
+                    # whole PLE. Measured from the real tensor tables, that is
+                    # 26.8 GiB of a 103.7 GiB Qwen3.8-Flash-Next UD-Q4_K_XL -- so on
+                    # a 128 GB Strix Halo with the usual 64 GB carve-out, a quant
+                    # that fits reads as one that outgrows it, and #10351's decision
+                    # re-enables exactly the managed-memory path it measured faulting
+                    # in k_set_rows. Same model family that PR names.
+                    need -= sum(
+                        size
+                        for name, size in self._host_pinned_weight_items(model_path)
+                        if name.startswith("per_layer_token_embd")
+                    )
                     if not engages and self._nextn_predict_layers:
                         need -= int(getattr(layout, "excluded_block_bytes", 0) or 0)
                     return need

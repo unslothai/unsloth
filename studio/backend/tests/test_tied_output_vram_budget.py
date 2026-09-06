@@ -673,6 +673,51 @@ def test_a_known_discrete_rocm_arch_is_proved_discrete(backend, monkeypatch, arc
     assert backend._torch_unified_memory_classification_known([0]) is True
 
 
+def test_the_classification_seam_survives_a_gguf_only_install(backend, monkeypatch):
+    """A GGUF-only (--no-torch) install must still classify its ROCm devices.
+
+    The classifier used to be imported from ``core.training.worker``, whose module
+    body pulls in the training stack. On an install without it that import raises,
+    and because the whole method is wrapped in ``except Exception: return False``,
+    every ROCm device silently read "unclassifiable" -- so the device was treated
+    as shared memory and the host-pinned discount was never applied. Safe direction,
+    but the optimisation was inert in exactly the configuration llama.cpp users run.
+
+    MEASURED on the AMD CI Windows runners, which install --no-torch: eleven
+    proved-discrete cases failed there while passing on Linux.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def without_training_stack(name, *args, **kwargs):
+        if name == "core.training.worker" or name.startswith("core.training.worker."):
+            raise ImportError("no training stack in a GGUF-only install")
+        return real_import(name, *args, **kwargs)
+
+    class _Props:
+        gcnArchName = "gfx1100"
+        is_integrated = 0
+
+    class _Cuda:
+        is_available = staticmethod(lambda: True)
+        device_count = staticmethod(lambda: 1)
+        get_device_properties = staticmethod(lambda _ordinal: _Props())
+
+    class _Version:
+        hip = "6.2.0"
+
+    class _Torch:
+        cuda = _Cuda()
+        version = _Version()
+        __version__ = "2.9.0+rocm"
+
+    monkeypatch.setitem(sys.modules, "torch", _Torch())
+    monkeypatch.setattr(backend, "_resolve_visible_physical_ids", staticmethod(lambda: None))
+    monkeypatch.setattr(builtins, "__import__", without_training_stack)
+    assert backend._torch_unified_memory_classification_known([0]) is True
+
+
 def test_gfx942_alone_is_not_proof_of_a_private_vram_pool(backend, monkeypatch):
     """MI300X (discrete) and MI300A (unified-memory APU) share gcnArchName gfx942.
 
