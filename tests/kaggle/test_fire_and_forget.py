@@ -1089,9 +1089,9 @@ def test_the_studio_workflow_resolves_its_ref_to_a_commit_before_dispatching():
         # A full SHA passes the shape test whether or not the repository has
         # it; only fetching the object says it is there. Without this the
         # Studio leg spent a session on a commit no status could be posted to.
-        assert "git fetch --quiet --depth=1 https://github.com/unslothai/unsloth" in run, (
-            f"{path.name} dispatches a full SHA without checking the repository serves it"
-        )
+        assert (
+            "git fetch --quiet --depth=1 https://github.com/unslothai/unsloth" in run
+        ), f"{path.name} dispatches a full SHA without checking the repository serves it"
 
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
