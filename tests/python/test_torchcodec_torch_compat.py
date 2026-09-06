@@ -351,6 +351,57 @@ def test_select_torchcodec_spec_matches_compat_matrix():
         )
 
 
+# The published torchcodec compatibility table, transcribed from upstream. Sources agree:
+#   https://github.com/meta-pytorch/torchcodec  (README, "older versions" section)
+#   https://pypi.org/project/torchcodec/        (same table in the project description)
+# Kept as a literal on purpose. Every other check here compares our three tables against each
+# OTHER, which passes just as happily when all three are wrong in the same way -- that is how
+# `2.6: {0.2, 0.3}` and `2.5: {0.1, 0.2}` survived: upstream pairs 0.3 with torch 2.7 and 0.2
+# with torch 2.6, so the installer's window picked a release built against the NEXT torch.
+# torch 2.4 -> 0.0.3 is deliberately omitted below: the installer floors at 2.5 and returns
+# _TORCHCODEC_DEFAULT_SPEC underneath it.
+_UPSTREAM_TORCH_TO_TORCHCODEC_MINORS = {
+    "2.11": {"0.11"},
+    "2.10": {"0.10"},
+    "2.9": {"0.8", "0.9"},
+    "2.8": {"0.6", "0.7"},
+    "2.7": {"0.3", "0.4", "0.5"},
+    "2.6": {"0.2"},
+    "2.5": {"0.1"},
+}
+
+
+def test_compat_matrix_matches_the_published_upstream_table():
+    """Pin the runtime guard to upstream, not merely to our own other copies of it."""
+    fixes = _load_import_fixes_module()
+    assert fixes._TORCH_TORCHCODEC_MINORS == _UPSTREAM_TORCH_TO_TORCHCODEC_MINORS
+
+
+def test_installer_never_selects_a_torchcodec_built_against_another_torch():
+    """The window handed to pip must not contain a release upstream pairs with a different
+    torch: pip takes the HIGHEST match, so a window one minor too wide installs the mismatch
+    this whole module exists to prevent."""
+    from packaging.specifiers import SpecifierSet
+
+    ips = _load_install_python_stack()
+    probes = [f"0.{n}.0" for n in range(0, 16)]
+    for torch_minor, allowed in _UPSTREAM_TORCH_TO_TORCHCODEC_MINORS.items():
+        spec = ips._select_torchcodec_spec(f"{torch_minor}.0")
+        specifier = SpecifierSet(spec.split("torchcodec", 1)[1])
+        admitted = {p.rsplit(".", 1)[0] for p in probes if specifier.contains(p)}
+        assert admitted == allowed, (
+            f"torch {torch_minor}: {spec} admits {sorted(admitted)}, "
+            f"upstream builds only {sorted(allowed)} against it"
+        )
+        highest = max(
+            (p for p in probes if specifier.contains(p)),
+            key=lambda v: tuple(int(x) for x in v.split(".")),
+        )
+        assert highest.rsplit(".", 1)[0] in allowed, (
+            f"torch {torch_minor}: pip would resolve {spec} to {highest}"
+        )
+
+
 def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
     """torchcodec publishes no sdist, so an ungated pin makes pip fail the whole install on
     a host with no wheel instead of just skipping audio -- and the cu*/rocm*/intel torch
@@ -562,8 +613,19 @@ def _host_key(label):
     return None
 
 
-def _wheel_exists_in_window(label, floor, ceiling):
-    """Does any release the window admits publish a wheel for this host?"""
+def _release_python_window(vt):
+    """Upstream's published Python range for a release, independent of architecture."""
+    if vt < (0, 2, 0):
+        return (3, 9), (3, 12)
+    if vt < (0, 8, 0):
+        return (3, 9), (3, 13)
+    if vt < (0, 9, 0):
+        return (3, 10), (3, 13)
+    return (3, 10), (3, 14)
+
+
+def _wheel_exists_in_window(label, floor, ceiling, python):
+    """Does any release the window admits publish a wheel for this host AND interpreter?"""
     key = _host_key(label)
     if key is None:
         return False
@@ -572,6 +634,9 @@ def _wheel_exists_in_window(label, floor, ceiling):
         vt = tuple(int(p) for p in ver.split("."))
         vt = vt + (0,) * (3 - len(vt))
         if vt < floor or (ceiling is not None and vt >= ceiling):
+            continue
+        py_min, py_max = _release_python_window(vt)
+        if not py_min <= python <= py_max:
             continue
         if key == "macos_arm64":
             for p in plats:
@@ -609,17 +674,19 @@ def test_the_installer_never_selects_a_spec_with_no_wheel_here(monkeypatch):
     """
     ips = _load_install_python_stack()
     for label in _SIM_HOSTS:
-        for minor in range(4, 15):
-            _patch_host(ips, monkeypatch, label)
-            spec = ips._select_torchcodec_spec(f"2.{minor}.0")
-            floor, ceiling = ips._torchcodec_spec_bounds(spec)
-            gate_says_yes = ips._torchcodec_spec_is_installable(spec)
-            really_has = _wheel_exists_in_window(label, floor, ceiling)
-            assert gate_says_yes == really_has, (
-                f"{label} torch 2.{minor}: gate says "
-                f"{'install' if gate_says_yes else 'skip'} for {spec}, but a wheel "
-                f"{'exists' if really_has else 'does not exist'}"
-            )
+        for python in ((3, 9), (3, 10), (3, 12), (3, 13), (3, 14)):
+            for minor in range(4, 15):
+                _patch_host(ips, monkeypatch, label)
+                monkeypatch.setattr(ips.sys, "version_info", python + (0, "final", 0))
+                spec = ips._select_torchcodec_spec(f"2.{minor}.0")
+                floor, ceiling = ips._torchcodec_spec_bounds(spec)
+                gate_says_yes = ips._torchcodec_spec_is_installable(spec)
+                really_has = _wheel_exists_in_window(label, floor, ceiling, python)
+                assert gate_says_yes == really_has, (
+                    f"{label} py{python[0]}.{python[1]} torch 2.{minor}: gate says "
+                    f"{'install' if gate_says_yes else 'skip'} for {spec}, but a wheel "
+                    f"{'exists' if really_has else 'does not exist'}"
+                )
 
 
 def test_linux_aarch64_is_served_from_the_011_line_onwards(monkeypatch):
@@ -641,6 +708,39 @@ def test_a_mac_below_14_declines_the_abi_stable_line(monkeypatch):
     assert ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.11.0"))
     _patch_host(ips, monkeypatch, "macos-arm64-14")
     assert ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.12.0"))
+
+
+def test_the_gate_declines_a_line_whose_python_window_excludes_this_interpreter(monkeypatch):
+    """Architecture is not the only wheel axis. torch 2.5 selects the 0.1 line, and 0.1 stops
+    at Python 3.12 -- on 3.13 there is no wheel to install even on plain linux-x86_64.
+
+    This was masked while the 2.5 window ran to <0.3.0: it reached 0.2, which does ship cp313,
+    so the gate said yes for a release built against torch 2.6.
+    """
+    ips = _load_install_python_stack()
+    _patch_host(ips, monkeypatch, "linux-x86_64")
+    spec = ips._select_torchcodec_spec("2.5.0")
+
+    monkeypatch.setattr(ips.sys, "version_info", (3, 12, 0, "final", 0))
+    assert ips._torchcodec_spec_is_installable(spec)
+    monkeypatch.setattr(ips.sys, "version_info", (3, 13, 0, "final", 0))
+    assert not ips._torchcodec_spec_is_installable(spec)
+
+    # The floor moves too: 0.8+ dropped 3.9, so torch 2.9 has nothing for a 3.9 interpreter.
+    monkeypatch.setattr(ips.sys, "version_info", (3, 9, 0, "final", 0))
+    assert not ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.9.0"))
+    assert ips._torchcodec_spec_is_installable(ips._select_torchcodec_spec("2.8.0"))
+
+
+def test_python_windows_match_the_published_upstream_table():
+    """Same reason as the compat-matrix pin: transcribed from upstream, not from ourselves."""
+    ips = _load_install_python_stack()
+    assert ips._TORCHCODEC_PYTHON_WINDOWS == (
+        ((0, 1, 0), (3, 9), (3, 12)),
+        ((0, 2, 0), (3, 9), (3, 13)),
+        ((0, 8, 0), (3, 10), (3, 13)),
+        ((0, 9, 0), (3, 10), (3, 14)),
+    )
 
 
 def test_windows_declines_the_pre_070_lines(monkeypatch):

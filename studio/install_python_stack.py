@@ -376,8 +376,8 @@ _TORCHCODEC_TORCH_SPECS: dict[int, str] = {
     9: "torchcodec>=0.8.0,<0.10.0",
     8: "torchcodec>=0.6.0,<0.8.0",
     7: "torchcodec>=0.3.0,<0.6.0",
-    6: "torchcodec>=0.2.0,<0.4.0",
-    5: "torchcodec>=0.1.0,<0.3.0",
+    6: "torchcodec>=0.2.0,<0.3.0",
+    5: "torchcodec>=0.1.0,<0.2.0",
 }
 _TORCHCODEC_MAX_KNOWN_MINOR = max(_TORCHCODEC_TORCH_SPECS)
 
@@ -426,6 +426,46 @@ def _macos_release_major() -> "int | None":
         return None
 
 
+# torchcodec's supported Python range is not constant across the lines we select from; it
+# moves three times. Transcribed from upstream's published table (README / PyPI):
+#
+#   0.1        >=3.9,  <=3.12
+#   0.2 .. 0.7 >=3.9,  <=3.13
+#   0.8        >=3.10, <=3.13
+#   0.9 +      >=3.10, <=3.14
+#
+# Each entry is (first release of the run, min python, max python); a run ends where the next
+# begins. This is a separate axis from the platform floor above: a host can have a wheel for
+# the architecture and still have none for its interpreter. The reachable case is torch 2.5 on
+# Python 3.13 -- the only line built against torch 2.5 is 0.1, which stops at 3.12.
+_TORCHCODEC_PYTHON_WINDOWS: "tuple[tuple[tuple[int, int, int], tuple[int, int], tuple[int, int]], ...]" = (
+    ((0, 1, 0), (3, 9), (3, 12)),
+    ((0, 2, 0), (3, 9), (3, 13)),
+    ((0, 8, 0), (3, 10), (3, 13)),
+    ((0, 9, 0), (3, 10), (3, 14)),
+)
+
+
+def _torchcodec_python_is_supported(
+    floor: "tuple[int, ...]", ceiling: "tuple[int, ...] | None"
+) -> bool:
+    """Does any release in [floor, ceiling) ship a wheel for the running interpreter?"""
+    running = sys.version_info[:2]
+    for index, (start, py_min, py_max) in enumerate(_TORCHCODEC_PYTHON_WINDOWS):
+        end = (
+            _TORCHCODEC_PYTHON_WINDOWS[index + 1][0]
+            if index + 1 < len(_TORCHCODEC_PYTHON_WINDOWS)
+            else None
+        )
+        if ceiling is not None and start >= ceiling:
+            continue  # run begins above the window
+        if end is not None and end <= floor:
+            continue  # run ends below the window
+        if py_min <= running <= py_max:
+            return True
+    return False
+
+
 def _torchcodec_spec_bounds(spec: str) -> "tuple[tuple[int, ...], tuple[int, ...] | None]":
     """`torchcodec>=0.6.0,<0.8.0` -> ((0,6,0), (0,8,0)); an open floor gives (floor, None)."""
 
@@ -453,6 +493,8 @@ def _torchcodec_spec_is_installable(spec: str) -> bool:
     floor, ceiling = _torchcodec_spec_bounds(spec)
     # The window has to reach the first release this platform actually published.
     if ceiling is not None and host_floor >= ceiling:
+        return False
+    if not _torchcodec_python_is_supported(max(floor, host_floor), ceiling):
         return False
     if IS_MAC_ARM and (_macos_release_major() or 0) < 14:
         # 0.12+ is macosx_14_0 only. Reachable when the window starts at or above it.
