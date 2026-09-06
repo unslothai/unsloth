@@ -131,13 +131,9 @@ def _fmt(
 
 
 class StudioClient:
-    def __init__(
-        self,
-        base_url: str,
-        token: str,
-        timeout: float = 180.0,
-    ):
+    def __init__(self, base_url: str, token: str, seed: int, timeout: float = 180.0):
         self.base = base_url.rstrip("/")
+        self.seed = seed
         self.timeout = timeout
         self.s = requests.Session()
         self.s.headers["Authorization"] = f"Bearer {token}"
@@ -171,10 +167,12 @@ class StudioClient:
         return r.json().get("text", ""), elapsed
 
     def speak(self, text: str) -> tuple[bytes, float]:
+        """Synthesize ``text`` with the benchmark seed (AudioSpeechRequest.seed is
+        best-effort: honoured where the loaded TTS backend takes a seed)."""
         t0 = time.perf_counter()
         r = self.s.post(
             f"{self.base}/v1/audio/speech",
-            json = {"input": text},
+            json = {"input": text, "seed": self.seed},
             timeout = self.timeout,
         )
         elapsed = time.perf_counter() - t0
@@ -306,18 +304,58 @@ def _mirror_to_downloads(turn_id: int, wav: bytes) -> None:
         pass
 
 
+class FixtureMismatch(RuntimeError):
+    """A hand-supplied recording no longer matches the utterance it stands for."""
+
+
+def fixture_paths(turn_id: int) -> tuple[Path, Path]:
+    """The cached wav and its sidecar, which pins the wav to the utterance text."""
+    return FIXTURES / f"turn_{turn_id}.wav", FIXTURES / f"turn_{turn_id}.json"
+
+
+def _read_fixture_meta(meta_path: Path) -> Optional[dict]:
+    try:
+        meta = json.loads(meta_path.read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) and isinstance(meta.get("text"), str) else None
+
+
+def _write_fixture_meta(meta_path: Path, text: str, source: str) -> None:
+    meta_path.write_text(json.dumps({"text": text, "source": source}), encoding = "utf-8")
+
+
 def ensure_fixture(client: StudioClient, turn: dict) -> tuple[bytes, float, bool]:
-    """Return (wav_bytes, duration_s, generated?). Prefer a real recording on disk."""
+    """Return (wav_bytes, duration_s, generated?). Prefer a real recording on disk.
+
+    The cache is keyed on the turn id, so the sidecar records which utterance the
+    wav was made for: a synthesized fixture whose text changed (another
+    --conversation, or an edited turn) is re-synthesized; a hand-supplied recording
+    is never overwritten and instead raises FixtureMismatch."""
     FIXTURES.mkdir(parents = True, exist_ok = True)
-    path = FIXTURES / f"turn_{turn['id']}.wav"
-    if path.exists():
-        wav = path.read_bytes()
-        _mirror_to_downloads(turn["id"], wav)
-        return wav, wav_duration_seconds(wav), False
+    wav_path, meta_path = fixture_paths(turn["id"])
+    text = turn["text"]
+    if wav_path.exists():
+        meta = _read_fixture_meta(meta_path)
+        if meta is None:
+            # Dropped in by hand with no sidecar: adopt it, pinned to the current text.
+            _write_fixture_meta(meta_path, text, "supplied")
+            meta = {"text": text, "source": "supplied"}
+        if meta["text"] == text:
+            wav = wav_path.read_bytes()
+            _mirror_to_downloads(turn["id"], wav)
+            return wav, wav_duration_seconds(wav), False
+        if meta.get("source") == "supplied":
+            raise FixtureMismatch(
+                f"{wav_path.name} was supplied for {meta['text']!r} but turn {turn['id']} "
+                f"now reads {text!r}; replace the recording, or delete it to re-synthesize"
+            )
+        print(f"    (utterance for turn {turn['id']} changed; re-synthesizing its fixture)")
     # No recording supplied: synthesize the utterance with the loaded TTS voice
     # (Orpheus) and cache it, so STT input is byte-identical on every later run.
-    wav, _ = client.speak(turn["text"])
-    path.write_bytes(wav)
+    wav, _ = client.speak(text)
+    wav_path.write_bytes(wav)
+    _write_fixture_meta(meta_path, text, "synthesized")
     _mirror_to_downloads(turn["id"], wav)
     return wav, wav_duration_seconds(wav), True
 
@@ -715,7 +753,7 @@ def main() -> int:
 
     convo = json.loads(Path(args.conversation).read_text(encoding = "utf-8"))
     token = get_token(args)
-    client = StudioClient(args.base_url, token)
+    client = StudioClient(args.base_url, token, args.seed)
 
     # Confirm the server is up and something is loaded to talk to.
     try:

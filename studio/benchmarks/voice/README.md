@@ -77,16 +77,27 @@ unreachable, no chat model, no usable TTS route).
 Fixed `--seed 42`, `--temperature 0` (greedy) for the LLM, and the **input audio
 is cached** to `audio_fixtures/turn_N.wav` on first run (and mirrored to
 `~/Downloads/voice_bench_fixtures/`), so every later run feeds identical bytes.
-Delete a `turn_N.wav` to regenerate it, or drop in your own real recording with
-that name to benchmark against authentic speech instead of synthesized input.
+A `turn_N.json` sidecar pins each wav to the utterance it was made for, so the
+cache cannot serve stale audio when a turn's text changes (an edited
+`conversation.json`, or another `--conversation` reusing the same turn ids): a
+synthesized fixture is re-synthesized automatically. Delete a `turn_N.wav` to
+regenerate it, or drop in your own real recording with that name to benchmark
+against authentic speech instead of synthesized input; a supplied recording is
+adopted (sidecar written on first use) and never overwritten, so if its text
+later changes the run stops with `FixtureMismatch` until you replace or delete it.
 
 The **LLM is fully deterministic** here (greedy + seed): turn 1 is run twice and
-must come back `IDENTICAL`. **TTS is not bit-reproducible on GPU**, though: Orpheus
-runs at temperature 0.6, and GPU float reductions are non-deterministic, so
-near-tie tokens flip run to run even with the fixed seed that
-`generate_audio_response` now sets. TTS wall-clock also drifts a little with GPU
-load. So TTS is judged by *latency* — reported as a median over `--repeats` and
-normalized by audio length (`tts_rtf`) — not by exact bytes.
+must come back `IDENTICAL`. The same `--seed` is sent as `seed` on every
+`/v1/audio/speech` call (fixtures, warmup, and reply synthesis). It is best-effort:
+on current `main` the speech route hands it to the transformers (non-GGUF) TTS
+backends, while a GGUF voice such as Orpheus takes no seed there (a fixed default
+seed for GGUF voices is part of the conversation-mode backend in PR #10373), and
+an external TTS connection does not receive it at all. **TTS is not
+bit-reproducible on GPU** even when seeded: Orpheus runs at temperature 0.6, and
+GPU float reductions are non-deterministic, so near-tie tokens flip run to run.
+TTS wall-clock also drifts a little with GPU load. So TTS is judged by *latency*
+— reported as a median over `--repeats` and normalized by audio length
+(`tts_rtf`) — not by exact bytes.
 
 ## Running it
 
