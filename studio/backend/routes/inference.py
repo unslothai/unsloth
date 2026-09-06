@@ -42,6 +42,8 @@ from typing import (
 import functools
 import json
 import httpx
+from hub.services.models.account_access import media_link_account, media_link_target
+from utils.account_context import run_as
 from loggers import get_logger
 import asyncio
 import contextvars
@@ -34120,7 +34122,7 @@ _IMAGE_LINK_SECRET = _secrets.token_bytes(32)
 
 def _sign_image_id(image_id: str) -> str:
     exp = int(time.time()) + _IMAGE_LINK_TTL
-    payload = f"{image_id}.{exp}"
+    payload = f"{media_link_target(image_id)}.{exp}"
     sig = _hmac.new(_IMAGE_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
@@ -34162,9 +34164,10 @@ async def get_gallery_image_file_signed(image_id: str, token: str = Query(...)):
     authenticated route, and the token names the single image it may serve."""
     from core.inference import image_gallery
 
-    if _verify_image_link_token(token) != image_id:
+    account = media_link_account(_verify_image_link_token(token), image_id)
+    if account is None:
         raise HTTPException(status_code = 401, detail = "Invalid or expired image link.")
-    path = await asyncio.to_thread(image_gallery.owned_image_path, image_id)
+    path = await asyncio.to_thread(run_as, account, image_gallery.owned_image_path, image_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Image not found.")
     data = await asyncio.to_thread(path.read_bytes)

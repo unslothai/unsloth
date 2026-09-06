@@ -37,6 +37,8 @@ from starlette.datastructures import UploadFile
 from auth.authentication import get_current_subject, request_admitted_without_credential
 from core.inference.model_ids import public_model_id
 from hub.dependencies import get_hf_token
+from hub.services.models.account_access import media_link_account, media_link_target
+from utils.account_context import run_as
 from loggers import get_logger
 from models.inference import (
     DiffusionDownloadPlanResponse,
@@ -55,6 +57,7 @@ from models.inference import (
     VideoLoadRequest,
     VideoStatusResponse,
 )
+from utils.account_context import current_account_id, is_owner_context
 from utils.api_errors import openai_error_body
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_MAX_BYTES
 
@@ -590,7 +593,7 @@ _VIDEO_LINK_SECRET = _secrets.token_bytes(32)
 
 def _sign_video_id(video_id: str) -> str:
     exp = int(_time.time()) + _VIDEO_LINK_TTL
-    payload = f"{video_id}.{exp}"
+    payload = f"{media_link_target(video_id)}.{exp}"
     sig = _hmac.new(_VIDEO_LINK_SECRET, payload.encode(), _hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
@@ -646,9 +649,10 @@ async def get_gallery_video_file_signed(video_id: str, token: str = Query(...)):
     the token names the single clip it may serve."""
     from core.inference import video_gallery
 
-    if _verify_video_link_token(token) != video_id:
+    account = media_link_account(_verify_video_link_token(token), video_id)
+    if account is None:
         raise HTTPException(status_code = 401, detail = "Invalid or expired video link.")
-    path = await asyncio.to_thread(video_gallery.owned_video_path, video_id)
+    path = await asyncio.to_thread(run_as, account, video_gallery.owned_video_path, video_id)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Video not found.")
     from fastapi.responses import FileResponse
@@ -807,6 +811,14 @@ class _VideoJob:
 
 _jobs: dict[str, _VideoJob] = {}
 _jobs_lock = threading.Lock()
+_managed_jobs: dict[str, dict[str, _VideoJob]] = {}
+
+
+def _account_jobs() -> dict[str, _VideoJob]:
+    """Called under _jobs_lock; the owner's registry and ids stay unchanged."""
+    if is_owner_context():
+        return _jobs
+    return _managed_jobs.setdefault(current_account_id(), {})
 
 
 def _forget_openai_job(video_id: str) -> bool:
@@ -816,7 +828,7 @@ def _forget_openai_job(video_id: str) -> bool:
     with _jobs_lock:
         if not video_gallery.forget_job(video_id):
             return False
-        _jobs.pop(video_id, None)
+        _account_jobs().pop(video_id, None)
     return True
 
 
@@ -966,19 +978,19 @@ def _remember_job(job: _VideoJob) -> None:
     from core.inference import video_gallery
 
     with _jobs_lock:
-        pending = [existing for existing in _jobs.values() if not existing.terminal]
+        pending = [existing for existing in _account_jobs().values() if not existing.terminal]
     for existing in pending:
         persisted = _job_from_record(video_gallery.get_job(existing.id) or {})
         if persisted is not None and persisted.terminal:
             with _jobs_lock:
-                if _jobs.get(existing.id) is existing:
-                    _jobs[existing.id] = persisted
+                if _account_jobs().get(existing.id) is existing:
+                    _account_jobs()[existing.id] = persisted
     with _jobs_lock:
-        _jobs[job.id] = job
-        excess = len(_jobs) - _MAX_REMEMBERED_JOBS
+        _account_jobs()[job.id] = job
+        excess = len(_account_jobs()) - _MAX_REMEMBERED_JOBS
         if excess > 0:
-            for stale in [j for j in _jobs.values() if j.terminal][:excess]:
-                _jobs.pop(stale.id, None)
+            for stale in [j for j in _account_jobs().values() if j.terminal][:excess]:
+                _account_jobs().pop(stale.id, None)
         try:
             video_gallery.save_job(job.id, asdict(job))
         except OSError as exc:
@@ -1014,11 +1026,11 @@ def _job_from_record(record: dict) -> Optional[_VideoJob]:
 def _hydrate_job(video_id: str) -> None:
     from core.inference import video_gallery
     with _jobs_lock:
-        if video_id in _jobs:
+        if video_id in _account_jobs():
             return
         job = _job_from_record(video_gallery.get_job(video_id) or {})
         if job is not None:
-            _jobs.setdefault(job.id, job)
+            _account_jobs().setdefault(job.id, job)
 
 
 def _hydrate_jobs() -> list[_VideoJob]:
@@ -1029,7 +1041,7 @@ def _hydrate_jobs() -> list[_VideoJob]:
         ]
         jobs.sort(key = lambda job: job.created_at, reverse = True)
         for job in jobs[:_MAX_REMEMBERED_JOBS]:
-            _jobs.setdefault(job.id, job)
+            _account_jobs().setdefault(job.id, job)
     return jobs
 
 
@@ -1039,7 +1051,7 @@ def _sync_jobs() -> None:
     from core.inference.video_families import VIDEO_CANCELLED_MSG
 
     with _jobs_lock:
-        open_jobs = [job for job in _jobs.values() if not job.terminal]
+        open_jobs = [job for job in _account_jobs().values() if not job.terminal]
     if not open_jobs:
         return
     gen = get_video_backend().generate_progress()
@@ -1048,8 +1060,8 @@ def _sync_jobs() -> None:
         persisted_job = _job_from_record(video_gallery.get_job(job.id) or {})
         if persisted_job is not None and persisted_job.terminal:
             with _jobs_lock:
-                if _jobs.get(job.id) is job:
-                    _jobs[job.id] = persisted_job
+                if _account_jobs().get(job.id) is job:
+                    _account_jobs()[job.id] = persisted_job
             continue
         status: Optional[str] = None
         progress = 0
@@ -1082,7 +1094,7 @@ def _sync_jobs() -> None:
                     "message": "The generation ended before a clip was saved.",
                 }
         with _jobs_lock:
-            if _jobs.get(job.id) is not job:
+            if _account_jobs().get(job.id) is not job:
                 continue
             if job.terminal:
                 continue
@@ -1129,7 +1141,7 @@ def _lookup_video(video_id: str) -> Optional[VideoJob]:
     _hydrate_job(video_id)
     _sync_jobs()
     with _jobs_lock:
-        job = _jobs.get(video_id)
+        job = _account_jobs().get(video_id)
     if job is not None and job.status != "completed":
         return _job_to_openai(job)
     record = video_gallery.get_record(video_id)
@@ -1145,7 +1157,7 @@ def _all_videos() -> list[VideoJob]:
     _sync_jobs()
     with _jobs_lock:
         jobs = {job.id: job for job in persisted_jobs}
-        jobs.update(_jobs)
+        jobs.update(_account_jobs())
     records = video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record)
     records.extend(
         video_gallery.list_videos(None, 0, valid = _valid_gallery_video_record, archived = True)
