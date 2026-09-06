@@ -331,51 +331,40 @@ def _is_gguf_file(path: str) -> bool:
         return False
 
 
-def _gguf_split_first_shard(path: Path) -> Optional[Path]:
-    """The shard-1 sibling of *path*'s own split family, or None when it is already first.
+def _gguf_file_as_the_loader_opens_it(path: str) -> str:
+    """*path*, collapsed to shard 1 when the LOADER reads it as a complete split family.
 
-    Same family rule as ``_gguf_file_is_loadable``: shared prefix and shard total.
+    Asked of ``_local_gguf_load_path`` rather than restated here, because the shard grammars
+    differ by layer: the scan's ``_GGUF_SPLIT_RE`` takes three or more digits and the loader's
+    ``_GGUF_SPLIT_FILE_RE`` exactly five. A local rule would rewrite ``model-002-of-003.gguf``
+    to a sibling that ``detect_gguf_model`` still opens as its own model, which is the
+    wrong-file selection this fix removes.
     """
     try:
-        from hub.utils.inventory_scan import _GGUF_SPLIT_RE
+        from utils.models.model_config import _local_gguf_load_path
     except ImportError:
-        return None
-    split = _GGUF_SPLIT_RE.search(path.name)
-    if split is None or int(split.group(1)) == 1:
-        return None
-    total = int(split.group(2))
-    prefix = path.name[: split.start()]
+        return path
     try:
-        for sibling in path.parent.iterdir():
-            match = _GGUF_SPLIT_RE.search(sibling.name)
-            if (
-                match is not None
-                and sibling.name[: match.start()] == prefix
-                and int(match.group(2)) == total
-                and int(match.group(1)) == 1
-                and sibling.is_file()
-            ):
-                return sibling
+        resolved = _local_gguf_load_path(Path(path))
+        return path if resolved.samefile(path) else str(resolved)
     except OSError:
-        return None
-    return None
+        return path
 
 
 def _gguf_load_target(target: str) -> str:
     """The GGUF a picker row should load.
 
     A row naming a ``.gguf`` loads that file: resolving it through its folder returned the best
-    quant across every unrelated single-file GGUF beside it (#10352). A later shard redirects to
-    shard 1, matching what detect_gguf_model does at load time, so _dedup_key sees one inode and
-    a split family is offered once instead of once per shard.
+    quant across every unrelated single-file GGUF beside it (#10352). Shard rows are the one
+    exception, collapsed to the shard the loader opens anyway so ``_dedup_key`` sees one inode
+    and a split family is offered once instead of once per shard.
 
     A FOLDER still resolves: detect_gguf_model takes the largest complete file, commonly the
     F16, while cached and exported rows resolve a Q4-class quant, so the same folder loads
     dramatically bigger by source alone, an OOM rather than a preference.
     """
     if _is_gguf_file(target):
-        first = _gguf_split_first_shard(Path(target))
-        return str(first) if first is not None else target
+        return _gguf_file_as_the_loader_opens_it(target)
     return _preferred_complete_gguf(target) or target
 
 

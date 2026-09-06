@@ -2511,6 +2511,11 @@ def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_pat
     # An unrelated single-file GGUF beside them: no shard may resolve to it, and it stays itself.
     loose = folder / "Unrelated-F16.gguf"
     loose.write_bytes(b"GGUF" + b"\0" * 4096 * 10)
+    # Three digits is not the loader's -NNNNN-of-NNNNN, so detect_gguf_model opens each of these
+    # as its own model and collapsing them would be the wrong-file pick this fix removes.
+    unsplit = [folder / f"Other-00{n}-of-003.gguf" for n in (1, 2, 3)]
+    for file in unsplit:
+        file.write_bytes(b"GGUF" + b"\0" * 4096)
 
     def row(path):
         return SimpleNamespace(
@@ -2523,17 +2528,24 @@ def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_pat
             id = str(path),
         )
 
-    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(p) for p in (*shards, loose)])
+    listed = [*shards, loose, *unsplit]
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(p) for p in listed])
     monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
     monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
     monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
 
     loads = {e.name: e.model for e in cat.local_folder_entries()}
-    assert loads == {**{shard.stem: str(shards[0]) for shard in shards}, loose.stem: str(loose)}
+    assert loads == {
+        **{shard.stem: str(shards[0]) for shard in shards},
+        **{file.stem: str(file) for file in unsplit},
+        loose.stem: str(loose),
+    }
 
     for source in ("trained_entries", "exported_entries", "cached_entries"):
         monkeypatch.setattr(cat, source, list)
-    assert sorted(e.model for e in cat.list_chat_models()) == [str(shards[0]), str(loose)]
+    assert sorted(e.model for e in cat.list_chat_models()) == sorted(
+        [str(shards[0]), str(loose), *(str(file) for file in unsplit)]
+    )
 
 
 def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
