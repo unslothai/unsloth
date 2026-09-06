@@ -108,13 +108,20 @@ Environment:
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         # Anchor a relative reparse-point target to the link's own parent, or Join-Path
         # resolves it from the uninstaller's working directory and the db test reads false.
+        #
+        # Split-Path -LiteralPath takes no -Parent, here or anywhere else in this script.
+        # Windows PowerShell 5.1 puts -LiteralPath in its own parameter set, which carries
+        # only -Resolve and -Credential; -Parent belongs to the -Path set, so the two
+        # together are an unresolvable parameter set and the call throws. -LiteralPath on
+        # its own already splits off the parent, and it is the spelling we want: -Path
+        # globs, so a home containing [ ] would be read as a wildcard.
         $resolveTarget = {
             param($Item, $Fallback)
             if (-not $Item -or -not $Item.Target) { return $Fallback }
             $t = @($Item.Target)[0]
             if ([string]::IsNullOrWhiteSpace($t)) { return $Fallback }
             if (-not [System.IO.Path]::IsPathRooted($t)) {
-                $t = Join-Path (Split-Path -LiteralPath $Item.FullName -Parent) $t
+                $t = Join-Path (Split-Path -LiteralPath $Item.FullName) $t
             }
             return $t
         }
@@ -412,7 +419,7 @@ Environment:
             $userProfile = $userProfile.TrimEnd('\','/')
             if ($norm -ieq $userProfile) { return $true }
             try {
-                $parent = Split-Path -LiteralPath $userProfile -Parent
+                $parent = Split-Path -LiteralPath $userProfile
                 if ($parent -and ($norm -ieq $parent.TrimEnd('\','/'))) { return $true }
             } catch { }
         }
@@ -441,9 +448,9 @@ Environment:
         if ($line -match "^UNSLOTH_EXE\s*=\s*'(.*)'\s*$") {
             $exe = $Matches[1] -replace "''", "'"
             try {
-                $bin = Split-Path -LiteralPath $exe -Parent
-                $studio = Split-Path -LiteralPath $bin -Parent
-                $root = Split-Path -LiteralPath $studio -Parent
+                $bin = Split-Path -LiteralPath $exe
+                $studio = Split-Path -LiteralPath $bin
+                $root = Split-Path -LiteralPath $studio
                 if ($root) { return $root }
             } catch { }
         }
@@ -629,7 +636,7 @@ Environment:
                 # A symlink target may be relative; a junction's never is. Anchor it on the link's
                 # own parent, or GetFullPath would read it from the uninstaller's working directory.
                 if (-not [System.IO.Path]::IsPathRooted($t)) {
-                    $t = Join-Path (Split-Path -LiteralPath $item.FullName -Parent) $t
+                    $t = Join-Path (Split-Path -LiteralPath $item.FullName) $t
                 }
                 $t = [System.IO.Path]::GetFullPath($t).TrimEnd('\', '/')
                 if (-not $t) { continue }
@@ -815,7 +822,7 @@ Environment:
     # so add them to the handle scan too, gated on the same owner marker.
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
-        $sdc = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        $sdc = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
         if ((Test-Path -LiteralPath $sdc) -and (Test-Path -LiteralPath (Join-Path $sdc ".unsloth-studio-owned") -PathType Leaf)) {
             $customSdCppToStop += $sdc
         }
@@ -848,7 +855,7 @@ Environment:
         # "stable-diffusion.cpp" is exactly what a git clone of the upstream project produces, so
         # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
         # unowned checkout. Guard the derived parent path the same way.
-        $customSdCpp = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        $customSdCpp = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
         if (_IsUnsafeRoot $customSdCpp) {
             _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"
         } elseif ((Test-Path -LiteralPath $customSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $customSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
