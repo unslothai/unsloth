@@ -42,10 +42,22 @@ def test_an_unrelated_failure_is_not():
 def test_the_reported_launch_becomes_one_slot_with_no_unified_cache():
     """The argv is the one in the report, trimmed to the flags that matter."""
     cmd = [
-        "llama-server", "-m", "GLM-5.3-Flash-UD-IQ4_XS-00001-of-00004.gguf",
-        "--parallel", "4", "--flash-attn", "on", "--no-context-shift",
-        "-c", "128000", "--gpu-layers", "47", "--fit", "off",
-        "--kv-unified", "--jinja",
+        "llama-server",
+        "-m",
+        "GLM-5.3-Flash-UD-IQ4_XS-00001-of-00004.gguf",
+        "--parallel",
+        "4",
+        "--flash-attn",
+        "on",
+        "--no-context-shift",
+        "-c",
+        "128000",
+        "--gpu-layers",
+        "47",
+        "--fit",
+        "off",
+        "--kv-unified",
+        "--jinja",
     ]
 
     out = LlamaCppBackend._with_single_sequence(cmd)
@@ -71,7 +83,11 @@ def test_a_parallel_surviving_in_the_extras_tail_is_rewritten_too():
 def test_every_spelling_of_the_two_flags_is_handled():
     cmd = ["llama-server", "--parallel=4", "-kvu", "--alias", "m"]
     assert LlamaCppBackend._with_single_sequence(cmd) == [
-        "llama-server", "--parallel", "1", "--alias", "m",
+        "llama-server",
+        "--parallel",
+        "1",
+        "--alias",
+        "m",
     ]
 
     # -np8 is llama.cpp's attached short form, which _flag_name peels to -np.
@@ -81,9 +97,7 @@ def test_every_spelling_of_the_two_flags_is_handled():
 
 def test_a_command_already_running_one_sequence_has_nothing_to_retry():
     assert LlamaCppBackend._with_single_sequence(["llama-server", "-c", "8192"]) is None
-    assert (
-        LlamaCppBackend._with_single_sequence(["llama-server", "--parallel", "1"]) is None
-    )
+    assert LlamaCppBackend._with_single_sequence(["llama-server", "--parallel", "1"]) is None
 
 
 def test_a_slot_count_is_added_when_the_command_carried_none():

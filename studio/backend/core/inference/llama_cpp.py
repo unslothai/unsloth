@@ -17556,8 +17556,10 @@ class LlamaCppBackend:
                 saw_kv_unified = True
                 # llama.cpp's own form is bare, but an inline "=1" and a separate
                 # "1" both reach us through user extras.
-                if "=" not in tok and cmd[i + 1 : i + 2] and cmd[i + 1] in (
-                    _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES
+                if (
+                    "=" not in tok
+                    and cmd[i + 1 : i + 2]
+                    and cmd[i + 1] in (_LLAMA_ARG_TRUE_FALSE_AUTO_VALUES)
                 ):
                     skip_value = True
                 continue
