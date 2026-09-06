@@ -656,7 +656,11 @@ def _effective_requested_version(install_cell: str, package: str, oracle: str) -
     if floor and cmp_versions(oracle, floor) < 0:
         return floor
     if ceiling and cmp_versions(oracle, ceiling) >= 0:
-        return floor or oracle
+        # The request excludes what is installed, so pip moves. With a floor the window
+        # names where; without one (`torchcodec<0.10.0`) only the index does, and returning
+        # the excluded oracle would report a pairing the cell just ruled out. Unknown is the
+        # honest answer, and it makes the caller fall silent rather than invent a finding.
+        return floor
     return oracle
 
 
@@ -673,6 +677,8 @@ def rule_inst_004_torchcodec_torch(
     # exactly, so a cell asking for `torchcodec>=0.12.0` still reads as Colab's 0.11 and the
     # branches below report a mismatch pip would never produce. Judge what pip installs.
     codec_v = _effective_requested_version(install_cell, "torchcodec", codec_v)
+    if not codec_v:
+        return findings  # the cell moved it somewhere only the index names
     # torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION
     # to 2.11), so that half of the matrix is open-ended and cannot be a finite set of minors.
     # Without this, adding the 2.11 row below would flag torch 2.11 with torchcodec 0.12

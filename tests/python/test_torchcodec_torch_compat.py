@@ -957,3 +957,54 @@ def test_the_torchcodec_step_cannot_end_the_install():
     step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
     assert "pip_install_try(" in step, "the torchcodec step must use the non-fatal install"
     assert "\n        pip_install(" not in step, "pip_install() exits on failure"
+
+
+def test_a_ceiling_only_request_is_unknown_rather_than_the_excluded_oracle():
+    """`pip install "torchcodec<0.10.0"` on a 0.11 image downgrades to a version only the
+    index names. Returning the excluded oracle reported the exact pairing the cell just
+    ruled out, so a clean notebook failed on torch 2.9 + the image's 0.11."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    ceiling_only = '!pip install torch==2.9.0 "torchcodec<0.10.0"'
+    assert nv.rule_inst_004_torchcodec_torch(ceiling_only, colab, "nb.ipynb", 0) == []
+
+    # A floor names where it lands, so that case still resolves and still judges.
+    named = '!pip install torch==2.9.0 "torchcodec>=0.8.0,<0.10.0"'
+    assert nv.rule_inst_004_torchcodec_torch(named, colab, "nb.ipynb", 0) == []
+    wrong = '!pip install torch==2.9.0 "torchcodec>=0.11.0,<0.12.0"'
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(wrong, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+
+def test_the_runtime_hint_pins_the_index_it_tells_you_to_install_from(monkeypatch):
+    """The installer pins the torch index for torchcodec, so a remedy that omits it hands
+    back the wrong accelerator build and audio stays broken."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+
+    _stub_torch(monkeypatch, "2.11.0+cu128")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.10.0")
+    hint = fixes._torchcodec_version_mismatch_hint()
+    assert "--index-url https://download.pytorch.org/whl/cu128 'torchcodec>=0.11" in hint
+
+    # cpu is an index too, and the ABI-stable branch takes the same treatment.
+    _stub_torch(monkeypatch, "2.12.0+cu130")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.11.1")
+    assert (
+        "--index-url https://download.pytorch.org/whl/cu130 'torchcodec>=0.12.0'"
+        in fixes._torchcodec_version_mismatch_hint()
+    )
+
+    # Untagged torch is PyPI's own build, and rocm publishes no torchcodec: no pin either way.
+    for version in ("2.11.0", "2.9.0+rocm6.4"):
+        _stub_torch(monkeypatch, version)
+        monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.7.0")
+        assert "--index-url" not in (fixes._torchcodec_version_mismatch_hint() or "")
+
+    # torchcodec 0.1 is PyPI-only, so the 2.5 row must not send anyone to a torch index.
+    _stub_torch(monkeypatch, "2.5.0+cu118")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.5.0")
+    assert "--index-url" not in fixes._torchcodec_version_mismatch_hint()
