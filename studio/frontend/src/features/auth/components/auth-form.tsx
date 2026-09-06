@@ -2,6 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
+import { transitionBrowserAccount } from "@/lib/account-transition";
+import { sessionAccount, useLoginMode } from "../account-session";
+import { fetchAuthStatus, loginFromForm, loginWithPassword, type TokenResponse } from "../login-client";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
 import { Input } from "@/components/ui/input";
@@ -39,41 +42,6 @@ import {
 
 type AuthMode = "login" | "change-password";
 
-type AuthStatusResponse = {
-  initialized: boolean;
-  requires_password_change: boolean;
-  bootstrap_deadline_seconds?: number | null;
-};
-
-type TokenResponse = {
-  access_token: string;
-  refresh_token: string;
-  must_change_password: boolean;
-};
-
-async function loginWithPassword(
-  username: string,
-  password: string,
-): Promise<TokenResponse> {
-  const response = await fetch(apiUrl("/api/auth/login"), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      username: username.trim(),
-      password,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorPayload = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(errorPayload?.detail ?? "Login failed.");
-  }
-
-  return (await response.json()) as TokenResponse;
-}
-
 type AuthFormProps = {
   mode: AuthMode;
 };
@@ -85,7 +53,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
-  const username = HIDDEN_LOGIN_USERNAME;
+  const loginMode = useLoginMode();
+  const [enteredUsername, setEnteredUsername] = useState("");
+  const username = loginMode === "multi" ? enteredUsername : HIDDEN_LOGIN_USERNAME;
   const [password, setPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -114,12 +84,14 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       // tokens from a previous install). /api/auth/status is the source of
       // truth for requires_password_change.
       try {
-        const response = await fetch(apiUrl("/api/auth/status"));
-        if (!response.ok) throw new Error("Failed to load auth status.");
-        const result = (await response.json()) as AuthStatusResponse;
+        const result = await fetchAuthStatus();
+        // Public status describes owner bootstrap. Managed setup is carried by the session.
+        const requiresChange = result.login_mode === "multi"
+          ? hasAuthToken() && mustChangePassword()
+          : result.requires_password_change;
         if (!canceled) {
           setInitialized(result.initialized);
-          setRequiresPasswordChange(result.requires_password_change);
+          setRequiresPasswordChange(requiresChange);
           // One clock sample for both: nowMs is otherwise still the mount time
           // until the first tick, which adds the request duration to the figure
           // and renders a 0 from the server as "shuts down in 0 seconds".
@@ -130,23 +102,23 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
           );
 
           // Server truth wins; keep localStorage in sync both ways.
-          if (result.requires_password_change !== mustChangePassword()) {
-            setMustChangePassword(result.requires_password_change);
+          if (requiresChange !== mustChangePassword()) {
+            setMustChangePassword(requiresChange);
           }
 
           // Redirect between login / change-password per server state
-          if (mode === "login" && result.requires_password_change) {
+          if (mode === "login" && requiresChange) {
             navigate({ to: "/change-password" });
             return;
           }
-          if (mode === "change-password" && !result.requires_password_change) {
+          if (mode === "change-password" && !requiresChange) {
             navigate({ to: "/login" });
             return;
           }
 
           // On login, skip to the app if a valid session exists and no
           // password change is required.
-          if (isLoginMode && !result.requires_password_change) {
+          if (isLoginMode && !requiresChange) {
             if (hasRefreshToken()) {
               const refreshed = await refreshSession();
               if (refreshed) {
@@ -273,7 +245,12 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       let token: TokenResponse;
 
       if (isLoginMode) {
-        token = await loginWithPassword(username, password);
+        const result = await loginFromForm(loginMode, username, password);
+        if (!result) {
+          setPassword("");
+          return;
+        }
+        token = result;
       } else {
         let accessToken = getAuthToken();
 
@@ -288,11 +265,11 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
         if (!accessToken) {
           const bootstrapToken = await loginWithPassword(username, currentPassword);
-          storeAuthTokens(
-            bootstrapToken.access_token,
-            bootstrapToken.refresh_token,
-          );
-          setMustChangePassword(bootstrapToken.must_change_password);
+          const replaced = await transitionBrowserAccount(username, "/change-password", () => {
+            storeAuthTokens(bootstrapToken.access_token, bootstrapToken.refresh_token);
+            setMustChangePassword(bootstrapToken.must_change_password);
+          });
+          if (replaced) return;
           accessToken = bootstrapToken.access_token;
         }
 
@@ -320,13 +297,15 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         token = (await response.json()) as TokenResponse;
       }
 
-      if (!isLoginMode) {
-        setRequiresPasswordChange(false);
-        setMustChangePassword(false);
-      } else {
-        setMustChangePassword(token.must_change_password);
-      }
-      storeAuthTokens(token.access_token, token.refresh_token);
+      const finishSession = () => {
+        if (!isLoginMode) setRequiresPasswordChange(false);
+        setMustChangePassword(isLoginMode && token.must_change_password);
+        storeAuthTokens(token.access_token, token.refresh_token);
+      };
+      // Password changes keep the authenticated subject, including managed setup sessions.
+      const signedInUsername = sessionAccount(token.access_token)?.username ?? username;
+      const route = isLoginMode && token.must_change_password ? "/change-password" : "/chat";
+      if (await transitionBrowserAccount(signedInUsername, route, finishSession)) return;
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
       // The backend returns the correct PATH-based command ("unsloth studio
@@ -373,12 +352,31 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         </p>
       )}
       <form className="space-y-5" onSubmit={handleSubmit}>
+        {isLoginMode && loginMode === "multi" && (
+          <div className="space-y-2">
+            <Label htmlFor="username">Username</Label>
+            <Input
+              id="username"
+              name="username"
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              value={enteredUsername}
+              onChange={(event) => setEnteredUsername(event.target.value)}
+              required
+            />
+            <p id="setup-code-hint" className="text-sm text-muted-foreground">
+              First sign in? Paste the setup code your administrator gave you as the password.
+            </p>
+          </div>
+        )}
         {isLoginMode && (
           <div className="space-y-2">
             <Label htmlFor="password">Password</Label>
             <div className="relative">
               <Input
                 id="password"
+                aria-describedby={loginMode === "multi" ? "setup-code-hint" : undefined}
                 type={showPassword ? "text" : "password"}
                 className="pr-10"
                 autoComplete="current-password"
@@ -509,7 +507,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             loading ||
             statusLoading ||
             blockedByState ||
-            (isLoginMode && password.length < 8) ||
+            (isLoginMode && (password.length < 8 || (loginMode === "multi" && !username.trim()))) ||
             invalidChangePasswordForm
           }
         >

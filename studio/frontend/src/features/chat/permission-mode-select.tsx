@@ -3,7 +3,8 @@
 
 import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
 import type { ComponentType } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useLoginMode } from "@/features/auth/account-session";
 
 import {
   AlertDialog,
@@ -84,17 +85,30 @@ export function permissionModeOption(mode: PermissionMode) {
 
 /** The option rows shared by every permission dropdown or submenu. Non-full levels apply
  *  directly; picking Full access must go through the caller's danger confirmation. */
+function useAccountPermissionMode() {
+  const loginMode = useLoginMode();
+  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  useEffect(() => {
+    if (loginMode === "multi" && permissionMode === "full") setPermissionMode("auto");
+  }, [loginMode, permissionMode, setPermissionMode]);
+  return {
+    permissionMode: loginMode === "multi" && permissionMode === "full" ? "auto" : permissionMode,
+    fullAccessAllowed: loginMode !== "multi",
+  };
+}
+
 export function PermissionModeMenuItems({
   onRequestFullAccess,
 }: {
   onRequestFullAccess: () => void;
 }) {
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
 
   return (
     <>
-      {PERMISSION_MODE_OPTIONS.map((option) => (
+      {PERMISSION_MODE_OPTIONS.filter((option) => fullAccessAllowed || option.value !== "full").map((option) => (
         <DropdownMenuItem
           key={option.value}
           onSelect={() => {
@@ -145,6 +159,8 @@ export function FullAccessConfirmDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  const { fullAccessAllowed } = useAccountPermissionMode();
+  if (!fullAccessAllowed) return null;
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -184,7 +200,7 @@ export function PermissionModeDropdown({
   align?: "start" | "end";
   triggerClassName?: string;
 } = {}) {
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
@@ -247,7 +263,7 @@ export function PermissionModeComposerPill({
 }: {
   side?: "top" | "bottom";
 } = {}) {
-  const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
