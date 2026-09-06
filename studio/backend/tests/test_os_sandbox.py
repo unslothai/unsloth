@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -2711,8 +2712,12 @@ def test_bridged_spawn_kills_a_child_that_never_hands_over(monkeypatch, tmp_path
     proxy = os_sandbox.AllowlistProxy(os_sandbox.NetworkAllowlist.from_entries(["pypi.org"]))
     host_end, sandbox_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     spawn = os_sandbox._bridged_spawn(proxy, host_end, sandbox_end)
+    # The marker is unique to this run: the scan below reads every process on the
+    # machine, and a concurrent copy of this suite would otherwise be mistaken
+    # for a child that outlived its launch.
+    marker = f"unsloth-bridge-{uuid.uuid4().hex}"
     prepared = os_sandbox.PreparedSandboxLaunch(
-        argv = (sys.executable, "-c", "import time; time.sleep(30)"),
+        argv = (sys.executable, "-c", f"import time; time.sleep(30)  # {marker}"),
         workdir = str(tmp_path),
         env = {},
         preexec_fn = None,
@@ -2728,7 +2733,7 @@ def test_bridged_spawn_kills_a_child_that_never_hands_over(monkeypatch, tmp_path
     with pytest.raises(OSError):
         os.fstat(host_end.fileno())
     assert not any(
-        p.info.get("cmdline") and "time.sleep(30)" in " ".join(p.info["cmdline"])
+        p.info.get("cmdline") and marker in " ".join(p.info["cmdline"])
         for p in _iter_python_processes()
     )
 
