@@ -20,6 +20,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -958,6 +959,192 @@ def test_a_user_object_with_no_dacl_is_left_exactly_as_it_was(tmp_path, monkeypa
     assert prepared.cleanup_diagnostics == []
 
 
+def _mutex_recorder(recorder: _WinApiRecorder, monkeypatch) -> None:
+    """Give a recorder a host that answers CreateMutexW, and a fresh handle cache."""
+    monkeypatch.setattr(windows_lpac, "_LEDGER_MUTEXES", {})
+    recorder.kernel32.CreateMutexW = lambda _attributes, _owned, name: (
+        recorder._note("CreateMutexW", name) and 900
+    )
+    recorder.kernel32.WaitForSingleObject = lambda handle, _ms: (
+        recorder._note("WaitForSingleObject", handle) and windows_lpac._WAIT_OBJECT_0
+    )
+    recorder.kernel32.ReleaseMutex = lambda handle: recorder._note("ReleaseMutex", handle)
+
+
+def test_two_launches_never_interleave_one_user_object_dacl_edit(monkeypatch):
+    """The window station and desktop edits are a read-modify-write on objects
+    this process neither owns nor has to itself.
+
+    Unsynchronised, two launches each read the DACL before either writes, and
+    the second write puts back a DACL that never carried the first launch's ACE:
+    a child that is already running loses the window station it was given. A
+    launch racing a cleanup resurrects a revoked ACE the same way, and that one
+    outlives the launch, on the user's interactive window station.
+    """
+    recorder = _WinApiRecorder()
+    monkeypatch.setattr(windows_lpac, "_api", lambda: recorder)
+    monkeypatch.setattr(token_launcher, "_last_error", lambda: recorder.last_error)
+    _mutex_recorder(recorder, monkeypatch)
+    order: list[str] = []
+    read_dacl = recorder.user32.GetUserObjectSecurity
+    write_dacl = recorder.user32.SetUserObjectSecurity
+
+    def slow_read(handle, information, buffer, length, needed):
+        order.append(threading.current_thread().name)
+        if buffer is not None:
+            # The window the unsynchronised version loses: the descriptor is in
+            # hand and the write has not happened yet.
+            time.sleep(0.02)
+        return read_dacl(handle, information, buffer, length, needed)
+
+    def watched_write(handle, information, descriptor):
+        order.append(threading.current_thread().name)
+        return write_dacl(handle, information, descriptor)
+
+    recorder.user32.GetUserObjectSecurity = slow_read
+    recorder.user32.SetUserObjectSecurity = watched_write
+
+    def edit() -> None:
+        token_launcher._edit_user_object_dacl(
+            recorder,
+            101,
+            ctypes.c_void_p(3),
+            mode = windows_lpac._GRANT_ACCESS,
+            access = token_launcher._WINSTA_GRANT,
+            inheritance = token_launcher._NO_PROPAGATE_INHERIT_ACE,
+        )
+
+    threads = [threading.Thread(target = edit, name = name) for name in ("first", "second")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 10)
+    assert not any(thread.is_alive() for thread in threads)
+
+    # Two contiguous runs, one per launch: neither read the DACL the other was
+    # about to replace.
+    runs = [name for index, name in enumerate(order) if index == 0 or order[index - 1] != name]
+    assert len(order) == 6, order
+    assert runs in (["first", "second"], ["second", "first"]), order
+    # And the same edit is ordered against a second Studio process, which the
+    # in-process lock cannot reach.
+    assert (
+        "CreateMutexW",
+        "Local\\unsloth.studio.ledger.limited-user-object.winsta0",
+    ) in recorder.calls
+    names = recorder.names()
+    for index, name in enumerate(names):
+        if name != "SetUserObjectSecurity":
+            continue
+        before = names[:index]
+        assert before.count("WaitForSingleObject") == before.count("ReleaseMutex") + 1, names
+    assert names.count("WaitForSingleObject") == names.count("ReleaseMutex") == 2
+
+
+def test_the_desktop_grant_is_the_loader_pair_and_not_every_desktop_right():
+    """A sandboxed child gets what user32 needs to initialise, and nothing else.
+
+    Chromium names DESKTOP_WRITEOBJECTS | DESKTOP_READOBJECTS as the "Access
+    required for UI thread to initialize (when user32.dll loads without win32k
+    lockdown)", the system connects a process to its desktop with MAXIMUM_ALLOWED
+    rather than a fixed mask, and under WRITE_RESTRICTED this ACE is consulted
+    only for the write rights. So the rest of DESKTOP_ALL_ACCESS bought nothing
+    and granted a great deal.
+    """
+    assert token_launcher._DESKTOP_GRANT == 0x0001 | 0x0080 | 0x00020000
+    dangerous = {
+        "DESKTOP_CREATEWINDOW": 0x0002,
+        "DESKTOP_CREATEMENU": 0x0004,
+        "DESKTOP_HOOKCONTROL": 0x0008,
+        "DESKTOP_JOURNALRECORD": 0x0010,
+        "DESKTOP_JOURNALPLAYBACK": 0x0020,
+        "DESKTOP_SWITCHDESKTOP": 0x0100,
+    }
+    for name, right in dangerous.items():
+        assert not token_launcher._DESKTOP_GRANT & right, name
+    # Still never WRITE_DAC, WRITE_OWNER or DELETE, on either object.
+    assert not (token_launcher._WINSTA_GRANT | token_launcher._DESKTOP_GRANT) & 0x000D0000
+    assert not hasattr(token_launcher, "_DESKTOP_ALL_ACCESS")
+
+
+def _dead_owner_manifest(manifest: Path, text: str, **overrides) -> None:
+    payload = {**json.loads(text), "owner_pid": 4242, "owner_created": 7, **overrides}
+    manifest.write_text(json.dumps(payload), encoding = "utf-8")
+
+
+def test_the_crash_manifest_records_and_revokes_the_user_object_grants(tmp_path, monkeypatch):
+    """A crashed launch's window station and desktop ACEs are reconcilable.
+
+    The manifest recorded the filesystem grants and not these, so a Studio that
+    died between the grant and the revoke left the launch SID on the user's own
+    interactive objects with nothing able to find it again. The record is
+    write-ahead, so it names what the launch planned rather than what it
+    managed; revoking an ACE that is not there is a no-op.
+    """
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+    recorder.advapi32.LookupAccountSidW = lambda *_arguments: 0
+
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    identity = prepared.spawn_callback._launch_identity
+    manifest = Path(identity.manifest_path)
+    recorded = manifest.read_text(encoding = "utf-8")
+    payload = json.loads(recorded)
+    assert payload["user_objects"] == ["window station", "desktop"]
+    assert payload["desktop"] == "WinSta0\\Default"
+    prepared.cleanup()
+    assert prepared.cleanup_diagnostics == []
+
+    # What the crash left: the same record, with an owner that is gone.
+    monkeypatch.setattr(windows_lpac, "_process_identity", lambda pid = None: None)
+    recorder.last_error = token_launcher._ERROR_NONE_MAPPED
+    _dead_owner_manifest(manifest, recorded)
+    recorder.calls.clear()
+
+    token_launcher.WindowsRestrictedTokenBackend().reconcile_stale_manifests()
+
+    revokes = [
+        call for call in recorder.calls
+        if call[0] == "SetEntriesInAclW" and call[2] == windows_lpac._REVOKE_ACCESS
+    ]
+    assert len(revokes) == 2
+    assert [call[1] for call in recorder.calls if call[0] == "SetUserObjectSecurity"] == [101, 102]
+    assert not manifest.exists()
+
+    # A record from another session names objects this process is not connected
+    # to. Its SID names no account and is never reused, so it is left for the
+    # Studio that is on that desktop rather than revoked from the wrong one.
+    _dead_owner_manifest(manifest, recorded, desktop = "OtherStation\\Other")
+    recorder.last_error = token_launcher._ERROR_NONE_MAPPED
+    recorder.calls.clear()
+
+    token_launcher.WindowsRestrictedTokenBackend().reconcile_stale_manifests()
+
+    assert "SetUserObjectSecurity" not in recorder.names()
+    assert not manifest.exists()
+
+
+def test_a_manifest_may_only_name_the_user_objects_this_launcher_grants(tmp_path):
+    sid = "S-1-5-21-1-2-3-4"
+    assert token_launcher._parse_manifest(_manifest(tmp_path, sid))["user_objects"] == []
+    assert token_launcher._parse_manifest(
+        _manifest(tmp_path, sid, user_objects = ["desktop"], desktop = "WinSta0\\Default")
+    )["desktop"] == "WinSta0\\Default"
+    # The reconciler drives a DACL edit on this process's own objects from these
+    # two, so nothing else may appear in either.
+    for planted in (["clipboard"], ["window station", "screen"], "desktop", [1]):
+        assert token_launcher._parse_manifest(
+            _manifest(tmp_path, sid, user_objects = planted)
+        ) is None, planted
+    assert token_launcher._parse_manifest(_manifest(tmp_path, sid, desktop = ["a"])) is None
+
+
 def test_spawn_restricted_detaches_the_child_and_names_its_desktop(tmp_path, monkeypatch):
     """Chromium's broker creates every sandboxed target with exactly
     CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS. A detached
@@ -1027,12 +1214,16 @@ def test_a_child_that_dies_in_process_start_up_is_named_by_its_status(tmp_path, 
 def test_a_job_that_provably_did_not_drain_is_a_cleanup_diagnostic(monkeypatch):
     """Cleanup is LIFO, so this callback runs before the ACL revoke and the temp
     removal; a child that outlived its job must not make those two silent.
+
+    Both launchers share the one implementation, so the wait is patched where it
+    lives rather than on the Limited-mode alias.
     """
     recorder = _WinApiRecorder()
     monkeypatch.setattr(windows_lpac, "_api", lambda: recorder)
     process = SimpleNamespace(close = lambda: recorder._note("process.close"))
+    assert token_launcher._close_after_drain is windows_lpac._close_after_drain
 
-    monkeypatch.setattr(token_launcher, "_wait_for_job_drain", lambda job: False)
+    monkeypatch.setattr(windows_lpac, "_wait_for_job_drain", lambda job: False)
     with pytest.raises(OSError, match = "still held a process"):
         token_launcher._close_after_drain(process, _FakeJob(recorder))
     # The handles are released even so: keeping them would leak the job and the
@@ -1041,9 +1232,9 @@ def test_a_job_that_provably_did_not_drain_is_a_cleanup_diagnostic(monkeypatch):
     assert names.index("job.terminate") < names.index("process.close")
 
     # A host that cannot be asked is not evidence of a live child.
-    monkeypatch.setattr(token_launcher, "_wait_for_job_drain", lambda job: None)
+    monkeypatch.setattr(windows_lpac, "_wait_for_job_drain", lambda job: None)
     token_launcher._close_after_drain(process, _FakeJob(recorder))
-    monkeypatch.setattr(token_launcher, "_wait_for_job_drain", lambda job: True)
+    monkeypatch.setattr(windows_lpac, "_wait_for_job_drain", lambda job: True)
     token_launcher._close_after_drain(process, _FakeJob(recorder))
 
 

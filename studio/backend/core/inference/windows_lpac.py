@@ -48,6 +48,16 @@ What a stable SID changes
   launch, and it is the directory the user asked the tool to work in.
 These are disclosed as ``concurrent_launches_share_the_container``.
 
+Everything in that list is shared with the launches of *other* Studio processes
+of the same installation, which this one sees only through their write-ahead
+manifests. Reading a directory of manifests is a check and not a lock, so every
+path that grants or revokes for an installation runs inside a named mutex keyed
+by its moniker (``_installation_ledger``): scan-and-revoke, prepare's
+create-and-grant, reconciliation and the persistent removal never interleave
+between processes. It is a session-namespace mutex and best effort, so two
+sessions of one account, and a host that will not give us one, are back to the
+manifests alone.
+
 What it does not change
 -----------------------
 Everything outside the granted roots and the workdir stays denied, the network
@@ -79,7 +89,7 @@ import sysconfig
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from loggers import get_logger
 
@@ -170,11 +180,25 @@ _JOB_OBJECT_LIMIT_PROCESS_MEMORY = 0x00000100
 _JOB_OBJECT_LIMIT_JOB_MEMORY = 0x00000200
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
 _WAIT_OBJECT_0 = 0
+# The previous owner of a mutex died without releasing it. Ownership is granted
+# to this caller all the same, which is what a crashed Studio looks like here.
+_WAIT_ABANDONED = 0x00000080
 _WAIT_TIMEOUT = 258
 _INFINITE = 0xFFFFFFFF
 _STILL_ACTIVE = 259
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+# TerminateJobObject and KILL_ON_JOB_CLOSE only start the kill, so the container
+# temp and the workdir ACE are released only once the job has actually drained.
+_JOB_DRAIN_SECONDS = 5.0
+_JOB_DRAIN_FIRST_POLL_SECONDS = 0.005
+_JOB_DRAIN_MAX_POLL_SECONDS = 0.1
+
+# The name of the cross-process ledger mutex, one per installation moniker.
+_LEDGER_MUTEX_PREFIX = "Local\\unsloth.studio.ledger."
+_LEDGER_MUTEX_WAIT_MS = 30_000
 
 
 class _TRUSTEE_W(ctypes.Structure):
@@ -306,6 +330,21 @@ class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
         ("JobMemoryLimit", ctypes.c_size_t),
         ("PeakProcessMemoryUsed", ctypes.c_size_t),
         ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+class _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+    """Only ``ActiveProcesses`` is read, to tell a drained job from a draining one."""
+
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_int64),
+        ("TotalKernelTime", ctypes.c_int64),
+        ("ThisPeriodTotalUserTime", ctypes.c_int64),
+        ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+        ("TotalPageFaultCount", wintypes.DWORD),
+        ("TotalProcesses", wintypes.DWORD),
+        ("ActiveProcesses", wintypes.DWORD),
+        ("TotalTerminatedProcesses", wintypes.DWORD),
     ]
 
 
@@ -561,6 +600,12 @@ def _api() -> _WinApi:
     kernel32.ResumeThread.restype = wintypes.DWORD
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    # The cross-process ledger. A mutex is the only one of these namespaces that
+    # orders two Studio processes; the manifests alone are a check, not a lock.
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel32.ReleaseMutex.restype = wintypes.BOOL
     kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     kernel32.GetExitCodeProcess.restype = wintypes.BOOL
     kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
@@ -799,20 +844,90 @@ def _manifest_root() -> str:
     return root
 
 
+def _is_reparse_point(path: str) -> bool:
+    """Whether a path is a junction or a symlink, tested without following it."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
+def _remove_reparse_point(path: str) -> None:
+    """Remove the link itself.
+
+    A sandboxed child needs no privilege to create a directory junction, so one
+    planted in a directory this module empties must not be able to block cleanup
+    forever, or to redirect it outside the container. ``os.rmdir`` is
+    ``RemoveDirectoryW``, which deletes the reparse point and never follows it;
+    a file symlink needs ``os.unlink`` instead.
+    """
+    try:
+        os.rmdir(path)
+        return
+    except FileNotFoundError:
+        return
+    except OSError:
+        pass
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return
+
+
+def _force_removable(function: Callable[[str], Any], path: str, exc: BaseException) -> None:
+    """Clear FILE_ATTRIBUTE_READONLY (or drop a reparse point) and retry one removal."""
+    if isinstance(exc, FileNotFoundError):
+        return
+    if _is_reparse_point(path):
+        _remove_reparse_point(path)
+        return
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
+
+
+def _rmtree_onerror(function: Callable[[str], Any], path: str, info: tuple[Any, ...]) -> None:
+    """The pre-3.12 ``onerror`` shape, which reports ``sys.exc_info`` instead."""
+    _force_removable(function, path, info[1])
+
+
+def _rmtree_error_handler() -> dict[str, Any]:
+    """``onexc`` where it exists (3.12+), ``onerror`` on the older interpreters."""
+    if sys.version_info >= (3, 12):
+        return {"onexc": _force_removable}
+    return {"onerror": _rmtree_onerror}
+
+
 def _empty_directory(path: str) -> None:
     """Delete everything inside ``path``, leaving the directory itself in place.
 
     The container temp is named in the package environment Windows builds for
     every AppContainer child of this installation, so it is emptied rather than
     removed: a concurrent launch would otherwise find its own TEMP gone.
+
+    A sandboxed child is free to leave a read-only file or a junction in there,
+    and neither needs a privilege to create. Without the same
+    FILE_ATTRIBUTE_READONLY clearing the Limited-mode removal does, one such file
+    fails this call, and with it the cleanup of every later launch that inherits
+    the same container temp.
     """
     with os.scandir(path) as entries:
         children = list(entries)
+    handler = _rmtree_error_handler()
     for entry in children:
-        if entry.is_dir(follow_symlinks = False):
-            shutil.rmtree(entry.path, ignore_errors = False)
+        # Checked before is_dir: a junction reports as a directory, and rmtree
+        # would walk through it into whatever it points at.
+        if _is_reparse_point(entry.path):
+            _remove_reparse_point(entry.path)
+        elif entry.is_dir(follow_symlinks = False):
+            shutil.rmtree(entry.path, **handler)
         else:
-            os.unlink(entry.path)
+            try:
+                os.unlink(entry.path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                _force_removable(os.unlink, entry.path, exc)
 
 
 def _is_container_temp(profile_folder: str, private_temp: str) -> bool:
@@ -1066,6 +1181,101 @@ _SHARED_GRANTS_LOCK = threading.RLock()
 # roots from the record (or each pay the same propagation).
 _PERSISTENT_GRANT_LOCK = threading.RLock()
 
+# One named-mutex handle per key, for the life of the process. A host that
+# cannot give us one is recorded as None and never asked again.
+_LEDGER_MUTEXES: dict[str, Any] = {}
+_LEDGER_MUTEX_LOCK = threading.Lock()
+
+
+def _ledger_mutex(key: str) -> Any:
+    """The named mutex ``key`` names, created once per process, or ``None``."""
+    with _LEDGER_MUTEX_LOCK:
+        if key in _LEDGER_MUTEXES:
+            return _LEDGER_MUTEXES[key]
+        handle = None
+        try:
+            create = getattr(_api().kernel32, "CreateMutexW", None)
+            if create is not None:
+                handle = create(None, False, _LEDGER_MUTEX_PREFIX + key) or None
+                if handle is None:
+                    raise _winerror("CreateMutexW(sandbox ledger)")
+        except Exception:  # noqa: BLE001 - the manifests stay the record either way
+            logger.warning(
+                "Could not create the sandbox ledger mutex for %s; two Studio processes are "
+                "ordered by their manifests alone",
+                key,
+                exc_info = True,
+            )
+            handle = None
+        _LEDGER_MUTEXES[key] = handle
+        return handle
+
+
+@contextmanager
+def _named_mutex(key: str):
+    """Hold the named mutex ``key`` for the length of the block, best effort.
+
+    The session namespace (``Local\\``), not the global one. Two Studios of one
+    interactive session are the case these mutexes order; a ``Global\\`` name is
+    one any other account on the machine could create first and then hold,
+    turning a cleanup into a wait. Two sessions of the same account (a console
+    login and an RDP login) therefore still see each other only through the
+    manifests, which is where every process was before this existed.
+
+    A host that will not give us the mutex, and a holder that has not released it
+    within ``_LEDGER_MUTEX_WAIT_MS``, both continue without it rather than
+    failing a tool call; ``held`` says which happened. ``WAIT_ABANDONED`` is
+    ownership too, and is exactly the crashed Studio the manifests are
+    reconciled for. Win32 mutexes are owned by a thread and are recursive, so
+    the nesting the call sites do is one acquire per release.
+    """
+    handle = _ledger_mutex(key)
+    held = False
+    if handle is not None:
+        try:
+            result = _api().kernel32.WaitForSingleObject(handle, _LEDGER_MUTEX_WAIT_MS)
+        except Exception:  # noqa: BLE001 - a wait that cannot run is not a launch failure
+            logger.warning("Could not wait on the sandbox ledger mutex %s", key, exc_info = True)
+            result = None
+        if result in (_WAIT_OBJECT_0, _WAIT_ABANDONED):
+            held = True
+        else:
+            logger.warning(
+                "The sandbox ledger mutex %s was not acquired (%s); another Studio process may "
+                "interleave with this one",
+                key,
+                result,
+            )
+    try:
+        yield held
+    finally:
+        if held:
+            try:
+                _api().kernel32.ReleaseMutex(handle)
+            except Exception:  # noqa: BLE001 - never mask the body's own failure
+                logger.warning("Could not release the sandbox ledger mutex %s", key, exc_info = True)
+
+
+@contextmanager
+def _installation_ledger(moniker: str = ""):
+    """Hold this installation's ownership ledger against every thread and process.
+
+    ``_SHARED_GRANTS_LOCK`` orders the launches of one Studio and nothing else.
+    The write-ahead manifests are what a second Studio of the same installation
+    is seen through, and reading them is a check, not a lock: it can write its
+    manifest in the window between this process's scan and its revoke, and then
+    lose the ACE it was just granted, under a container that is already running.
+    A named mutex keyed by the installation moniker closes that window. It is
+    held across scan-and-revoke, across prepare's create-and-grant, across
+    reconciliation and across the persistent removal, so no two of those
+    interleave between processes.
+
+    ``_SHARED_GRANTS_LOCK`` is always taken first, so the process-local lock and
+    the mutex can never be acquired in opposite orders.
+    """
+    with _SHARED_GRANTS_LOCK, _named_mutex(moniker or _install_moniker()) as held:
+        yield held
+
 
 def _hold_shared_grants(paths: tuple[str, ...]) -> None:
     """Record that one more live launch of this installation needs these ACEs.
@@ -1102,7 +1312,9 @@ def _release_shared_grants(paths: tuple[str, ...]) -> set[str]:
     return released
 
 
-def _live_launch_holds(exclude_launch_id: str = "") -> frozenset[str]:
+def _live_launch_holds(
+    exclude_launch_id: str = "", *, moniker: str | None = None
+) -> frozenset[str]:
     """Normalised paths a launch of any live Studio process still needs.
 
     ``_SHARED_GRANTS`` counts this process's launches only, and every launch of
@@ -1113,11 +1325,20 @@ def _live_launch_holds(exclude_launch_id: str = "") -> frozenset[str]:
     anything and removed only after it has revoked, so a manifest whose owner
     process is still alive names paths this cleanup must leave alone.
 
+    ``moniker`` narrows that to one installation, and every caller that is
+    revoking passes its own. Two installations (two interpreters, two accounts)
+    derive different package SIDs from their different names, so nothing one
+    revokes can reach the other's ACE, and a foreign manifest answering here
+    would only suppress this installation's revoke on a path both happen to use
+    - permanently, for as long as that manifest exists, since nothing in this
+    process ever removes another installation's record. ``None`` means every
+    installation, which is what the all-installations reset asks about.
+
     Best effort by design. A manifest root that cannot be read yields nothing,
     which is where this was before the ledger existed. The instant between
     another process writing its manifest and this one reading the directory is
-    not closed by a scan; the per-process lock closes it for two launches of one
-    Studio, which is the case that happens.
+    closed by the named mutex ``_installation_ledger`` holds across the scan and
+    the revoke it gates, not by the scan itself.
     """
     try:
         root = _manifest_root()
@@ -1128,6 +1349,8 @@ def _live_launch_holds(exclude_launch_id: str = "") -> frozenset[str]:
     for manifest in Path(root).glob(_LAUNCH_PREFIX + "*.json"):
         payload = _parse_manifest(manifest)
         if payload is None or payload["kind"] != _MANIFEST_KIND_LAUNCH:
+            continue
+        if moniker is not None and payload["moniker"] != moniker:
             continue
         if exclude_launch_id and payload["launch_id"] == exclude_launch_id:
             continue
@@ -1143,6 +1366,39 @@ def _live_launch_holds(exclude_launch_id: str = "") -> frozenset[str]:
         held.update(os.path.normcase(path) for path in payload["granted_roots"])
         held.add(os.path.normcase(payload["private_temp"]))
     return frozenset(held)
+
+
+def _release_private_temp(
+    profile_folder: str,
+    private_temp: str,
+    *,
+    released: set[str] | None,
+    elsewhere: frozenset[str],
+) -> None:
+    """Give up one launch's claim on its temp without disturbing a live one.
+
+    The container temp is the directory Windows points every AppContainer child
+    of this installation at, so it belongs to the container and not to a launch:
+    it is emptied, never removed, and only once nothing else holds it. Removing
+    it would take the TEMP out from under every concurrent launch, and the
+    shared-temp change is what made that possible - before it, a launch owned a
+    per-launch subdirectory that was its alone.
+
+    ``released`` is the set of paths this launch was the last holder of in this
+    process, or ``None`` when there is no per-process count to consult (a
+    manifest reconciled for a dead owner). ``elsewhere`` is what a launch of
+    another Studio process still holds. A per-launch child of the temp, which
+    only a manifest written by an earlier build can name, is removed as before.
+    """
+    validated = _validated_private_temp(profile_folder, private_temp)
+    key = os.path.normcase(validated)
+    if key in elsewhere:
+        return
+    if _is_container_temp(profile_folder, validated):
+        if released is None or key in released:
+            _empty_directory(validated)
+        return
+    shutil.rmtree(validated, ignore_errors = False)
 
 
 def _container_owned(path: str, profile_folder: str) -> bool:
@@ -1524,9 +1780,10 @@ class _InvocationIdentity:
         if self.cleaned:
             return
         errors: list[str] = []
-        # The ledger lock spans the release and the revokes: a launch starting in
-        # between would otherwise see the ACE, skip its own grant, and lose it.
-        with _SHARED_GRANTS_LOCK:
+        # The ledger spans the release and the revokes, in this process and in
+        # every other Studio of this installation: a launch starting in between
+        # would otherwise see the ACE, skip its own grant, and lose it here.
+        with _installation_ledger(self.moniker):
             targets = self.granted_roots
             if self.shared_roots:
                 if self._released is None:
@@ -1541,7 +1798,7 @@ class _InvocationIdentity:
             # The in-process count answers for this Studio only, and the SID is
             # the installation's: another live Studio's launch needs the same
             # ACEs and would lose them here.
-            elsewhere = _live_launch_holds(self.launch_id)
+            elsewhere = _live_launch_holds(self.launch_id, moniker = self.moniker)
             targets = tuple(path for path in targets if os.path.normcase(path) not in elsewhere)
             traverse = {os.path.normcase(path) for path in self.traverse_roots}
             for path in reversed(targets):
@@ -1549,21 +1806,15 @@ class _InvocationIdentity:
                     _revoke_sid(path, self.sid, exact = os.path.normcase(path) in traverse)
                 except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
                     errors.append(f"ACL {path}: {exc}")
-            # Inside the ledger lock: a launch starting between the release above
-            # and the removal below would otherwise have its temp emptied under it.
+            # Inside the ledger: a launch starting between the release above and
+            # the removal below would otherwise have its temp emptied under it.
             try:
-                private_temp = _validated_private_temp(self.profile_folder, self.private_temp)
-                mine = os.path.normcase(private_temp) not in elsewhere
-                if _is_container_temp(self.profile_folder, private_temp):
-                    # Shared with every concurrent launch of this installation, so
-                    # it is emptied and only once no other live launch, in this
-                    # process or another, still holds it.
-                    if mine and (
-                        self._released is None or os.path.normcase(private_temp) in self._released
-                    ):
-                        _empty_directory(private_temp)
-                elif mine:
-                    shutil.rmtree(private_temp, ignore_errors = False)
+                _release_private_temp(
+                    self.profile_folder,
+                    self.private_temp,
+                    released = self._released,
+                    elsewhere = elsewhere,
+                )
             except FileNotFoundError:
                 pass
             except Exception as exc:  # noqa: BLE001
@@ -1838,7 +2089,15 @@ def _ensure_persistent_grants(
     ambient_text = _ambient_sid_text(profile)
     read_execute = _FILE_GENERIC_READ | _FILE_GENERIC_EXECUTE
     unverified: list[str] = []
-    with _PERSISTENT_GRANT_LOCK, _well_known_sid(ambient_text) as ambient:
+    # The ledger covers the read, the decision and the write-back across
+    # processes too: two Studios of one installation starting for the first time
+    # would otherwise each record only the roots it found missing, and the second
+    # write would drop the first's from the manifest that releases them.
+    with (
+        _installation_ledger(install.moniker),
+        _PERSISTENT_GRANT_LOCK,
+        _well_known_sid(ambient_text) as ambient,
+    ):
         # _UNVERIFIED_ROOTS is read and written under this lock only.
         recorded = _read_persistent_manifest(install.moniker) or {}
         sids = (install.sid, ambient)
@@ -1929,21 +2188,24 @@ def _remove_persistent_grants(*, all_installations: bool = False) -> tuple[str, 
     revoke the interpreter grant under a running container and delete the profile
     directory that launch's temp lives in.
 
-    The check and the removal are one critical section, under the lock the launch
-    path holds across its own manifest and grants. Checking outside it let a
-    launch start in between and lose the profile it had just been prepared with.
-    A launch of another Studio process of this installation is just as live, and
-    is seen through its manifest.
+    The check and the removal are one critical section, under the ledger the
+    launch path holds across its own manifest and grants. Checking outside it let
+    a launch start in between and lose the profile it had just been prepared
+    with. A launch of another Studio process of this installation is just as
+    live, is seen through its manifest, and is now ordered against by the same
+    named mutex rather than only looked for.
     """
     global _INSTALL_PROFILE
     removed: list[str] = []
-    with _SHARED_GRANTS_LOCK:
-        if _held_shared_grants() or _live_launch_holds():
+    moniker = _install_moniker()
+    with _installation_ledger(moniker):
+        if _held_shared_grants() or _live_launch_holds(
+            moniker = None if all_installations else moniker
+        ):
             raise SandboxUnavailableError(
                 "a sandboxed tool call is still running; its container cannot be released"
             )
         root = _manifest_root()
-        moniker = _install_moniker()
         with _PERSISTENT_GRANT_LOCK:
             for manifest in sorted(Path(root).glob(_INSTALL_PREFIX + "*.json")):
                 payload = _parse_manifest(manifest)
@@ -2038,15 +2300,36 @@ def _create_identity(
         _write_manifest(identity)
         return identity
     except Exception:
-        if held:
-            _release_shared_grants((*granted_roots, private_temp))
-        if manifest_path:
-            try:
-                os.unlink(manifest_path)
-            except FileNotFoundError:
-                pass
-        if private_temp:
-            shutil.rmtree(private_temp, ignore_errors = True)
+        with _SHARED_GRANTS_LOCK:
+            # Empty when nothing else holds it, never remove: private_temp is the
+            # container temp now, shared by every concurrent launch of this
+            # installation, and the rmtree this used to do would delete the TEMP
+            # Windows names for all of them. Nothing of this launch ever ran, so
+            # the set of paths it was the last holder of is the whole claim it
+            # has to give back; a launch that never took the hold gives back
+            # nothing and leaves the directory exactly as it found it.
+            released: set[str] = (
+                _release_shared_grants((*granted_roots, private_temp)) if held else set()
+            )
+            if manifest_path:
+                try:
+                    os.unlink(manifest_path)
+                except FileNotFoundError:
+                    pass
+            if private_temp:
+                try:
+                    _release_private_temp(
+                        install.profile_folder,
+                        private_temp,
+                        released = released,
+                        elsewhere = _live_launch_holds(launch_id, moniker = install.moniker)
+                        | _held_shared_grants(),
+                    )
+                except Exception:  # noqa: BLE001 - never replace the original failure
+                    logger.warning(
+                        "Could not release the LPAC private temp of a failed launch",
+                        exc_info = True,
+                    )
         raise
 
 
@@ -2061,6 +2344,107 @@ class _WindowsJob:
         handle, self._handle = self._handle, None
         if handle:
             _api().kernel32.CloseHandle(handle)
+
+
+def _job_query_function(api: Any) -> Any:
+    """``QueryInformationJobObject``, declared on first use, or ``None`` when absent."""
+    query = getattr(getattr(api, "kernel32", None), "QueryInformationJobObject", None)
+    if query is None:
+        return None
+    if getattr(query, "argtypes", None) is None:
+        try:
+            query.argtypes = [
+                wintypes.HANDLE,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD),
+            ]
+            query.restype = wintypes.BOOL
+        except (AttributeError, TypeError):
+            pass
+    return query
+
+
+def _job_active_processes(api: Any, handle: Any) -> int | None:
+    """How many processes the job still holds, or ``None`` when that cannot be read."""
+    query = _job_query_function(api)
+    if query is None:
+        return None
+    info = _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+    returned = wintypes.DWORD()
+    if not query(
+        handle,
+        _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+        ctypes.byref(returned),
+    ):
+        return None
+    return int(info.ActiveProcesses)
+
+
+def _wait_for_job_drain(job: Any, timeout: float = _JOB_DRAIN_SECONDS) -> bool | None:
+    """Wait, bounded, until the job holds no process.
+
+    ``TerminateJobObject`` and ``KILL_ON_JOB_CLOSE`` only initiate termination.
+    Revoking the workdir ACE and emptying the container temp before the children
+    are actually gone races the kernel closing their handles.
+
+    ``True`` when the job is empty, ``False`` when it still held a process at the
+    deadline, and ``None`` when this host cannot be asked (no
+    ``QueryInformationJobObject``). Only ``False`` is evidence of a child that
+    outlived its job; the caller must not turn a host it cannot observe into a
+    failure.
+    """
+    handle = getattr(job, "_handle", None)
+    if not handle:
+        return True
+    api = _api()
+    deadline = time.monotonic() + timeout
+    delay = _JOB_DRAIN_FIRST_POLL_SECONDS
+    while True:
+        active = _job_active_processes(api, handle)
+        if active == 0:
+            return True
+        if active is None:
+            logger.warning("Could not observe the sandbox job draining; removal retries instead")
+            return None
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "The sandbox job still held %d process(es) after %.1f s", active, timeout
+            )
+            return False
+        time.sleep(delay)
+        delay = min(delay * 2, _JOB_DRAIN_MAX_POLL_SECONDS)
+
+
+def _close_after_drain(process: Any, job: Any) -> None:
+    """Kill the job, wait for it to drain, then release the process and job handles.
+
+    Both launchers need this, and for the same reason. Cleanup is LIFO, so this
+    callback runs before the ACL revoke and the temp removal, and closing a
+    kill-on-close job only starts the kill: without the wait, Required mode
+    revokes the workdir ACE and empties the container temp while a child of the
+    launch is still holding both, which is the asymmetry the Limited path did not
+    have.
+
+    A drain that provably did not finish is raised, so ``cleanup`` records it as
+    a diagnostic instead of continuing in silence. The handles are released
+    either way - holding them would leak the job and the process for the rest of
+    Studio's life - and the grants are still revoked afterwards, because a child
+    that outlived ``TerminateJobObject`` is a runaway that must not keep its
+    access. A host that cannot be asked (``None``) is not a failure.
+    """
+    job.terminate()
+    drained = _wait_for_job_drain(job)
+    process.close()
+    if drained is False:
+        raise OSError(
+            f"the sandbox job still held a process {_JOB_DRAIN_SECONDS:.0f} s after it was "
+            "terminated; the ACL revoke and the private temp removal below ran while a child "
+            "of this launch was still alive"
+        )
 
 
 class WindowsLpacProcess:
@@ -2378,7 +2762,10 @@ def _spawn_lpac(
             stdout,
             job,
         )
-        prepared.cleanup_callbacks.append(process.close)
+        # Not process.close: closing the kill-on-close job only starts the kill,
+        # and identity.cleanup below this in the LIFO order revokes the workdir
+        # ACE and empties the container temp a surviving child is still using.
+        prepared.cleanup_callbacks.append(lambda: _close_after_drain(process, job))
         return process
     except Exception:
         if process_info.hProcess:
@@ -2841,14 +3228,15 @@ class WindowsLpacBackend:
         runtime_roots = _runtime_roots(workdir, argv)
         acl_runtime_roots = tuple(path for path in runtime_roots if _needs_explicit_acl(path))
         install = _install_profile()
-        # The runtime grant belongs to the installation and survives this launch;
-        # only the workdir, the private temp and their remaining ancestors are
-        # granted and revoked here.
-        persistent = _ensure_persistent_grants(install, acl_runtime_roots, profile)
         # Held from the moment this launch takes its share of the workdir and its
-        # ancestors until the last of them is granted, so a concurrent cleanup
-        # cannot revoke an ACE between the check that found it and its use.
-        with _SHARED_GRANTS_LOCK:
+        # ancestors until the last of them is granted, so a concurrent cleanup -
+        # in this process or in another Studio of this installation - cannot
+        # revoke an ACE between the check that found it and its use.
+        with _installation_ledger(install.moniker):
+            # The runtime grant belongs to the installation and survives this
+            # launch; only the workdir, the private temp and their remaining
+            # ancestors are granted and revoked here.
+            persistent = _ensure_persistent_grants(install, acl_runtime_roots, profile)
             identity = _create_identity(
                 install, workdir, already_granted = persistent.paths, profile = profile
             )
@@ -2914,6 +3302,15 @@ class WindowsLpacBackend:
         """
         root = _manifest_root()
         _remove_orphan_temporary_manifests(root)
+        # One critical section for the whole pass, in this process and in every
+        # other Studio of this installation: a launch that starts between the
+        # scan that found a record dead and the revoke it gates must not lose an
+        # ACE, and a second reconciliation must not revoke the same paths twice.
+        with _installation_ledger():
+            self._reconcile_pass(root)
+
+    def _reconcile_pass(self, root: str) -> None:
+        """One reconciliation sweep, under the installation ledger its caller holds."""
         for manifest in sorted(Path(root).glob(_PROFILE_PREFIX + "*.json")):
             try:
                 payload = _parse_manifest(manifest)
@@ -2936,10 +3333,7 @@ class WindowsLpacBackend:
                 owner = (payload["owner_pid"], payload["owner_created"])
                 if _process_identity(owner[0]) == owner:
                     continue
-                # The held snapshot and the revokes it gates are one critical
-                # section: a launch that starts in between must not lose an ACE.
-                with _SHARED_GRANTS_LOCK:
-                    self._reconcile_launch_manifest(manifest, payload)
+                self._reconcile_launch_manifest(manifest, payload)
             except Exception:
                 # A stale record is retained for the next startup; never delete
                 # evidence or reuse its identity after partial reconciliation.
@@ -2955,12 +3349,15 @@ class WindowsLpacBackend:
         of one installation share a SID, and a workdir is per chat session, so a
         crashed Studio's manifest can name the directory a running call is using.
         That launch revokes it when it finishes, and a manifest that names a
-        running launch's private temp is skipped entirely. The same overlap
-        between two live Studio processes of one installation is not visible from
-        here, and the ACE is then restored by the next launch that needs it.
+        running launch's private temp is skipped entirely. A live launch of
+        another Studio process of this installation is seen through its own
+        manifest, and the ledger the caller holds keeps one from appearing
+        between this scan and the revokes it gates.
         """
         single_use = payload["kind"] == _MANIFEST_KIND_SINGLE_USE
-        held = _held_shared_grants()
+        held = _held_shared_grants() | _live_launch_holds(
+            payload.get("launch_id", ""), moniker = payload["moniker"]
+        )
         if os.path.normcase(payload["private_temp"]) in held:
             return  # a running launch of this process owns it
         owned: set[str] = set()

@@ -30,7 +30,10 @@ it still does not start:
 * the launch SID is added to the DACL of the window station and the desktop.
   ``CreateProcessAsUser`` requires that "the DACLs for the window station and
   desktop must grant access to the user or the logon session represented by the
-  hToken parameter", and a per-launch random SID is on no DACL anywhere;
+  hToken parameter", and a per-launch random SID is on no DACL anywhere. Those
+  two are the user's own session objects, so the edit is serialised against
+  every other launch and cleanup, and recorded in the manifest before it is
+  made, the same way the filesystem grants are;
 * ``STARTUPINFO.lpDesktop`` names this process's own window station and desktop
   instead of being left NULL;
 * the child is created ``DETACHED_PROCESS`` (Chromium's broker flags), so no
@@ -44,9 +47,12 @@ isolation; the record says ``os_isolation = False`` and lists the limitations.
 Every launch is bound to a kill-on-close Job Object carrying Studio's resource
 limits, attached at creation through ``PROC_THREAD_ATTRIBUTE_JOB_LIST`` (or
 before the first instruction runs on hosts without it). Ownership of the ACL
-grants and the private temp is recorded in a write-ahead manifest under
+grants, the private temp and the window station and desktop ACEs is recorded in
+a write-ahead manifest under
 ``%LOCALAPPDATA%\\Unsloth\\Studio\\limited-manifests`` so a crashed Studio leaves
-nothing behind that the next start does not reconcile.
+nothing behind that the next start does not reconcile. Only a Studio on the same
+window station and desktop can reconcile those last two, and the manifest names
+which they were.
 """
 
 from __future__ import annotations
@@ -66,7 +72,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Iterator
+from typing import Any, Iterator
 
 from loggers import get_logger
 
@@ -140,15 +146,53 @@ _INTERACTIVE_DESKTOP = "WinSta0\\Default"
 _UOI_NAME = 2
 _DACL_SECURITY_INFORMATION = 0x00000004
 _READ_CONTROL = 0x00020000
-# Every WINSTA_* and DESKTOP_* right, and READ_CONTROL so the child can read the
-# DACL it is being judged by. WRITE_DAC, WRITE_OWNER and DELETE are deliberately
-# left out: a sandboxed child that could rewrite the window station DACL could
-# grant itself anything. Codex's windows-sandbox-rs draws the same line for its
+# The two objects a launch grants its SID, and the mutex namespace those edits
+# are serialised in. See _edit_user_object_dacl.
+_USER_OBJECT_KINDS = ("window station", "desktop")
+_USER_OBJECT_MUTEX_PREFIX = "limited-user-object."
+_USER_OBJECT_LOCK = threading.RLock()
+# Every WINSTA_* right, and READ_CONTROL so the child can read the DACL it is
+# being judged by. WRITE_DAC, WRITE_OWNER and DELETE are deliberately left out:
+# a sandboxed child that could rewrite the window station DACL could grant
+# itself anything. Codex's windows-sandbox-rs draws the same line for its
 # desktop participants.
 _WINSTA_ALL_ACCESS = 0x37F
-_DESKTOP_ALL_ACCESS = 0x01FF
 _WINSTA_GRANT = _WINSTA_ALL_ACCESS | _READ_CONTROL
-_DESKTOP_GRANT = _DESKTOP_ALL_ACCESS | _READ_CONTROL
+
+_DESKTOP_READOBJECTS = 0x0001
+_DESKTOP_WRITEOBJECTS = 0x0080
+# The desktop grant is those two bits, not DESKTOP_ALL_ACCESS, and the
+# difference is what a sandboxed child could otherwise do to the user's own
+# session. Three documented facts bound what a non-interactive child of this
+# launcher needs, and they agree on the same pair:
+#
+# * a process that did not inherit a desktop is connected by the system with
+#   "MAXIMUM_ALLOWED access" (Thread Connection to a Desktop), so a narrower
+#   DACL gives the child fewer rights rather than refusing to start it;
+# * Chromium names exactly this pair as what the loader needs: "Access required
+#   for UI thread to initialize (when user32.dll loads without win32k
+#   lockdown)" over DESKTOP_WRITEOBJECTS | DESKTOP_READOBJECTS
+#   (content/browser/gpu/gpu_process_host.cc, CanLowIntegrityAccessDesktop);
+# * under WRITE_RESTRICTED the restricting SIDs are "considered only when
+#   evaluating write access" (CreateRestrictedToken), and the desktop generic
+#   mapping puts only CREATEWINDOW, CREATEMENU, HOOKCONTROL, JOURNALRECORD,
+#   JOURNALPLAYBACK and WRITEOBJECTS on the write side. This ACE therefore only
+#   ever decides those six; READOBJECTS, ENUMERATE and SWITCHDESKTOP are settled
+#   by the first access check, against the user's own SID, whatever is written
+#   here. READOBJECTS is kept anyway so the ACE reads as the pair the loader
+#   opens.
+#
+# What it leaves out is the point. DESKTOP_HOOKCONTROL is a window hook into
+# every process on the user's interactive desktop, JOURNALRECORD and
+# JOURNALPLAYBACK are recorded and synthesised input, and DESKTOP_CREATEMENU and
+# DESKTOP_CREATEWINDOW put the sandboxed child's own windows in front of the
+# user. Chromium's alternate desktop denies its restricted targets the same set
+# (sandbox/win/src/window.cc, kDesktopDenyMask) and its renderers run there.
+#
+# Not verified on a live Windows host: the change that narrowed this could not
+# run one. If a host does need more, the child dies in start-up and the probe
+# failure text already names the desktop and which objects carry the launch SID.
+_DESKTOP_GRANT = _DESKTOP_READOBJECTS | _DESKTOP_WRITEOBJECTS | _READ_CONTROL
 
 # An exit code the loader produced, not the payload: the child never ran.
 _NTSTATUS_NAMES = {
@@ -168,14 +212,17 @@ _ERROR_INVALID_PARAMETER = 87
 # LookupAccountSidW could not name the SID, which is what a launch SID must be.
 _ERROR_NONE_MAPPED = 1332
 _MAX_SIBLING_SCAN = 100_000
-_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 
-# TerminateJobObject and KILL_ON_JOB_CLOSE only start the kill, so the private
-# temp and the workdir ACE are released only once the job has actually drained.
-_JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
-_JOB_DRAIN_SECONDS = 5.0
-_JOB_DRAIN_FIRST_POLL_SECONDS = 0.005
-_JOB_DRAIN_MAX_POLL_SECONDS = 0.1
+# Job draining, reparse-point removal and read-only clearing are the same problem
+# for both launchers, so they live with the Job Object and are named here.
+_JOB_DRAIN_SECONDS = _lpac._JOB_DRAIN_SECONDS
+_wait_for_job_drain = _lpac._wait_for_job_drain
+_close_after_drain = _lpac._close_after_drain
+_is_reparse_point = _lpac._is_reparse_point
+_remove_reparse_point = _lpac._remove_reparse_point
+_force_removable = _lpac._force_removable
+_rmtree_onerror = _lpac._rmtree_onerror
+_rmtree_error_handler = _lpac._rmtree_error_handler
 # A handle the kernel has not finished closing turns a removal into a sharing
 # violation, so removal is retried before it counts as a leak.
 _TEMP_REMOVAL_ATTEMPTS = 6
@@ -187,21 +234,6 @@ _ORPHAN_TEMPORARY_MANIFEST_SECONDS = 300.0
 
 class _SID_AND_ATTRIBUTES(ctypes.Structure):
     _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
-
-
-class _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
-    """Declared here because ``windows_lpac._api()`` never needed to query a job."""
-
-    _fields_ = [
-        ("TotalUserTime", ctypes.c_int64),
-        ("TotalKernelTime", ctypes.c_int64),
-        ("ThisPeriodTotalUserTime", ctypes.c_int64),
-        ("ThisPeriodTotalKernelTime", ctypes.c_int64),
-        ("TotalPageFaultCount", wintypes.DWORD),
-        ("TotalProcesses", wintypes.DWORD),
-        ("ActiveProcesses", wintypes.DWORD),
-        ("TotalTerminatedProcesses", wintypes.DWORD),
-    ]
 
 
 class _TOKEN_GROUPS_HEADER(ctypes.Structure):
@@ -297,36 +329,6 @@ def _validated_private_temp(private_temp: str) -> str:
     return spelled
 
 
-def _is_reparse_point(path: str) -> bool:
-    """Whether a path is a junction or a symlink, tested without following it."""
-    try:
-        info = os.lstat(path)
-    except OSError:
-        return False
-    return bool(getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
-
-
-def _remove_reparse_point(path: str) -> None:
-    """Remove the link itself.
-
-    A sandboxed child needs no privilege to create a directory junction, so one
-    planted in its private temp must not be able to block cleanup forever.
-    ``os.rmdir`` is ``RemoveDirectoryW``, which deletes the reparse point and
-    never follows it; a file symlink needs ``os.unlink`` instead.
-    """
-    try:
-        os.rmdir(path)
-        return
-    except FileNotFoundError:
-        return
-    except OSError:
-        pass
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        return
-
-
 def _prune_reparse_points(root: str) -> None:
     """Delete every reparse point under a private temp, never recursing into one."""
     entries = 0
@@ -353,29 +355,6 @@ def _prune_reparse_points(root: str) -> None:
                 pending.append(child.path)
 
 
-def _force_removable(function: Callable[[str], Any], path: str, exc: BaseException) -> None:
-    """Clear FILE_ATTRIBUTE_READONLY (or drop a reparse point) and retry one removal."""
-    if isinstance(exc, FileNotFoundError):
-        return
-    if _is_reparse_point(path):
-        _remove_reparse_point(path)
-        return
-    os.chmod(path, stat.S_IWRITE)
-    function(path)
-
-
-def _rmtree_onerror(function: Callable[[str], Any], path: str, info: tuple[Any, ...]) -> None:
-    """The pre-3.12 ``onerror`` shape, which reports ``sys.exc_info`` instead."""
-    _force_removable(function, path, info[1])
-
-
-def _rmtree_error_handler() -> dict[str, Any]:
-    """``onexc`` where it exists (3.12+), ``onerror`` on the older interpreters."""
-    if sys.version_info >= (3, 12):
-        return {"onexc": _force_removable}
-    return {"onerror": _rmtree_onerror}
-
-
 def _remove_private_temp(private_temp: str) -> None:
     """Remove one launch's private temp, retrying past handles the kernel is still closing."""
     target = _validated_private_temp(private_temp)
@@ -394,102 +373,6 @@ def _remove_private_temp(private_temp: str) -> None:
             if attempt == _TEMP_REMOVAL_ATTEMPTS - 1:
                 raise
             time.sleep(_TEMP_REMOVAL_BACKOFF_SECONDS * (attempt + 1))
-
-
-def _job_query_function(api: Any) -> Any:
-    """``QueryInformationJobObject``, declared on first use, or ``None`` when absent."""
-    query = getattr(getattr(api, "kernel32", None), "QueryInformationJobObject", None)
-    if query is None:
-        return None
-    if getattr(query, "argtypes", None) is None:
-        try:
-            query.argtypes = [
-                wintypes.HANDLE,
-                ctypes.c_int,
-                ctypes.c_void_p,
-                wintypes.DWORD,
-                ctypes.POINTER(wintypes.DWORD),
-            ]
-            query.restype = wintypes.BOOL
-        except (AttributeError, TypeError):
-            pass
-    return query
-
-
-def _job_active_processes(api: Any, handle: Any) -> int | None:
-    """How many processes the job still holds, or ``None`` when that cannot be read."""
-    query = _job_query_function(api)
-    if query is None:
-        return None
-    info = _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
-    returned = wintypes.DWORD()
-    if not query(
-        handle,
-        _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
-        ctypes.byref(info),
-        ctypes.sizeof(info),
-        ctypes.byref(returned),
-    ):
-        return None
-    return int(info.ActiveProcesses)
-
-
-def _wait_for_job_drain(job: Any, timeout: float = _JOB_DRAIN_SECONDS) -> bool | None:
-    """Wait, bounded, until the job holds no process.
-
-    ``TerminateJobObject`` and ``KILL_ON_JOB_CLOSE`` only initiate termination.
-    Revoking the workdir ACE and removing the private temp before the children
-    are actually gone races the kernel closing their handles.
-
-    ``True`` when the job is empty, ``False`` when it still held a process at the
-    deadline, and ``None`` when this host cannot be asked (no
-    ``QueryInformationJobObject``). Only ``False`` is evidence of a child that
-    outlived its job; the caller must not turn a host it cannot observe into a
-    failure.
-    """
-    handle = getattr(job, "_handle", None)
-    if not handle:
-        return True
-    api = _lpac._api()
-    deadline = time.monotonic() + timeout
-    delay = _JOB_DRAIN_FIRST_POLL_SECONDS
-    while True:
-        active = _job_active_processes(api, handle)
-        if active == 0:
-            return True
-        if active is None:
-            logger.warning("Could not observe the Limited job draining; removal retries instead")
-            return None
-        if time.monotonic() >= deadline:
-            logger.warning(
-                "The Limited job still held %d process(es) after %.1f s", active, timeout
-            )
-            return False
-        time.sleep(delay)
-        delay = min(delay * 2, _JOB_DRAIN_MAX_POLL_SECONDS)
-
-
-def _close_after_drain(process: Any, job: Any) -> None:
-    """Kill the job, wait for it to drain, then release the process and job handles.
-
-    A drain that provably did not finish is raised, so ``cleanup`` records it as
-    a diagnostic instead of continuing in silence: this callback runs before the
-    ACL revoke and the private temp removal (cleanup is LIFO), and both of those
-    then run against a child that has not exited. The handles are released
-    either way - holding them would leak the job and the process for the rest of
-    Studio's life - and the launch SID is still revoked afterwards, because a
-    child that outlived ``TerminateJobObject`` is a runaway that must not keep
-    its write access. A host that cannot be asked (``None``) is not a failure.
-    """
-    job.terminate()
-    drained = _wait_for_job_drain(job)
-    process.close()
-    if drained is False:
-        raise OSError(
-            f"the Limited job still held a process {_JOB_DRAIN_SECONDS:.0f} s after it was "
-            "terminated; the ACL revoke and the private temp removal below ran while a child "
-            "of this launch was still alive"
-        )
 
 
 @dataclass
@@ -536,10 +419,19 @@ class _LaunchIdentity:
     owner_created: int
     cleaned: bool = False
     # "window station" and "desktop" once their DACLs carry this launch's SID,
-    # and why they do not when a host refuses the edit.
+    # and why they do not when a host refuses the edit. This is an observation,
+    # and it drives the revoke this process performs itself.
     user_objects: tuple[str, ...] = ()
     user_object_reason: str = ""
-    # "<window station>\<desktop>" for STARTUPINFO.lpDesktop.
+    # What the write-ahead manifest records, which is a plan rather than an
+    # observation: it is written before the grant is attempted, so a crash
+    # between the two leaves a record of an ACE that may never have been made.
+    # Revoking one that is not there is a no-op, which is the safe direction for
+    # a crash record; the reverse would leave the launch SID on the user's
+    # interactive window station with nothing left to notice it.
+    recorded_user_objects: tuple[str, ...] = ()
+    # "<window station>\<desktop>" for STARTUPINFO.lpDesktop, and the session
+    # whose objects a reconciliation may act on.
     desktop: str = ""
 
     def cleanup(self) -> None:
@@ -592,6 +484,12 @@ def _write_manifest(identity: _LaunchIdentity) -> None:
         "workdir": identity.workdir,
         "private_temp": identity.private_temp,
         "granted_roots": list(identity.granted_roots),
+        # The window station and desktop ACEs, recorded before they are made for
+        # the same reason the filesystem grants are: a Studio that crashes
+        # between the grant and the revoke leaves them on the user's own session
+        # objects, and only a record can find them again.
+        "user_objects": list(identity.recorded_user_objects),
+        "desktop": identity.desktop,
         "owner_pid": identity.owner_pid,
         "owner_created": identity.owner_created,
     }
@@ -615,6 +513,10 @@ def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
     roots = payload.get("granted_roots")
     private_temp = payload.get("private_temp")
     workdir = payload.get("workdir")
+    # Absent in a manifest written before the user object ACEs were recorded;
+    # such a launch is reconciled for its files exactly as it was.
+    user_objects = payload.get("user_objects", [])
+    desktop = payload.get("desktop", "")
     if (
         payload.get("version") != 1
         or payload.get("kind") != "restricted-token"
@@ -628,6 +530,12 @@ def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
         or not os.path.isabs(workdir)
         or not isinstance(payload.get("owner_pid"), int)
         or not isinstance(payload.get("owner_created"), int)
+        # The reconciler drives a DACL edit on this process's own window station
+        # and desktop from these two, so a planted manifest may name only the
+        # objects this launcher ever grants, and only the session it ran in.
+        or not isinstance(desktop, str)
+        or not isinstance(user_objects, list)
+        or not set(user_objects) <= set(_USER_OBJECT_KINDS)
     ):
         return None
     # The reconciler revokes an ACE on every granted root, so a planted manifest
@@ -637,7 +545,7 @@ def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
         os.path.normcase(private_temp),
     }:
         return None
-    return payload
+    return {**payload, "user_objects": user_objects, "desktop": desktop}
 
 
 def _sid_from_text(text: str) -> ctypes.c_void_p:
@@ -757,6 +665,10 @@ def _create_identity(workdir: str) -> _LaunchIdentity:
             (workdir, private_temp),
             owner[0],
             owner[1],
+            # The window station and desktop grants prepare is about to make,
+            # named here so the manifest records them before they exist.
+            recorded_user_objects = _USER_OBJECT_KINDS,
+            desktop = _launch_desktop(api),
         )
         _write_manifest(identity)
         for root in identity.granted_roots:
@@ -888,6 +800,22 @@ def _launch_desktop(api: Any) -> str:
     return "\\".join(names)
 
 
+def _user_object_key(api: Any, handle: Any) -> str:
+    """The mutex name one window station or desktop is edited under.
+
+    The object's own name, so two launches editing the same object serialise and
+    a launcher connected to another desktop is not held up by them. A name that
+    cannot be read falls back to a session-wide one, which over-serialises rather
+    than letting an unordered edit through.
+    """
+    try:
+        name = _user_object_name(api, handle)
+    except OSError:
+        logger.warning("Could not name a Limited launcher user object", exc_info = True)
+        name = ""
+    return _USER_OBJECT_MUTEX_PREFIX + (name or "session").replace("\\", ".").lower()
+
+
 def _edit_user_object_dacl(
     api: Any,
     handle: Any,
@@ -904,12 +832,40 @@ def _edit_user_object_dacl(
     removed), written back as an absolute descriptor. The trustee is always the
     per-launch SID, so a revoke can never take another principal's ACE with it.
 
+    That sequence is a read-modify-write on an object this process does not own
+    and does not have to itself, and losing the race loses a whole edit: two
+    launches starting at once each read the DACL before either writes, and the
+    second write puts back a DACL that never carried the first launch's ACE, so
+    a child that is already running silently loses the window station it was
+    given. A launch racing a cleanup resurrects a revoked ACE the same way, and
+    that one outlives the launch, on the user's interactive window station. The
+    process-local lock orders the launches of one Studio and the named mutex
+    orders two Studios, which both touch the same session objects; the mutex is
+    best effort, so a host that will not give us one degrades to the lock alone
+    rather than failing the launch.
+
     An object with no DACL is left alone, and ``False`` says so. A NULL DACL
     allows everyone everything, so the SID needs nothing added; writing a DACL
     that holds only this ACE would take the interactive window station away from
     the user's own session. Chromium's ``window.cc`` guards the same trap from
     the other direction, seeding an allow-everyone entry before it denies.
     """
+    with _USER_OBJECT_LOCK, _lpac._named_mutex(_user_object_key(api, handle)):
+        return _write_user_object_dacl(
+            api, handle, sid, mode = mode, access = access, inheritance = inheritance
+        )
+
+
+def _write_user_object_dacl(
+    api: Any,
+    handle: Any,
+    sid: ctypes.c_void_p,
+    *,
+    mode: int,
+    access: int,
+    inheritance: int,
+) -> bool:
+    """The read-modify-write itself, only ever called under ``_edit_user_object_dacl``."""
     information = wintypes.DWORD(_DACL_SECURITY_INFORMATION)
     needed = wintypes.DWORD()
     api.user32.GetUserObjectSecurity(
@@ -987,7 +943,8 @@ def _grant_user_objects(identity: _LaunchIdentity) -> str:
     granted: list[str] = []
     reason = ""
     kind = "window station"
-    identity.desktop = _launch_desktop(api)
+    # Named by _create_identity, before the manifest recorded this grant.
+    identity.desktop = identity.desktop or _launch_desktop(api)
     try:
         for kind, handle in _process_user_objects(api):
             access = _WINSTA_GRANT if kind == "window station" else _DESKTOP_GRANT
@@ -1014,15 +971,27 @@ def _grant_user_objects(identity: _LaunchIdentity) -> str:
 def _revoke_user_objects(identity: _LaunchIdentity) -> None:
     """Remove the launch SID's window station and desktop ACEs.
 
-    Best effort by design: these are session objects, and a Studio reconciling
-    another Studio's manifest from a different session cannot reach the ones the
-    ACE was written on. The SID names no account and is never reused, so an ACE
-    that outlives its launch grants nobody anything and disappears with the
-    session.
+    A crashed Studio's launch is reached the same way, through the objects
+    recorded in its manifest, which is why the manifest names them at all. What
+    it cannot reach is another session's: ``_process_user_objects`` hands out
+    the window station and desktop *this* process is connected to, so a record
+    naming a different one is left for the Studio that is on it. The SID names
+    no account and is never reused, so an ACE that outlives every process that
+    could remove it grants nobody anything and disappears with the session.
     """
     if not identity.user_objects:
         return
     api = _lpac._api()
+    current = _launch_desktop(api)
+    if identity.desktop and identity.desktop != current:
+        logger.warning(
+            "Not revoking the Limited launch SID from %s: it was granted on %s, and this "
+            "process is connected to %s",
+            ", ".join(identity.user_objects),
+            identity.desktop,
+            current,
+        )
+        return
     for kind, handle in _process_user_objects(api):
         if kind not in identity.user_objects:
             continue
@@ -1764,6 +1733,12 @@ class WindowsRestrictedTokenBackend:
                     tuple(payload["granted_roots"]),
                     owner[0],
                     owner[1],
+                    # The record is all that is known about the window station
+                    # and desktop ACEs, so it is what cleanup revokes. It names
+                    # what the dead launch planned, which can be more than it
+                    # managed; a revoke of an ACE that is not there is a no-op.
+                    user_objects = tuple(payload["user_objects"]),
+                    desktop = payload["desktop"],
                 )
                 identity.cleanup()
             except Exception:  # noqa: BLE001 - keep the record for the next startup

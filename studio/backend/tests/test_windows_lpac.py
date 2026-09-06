@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import stat
 import statistics
 import subprocess
 import sys
@@ -70,7 +71,13 @@ def test_source_only_public_api_and_profile_are_narrow_and_unique():
     # redirected <profile>\Temp, so the launch owns that directory itself and
     # empties it rather than removing a per-launch subdirectory of it.
     assert "private_temp = temp_root" in source
-    assert "_empty_directory(private_temp)" in source
+    # _release_private_temp is the only thing that ever touches it, and it can
+    # only empty the container temp: the rmtree it still carries is reachable
+    # only for the per-launch subdirectory an earlier build's manifest names.
+    assert "_empty_directory(validated)" in source
+    release = source[source.index("def _release_private_temp") :]
+    assert release.index("_empty_directory(validated)") < release.index("shutil.rmtree(validated")
+    assert "shutil.rmtree(private_temp" not in source
     assert "secrets.token_hex(12)" not in source
     assert "_SECURITY_CAPABILITIES(identity.sid, None, 0, 0)" in source
     # Both container kinds are zero-capability; only the opt-out attribute differs.
@@ -954,6 +961,7 @@ def _lpac_fakes(
     existing = (),
     create_results = None,
     runtime_roots = None,
+    ledger_mutex = False,
 ):
     """Drive the real prepare and cleanup paths with every Windows API recorded.
 
@@ -963,6 +971,10 @@ def _lpac_fakes(
     monkeypatch.setattr(windows_lpac, "_INSTALL_PROFILE", None)
     monkeypatch.setattr(windows_lpac, "_ACCESS_MEMO", {})
     monkeypatch.setattr(windows_lpac, "_SHARED_GRANTS", {})
+    # Handles are cached for the life of the process, so each test starts from a
+    # cache of its own rather than inheriting another test's "this host has no
+    # CreateMutexW" answer.
+    monkeypatch.setattr(windows_lpac, "_LEDGER_MUTEXES", {})
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     manifests = tmp_path / "manifests"
     manifests.mkdir()
@@ -987,6 +999,19 @@ def _lpac_fakes(
         ),
         kernel32 = SimpleNamespace(LocalFree = lambda _value: None),
     )
+    if ledger_mutex:
+        # A host that answers CreateMutexW, so the cross-process ledger is real
+        # here. Every other test leaves it absent, which is the documented
+        # degradation to the manifest ledger alone.
+        api.kernel32.CreateMutexW = lambda _attributes, _owned, name: (
+            events.append(("mutex-create", name)) or 900
+        )
+        api.kernel32.WaitForSingleObject = lambda handle, _ms: (
+            events.append(("mutex-wait", handle)) or windows_lpac._WAIT_OBJECT_0
+        )
+        api.kernel32.ReleaseMutex = lambda handle: (
+            events.append(("mutex-release", handle)) or True
+        )
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: sid_text)
     monkeypatch.setattr(windows_lpac, "_profile_folder", lambda _api, _sid: str(profile))
@@ -1403,6 +1428,189 @@ def test_another_live_studios_launch_keeps_its_grants_and_the_container_temp(
 
         other.unlink()
         assert not windows_lpac._live_launch_holds()
+
+
+def test_a_launch_that_fails_to_prepare_never_removes_the_container_temp(monkeypatch, tmp_path):
+    """The failure path may empty the shared temp, never delete it.
+
+    ``private_temp`` is the container temp since Windows was found to point every
+    AppContainer child's TEMP at it, so the ``shutil.rmtree`` the failure path
+    used to do would take the TEMP out from under every concurrent launch of the
+    installation. Before that change it removed a per-launch subdirectory that
+    was nobody else's.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        live = fakes.backend.prepare(fakes.spec)
+        identity = live.spawn_callback._lpac_identity
+        temp = Path(identity.private_temp)
+        scratch = temp / "the-live-launch-is-using-this"
+        scratch.write_text("live", encoding = "utf-8")
+
+        def refuse(_identity):
+            raise OSError(5, "the manifest could not be written")
+
+        monkeypatch.setattr(windows_lpac, "_write_manifest", refuse)
+        with pytest.raises(OSError, match = "manifest could not be written"):
+            fakes.backend.prepare(fakes.spec)
+
+        assert temp.is_dir() and scratch.is_file()
+        # The hold it took is the only thing it gave back.
+        assert windows_lpac._SHARED_GRANTS[os.path.normcase(str(temp))] == 1
+        assert not [event for event in events if event[0] == "revoke" and event[1] == fakes.workdir]
+
+        live.cleanup()
+        assert live.cleanup_diagnostics == []
+        assert temp.is_dir() and not scratch.exists()
+
+        # With nothing else holding it, a failed launch empties it and still
+        # leaves the directory a later launch's TEMP will name.
+        leftover = temp / "leftover"
+        leftover.write_text("x", encoding = "utf-8")
+        with pytest.raises(OSError, match = "manifest could not be written"):
+            fakes.backend.prepare(fakes.spec)
+        assert temp.is_dir() and not leftover.exists()
+
+
+def test_the_installation_ledger_is_held_across_every_grant_and_revoke(monkeypatch, tmp_path):
+    """The manifests are a check, not a lock; the named mutex is the lock.
+
+    Process A can write its manifest in the window between B's scan and B's
+    revoke. Every path that grants or revokes for this installation therefore
+    runs inside one named mutex keyed by the installation moniker.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events, ledger_mutex = True) as fakes:
+        prepared = fakes.backend.prepare(fakes.spec)
+        prepared.cleanup()
+        fakes.backend.reconcile_stale_manifests()
+        fakes.backend.remove_persistent_grants()
+
+    assert ("mutex-create", "Local\\unsloth.studio.ledger." + fakes.moniker) in events
+    # Only one handle is ever created, and every wait is matched by a release.
+    assert len([event for event in events if event[0] == "mutex-create"]) == 1
+    depth = 0
+    unguarded: list[tuple] = []
+    for event in events:
+        if event[0] == "mutex-wait":
+            depth += 1
+        elif event[0] == "mutex-release":
+            depth -= 1
+            assert depth >= 0, events
+        elif event[0] in {"read_execute", "modify", "traverse", "revoke", "revoke-absent"}:
+            if depth == 0:
+                unguarded.append(event)
+    assert unguarded == [], unguarded
+    assert depth == 0
+
+
+def test_a_foreign_installations_launch_manifest_is_not_consulted(monkeypatch, tmp_path):
+    """A manifest of another installation can neither hold nor block this one.
+
+    Its ACEs name the package SID derived from its own moniker, so nothing this
+    installation revokes can reach them. Letting it answer suppressed this
+    installation's revoke on any path both happen to use, and permanently:
+    nothing here ever removes another installation's launch record.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        mine = fakes.backend.prepare(fakes.spec)
+        identity = mine.spawn_callback._lpac_identity
+        payload = json.loads(Path(identity.manifest_path).read_text(encoding = "utf-8"))
+        foreign = fakes.manifests / f"unsloth.studio.launch.{'a' * 32}.json"
+        foreign.write_text(
+            json.dumps(
+                {
+                    **payload,
+                    "launch_id": "a" * 32,
+                    "moniker": "unsloth.studio.sandbox." + "f" * 16,
+                }
+            ),
+            encoding = "utf-8",
+        )
+        leftover = Path(identity.private_temp) / "not-the-other-installations"
+        leftover.write_text("x", encoding = "utf-8")
+
+        # Excluding this launch's own record leaves only the foreign one.
+        workdir = os.path.normcase(identity.workdir)
+        assert workdir in windows_lpac._live_launch_holds(identity.launch_id)
+        assert workdir not in windows_lpac._live_launch_holds(
+            identity.launch_id, moniker = fakes.moniker
+        )
+        events.clear()
+
+        mine.cleanup()
+
+        assert mine.cleanup_diagnostics == []
+        assert ("revoke", fakes.workdir, False) in events
+        assert Path(identity.private_temp).is_dir() and not leftover.exists()
+        # And it does not keep the installation-wide release waiting either.
+        fakes.backend.remove_persistent_grants()
+
+
+def test_required_mode_cleanup_waits_for_its_job_to_drain(monkeypatch):
+    """Closing a kill-on-close job only starts the kill.
+
+    ``identity.cleanup`` is next in the LIFO cleanup order, and it revokes the
+    workdir ACE and empties the container temp; both would otherwise run while a
+    child of this launch was still holding them. The Limited path already waited.
+    """
+    source = Path(windows_lpac.__file__).read_text(encoding = "utf-8")
+    spawn = source[source.index("def _spawn_lpac") :]
+    assert "cleanup_callbacks.append(process.close)" not in spawn
+    assert "cleanup_callbacks.append(lambda: _close_after_drain(process, job))" in spawn
+
+    events: list[str] = []
+    job = SimpleNamespace(
+        _handle = 55,
+        terminate = lambda: events.append("job.terminate") or True,
+        close = lambda: events.append("job.close"),
+    )
+    process = SimpleNamespace(close = lambda: events.append("process.close"))
+
+    monkeypatch.setattr(windows_lpac, "_wait_for_job_drain", lambda _job: False)
+    with pytest.raises(OSError, match = "still held a process"):
+        windows_lpac._close_after_drain(process, job)
+    # The handles go either way; only the diagnostic is added.
+    assert events == ["job.terminate", "process.close"]
+
+    events.clear()
+    monkeypatch.setattr(windows_lpac, "_wait_for_job_drain", lambda _job: True)
+    windows_lpac._close_after_drain(process, job)
+    assert events == ["job.terminate", "process.close"]
+    # A host that cannot be asked is not evidence of a live child.
+    monkeypatch.setattr(windows_lpac, "_wait_for_job_drain", lambda _job: None)
+    windows_lpac._close_after_drain(process, job)
+
+
+def test_emptying_the_container_temp_clears_a_read_only_file(monkeypatch, tmp_path):
+    """A read-only file a child left behind must not fail every later cleanup.
+
+    The Limited-mode removal has cleared FILE_ATTRIBUTE_READONLY since it was
+    written; the container temp is emptied rather than removed and did not.
+    """
+    temp = tmp_path / "Temp"
+    (temp / "nested").mkdir(parents = True)
+    (temp / "nested" / "inner.txt").write_text("x", encoding = "utf-8")
+    stubborn = temp / "readonly.txt"
+    stubborn.write_text("x", encoding = "utf-8")
+    chmods: list[tuple[str, int]] = []
+    real_unlink = os.unlink
+    refuse_once = {str(stubborn)}
+
+    def unlink(path, **kwargs):
+        if str(path) in refuse_once:
+            refuse_once.discard(str(path))
+            raise PermissionError(13, "the file is read-only")
+        return real_unlink(path, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    monkeypatch.setattr(os, "chmod", lambda path, mode: chmods.append((str(path), mode)))
+
+    windows_lpac._empty_directory(str(temp))
+
+    assert chmods == [(str(stubborn), stat.S_IWRITE)]
+    assert temp.is_dir() and not list(temp.iterdir())
 
 
 def test_a_live_owner_keeps_its_launch_manifest(monkeypatch, tmp_path):
