@@ -601,6 +601,55 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     assert e2 is not None and e2.variants
 
 
+def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
+    # No quant token in the name, so the picker and every saved setting key this variant by
+    # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).
+    from types import SimpleNamespace
+
+    from utils.openai_auto_switch_settings import override_lookup_candidates
+
+    repo = tmp_path / "models--org--KAT-GGUF"
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "KAT-Coder-V2.5-Dev-APEX-dynamic-v2.gguf").write_text("x")
+
+    entry = resolver._local_gguf_entry("org/KAT-GGUF", SimpleNamespace(path = str(repo)))
+    assert entry is not None
+    assert entry.variants == ("KAT-Coder-V2.5-Dev-APEX-dynamic-v2",)
+    assert "org/KAT-GGUF:KAT-Coder-V2.5-Dev-APEX-dynamic-v2" in override_lookup_candidates(
+        entry.load_path, entry.loader_id, entry.variants[0]
+    )
+
+
+def test_local_gguf_entry_skips_a_quant_whose_blob_is_gone(tmp_path):
+    # An evicted blob leaves a dangling link, and advertising it offers a quant no load can
+    # open. The twins repo is the other direction: one quant, two checkpoints, dead one first.
+    from types import SimpleNamespace
+
+    evicted = tmp_path / "models--org--evicted" / "snapshots" / "abc"
+    evicted.mkdir(parents = True)
+    (evicted / "m-Q8_0.gguf").write_text("x")
+    twins = tmp_path / "models--org--twins" / "snapshots" / "abc"
+    twins.mkdir(parents = True)
+    (twins / "z-BF16.gguf").write_text("x")
+    try:
+        (evicted / "m-Q4_K_M.gguf").symlink_to(tmp_path / "evicted-blob")
+        (twins / "a-BF16.gguf").symlink_to(tmp_path / "evicted-blob")
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    entry = resolver._local_gguf_entry(
+        "org/evicted", SimpleNamespace(path = str(evicted.parent.parent))
+    )
+    assert entry is not None and entry.variants == ("Q8_0",)
+    assert resolver._resolve_from_index("org/evicted", {"org/evicted": entry})[1] == "Q8_0"
+
+    twin_entry = resolver._local_gguf_entry(
+        "org/twins", SimpleNamespace(path = str(twins.parent.parent))
+    )
+    assert twin_entry is not None and twin_entry.variants == ("BF16",)
+
+
 def test_local_gguf_entry_rejects_standalone_companions(tmp_path, monkeypatch):
     # Codex P2: _scan_models_dir's standalone-.gguf pass emits an entry for a
     # bare mmproj projector (it only filters mmproj inside directory scans). A
