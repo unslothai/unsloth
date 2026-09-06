@@ -2417,6 +2417,21 @@ _check_linux_deps() {
     else
         step "deps" "all system dependencies found"
     fi
+
+    # Bubblewrap backs the OS sandbox the Studio Python and Terminal tools run in.
+    # Those tools default to OS isolation and fail closed, so without bwrap they
+    # refuse every call until the user picks Limited or Full. Warn only: nothing
+    # else here needs it, and no prompt -- a headless install must not stop for this.
+    if ! command -v bwrap >/dev/null 2>&1; then
+        step "deps" "bubblewrap not found (OS-isolated tool calls will refuse)" "$C_WARN"
+        substep "Studio runs the Python and Terminal tools inside an OS sandbox by default"
+        substep "and fails closed without one. Install bubblewrap to enable them:"
+        substep "  Debian/Ubuntu: sudo apt install bubblewrap"
+        substep "  Fedora/RHEL:   sudo dnf install bubblewrap"
+        substep "  Arch:          sudo pacman -S --needed bubblewrap"
+        substep "  openSUSE:      sudo zypper install bubblewrap"
+        substep "On Ubuntu 23.10+ also allow it a user namespace via /etc/apparmor.d/bwrap."
+    fi
     return 0
 }
 

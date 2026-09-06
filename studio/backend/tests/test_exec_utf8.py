@@ -20,11 +20,30 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
+from core.inference import os_sandbox
+from core.inference import tools as tools_module
 from core.inference.tools import _python_exec
 
 # Arrow, em-dash, accent, CJK, check mark, astral-plane emoji -- none encodable
 # in cp1252, so the OS default codec would raise on write or read.
 _UNICODE = "café — 数字 → ✓ 😀"
+
+
+@pytest.fixture(autouse = True)
+def _portable_tool_lifecycle(monkeypatch):
+    if os_sandbox.sandbox_capability().available:
+        return
+    monkeypatch.setattr(
+        tools_module,
+        "prepare_tool_launch",
+        lambda spec: os_sandbox.PreparedSandboxLaunch(
+            argv = spec.argv,
+            workdir = spec.workdir,
+            env = spec.env,
+            preexec_fn = spec.preexec_fn,
+            backend = "test-utf8-passthrough",
+        ),
+    )
 
 
 @pytest.mark.parametrize("disable_sandbox", [False, True])

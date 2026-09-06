@@ -13,6 +13,7 @@ import hashlib
 import json
 import http.client
 import os
+import secrets
 import signal
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -36,6 +37,15 @@ from contextvars import ContextVar
 # What a truncated result costs besides its body, charged where the cut is decided rather
 # than held back from the room in advance. See its definition for why that matters.
 from .context_window import _RESULT_NOTICE_RESERVE
+from .os_sandbox import (
+    _pidfd_open,
+    _pidfd_send_signal,
+    descendant_sweep_supported,
+    SandboxUnavailableError,
+    ToolLaunchPlan,
+    prepare_tool_launch,
+    spawn_prepared_launch,
+)
 
 # The window of the model THIS request is served by, set by execute_tool for the call's
 # duration. Left unset, the budget falls back to the process-global probe, which is right
@@ -175,6 +185,15 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "scp",
         "sftp",
         "rsync",
+        # macOS escape hatches: `open` and `osascript` hand work to LaunchServices
+        # or AppleScript outside the sandbox, `security` reads the Keychain,
+        # `launchctl` starts a job that outlives the call. The Seatbelt profile
+        # denies these binaries too; this is the same rule for the tiers that have
+        # no OS boundary.
+        "open",
+        "osascript",
+        "security",
+        "launchctl",
         "eval",
         "source",
         # `.` is the POSIX synonym for `source`: `. ./script.sh` runs the file's
@@ -7101,7 +7120,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     return env
 
 
-def _sandbox_preexec():
+def _sandbox_preexec_impl(*, apply_no_new_privs: bool, apply_nproc: bool) -> None:
     """Best-effort sandbox setup for sandboxed subprocesses (modules are
     resolved at import time so the forked child runs no imports)."""
     try:
@@ -7115,10 +7134,11 @@ def _sandbox_preexec():
         pass
 
     if _libc is not None:
-        try:
-            _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
-        except (OSError, AttributeError):
-            pass
+        if apply_no_new_privs:
+            try:
+                _libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
+            except (OSError, AttributeError):
+                pass
 
         try:
             _libc.prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG = SIGKILL
@@ -7131,11 +7151,12 @@ def _sandbox_preexec():
 
     if _resource is not None:
         # RLIMIT_NPROC is per-real-UID, so the cap is well above normal usage.
-        try:
-            nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
-            _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
-        except (ValueError, OSError, AttributeError):
-            pass
+        if apply_nproc:
+            try:
+                nproc = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000"))
+                _resource.setrlimit(_resource.RLIMIT_NPROC, (nproc, nproc))
+            except (ValueError, OSError, AttributeError):
+                pass
         try:
             _resource.setrlimit(_resource.RLIMIT_FSIZE, (100 * 1024 * 1024, 100 * 1024 * 1024))
         except (ValueError, OSError):
@@ -7160,6 +7181,81 @@ def _sandbox_preexec():
             _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
         except (ValueError, OSError, AttributeError):
             pass
+
+
+def _sandbox_preexec() -> None:
+    _sandbox_preexec_impl(apply_no_new_privs = True, apply_nproc = True)
+
+
+def _limited_resource_limits() -> tuple[int, int, int, int]:
+    try:
+        limits = (
+            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
+            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")) * 1024**3,
+            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
+            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NOFILE", "16384")),
+        )
+    except ValueError as exc:
+        raise RuntimeError("Limited mode resource-limit configuration is invalid") from exc
+    if any(value <= 0 for value in limits):
+        raise RuntimeError("Limited mode resource limits must be positive")
+    if sys.platform == "darwin":
+        # Darwin can report RLIM_INFINITY for NOFILE while rejecting values
+        # above the kernel's current per-process descriptor ceiling.
+        try:
+            limits = (*limits[:3], min(limits[3], int(os.sysconf("SC_OPEN_MAX"))))
+        except (ValueError, OSError):
+            raise RuntimeError("Limited mode could not determine the macOS file limit")
+    return limits
+
+
+def _limited_preexec() -> None:
+    """Establish every resource limit promised by Limited mode or abort exec.
+
+    The shared guard (session leader, umask, ``PR_SET_NO_NEW_PRIVS``,
+    ``PR_SET_PDEATHSIG`` and the best-effort limits) runs first so Limited mode
+    keeps every protection the pre-isolation sandboxed path had; the limits below
+    are then re-applied fail-closed. NPROC is left to the fail-closed pass.
+    """
+    _sandbox_preexec_impl(apply_no_new_privs = True, apply_nproc = False)
+    if _resource is None:
+        raise RuntimeError("POSIX resource limits are unavailable")
+
+    def apply_limit(resource_name: str, requested: int) -> None:
+        resource_id = getattr(_resource, resource_name, None)
+        if resource_id is None:
+            raise RuntimeError(f"{resource_name} is unavailable")
+        inherited_soft, inherited_hard = _resource.getrlimit(resource_id)
+        bounds = [requested]
+        for inherited in (inherited_soft, inherited_hard):
+            if inherited != _resource.RLIM_INFINITY:
+                bounds.append(inherited)
+        target = min(bounds)
+        if target <= 0:
+            raise RuntimeError(f"{resource_name} cannot be established")
+        _resource.setrlimit(resource_id, (target, target))
+
+    nproc, memory, cpu_time, nofile = _limited_resource_limits()
+    apply_limit("RLIMIT_NPROC", nproc)
+    apply_limit("RLIMIT_FSIZE", 100 * 1024 * 1024)
+    # Darwin exposes AS, DATA, and RSS constants through Python, but rejects
+    # setting each one in this launch context. Its other four limits are still
+    # mandatory; Linux additionally enforces this address-space bound.
+    if sys.platform != "darwin":
+        apply_limit("RLIMIT_AS", memory)
+    apply_limit("RLIMIT_CPU", cpu_time)
+    apply_limit("RLIMIT_NOFILE", nofile)
+
+
+def _sandbox_launcher_preexec() -> None:
+    """Limits safe for a native sandbox launcher before it enters isolation.
+
+    A setuid Bubblewrap helper cannot start under ``no_new_privs``. NPROC is
+    installed by a tiny interpreter wrapper after Bubblewrap enters the new
+    namespace; applying the per-host-UID limit to the launcher can make its
+    required fork fail on a busy host. All other existing limits remain.
+    """
+    _sandbox_preexec_impl(apply_no_new_privs = False, apply_nproc = False)
 
 
 def _bypass_preexec():
@@ -7293,18 +7389,241 @@ def _shell_is_posix() -> bool:
     return sys.platform != "win32" or _windows_bash() is not None
 
 
-def _get_shell_cmd(command: str) -> list[str]:
-    """Return the platform-appropriate shell invocation for a command string."""
+def _get_shell_cmd(
+    command: str,
+    *,
+    os_isolated: bool = False,
+    script_path: str | None = None,
+) -> list[str]:
+    """Return the platform-appropriate shell invocation for a command string.
+
+    ``os_isolated`` says the launch runs inside the Windows AppContainer. Git for
+    Windows bash is an MSYS2 program and MSYS2 opens a shared object under
+    ``\\BaseNamedObjects`` at startup, which an AppContainer is denied
+    (``NtCreateDirectoryObject: 0xC0000022``), so it can never start there. The
+    isolated launch uses cmd and the model is told so by
+    apply_os_isolated_tool_descriptions. ``script_path`` names a batch file the
+    caller wrote inside the workdir holding ``command``: cmd /c executes only
+    the first line of a multi-line argument, a batch file runs all of them.
+    ``/d`` skips the AutoRun registry commands, which are host state.
+    """
     if sys.platform == "win32":
         # why: the model is told this tool is bash and writes bash. cmd /c runs
         # only the first line of a multi-line command, keeps single quotes
         # literal, and does not understand bash quoting, so a correct script
         # silently half-executes. Use a real bash when the host has one.
-        bash = _windows_bash()
+        bash = None if os_isolated else _windows_bash()
         if bash:
             return [bash, "-c", command]
+        if script_path:
+            # why call: naming the batch file as the command itself makes cmd
+            # search for it the way it searches for a program, and inside the
+            # container that search is refused ("Access is denied.") even though
+            # the file itself reads fine. Measured on hosted Windows: `type` and
+            # `call` on the same absolute path both succeed while the bare path
+            # and `dir` both fail. `call` still propagates the batch's exit code.
+            return ["cmd", "/d", "/c", "call", script_path]
         return ["cmd", "/c", command]
     return ["bash", "-c", command]
+
+
+_GENERIC_READ_ACCESS = 0x80000000
+_GENERIC_WRITE_ACCESS = 0x40000000
+_FILE_SHARE_READ = 0x00000001
+_CREATE_NEW = 1
+_FILE_ATTRIBUTE_NORMAL = 0x80
+_INVALID_HANDLE_VALUE = -1
+
+
+def _create_locked_batch_script(path: str, body: str) -> object:
+    """Create the batch file and keep it unwritable for as long as the launch runs.
+
+    Creation and locking are one operation on purpose. Writing the file, closing
+    it and reopening it to lock leaves a window in which a concurrent tool call
+    in the same chat workdir, which the sandboxed process can write, replaces
+    the script between the two opens and gets its own command run instead.
+    ``CREATE_NEW`` refuses an existing name, ``FILE_SHARE_READ`` lets cmd read
+    the file and refuses every open asking for write or delete, and the handle
+    is held until the launch is over.
+
+    Raises OSError when the file cannot be created this way, so an isolated
+    launch never falls back to a script anyone could swap.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    handle = kernel32.CreateFileW(
+        path,
+        _GENERIC_READ_ACCESS | _GENERIC_WRITE_ACCESS,
+        _FILE_SHARE_READ,
+        None,
+        _CREATE_NEW,
+        _FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    if not handle or ctypes.c_ssize_t(handle).value == _INVALID_HANDLE_VALUE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        payload = body.encode("utf-8")
+        kernel32.WriteFile.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        written = wintypes.DWORD(0)
+        if not kernel32.WriteFile(
+            ctypes.c_void_p(handle), payload, len(payload), ctypes.byref(written), None
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if written.value != len(payload):
+            raise OSError(f"batch script short write: {written.value} of {len(payload)} bytes")
+        # cmd opens the file by name, so the bytes must be on disk, not in this
+        # handle's buffer, before the child starts.
+        kernel32.FlushFileBuffers(ctypes.c_void_p(handle))
+    except BaseException:
+        _release_batch_script(handle)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+    return handle
+
+
+def _release_batch_script(handle: "object | None") -> None:
+    if handle is None or sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.WinDLL("kernel32", use_last_error = True).CloseHandle(ctypes.c_void_p(handle))
+    # TypeError: a caller that passes something that is not a handle at all.
+    # This runs in the launch's finally, where raising would replace the tool's
+    # own result with a traceback.
+    except (OSError, AttributeError, ImportError, TypeError):
+        pass
+
+
+def _seal_scratch_script(path: str) -> "tuple[object | None, tuple[int, int] | None]":
+    """Make the written script unswappable, or at least detectably swapped.
+
+    Both tool calls of one chat share a workdir that the sandboxed process can
+    write, so a second call can replace the first call's script between the
+    write and the interpreter opening it, and the wrong code runs under the
+    first call's tier and grant. The Terminal path solves this by creating the
+    batch file through a handle that denies writers; Python cannot, because the
+    file must stay readable by name for tracebacks and for the download route.
+
+    On Windows a second handle with FILE_SHARE_READ refuses every open that asks
+    for write or delete, so the swap is prevented. POSIX has no mandatory
+    locking, so the file's identity is recorded instead and checked again just
+    before the spawn: a replacement (the usual shape, since writing in place
+    over a file opened by another launch is what an editor avoids doing) changes
+    the inode and is refused. A truncate and rewrite in place is not caught, and
+    that is stated here rather than implied.
+    """
+    if sys.platform == "win32":
+        return _lock_scratch_script_for_reading(path), None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None, None
+    return None, (stat.st_dev, stat.st_ino)
+
+
+def _scratch_script_was_swapped(path: str, identity: "tuple[int, int] | None") -> bool:
+    if identity is None:
+        return False
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return True
+    return (stat.st_dev, stat.st_ino) != identity
+
+
+def _lock_scratch_script_for_reading(path: str) -> "object | None":
+    """Open ``path`` denying writers, for a file that already exists.
+
+    Unlike the batch script this cannot create the file, so it is best effort:
+    the Python script is written by the ordinary text path first. A host that
+    refuses the open leaves the launch to the identity check above.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.CreateFileW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        kernel32.CreateFileW.restype = ctypes.c_void_p
+        handle = kernel32.CreateFileW(
+            path, _GENERIC_READ_ACCESS, _FILE_SHARE_READ, None, 3, _FILE_ATTRIBUTE_NORMAL, None
+        )
+    except (OSError, AttributeError, ImportError):
+        return None
+    if not handle or ctypes.c_ssize_t(handle).value == _INVALID_HANDLE_VALUE:
+        return None
+    return handle
+
+
+def _reserve_isolated_batch_script(workdir: str) -> str:
+    """Pick the batch file's path without creating it yet.
+
+    The file must not exist before the sandbox is prepared. Preparation is what
+    puts the container's inheritable ACE on the workdir, and only a file created
+    after that inherits it at creation time; a file created before is left with
+    the parent's ACEs as they stood, which on a workdir whose own DACL carries
+    no inheritable entries means the container cannot read it at all. That is
+    the "Access is denied." cmd printed on the hosted runners. Nothing is
+    created here, so a failed preparation leaves no file behind.
+    """
+    return os.path.join(workdir, f"studio_exec_{secrets.token_hex(12)}.cmd")
+
+
+def _write_isolated_batch_script(command: str, path: str) -> "object | None":
+    """Write ``command`` as the batch file for the isolated cmd launch.
+
+    Called only after prepare_tool_launch, see _reserve_isolated_batch_script.
+    The AppContainer can read the workdir, so the file is reachable inside the
+    sandbox, and it is registered as this call's scratch so the created-file
+    report skips it. ``@echo off`` keeps cmd from echoing every line into the
+    tool output; CRLF line endings because cmd mis-parses a bare LF at the end
+    of a label or a parenthesised block.
+
+    On Windows the file is created through a handle that denies every writer
+    for the life of the launch, and that handle is returned for the caller to
+    release; see _create_locked_batch_script. Elsewhere (only the unit tests
+    reach this) an exclusive create is enough and None is returned.
+    """
+    body = "@echo off\r\n" + command.replace("\r\n", "\n").replace("\n", "\r\n")
+    if not body.endswith("\r\n"):
+        body += "\r\n"
+    if sys.platform == "win32":
+        return _create_locked_batch_script(path, body)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding = "utf-8", newline = "") as handle:
+        handle.write(body)
+    return None
 
 
 # Per-session working directories so each chat thread gets its own sandbox.
@@ -9871,15 +10190,19 @@ def _build_terminal_shell_note() -> str:
     if sys.platform != "win32":
         return ""
     if _windows_bash():
-        return (
-            " The shell is bash (Git for Windows), and native Windows programs are "
-            "available; a program you start detached opens a window on the user's "
-            "desktop."
-        )
-    return (
-        " The shell is cmd, not bash: send one command per call, chain with &&, and "
-        "do not use bash syntax such as multi-line loops or single-quoted arguments."
-    )
+        return _TERMINAL_BASH_NOTE
+    return _TERMINAL_CMD_NOTE
+
+
+_TERMINAL_BASH_NOTE = (
+    " The shell is bash (Git for Windows), and native Windows programs are "
+    "available; a program you start detached opens a window on the user's "
+    "desktop."
+)
+_TERMINAL_CMD_NOTE = (
+    " The shell is cmd, not bash: send one command per call, chain with &&, and "
+    "do not use bash syntax such as multi-line loops or single-quoted arguments."
+)
 
 
 _SANDBOX_PATHS_NOTE = _build_sandbox_paths_note()
@@ -9950,6 +10273,139 @@ _FULL_ACCESS_TOOL_BY_NAME = {
     "python": PYTHON_TOOL_FULL_ACCESS,
     "terminal": TERMINAL_TOOL_FULL_ACCESS,
 }
+
+_LIMITED_TOOL_DESCRIPTION_PREFIX = (
+    "This tool runs with Unsloth software safeguards but without OS isolation; "
+    "it may access anything available to the Studio process. "
+)
+
+
+_NETWORK_ALLOWLIST_NOTE = (
+    " Outbound network access is limited to HTTPS (port 443) through a local proxy that"
+    " admits only these hosts: {hosts}. Connections to any other host, to an IP address,"
+    " or over plain http:// are refused; refused hosts are listed at the end of the"
+    " tool output. pip, git, requests and huggingface_hub pick up the proxy"
+    " from the standard HTTPS_PROXY environment variables automatically. The proxy"
+    " carries traffic in both directions, so these hosts can also receive data."
+)
+
+
+def _requested_network_policy(network_policy: str | None, full_access: bool) -> str:
+    """Map the caller's per-session choice to the launch plan's policy.
+
+    Full access has the host network and never carries an allowlist; anything
+    unknown is passed through unchanged so prepare_tool_launch refuses it
+    explicitly instead of a typo silently meaning "deny".
+    """
+    if full_access or not network_policy:
+        return "deny"
+    return str(network_policy)
+
+
+def _network_denied_trailer(prepared_launch) -> str:
+    """Name the hosts the sandbox network allowlist refused during this launch."""
+    audit = getattr(prepared_launch, "network_audit", None)
+    if audit is None:
+        return ""
+    try:
+        from core.inference.network_proxy import format_denied_trailer
+        return format_denied_trailer(audit)
+    except Exception:  # noqa: BLE001 - a reporting failure must not fail the tool
+        return ""
+
+
+# How many cleanup diagnostics a result names before it says "and N more".
+_MAX_CLEANUP_DIAGNOSTICS = 20
+
+
+def _isolation_cleanup_trailer(prepared_launch, tool_name: str) -> str:
+    """Name whatever the OS isolation could not release, or an empty string.
+
+    ``PreparedSandboxLaunch.cleanup`` fills ``cleanup_diagnostics`` when a
+    callback raises or a private path cannot be removed. Those only ever reached
+    the backend log, so a launch that leaked a mount or a temporary directory
+    looked to the user and the model like a clean run.
+    """
+    diagnostics = getattr(prepared_launch, "cleanup_diagnostics", None)
+    if not isinstance(diagnostics, (list, tuple)) or not diagnostics:
+        return ""
+    diagnostics = [str(item) for item in diagnostics]
+    logger.warning("Sandbox cleanup incomplete after %s: %s", tool_name, "; ".join(diagnostics))
+    lines = ["", "[isolation] cleanup incomplete:"]
+    for diagnostic in diagnostics[:_MAX_CLEANUP_DIAGNOSTICS]:
+        # One line per diagnostic: the text can carry an exception message.
+        lines.append("  - " + " ".join(str(diagnostic).split()))
+    if len(diagnostics) > _MAX_CLEANUP_DIAGNOSTICS:
+        lines.append(f"  - and {len(diagnostics) - _MAX_CLEANUP_DIAGNOSTICS} more")
+    return "\n".join(lines)
+
+
+def apply_os_isolated_tool_descriptions(
+    tools: list[dict], network_allowlist: tuple[str, ...] | list[str] | None = None
+) -> list[dict]:
+    """Describe what actually runs inside the OS sandbox this turn.
+
+    Two adjustments, both no-ops when they do not apply. On Windows with Git
+    bash installed, the terminal description promises bash but an OS-isolated
+    launch runs cmd (see _get_shell_cmd), so the cmd note replaces the bash
+    note. When the session enabled the network allowlist, the python and
+    terminal descriptions gain the list of reachable hosts so the model asks
+    for what the proxy admits instead of guessing why a download failed.
+    A list without either tool is returned as-is.
+    """
+    swap_shell = sys.platform == "win32" and bool(_windows_bash())
+    hosts = tuple(str(host) for host in (network_allowlist or ()) if str(host).strip())
+    if not swap_shell and not hosts:
+        return tools
+    out: list[dict] = []
+    swapped = False
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if name not in ("python", "terminal"):
+            out.append(tool)
+            continue
+        original = str(function.get("description", ""))
+        description = original
+        if name == "terminal" and swap_shell:
+            if _TERMINAL_BASH_NOTE in description:
+                description = description.replace(_TERMINAL_BASH_NOTE, _TERMINAL_CMD_NOTE)
+            else:
+                description = description + _TERMINAL_CMD_NOTE
+        if hosts:
+            description = description + _NETWORK_ALLOWLIST_NOTE.format(hosts = ", ".join(hosts))
+        if description == original:
+            out.append(tool)
+            continue
+        out.append({**tool, "function": {**function, "description": description}})
+        swapped = True
+    return out if swapped else tools
+
+
+def apply_limited_tool_descriptions(tools: list[dict]) -> list[dict]:
+    """Describe the actual Limited boundary for model-visible local tools."""
+    swapped = False
+    out: list[dict] = []
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if name not in ("python", "terminal"):
+            out.append(tool)
+            continue
+        host_description = str(
+            _FULL_ACCESS_TOOL_BY_NAME[name]["function"].get("description", "")
+        ).replace("The code sandbox is disabled, so ", "")
+        out.append(
+            {
+                **tool,
+                "function": {
+                    **function,
+                    "description": _LIMITED_TOOL_DESCRIPTION_PREFIX + host_description,
+                },
+            }
+        )
+        swapped = True
+    return out if swapped else tools
 
 
 def apply_full_access_tool_descriptions(tools: list[dict]) -> list[dict]:
@@ -10401,6 +10857,12 @@ def execute_tool(
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
     result_budget_tokens: int | None = None,
+    tool_execution_mode: str | None = None,
+    current_subject: str | None = None,
+    tool_ui_session_id: str | None = None,
+    limited_grant: str | None = None,
+    launch_record_callback = None,
+    network_policy: str | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10418,6 +10880,8 @@ def execute_tool(
     output). Purely observational: the returned result string is identical
     with or without it. Tools without incremental output ignore it.
     ``website_policy``: hidden server-validated domain limits for web_search.
+    ``tool_execution_mode``: Required (default), explicitly granted Limited,
+    or existing Full access for local Python/Terminal launches.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     # Set unconditionally, so a value from an earlier call on this thread can never be
@@ -10447,6 +10911,9 @@ def execute_tool(
             "split across smaller calls if the content is long."
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    effective_execution_mode = (
+        "full" if disable_sandbox else tool_execution_mode or "os_isolation_required"
+    )
     if name == "search_knowledge_base":
         return _fit_result_to_room(
             _search_knowledge_base_with_budget(
@@ -10564,6 +11031,12 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = effective_execution_mode,
+                current_subject = current_subject,
+                tool_ui_session_id = tool_ui_session_id,
+                limited_grant = limited_grant,
+                launch_record_callback = launch_record_callback,
+                network_policy = network_policy,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -10575,6 +11048,12 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = effective_execution_mode,
+                current_subject = current_subject,
+                tool_ui_session_id = tool_ui_session_id,
+                limited_grant = limited_grant,
+                launch_record_callback = launch_record_callback,
+                network_policy = network_policy,
             )
     # Same in-flight guard as the two above: it writes into the session workdir,
     # so a chat deleted mid-call must not unlink it underneath.
@@ -14363,7 +14842,13 @@ def _forget_tool_pid(proc) -> None:
         pass
 
 
-def _capture_process_group(proc):
+# Backends whose spawn callback returns a process already bound to its own
+# kill-on-close Job Object (``proc._unsloth_job``): the AppContainer launcher
+# for Required mode and the write-restricted token launcher for Limited mode.
+_WINDOWS_JOB_OWNING_BACKENDS = frozenset({"windows-lpac", "windows-restricted-token"})
+
+
+def _capture_process_group(proc, *, require_windows_resource_limits: bool = False):
     """Return the setsid process-group id, or ``None`` when unavailable.
 
     Captured right after ``Popen`` so a later ``poll()`` / ``wait()`` that reaps
@@ -14374,9 +14859,17 @@ def _capture_process_group(proc):
     there left a payload that outlived its wrapper unsignalled.
     """
     if os.name == "nt":
-        job = _windows_job_capture(proc)
+        owned_job = getattr(proc, "_unsloth_job", None)
+        if owned_job is not None:
+            return ("windows-job", owned_job)
+        job = _windows_job_capture(
+            proc,
+            apply_resource_limits = require_windows_resource_limits,
+        )
         if job is not None:
             return ("windows-job", job)
+        if require_windows_resource_limits:
+            return None
         # No job available, so fall back to the pid, carrying its creation-time
         # identity: a posix group id cannot be recycled while a member lives,
         # but this bare pid can, and the timeout path may fire much later.
@@ -14394,8 +14887,11 @@ class _WindowsToolJob:
 
     Windows has no process groups, and ``taskkill`` cannot reach a tree whose
     root has already exited, which is exactly the case this capture exists for.
-    The job stays a valid handle on every descendant either way. Created without
-    kill-on-close, so releasing it never kills a process that outlived the call.
+    The job stays a valid handle on every descendant either way. When the job
+    carries Limited-mode resource limits it is also created with kill-on-close,
+    so a detached grandchild dies with the tool call instead of outliving it,
+    which is what the ``reaping`` safeguard promises. A plain capture (Full
+    access) keeps the historical behaviour and never kills on release.
     """
 
     def __init__(self, handle, kernel32):
@@ -14419,7 +14915,56 @@ class _WindowsToolJob:
         self.close()
 
 
-def _windows_job_capture(proc) -> "_WindowsToolJob | None":
+def _resume_windows_process(kernel32, ctypes, proc) -> bool:
+    """Resume the sole initial thread of a CREATE_SUSPENDED child."""
+    from ctypes import wintypes
+
+    class _ThreadEntry32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ThreadID", wintypes.DWORD),
+            ("th32OwnerProcessID", wintypes.DWORD),
+            ("tpBasePri", wintypes.LONG),
+            ("tpDeltaPri", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    H, BOOL, DWORD = wintypes.HANDLE, wintypes.BOOL, wintypes.DWORD
+    kernel32.CreateToolhelp32Snapshot.argtypes = [DWORD, DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = H
+    kernel32.Thread32First.argtypes = [H, ctypes.POINTER(_ThreadEntry32)]
+    kernel32.Thread32First.restype = BOOL
+    kernel32.Thread32Next.argtypes = [H, ctypes.POINTER(_ThreadEntry32)]
+    kernel32.Thread32Next.restype = BOOL
+    kernel32.OpenThread.argtypes = [DWORD, BOOL, DWORD]
+    kernel32.OpenThread.restype = H
+    kernel32.ResumeThread.argtypes = [H]
+    kernel32.ResumeThread.restype = DWORD
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x00000004, 0)
+    if not snapshot or int(snapshot) == -1:
+        return False
+    thread = None
+    try:
+        entry = _ThreadEntry32()
+        entry.dwSize = ctypes.sizeof(entry)
+        found = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+        while found:
+            if int(entry.th32OwnerProcessID) == int(proc.pid):
+                thread = kernel32.OpenThread(0x0002, False, entry.th32ThreadID)
+                break
+            found = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+        if not thread:
+            return False
+        return kernel32.ResumeThread(thread) != 0xFFFFFFFF
+    finally:
+        if thread:
+            kernel32.CloseHandle(thread)
+        kernel32.CloseHandle(snapshot)
+
+
+def _windows_job_capture(proc, *, apply_resource_limits: bool = False) -> "_WindowsToolJob | None":
     """Put ``proc`` in its own job. ``None`` when that is not possible, leaving
     the pid-based fallback."""
     if os.name != "nt":
@@ -14428,7 +14973,12 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         import ctypes
         from ctypes import wintypes
 
-        H, BOOL, UINT = wintypes.HANDLE, wintypes.BOOL, wintypes.UINT
+        H, BOOL, DWORD, UINT = (
+            wintypes.HANDLE,
+            wintypes.BOOL,
+            wintypes.DWORD,
+            wintypes.UINT,
+        )
         kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
         # Explicit widths: without them ctypes truncates a 64-bit handle to
         # c_int and every call silently works on a bogus one.
@@ -14436,6 +14986,13 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         kernel32.CreateJobObjectW.restype = H
         kernel32.AssignProcessToJobObject.argtypes = [H, H]
         kernel32.AssignProcessToJobObject.restype = BOOL
+        kernel32.SetInformationJobObject.argtypes = [
+            H,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = BOOL
         kernel32.TerminateJobObject.argtypes = [H, UINT]
         kernel32.TerminateJobObject.restype = BOOL
         kernel32.CloseHandle.argtypes = [H]
@@ -14444,9 +15001,90 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             return None
+        if apply_resource_limits:
+
+            class _BasicLimits(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", DWORD),
+                    ("SchedulingClass", DWORD),
+                ]
+
+            class _IoCounters(ctypes.Structure):
+                _fields_ = [
+                    (name, ctypes.c_uint64)
+                    for name in (
+                        "ReadOperationCount",
+                        "WriteOperationCount",
+                        "OtherOperationCount",
+                        "ReadTransferCount",
+                        "WriteTransferCount",
+                        "OtherTransferCount",
+                    )
+                ]
+
+            class _ExtendedLimits(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", _BasicLimits),
+                    ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            try:
+                nproc = max(
+                    1,
+                    int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
+                )
+                memory = (
+                    max(
+                        1,
+                        int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")),
+                    )
+                    * 1024
+                    * 1024
+                    * 1024
+                )
+                cpu_time = (
+                    max(
+                        1,
+                        int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
+                    )
+                    * 10_000_000
+                )
+            except ValueError:
+                kernel32.CloseHandle(job)
+                return None
+            info = _ExtendedLimits()
+            info.BasicLimitInformation.PerProcessUserTimeLimit = cpu_time
+            info.BasicLimitInformation.ActiveProcessLimit = nproc
+            # PROCESS_TIME | ACTIVE_PROCESS | PROCESS_MEMORY | JOB_MEMORY | KILL_ON_JOB_CLOSE
+            info.BasicLimitInformation.LimitFlags = 0x2 | 0x8 | 0x100 | 0x200 | 0x2000
+            info.ProcessMemoryLimit = memory
+            info.JobMemoryLimit = memory
+            if not kernel32.SetInformationJobObject(
+                job,
+                9,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            ):
+                kernel32.CloseHandle(job)
+                return None
         # The Popen handle, not a fresh OpenProcess: it already refers to this
         # child, so there is no window for the pid to be recycled first.
         if not kernel32.AssignProcessToJobObject(job, int(proc._handle)):
+            kernel32.CloseHandle(job)
+            return None
+        if apply_resource_limits and not _resume_windows_process(kernel32, ctypes, proc):
+            kernel32.TerminateJobObject(job, 1)
             kernel32.CloseHandle(job)
             return None
         return _WindowsToolJob(job, kernel32)
@@ -14521,6 +15159,71 @@ def _kill_process_tree(proc) -> None:
         pass
 
 
+# Limited mode has no pid namespace, so a `setsid` grandchild leaves the captured
+# process group and survives `_killpg_captured`. Every Limited launch therefore
+# carries a per-call random marker in its environment; after the leader is gone
+# the sweep kills every process of our uid still carrying that exact marker.
+_LIMITED_RUN_MARKER_ENV = "UNSLOTH_STUDIO_TOOL_RUN_ID"
+_LIMITED_SWEEP_PASSES = 2
+_LIMITED_SWEEP_PAUSE_SECONDS = 0.05
+
+
+def _sweep_marked_descendants(marker: str) -> int:
+    """SIGKILL processes of this uid whose environment carries the Limited run marker.
+
+    Linux only (it reads ``/proc/<pid>/environ``); elsewhere it is a no-op and
+    the Limited execution record discloses ``detached_descendant_cleanup_unverified``.
+    Pids without the marker are never signalled; unreadable or vanished pids are
+    skipped. A child that scrubs its own environment escapes the sweep, which is
+    why Limited mode is offered only where no OS sandbox qualifies.
+    """
+    if not marker or not descendant_sweep_supported():
+        return 0
+    needle = f"{_LIMITED_RUN_MARKER_ENV}={marker}".encode()
+    own_pid = os.getpid()
+    own_uid = os.getuid()
+    killed = 0
+    for _pass in range(_LIMITED_SWEEP_PASSES):
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return killed
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            pid = int(entry)
+            if pid == own_pid:
+                continue
+            # The pidfd pins this exact process before anything about it is
+            # read: if the pid is recycled after the match, the signal still
+            # goes to the (already dead) process the fd refers to, never to the
+            # newcomer.
+            try:
+                pidfd = _pidfd_open(pid)
+            except OSError:
+                continue
+            try:
+                try:
+                    if os.stat(f"/proc/{pid}").st_uid != own_uid:
+                        continue
+                    with open(f"/proc/{pid}/environ", "rb") as stream:
+                        environ = stream.read()
+                except OSError:
+                    continue
+                if needle not in environ.split(b"\0"):
+                    continue
+                try:
+                    _pidfd_send_signal(pidfd, signal.SIGKILL)
+                    killed += 1
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+            finally:
+                os.close(pidfd)
+        if _pass + 1 < _LIMITED_SWEEP_PASSES:
+            time.sleep(_LIMITED_SWEEP_PAUSE_SECONDS)
+    return killed
+
+
 def _killpg_captured(pgid) -> None:
     """SIGKILL a process group captured before its leader was waited on.
 
@@ -14548,6 +15251,23 @@ def _killpg_captured(pgid) -> None:
     try:
         os.killpg(pgid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def _terminate_limited_windows_job(pgid, effective_execution_mode) -> None:
+    """Once a Limited tool call's leader is done, take its whole Windows job with it.
+
+    The job was created with kill-on-close, so this is the eager half of the
+    same guarantee: a ``start /b`` grandchild left running by the leader does
+    not survive the call. No-op outside Limited mode and off Windows.
+    """
+    if effective_execution_mode != "limited" or not isinstance(pgid, tuple):
+        return
+    if pgid[0] != "windows-job":
+        return
+    try:
+        pgid[1].terminate()
+    except Exception:  # noqa: BLE001 - best effort; kill-on-close still applies
         pass
 
 
@@ -16009,6 +16729,31 @@ def _created_file_sentinels(
     return out
 
 
+# One process-wide notice: API clients written before OS isolation existed send no
+# tool_execution_mode, and on a host without a qualified backend their tool calls now
+# fail closed. The request models record the omission; the launch path reports it once.
+_LEGACY_MODE_NOTICE_LOGGED = False
+_API_OPT_OUT_HINT = (
+    "API clients that accept running without OS isolation must say so explicitly with "
+    'permission_mode "full" (or bypass_permissions true); an omitted tool_execution_mode '
+    "means OS isolation is required."
+)
+
+
+def _tool_failure_message(exc: BaseException) -> str:
+    """The string a failed tool call hands back to the model."""
+    message = f"Execution error: {exc}"
+    if isinstance(exc, SandboxUnavailableError) and "OS_ISOLATION_UNAVAILABLE" in message:
+        global _LEGACY_MODE_NOTICE_LOGGED
+        if not _LEGACY_MODE_NOTICE_LOGGED:
+            _LEGACY_MODE_NOTICE_LOGGED = True
+            logger.warning(
+                "Python/Terminal tool refused: %s. %s", str(exc)[:300], _API_OPT_OUT_HINT
+            )
+        message = f"{message} {_API_OPT_OUT_HINT}"
+    return message
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -16017,6 +16762,12 @@ def _python_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    tool_execution_mode: str | None = None,
+    current_subject: str | None = None,
+    tool_ui_session_id: str | None = None,
+    limited_grant: str | None = None,
+    launch_record_callback = None,
+    network_policy: str | None = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox.
 
@@ -16028,8 +16779,13 @@ def _python_exec(
     if not code or not code.strip():
         return "No code provided."
 
-    # Validate imports and code safety (skipped when the sandbox is disabled)
-    if not disable_sandbox:
+    effective_execution_mode = (
+        "full" if disable_sandbox else tool_execution_mode or "os_isolation_required"
+    )
+    full_access = effective_execution_mode == "full"
+
+    # Validate imports and code safety (skipped only for explicit Full access).
+    if not full_access:
         error = _check_code_safety(code)
         if error:
             # Capped like any other result: the analyzer names every occurrence it
@@ -16052,6 +16808,8 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
+    prepared_launch = None
+    run_marker = None
     workdir = _get_workdir(session_id)
     # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
     # one session by design. Retaining a result in either, under a path the next chat can
@@ -16060,6 +16818,8 @@ def _python_exec(
     spill_scope = _spill_scope(session_id, thread_id)
     spill_dir = workdir if session_id else None
     call_token = _call_started(workdir)
+    script_handle = None
+    script_identity = None
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
     try:
@@ -16073,12 +16833,62 @@ def _python_exec(
             _active_scratch.add(_scratch_name)
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
+        # Held until the finally on Windows, recorded for the check below
+        # elsewhere: another call in the same chat workdir must not be able to
+        # swap this script between the write and the interpreter opening it.
+        script_handle, script_identity = _seal_scratch_script(tmp_path)
 
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
-        if disable_sandbox:
+        safe_env = _build_bypass_env(workdir) if full_access else _build_safe_env(workdir)
+        if full_access:
             # Match the sandboxed Python path without changing bypass shell I/O.
             safe_env = dict(safe_env)
             safe_env["PYTHONIOENCODING"] = "utf-8"
+        elif effective_execution_mode == "limited":
+            run_marker = secrets.token_hex(16)
+            safe_env = dict(safe_env)
+            safe_env[_LIMITED_RUN_MARKER_ENV] = run_marker
+        launch_argv = (sys.executable, "-u", tmp_path)
+        launch_preexec = (
+            _bypass_preexec
+            if full_access
+            else _limited_preexec
+            if effective_execution_mode == "limited"
+            else _sandbox_preexec
+        )
+        prepared_launch = prepare_tool_launch(
+            ToolLaunchPlan(
+                argv = launch_argv,
+                workdir = workdir,
+                env = safe_env,
+                preexec_fn = launch_preexec,
+                launcher_preexec_fn = (None if full_access else _sandbox_launcher_preexec),
+                requested_mode = effective_execution_mode,
+                current_subject = current_subject,
+                tool_ui_session_id = tool_ui_session_id,
+                limited_grant = limited_grant,
+                timeout_seconds = timeout,
+                network_policy = _requested_network_policy(network_policy, full_access),
+                execution_kind = "python",
+            )
+        )
+        launch_argv = prepared_launch.argv
+        workdir = prepared_launch.workdir
+        safe_env = prepared_launch.env
+        launch_preexec = prepared_launch.preexec_fn
+        launch_timeout = prepared_launch.timeout_seconds
+        if launch_timeout is None and timeout is not None:
+            launch_timeout = timeout
+        if _scratch_script_was_swapped(tmp_path, script_identity):
+            # Refusing beats running someone else's code under this call's
+            # tier and grant. Nothing has been spawned yet.
+            raise RuntimeError(
+                "the script for this call was replaced before it could run; nothing was executed"
+            )
+        if effective_execution_mode == "limited" and sys.platform != "win32":
+            # Validate in the parent so configuration failures remain actionable;
+            # the child repeats this immediately before exec and applies them.
+            _limited_resource_limits()
+
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -16089,22 +16899,52 @@ def _python_exec(
             errors = "replace",
             cwd = workdir,
             env = safe_env,
+            close_fds = prepared_launch.close_fds,
         )
+        if not full_access:
+            popen_kwargs["stdin"] = subprocess.DEVNULL
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            if launch_preexec is not None:
+                popen_kwargs["preexec_fn"] = launch_preexec
+            if prepared_launch is not None and prepared_launch.pass_fds:
+                popen_kwargs["pass_fds"] = prepared_launch.pass_fds
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            if effective_execution_mode == "limited":
+                # The child cannot run between creation and assignment to its
+                # resource-limited Job Object.
+                popen_kwargs["creationflags"] |= getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
+        proc = spawn_prepared_launch(prepared_launch, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
-        pgid = _capture_process_group(proc)
+        if sys.platform == "win32" and (
+            effective_execution_mode == "limited"
+            or prepared_launch.backend in _WINDOWS_JOB_OWNING_BACKENDS
+        ):
+            pgid = _capture_process_group(proc, require_windows_resource_limits = True)
+            if pgid is None:
+                _kill_process_tree(proc)
+                proc.wait()
+                raise SandboxUnavailableError(
+                    "Limited mode could not establish Windows process resource limits"
+                )
+        else:
+            pgid = _capture_process_group(proc)
         _adopt_tool_pid(proc.pid)
+        if launch_record_callback is not None and prepared_launch.execution_record is not None:
+            try:
+                launch_record_callback(prepared_launch.execution_record)
+            except Exception:
+                _killpg_captured(pgid)
+                _kill_process_tree(proc)
+                proc.wait()
+                raise
 
         if cancel_event is not None:
             watcher = threading.Thread(
@@ -16119,12 +16959,26 @@ def _python_exec(
         # outlived the leader, and returns bytes identical to communicate() so
         # the streaming vs non-streaming result stays byte-identical.
         output, timed_out = _drain_process_output(
-            proc, timeout, output_callback, cancel_event, pgid = pgid
+            proc,
+            launch_timeout,
+            output_callback,
+            cancel_event,
+            pgid = pgid,
         )
+        _terminate_limited_windows_job(pgid, effective_execution_mode)
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            # Cleanup before the trailers, as on the success path: a revoke or a
+            # temp removal that failed is reported instead of only logged. It is
+            # idempotent, so the finally's call is a no-op.
+            if prepared_launch is not None:
+                prepared_launch.cleanup()
+            ended += _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "python_exec")
+            )
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -16132,7 +16986,15 @@ def _python_exec(
             )
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled." + (
+            # A cancelled `pip install` still has to say the host was refused, and
+            # an unfinished cleanup is reported here too.
+            if prepared_launch is not None:
+                prepared_launch.cleanup()
+            cancelled = "Execution cancelled." + _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "python_exec")
+            )
+            return cancelled + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
                 else ""
@@ -16146,17 +17008,33 @@ def _python_exec(
         # paths are judged against the real workdir (project sessions live outside
         # the default sandbox root).
         hint = _missing_path_hint(result, workdir)
-        # Before the fit, not after it. Defusing inserts a space into every line that
-        # opens with a marker, so a result full of them grows after it has been measured
-        # and the text replayed to the model is larger than the prefix that was admitted.
-        # Before ours is appended, and whether or not one is: a program's own marker line
-        # is not an envelope.
-        result = _defuse_sentinels(result)
-        result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
-            if result.strip()
-            else "(no output)" + hint
-        )
+        # Defusing runs before the fit, not after it: it inserts a space into every
+        # line that opens with a marker, so a result full of them grows after it has
+        # been measured and the text replayed to the model is larger than the prefix
+        # that was admitted. A program's own marker line is not an envelope, and
+        # neither is one that reached a trailer.
+        if prepared_launch is not None:
+            # Released here and not only in the finally, so a cleanup that could
+            # not finish is reported instead of being logged and forgotten. It
+            # is idempotent: every list is popped, so the finally's call is a
+            # no-op.
+            prepared_launch.cleanup()
+        # Both trailers go on before the defuse and the fit. A sandboxed process
+        # steers what the network trailer names, so a forged sentinel line in it
+        # has to be broken like any other output, and the trailers have to be
+        # charged to the same budget the result was measured against.
+        trailer = _network_denied_trailer(prepared_launch)
+        trailer += _isolation_cleanup_trailer(prepared_launch, "python_exec")
+        trailer = _defuse_sentinels(trailer) if trailer else ""
+        if result.strip():
+            # The trailer rides with the hint: priced against the same budget and kept
+            # past the cut, where a trailer glued to the body was the first thing lost
+            # on an output that overran the room.
+            result = _truncate(
+                _defuse_sentinels(result), workdir = spill_dir, scope = spill_scope, hint = hint + trailer
+            )
+        else:
+            result = "(no output)" + hint + trailer
 
         # Only for a chat that has an id: without one every first turn shares
         # the _default workdir, so a card pinned to it would later download
@@ -16167,15 +17045,36 @@ def _python_exec(
         return result
 
     except Exception as e:
+        # Cleanup first, like the success, timeout and cancellation paths: the
+        # finally below would run it after this return, so a failed ACL revoke
+        # or a leftover container temp would never reach the caller. A launch
+        # that failed on the way up is exactly when cleanup is most likely to
+        # have something to say.
+        if prepared_launch is not None:
+            prepared_launch.cleanup()
         # An exception message carries whatever the failure put in it, so it is capped
-        # like the result would have been.
-        return _truncate(f"Execution error: {e}")
+        # like the result would have been, with the trailers as its hint so an
+        # overrun cannot drop them.
+        return _truncate(
+            _tool_failure_message(e),
+            hint = _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "python_exec")
+            ),
+        )
     finally:
         _call_finished(call_token)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
+        # Before the unlink below: on Windows the file cannot be removed while
+        # this handle denies delete access.
+        _release_batch_script(script_handle)
         _forget_tool_pid(locals().get("proc"))
+        if run_marker is not None:
+            _sweep_marked_descendants(run_marker)
+        if prepared_launch is not None:
+            prepared_launch.cleanup()
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
@@ -16191,6 +17090,12 @@ def _bash_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    tool_execution_mode: str | None = None,
+    current_subject: str | None = None,
+    tool_ui_session_id: str | None = None,
+    limited_grant: str | None = None,
+    launch_record_callback = None,
+    network_policy: str | None = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox.
 
@@ -16202,8 +17107,13 @@ def _bash_exec(
     if not command or not command.strip():
         return "No command provided."
 
-    # Block dangerous commands (skipped when the sandbox is disabled)
-    if not disable_sandbox:
+    effective_execution_mode = (
+        "full" if disable_sandbox else tool_execution_mode or "os_isolation_required"
+    )
+    full_access = effective_execution_mode == "full"
+
+    # Block dangerous commands (skipped only for explicit Full access).
+    if not full_access:
         blocked = _find_blocked_commands(command)
         if blocked:
             # Capped for the same reason the Python analyzer's error is: it lists what
@@ -16226,6 +17136,11 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
+    prepared_launch = None
+    run_marker = None
+    script_path = None
+    script_handle = None
+    _scratch_name = None
     try:
         workdir = _get_workdir(session_id)
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
@@ -16235,7 +17150,60 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used
         # to produce "(no output)" and no other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        safe_env = _build_bypass_env(workdir) if full_access else _build_safe_env(workdir)
+        if not full_access and effective_execution_mode == "limited":
+            run_marker = secrets.token_hex(16)
+            safe_env = dict(safe_env)
+            safe_env[_LIMITED_RUN_MARKER_ENV] = run_marker
+        os_isolated = not full_access and effective_execution_mode == "os_isolation_required"
+        if os_isolated and sys.platform == "win32":
+            script_path = _reserve_isolated_batch_script(workdir)
+            _scratch_name = os.path.basename(script_path)
+            with _scratch_lock:
+                _active_scratch.add(_scratch_name)
+        launch_argv = tuple(
+            _get_shell_cmd(command, os_isolated = os_isolated, script_path = script_path)
+        )
+        launch_preexec = (
+            _bypass_preexec
+            if full_access
+            else _limited_preexec
+            if effective_execution_mode == "limited"
+            else _sandbox_preexec
+        )
+        prepared_launch = prepare_tool_launch(
+            ToolLaunchPlan(
+                argv = launch_argv,
+                workdir = workdir,
+                env = safe_env,
+                preexec_fn = launch_preexec,
+                launcher_preexec_fn = (None if full_access else _sandbox_launcher_preexec),
+                requested_mode = effective_execution_mode,
+                current_subject = current_subject,
+                tool_ui_session_id = tool_ui_session_id,
+                limited_grant = limited_grant,
+                timeout_seconds = timeout,
+                network_policy = _requested_network_policy(network_policy, full_access),
+                execution_kind = "terminal",
+            )
+        )
+        launch_argv = prepared_launch.argv
+        workdir = prepared_launch.workdir
+        safe_env = prepared_launch.env
+        launch_preexec = prepared_launch.preexec_fn
+        launch_timeout = prepared_launch.timeout_seconds
+        if launch_timeout is None and timeout is not None:
+            launch_timeout = timeout
+        if script_path is not None:
+            # After preparation on purpose: the workdir now carries the
+            # container's inheritable ACE, so the file gets it at creation.
+            # The handle is held until the finally: created and locked in one
+            # operation, so no concurrent call in the same chat workdir can swap
+            # the script under cmd.
+            script_handle = _write_isolated_batch_script(command, script_path)
+        if effective_execution_mode == "limited" and sys.platform != "win32":
+            _limited_resource_limits()
+
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
@@ -16247,18 +17215,46 @@ def _bash_exec(
             errors = "replace",
             cwd = workdir,
             env = safe_env,
+            close_fds = prepared_launch.close_fds,
         )
+        if not full_access:
+            popen_kwargs["stdin"] = subprocess.DEVNULL
         if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
+            if launch_preexec is not None:
+                popen_kwargs["preexec_fn"] = launch_preexec
+            if prepared_launch is not None and prepared_launch.pass_fds:
+                popen_kwargs["pass_fds"] = prepared_launch.pass_fds
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            if effective_execution_mode == "limited":
+                popen_kwargs["creationflags"] |= getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
+        proc = spawn_prepared_launch(prepared_launch, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.
-        pgid = _capture_process_group(proc)
+        if sys.platform == "win32" and (
+            effective_execution_mode == "limited"
+            or prepared_launch.backend in _WINDOWS_JOB_OWNING_BACKENDS
+        ):
+            pgid = _capture_process_group(proc, require_windows_resource_limits = True)
+            if pgid is None:
+                _kill_process_tree(proc)
+                proc.wait()
+                raise SandboxUnavailableError(
+                    "Limited mode could not establish Windows process resource limits"
+                )
+        else:
+            pgid = _capture_process_group(proc)
         _adopt_tool_pid(proc.pid)
+        if launch_record_callback is not None and prepared_launch.execution_record is not None:
+            try:
+                launch_record_callback(prepared_launch.execution_record)
+            except Exception:
+                _killpg_captured(pgid)
+                _kill_process_tree(proc)
+                proc.wait()
+                raise
 
         if cancel_event is not None:
             watcher = threading.Thread(
@@ -16272,18 +17268,40 @@ def _bash_exec(
         # captured group on cancellation and returns bytes identical to
         # communicate(), keeping streaming vs non-streaming byte-identical.
         output, timed_out = _drain_process_output(
-            proc, timeout, output_callback, cancel_event, pgid = pgid
+            proc,
+            launch_timeout,
+            output_callback,
+            cancel_event,
+            pgid = pgid,
         )
+        _terminate_limited_windows_job(pgid, effective_execution_mode)
         # A run that wrote its file and then hung still produced that file, so
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
+            # Cleanup before the trailers, as on the success path: a revoke or a
+            # temp removal that failed is reported instead of only logged. It is
+            # idempotent, so the finally's call is a no-op.
+            if prepared_launch is not None:
+                prepared_launch.cleanup()
+            ended += _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "bash_exec")
+            )
             return ended + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )
 
         if cancel_event is not None and cancel_event.is_set():
-            return "Execution cancelled." + (
+            # Cancelling does not make a refused host, or an unfinished cleanup,
+            # any less worth reporting.
+            if prepared_launch is not None:
+                prepared_launch.cleanup()
+            cancelled = "Execution cancelled." + _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "bash_exec")
+            )
+            return cancelled + (
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )
 
@@ -16292,21 +17310,54 @@ def _bash_exec(
             result = f"Exit code {proc.returncode}:\n{result}"
         # Same missing-path healing as _python_exec.
         hint = _missing_path_hint(result, workdir)
-        result = _defuse_sentinels(result)  # before the fit; see _python_exec
-        result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
-            if result.strip()
-            else "(no output)" + hint
-        )
+        if prepared_launch is not None:
+            prepared_launch.cleanup()  # before the result is final; see _python_exec
+        trailer = _network_denied_trailer(prepared_launch)
+        trailer += _isolation_cleanup_trailer(prepared_launch, "bash_exec")
+        trailer = _defuse_sentinels(trailer) if trailer else ""
+        if result.strip():
+            # Defused, then fitted with the trailer priced as part of the hint; see _python_exec.
+            result = _truncate(
+                _defuse_sentinels(result), workdir = spill_dir, scope = spill_scope, hint = hint + trailer
+            )
+        else:
+            result = "(no output)" + hint + trailer
         # Only for a chat that has an id (see _python_exec).
         if session_id:
-            result += _created_file_sentinels(workdir, _before, None, call_token)
+            result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
         return result
 
     except Exception as e:
+        # Cleanup first, like the success, timeout and cancellation paths: the
+        # finally below would run it after this return, so a failed ACL revoke
+        # or a leftover container temp would never reach the caller. A launch
+        # that failed on the way up is exactly when cleanup is most likely to
+        # have something to say.
+        if prepared_launch is not None:
+            prepared_launch.cleanup()
         # An exception message carries whatever the failure put in it, so it is capped
-        # like the result would have been.
-        return _truncate(f"Execution error: {e}")
+        # like the result would have been, with the trailers as its hint so an
+        # overrun cannot drop them.
+        return _truncate(
+            _tool_failure_message(e),
+            hint = _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "bash_exec")
+            ),
+        )
     finally:
         _call_finished(call_token)
+        if _scratch_name:
+            with _scratch_lock:
+                _active_scratch.discard(_scratch_name)
+        _release_batch_script(script_handle)
+        if script_path and os.path.exists(script_path):
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
         _forget_tool_pid(locals().get("proc"))
+        if run_marker is not None:
+            _sweep_marked_descendants(run_marker)
+        if prepared_launch is not None:
+            prepared_launch.cleanup()

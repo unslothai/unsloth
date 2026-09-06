@@ -180,7 +180,9 @@ def test_multiline_script_runs_every_line_on_windows():
             "done",
         ]
     )
-    out = tools._bash_exec(script)
+    # Native Windows is intentionally unqualified for ordinary OS-sandboxed
+    # execution. This regression owns the existing explicit bypass shell path.
+    out = tools._bash_exec(script, disable_sandbox = True)
     for expected in ("line 1 unsloth", "line 2 unsloth", "line 3 unsloth"):
         assert expected in out, out
 
@@ -427,3 +429,175 @@ def test_a_program_path_is_not_read_as_a_cmd_switch(monkeypatch, _windows_blockl
     # token as a flag, and never reach the shell name behind it.
     assert not tools._CMD_SWITCH_RE.fullmatch("/bin/bash")
     assert _screen_on_windows(monkeypatch, _WINDOWS_SHELLS[0], '/bin/bash -c "rm -rf x"') == {"rm"}
+
+
+def test_os_isolated_windows_launch_uses_cmd_even_with_bash(monkeypatch):
+    # MSYS2 bash cannot start inside an AppContainer, so the isolated launch
+    # runs cmd while every other mode keeps the bash the host has.
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\\Program Files\\Git\\bin\\bash.exe")
+    assert tools._get_shell_cmd("echo hi")[0].endswith("bash.exe")
+    assert tools._get_shell_cmd("echo hi", os_isolated = False)[0].endswith("bash.exe")
+    assert tools._get_shell_cmd("echo hi", os_isolated = True) == ["cmd", "/c", "echo hi"]
+    # The real launch hands cmd a batch file so every line of the command runs.
+    # `call`, not the bare path: inside the container cmd's search for a command
+    # named like a batch file is refused even when the file itself reads fine.
+    assert tools._get_shell_cmd(
+        "echo hi", os_isolated = True, script_path = r"C:\w\studio_exec_a.cmd"
+    ) == [
+        "cmd",
+        "/d",
+        "/c",
+        "call",
+        r"C:\w\studio_exec_a.cmd",
+    ]
+
+
+def test_isolated_batch_script_carries_every_line_with_echo_off(tmp_path):
+    path = tools._reserve_isolated_batch_script(str(tmp_path))
+    assert os.path.basename(path).startswith("studio_exec_") and path.endswith(".cmd")
+    # Reserving the name must not create the file: it is written only after the
+    # sandbox is prepared, so that it inherits the container's ACE.
+    assert not os.path.exists(path)
+    # On Windows the file is created through a handle that denies writers and
+    # that handle comes back for the caller to release; elsewhere an exclusive
+    # create is enough and there is nothing to hold.
+    handle = tools._write_isolated_batch_script("echo one\necho two\r\nexit /b 3", path)
+    assert (handle is None) is (sys.platform != "win32")
+    try:
+        with open(path, "rb") as reader:
+            body = reader.read()
+        assert body == b"@echo off\r\necho one\r\necho two\r\nexit /b 3\r\n"
+        # The name is never reused over an existing file.
+        with pytest.raises(OSError) as excinfo:
+            tools._write_isolated_batch_script("echo again", path)
+        assert isinstance(excinfo.value, FileExistsError) or excinfo.value.winerror == 80
+    finally:
+        tools._release_batch_script(handle)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "CreateFileW sharing is Windows only")
+def test_the_isolated_batch_script_is_unwritable_while_the_launch_holds_it(tmp_path):
+    # Creating and locking are one operation, so there is no window in which a
+    # concurrent call in the same chat workdir can swap the script under cmd.
+    path = tools._reserve_isolated_batch_script(str(tmp_path))
+    handle = tools._write_isolated_batch_script("echo held", path)
+    assert handle is not None
+    try:
+        # A reader (cmd) is admitted, every writer and the delete are refused.
+        with open(path, "rb") as reader:
+            assert reader.read() == b"@echo off\r\necho held\r\n"
+        with pytest.raises(PermissionError):
+            open(path, "wb").close()
+        with pytest.raises(PermissionError):
+            os.remove(path)
+    finally:
+        tools._release_batch_script(handle)
+    # Released with the launch: the caller can clean the file up afterwards.
+    os.remove(path)
+
+
+def test_os_isolated_description_names_cmd_only_on_windows_with_bash(monkeypatch):
+    specs = [dict(tools.TERMINAL_TOOL), dict(tools.PYTHON_TOOL)]
+    monkeypatch.setattr(tools.sys, "platform", "linux")
+    assert tools.apply_os_isolated_tool_descriptions(specs) is specs
+
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert tools.apply_os_isolated_tool_descriptions(specs) is specs
+
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\\Git\\bin\\bash.exe")
+    bash_tools = [
+        {
+            **tools.TERMINAL_TOOL,
+            "function": {
+                **tools.TERMINAL_TOOL["function"],
+                "description": "Run a command." + tools._TERMINAL_BASH_NOTE,
+            },
+        },
+        tools.PYTHON_TOOL,
+    ]
+    swapped = tools.apply_os_isolated_tool_descriptions(bash_tools)
+    assert swapped is not bash_tools
+    terminal = swapped[0]["function"]["description"]
+    assert "bash (Git for Windows)" not in terminal
+    assert "The shell is cmd, not bash" in terminal
+    assert swapped[1] is tools.PYTHON_TOOL
+    # The module constants are never mutated.
+    assert "The shell is cmd" not in bash_tools[0]["function"]["description"]
+
+
+def test_batch_script_lock_is_windows_only_and_never_raises(tmp_path, monkeypatch):
+    # Creating the script and denying every writer is one operation, and it is
+    # fail-closed: a host where the API refuses raises rather than running a
+    # script anyone could swap. Releasing a handle never raises, since it runs
+    # in the launch's finally.
+    monkeypatch.setattr(tools.sys, "platform", "linux")
+    tools._release_batch_script(None)
+    tools._release_batch_script(object())
+    monkeypatch.setattr(tools.sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_create_locked_batch_script", _raise_oserror)
+    with pytest.raises(OSError):
+        tools._write_isolated_batch_script("echo hi", str(tmp_path / "studio_exec_x.cmd"))
+    assert not list(tmp_path.iterdir())
+    tools._release_batch_script(object())
+
+
+def _raise_oserror(*args, **kwargs):
+    raise OSError("no WinDLL on this host")
+
+
+def test_a_replaced_python_script_is_refused_before_anything_runs(tmp_path):
+    # Both tool calls of one chat share a workdir the sandboxed process can
+    # write, so a second call could swap the first call's script between the
+    # write and the interpreter opening it, and the wrong code would run under
+    # the first call's tier and grant.
+    script = tmp_path / "studio_exec_victim.py"
+    script.write_text("print('victim')", encoding = "utf-8")
+    handle, identity = tools._seal_scratch_script(str(script))
+    try:
+        assert not tools._scratch_script_was_swapped(str(script), identity)
+        if sys.platform != "win32":
+            # Rewriting the same bytes in place is not a swap. Not on Windows,
+            # where the seal denies writers outright, which the branch below
+            # asserts.
+            script.write_text("print('victim')", encoding = "utf-8")
+            assert not tools._scratch_script_was_swapped(str(script), identity)
+        if sys.platform == "win32":
+            # Windows prevents it outright: the handle denies delete and write.
+            assert handle is not None
+            attacker = tmp_path / "attacker.py"
+            attacker.write_text("print('attacker')", encoding = "utf-8")
+            with pytest.raises(PermissionError):
+                os.replace(str(attacker), str(script))
+            with pytest.raises(PermissionError):
+                open(str(script), "w").close()
+        else:
+            # POSIX cannot prevent it, so it is detected: a replacement gets a
+            # new inode and the launch is refused.
+            assert identity is not None
+            attacker = tmp_path / "attacker.py"
+            attacker.write_text("print('attacker')", encoding = "utf-8")
+            os.replace(str(attacker), str(script))
+            assert tools._scratch_script_was_swapped(str(script), identity)
+    finally:
+        tools._release_batch_script(handle)
+    os.unlink(str(script))
+    if sys.platform != "win32":
+        # A script that vanished entirely is a swap too, never a silent pass.
+        # Windows records no identity, because there the handle prevents the
+        # swap outright, so there is nothing to re-check.
+        assert tools._scratch_script_was_swapped(str(script), identity)
+
+
+def test_the_python_launch_checks_the_script_after_preparing_it(tmp_path):
+    # The check has to sit between prepare_tool_launch and the spawn: earlier
+    # and a swap during preparation is missed, later and the child is already
+    # running someone else's code.
+    source = Path(tools.__file__).read_text(encoding = "utf-8")
+    body = source.split("def _python_exec(", 1)[1].split("def ", 1)[0]
+    seal = body.index("_seal_scratch_script(")
+    check = body.index("_scratch_script_was_swapped(")
+    prepare = body.index("prepare_tool_launch(")
+    spawn = body.index("popen_kwargs = dict(")
+    assert seal < prepare < check < spawn

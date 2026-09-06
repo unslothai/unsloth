@@ -2113,6 +2113,11 @@ class InferenceOrchestrator:
         stop: Optional[list] = None,
         reasoning_prefilled: bool = False,
         seed: Optional[int] = None,
+        tool_execution_mode: str = "os_isolation_required",
+        current_subject: Optional[str] = None,
+        tool_ui_session_id: Optional[str] = None,
+        limited_grant: Optional[str] = None,
+        network_policy: str = "deny",
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process,
@@ -2238,6 +2243,11 @@ class InferenceOrchestrator:
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
             generation_stats_holder = turn_stats,
+            tool_execution_mode = tool_execution_mode,
+            current_subject = current_subject,
+            tool_ui_session_id = tool_ui_session_id,
+            limited_grant = limited_grant,
+            network_policy = network_policy,
         )
 
     def generate_with_adapter_control(

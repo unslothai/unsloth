@@ -1,0 +1,312 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Studio Tool Isolation CI
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/core/inference/**'
+      - 'studio/backend/models/inference.py'
+      - 'studio/backend/routes/inference.py'
+      - 'studio/backend/tests/test_os_sandbox.py'
+      - 'studio/backend/tests/test_macos_seatbelt.py'
+      - 'studio/backend/tests/test_windows_lpac.py'
+      - 'studio/backend/tests/test_windows_restricted_token.py'
+      - 'studio/backend/tests/test_windows_bash_shell.py'
+      - 'studio/backend/tests/test_network_proxy.py'
+      - 'studio/backend/tests/test_network_allowlist_tools.py'
+      - 'studio/backend/tests/test_sandbox_startup_notice.py'
+      - 'studio/backend/tests/test_tool_isolation_api.py'
+      - 'studio/backend/tests/test_tool_output_streaming.py'
+      - 'studio/backend/tests/test_studio_tool_loop.py'
+      - 'studio/backend/tests/test_safetensors_tool_loop.py'
+      - 'studio/backend/tests/test_tool_loop_controller.py'
+      - 'studio/frontend/**'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/workflows/studio-tool-isolation-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  linux-bubblewrap:
+    name: ${{ matrix.runner }} native Linux Protected qualification
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 ships bubblewrap 0.6.1, which predates --disable-userns:
+          # the seccomp fallback must qualify here.
+          - runner: ubuntu-22.04
+            apparmor_profile: false
+            expect_limitation: nested_userns_blocked_by_seccomp
+          # Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor by
+          # default; without the profile the backend must explain and fail closed,
+          # with it the full Protected path runs.
+          - runner: ubuntu-24.04
+            apparmor_profile: true
+            expect_limitation: ''
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Bubblewrap and test dependencies
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: 2
+          RETRY_ATTEMPT_TIMEOUT: 120
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo apt-get update
+          bash .github/scripts/retry-with-apt-lock.sh sudo apt-get install -y bubblewrap
+          bwrap --version
+          python -m pip install --upgrade pip
+          python -m pip install -r studio/backend/requirements/studio.txt
+          python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth requests 'numpy<3' pytest pytest-asyncio httpx
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
+          python -m pip install 'transformers>=4.51,<5.5'
+      - name: Without an AppArmor profile the backend explains itself and fails closed
+        if: matrix.apparmor_profile
+        working-directory: studio/backend
+        run: |
+          python - <<'PY'
+          from core.inference.os_sandbox import capability_snapshot
+          capability = capability_snapshot(force=True)
+          print(capability)
+          restricted = open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read().strip() == "1"
+          if restricted:
+              assert not capability.available, capability
+              assert capability.protection_state == "unavailable", capability
+              assert "AppArmor" in capability.reason, capability
+              assert "/etc/apparmor.d/bwrap" in capability.remediation, capability
+          else:
+              print("host does not restrict user namespaces; nothing to explain")
+          PY
+      - name: Allow Bubblewrap through AppArmor (the documented remediation)
+        if: matrix.apparmor_profile
+        run: |
+          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' '' 'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '  include if exists <local/bwrap>' '}' | sudo tee /etc/apparmor.d/bwrap
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap
+      - name: Require native Linux Protected qualification
+        working-directory: studio/backend
+        env:
+          EXPECT_LIMITATION: ${{ matrix.expect_limitation }}
+        run: |
+          python - <<'PY'
+          import os, time
+          from core.inference.os_sandbox import capability_snapshot
+          started = time.monotonic()
+          capability = capability_snapshot(force=True)
+          print(f"probe took {time.monotonic() - started:.2f}s")
+          print(capability)
+          assert capability.environment == "native_linux", capability
+          assert capability.qualified, capability
+          assert capability.protection_state == "protected", capability
+          expected = os.environ.get("EXPECT_LIMITATION", "")
+          if expected:
+              assert expected in capability.limitations, capability
+          else:
+              assert "nested_userns_blocked_by_seccomp" not in capability.limitations, capability
+          PY
+      - name: Live enforcement and shared regression tests
+        working-directory: studio/backend
+        run: |
+          python -m pytest -q -s --tb=short \
+            tests/test_os_sandbox.py \
+            tests/test_network_proxy.py \
+            tests/test_network_allowlist_tools.py \
+            tests/test_sandbox_startup_notice.py \
+            tests/test_tool_isolation_api.py \
+            tests/test_full_access_tool_prompt.py \
+            tests/test_tool_output_streaming.py \
+            tests/test_studio_tool_loop.py \
+            tests/test_safetensors_tool_loop.py \
+            tests/test_tool_loop_controller.py
+
+  windows-lpac:
+    name: ${{ matrix.runner }} LPAC Preview qualification
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r studio/backend/requirements/studio.txt
+          python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth requests 'numpy<3' pytest pytest-asyncio httpx
+          python -m pip install 'torch>=2.4,<2.11' 'transformers>=4.51,<5.5'
+      - name: Report the Windows capability state
+        shell: pwsh
+        working-directory: studio/backend
+        run: |
+          python -c "from core.inference.os_sandbox import capability_snapshot; c=capability_snapshot(force=True); print(c); assert c.environment == 'windows', c; open(r'$env:GITHUB_STEP_SUMMARY', 'a', encoding='utf-8').write(f'Windows capability: backend={c.backend} state={c.protection_state} profile={c.profile_id} qualified={c.qualified}\n\nreason: {c.reason}\n'); assert c.available and c.qualified and c.protection_state == 'preview', c; assert c.profile_id in ('windows-lpac-preview-v1', 'windows-appcontainer-preview-v1'), c"
+      - name: Run Windows enforcement and shared regression tests
+        # Runs whatever the probe reported: the suites skip the live legs when
+        # no backend qualifies, so a regression in the shared tool paths is
+        # visible even on a host that cannot sandbox.
+        working-directory: studio/backend
+        shell: pwsh
+        run: >-
+          python -m pytest -q -s --tb=short
+          tests/test_windows_lpac.py
+          tests/test_windows_restricted_token.py
+          tests/test_windows_bash_shell.py
+          tests/test_os_sandbox.py
+          tests/test_network_proxy.py
+          tests/test_tool_isolation_api.py
+          tests/test_full_access_tool_prompt.py
+          tests/test_tool_output_streaming.py
+          tests/test_studio_tool_loop.py
+          tests/test_safetensors_tool_loop.py
+          tests/test_tool_loop_controller.py
+
+  macos-seatbelt:
+    name: ${{ matrix.runner }} Seatbelt Preview qualification
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            install_torch: true
+          - runner: macos-15-intel
+            install_torch: false
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r studio/backend/requirements/studio.txt
+          python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth requests 'numpy<3' pytest pytest-asyncio httpx
+          python -m pip install 'transformers>=4.51,<5.5'
+      - name: Install PyTorch where a supported wheel exists
+        if: matrix.install_torch
+        run: python -m pip install 'torch>=2.4,<2.11'
+      - name: Require production Seatbelt Preview and disclosed limitations
+        working-directory: studio/backend
+        run: |
+          python - <<'PY'
+          from core.inference.os_sandbox import capability_snapshot
+          capability = capability_snapshot(force=True)
+          print(capability)
+          assert capability.backend == "macos-seatbelt", capability
+          assert capability.available, capability
+          assert not capability.qualified, capability
+          assert capability.protection_state == "preview", capability
+          assert "deprecated_undocumented_sbpl" in capability.limitations, capability
+          assert "detached_descendant_cleanup_unverified" in capability.limitations, capability
+          assert "pytorch_posix_shm_namespace_shared" in capability.limitations, capability
+          PY
+      - name: Run Seatbelt enforcement and shared regression tests
+        working-directory: studio/backend
+        run: |
+          python -m pytest -q -s --tb=short \
+            tests/test_macos_seatbelt.py \
+            tests/test_os_sandbox.py \
+            tests/test_network_proxy.py \
+            tests/test_network_allowlist_tools.py \
+            tests/test_sandbox_startup_notice.py \
+            tests/test_tool_isolation_api.py \
+            tests/test_full_access_tool_prompt.py \
+            tests/test_tool_output_streaming.py \
+            tests/test_studio_tool_loop.py \
+            tests/test_safetensors_tool_loop.py \
+            tests/test_tool_loop_controller.py
+
+  nested-container:
+    name: Container Bubblewrap live qualification and tool paths
+    runs-on: ubuntu-22.04
+    container:
+      image: ubuntu:24.04
+      options: --privileged
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Bubblewrap and test dependencies in the outer container
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: 2
+          RETRY_ATTEMPT_TIMEOUT: 120
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh apt-get update
+          bash .github/scripts/retry-with-apt-lock.sh apt-get install -y bubblewrap python3 python3-pip python3-venv
+          python3 -m venv /opt/tool-isolation-venv
+          echo "/opt/tool-isolation-venv/bin" >> "$GITHUB_PATH"
+          /opt/tool-isolation-venv/bin/python -m pip install --upgrade pip
+          /opt/tool-isolation-venv/bin/python -m pip install -r studio/backend/requirements/studio.txt
+          /opt/tool-isolation-venv/bin/python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth unpdf requests 'numpy<3' pytest pytest-asyncio httpx
+          /opt/tool-isolation-venv/bin/python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
+          /opt/tool-isolation-venv/bin/python -m pip install 'transformers>=4.51,<5.5'
+      - name: Require a container-qualified Preview backend
+        working-directory: studio/backend
+        run: |
+          python - <<'PY'
+          from core.inference.os_sandbox import capability_snapshot
+          capability = capability_snapshot(force=True)
+          print(capability)
+          assert capability.environment == "container", capability
+          assert capability.qualified, capability
+          assert capability.protection_state == "preview", capability
+          PY
+      - name: Focused backend and live enforcement tests
+        working-directory: studio/backend
+        run: |
+          python -m pytest -q -s --tb=short \
+            tests/test_os_sandbox.py \
+            tests/test_tool_isolation_api.py \
+            tests/test_full_access_tool_prompt.py \
+            tests/test_tool_output_streaming.py \
+            tests/test_studio_tool_loop.py \
+            tests/test_safetensors_tool_loop.py \
+            tests/test_tool_loop_controller.py
+
+  frontend:
+    name: Frontend consent and execution-record UX
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: studio/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: node --experimental-strip-types --test tests/tool-isolation-adapter.test.ts

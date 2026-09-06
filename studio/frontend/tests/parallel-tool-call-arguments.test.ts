@@ -25,6 +25,10 @@ import {
   mintStreamedToolCallId,
   resolveToolCallPartId,
 } from "../src/features/chat/tool-call-id.ts";
+import {
+  discardAuthoritativeExecutionRecord,
+  stripUntrustedExecutionMetadata,
+} from "../src/features/chat/types/api.ts";
 
 test("a slot holding one object is left as one object", () => {
   assert.deepEqual(splitTopLevelJsonObjects('{"url":"a"}'), {
@@ -273,6 +277,11 @@ function makeStream(mintPartIds = false): {
     "mintStreamedToolCallId",
     "bindStreamedToolCallCard",
     "resolveToolCallPartId",
+    "discardAuthoritativeExecutionRecord",
+    "stripUntrustedExecutionMetadata",
+    // The lifted loop files launch records under the run's pane+thread(+message) scope.
+    "toolOutputPaneScope",
+    "executionRecordScope",
     js,
   )(
     splitTopLevelJsonObjects,
@@ -282,6 +291,10 @@ function makeStream(mintPartIds = false): {
     mintStreamedToolCallId,
     bindStreamedToolCallCard,
     resolveToolCallPartId,
+    discardAuthoritativeExecutionRecord,
+    stripUntrustedExecutionMetadata,
+    "test-pane\u0000test-thread",
+    "test-pane\u0000test-thread\u0000test-message",
   ) as {
     feed: (batch: DeltaCall[], finished?: boolean) => boolean;
     parts: LoopPart[];

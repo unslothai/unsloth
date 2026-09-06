@@ -32,6 +32,7 @@ from core.inference.tools import (
     TERMINAL_TOOL,
     TERMINAL_TOOL_FULL_ACCESS,
     apply_full_access_tool_descriptions,
+    apply_limited_tool_descriptions,
 )
 from models.inference import ChatCompletionRequest, ChatCountTokensRequest
 from routes.inference import (
@@ -223,6 +224,18 @@ def test_swap_is_a_no_op_without_the_sandboxed_builtins():
     assert apply_full_access_tool_descriptions([]) == []
 
 
+def test_limited_descriptions_state_the_real_host_boundary_without_mutation():
+    before = list(ALL_TOOLS)
+    limited = apply_limited_tool_descriptions(list(ALL_TOOLS))
+    for name in ("python", "terminal"):
+        description = _desc(_named(limited, name))
+        assert "without OS isolation" in description
+        assert "may access anything available to the Studio process" in description
+        assert "in a sandbox" not in description
+        assert "absolute paths" in description
+    assert ALL_TOOLS == before
+
+
 # ── Request-level selection ───────────────────────────────────────────
 
 
@@ -248,6 +261,13 @@ def test_non_full_modes_keep_the_sandboxed_schemas(mode):
 def test_omitted_mode_keeps_the_sandboxed_schemas():
     tools = _select()
     assert _desc(_named(tools, "python")) == _desc(PYTHON_TOOL)
+    assert _desc(_named(tools, "terminal")) == _desc(TERMINAL_TOOL)
+
+
+def test_limited_mode_uses_honest_model_visible_descriptions():
+    selected = _select(tool_execution_mode = "limited")
+    assert "without OS isolation" in _desc(_named(selected, "python"))
+    assert "without OS isolation" in _desc(_named(selected, "terminal"))
 
 
 @pytest.mark.parametrize(

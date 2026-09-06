@@ -124,19 +124,23 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
 
 
 def stream_tool_execution(
-    invoke: Callable[[Callable[[str], None]], str],
+    invoke: Callable[..., str],
     *,
     tool_name: str,
     tool_call_id: str = "",
     cancel_event: Any = None,
+    launch_event_factory: Callable[[Any], dict[str, Any]] | None = None,
     heartbeat_interval_s: float = TOOL_HEARTBEAT_INTERVAL_S,
     poll_interval_s: float = _POLL_INTERVAL_S,
 ) -> Generator[dict, None, str]:
     """Run ``invoke(output_callback)`` in a thread; yield live events; return the result.
 
     ``invoke`` receives a thread-safe ``callable(str)`` it may call with
-    incremental output chunks (or ignore entirely). Exceptions raised by the
-    tool propagate to the caller unchanged after the worker thread finishes.
+    incremental output chunks (or ignore entirely). When ``launch_event_factory``
+    is supplied, ``invoke`` also receives a second callback. Calling it places the
+    factory-built event in the same FIFO as output, so launch metadata is always
+    yielded before any output produced after launch. Exceptions raised by the tool
+    propagate to the caller unchanged after the worker thread finishes.
 
     ``cancel_event`` is the request-level cancellation signal already handed to
     the tool. If the consumer closes this generator early (an SSE disconnect
@@ -170,9 +174,17 @@ def stream_tool_execution(
             accepted_output_chars += len(accepted)
         output_queue.put(accepted)
 
+    def _on_launch(record: Any) -> None:
+        if launch_event_factory is None:
+            return
+        output_queue.put(launch_event_factory(record))
+
     def _run() -> None:
         try:
-            outcome["result"] = invoke(_on_output)
+            if launch_event_factory is None:
+                outcome["result"] = invoke(_on_output)
+            else:
+                outcome["result"] = invoke(_on_output, _on_launch)
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller side
             outcome["error"] = exc
         finally:
@@ -238,6 +250,11 @@ def stream_tool_execution(
 
             if item is done_sentinel:
                 break
+
+            if isinstance(item, dict):
+                idle_polls = 0
+                yield item
+                continue
 
             if stream_capped:
                 # Past the cap: drop this chunk and every queued sibling (see _drain_and_drop). Pace with one time.sleep

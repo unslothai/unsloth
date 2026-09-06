@@ -13,6 +13,7 @@ import {
   useChatPreferencesStore,
   useToolAwaitingApproval,
   useToolOutputFor,
+  useToolExecutionRecordFor,
   useToolPaneScope,
 } from "@/features/chat";
 import { stringifyToolResult } from "@/lib/strip-ansi";
@@ -24,6 +25,9 @@ import { pythonToolImagePath } from "./python-tool-image-path";
 import { useSandboxImage } from "./use-sandbox-image";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { toolArgText } from "./tool-arg-text";
+import {
+  toolExecutionRecordLabel,
+} from "@/features/chat/types/api";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
@@ -83,6 +87,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   status,
 }) => {
   const code = toolArgText((args as { code?: unknown })?.code);
+  const executionLabel = toolExecutionRecordLabel(
+    useToolExecutionRecordFor(toolCallId),
+  );
   const firstLine = code.split("\n")[0]?.slice(0, 60) ?? "";
   const isRunning = status?.type === "running";
   // Args still streaming = the model is WRITING the code, not running it yet.
@@ -150,6 +157,14 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
         status={status}
         icon={CodeIcon}
       />
+      {executionLabel ? (
+        <div
+          data-slot="tool-execution-protection"
+          className="ml-5 w-fit rounded-full border border-border px-2 py-0.5 text-ui-11 text-muted-foreground"
+        >
+          {executionLabel}
+        </div>
+      ) : null}
       {!collapseByDefault && scriptCell}
       <ToolFallbackContent>
         {collapseByDefault && scriptCell}

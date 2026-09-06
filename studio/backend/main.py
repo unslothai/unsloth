@@ -667,6 +667,15 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         pass
 
+    # The first sandbox capability probe on a cold host scans the system roots and
+    # can take up to two minutes. Pay it here, in a daemon thread, so the first
+    # Python or terminal tool call does not; the result caches inside os_sandbox.
+    try:
+        from core.inference.sandbox_startup import start_sandbox_capability_warmup
+        start_sandbox_capability_warmup()
+    except Exception:  # noqa: BLE001 -- warming is best effort, never blocks startup
+        pass
+
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
     if overlay_dir.is_dir():

@@ -29,6 +29,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
 from typing import (
+    Annotated,
     Any,
     Callable,
     Collection,
@@ -42,6 +43,7 @@ from typing import (
 import functools
 import json
 import httpx
+from datetime import datetime, timezone
 from loggers import get_logger
 import asyncio
 import contextvars
@@ -107,6 +109,11 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.tool_isolation import (
+    LimitedGrantError,
+    capability_snapshot as tool_isolation_capability_snapshot,
+    issue_limited_grant,
+)
 
 
 def _positive_int_or_none(value: Any) -> Optional[int]:
@@ -3014,6 +3021,9 @@ from models.inference import (
     ChatCompletionChunk,
     ChatCompletion,
     ToolConfirmRequest,
+    ToolIsolationCapabilityResponse,
+    ToolIsolationLimitedGrantRequest,
+    ToolIsolationLimitedGrantResponse,
     ChatMessage,
     ChunkChoice,
     ChoiceDelta,
@@ -3074,7 +3084,13 @@ from core.inference.anthropic_compat import (
     AnthropicPassthroughEmitter,
 )
 from auth import storage as auth_storage
-from auth.authentication import API_KEY_PREFIX, get_current_subject
+from auth.authentication import (
+    API_KEY_PREFIX,
+    authenticated_via_api_key,
+    get_current_subject,
+    require_ui_session_for_local_commands,
+    UI_ONLY_ACTION_DETAIL,
+)
 from state import active_generations
 
 
@@ -3238,6 +3254,7 @@ if TYPE_CHECKING:
 router = APIRouter()
 # Unsloth-only router (not mounted on /v1 OpenAI-compat).
 studio_router = APIRouter()
+_ToolIsolationViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
 # Packaged desktop runs at tauri://localhost (macOS/Linux) or http://tauri.localhost
@@ -4840,6 +4857,8 @@ async def _select_request_tools(
     from core.inference.tools import (
         ALL_TOOLS,
         apply_full_access_tool_descriptions,
+        apply_limited_tool_descriptions,
+        apply_os_isolated_tool_descriptions,
         get_enabled_mcp_tools,
     )
 
@@ -4880,6 +4899,12 @@ async def _select_request_tools(
     # how that server runs.
     if payload.bypass_permissions:
         tools = apply_full_access_tool_descriptions(tools)
+    elif getattr(payload, "tool_execution_mode", "os_isolation_required") == "limited":
+        tools = apply_limited_tool_descriptions(tools)
+    else:
+        tools = apply_os_isolated_tool_descriptions(
+            tools, network_allowlist = _requested_network_allowlist(payload)
+        )
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     # getattr: callers hand in lighter payload objects than the request models, not all of
@@ -15889,6 +15914,101 @@ async def confirm_tool_call(
     return {"resolved": True}
 
 
+def _requested_network_allowlist(payload: Any) -> list[str] | None:
+    """Hosts an allowlist-policy Required turn may reach, else None.
+
+    Only Required mode can enforce a network policy, and the model should hear
+    about the allowlist only when this host's backend can honour it. Nothing here
+    forces a probe: the cached capability is enough for a description, and the
+    launch itself re-checks before opening any proxy.
+    """
+    if getattr(payload, "tool_network_policy", "deny") != "allowlist":
+        return None
+    if getattr(payload, "tool_execution_mode", "os_isolation_required") != "os_isolation_required":
+        return None
+    if bool(getattr(payload, "bypass_permissions", False)):
+        return None
+    try:
+        capability = tool_isolation_capability_snapshot(force = False)
+    except Exception:
+        logger.exception("tool_isolation.capability_probe_failed")
+        return None
+    policies = tuple(getattr(capability, "network_policies", ()) or ())
+    if "allowlist" not in policies:
+        return None
+    return list(getattr(capability, "network_allowlist", ()) or ())
+
+
+def _read_tool_isolation_capability(*, force: bool) -> Any:
+    try:
+        return tool_isolation_capability_snapshot(force = force)
+    except Exception:
+        logger.exception("tool_isolation.capability_probe_failed")
+        raise HTTPException(
+            status_code = 503,
+            detail = {
+                "code": "CAPABILITY_PROBE_FAILED",
+                "message": "Tool-isolation capability could not be established.",
+                "retryable": True,
+            },
+        )
+
+
+@studio_router.get("/tool-isolation/capability", response_model = ToolIsolationCapabilityResponse)
+def get_tool_isolation_capability(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: _ToolIsolationViaApiKey = False,
+):
+    require_ui_session_for_local_commands(via_api_key, UI_ONLY_ACTION_DETAIL)
+    return _read_tool_isolation_capability(force = True)
+
+
+@studio_router.post(
+    "/tool-isolation/limited-grant", response_model = ToolIsolationLimitedGrantResponse
+)
+def create_tool_isolation_limited_grant(
+    request: ToolIsolationLimitedGrantRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: _ToolIsolationViaApiKey = False,
+):
+    require_ui_session_for_local_commands(via_api_key, UI_ONLY_ACTION_DETAIL)
+    snapshot = _read_tool_isolation_capability(force = True)
+    if request.probe_generation != snapshot.probe_generation:
+        raise HTTPException(
+            status_code = 409,
+            detail = {
+                "code": "CAPABILITY_CHANGED",
+                "message": "Tool-isolation capability changed; review it before using Limited mode.",
+                "retryable": True,
+            },
+        )
+    if snapshot.available:
+        raise HTTPException(
+            status_code = 409,
+            detail = {
+                "code": "OS_ISOLATION_AVAILABLE",
+                "message": "OS isolation is available; Limited mode was not granted.",
+                "retryable": False,
+            },
+        )
+    try:
+        grant = issue_limited_grant(
+            current_subject = current_subject,
+            tool_ui_session_id = request.ui_session_id,
+            probe_generation = snapshot.probe_generation,
+        )
+    except LimitedGrantError as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = {"code": exc.code, "message": str(exc), "retryable": False},
+        ) from exc
+    return ToolIsolationLimitedGrantResponse(
+        grant = grant.token,
+        expires_at = datetime.fromtimestamp(grant.expires_at, tz = timezone.utc).isoformat(),
+        probe_generation = grant.probe_generation,
+    )
+
+
 @studio_router.get("/monitor")
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
@@ -19604,6 +19724,9 @@ async def _proxy_to_external_provider(
                 response_format = _extract_response_format(payload),
                 tool_choice = payload.tool_choice,
                 continue_final_message = _continue_final_message(payload),
+                current_subject = current_subject,
+                tool_ui_session_id = payload.tool_ui_session_id,
+                limited_grant = payload.limited_grant,
             )
             policy = (
                 CodexToolPolicy(
@@ -19617,6 +19740,8 @@ async def _proxy_to_external_provider(
                     permission_mode = payload.permission_mode or "auto",
                     confirm_calls = _permission_mode_confirm(payload),
                     bypass_permissions = bool(payload.bypass_permissions),
+                    tool_execution_mode = payload.tool_execution_mode,
+                    network_policy = payload.tool_network_policy,
                     rag_scope = payload.rag_scope,
                     nudge_tool_calls = payload.nudge_tool_calls,
                 )
@@ -19933,6 +20058,9 @@ async def _proxy_to_external_provider(
                     model = model,
                     tool_choice = payload.tool_choice,
                     continue_final_message = _continue_final_message(payload),
+                    current_subject = current_subject,
+                    tool_ui_session_id = payload.tool_ui_session_id,
+                    limited_grant = payload.limited_grant,
                 ),
                 policy = ToolLoopPolicy(
                     tools = external_studio_tools,
@@ -19945,6 +20073,8 @@ async def _proxy_to_external_provider(
                     permission_mode = payload.permission_mode or "auto",
                     confirm_calls = _permission_mode_confirm(payload),
                     bypass_permissions = bool(payload.bypass_permissions),
+                    tool_execution_mode = payload.tool_execution_mode,
+                    network_policy = payload.tool_network_policy,
                     rag_scope = payload.rag_scope,
                     auto_heal = payload.auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
@@ -21555,6 +21685,11 @@ async def produce_openai_chat_completions(
                     confirm_tool_calls = _effective_confirm and not bool(payload.bypass_permissions),
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
+                    tool_execution_mode = payload.tool_execution_mode,
+                    network_policy = payload.tool_network_policy,
+                    current_subject = current_subject,
+                    tool_ui_session_id = payload.tool_ui_session_id,
+                    limited_grant = payload.limited_grant,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
                     context_overflow = _rolling_context_policy(payload),
@@ -23263,6 +23398,11 @@ async def produce_openai_chat_completions(
                 confirm_tool_calls = _sf_effective_confirm and not bool(payload.bypass_permissions),
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = payload.permission_mode,
+                tool_execution_mode = payload.tool_execution_mode,
+                network_policy = payload.tool_network_policy,
+                current_subject = current_subject,
+                tool_ui_session_id = payload.tool_ui_session_id,
+                limited_grant = payload.limited_grant,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
                 reasoning_prefilled = _sf_reasoning_prefilled,
@@ -26463,6 +26603,12 @@ def _build_chat_request(
     chat_kwargs: dict = dict(
         messages = messages,
         stream = stream,
+        tool_execution_mode = payload.tool_execution_mode,
+        tool_network_policy = payload.tool_network_policy,
+        limited_grant = payload.limited_grant,
+        tool_ui_session_id = payload.tool_ui_session_id,
+        permission_mode = payload.permission_mode,
+        bypass_permissions = payload.bypass_permissions,
     )
     # Only forward an explicitly set model so an omitted Responses model stays
     # reload-only when openai_chat_completions re-checks on the non-streaming path.
@@ -29429,7 +29575,12 @@ async def anthropic_messages(
                     err_type = "invalid_request_error",
                 ),
             )
-        from core.inference.tools import ALL_TOOLS, apply_full_access_tool_descriptions
+        from core.inference.tools import (
+            ALL_TOOLS,
+            apply_full_access_tool_descriptions,
+            apply_limited_tool_descriptions,
+            apply_os_isolated_tool_descriptions,
+        )
 
         # ask/auto (and an omitted mode selecting a gate-needing terminal/python
         # tool) were already rejected before the auto-switch above, so an invalid
@@ -29447,6 +29598,12 @@ async def anthropic_messages(
         _full_access = bool(getattr(payload, "bypass_permissions", False))
         if _full_access:
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        elif getattr(payload, "tool_execution_mode", "os_isolation_required") == "limited":
+            openai_tools = apply_limited_tool_descriptions(openai_tools)
+        else:
+            openai_tools = apply_os_isolated_tool_descriptions(
+                openai_tools, network_allowlist = _requested_network_allowlist(payload)
+            )
 
         server_tool_choice = openai_tool_choice
         if isinstance(server_tool_choice, dict):
@@ -29528,6 +29685,11 @@ async def anthropic_messages(
                 disable_parallel_tool_use = _disable_parallel,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),
+                tool_execution_mode = payload.tool_execution_mode,
+                network_policy = payload.tool_network_policy,
+                current_subject = current_subject,
+                tool_ui_session_id = payload.tool_ui_session_id,
+                limited_grant = payload.limited_grant,
                 promote_reasoning_only = False,
                 perf_callback = _monitor_perf_callback(
                     monitor_id,

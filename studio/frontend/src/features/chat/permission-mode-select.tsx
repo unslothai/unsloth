@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
+import {
+  ChevronDown,
+  CircleAlert,
+  Globe,
+  Hand,
+  RefreshCw,
+  ShieldCheck,
+} from "lucide-react";
 import type { ComponentType } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   AlertDialog,
@@ -21,6 +28,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -32,6 +40,16 @@ import {
   type PermissionMode,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import {
+  type ToolIsolationCapability,
+  toolIsolationPresentation,
+} from "./tool-isolation";
+import {
+  TOOL_ISOLATION_LIMITATION_TEXT,
+  limitedBackendLabel,
+  networkAllowlistSummary,
+} from "./tool-isolation-labels";
+import { capabilityOffersNetworkAllowlist } from "./utils/tool-network-policy";
 
 /** Permission levels for tool calls. Full access stays last because it disables both approval
  *  prompts and the code sandbox. */
@@ -73,6 +91,23 @@ export const PERMISSION_MODE_OPTIONS: readonly {
 export const FULL_ACCESS_WARNING =
   "Full access lets tool calls run without approval prompts or the code sandbox. They can modify or delete files, run commands, and make network requests. Enable it only when you trust the current task.";
 
+export const TOOL_ISOLATION_UNAVAILABLE_WARNING =
+  "OS isolation isn’t available in this environment. Python and Terminal can run with Unsloth’s software safeguards, but they may access anything available to the Studio process.";
+
+const TOOL_ISOLATION_RESTRICTED_TOKEN_NOTE =
+  "On this Windows host, Limited runs under a restricted token: writes outside the sandbox directory are refused, but files readable by your account, the network and other processes stay reachable.";
+
+/** The Limited consent text for this host: the generic warning, plus what the Windows
+ *  restricted token adds when the backend reports it. */
+function limitedModeWarning(
+  capability: Pick<ToolIsolationCapability, "limited_backend"> | null,
+): string {
+  if (capability?.limited_backend === "windows-restricted-token") {
+    return `${TOOL_ISOLATION_UNAVAILABLE_WARNING} ${TOOL_ISOLATION_RESTRICTED_TOKEN_NOTE}`;
+  }
+  return TOOL_ISOLATION_UNAVAILABLE_WARNING;
+}
+
 export function permissionModeOption(mode: PermissionMode) {
   return (
     PERMISSION_MODE_OPTIONS.find((option) => option.value === mode) ??
@@ -82,8 +117,22 @@ export function permissionModeOption(mode: PermissionMode) {
   );
 }
 
-/** The option rows shared by every permission dropdown or submenu. Non-full levels apply
- *  directly; picking Full access must go through the caller's danger confirmation. */
+function useToolIsolationCapabilityRefresh() {
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+  const loading = useChatRuntimeStore((s) => s.toolIsolationCapabilityLoading);
+  const error = useChatRuntimeStore((s) => s.toolIsolationError);
+  const refresh = useChatRuntimeStore((s) => s.refreshToolIsolationCapability);
+
+  useEffect(() => {
+    if (!capability && !loading && !error) {
+      refresh().catch(() => undefined);
+    }
+  }, [capability, error, loading, refresh]);
+}
+
+/** The option rows shared by every permission dropdown/submenu. Non-full
+ *  levels apply directly; picking Full access must go through the caller's
+ *  danger confirmation, so it's a separate callback. */
 export function PermissionModeMenuItems({
   onRequestFullAccess,
 }: {
@@ -151,9 +200,7 @@ export function FullAccessConfirmDialog({
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
           <AlertDialogTitle>Enable Full access?</AlertDialogTitle>
-          <AlertDialogDescription>
-            {FULL_ACCESS_WARNING}
-          </AlertDialogDescription>
+          <AlertDialogDescription>{FULL_ACCESS_WARNING}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -173,8 +220,265 @@ export function FullAccessConfirmDialog({
   );
 }
 
-/** Select-style dropdown (like the MCP composer menu) for picking the permission level. Used in
- *  General settings and the chat settings sheet. */
+function ToolIsolationMenuSection({
+  onRequestLimited,
+}: {
+  onRequestLimited: () => void;
+}) {
+  useToolIsolationCapabilityRefresh();
+  const mode = useChatRuntimeStore((s) => s.toolExecutionMode);
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+  const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
+  const loading = useChatRuntimeStore((s) => s.toolIsolationCapabilityLoading);
+  const error = useChatRuntimeStore((s) => s.toolIsolationError);
+  const refresh = useChatRuntimeStore((s) => s.refreshToolIsolationCapability);
+  const setMode = useChatRuntimeStore((s) => s.setToolExecutionMode);
+  const networkPolicy = useChatRuntimeStore((s) => s.toolNetworkPolicy);
+  const setNetworkPolicy = useChatRuntimeStore((s) => s.setToolNetworkPolicy);
+  const presentation = toolIsolationPresentation(mode, capability, grant);
+
+  const unavailable =
+    presentation.state === "unavailable" &&
+    capability?.protection_state === "unavailable";
+  const osIsolated =
+    presentation.state === "protected" || presentation.state === "preview";
+  // The toggle exists only where the backend can enforce it (Linux and macOS today); a Windows
+  // or older backend never advertises "allowlist" and shows nothing here.
+  const offersAllowlist =
+    osIsolated && capabilityOffersNetworkAllowlist(capability);
+  const limitedBackend = limitedBackendLabel(
+    capability?.limited_backend ?? null,
+  );
+  const showLimitedFacts = presentation.state === "limited" || unavailable;
+  // A host whose Limited tier is more than the software safeguards (the Windows
+  // write-restricted token) says so even while OS isolation works, so the cost of
+  // choosing Limited can be read before isolation breaks or Limited is active.
+  const showLimitedTier = showLimitedFacts || limitedBackend !== null;
+
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <div className="space-y-2 px-3 py-2.5" aria-live="polite">
+        <div className="flex items-start gap-2">
+          <ShieldCheck
+            className={cn(
+              "mt-0.5 size-4 shrink-0",
+              presentation.state === "unavailable" && "text-destructive",
+              presentation.state === "limited" && "text-amber-600",
+              presentation.state === "full" && "text-bypass",
+            )}
+            strokeWidth={2}
+          />
+          <div className="min-w-0 space-y-1">
+            <p className="text-ui-13 font-medium leading-tight">
+              {loading ? "Checking OS isolation…" : presentation.label}
+            </p>
+            <p className="text-xs leading-snug text-muted-foreground">
+              {presentation.description}
+            </p>
+          </div>
+        </div>
+        {capability ? (
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            <dt>Environment</dt>
+            <dd className="truncate text-right text-foreground/80">
+              {capability.environment}
+            </dd>
+            <dt>Backend</dt>
+            <dd className="truncate text-right text-foreground/80">
+              {capability.backend ?? "None qualified"}
+            </dd>
+            {capability.profile_id ? (
+              <>
+                <dt>Profile</dt>
+                <dd className="truncate text-right text-foreground/80">
+                  {capability.profile_id}
+                </dd>
+              </>
+            ) : null}
+            {osIsolated ? (
+              <>
+                <dt>Network</dt>
+                <dd className="truncate text-right text-foreground/80">
+                  {offersAllowlist && networkPolicy === "allowlist"
+                    ? "Allowlist"
+                    : "Off"}
+                </dd>
+              </>
+            ) : null}
+            {showLimitedTier && limitedBackend ? (
+              <>
+                <dt>Limited backend</dt>
+                <dd className="truncate text-right text-foreground/80">
+                  {limitedBackend}
+                </dd>
+              </>
+            ) : null}
+          </dl>
+        ) : null}
+        {capability?.reason ? (
+          <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
+            {capability.reason}
+          </p>
+        ) : null}
+        {capability?.limitations.map((limitation) => (
+          <p
+            key={limitation}
+            className="text-xs leading-snug text-amber-700 dark:text-amber-400"
+          >
+            {TOOL_ISOLATION_LIMITATION_TEXT[limitation] ?? limitation}
+          </p>
+        ))}
+        {capability?.remediation ? (
+          <p className="whitespace-pre-wrap break-words text-xs leading-snug text-muted-foreground">
+            {capability.remediation}
+          </p>
+        ) : null}
+        {showLimitedTier
+          ? capability?.limited_limitations.map((limitation) => (
+              <p
+                key={`limited-${limitation}`}
+                className="text-xs leading-snug text-amber-700 dark:text-amber-400"
+              >
+                {TOOL_ISOLATION_LIMITATION_TEXT[limitation] ?? limitation}
+              </p>
+            ))
+          : null}
+        {showLimitedFacts ? (
+          <p className="text-xs leading-snug text-muted-foreground">
+            Process Guard, sanitized environment, resource limits, descriptor
+            closure, workdir policy, timeout, cancellation, and cleanup remain
+            active, and code and commands are still analysed for known-dangerous
+            patterns. That analysis is best effort, not a boundary: Limited is not
+            an OS sandbox.
+          </p>
+        ) : null}
+        {error ? (
+          <p className="text-xs leading-snug text-destructive">{error}</p>
+        ) : null}
+      </div>
+      {offersAllowlist && capability ? (
+        <DropdownMenuItem
+          onSelect={(event) => {
+            // Keep the menu open so the Network row above reflects the change at once.
+            event.preventDefault();
+            setNetworkPolicy(networkPolicy === "allowlist" ? "deny" : "allowlist");
+          }}
+          className={cn(
+            "items-start gap-2 py-2",
+            networkPolicy === "allowlist" && "font-medium",
+          )}
+          aria-checked={networkPolicy === "allowlist"}
+          role="menuitemcheckbox"
+        >
+          <Globe className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className="text-ui-13 leading-tight">
+              Allow network to package and model hosts
+            </span>
+            <span className="text-xs font-normal leading-snug text-muted-foreground">
+              {networkAllowlistSummary(capability.network_allowlist)}
+            </span>
+          </span>
+          {networkPolicy === "allowlist" ? (
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className="ml-auto mt-0.5 size-4 shrink-0"
+            />
+          ) : null}
+        </DropdownMenuItem>
+      ) : null}
+      {unavailable ? (
+        <DropdownMenuItem
+          onSelect={() => setTimeout(onRequestLimited, 0)}
+          className="text-ui-13"
+        >
+          <CircleAlert className="size-4" strokeWidth={2} />
+          Use Limited mode for this session
+        </DropdownMenuItem>
+      ) : null}
+      {presentation.state === "limited" ? (
+        <DropdownMenuItem
+          onSelect={() => setMode("os_isolation_required")}
+          className="text-ui-13"
+        >
+          <ShieldCheck className="size-4" strokeWidth={2} />
+          Require OS isolation
+        </DropdownMenuItem>
+      ) : null}
+      {!loading && (!capability || capability.retryable || !capability.available) ? (
+        <DropdownMenuItem
+          onSelect={(event) => {
+            event.preventDefault();
+            refresh().catch(() => undefined);
+          }}
+          className="text-ui-13"
+        >
+          <RefreshCw className="size-4" strokeWidth={2} />
+          Check again
+        </DropdownMenuItem>
+      ) : null}
+    </>
+  );
+}
+
+export function LimitedModeConfirmDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const requestGrant = useChatRuntimeStore((s) => s.requestLimitedToolGrant);
+  const loading = useChatRuntimeStore((s) => s.toolIsolationGrantLoading);
+  const error = useChatRuntimeStore((s) => s.toolIsolationError);
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent size="sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Use Limited mode?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {limitedModeWarning(capability)}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {error ? (
+          <p className="text-center text-xs text-destructive">{error}</p>
+        ) : null}
+        <AlertDialogFooter className="sm:items-center">
+          <AlertDialogCancel disabled={loading}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className="!h-auto !whitespace-normal !py-2 text-center"
+            disabled={loading}
+            onClick={(event) => {
+              event.preventDefault();
+              requestGrant()
+                .then(() => onOpenChange(false))
+                .catch(() => undefined);
+            }}
+          >
+            {loading ? "Enabling…" : "Use Limited mode"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+/** Page-root dialog used by the pre-send gate when Required cannot launch. */
+export function ToolIsolationConsentDialog() {
+  const open = useChatRuntimeStore((s) => s.toolIsolationConsentOpen);
+  const setOpen = useChatRuntimeStore((s) => s.setToolIsolationConsentOpen);
+
+  return <LimitedModeConfirmDialog open={open} onOpenChange={setOpen} />;
+}
+
+/**
+ * Select-style dropdown (like the MCP composer menu) for picking the
+ * permission level. Used in General settings and the chat settings sheet.
+ */
 export function PermissionModeDropdown({
   side = "bottom",
   align = "end",
@@ -184,9 +488,19 @@ export function PermissionModeDropdown({
   align?: "start" | "end";
   triggerClassName?: string;
 } = {}) {
+  useToolIsolationCapabilityRefresh();
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const toolExecutionMode = useChatRuntimeStore((s) => s.toolExecutionMode);
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+  const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [limitedConfirmOpen, setLimitedConfirmOpen] = useState(false);
   const active = permissionModeOption(permissionMode);
+  const isolation = toolIsolationPresentation(
+    toolExecutionMode,
+    capability,
+    grant,
+  );
   const ActiveIcon = active.icon;
 
   return (
@@ -209,6 +523,9 @@ export function PermissionModeDropdown({
             <span className="min-w-0 flex-1 truncate text-left">
               {active.label}
             </span>
+            <span className="truncate text-xs text-muted-foreground">
+              {isolation.label}
+            </span>
             <ChevronDown className="size-3.5 shrink-0 opacity-60" />
           </Button>
         </DropdownMenuTrigger>
@@ -228,11 +545,18 @@ export function PermissionModeDropdown({
               setTimeout(() => setConfirmOpen(true), 0)
             }
           />
+          <ToolIsolationMenuSection
+            onRequestLimited={() => setLimitedConfirmOpen(true)}
+          />
         </DropdownMenuContent>
       </DropdownMenu>
       <FullAccessConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
+      />
+      <LimitedModeConfirmDialog
+        open={limitedConfirmOpen}
+        onOpenChange={setLimitedConfirmOpen}
       />
     </>
   );
@@ -247,54 +571,76 @@ export function PermissionModeComposerPill({
 }: {
   side?: "top" | "bottom";
 } = {}) {
+  useToolIsolationCapabilityRefresh();
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
+  const toolExecutionMode = useChatRuntimeStore((s) => s.toolExecutionMode);
+  const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
+  const grant = useChatRuntimeStore((s) => s.limitedToolGrant);
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
+  const [limitedConfirmOpen, setLimitedConfirmOpen] = useState(false);
   const active = permissionModeOption(permissionMode);
+  const isolation = toolIsolationPresentation(
+    toolExecutionMode,
+    capability,
+    grant,
+  );
   const ActiveIcon = active.icon;
   const fullAccess = permissionMode === "full";
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild={true}>
-        <button
-          type="button"
-          className="composer-pill-btn composer-pill-permissions"
-          data-pill-label={active.label}
-          data-active={fullAccess ? "true" : "false"}
-          data-variant={fullAccess ? "danger" : undefined}
-          aria-label="Permission level for tool calls"
-          title={`${active.label}: ${active.description}`}
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild={true}>
+          <button
+            type="button"
+            className="composer-pill-btn composer-pill-permissions"
+            data-pill-label={active.label}
+            data-active={fullAccess ? "true" : "false"}
+            data-variant={fullAccess ? "danger" : undefined}
+            aria-label="Permission level for tool calls"
+            title={`${active.label}: ${active.description}. ${isolation.label}.`}
+          >
+            <span className="composer-pill-glyph">
+              <ActiveIcon className="size-[15px]" strokeWidth={2} />
+            </span>
+            <span>{active.label}</span>
+            <span className="max-w-[190px] truncate text-ui-11 font-normal opacity-75">
+              {isolation.label}
+            </span>
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={1.5}
+              className="composer-pill-caret size-[15px]"
+            />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side={side}
+          align="start"
+          sideOffset={0}
+          avoidCollisions={true}
+          className="unsloth-plus-menu w-[300px]"
         >
-          <span className="composer-pill-glyph">
-            <ActiveIcon className="size-[15px]" strokeWidth={2} />
-          </span>
-          <span>{active.label}</span>
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            strokeWidth={1.5}
-            className="composer-pill-caret size-[15px]"
+          <DropdownMenuLabel>
+            How should tool calls be approved?
+          </DropdownMenuLabel>
+          <PermissionModeMenuItems
+            // Defer past the menu-close focus restoration (see PermissionModeDropdown).
+            onRequestFullAccess={() =>
+              setTimeout(() => setBypassConfirmOpen(true), 0)
+            }
           />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        side={side}
-        align="start"
-        sideOffset={0}
-        avoidCollisions={true}
-        className="unsloth-plus-menu w-[300px]"
-      >
-        <DropdownMenuLabel>
-          How should tool calls be approved?
-        </DropdownMenuLabel>
-        <PermissionModeMenuItems
-          // Defer past the menu-close focus restoration (see PermissionModeDropdown).
-          onRequestFullAccess={() =>
-            setTimeout(() => setBypassConfirmOpen(true), 0)
-          }
-        />
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <ToolIsolationMenuSection
+            onRequestLimited={() => setLimitedConfirmOpen(true)}
+          />
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <LimitedModeConfirmDialog
+        open={limitedConfirmOpen}
+        onOpenChange={setLimitedConfirmOpen}
+      />
+    </>
   );
 }

@@ -25,8 +25,28 @@ from pathlib import Path
 
 import pytest
 
+from core.inference import os_sandbox
+from core.inference import tools as tools_module
+
 
 _FRONTEND_SRC = Path(__file__).resolve().parents[2] / "frontend" / "src"
+
+
+@pytest.fixture(autouse = True)
+def _portable_tool_lifecycle(monkeypatch):
+    if os_sandbox.sandbox_capability().available:
+        return
+    monkeypatch.setattr(
+        tools_module,
+        "prepare_tool_launch",
+        lambda spec: os_sandbox.PreparedSandboxLaunch(
+            argv = spec.argv,
+            workdir = spec.workdir,
+            env = spec.env,
+            preexec_fn = spec.preexec_fn,
+            backend = "test-storage-passthrough",
+        ),
+    )
 
 
 @functools.lru_cache(maxsize = None)

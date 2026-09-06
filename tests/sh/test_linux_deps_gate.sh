@@ -115,11 +115,27 @@ assert_contains    "build tooling only warned about"     "$_out" "using prebuilt
 
 echo "=== fully equipped machine: no warnings ==="
 rm -f "$_BIN"/*
-for t in curl cmake gcc curl-config git; do _mk "$t" 'exit 0'; done
+for t in curl cmake gcc curl-config git bwrap; do _mk "$t" 'exit 0'; done
 _out="$(_run_gate false)"
 assert_contains "install proceeds"                       "$_out" "RC=0"
 assert_contains "reports everything found"               "$_out" "all system dependencies found"
 assert_not_contains "no prebuilt fallback warning"       "$_out" "using prebuilt llama.cpp"
+assert_not_contains "no bubblewrap warning"              "$_out" "bubblewrap"
+
+echo "=== no bubblewrap: warn about OS-isolated tool calls, never fail ==="
+# Studio's Python and Terminal tools default to OS isolation and fail closed, so a
+# host without bwrap refuses every one of them. Soft: nothing else needs it.
+rm -f "$_BIN"/*
+for t in curl cmake gcc curl-config git; do _mk "$t" 'exit 0'; done
+_out="$(_run_gate false)"
+assert_contains "install proceeds"                       "$_out" "RC=0"
+assert_contains "names the missing package"              "$_out" "bubblewrap not found"
+assert_contains "names what breaks"                      "$_out" "OS-isolated tool calls will refuse"
+assert_contains "gives the apt remedy"                   "$_out" "sudo apt install bubblewrap"
+assert_contains "gives the dnf remedy"                   "$_out" "sudo dnf install bubblewrap"
+assert_contains "gives the pacman remedy"                "$_out" "sudo pacman -S --needed bubblewrap"
+assert_contains "gives the zypper remedy"                "$_out" "sudo zypper install bubblewrap"
+assert_not_contains "does not auto-install it"           "$_out" "APT_CALLED"
 
 echo "=== apt present: git is auto-installed, because triton_kernels needs it ==="
 # Regression: making git optional without this failed at "6/14 triton kernels", whose

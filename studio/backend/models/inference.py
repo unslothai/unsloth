@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from collections import deque
@@ -1926,6 +1927,11 @@ class ReasoningControlsRequest(BaseModel):
 # derivation keeps an unset mode lenient (a non-streaming request cannot prompt, so
 # it runs) to keep non-streaming clients and health checks working.
 _KNOWN_PERMISSION_MODES = ("ask", "auto", "off", "full")
+ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
+# Network reach of an OS-isolated Python or Terminal launch. "deny" is the
+# fail-closed default; "allowlist" routes traffic through the backend's loopback
+# proxy to the advertised hosts and is accepted only where a backend supports it.
+ToolNetworkPolicy = Literal["deny", "allowlist"]
 
 
 def _normalize_permission_mode(value: Any) -> Any:
@@ -1934,6 +1940,63 @@ def _normalize_permission_mode(value: Any) -> Any:
     if value not in _KNOWN_PERMISSION_MODES:
         return "ask"
     return value
+
+
+_TOOL_EXECUTION_MODE_OMISSION_LOGGED = False
+
+
+def _normalize_tool_execution_mode(value: Any) -> Any:
+    return "os_isolation_required" if value is None else value
+
+
+def _normalize_tool_network_policy(value: Any) -> Any:
+    # Omitted or null means no network, the behaviour every client had before
+    # the allowlist existed. Unknown values are left for Literal validation (422).
+    return "deny" if value is None else value
+
+
+def _reject_unenforceable_network_policy(request: Any) -> None:
+    """Limited mode has no OS boundary, so an allowlist there would be advisory only.
+
+    Decided once at the request edge: otherwise the turn is accepted, the model gets
+    plain Limited descriptions, and every Python or Terminal call fails with the
+    same launch error after the generation has been spent.
+    """
+    if (
+        getattr(request, "tool_network_policy", "deny") == "allowlist"
+        and getattr(request, "tool_execution_mode", None) == "limited"
+    ):
+        raise ValueError(
+            "tool_network_policy 'allowlist' requires tool_execution_mode "
+            "'os_isolation_required'; Limited mode cannot enforce a network allowlist"
+        )
+
+
+def _note_omitted_tool_execution_mode(request: Any) -> None:
+    """Say once per process that a tools-enabled request left the mode to the default.
+
+    A client written before OS isolation existed sends no tool_execution_mode, so
+    its Python and Terminal calls now require a qualified OS sandbox. That is the
+    intended default; the notice is for an operator reading logs after an old
+    script's tool calls started failing closed.
+    """
+    global _TOOL_EXECUTION_MODE_OMISSION_LOGGED
+    if _TOOL_EXECUTION_MODE_OMISSION_LOGGED:
+        return
+    if "tool_execution_mode" in request.model_fields_set:
+        return
+    if getattr(request, "tool_execution_mode", None) == "full":
+        return  # legacy bypass callers already chose the explicit opt-out
+    if not (getattr(request, "enable_tools", None) or getattr(request, "tools", None)):
+        return
+    _TOOL_EXECUTION_MODE_OMISSION_LOGGED = True
+    logging.getLogger(__name__).warning(
+        "A tools-enabled request omitted tool_execution_mode; defaulting to "
+        "os_isolation_required, so Python and Terminal need a qualified OS sandbox. "
+        "Clients that accept running without OS isolation must send "
+        'tool_execution_mode "full" (permission_mode "full" and bypass_permissions '
+        "true mean the same)."
+    )
 
 
 class ChatCompletionRequest(BaseModel):
@@ -2171,6 +2234,30 @@ class ChatCompletionRequest(BaseModel):
             "'auto' for the per-call gate; a non-streaming request without an explicit "
             "mode cannot prompt and runs the loop. An unrecognized value (e.g. from a "
             "newer client) is treated as 'ask'."
+        ),
+    )
+    tool_execution_mode: ToolExecutionMode = Field(
+        "os_isolation_required",
+        description = (
+            "[x-unsloth] Isolation required for local Python and Terminal by default. "
+            "'limited' requires a valid session-only Limited grant; 'full' preserves "
+            "the existing unrestricted permission semantics."
+        ),
+    )
+    limited_grant: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Opaque, session-only Limited-mode grant.",
+    )
+    tool_ui_session_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Ephemeral page-memory identifier binding a Limited grant.",
+    )
+    tool_network_policy: ToolNetworkPolicy = Field(
+        "deny",
+        description = (
+            "[x-unsloth] Network reach of OS-isolated Python and Terminal launches: 'deny' "
+            "(default) or 'allowlist' (loopback proxy to the hosts the capability advertises; "
+            "rejected where the backend cannot enforce it). Ignored in Full mode."
         ),
     )
     auto_heal_tool_calls: Optional[bool] = Field(
@@ -2515,16 +2602,36 @@ class ChatCompletionRequest(BaseModel):
         # 422; mirrors the tool loops' unknown -> ask fallback.
         return _normalize_permission_mode(value)
 
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _coerce_tool_execution_mode(cls, value: Any) -> Any:
+        return _normalize_tool_execution_mode(value)
+
+    @field_validator("tool_network_policy", mode = "before")
+    @classmethod
+    def _coerce_tool_network_policy(cls, value: Any) -> Any:
+        return _normalize_tool_network_policy(value)
+
+    @model_validator(mode = "after")
+    def _check_network_policy_is_enforceable(self):
+        _reject_unenforceable_network_policy(self)
+        return self
+
     @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "ChatCompletionRequest":
         """permission_mode='full' is the documented equivalent of
         bypass_permissions=true, so fold it in before any route guard reads
         the flag (else a full request would trip the confirm-gate rejections)."""
-        if self.permission_mode == "full":
+        if self.tool_execution_mode == "full":
+            self.permission_mode = "full"
             self.bypass_permissions = True
+        elif self.permission_mode == "full":
+            self.bypass_permissions = True
+            self.tool_execution_mode = "full"
         elif self.bypass_permissions:
             # Legacy bypass callers map onto Full access (mirrors the tool loop).
             self.permission_mode = "full"
+            self.tool_execution_mode = "full"
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
@@ -2567,6 +2674,7 @@ class ChatCompletionRequest(BaseModel):
             # auto selection needs no stream) instead of an explicit-confirm forcing
             # stream=true. The mode still drives the loop's per-call gate.
             self.confirm_tool_calls = True
+        _note_omitted_tool_execution_mode(self)
         return self
 
 
@@ -2644,6 +2752,17 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         description = "[x-unsloth] Equivalent of permission_mode='full'. Declared explicitly (not "
         "left to extra='allow') so an omitted flag reads as None instead of raising AttributeError.",
     )
+    tool_execution_mode: ToolExecutionMode = Field(
+        "os_isolation_required",
+        description = (
+            "[x-unsloth] Isolation mode whose Python and Terminal descriptions the matching "
+            "completion request will render."
+        ),
+    )
+    tool_network_policy: ToolNetworkPolicy = Field(
+        "deny",
+        description = "[x-unsloth] Network policy the matching completion request will use.",
+    )
 
     confirm_tool_calls: Optional[bool] = Field(
         None,
@@ -2662,6 +2781,21 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     def _coerce_permission_mode(cls, value: Any) -> Any:
         return _normalize_permission_mode(value)
 
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _coerce_tool_execution_mode(cls, value: Any) -> Any:
+        return _normalize_tool_execution_mode(value)
+
+    @field_validator("tool_network_policy", mode = "before")
+    @classmethod
+    def _coerce_tool_network_policy(cls, value: Any) -> Any:
+        return _normalize_tool_network_policy(value)
+
+    @model_validator(mode = "after")
+    def _check_network_policy_is_enforceable(self):
+        _reject_unenforceable_network_policy(self)
+        return self
+
     # The very function the completion request runs, not a copy: a count renders replayed
     # tool history through the same templates, which read the id off the result message.
     _resolve_missing_tool_call_ids = model_validator(mode = "after")(
@@ -2672,15 +2806,21 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     def _fold_full_permission_into_bypass(self) -> "ChatCountTokensRequest":
         """Mirrors ChatCompletionRequest: the prompt builders read only the
         bypass flag, so 'full' has to reach them the same way here."""
-        if self.permission_mode == "full":
+        if self.tool_execution_mode == "full":
+            self.permission_mode = "full"
             self.bypass_permissions = True
+        elif self.permission_mode == "full":
+            self.bypass_permissions = True
+            self.tool_execution_mode = "full"
         elif self.bypass_permissions:
             self.permission_mode = "full"
+            self.tool_execution_mode = "full"
         elif self.permission_mode is None and self.confirm_tool_calls is True:
             # The same reading a completion gives it: gating every call is the
             # pre-permission-mode way of asking for "ask", and the loop's retrieval
             # gate turns on that. No provider clause -- this endpoint is local only.
             self.permission_mode = "ask"
+        _note_omitted_tool_execution_mode(self)
         return self
 
 
@@ -2688,6 +2828,39 @@ class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
     decision: Literal["allow", "deny"] = "deny"
+
+
+class ToolIsolationCapabilityResponse(BaseModel):
+    environment: str
+    backend: str
+    protection_state: str
+    profile_id: str
+    probe_generation: str
+    environment_fingerprint: str
+    reason: str
+    remediation: str
+    retryable: bool
+    available: bool
+    qualified: bool
+    limitations: list[str] = Field(default_factory = list)
+    # Optional additions; absent on older servers, so clients treat them as
+    # "deny only" and "no Limited-tier detail".
+    network_policies: list[str] = Field(default_factory = lambda: ["deny"])
+    network_allowlist: list[str] = Field(default_factory = list)
+    limited_backend: Optional[str] = None
+    limited_profile_id: Optional[str] = None
+    limited_limitations: list[str] = Field(default_factory = list)
+
+
+class ToolIsolationLimitedGrantRequest(BaseModel):
+    ui_session_id: str = Field(min_length = 1, max_length = 512)
+    probe_generation: str = Field(min_length = 1, max_length = 512)
+
+
+class ToolIsolationLimitedGrantResponse(BaseModel):
+    grant: str
+    expires_at: str
+    probe_generation: str
 
 
 # ── OpenAI shell-tool container management ─────────────────────
@@ -3086,8 +3259,52 @@ class ResponsesRequest(BaseModel):
     user: Optional[str] = None
     text: Optional[Any] = None
     reasoning: Optional[Any] = None
+    tool_execution_mode: ToolExecutionMode = Field(
+        "os_isolation_required",
+        description = (
+            "[x-unsloth] Isolation required for local Python and Terminal by default; "
+            "Limited requires a session-only grant and Full preserves unrestricted semantics."
+        ),
+    )
+    limited_grant: Optional[str] = None
+    tool_ui_session_id: Optional[str] = None
+    tool_network_policy: ToolNetworkPolicy = "deny"
+    permission_mode: Optional[str] = None
+    bypass_permissions: Optional[bool] = False
 
     model_config = {"extra": "allow"}
+
+    @field_validator("permission_mode", mode = "before")
+    @classmethod
+    def _coerce_permission_mode(cls, value: Any) -> Any:
+        return _normalize_permission_mode(value)
+
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _coerce_tool_execution_mode(cls, value: Any) -> Any:
+        return _normalize_tool_execution_mode(value)
+
+    @field_validator("tool_network_policy", mode = "before")
+    @classmethod
+    def _coerce_tool_network_policy(cls, value: Any) -> Any:
+        return _normalize_tool_network_policy(value)
+
+    @model_validator(mode = "after")
+    def _check_network_policy_is_enforceable(self):
+        _reject_unenforceable_network_policy(self)
+        return self
+
+    @model_validator(mode = "after")
+    def _fold_full_permission_into_bypass(self) -> "ResponsesRequest":
+        if self.tool_execution_mode == "full":
+            self.permission_mode = "full"
+            self.bypass_permissions = True
+        elif self.permission_mode == "full" or self.bypass_permissions:
+            self.permission_mode = "full"
+            self.bypass_permissions = True
+            self.tool_execution_mode = "full"
+        _note_omitted_tool_execution_mode(self)
+        return self
 
 
 # ── Response models ─────────────────────────────────────────────
@@ -3451,6 +3668,17 @@ class AnthropicMessagesRequest(BaseModel):
         None,
         description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
+    tool_execution_mode: ToolExecutionMode = Field(
+        "os_isolation_required",
+        description = (
+            "[x-unsloth] Isolation required for local Python and Terminal by default. "
+            "'limited' requires a valid session-only Limited grant; 'full' preserves "
+            "the existing unrestricted permission semantics."
+        ),
+    )
+    limited_grant: Optional[str] = None
+    tool_ui_session_id: Optional[str] = None
+    tool_network_policy: ToolNetworkPolicy = "deny"
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output (mirrors the Chat Completions field; applies to the client-tool passthrough).",
@@ -3523,18 +3751,39 @@ class AnthropicMessagesRequest(BaseModel):
         # 422; mirrors the tool loops' unknown -> ask fallback.
         return _normalize_permission_mode(value)
 
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _coerce_tool_execution_mode(cls, value: Any) -> Any:
+        return _normalize_tool_execution_mode(value)
+
+    @field_validator("tool_network_policy", mode = "before")
+    @classmethod
+    def _coerce_tool_network_policy(cls, value: Any) -> Any:
+        return _normalize_tool_network_policy(value)
+
+    @model_validator(mode = "after")
+    def _check_network_policy_is_enforceable(self):
+        _reject_unenforceable_network_policy(self)
+        return self
+
     @model_validator(mode = "after")
     def _fold_full_permission_into_bypass(self) -> "AnthropicMessagesRequest":
         """permission_mode='full' equals bypass_permissions=true (mirrors the
         Chat Completions request)."""
-        if self.permission_mode == "full":
+        if self.tool_execution_mode == "full":
+            self.permission_mode = "full"
             self.bypass_permissions = True
+        elif self.permission_mode == "full":
+            self.bypass_permissions = True
+            self.tool_execution_mode = "full"
         elif self.bypass_permissions:
             # Legacy bypass callers map onto Full access (mirrors the tool loop).
             self.permission_mode = "full"
+            self.tool_execution_mode = "full"
         elif self.permission_mode == "off":
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
+        _note_omitted_tool_execution_mode(self)
         return self
 
 

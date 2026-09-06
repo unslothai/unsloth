@@ -20,6 +20,7 @@ import sys
 import pytest
 
 import core.inference.tools as tools
+from core.inference.os_sandbox import PreparedSandboxLaunch
 from core.inference.tools import (
     _SANDBOX_TEMP_DIRNAME,
     _bash_exec,
@@ -130,13 +131,36 @@ def captured_popen(monkeypatch):
         cap["kwargs"] = kwargs
         return _FakeProc()
 
-    monkeypatch.setattr(tools.subprocess, "Popen", fake_popen)
+    # Intercept the tool's own spawn seam, not ``subprocess.Popen`` itself: the
+    # shared module object is what ``os_sandbox`` runs its live probe with, and a
+    # probe that meets ``_FakeProc`` caches a bogus "unavailable" for the process
+    # (that is how the Seatbelt live tests failed when the suites ran together).
+    monkeypatch.setattr(
+        tools,
+        "spawn_prepared_launch",
+        lambda prepared, **kwargs: fake_popen(prepared.argv, **kwargs),
+    )
     return cap
+
+
+def _direct_prepared_launch(spec):
+    """Stand in for a qualified backend while this file inspects tool wiring."""
+    return PreparedSandboxLaunch(
+        argv = spec.argv,
+        workdir = spec.workdir,
+        env = spec.env,
+        preexec_fn = spec.preexec_fn,
+        backend = "test-backend",
+        timeout_seconds = spec.timeout_seconds,
+        close_fds = spec.close_fds,
+        terminate_descendants = spec.terminate_descendants,
+    )
 
 
 @_POSIX_ONLY
 def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_popen, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
+    monkeypatch.setattr(tools, "prepare_tool_launch", _direct_prepared_launch)
     _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
     assert captured_popen["kwargs"]["preexec_fn"] is tools._sandbox_preexec
     assert "HF_TOKEN" not in captured_popen["kwargs"]["env"]

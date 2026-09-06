@@ -154,6 +154,11 @@ import {
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
 import { ragScopeContextLength } from "./rag-context-length";
+import { isLimitedGrantCurrent } from "../tool-isolation";
+import {
+  effectiveToolNetworkPolicy,
+  queuedToolNetworkPolicy,
+} from "../utils/tool-network-policy";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -184,12 +189,24 @@ import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import {
   shouldPreserveFullOutput,
+  toolExecutionRecordScope,
   toolOutputKey,
   toolPaneScope,
   toolThreadScope,
 } from "../tool-output-scope";
+import { queuedIsolationDecisionIsCurrent } from "../utils/queued-isolation-gate";
 import type { ModelType, ThreadRecord } from "../types";
-import { isMultimodalResponse } from "../types/api";
+import {
+  attachAuthoritativeExecutionRecord,
+  discardAuthoritativeExecutionRecord,
+  isMultimodalResponse,
+  parseBackendExecutionRecord,
+  stripUntrustedExecutionMetadata,
+  TOOL_EXECUTION_RECORD_ARG_KEY,
+  type ToolCardState,
+  type ToolExecutionRecord,
+  toolExecutionRecordFromCard,
+} from "../types/api";
 import type {
   CpuFallbackReason,
   MmprojFallbackReason,
@@ -1040,7 +1057,33 @@ function serializeAssistantToolCallPart(
     return null;
   }
 
-  const argumentsStr = toolCallReplayArguments(tc.argsText, tc.args);
+  const replayArgs = stripUntrustedExecutionMetadata(tc.args);
+  let replayArgsText = tc.argsText;
+  if (typeof replayArgsText === "string") {
+    try {
+      const parsed = JSON.parse(replayArgsText) as unknown;
+      if (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        Object.hasOwn(
+          parsed as Record<string, unknown>,
+          TOOL_EXECUTION_RECORD_ARG_KEY,
+        )
+      ) {
+        // Preserve exact JSON lexemes for ordinary arguments while removing
+        // the reserved key from provider-authored replay text.
+        replayArgsText = mergedToolCallArgumentsText(
+          replayArgsText,
+          replayArgs,
+          [TOOL_EXECUTION_RECORD_ARG_KEY],
+        );
+      }
+    } catch {
+      // toolCallReplayArguments already rejects malformed replay text.
+    }
+  }
+  const argumentsStr = toolCallReplayArguments(replayArgsText, replayArgs);
   const entry: SerializedToolCall = {
     id: tc.toolCallId,
     type: "function" as const,
@@ -1833,17 +1876,32 @@ export async function buildLocalTokenCountExtras(
     bypassPermissions,
     deepResearchEnabled,
     permissionMode,
+    toolExecutionMode,
+    toolNetworkPolicy,
+    toolIsolationCapability,
     maxToolCallsPerMessage,
     ragAutoInject,
     ragAutoInjectMinScore,
     residentCheckpoint,
   } = useChatRuntimeStore.getState();
+  // The allowlist appends the host list to the python/terminal descriptions, so the count
+  // carries the same policy the completion will (collapsed to "deny" wherever it would be).
+  const countNetworkPolicy = effectiveToolNetworkPolicy(
+    toolNetworkPolicy,
+    toolExecutionMode,
+    toolIsolationCapability,
+  );
   // Explicit false, as the completion sends: an omitted field lets the launcher's
   // tools-on default answer and the server renders a catalog the completion does not.
   // No budget, because the completion sends none either, so a policy that injects tools
   // past this false gets the server default on both sides.
   if (!supportsTools) {
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    return {
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+      tool_execution_mode: toolExecutionMode,
+      tool_network_policy: countNetworkPolicy,
+    };
   }
 
   const ragProjectId = await resolveProjectId(threadId);
@@ -1859,9 +1917,19 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled
   ) {
-    // Explicit false, not omission: the server defaults tools on. The permission level rides
-    // along because `--enable-tools` still outranks that false in _effective_enable_tools.
-    return { enable_tools: false, bypass_permissions: bypassPermissions };
+    // Explicit false, not an omitted field: the server defaults tools on for a
+    // request that never mentions them, so every pill being off has to say so.
+    // The permission level rides along because `--enable-tools` still outranks
+    // that false in _effective_enable_tools, so a CLI policy can inject
+    // python/terminal into a pill-less request and the count would otherwise
+    // price sandboxed schemas against an unsandboxed completion. Inert whenever
+    // the false stands and no tool list is built.
+    return {
+      enable_tools: false,
+      bypass_permissions: bypassPermissions,
+      tool_execution_mode: toolExecutionMode,
+      tool_network_policy: countNetworkPolicy,
+    };
   }
 
   return {
@@ -1871,6 +1939,8 @@ export async function buildLocalTokenCountExtras(
     // Ask holds first-pass retrieval behind the gate, so the count prices a pending RAG
     // turn rather than declining one the completion never retrieves for.
     permission_mode: permissionMode,
+    tool_execution_mode: toolExecutionMode,
+    tool_network_policy: countNetworkPolicy,
     // Off suppresses the loop, and the relay renders no schemas or nudge: same zero.
     max_tool_calls_per_message: maxToolCallsPerMessage,
     // Full access swaps the python/terminal descriptions and adds a nudge
@@ -4358,6 +4428,21 @@ export function createOpenAIStreamAdapter(
       );
       const scopedToolOutputKey = (id: string) =>
         toolOutputKey(toolOutputPaneScope, id);
+      // Launch records are keyed by the pane+thread scope of live output plus the assistant
+      // message: local ids repeat across conversations and restart every turn
+      // ("tool_call_0"), so a thread-wide key would let an earlier turn's card wear a later
+      // run's protection label. The reader (useToolExecutionRecordFor) adds message.id, which
+      // is what assistant-ui hands this run as unstable_assistantMessageId.
+      const executionRecordScope = toolExecutionRecordScope(
+        toolOutputPaneScope,
+        unstable_assistantMessageId,
+      );
+      const attachScopedExecutionRecord = <T extends ToolCardState>(
+        card: T,
+        record: ToolExecutionRecord | null,
+      ) => attachAuthoritativeExecutionRecord(card, record, executionRecordScope);
+      const scopedExecutionRecordFromCard = (id: string) =>
+        toolExecutionRecordFromCard(id, executionRecordScope);
       const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       // Which conversation was on screen when this run started; a first turn has no id yet.
@@ -4661,6 +4746,131 @@ export function createOpenAIStreamAdapter(
           externalProvider?.providerType,
         ),
       });
+      const runsStudioPythonOrTerminal =
+        supportsStudioToolsForThisTurn &&
+        studioLocalCodeTools.some(
+          (name) => name === "python" || name === "terminal",
+        );
+      let toolIsolationRequestFields: Pick<
+        OpenAIChatCompletionsRequest,
+        | "tool_execution_mode"
+        | "tool_ui_session_id"
+        | "limited_grant"
+        | "tool_network_policy"
+      > = {};
+      if (supportsStudioToolsForThisTurn) {
+        // The isolation decision is read from the run snapshot, never from the live store:
+        // a message queued under Required must not go out as whatever the pill says by the
+        // time the model has loaded. For a send that was not queued the snapshot is the live
+        // state, so nothing changes there.
+        const requestedMode = runtime.toolExecutionMode;
+        const requestedUiSessionId = runtime.toolIsolationUiSessionId;
+        const requestedGrant = runtime.limitedToolGrant;
+        // The network decision travels with the send too; "allowlist" goes out only when the
+        // capability seen at dispatch lists it (see effectiveToolNetworkPolicy).
+        // The live store is read at dispatch: a Full or allowlist grant withdrawn while the
+        // send waited in the queue wins over the snapshot it was queued with.
+        const requestedNetworkPolicy = queuedToolNetworkPolicy(
+          runtime.toolNetworkPolicy,
+          useChatRuntimeStore.getState().toolNetworkPolicy,
+        );
+        if (requestedMode === "full") {
+          // Full access predates capability discovery and keeps its existing
+          // explicit semantics. The backend still records the launch-time host
+          // state; a failed advisory endpoint must not silently redefine Full.
+          // A Full decision revoked while this send waited in the queue wins over
+          // the snapshot: stop instead of sending what the person has since undone.
+          // The UI session is fenced too, exactly like Required and Limited below: an
+          // authentication rotation retires the session that authorized this Full send,
+          // and a later session choosing Full on its own does not revive it.
+          const live = useChatRuntimeStore.getState();
+          if (
+            !queuedIsolationDecisionIsCurrent(
+              {
+                toolExecutionMode: "full",
+                toolIsolationUiSessionId: requestedUiSessionId,
+              },
+              live,
+            )
+          ) {
+            clearSelectedImageEditReference();
+            throw new Error(
+              "Full access authorization changed while this message was queued. Review the protection level and send again.",
+            );
+          }
+          toolIsolationRequestFields = { tool_execution_mode: "full" };
+        } else if (!runsStudioPythonOrTerminal) {
+          // No Python or Terminal was selected here, but `unsloth run --enable-tools` can
+          // still open them server-side, so the request states its mode instead of leaving
+          // the backend to assume one. Only the OS-isolated default is declared this way; a
+          // Limited grant is attached solely by the gated branch below, which proves it is
+          // current first.
+          toolIsolationRequestFields = {
+            tool_execution_mode: "os_isolation_required",
+            tool_ui_session_id: requestedUiSessionId,
+            tool_network_policy: effectiveToolNetworkPolicy(
+              requestedNetworkPolicy,
+              "os_isolation_required",
+              useChatRuntimeStore.getState().toolIsolationCapability,
+            ),
+          };
+        } else {
+          await useChatRuntimeStore
+            .getState()
+            .refreshToolIsolationCapability();
+          const isolation = useChatRuntimeStore.getState();
+          const mode = requestedMode;
+          const capability = isolation.toolIsolationCapability;
+          const currentLimitedGrant = isLimitedGrantCurrent(
+            requestedGrant,
+            capability,
+          )
+            ? requestedGrant
+            : null;
+          if (
+            isolation.toolExecutionMode !== mode ||
+            isolation.toolIsolationUiSessionId !== requestedUiSessionId
+          ) {
+            // The pill moved, or the auth session rotated, after this send was prepared.
+            // Stop and ask for a fresh send rather than substituting the current state.
+            if (capability?.protection_state === "unavailable") {
+              isolation.setToolIsolationConsentOpen(true);
+            }
+            clearSelectedImageEditReference();
+            throw new Error(
+              "The tool-isolation capability changed while preparing this request. Review the current protection level and send the message again.",
+            );
+          }
+          if (
+            (mode === "os_isolation_required" &&
+              capability?.protection_state !== "protected" &&
+              capability?.protection_state !== "preview") ||
+            (mode === "limited" && !currentLimitedGrant)
+          ) {
+            isolation.setToolIsolationConsentOpen(true);
+            clearSelectedImageEditReference();
+            const reason =
+              capability?.reason ??
+              isolation.toolIsolationError ??
+              "No qualified OS isolation backend is available.";
+            throw new Error(
+              `OS isolation is unavailable: ${reason} Review the protection level and explicitly choose Limited mode to run this command without OS isolation.`,
+            );
+          }
+          toolIsolationRequestFields = {
+            tool_execution_mode: mode,
+            tool_ui_session_id: requestedUiSessionId,
+            tool_network_policy: effectiveToolNetworkPolicy(
+              requestedNetworkPolicy,
+              mode,
+              capability,
+            ),
+            ...(mode === "limited" && currentLimitedGrant
+              ? { limited_grant: currentLimitedGrant.grant }
+              : {}),
+          };
+        }
+      }
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -5281,6 +5491,9 @@ export function createOpenAIStreamAdapter(
       const mintStreamedCardId = (deltaIndex: number | undefined): string =>
         mintStreamedToolCallId(toolCallParts, deltaIndex, reservedToolCallIds);
       const paintStreamedCard = (partId: string): void => {
+        // Provider/model cards are provisional. A provider can reuse a prior
+        // call id, so clear any process-local launch record before it paints.
+        discardAuthoritativeExecutionRecord(partId, executionRecordScope);
         reservedToolCallIds.add(partId);
         bindStreamedToolCallCard(toolPartIdByBackendId, partId);
       };
@@ -5289,6 +5502,7 @@ export function createOpenAIStreamAdapter(
       const liveArgsTextById = new Map<string, string>();
       // A dropped card gives its id back: holding it makes the next round's mint skip a number it then reuses.
       const releaseStreamedCard = (partId: string): void => {
+        discardAuthoritativeExecutionRecord(partId, executionRecordScope);
         reservedToolCallIds.delete(partId);
         toolPartIdByBackendId.delete(partId);
         // A card that took a late id answers to a run-unique part id, so the provider's id is a
@@ -5384,7 +5598,9 @@ export function createOpenAIStreamAdapter(
           const isLast = n === extraSegments.length - 1;
           let segmentArgs: ToolCallMessagePart["args"] = {};
           try {
-            segmentArgs = JSON.parse(segment) as ToolCallMessagePart["args"];
+            segmentArgs = stripUntrustedExecutionMetadata(
+              JSON.parse(segment),
+            ) as ToolCallMessagePart["args"];
           } catch {
             segmentArgs = { _raw: segment } as ToolCallMessagePart["args"];
           }
@@ -5870,6 +6086,7 @@ export function createOpenAIStreamAdapter(
                       ...hostedCodeToolsForThisTurn,
                     ],
                     mcp_enabled: mcpEnabledForChat,
+                    ...toolIsolationRequestFields,
                     permission_mode: permissionMode,
                     ...(permissionMode === "auto"
                       ? {}
@@ -6077,6 +6294,7 @@ export function createOpenAIStreamAdapter(
             // no pill lit. "auto" OMITS confirm_tool_calls (an explicit true would force a stream and
             // defeat the safe-only exception); "ask" sends true, off/full send false.
             permission_mode: permissionMode,
+            ...toolIsolationRequestFields,
             ...(permissionMode === "auto"
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
@@ -6514,7 +6732,9 @@ export function createOpenAIStreamAdapter(
                       ] as PositionedToolCallPart;
                       toolCallParts[idx] = {
                         ...existing,
-                        args: partial.args as ToolCallMessagePart["args"],
+                        args: stripUntrustedExecutionMetadata(
+                          partial.args,
+                        ) as ToolCallMessagePart["args"],
                         argsText: partial.argsText,
                       };
                       // A preview: it repeats per argument delta and tool_start replaces it. Tool events carry
@@ -6568,12 +6788,26 @@ export function createOpenAIStreamAdapter(
                   const staleKey = scopedToolOutputKey(id);
                   useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
-                  const toolArgs = (toolEvent.arguments ??
-                    {}) as ToolCallMessagePart["args"];
+                  const untrustedToolArgs = toolEvent.arguments ?? {};
+                  const hadReservedMetadata =
+                    untrustedToolArgs !== null &&
+                    typeof untrustedToolArgs === "object" &&
+                    !Array.isArray(untrustedToolArgs) &&
+                    Object.hasOwn(
+                      untrustedToolArgs as Record<string, unknown>,
+                      TOOL_EXECUTION_RECORD_ARG_KEY,
+                    );
+                  const toolArgs = stripUntrustedExecutionMetadata(
+                    untrustedToolArgs,
+                  ) as ToolCallMessagePart["args"];
                   const toolArgsText = toolCallArgumentsText(
-                    toolEvent.arguments_text,
+                    hadReservedMetadata ? undefined : toolEvent.arguments_text,
                     toolArgs,
                   );
+                  const executionRecord =
+                    toolEvent.execution_state === "started"
+                      ? parseBackendExecutionRecord(toolEvent.execution_record)
+                      : null;
                   const idx = toolCallParts.findIndex(
                     (p) => p.toolCallId === id,
                   );
@@ -6581,26 +6815,36 @@ export function createOpenAIStreamAdapter(
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;
-                    toolCallParts[idx] = {
-                      ...existing,
-                      toolName: toolEvent.tool_name as string,
-                      argsText: toolArgsText,
-                      args: toolArgs,
-                      provenance: mergeToolProvenance(
-                        existing.provenance,
-                        toolProvenance,
-                      ),
-                    };
+                    toolCallParts[idx] = attachScopedExecutionRecord(
+                      {
+                        ...existing,
+                        toolName: toolEvent.tool_name as string,
+                        argsText: toolArgsText,
+                        args: toolArgs,
+                        provenance: mergeToolProvenance(
+                          existing.provenance,
+                          toolProvenance,
+                        ),
+                      },
+                      executionRecord,
+                    );
                   } else {
-                    toolCallParts.push({
-                      type: "tool-call" as const,
-                      toolCallId: id,
-                      toolName: toolEvent.tool_name as string,
-                      argsText: toolArgsText,
-                      args: toolArgs,
-                      textCursor: cumulativeText.length,
-                      ...(toolProvenance ? { provenance: toolProvenance } : {}),
-                    } as PositionedToolCallPart);
+                    toolCallParts.push(
+                      attachScopedExecutionRecord(
+                        {
+                          type: "tool-call" as const,
+                          toolCallId: id,
+                          toolName: toolEvent.tool_name as string,
+                          argsText: toolArgsText,
+                          args: toolArgs,
+                          textCursor: cumulativeText.length,
+                          ...(toolProvenance
+                            ? { provenance: toolProvenance }
+                            : {}),
+                        } as PositionedToolCallPart,
+                        executionRecord,
+                      ),
+                    );
                   }
                   if (awaitingConfirmation) {
                     useChatRuntimeStore
@@ -6679,6 +6923,15 @@ export function createOpenAIStreamAdapter(
                           background?: string;
                           prompt?: string;
                         };
+                    const completionExecutionRecord =
+                      toolEvent.execution_state === "completed"
+                        ? parseBackendExecutionRecord(
+                            toolEvent.execution_record,
+                          )
+                        : null;
+                    const executionRecord =
+                      completionExecutionRecord ??
+                      scopedExecutionRecordFromCard(id);
                     const imageB64 = toolEvent.image_b64 as string | undefined;
                     // A valid MCP image envelope wins; an invalid marker falls through so a sandbox __IMAGES__
                     // suffix still renders.
@@ -6755,12 +7008,16 @@ export function createOpenAIStreamAdapter(
                     const nextArgs =
                       toolEvent.arguments &&
                       typeof toolEvent.arguments === "object"
-                        ? (toolEvent.arguments as ToolCallMessagePart["args"])
+                        ? (stripUntrustedExecutionMetadata(
+                            toolEvent.arguments,
+                          ) as ToolCallMessagePart["args"])
                         : undefined;
-                    const mergedArgs: ToolCallMessagePart["args"] = {
-                      ...(toolCallParts[idx].args ?? {}),
+                    const mergedArgs = stripUntrustedExecutionMetadata({
+                      ...(stripUntrustedExecutionMetadata(
+                        toolCallParts[idx].args,
+                      ) as ToolCallMessagePart["args"]),
                       ...(nextArgs ?? {}),
-                    } as ToolCallMessagePart["args"];
+                    }) as ToolCallMessagePart["args"];
                     const overwrittenArgumentKeys =
                       nextArgs !== undefined ? Object.keys(nextArgs) : [];
                     // Merge tool_end native_part into args.google so the
@@ -6840,20 +7097,23 @@ export function createOpenAIStreamAdapter(
                     const existing = toolCallParts[
                       idx
                     ] as PositionedToolCallPart;
-                    toolCallParts[idx] = {
-                      ...existing,
-                      args: mergedArgs,
-                      argsText: mergedToolCallArgumentsText(
-                        existing.argsText,
-                        mergedArgs,
-                        overwrittenArgumentKeys,
-                      ),
-                      result: parsedResult,
-                      provenance: mergeToolProvenance(
-                        existing.provenance,
-                        toolProvenance,
-                      ),
-                    };
+                    toolCallParts[idx] = attachScopedExecutionRecord(
+                      {
+                        ...existing,
+                        args: mergedArgs,
+                        argsText: mergedToolCallArgumentsText(
+                          existing.argsText,
+                          mergedArgs,
+                          overwrittenArgumentKeys,
+                        ),
+                        result: parsedResult,
+                        provenance: mergeToolProvenance(
+                          existing.provenance,
+                          toolProvenance,
+                        ),
+                      },
+                      executionRecord,
+                    );
                   }
                 }
                 yield {
@@ -7150,8 +7410,8 @@ export function createOpenAIStreamAdapter(
                       existing.args ?? {};
                     if (slotText) {
                       try {
-                        parsedArgs = JSON.parse(
-                          slotText,
+                        parsedArgs = stripUntrustedExecutionMetadata(
+                          JSON.parse(slotText),
                         ) as ToolCallMessagePart["args"];
                       } catch {
                         parsedArgs = {
@@ -7239,6 +7499,7 @@ export function createOpenAIStreamAdapter(
                       stablePartId ||
                       mintStreamedCardId(idx ?? toolCallParts.length);
                     if (!stablePartId) paintStreamedCard(callId);
+                    else discardAuthoritativeExecutionRecord(callId, executionRecordScope);
 
                     if (!codexRoundToolCallIds.includes(callId)) {
                       codexRoundToolCallIds.push(callId);
@@ -7281,8 +7542,8 @@ export function createOpenAIStreamAdapter(
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
                       try {
-                        parsedArgs = JSON.parse(
-                          argsText,
+                        parsedArgs = stripUntrustedExecutionMetadata(
+                          JSON.parse(argsText),
                         ) as ToolCallMessagePart["args"];
                       } catch {
                         parsedArgs = {

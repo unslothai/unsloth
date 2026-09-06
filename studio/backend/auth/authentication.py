@@ -385,18 +385,30 @@ async def authenticated_without_credential(
     return admitted_without_credential(credentials)
 
 
-def require_ui_session_for_local_commands(via_api_key: bool) -> None:
-    """Refuse an sk-unsloth API key that asks to define a local (stdio) MCP command.
+_LOCAL_MCP_UI_ONLY_DETAIL = (
+    "Local (stdio) MCP servers can only be configured from the Unsloth UI, "
+    "not with an API key. Use an http:// or https:// MCP server instead."
+)
+UI_ONLY_ACTION_DETAIL = (
+    "This action can only be performed from the Unsloth UI, not with an API key."
+)
+
+
+def require_ui_session_for_local_commands(
+    via_api_key: bool, detail: str = _LOCAL_MCP_UI_ONLY_DETAIL
+) -> None:
+    """Refuse an sk-unsloth API key for an action only a UI session may take.
 
     stdio MCP runs a command on this host as the backend user, outside the
     python/terminal sandbox, so only a UI session may choose what runs. API keys
-    keep http(s) MCP, and stdio servers the owner already configured.
+    keep http(s) MCP, and stdio servers the owner already configured. The
+    tool-isolation routes reuse the gate with their own wording, since a 403
+    about MCP servers would send an API caller looking in the wrong place.
     """
     if via_api_key:
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
-            detail = "Local (stdio) MCP servers can only be configured from the Unsloth UI, "
-            "not with an API key. Use an http:// or https:// MCP server instead.",
+            detail = detail,
         )
 
 

@@ -555,6 +555,293 @@ export interface OpenAIChatMessage {
   name?: string;
 }
 
+export type ToolExecutionMode = "os_isolation_required" | "limited" | "full";
+
+/** Mirrors ToolNetworkPolicy in tool-isolation.ts (this module stays import-free). */
+export type ToolNetworkPolicy = "deny" | "allowlist";
+
+/** What a finished launch actually had: the two request policies, or "unrestricted" for
+ *  Full access and for Limited launches, which keep the host network. */
+export type ToolExecutionRecordNetworkPolicy = ToolNetworkPolicy | "unrestricted";
+
+/** Launch-time protection facts emitted by the backend that ran the tool. */
+export interface ToolExecutionRecord {
+  requested_mode: ToolExecutionMode;
+  effective_mode: ToolExecutionMode;
+  environment: string;
+  backend: string;
+  profile_id: string;
+  probe_generation: string;
+  os_isolation: boolean;
+  retained_safeguards: string[];
+  limitations?: string[];
+  /** Network reach the launch actually had. Absent from older backends, which means "deny". */
+  network_policy?: ToolExecutionRecordNetworkPolicy;
+  /** Hosts admitted when network_policy is "allowlist". */
+  network_allowlist?: string[];
+}
+
+/** Reserved backend metadata. Model/provider arguments must never retain it. */
+export const TOOL_EXECUTION_RECORD_ARG_KEY =
+  "__unsloth_execution_record" as const;
+
+const BACKEND_EXECUTION_RECORD = Symbol("unsloth.backend-execution-record");
+type BackendExecutionRecord = ToolExecutionRecord & {
+  [BACKEND_EXECUTION_RECORD]: true;
+};
+
+const authoritativeExecutionRecords = new Map<string, BackendExecutionRecord>();
+/** Records outlive their cards only until a run ends; this bound keeps a tab that streams
+ *  thousands of tool calls from growing the map without limit (oldest entry goes first). */
+const MAX_AUTHORITATIVE_EXECUTION_RECORDS = 2048;
+const RECORD_KEY_SEPARATOR = "\u0000";
+
+/** Local model tool-call ids repeat across conversations and across turns ("tool_call_0"), so
+ *  a record is filed under the pane+thread+assistant-message scope its run wrote it in (see
+ *  toolExecutionRecordScope). An absent scope is the legacy single namespace. */
+function executionRecordKey(toolCallId: string, scope?: string): string {
+  return `${scope ?? ""}${RECORD_KEY_SEPARATOR}${toolCallId}`;
+}
+
+export function stripUntrustedExecutionMetadata(args: unknown): unknown {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return args;
+  return Object.fromEntries(
+    Object.entries(args as Record<string, unknown>).filter(
+      ([key]) => key !== TOOL_EXECUTION_RECORD_ARG_KEY,
+    ),
+  );
+}
+
+function parseExecutionRecordShape(value: unknown): ToolExecutionRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const modes = new Set<ToolExecutionMode>([
+    "os_isolation_required",
+    "limited",
+    "full",
+  ]);
+  if (
+    !modes.has(record.requested_mode as ToolExecutionMode) ||
+    !modes.has(record.effective_mode as ToolExecutionMode) ||
+    typeof record.environment !== "string" ||
+    typeof record.backend !== "string" ||
+    typeof record.profile_id !== "string" ||
+    typeof record.probe_generation !== "string" ||
+    typeof record.os_isolation !== "boolean" ||
+    !Array.isArray(record.retained_safeguards) ||
+    !record.retained_safeguards.every((item) => typeof item === "string") ||
+    (record.limitations !== undefined &&
+      (!Array.isArray(record.limitations) ||
+        !record.limitations.every((item) => typeof item === "string"))) ||
+    (record.network_policy !== undefined &&
+      record.network_policy !== "deny" &&
+      record.network_policy !== "allowlist" &&
+      record.network_policy !== "unrestricted") ||
+    (record.network_allowlist !== undefined &&
+      (!Array.isArray(record.network_allowlist) ||
+        !record.network_allowlist.every((item) => typeof item === "string")))
+  ) {
+    return null;
+  }
+  return {
+    requested_mode: record.requested_mode as ToolExecutionMode,
+    effective_mode: record.effective_mode as ToolExecutionMode,
+    environment: record.environment,
+    backend: record.backend,
+    profile_id: record.profile_id,
+    probe_generation: record.probe_generation,
+    os_isolation: record.os_isolation,
+    retained_safeguards: [...record.retained_safeguards] as string[],
+    limitations: Array.isArray(record.limitations)
+      ? ([...record.limitations] as string[])
+      : [],
+    ...(record.network_policy !== undefined
+      ? { network_policy: record.network_policy as ToolExecutionRecordNetworkPolicy }
+      : {}),
+    ...(Array.isArray(record.network_allowlist)
+      ? { network_allowlist: [...record.network_allowlist] as string[] }
+      : {}),
+  };
+}
+
+/** Parse and brand a record received on a backend-owned tool event. */
+export function parseBackendExecutionRecord(
+  value: unknown,
+): ToolExecutionRecord | null {
+  const record = parseExecutionRecordShape(value);
+  if (!record) return null;
+  Object.defineProperty(record, BACKEND_EXECUTION_RECORD, {
+    value: true,
+    enumerable: false,
+  });
+  return record;
+}
+
+function isBackendExecutionRecord(
+  record: ToolExecutionRecord | null,
+): record is BackendExecutionRecord {
+  return (
+    record !== null &&
+    (record as BackendExecutionRecord)[BACKEND_EXECUTION_RECORD] === true
+  );
+}
+
+export type ToolCardState = {
+  toolCallId: string;
+  executionRecord?: ToolExecutionRecord;
+};
+
+/** Attach only a record created by parseBackendExecutionRecord. */
+export function attachAuthoritativeExecutionRecord<T extends ToolCardState>(
+  card: T,
+  record: ToolExecutionRecord | null,
+  scope?: string,
+): Omit<T, "executionRecord"> & ToolCardState {
+  const ordinaryCard = Object.fromEntries(
+    Object.entries(card).filter(([key]) => key !== "executionRecord"),
+  ) as Omit<T, "executionRecord">;
+  const key = executionRecordKey(card.toolCallId, scope);
+  if (isBackendExecutionRecord(record)) {
+    // Re-insert so a refreshed record counts as the newest entry.
+    authoritativeExecutionRecords.delete(key);
+    authoritativeExecutionRecords.set(key, record);
+    while (
+      authoritativeExecutionRecords.size > MAX_AUTHORITATIVE_EXECUTION_RECORDS
+    ) {
+      const oldest = authoritativeExecutionRecords.keys().next().value;
+      if (oldest === undefined) break;
+      authoritativeExecutionRecords.delete(oldest);
+    }
+    return { ...ordinaryCard, executionRecord: record };
+  }
+  authoritativeExecutionRecords.delete(key);
+  return ordinaryCard;
+}
+
+/** Read the process-local backend record associated with this live card, in the scope the
+ *  run that produced it wrote under. */
+export function toolExecutionRecordFromCard(
+  toolCallId: string,
+  scope?: string,
+): ToolExecutionRecord | null {
+  return (
+    authoritativeExecutionRecords.get(executionRecordKey(toolCallId, scope)) ??
+    null
+  );
+}
+
+/** Drop a card's record in exactly one scope. An unscoped call touches only the legacy
+ *  unscoped namespace: hydrating one conversation must never erase a record another pane or
+ *  thread filed under the same repeating local id. */
+export function discardAuthoritativeExecutionRecord(
+  toolCallId: string,
+  scope?: string,
+): void {
+  authoritativeExecutionRecords.delete(executionRecordKey(toolCallId, scope));
+}
+
+/** Test seam: how many records are held right now. */
+export function authoritativeExecutionRecordCount(): number {
+  return authoritativeExecutionRecords.size;
+}
+
+function stripUntrustedRecordEnvelope(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      ([key]) => key !== "executionRecord" && key !== "execution_record",
+    ),
+  );
+}
+
+/** Stored/imported message content has no backend-event provenance. */
+export function stripUntrustedExecutionMetadataFromContent(
+  content: unknown,
+): unknown {
+  if (!Array.isArray(content)) return content;
+  return content.map((part) => {
+    if (
+      !part ||
+      typeof part !== "object" ||
+      Array.isArray(part) ||
+      (part as Record<string, unknown>).type !== "tool-call"
+    ) {
+      return part;
+    }
+    const sanitized = Object.fromEntries(
+      Object.entries(part as Record<string, unknown>).filter(
+        ([key]) => key !== "executionRecord",
+      ),
+    );
+    sanitized.args = stripUntrustedExecutionMetadata(sanitized.args);
+    if ("result" in sanitized) {
+      sanitized.result = stripUntrustedRecordEnvelope(sanitized.result);
+    }
+    if ("artifact" in sanitized) {
+      sanitized.artifact = stripUntrustedRecordEnvelope(sanitized.artifact);
+    }
+    return sanitized;
+  });
+}
+
+/** A card label derived only from the backend's launch-time record. An OS-isolated launch that
+ *  reached the network allowlist says so, since the sandbox was deliberately opened that far. */
+export function toolExecutionRecordLabel(
+  record: ToolExecutionRecord | null,
+): string | null {
+  const base = toolExecutionRecordBaseLabel(record);
+  if (!base || !record) return base;
+  if (record.os_isolation && record.network_policy === "allowlist") {
+    return `${base} · network allowlist`;
+  }
+  return base;
+}
+
+function toolExecutionRecordBaseLabel(
+  record: ToolExecutionRecord | null,
+): string | null {
+  if (!record) return null;
+  if (record.effective_mode === "full") {
+    return "Full access · security restrictions disabled";
+  }
+  if (record.effective_mode === "limited") {
+    // Mirrors limitedBackendLabel in tool-isolation-labels.ts.
+    return record.backend === "windows-restricted-token"
+      ? "Limited · restricted token (Windows)"
+      : "Limited · no OS isolation";
+  }
+  if (!record.os_isolation) return null;
+  if (record.backend === "windows-lpac") {
+    // Mirrors backendLabel in tool-isolation-labels.ts (this module stays free of runtime
+    // imports so the node tests can load it): the plain AppContainer fallback is not LPAC.
+    return record.profile_id.startsWith("windows-appcontainer")
+      ? "Preview OS isolation · AppContainer (Windows)"
+      : "Preview OS isolation · LPAC (Windows)";
+  }
+  if (record.backend === "macos-seatbelt") {
+    return "Preview OS isolation · Seatbelt (lifecycle unverified)";
+  }
+  const environment = record.environment.toLowerCase();
+  const usesBubblewrap = record.backend.toLowerCase().includes("bubblewrap");
+  const backend = usesBubblewrap ? "Bubblewrap" : record.backend;
+  if (usesBubblewrap && environment === "native_linux") {
+    return `Protected · ${backend}`;
+  }
+  if (environment === "wsl2") {
+    return `Preview OS isolation · ${backend} (WSL2)`;
+  }
+  if (environment === "container") {
+    return `Preview OS isolation · ${backend} (Container)`;
+  }
+  if (environment === "colab") {
+    return `Preview OS isolation · ${backend} (Colab)`;
+  }
+  if (usesBubblewrap) {
+    return `Preview OS isolation · ${backend} (${record.environment})`;
+  }
+  return `Protected · ${backend}`;
+}
+
 export interface OpenAIChatCompletionsRequest {
   model: string;
   messages: OpenAIChatMessage[];
@@ -603,6 +890,15 @@ export interface OpenAIChatCompletionsRequest {
   permission_mode?: "ask" | "auto" | "off" | "full";
   /** Local models + enable_tools only. Full-access escape hatch. */
   bypass_permissions?: boolean;
+  /** Requested Python/Terminal protection mode, revalidated at launch. */
+  tool_execution_mode?: ToolExecutionMode;
+  /** Page-lifetime identity bound to a Limited grant. */
+  tool_ui_session_id?: string;
+  /** Opaque, session-only consent proof. Sent only for current Limited mode. */
+  limited_grant?: string;
+  /** Outbound network for an OS-isolated launch. Omitted means "deny"; "allowlist" is sent only
+   *  when the capability advertised it. Ignored under Limited and Full. */
+  tool_network_policy?: ToolNetworkPolicy;
   /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;
