@@ -2607,6 +2607,25 @@ def _torchcodec_provenance_hint() -> "str | None":
         return None  # rocm and xpu publish no torchcodec under this name
     index = _torch_index_url_for_remedy(torch_local)
     codec_from = codec_local or "the default index"
+    # Pin the window the table allows, not a bare name. The accelerator indexes carry the
+    # whole codec line, so `pip install torchcodec` on a torch 2.9 host installs the newest
+    # release there and trades a wrong-accelerator build for a wrong-VERSION one, which
+    # leaves audio just as disabled. Past the table, the ABI-stable floor is the pin.
+    try:
+        from packaging.version import Version
+        parts = Version(str(torch.__version__).split("+", 1)[0]).release
+        torch_release = tuple(parts[:2]) + (0,) * (2 - len(parts[:2]))
+    except Exception:
+        torch_release = ()
+    allowed = _TORCH_TORCHCODEC_MINORS.get(".".join(str(p) for p in torch_release))
+    if allowed:
+        pin = sorted(allowed)[-1]
+        want = f"'torchcodec>={pin},{_torchcodec_exclusive_upper(pin)}'"
+    elif torch_release and torch_release >= _TORCHCODEC_ABI_STABLE_TORCH:
+        abi = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
+        want = f"'torchcodec>={abi}.0'"
+    else:
+        want = "torchcodec"
     # "may be", not "is": all this establishes is that the two came from different indexes.
     # torchcodec is published per accelerator on every line, 0.12+ included, so a mismatch
     # stays possible there -- but the load can also have failed for an unrelated reason such
@@ -2615,7 +2634,7 @@ def _torchcodec_provenance_hint() -> "str | None":
         f"torchcodec {getattr(torchcodec, '__version__', '?')} came from {codec_from} while "
         f"torch {getattr(torch, '__version__', '?')} is a {torch_local} build, so the codec "
         f"may be built for a different accelerator; audio is disabled. Try "
-        f"`pip install --force-reinstall --no-deps --index-url {index} torchcodec`. "
+        f"`pip install --force-reinstall --no-deps --index-url {index} {want}`. "
         f"If that does not help, the failure is likely FFmpeg rather than the wheel: "
         f"torchcodec needs libavutil / libavcodec from FFmpeg 4 through 8."
     )

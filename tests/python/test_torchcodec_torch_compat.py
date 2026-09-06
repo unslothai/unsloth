@@ -1592,3 +1592,90 @@ def test_each_pip_command_owns_the_packages_it_names():
     removed = "!pip install torchcodec==0.10.0 && pip uninstall -y torchcodec"
     assert nv._effective_requested_version(removed, "torchcodec", "0.11.0") == ("", True)
     assert nv.rule_inst_004_torchcodec_torch(removed, colab, "nb.ipynb", 0) == []
+
+
+def test_a_fallback_after_a_successful_install_does_not_run():
+    """`A || B` runs B only when A fails, and the rules read a cell as the shell would run it
+    on a working host. Replaying the fallback let `install codec==0.10 || install codec==0.12`
+    finish on a 0.12 that never gets installed."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.10.0+cu128", "torchcodec": "0.11.0+cu128"}
+    fallback = "!pip install torchcodec==0.10.0 || pip install torchcodec==0.12.0"
+    assert nv._effective_requested_version(fallback, "torchcodec", "0.11.0") == ("0.10.0", True)
+    assert nv.rule_inst_004_torchcodec_torch(fallback, colab, "nb.ipynb", 0) == []
+
+    # `&&` and `;` both run, so the later command still decides there.
+    for separator in ("&&", ";"):
+        chained = f"!pip install torchcodec==0.10.0 {separator} pip install torchcodec==0.12.0"
+        assert nv._effective_requested_version(chained, "torchcodec", "0.11.0") == (
+            "0.12.0",
+            True,
+        ), separator
+
+
+def test_a_package_is_attributed_by_token_not_substring():
+    """`pip install torch && pip uninstall -y torchaudio` put `torch` in the uninstall span,
+    because "torch" is a substring of "torchaudio", so torch read as removed and the pair the
+    cell leaves installed went unjudged."""
+    from scripts import notebook_validator as nv
+
+    overlapping = "!pip install torch && pip uninstall -y torchaudio"
+    assert nv._effective_requested_version(overlapping, "torch", "2.11.0") == ("2.11.0", True)
+    assert nv._span_tokens(' -y torchaudio') == {"-y", "torchaudio"}
+
+    # The uninstall of the package itself still lands.
+    removed = "!pip install torchaudio && pip uninstall -y torch"
+    assert nv._effective_requested_version(removed, "torch", "2.11.0") == ("", True)
+
+
+def test_the_provenance_remedy_pins_the_compatible_window(monkeypatch):
+    """The accelerator indexes carry the whole codec line, so a bare `torchcodec` on a torch
+    2.9 host installs the newest release there and trades a wrong-accelerator build for a
+    wrong-version one, leaving audio just as disabled."""
+    import sys
+    import types
+
+    fixes = _load_import_fixes_module()
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
+
+    codec = types.ModuleType("torchcodec")
+    codec.__version__ = "0.8.0"
+    monkeypatch.setitem(sys.modules, "torchcodec", codec)
+
+    _stub_torch(monkeypatch, "2.9.0+cu128")
+    hint = fixes._torchcodec_provenance_hint()
+    assert "'torchcodec>=0.9,<0.10.0'" in hint, hint
+    assert "--index-url https://download.pytorch.org/whl/cu128 torchcodec`" not in hint
+
+    # Past the table, the ABI-stable floor is the pin instead of a bare name.
+    _stub_torch(monkeypatch, "2.12.0+cu128")
+    codec.__version__ = "0.11.0"
+    assert "'torchcodec>=0.12.0'" in (fixes._torchcodec_provenance_hint() or "")
+
+
+def test_a_cuda_index_codec_also_installs_npp():
+    """torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is not in torch's own
+    dependency set, so a --no-deps install from a cuNNN index reports success and then fails
+    to import. docker/Dockerfile installs nvidia-npp-cu12 beside the same wheel."""
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert 'f"nvidia-npp-cu{_npp_major}"' in source
+    assert "Installing torchcodec CUDA runtime (NPP)" in source
+
+    # The major follows the index leaf, and a cpu or rocm index asks for nothing.
+    import re
+    for url, want in (
+        ("https://download.pytorch.org/whl/cu128", "12"),
+        ("https://download.pytorch.org/whl/cu130", "13"),
+        ("https://mirror.corp.example/whl/cu128/", "12"),
+        ("https://download.pytorch.org/whl/cpu", None),
+        ("https://download.pytorch.org/whl/rocm6.3", None),
+    ):
+        match = re.search(r"/cu(\d+)/?$", url)
+        assert (match.group(1)[:2] if match else None) == want, url
+
+    # The Dockerfile this mirrors still pairs the two, so the rationale stays checkable.
+    dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding = "utf-8")
+    assert "nvidia-npp-cu12" in dockerfile

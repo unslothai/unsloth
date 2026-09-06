@@ -666,6 +666,22 @@ def _version_is_excluded(version: str, exclusion: str) -> bool:
     return installed + [0] * (width - len(installed)) == wanted + [0] * (width - len(wanted))
 
 
+def _span_tokens(span):
+    """The words one pip command was written with, for exact attribution.
+
+    Substring membership put `torch` inside `pip uninstall -y torchaudio`, so an install of
+    torch on the left of an `&&` was read as removed and the pair it leaves went unjudged.
+    """
+    try:
+        return set(shlex.split(span, posix = True))
+    except ValueError:
+        # Same f-string escape hatch parse_pip_line uses: `{xformers}` is not shell-quotable.
+        try:
+            return set(shlex.split(re.sub(r"\{[^}]+\}", "PLACEHOLDER", span), posix = True))
+        except ValueError:
+            return set(span.split())
+
+
 def _verb_scoped_requirements(install_cell: str) -> "list[tuple[bool, list[str]]]":
     """`(is_uninstall, requirements)` for every pip command, in the order pip runs them.
 
@@ -686,10 +702,16 @@ def _verb_scoped_requirements(install_cell: str) -> "list[tuple[bool, list[str]]
         for i, match in enumerate(verbs):
             stop = verbs[i + 1].start() if i + 1 < len(verbs) else len(invocation.raw)
             span = invocation.raw[match.end() : stop]
+            if i and "||" in invocation.raw[verbs[i - 1].end():match.start()]:
+                # `A || B` runs B only when A FAILS, and the rules read a cell as the shell
+                # would run it on a working host, where A succeeds. Replaying the fallback
+                # too let `pip install codec==0.10 || pip install codec==0.12` finish on a
+                # 0.12 that never gets installed. `&&` and `;` both run, so only `||` skips.
+                continue
             out.append(
                 (
                     match.group(1).lower() == "uninstall",
-                    [r for r in invocation.packages if r in span],
+                    [r for r in invocation.packages if r in _span_tokens(span)],
                 )
             )
     return out
