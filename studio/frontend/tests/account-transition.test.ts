@@ -8,6 +8,7 @@ import {
   ACCOUNT_DATABASES,
   BROWSER_ACCOUNT_KEY,
   installAccountTransitionListener,
+  normalizeAccountUsername,
   resetFullAccessForMultiUser,
   transitionBrowserAccount,
 } from "../src/lib/account-transition.ts";
@@ -236,4 +237,18 @@ test("multi-user policy resets full while preserving other permission modes", ()
     resetFullAccessForMultiUser(b.browser.localStorage);
     assert.equal(b.data.get("unsloth_chat_permission_mode"), mode);
   }
+});
+
+test("username normalization matches full Unicode case folding", () => {
+  for (const [input, expected] of [
+    [" UNSLOTH ", "unsloth"],
+    [" Straße ", "strasse"],
+    ["ΟΣ", "οσ"],
+    ["ς", "σ"],
+    ["İ", "i\u0307"],
+    ["ı", "ı"],
+    ["ﬃ", "ffi"],
+    ["ꭰ", "Ꭰ"],
+  ])
+    assert.equal(normalizeAccountUsername(input), expected);
 });
