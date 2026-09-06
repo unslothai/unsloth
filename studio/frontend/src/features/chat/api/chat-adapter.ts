@@ -4941,24 +4941,17 @@ export function createOpenAIStreamAdapter(
         .reverse()
         .find((message) => message.role === "user");
 
-      // Durability gate keys on THIS turn's attachments only. The scans above walk post-prune history so an old
-      // refused turn cannot mis-attribute media onto the next one - correct for building the request payload, but it
-      // also meant one screenshot anywhere in a thread excluded every later text-only turn from the durable path.
-      // A turn that itself carries media still stays on the subscriber-owned stream; a text follow-up does not.
+      // Payload attachment fields are THIS turn's only - the scans above walk post-prune history so an old turn's
+      // media cannot mis-ride a later one. Media turns are durable candidates too: replay is faithful now, and once
+      // generation starts the client contributes nothing; a backend toggle-off degrades to legacy silently via
+      // isLegacyFallbackChatGenerationAdmissionError, exactly like a policy-refused tool turn.
       const currentTurnMessages = [generationUserMessage] as unknown as Parameters<
         typeof findLatestUserImageBase64
       >[0];
-      const currentTurnCarriesMedia = Boolean(
-        findLatestUserImageBase64(currentTurnMessages) ||
-          findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation) ||
-          findLatestUserVideoBase64(currentTurnMessages),
-      );
       const generationCandidate = Boolean(
         !isExternalRequest &&
           !activeModel?.isAudio &&
           !runtime.loadedIsDiffusion &&
-          // Turn-scoped, not thread-scoped: see currentTurnCarriesMedia above.
-          !currentTurnCarriesMedia &&
           // Continue yields the seeded partial before the request starts so the autosave lands before
           // admission, which 409s a substantive placeholder. Continuations keep the legacy stream.
           !continuation &&

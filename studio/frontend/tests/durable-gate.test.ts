@@ -2,11 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
+
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
 const { BROWSER_EXECUTED_TOOLS, turnRequiresLegacyStream } = await import(
   "../src/features/chat/api/durable-gate.ts"
@@ -44,4 +47,18 @@ test("a plain text turn stays durable", () => {
 
 test("only a browser-executed tool forces the legacy stream", () => {
   assert.equal(BROWSER_EXECUTED_TOOLS.size, 0, "nothing is browser-executed today");
+});
+
+test("a media-bearing turn stays durable; media rides the payload, not the gate", () => {
+  // The gate used to read this turn's attachments and force a screenshot-carrying turn onto the
+  // cancel-on-disconnect stream. Replay is faithful now, so once generation starts the client
+  // contributes nothing and the turn is durable like any other; if the backend toggle ever flips
+  // media back off, its 400 degrades silently through isLegacyFallbackChatGenerationAdmissionError.
+  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  assert.ok(
+    !adapter.includes("currentTurnCarriesMedia"),
+    "media re-entered the durability gate: a screenshot turn would cancel on tab close again",
+  );
+  // The attachment itself still rides along, scoped to THIS turn's message only - never to thread history.
+  assert.match(adapter, /image_base64: findLatestUserImageBase64\(currentTurnMessages\)/);
 });
