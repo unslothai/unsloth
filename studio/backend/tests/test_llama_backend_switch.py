@@ -157,9 +157,7 @@ def _drifted(monkeypatch, resolved_backend = "vulkan"):
                 {
                     "backend": backend,
                     "available": True,
-                    "resolved_backend": (
-                        resolved_backend if backend == "auto" else backend
-                    ),
+                    "resolved_backend": (resolved_backend if backend == "auto" else backend),
                     "asset": f"app-b9596-mix-abc-linux-x64-{backend}.tar.gz",
                 }
                 for backend in ("auto", "cpu", "cuda", "rocm", "vulkan")

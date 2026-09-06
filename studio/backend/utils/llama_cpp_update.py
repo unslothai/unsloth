@@ -519,9 +519,7 @@ def _llama_only_status(
     # bundle a migration would. The drift only needs its own offer when nothing else
     # would move the install.
     to_backend = (
-        None
-        if job_running or update_available
-        else _pending_backend_migration(binary, marker)
+        None if job_running or update_available else _pending_backend_migration(binary, marker)
     )
 
     with _job_lock:
@@ -638,7 +636,10 @@ def _selection_applied(
 
 
 def _pending_backend_migration(
-    binary: Optional[str], marker: Optional[dict], *, force_refresh: bool = False
+    binary: Optional[str],
+    marker: Optional[dict],
+    *,
+    force_refresh: bool = False,
 ) -> Optional[str]:
     """The backend a re-applied AUTOMATIC selection would install, when it differs.
 

@@ -6915,8 +6915,7 @@ def test_a_pin_written_in_the_other_index_space_is_unusable(monkeypatch):
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: installed_is_vulkan)
         )
         assert (
-            asyncio.run(inference_route._override_gpu_ids_still_resolve([0], stored_kind))
-            is False
+            asyncio.run(inference_route._override_gpu_ids_still_resolve([0], stored_kind)) is False
         ), (installed_is_vulkan, stored_kind)
 
 
@@ -6924,7 +6923,6 @@ def test_a_rocm_pin_survives_while_the_backend_is_still_rocm(monkeypatch):
     # Negative control for the test above: the mismatch check must not reject a pin that
     # never moved, or the flip would drop every stored pin on every host.
     from core.inference.llama_cpp import LlamaCppBackend
-
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
     assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "physical")) is True
 
