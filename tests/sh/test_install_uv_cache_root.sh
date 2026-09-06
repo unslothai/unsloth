@@ -180,6 +180,83 @@ for shell in sh bash; do
     run_case "$shell" "unresolvable default safely selects Studio" unset "" false \
         "" unset "" "$ROOT" "" "$STUDIO_CACHE" studio \
         "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+
+    # A cache that was only ever RESOLVED against, never downloaded into. On a real
+    # uv 0.10 cache `wheels-v*` holds .msgpack and .http exclusively, so one
+    # `uv pip install --dry-run` -- or an install that failed before fetching
+    # anything -- leaves a file there. Reusing that buys no download saving at all
+    # and puts the whole install outside the Studio root, so it must stay Studio.
+    META_CACHE="$CASE/metadata only/uv"
+    mkdir -p "$META_CACHE/wheels-v6/pypi/torch" "$META_CACHE/simple-v20/pypi" \
+        "$META_CACHE/sdists-v9/pypi/pkg"
+    : > "$META_CACHE/wheels-v6/pypi/torch/2.11.0-cp313-none-any.msgpack"
+    : > "$META_CACHE/wheels-v6/pypi/torch/2.11.0.http"
+    : > "$META_CACHE/simple-v20/pypi/torch.rkyv"
+    : > "$META_CACHE/sdists-v9/pypi/pkg/revision.rev"
+    : > "$META_CACHE/sdists-v9/pypi/pkg/download.lock"
+    run_case "$shell" "metadata-only default is not a warm cache" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$META_CACHE" "$STUDIO_CACHE" studio \
+        "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+
+    # The same cache once a real artifact lands next to the metadata.
+    mkdir -p "$META_CACHE/archive-v0/hash/torch"
+    : > "$META_CACHE/archive-v0/hash/torch/_C.so"
+    run_case "$shell" "package bytes beside metadata do count" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$META_CACHE" "$META_CACHE" shared \
+        "reusing existing shared cache ($META_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+        "$STUDIO_CACHE"
+
+    # builds-v* is what modern uv calls the bucket this file used to look for under
+    # the name built-wheels-*.
+    BUILDS_CACHE="$CASE/builds cache/uv"
+    mkdir -p "$BUILDS_CACHE/builds-v0/pkg"
+    : > "$BUILDS_CACHE/builds-v0/pkg/module.py"
+    run_case "$shell" "builds-v0 counts as package data" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
+        "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+        "$STUDIO_CACHE"
+
+    # A bucket symlinked onto another volume still holds the packages. `find` does
+    # not descend a symlinked start point without -L, and Get-ChildItem -Recurse on
+    # the PowerShell side does, so without -L the two installers disagree here.
+    LINK_CACHE="$CASE/symlinked bucket/uv"
+    LINK_TARGET="$CASE/symlinked bucket/elsewhere"
+    mkdir -p "$LINK_CACHE" "$LINK_TARGET/pkg"
+    : > "$LINK_TARGET/pkg/payload.so"
+    if ln -s "$LINK_TARGET" "$LINK_CACHE/archive-v0" 2>/dev/null; then
+        run_case "$shell" "symlinked bucket is still inspected" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$LINK_CACHE" "$LINK_CACHE" shared \
+            "reusing existing shared cache ($LINK_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+            "$STUDIO_CACHE"
+    fi
+
+    # An unreadable bucket is not an empty bucket. Falling back to the Studio cache
+    # is right, but it must say why: otherwise the user gets an unexplained
+    # multi-gigabyte download and no way to connect it to a permission problem.
+    DENIED_CACHE="$CASE/denied bucket/uv"
+    mkdir -p "$DENIED_CACHE/archive-v0/pkg"
+    : > "$DENIED_CACHE/archive-v0/pkg/payload.so"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 000 "$DENIED_CACHE/archive-v0" 2>/dev/null; then
+        run_case "$shell" "unreadable bucket says why it fell back" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$DENIED_CACHE" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE); part of $DENIED_CACHE could not be read, so cached packages may download again" \
+            "$STUDIO_CACHE"
+        chmod 755 "$DENIED_CACHE/archive-v0" 2>/dev/null || true
+    fi
+
+    # An unreadable corner deeper down must NOT change the verdict: the packages are
+    # still visible, so the cache is still warm.
+    DEEP_CACHE="$CASE/denied leaf/uv"
+    mkdir -p "$DEEP_CACHE/archive-v0/visible" "$DEEP_CACHE/archive-v0/aaa hidden"
+    : > "$DEEP_CACHE/archive-v0/visible/payload.so"
+    : > "$DEEP_CACHE/archive-v0/aaa hidden/other.so"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 000 "$DEEP_CACHE/archive-v0/aaa hidden" 2>/dev/null; then
+        run_case "$shell" "unreadable leaf keeps a warm cache warm" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$DEEP_CACHE" "$DEEP_CACHE" shared \
+            "reusing existing shared cache ($DEEP_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+            "$STUDIO_CACHE"
+        chmod 755 "$DEEP_CACHE/archive-v0/aaa hidden" 2>/dev/null || true
+    fi
 done
 
 _resolve_line=$(grep -n '^_resolve_studio_destinations$' "$INSTALL_SH" | head -n1 | cut -d: -f1)

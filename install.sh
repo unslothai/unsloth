@@ -673,7 +673,11 @@ _configure_uv_cache() {
     # Ask the verified uv binary for the path it will actually use. This includes
     # uv.toml, pyproject, UV_CONFIG_FILE and platform defaults. A blank inherited
     # variable is intentionally removed so it cannot override those sources.
-    _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null) || _uv_default_cache=""
+    # Take the LAST nonblank line: a wrapper or a future uv could print a notice
+    # ahead of the path, and a two-line value silently fails the -d test below,
+    # which reads as "no cache" and quietly picks the Studio path instead.
+    _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null \
+        | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 1) || _uv_default_cache=""
     if [ -z "$_uv_default_cache" ]; then
         if [ -n "${XDG_CACHE_HOME:-}" ]; then
             _uv_default_cache="${XDG_CACHE_HOME}/uv"
@@ -683,18 +687,38 @@ _configure_uv_cache() {
     fi
 
     _uv_default_populated=false
+    _uv_scan_blocked=false
     if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
         # uv venv alone creates root markers, interpreter metadata and empty
         # sdists scaffolding. Reuse only when a package-data bucket contains an
         # actual artifact; stop at the first file and never size or mutate it.
+        #
+        # The extension filter is what separates a warm cache from a merely
+        # visited one. Only archive-*, builds-* and the .whl/extracted contents of
+        # sdists-* hold package bytes. wheels-* is metadata: on a real uv 0.10
+        # cache it is .msgpack and .http exclusively, so a single `--dry-run`
+        # resolve -- or an install that failed before downloading anything --
+        # leaves a file there and used to be read as a warm cache. That sent the
+        # whole install to the global cache for no download saving at all.
+        # -L so a bucket symlinked onto another volume is still inspected, which
+        # is what Get-ChildItem -Recurse does on the PowerShell side.
         for _uv_bucket in \
             "$_uv_default_cache"/archive-* \
-            "$_uv_default_cache"/wheels-* \
+            "$_uv_default_cache"/builds-* \
             "$_uv_default_cache"/built-wheels-* \
+            "$_uv_default_cache"/wheels-* \
             "$_uv_default_cache"/sdists-*; do
             [ -d "$_uv_bucket" ] || continue
-            _uv_artifact=$(find "$_uv_bucket" -type f \
-                ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore ! -name .lock \
+            # A bucket we cannot open is not an empty bucket. Remember that, so the
+            # studio-cache message below can say why it could not reuse the cache
+            # instead of leaving an unexplained multi-gigabyte download.
+            if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
+                _uv_scan_blocked=true
+                continue
+            fi
+            _uv_artifact=$(find -L "$_uv_bucket" -type f \
+                ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+                ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
                 -print 2>/dev/null | head -n 1) || _uv_artifact=""
             if [ -n "$_uv_artifact" ]; then
                 _uv_default_populated=true
@@ -717,7 +741,11 @@ _configure_uv_cache() {
             step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
             ;;
         studio)
-            step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
+            if [ "$_uv_scan_blocked" = true ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
+            else
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
+            fi
             ;;
     esac
 }

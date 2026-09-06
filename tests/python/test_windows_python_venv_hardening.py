@@ -473,7 +473,6 @@ def test_uv_cache_lifecycle_wraps_all_install_time_uv_work():
     assert "Remove-Item -LiteralPath Env:UV_CACHE_DIR" in source
 
 
-
 def test_uv_cache_option_and_environment_parsers_cannot_drift():
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     parse_start = source.index("# ── Parse flags ──")
@@ -512,6 +511,37 @@ def _prepare_uv_default(local_app_data: Path, state: str) -> Path:
         (shared / "archive-v0" / "package" / "payload.py").write_text(
             "cached = True\n", encoding = "utf-8"
         )
+    elif state == "metadata-only":
+        # A cache that was resolved against but never downloaded into. On a real uv
+        # 0.10 cache `wheels-v*` is .msgpack and .http exclusively, so a single
+        # `uv pip install --dry-run` leaves a file here while the cache stays cold.
+        (shared / "wheels-v6" / "pypi" / "torch").mkdir(parents = True)
+        (shared / "wheels-v6" / "pypi" / "torch" / "2.11.0-cp313.msgpack").write_bytes(b"meta")
+        (shared / "wheels-v6" / "pypi" / "torch" / "2.11.0.http").write_bytes(b"meta")
+        (shared / "sdists-v9" / "pypi" / "pkg").mkdir(parents = True)
+        (shared / "sdists-v9" / "pypi" / "pkg" / "revision.rev").write_bytes(b"meta")
+        (shared / "sdists-v9" / "pypi" / "pkg" / "download.lock").write_bytes(b"")
+    elif state == "builds":
+        # What modern uv calls the bucket this selector used to look for as
+        # `built-wheels-*`.
+        (shared / "builds-v0" / "pkg").mkdir(parents = True)
+        (shared / "builds-v0" / "pkg" / "module.py").write_text("x = 1\n", encoding = "utf-8")
+    elif state == "symlinked-bucket":
+        target = local_app_data / "elsewhere" / "pkg"
+        target.mkdir(parents = True)
+        (target / "payload.so").write_bytes(b"data")
+        (shared / "archive-v0").symlink_to(target.parent, target_is_directory = True)
+    elif state == "denied-bucket":
+        (shared / "archive-v0" / "package").mkdir(parents = True)
+        (shared / "archive-v0" / "package" / "payload.py").write_text("x\n", encoding = "utf-8")
+        (shared / "archive-v0").chmod(0o000)
+    elif state == "denied-leaf":
+        (shared / "archive-v0" / "visible").mkdir(parents = True)
+        (shared / "archive-v0" / "visible" / "payload.py").write_text("x\n", encoding = "utf-8")
+        hidden = shared / "archive-v0" / "aaa hidden"
+        hidden.mkdir()
+        (hidden / "other.py").write_text("y\n", encoding = "utf-8")
+        hidden.chmod(0o000)
     else:
         raise AssertionError(f"unknown uv cache fixture: {state}")
     return shared
@@ -532,6 +562,16 @@ def _prepare_uv_default(local_app_data: Path, state: str) -> Path:
         ("custom", "CUSTOM", False, "populated", "custom"),
         ("custom-over-isolation", "CUSTOM", True, "populated", "custom"),
         ("forced-isolation", None, True, "populated", "isolated"),
+        # Metadata without package bytes is not a warm cache: reusing it would put
+        # the whole install outside the Studio root for no download saving.
+        ("metadata-only", None, False, "metadata-only", "studio"),
+        ("builds-bucket", None, False, "builds", "shared"),
+        ("symlinked-bucket", None, False, "symlinked-bucket", "shared"),
+        # One unreadable corner must not make a warm cache read as cold.
+        ("denied-leaf", None, False, "denied-leaf", "shared"),
+        # A bucket that cannot be opened at all is genuinely uninspectable. Falling
+        # back is right; doing it silently is what leaves an unexplained download.
+        ("denied-bucket", None, False, "denied-bucket", "studio"),
     ],
 )
 def test_uv_cache_selector_precedence_and_launch_handoff(
@@ -543,6 +583,8 @@ def test_uv_cache_selector_precedence_and_launch_handoff(
     default_state: str,
     expected_mode: str,
 ):
+    if default_state.startswith("denied") and (os.name == "nt" or os.geteuid() == 0):
+        pytest.skip("POSIX mode bits do not deny this caller")
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     functions = _uv_cache_functions(source)
     studio_root = tmp_path / "studio root"
@@ -630,7 +672,12 @@ try {{
             f"reusing existing shared cache ({effective_cache}) to avoid duplicate Torch/CUDA downloads; "
             "use --isolated-uv-cache to isolate"
         ),
-        "studio": f"using new Studio-owned cache ({studio})",
+        "studio": (
+            f"using new Studio-owned cache ({studio}); part of {shared} could not be "
+            "read, so cached packages may download again"
+            if default_state == "denied-bucket"
+            else f"using new Studio-owned cache ({studio})"
+        ),
         "isolated": (
             f"forced Studio cache isolation ({studio}); already-cached packages may download again"
         ),
@@ -649,7 +696,6 @@ try {{
             encoding = "utf-8"
         ) == "keep"
         assert (shared / ".gitignore").read_text(encoding = "utf-8") == "*\n"
-
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
