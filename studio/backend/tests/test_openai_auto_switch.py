@@ -6784,9 +6784,7 @@ def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
     assert resp.overrides[_LEGACY_SNAPSHOT]["max_seq_length"] == 4096
 
 
-def test_a_fill_never_labels_the_server_s_gpu_pin_with_this_browser_s_index_space(
-    override_store,
-):
+def test_a_fill_never_labels_the_server_s_gpu_pin_with_this_browser_s_index_space(override_store):
     # Two browsers against one server: the stored pin is physical ids from a ROCm-era
     # save, and this one's one-time backfill offers Vulkan ordinals. The ids belong to
     # the space they were written in, so the qualifier cannot arrive without them.

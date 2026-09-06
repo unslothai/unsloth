@@ -1933,9 +1933,7 @@ def test_amd_vulkan_icd_probe_reads_the_loader_overrides_first(monkeypatch, tmp_
     assert ilp._amd_vulkan_icd_present() is False
     monkeypatch.setenv(
         "VK_DRIVER_FILES",
-        os.pathsep.join(
-            [_icd(tmp_path / "intel_icd.json"), _icd(tmp_path / "radeon_icd.json")]
-        ),
+        os.pathsep.join([_icd(tmp_path / "intel_icd.json"), _icd(tmp_path / "radeon_icd.json")]),
     )
     assert ilp._amd_vulkan_icd_present() is True
 
