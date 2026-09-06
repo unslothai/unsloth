@@ -28,7 +28,7 @@ from huggingface_hub import HfApi, ModelCard
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
-from hub.utils.hf_tokens import HfTokenArg, is_anonymous
+from hub.utils.hf_tokens import HfTokenArg, normalize_token
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import detect_audio_type
 from utils.paths import (
@@ -55,22 +55,13 @@ logger = get_logger(__name__)
 
 
 def _export_hub_push_token(hf_token: HfTokenArg) -> Optional[str]:
-    """Return a real Hub push credential, or None when push must be refused."""
-    if is_anonymous(hf_token):
-        return None
-    if isinstance(hf_token, str):
-        stripped = hf_token.strip()
-        return stripped or None
-    return None
+    """Return a real Hub push credential, or None when push must be refused.
 
-
-def _export_load_token(hf_token: HfTokenArg) -> HfTokenArg:
-    """Resolve a checkpoint-load credential without laundering the forced-anonymous sentinel."""
-    if is_anonymous(hf_token):
-        return False
-    if isinstance(hf_token, str):
-        return hf_token.strip() or None
-    return None
+    Only a push takes this: a write has no anonymous mode, so the sentinel and a missing
+    token both mean refuse. Reads keep the sentinel, so they use normalize_token instead.
+    """
+    token = normalize_token(hf_token)
+    return token if isinstance(token, str) else None
 
 
 def _export_runtime_available() -> bool:
@@ -498,7 +489,7 @@ class ExportBackend:
         Returns:
             Tuple of (success: bool, message: str)
         """
-        token = _export_load_token(hf_token)
+        token = normalize_token(hf_token)
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -1151,11 +1142,13 @@ class ExportBackend:
             )
         shard_kw = {"gguf_shard_size": gguf_shard_size} if gguf_shard_size is not None else {}
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
-        # push shares and names token= itself.
+        # push shares and names token= itself. False must be forwarded, not dropped: omitting token= sends
+        # _resolve_imatrix_file to get_token(), which is the ambient credential this caller was denied.
+        local_token = normalize_token(hf_token)
         local_token_kw = (
-            {"token": _export_hub_push_token(hf_token)}
+            {"token": local_token}
             if imatrix_file
-            and _export_hub_push_token(hf_token)
+            and local_token is not None
             and _supports_kwarg(self.current_model.save_pretrained_gguf, "token")
             else {}
         )
@@ -1425,7 +1418,7 @@ class ExportBackend:
                         save_method = "lora",
                         quantization_method = outtype,
                         # Forward the token so convert_lora_to_gguf.py can fetch a gated base's config.
-                        token = _export_load_token(hf_token),
+                        token = normalize_token(hf_token),
                     )
                     # iterdir, not glob.glob: glob hides dot-leading names.
                     final_ggufs = sorted(

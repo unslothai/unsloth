@@ -497,6 +497,48 @@ def test_export_gguf_push_refuses_the_forced_anonymous_sentinel(monkeypatch):
     assert output is None
 
 
+@pytest.mark.parametrize(
+    "hf_token, expected",
+    [
+        (False, False),      # denied the ambient token: force anonymous, do not omit token=
+        (None, "absent"),    # ambient allowed: omitting token= is what grants it
+        ("  tok  ", "tok"),
+    ],
+)
+def test_imatrix_resolution_carries_the_caller_token(monkeypatch, tmp_path, hf_token, expected):
+    """save_pretrained_gguf without token= sends _resolve_imatrix_file to get_token()."""
+    from core.export import export as export_mod
+    from core.export.export import ExportBackend
+
+    seen = {}
+
+    class _Model:
+        def save_pretrained_gguf(self, _path, _tokenizer, **kwargs):
+            seen.update(kwargs)
+            return {}
+
+    monkeypatch.setattr(export_mod, "_export_runtime_available", lambda: True)
+    monkeypatch.setattr(export_mod, "_apply_wsl_sudo_patch", lambda: None)
+    monkeypatch.setattr(export_mod, "_imatrix_export_supported", lambda _fn: True)
+    monkeypatch.setattr(export_mod, "_supports_kwarg", lambda _fn, _name: True)
+    monkeypatch.setattr(export_mod, "resolve_export_write_dir", lambda d: d)
+
+    backend = ExportBackend.__new__(ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+
+    backend.export_gguf(
+        save_directory = str(tmp_path),
+        push_to_hub = False,
+        hf_token = hf_token,
+        imatrix_file = True,
+    )
+
+    assert seen.get("token", "absent") == expected
+    if expected is False:
+        assert seen["token"] is False
+
+
 def test_export_worker_passes_false_sentinel_into_gguf_export():
     import queue
 
