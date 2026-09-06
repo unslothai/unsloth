@@ -46,6 +46,8 @@ def _setup(
     verify_ok: bool = True,
     uid: int = 0,
     wsl: bool = False,
+    driver_version: str = "580.65.06",
+    rootless: bool = False,
 ) -> tuple[Path, Path, dict]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -60,14 +62,23 @@ def _setup(
     _stub(bindir / "sudo", rec + "exit 0\n")
     _stub(
         bindir / "nvidia-smi",
-        'echo "GPU 0: NVIDIA H100 (UUID: GPU-abc)"\n' if driver else "exit 9\n",
+        (
+            f'if [ "$1" = --query-gpu=driver_version ]; then echo " {driver_version}"; exit 0; fi\n'
+            'echo "GPU 0: NVIDIA H100 (UUID: GPU-abc)"\n'
+        )
+        if driver
+        else "exit 9\n",
     )
+    # the installer picks the verification platform from uname -m; pin it so the
+    # suite means the same thing on an arm64 runner
+    _stub(bindir / "uname", "echo x86_64\n")
     _stub(bindir / "nvidia-ctk", rec + f"touch {marker}\n")
     _stub(
         bindir / "docker",
         rec
         + 'if [ "$1" = info ]; then\n'
         + ('  echo " Operating System: Docker Desktop"\n' if desktop else "")
+        + ('  if [ "$2" = "--format" ]; then echo "name=rootless,name=seccomp"; exit 0; fi\n' if rootless else "")
         + f'  if [ -e {marker} ]; then echo " Runtimes: io.containerd.runc.v2 nvidia runc"; else echo " Runtimes: io.containerd.runc.v2 runc"; fi\n'
         + "  exit 0\nfi\n"
         + (
@@ -207,6 +218,31 @@ def test_no_driver_means_stop_and_say_how_to_get_one(tmp_path: Path):
     assert not any(c.startswith(("apt-get", "nvidia-ctk", "docker run")) for c in _calls(log))
 
 
+def test_an_old_driver_is_reported_after_the_toolkit_is_in_place(tmp_path: Path):
+    _, log, env = _setup(tmp_path, driver_version = "550.54.15")
+    res = _run(env)
+    assert res.returncode == 3
+    assert "550.54.15 is below 570.26" in res.stderr
+    calls = _calls(log)
+    assert "nvidia-ctk runtime configure --runtime=docker" in calls
+    assert any(c.startswith("docker run") for c in calls)
+
+
+def test_a_current_driver_is_confirmed(tmp_path: Path):
+    _, _, env = _setup(tmp_path, driver_version = "570.26")
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "570.26 meets the 570.26 minimum" in res.stdout
+
+
+def test_rootless_docker_is_refused_before_anything_runs(tmp_path: Path):
+    _, log, env = _setup(tmp_path, rootless = True, uid = 1000)
+    res = _run(env)
+    assert res.returncode == 2
+    assert "rootless" in res.stderr and "#rootless-mode" in res.stderr
+    assert not any(c.startswith(("sudo", "apt-get", "nvidia-ctk")) for c in _calls(log))
+
+
 def test_a_configured_host_only_verifies(tmp_path: Path):
     _, log, env = _setup(tmp_path, configured = True)
     res = _run(env)
@@ -222,7 +258,7 @@ def test_docker_desktop_needs_nothing(tmp_path: Path):
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
     assert "Docker Desktop detected" in res.stdout
-    assert _calls(log) == ["docker info"]
+    assert [c for c in _calls(log) if not c.startswith("docker info")] == []
 
 
 @pytest.mark.parametrize("systemctl", ["missing", "fails"])
@@ -255,7 +291,7 @@ def test_a_non_root_run_of_the_file_re_executes_itself_under_sudo(tmp_path: Path
     _, log, env = _setup(tmp_path, uid = 1000)
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
-    assert _calls(log) == [f"sudo -E bash {INSTALLER}"]
+    assert [c for c in _calls(log) if not c.startswith("docker info")] == [f"sudo -E bash {INSTALLER}"]
 
 
 def test_a_non_root_pipe_cannot_re_execute_and_says_so(tmp_path: Path):
@@ -270,7 +306,7 @@ def test_a_non_root_pipe_cannot_re_execute_and_says_so(tmp_path: Path):
     )
     assert res.returncode == 2
     assert "sudo bash" in res.stderr
-    assert _calls(log) == []
+    assert [c for c in _calls(log) if not c.startswith("docker info")] == []
 
 
 def _run_sh_env(tmp_path: Path, *, nvidia_runtime: bool) -> tuple[Path, Path, dict]:
@@ -289,6 +325,8 @@ def _run_sh_env(tmp_path: Path, *, nvidia_runtime: bool) -> tuple[Path, Path, di
     )
     _stub(bindir / "nvidia-smi", 'echo "GPU 0: NVIDIA H100 (UUID: GPU-abc)"\n')
     _stub(bindir / "sudo", rec + "exit 0\n")
+    # never root here: as uid 0 run.sh would execute the REAL installer against the host
+    _stub(bindir / "id", "echo 1000\n")
     _stub(bindir / "getent", "exit 2\n")
     dev_root = tmp_path / "root"
     (dev_root / "dev").mkdir(parents = True)
@@ -318,7 +356,7 @@ def test_run_sh_installs_the_toolkit_when_told_to_then_runs(tmp_path: Path):
     env["UNSLOTH_INSTALL_TOOLKIT"] = "1"
     res = _run_run_sh(env)
     assert res.returncode == 0, res.stdout + res.stderr
-    assert f"sudo bash {INSTALLER}" in _calls(log)
+    assert f"sudo -E bash {INSTALLER}" in _calls(log)
     assert "--gpus\nall\n" in argv.read_text(encoding = "utf-8")
 
 

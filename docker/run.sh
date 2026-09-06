@@ -111,7 +111,8 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
     fi
     case "$answer" in
         1|[Yy]*)
-            if [[ "$(id -u)" = 0 ]]; then bash "$INSTALLER"; else sudo bash "$INSTALLER"; fi
+            # -E: keep UNSLOTH_TOOLKIT_VERIFY and proxy settings through sudo's env_reset
+            if [[ "$(id -u)" = 0 ]]; then bash "$INSTALLER"; else sudo -E bash "$INSTALLER"; fi
             ;;
         *)
             printf "      Install it with one command (Linux, needs sudo):\n" >&2

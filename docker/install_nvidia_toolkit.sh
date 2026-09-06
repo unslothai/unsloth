@@ -26,6 +26,14 @@ BASE="https://nvidia.github.io/libnvidia-container"
 say()  { printf '%s\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit "${2:-1}"; }
 
+# Rootless Docker keeps its daemon and config under the user; the system-wide steps
+# below would configure a daemon that user never talks to. NVIDIA documents the
+# rootless procedure separately. Checked before elevating: root sees another daemon.
+if docker info --format '{{join .SecurityOptions ","}}' 2>/dev/null | grep -q rootless; then
+    fail "rootless Docker detected. Follow NVIDIA's rootless procedure instead:
+       https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html#rootless-mode" 2
+fi
+
 if [[ "$(id -u)" != 0 ]]; then
     # piped through `curl | bash` there is no file to re-run: $0 is just "bash"
     if [[ -r "$0" ]] && command -v sudo >/dev/null 2>&1; then
@@ -50,6 +58,11 @@ if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep
        nvidia-driver module from the CUDA repository), reboot, then run this again.
        Unsloth images need driver 570.26 or newer." 2
 fi
+MIN_DRIVER=570.26
+DRIVER="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')"
+driver_ok() {
+    [[ -n "$DRIVER" ]] && [[ "$(printf '%s\n' "$MIN_DRIVER" "$DRIVER" | sort -V | head -1)" == "$MIN_DRIVER" ]]
+}
 
 configured() {
     command -v nvidia-ctk >/dev/null 2>&1 && docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'
@@ -125,4 +138,11 @@ fi
 if grep -qi microsoft "$PROC_VERSION" 2>/dev/null; then
     say "WSL 2 host: the GPU is the Windows driver's; keep it current with the NVIDIA installer."
 fi
+if ! driver_ok; then
+    # the toolkit is in place, but the image's CUDA 12.8 stack will not start on this
+    # driver, so do not call it done
+    fail "the toolkit works, but NVIDIA driver ${DRIVER:-unknown} is below ${MIN_DRIVER}, the minimum for
+       the Unsloth images. Update the driver, reboot, then run: docker run --rm --gpus all --platform ${PLATFORM:-linux/amd64} ubuntu:24.04 nvidia-smi -L" 3
+fi
+say "Driver ${DRIVER} meets the ${MIN_DRIVER} minimum."
 say "Done. Run: docker run -d --gpus all -p 8000:8000 -p 8888:8888 unsloth/unsloth"
