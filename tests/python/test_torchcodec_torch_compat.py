@@ -1140,7 +1140,9 @@ def test_an_exclusive_ceiling_names_the_minor_pip_moves_to():
     assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)] == [
         "R-INST-004"
     ]
-    assert nv._effective_version('!pip install "torchcodec>=0.8,<0.11"', "torchcodec", "0.11.0") == (
+    assert nv._effective_version(
+        '!pip install "torchcodec>=0.8,<0.11"', "torchcodec", "0.11.0"
+    ) == (
         "0.10",
         True,
     )

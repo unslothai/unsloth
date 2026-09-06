@@ -1951,15 +1951,19 @@ def test_a_conditional_only_cell_does_not_replay_the_bare_oracle(tmp_path):
     assert nv.rule_inst_003_peft_torchao(conditional, colab, "nb/T.ipynb", 0)
 
     notebook = {
-        "cells": [{
-            "cell_type": "code",
-            "metadata": {},
-            "source": [conditional + "\n"],
-            "outputs": [],
-            "execution_count": None,
-        }],
-        "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3"},
-                     "language_info": {"name": "python"}},
+        "cells": [
+            {
+                "cell_type": "code",
+                "metadata": {},
+                "source": [conditional + "\n"],
+                "outputs": [],
+                "execution_count": None,
+            }
+        ],
+        "metadata": {
+            "kernelspec": {"name": "python3", "display_name": "Python 3"},
+            "language_info": {"name": "python"},
+        },
         "nbformat": 4,
         "nbformat_minor": 0,
     }
@@ -1968,7 +1972,10 @@ def test_a_conditional_only_cell_does_not_replay_the_bare_oracle(tmp_path):
     (nb_dir / "Conditional_Only.ipynb").write_text(json.dumps(notebook), encoding = "utf-8")
 
     args = argparse.Namespace(
-        notebooks_dir = str(tmp_path), colab_pin = None, no_pypi = True, json = False,
+        notebooks_dir = str(tmp_path),
+        colab_pin = None,
+        no_pypi = True,
+        json = False,
     )
     findings: list = []
     original_emit = nv._emit
