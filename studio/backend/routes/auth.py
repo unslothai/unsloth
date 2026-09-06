@@ -506,7 +506,7 @@ async def logout(
 
 
 @router.post("/desktop-login", response_model = Token)
-async def desktop_login(payload: DesktopLoginRequest) -> Token:
+async def desktop_login(payload: DesktopLoginRequest) -> Token | Response:
     """Exchange a local desktop secret for normal admin-subject tokens."""
     verified = storage.validate_desktop_secret_with_credential(payload.secret)
     if verified is None:
@@ -515,6 +515,16 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
             detail = "Desktop authentication failed",
         )
     username, jwt_secret = verified
+
+    from auth.policy import installation_is_multi_user
+
+    if installation_is_multi_user():
+        # The secret still proves the shell owns the backend. It cannot choose
+        # which account is using the desktop once login is required.
+        return Response(
+            content = '{"login_required":true,"login_mode":"multi"}',
+            media_type = "application/json",
+        )
 
     return Token(
         access_token = create_access_token(subject = username, desktop = True, secret = jwt_secret),
@@ -562,7 +572,7 @@ async def set_desktop_initial_password(
     already-authenticated desktop session may set it while the seeded credential
     is still in place. Once set, change-password owns every later change.
     """
-    if not is_desktop:
+    if not is_desktop or current_subject != storage.DEFAULT_ADMIN_USERNAME:
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
             detail = "This action requires the Unsloth desktop app.",
