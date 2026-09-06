@@ -149,6 +149,8 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
     src,
     alt = "",
     className,
+    onLoad,
+    onError,
     node: _node,
     ...dom
   } = props as ComponentProps<"img"> & { node?: unknown };
@@ -165,7 +167,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
       })
     : null;
   const sandbox = useSandboxImage(file);
-  const [failed, setFailed] = useState(false);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
   // A sandbox src is renderable only once the authed fetch has produced a blob: until then it is
   // absent, never raw. `data:`/`blob:` keep going through exactly as they were.
   const resolved =
@@ -175,7 +177,8 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         ? sandbox.state.url
         : undefined;
   const failedNow =
-    failed || (file !== null && sandbox.state.status === "failed");
+    (resolved != null && failedSrc === resolved) ||
+    (file !== null && sandbox.state.status === "failed");
   // Hidden when it failed and has no intrinsic size to fall back on, as Streamdown's own renderer does.
   const sized = dom.width != null || dom.height != null;
   // Download naming follows the replaced renderer: a real extension on the path wins whole (alt must
@@ -210,7 +213,14 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         src={resolved}
         alt={alt}
         decoding="async"
-        onError={() => setFailed(true)}
+        onLoad={(event) => {
+          setFailedSrc(null);
+          onLoad?.(event);
+        }}
+        onError={(event) => {
+          setFailedSrc(resolved ?? null);
+          onError?.(event);
+        }}
         className={`max-w-full rounded-lg ${failedNow && !sized ? "hidden" : ""} ${className ?? ""}`}
         {...dom}
       />

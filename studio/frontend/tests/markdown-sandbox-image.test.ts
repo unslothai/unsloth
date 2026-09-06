@@ -10,6 +10,8 @@ import {
   SANDBOX_INLINE_IMAGE_EXTS,
   markdownSandboxImageSrc,
   sandboxFileForSrc,
+  sandboxFilePath,
+  sandboxSessionInSrc,
 } from "../src/components/assistant-ui/sandbox-files.ts";
 import { safeMarkdownUrl } from "../src/lib/safe-markdown-url.ts";
 
@@ -38,6 +40,47 @@ const TOOL_UI = read("../src/components/assistant-ui/tool-ui-python.tsx");
 const BACKEND = read(
   "../../backend/routes/inference.py",
 );
+
+test("decoded separators cannot bypass sandbox traversal checks", () => {
+  const context = { threadId: "current", projectId: null };
+  for (const src of [
+    "%2e%2e%2fother/plot.png",
+    "outputs/%2E%2E%2F%2E%2E%2Fother/plot.png",
+    "%2e%2e%2f%2e%2e%2f%2e%2e%2f%2e%2e%2foutside/plot.png",
+    "..%5cother/plot.png",
+    "..\\other/plot.png",
+    "/api/inference/sandbox/recorded/%2e%2e%2fother/plot.png",
+  ]) {
+    assert.equal(sandboxFileForSrc(src), null, src);
+    assert.equal(markdownSandboxImageSrc(src, context), null, src);
+  }
+  assert.equal(
+    markdownSandboxImageSrc("outputs/loss%20curve%20%231.png", context),
+    "/api/inference/sandbox/current/outputs/loss%20curve%20%231.png",
+  );
+});
+
+test("recorded session IDs round-trip without a second query decode", () => {
+  for (const session of ["api%2Fclient", "literal%23id", "literal%25id", "a+b", "session/id", "100%", "project-old"]) {
+    const src = sandboxFilePath(session, "plot.png");
+    assert.equal(sandboxSessionInSrc(src), session);
+    assert.equal(
+      markdownSandboxImageSrc(src, { threadId: "new-thread", projectId: "new-project" }),
+      src,
+    );
+  }
+});
+
+test("a fragment cannot override the recorded sandbox session", () => {
+  for (const session of ["original", "api%2Fclient"]) {
+    const src = sandboxFilePath(session, "plot.png");
+    assert.equal(sandboxSessionInSrc(`${src}#?session=other`), session);
+    assert.equal(
+      markdownSandboxImageSrc(`${src}#?session=other`, { threadId: "current", projectId: null }),
+      src,
+    );
+  }
+});
 
 test("a scheme-less sandbox src is rewritten before it reaches the DOM, and rendered from a blob:", () => {
   // PRECONDITION: the renderer still relies on the sanitizer's deny rule rather than repeating it.

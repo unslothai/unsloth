@@ -186,7 +186,10 @@ export function sandboxFileForSrc(src: string): string | null {
   // prepends -- one reads another chat's folder, two land on another route. A bare `.` is noise URL
   // parsing drops anyway; drop it here so callers see one canonical shape.
   const decoded = segments.map(decodeSegment);
-  if (decoded.some((segment) => segment === "..")) return null;
+  // Encoded separators must not become new path segments after this check.
+  if (decoded.some((segment) => segment === ".." || /[/\\]/.test(segment))) {
+    return null;
+  }
   const parts = decoded.filter((segment) => segment !== ".");
   const name = parts[parts.length - 1] ?? "";
   const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
@@ -204,16 +207,15 @@ export function sandboxSessionInSrc(src: string): string | null {
   if (!trimmed || HAS_SCHEME_RE.test(trimmed) || PROTOCOL_RELATIVE_RE.test(trimmed)) {
     return null;
   }
-  const [path, ...queryAndFragment] = trimmed.split("?");
+  const [path, ...query] = trimmed.split("#")[0].split("?");
   // A bare relative path records nothing: the caller's fallback scope is all there is.
   if (!path.startsWith(SANDBOX_ROUTE_PREFIX)) return null;
   const segment = path.slice(SANDBOX_ROUTE_PREFIX.length).split("/")[0] ?? "";
   // `sandboxRoutePrefix` carries a not-path-safe id in the query under `_`; mirror it back out.
-  if (queryAndFragment.length > 0) {
-    const session = new URLSearchParams(
-      queryAndFragment.join("?").split("#")[0] ?? "",
-    ).get("session");
-    if (session) return decodeSegment(session);
+  if (query.length > 0) {
+    const session = new URLSearchParams(query.join("?")).get("session");
+    // URLSearchParams has already decoded the query value.
+    if (session) return session;
   }
   return segment ? decodeSegment(segment) : null;
 }
