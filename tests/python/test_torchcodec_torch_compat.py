@@ -1173,3 +1173,41 @@ def test_a_later_install_keeps_what_an_earlier_one_landed_on():
     # An exact pin after an uninstall restores a version rather than staying gone.
     restored = '!pip uninstall -y torchcodec\n!pip install "torchcodec==0.11.1"'
     assert nv._effective_requested_version(restored, "torchcodec", "0.11.0") == "0.11.1"
+
+
+def test_an_exclusion_rules_out_the_installed_version():
+    """`!=` inverts `==` (PEP 440 version exclusion), so `torchcodec!=0.11.0` really does
+    make pip replace the image's 0.11.0. Ignoring the operator kept the excluded version and
+    R-INST-004 rejected a torch 2.12 notebook that pip resolves to an ABI-stable codec."""
+    from scripts import notebook_validator as nv
+
+    # An exact clause blocks one release after zero-padding; a `.*` clause blocks the prefix.
+    # Local labels are not part of the comparison.
+    assert nv._version_is_excluded("0.11.0+cu128", "0.11.0")
+    assert nv._version_is_excluded("0.11.0", "0.11")
+    assert nv._version_is_excluded("0.11.5", "0.11.*")
+    assert not nv._version_is_excluded("0.11.1", "0.11.0")
+    assert not nv._version_is_excluded("0.12.0", "0.11.*")
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    for cell in (
+        '!pip install "torch==2.12.0" "torchcodec!=0.11.0"',
+        '!pip install "torch==2.12.0" "torchcodec!=0.11.*"',
+    ):
+        assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == "", cell
+        assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == [], cell
+
+    # An exclusion that does NOT cover the installed version leaves it alone, so a real
+    # mismatch is still reported.
+    untouched = '!pip install "torch==2.9.0" "torchcodec!=0.12.0"'
+    assert nv._effective_requested_version(untouched, "torchcodec", "0.11.0") == "0.11.0"
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(untouched, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+    # A window whose own landing the exclusion rules out names nothing.
+    self_excluded = '!pip install "torch==2.12.0" "torchcodec>=0.12.0,!=0.12.0"'
+    assert nv._effective_requested_version(self_excluded, "torchcodec", "0.11.0") == ""
+    # ...but an exclusion elsewhere in the range leaves the landing intact.
+    kept = '!pip install "torch==2.12.0" "torchcodec>=0.12.0,!=0.11.0"'
+    assert nv._effective_requested_version(kept, "torchcodec", "0.11.0") == "0.12.0"

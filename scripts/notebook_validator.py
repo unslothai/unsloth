@@ -641,11 +641,27 @@ def _highest_minor_below(ceiling: str) -> str:
     return f"0.{minor - 1}" if minor >= 1 else ""
 
 
+def _version_is_excluded(version: str, exclusion: str) -> bool:
+    """Whether `!=exclusion` rules `version` out (PEP 440 version exclusion).
+
+    `!=` inverts `==`, so an exact clause blocks one release after zero-padding while a
+    `.*` clause blocks every version sharing that prefix. Local labels (`+cu128`) are not
+    part of the comparison.
+    """
+    installed = [int(x) for x in re.findall(r"\d+", normalise_version(version))]
+    if exclusion.endswith(".*"):
+        prefix = [int(x) for x in re.findall(r"\d+", normalise_version(exclusion[:-2]))]
+        return installed[: len(prefix)] == prefix
+    wanted = [int(x) for x in re.findall(r"\d+", normalise_version(exclusion))]
+    width = max(len(installed), len(wanted))
+    return installed + [0] * (width - len(installed)) == wanted + [0] * (width - len(wanted))
+
+
 def _requested_bounds(
     install_cell: str, package: str
-) -> list[tuple[str, str, str, str, bool, bool]]:
-    """`(exact, floor, ceiling, cap, floor_excludes_itself, removed)` per invocation naming
-    `package`, in the order pip runs them.
+) -> list[tuple[str, str, str, str, bool, bool, list[str]]]:
+    """`(exact, floor, ceiling, cap, floor_excludes_itself, removed, exclusions)` per
+    invocation naming `package`, in the order pip runs them.
 
     Order matters and intersecting does not: pip runs the commands in sequence, so
     `torchcodec>=0.12.0` followed by `torchcodec<0.12.0` ends on a pre-0.12 codec, while
@@ -664,10 +680,11 @@ def _requested_bounds(
     move the answer between machines. Skipping leaves such a cell judged on the preinstalled
     version, which is what it was judged on before this function existed.
     """
-    sequence: list[tuple[str, str, str, bool, bool]] = []
+    sequence: list[tuple[str, str, str, str, bool, bool, list[str]]] = []
     for invocation in iter_pip_invocations(install_cell):
         uninstall = re.search(r"\bpip\s+uninstall\b", invocation.raw, re.IGNORECASE) is not None
         current_exact = current_floor = current_ceiling = current_cap = ""
+        current_exclusions: list[str] = []
         floor_excludes_itself = False
         named = False
         for requirement in invocation.packages:
@@ -678,7 +695,11 @@ def _requested_bounds(
                 continue
             named = True
             for operator, version in spec.pins:
-                if operator == "==":
+                if operator == "!=":
+                    # An exclusion names no landing of its own, but it can rule out the
+                    # version already installed, which is enough to say pip must move.
+                    current_exclusions.append(version)
+                elif operator == "==":
                     # An exact pin names the landing outright; resolved_set reads it too,
                     # but the replay has to carry it so a reinstall after an uninstall
                     # restores a version rather than staying "gone".
@@ -719,13 +740,20 @@ def _requested_bounds(
                     current_cap,
                     floor_excludes_itself,
                     uninstall,
+                    current_exclusions,
                 )
             )
     return sequence
 
 
 def _apply_requested_bounds(
-    installed: str, exact: str, floor: str, ceiling: str, cap: str, floor_excludes_itself: bool
+    installed: str,
+    exact: str,
+    floor: str,
+    ceiling: str,
+    cap: str,
+    floor_excludes_itself: bool,
+    exclusions: list[str],
 ) -> str:
     """What one pip command leaves installed, given what was there before it ran.
 
@@ -734,10 +762,12 @@ def _apply_requested_bounds(
     """
     if exact:
         return exact
-    if not floor and not ceiling and not cap:
+    if not floor and not ceiling and not cap and not exclusions:
         return installed
     if installed:
         satisfied = True
+        if any(_version_is_excluded(installed, ver) for ver in exclusions):
+            satisfied = False
         if cap and cmp_versions(installed, cap) > 0:
             satisfied = False
         if ceiling and cmp_versions(installed, ceiling) >= 0:
@@ -756,9 +786,12 @@ def _apply_requested_bounds(
             return landing
     if cap and (not floor or cmp_versions(cap, floor) >= 0):
         return cap  # `<=V` allows V, so V is what pip picks
+    landing = ""
     if floor and not floor_excludes_itself:
-        return floor
-    return ""
+        landing = floor
+    if landing and any(_version_is_excluded(landing, ver) for ver in exclusions):
+        return ""  # the window names a version its own exclusion rules out
+    return landing
 
 
 def _effective_requested_version(install_cell: str, package: str, oracle: str) -> str:
@@ -770,16 +803,22 @@ def _effective_requested_version(install_cell: str, package: str, oracle: str) -
     reinstall a package that already satisfies the new requirement.
     """
     installed = oracle
-    for exact, floor, ceiling, cap, floor_excludes_itself, removed in _requested_bounds(
-        install_cell, package
-    ):
+    for (
+        exact,
+        floor,
+        ceiling,
+        cap,
+        floor_excludes_itself,
+        removed,
+        exclusions,
+    ) in _requested_bounds(install_cell, package):
         if removed:
             # Uninstalled, so there is nothing left to judge unless a later command puts it
             # back. Reporting the oracle here flagged a package the cell had just deleted.
             installed = ""
             continue
         installed = _apply_requested_bounds(
-            installed, exact, floor, ceiling, cap, floor_excludes_itself
+            installed, exact, floor, ceiling, cap, floor_excludes_itself, exclusions
         )
     return installed
 
