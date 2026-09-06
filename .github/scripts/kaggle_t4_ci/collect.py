@@ -471,8 +471,7 @@ def statuses_from(records: list[dict], target_url: str = "") -> list[dict]:
             (
                 k
                 for k, s in out.items()
-                if k[1] == context
-                and (s["sha"].startswith(sha) or sha.startswith(s["sha"]))
+                if k[1] == context and (s["sha"].startswith(sha) or sha.startswith(s["sha"]))
             ),
             None,
         )
