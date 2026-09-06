@@ -1935,6 +1935,14 @@ _MACOS_OPTIONAL_READ_LITERALS = (
     "/private/etc/gitconfig",
     "/etc/gitattributes",
     "/private/etc/gitattributes",
+    # A Homebrew git is built with its own prefix as the system config path, so
+    # it reads these instead of /etc and aborts the same way. Both prefixes are
+    # listed because the binary on PATH decides which one, not the host's
+    # architecture: an Intel-built git under Rosetta uses /usr/local.
+    "/usr/local/etc/gitconfig",
+    "/usr/local/etc/gitattributes",
+    "/opt/homebrew/etc/gitconfig",
+    "/opt/homebrew/etc/gitattributes",
     # xcrun's license check: the Xcode shims refuse ("You have not agreed to the
     # Xcode license agreements") when they cannot read the system-wide record.
     "/Library/Preferences/com.apple.dt.Xcode.plist",

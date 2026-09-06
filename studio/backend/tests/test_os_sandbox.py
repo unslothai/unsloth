@@ -2920,7 +2920,18 @@ def test_macos_profile_admits_only_the_proxy_port_when_given(tmp_path):
     # Their ancestors are searchable even when the files are absent, and the /etc
     # symlink spelling resolves (round 10 on macOS: EPERM on /etc/gitconfig).
     metadata = base.split("(allow file-read-metadata ", 1)[1].split(")\n", 1)[0]
-    for ancestor in ('"/etc"', '"/private/etc"', '"/Library/Preferences"', '"/Library"'):
+    for ancestor in (
+        '"/etc"',
+        '"/private/etc"',
+        '"/Library/Preferences"',
+        '"/Library"',
+        # A Homebrew git reads its own prefix, not /etc (round 15 on macOS Intel:
+        # EPERM on /usr/local/etc/gitconfig aborted git before it ran).
+        '"/usr/local/etc"',
+        '"/usr/local"',
+        '"/opt/homebrew/etc"',
+        '"/opt/homebrew"',
+    ):
         assert f"(literal {ancestor})" in metadata, ancestor
     with_proxy = os_sandbox._macos_seatbelt_profile(
         workdir = str(workdir),
