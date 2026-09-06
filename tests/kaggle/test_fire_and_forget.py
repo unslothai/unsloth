@@ -1190,7 +1190,11 @@ def test_the_evidence_download_is_clamped_to_the_pass_deadline(tmp_path, monkeyp
     inside a twenty-five minute job with the release step still to come."""
     seen: list[float] = []
 
-    def _fetch(slug, dest, deadline = None):
+    def _fetch(
+        slug,
+        dest,
+        deadline = None,
+    ):
         seen.append(deadline)
         return {}
 
