@@ -1632,16 +1632,16 @@ test("a Hangul syllable is matched whole, in every spelling it can be stored in"
   // Three canonical spellings, not two. Besides fully composed and fully decomposed there is the
   // half-composed one, an LV syllable followed by a loose trailing Jamo, which is exactly what
   // joining two text nodes produces when the syllable straddles them.
-  const GA = "\uac00"; // 가
-  const GAG = "\uac01"; // 각, the same syllable closed by a trailing consonant
-  const GAG_NFD = "\u1100\u1161\u11a8";
-  const GAG_HALF = "\uac00\u11a8";
+  const ga = "\uac00"; // 가
+  const gag = "\uac01"; // 각, the same syllable closed by a trailing consonant
+  const gagNfd = "\u1100\u1161\u11a8";
+  const gagHalf = "\uac00\u11a8";
   const index = (body: string) =>
     buildTextIndex(el("DIV", [el("P", [text(body)])]));
 
   // Every spelling of the text is reachable from every spelling of the query.
-  for (const body of [GAG, GAG_NFD, GAG_HALF]) {
-    for (const query of [GAG, GAG_NFD, GAG_HALF]) {
+  for (const body of [gag, gagNfd, gagHalf]) {
+    for (const query of [gag, gagNfd, gagHalf]) {
       const hits = findMatches(index(body), query, 10);
       assert.equal(
         hits.length,
@@ -1656,11 +1656,11 @@ test("a Hangul syllable is matched whole, in every spelling it can be stored in"
   // An open syllable must not stop short of the trailing Jamo that closes the one on screen.
   // Decomposed, 가 would otherwise match the first two thirds of 각 and highlight part of a letter,
   // while composed text never could, since there the whole syllable is one code point.
-  for (const body of [GAG, GAG_NFD, GAG_HALF]) {
-    assert.deepEqual(findMatches(index(body), GA, 10), [], escape(body));
+  for (const body of [gag, gagNfd, gagHalf]) {
+    assert.deepEqual(findMatches(index(body), ga, 10), [], escape(body));
   }
   // The open syllable is still found where it really is open.
-  assert.deepEqual(findMatches(index(GA), GA, 10), [{ start: 0, end: 1 }]);
+  assert.deepEqual(findMatches(index(ga), ga, 10), [{ start: 0, end: 1 }]);
 });
 
 test("Hangul clusters keep every Jamo, and only a real syllable is fenced", () => {
@@ -1670,8 +1670,8 @@ test("Hangul clusters keep every Jamo, and only a real syllable is fenced", () =
   // A grapheme can carry more than one trailing Jamo. The half-composed spelling has to keep the
   // whole suffix: dropping all but the first both shortened the match and let it land on text that
   // lacks the query's final Jamo.
-  const TWO_TRAILING = "\uac00\u11a8\u11a8";
-  assert.deepEqual(findMatches(index(TWO_TRAILING), TWO_TRAILING, 10), [
+  const twoTrailing = "\uac00\u11a8\u11a8";
+  assert.deepEqual(findMatches(index(twoTrailing), twoTrailing, 10), [
     { start: 0, end: 3 },
   ]);
   assert.deepEqual(
@@ -1696,27 +1696,27 @@ test("Hangul clusters keep every Jamo, and only a real syllable is fenced", () =
 test("a Hangul match starts and stops on grapheme boundaries", () => {
   const index = (body: string) =>
     buildTextIndex(el("DIV", [el("P", [text(body)])]));
-  const GAG = "\uac01"; // 각
-  const GA = "\uac00"; // 가
-  const LEAD = "\u1100"; // a bare leading Jamo
+  const gag = "\uac01"; // 각
+  const ga = "\uac00"; // 가
+  const lead = "\u1100"; // a bare leading Jamo
 
   // Not stopping inside one. A query carrying its own trailing Jamo could still match the prefix
   // of a grapheme that carries two, so the fence belongs after closed syllables as well as open.
-  for (const body of [`${GAG}\u11a8`, `${LEAD}\u1161\u11a8\u11a8`]) {
-    assert.deepEqual(findMatches(index(body), GAG, 10), [], escape(body));
+  for (const body of [`${gag}\u11a8`, `${lead}\u1161\u11a8\u11a8`]) {
+    assert.deepEqual(findMatches(index(body), gag, 10), [], escape(body));
   }
   // Nor starting inside one: a grapheme can carry more than one leading Jamo, and a match that
   // begins at the second highlights only its tail.
-  for (const body of [`${LEAD}${GA}`, `${LEAD}${LEAD}\u1161`]) {
-    assert.deepEqual(findMatches(index(body), GA, 10), [], escape(body));
+  for (const body of [`${lead}${ga}`, `${lead}${lead}\u1161`]) {
+    assert.deepEqual(findMatches(index(body), ga, 10), [], escape(body));
   }
   // The fence is on the first cluster only, so a query that itself opens with a bare leading Jamo
   // still finds exactly that text.
-  assert.deepEqual(findMatches(index(`${LEAD}${GA}`), `${LEAD}${GA}`, 10), [
+  assert.deepEqual(findMatches(index(`${lead}${ga}`), `${lead}${ga}`, 10), [
     { start: 0, end: 2 },
   ]);
   // And an ordinary syllable is still found where it really stands alone.
-  assert.deepEqual(findMatches(index(`${GA} hello`), GA, 10), [
+  assert.deepEqual(findMatches(index(`${ga} hello`), ga, 10), [
     { start: 0, end: 1 },
   ]);
 });
@@ -1726,7 +1726,7 @@ test("an engine without lookbehind falls back rather than throwing", () => {
   // pattern is built from a string, so an older engine throws at construction, where `matchPattern`
   // already catches it and hands the search to the literal scan.
   const real = globalThis.RegExp;
-  const refuseLookbehind = function (source: string, flags?: string) {
+  const refuseLookbehind = (source: string, flags?: string) => {
     if (typeof source === "string" && source.includes("(?<")) {
       throw new SyntaxError("Invalid regular expression");
     }
@@ -1848,7 +1848,7 @@ test("the grapheme fences do not depend on lookbehind", async () => {
   assert.equal(source.includes("(?<"), false, "no lookbehind in the pattern");
 
   const real = globalThis.RegExp;
-  const refuse = function (pattern: string, flags?: string) {
+  const refuse = (pattern: string, flags?: string) => {
     if (typeof pattern === "string" && pattern.includes("(?<")) {
       throw new SyntaxError("Invalid regular expression");
     }
@@ -1900,6 +1900,93 @@ test("the grapheme boundary is the platform's answer, not a list of ranges", () 
     ),
     [],
   );
+});
+
+test("an engine whose `containing` is off by one is not trusted with it", () => {
+  // WebKit's answers the segment that ENDS at an offset rather than the one that starts there:
+  // over `x` and a thumbs up it reads 0, 0, 1 where Chromium and Firefox both read 0, 1, 1. Taken
+  // at face value every interior boundary is "not a boundary", so on Safari the fence threw away
+  // every match beside an emoji or an accent -- and only until a search went over its seek budget,
+  // after which the table is built from the iterator and the answers change back on their own.
+  const body = `x${"\u{1f44d}"} and caf\u00e9`;
+  const withReal = buildTextIndex(el("DIV", [el("P", [text(body)])]));
+  const correct = findMatches(withReal, "x", 10);
+  assert.deepEqual(correct, [{ start: 0, end: 1 }]);
+
+  // A fresh process, since the segmenter and the probe are both held for the life of the module.
+  {
+    const probe = spawnSync(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        "--no-warnings",
+        "--input-type=module",
+        "-e",
+        `
+        const real = Intl.Segmenter;
+        Intl.Segmenter = class {
+          constructor(...args) { this.inner = new real(...args); }
+          segment(input) {
+            const segments = this.inner.segment(input);
+            const starts = [...segments].map(({ index }) => index);
+            return {
+              containing: (at) => {
+                if (at >= input.length) return undefined;
+                const previous = starts.filter((start) => start <= at);
+                const own = previous[previous.length - 1];
+                const earlier = previous[previous.length - 2];
+                return { index: own === at && earlier !== undefined ? earlier : own };
+              },
+              [Symbol.iterator]: () => segments[Symbol.iterator](),
+            };
+          }
+        };
+        const { buildTextIndex, findMatches } = await import(${JSON.stringify(
+          new URL(
+            "../src/features/find-in-page/lib/find-text-index.ts",
+            import.meta.url,
+          ).href,
+        )});
+        const el = (tagName, childNodes) => ({
+          nodeType: 1, tagName, childNodes, getAttribute: () => null,
+        });
+        const text = (data) => ({ nodeType: 3, data });
+        const index = buildTextIndex(el("DIV", [el("P", [text(${JSON.stringify(
+          body,
+        )})])]));
+        console.log(JSON.stringify(findMatches(index, "x", 10)));
+        `,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(probe.status, 0, probe.stderr);
+    assert.deepEqual(
+      JSON.parse(probe.stdout.trim()),
+      correct,
+      "the same answer, by the table rather than by seeking",
+    );
+  }
+});
+
+test("the seek probe is asked once, on a fixture the spec settles", () => {
+  // Once per process, not once per index or once per candidate: a probe on the hot path is the
+  // cost the budget exists to avoid.
+  const source = readFileSync(
+    new URL(
+      "../src/features/find-in-page/lib/find-text-index.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(source, /let seeksBoundaries: boolean \| undefined;/);
+  assert.match(
+    source,
+    /if \(seeksBoundaries !== undefined\) return seeksBoundaries;/,
+  );
+  // The fixture is the case that separates the two readings, and its answer is not a matter of
+  // opinion: `containing(1)` over a code unit and a surrogate pair is the start of the pair.
+  assert.match(source, /probe\.containing\(1\)\?\.index === 1/);
+  assert.equal((source.match(/segmenterSeeksBoundaries\(/g) ?? []).length, 2);
 });
 
 test("a query that needs no pattern is not given one", () => {

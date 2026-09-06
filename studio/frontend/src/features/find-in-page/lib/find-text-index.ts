@@ -655,6 +655,35 @@ function graphemeSegmenter() {
 }
 
 /**
+ * Whether this engine's `containing` agrees with its own iterator about where a segment starts.
+ *
+ * WebKit's does not. Asked about the first code unit of a cluster that follows an astral one, it
+ * answers with the cluster that ENDS there rather than the one that starts there: over `x` and a
+ * thumbs up it reads 0, 0, 1 where Chromium and Firefox both read 0, 1, 1. Every interior boundary
+ * then answers "not a boundary", so on Safari the fence would have thrown away every match beside
+ * an emoji or an accent -- and only until a search went over its seek budget, after which the
+ * table below is built from the iterator and the answers silently change back.
+ *
+ * One fixture, once per process, whose answer the spec fixes: `containing(1)` over "x" and a
+ * surrogate pair is the start of the pair. Where it is wrong, boundaries are tabulated instead,
+ * which is the same answer by a slower route rather than a second implementation of UAX 29.
+ */
+let seeksBoundaries: boolean | undefined;
+function segmenterSeeksBoundaries(platform: {
+  segment(input: string): GraphemeSegments;
+}): boolean {
+  if (seeksBoundaries !== undefined) return seeksBoundaries;
+  try {
+    const probe = platform.segment("x\u{1f44d}");
+    seeksBoundaries =
+      probe.containing(1)?.index === 1 && probe.containing(0)?.index === 0;
+  } catch {
+    seeksBoundaries = false;
+  }
+  return seeksBoundaries;
+}
+
+/**
  * True when `[start, end)` begins and ends where a grapheme does.
  *
  * Asked of the platform, which knows the whole of UAX 29 and is kept current with it; enumerating
@@ -711,7 +740,7 @@ function startsGrapheme(index: FindTextIndex, at: number): boolean {
     seekCosts.set(index, cost);
   }
   const budget = Math.max(MIN_SEEK_BUDGET_MS, text.length / SCAN_CHARS_PER_MS);
-  if (cost.spent <= budget) {
+  if (segmenterSeeksBoundaries(platform) && cost.spent <= budget) {
     if (cost.since === 0) cost.since = performance.now();
     const answer = segments.containing(at)?.index === at;
     cost.seen = (cost.seen ?? 0) + 1;
