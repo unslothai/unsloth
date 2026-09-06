@@ -391,28 +391,29 @@ def recover_or_replace_page(
 # setup token means /link-initial-password, which takes no current password. A
 # driver must accept either, so it works against both an older and a newer backend
 # and does not have to know which one it is talking to.
-PASSWORD_CHANGE_ENDPOINTS = (
+FIRST_BOOT_SUBMIT_ENDPOINTS = (
     "/api/auth/change-password",
     "/api/auth/link-initial-password",
 )
 
 
-def prepare_first_boot_form(
+def report_first_boot_form(
     page: Any,
-    old_password: str | None,
     *,
     info: Callable[[str], None] | None = None,
-) -> None:
-    """Get the first-boot change-password form ready to submit, and say what it is.
+) -> bool:
+    """Log what the first-boot form rendered; return whether Current password shows.
 
-    What the backend puts in the page decides which fields the form renders. A
-    one-time setup token keeps the Current password input hidden, exactly as the
-    seeded password used to; a page with neither renders it and the operator has
-    to type the seed. A driver should cope with all three rather than encode one,
-    so fill the field when it is actually shown and leave it alone when it is not.
+    What the backend puts in the page decides which fields render. A one-time
+    setup token keeps the Current password input hidden, exactly as the seeded
+    password used to; a page with neither renders it and the operator has to type
+    the seed. A driver should cope with all three rather than encode one.
 
-    The reported state is worth having in the log either way: a submit that never
-    fires is otherwise indistinguishable from a submit whose response was missed.
+    Worth logging either way: a submit that never fires is otherwise
+    indistinguishable from a submit whose response was missed.
+
+    Takes no credential on purpose. The companion filler below takes one and logs
+    nothing, so no helper both holds a secret and writes to a log.
     """
     try:
         injected = page.evaluate(
@@ -421,20 +422,17 @@ def prepare_first_boot_form(
         )
     except Exception:
         injected = "<unreadable>"
-    current = page.locator("#current-password")
     try:
-        shown = current.is_visible(timeout = 5_000)
+        shown = bool(page.locator("#current-password").is_visible(timeout = 5_000))
     except Exception:
         shown = False
     if info is not None:
         info(
             f"first-boot form: __UNSLOTH_BOOTSTRAP__ keys={injected!r} current-password visible={shown}"
         )
-    if shown and old_password:
-        current.fill(old_password, timeout = 30_000)
-    if info is not None:
+
         # The setup handshake is its own request, so a failure there is invisible
-        # to a caller waiting on the password endpoint: the click produces no
+        # to a caller waiting on the submit endpoint: the click produces no
         # matching response and looks like a dead button. Report its status.
         def _on_response(response: Any) -> None:
             if "/api/auth/link-exchange" in response.url:
@@ -444,6 +442,24 @@ def prepare_first_boot_form(
             page.on("response", _on_response)
         except Exception:
             pass
+    return shown
+
+
+def fill_current_password_if_shown(page: Any, old_password: str | None) -> None:
+    """Type the seed into Current password when the page actually rendered it.
+
+    No logging in here, deliberately: this is the one helper that handles the
+    credential, so it is given no way to write anywhere.
+    """
+    if not old_password:
+        return
+    current = page.locator("#current-password")
+    try:
+        if not current.is_visible(timeout = 5_000):
+            return
+    except Exception:
+        return
+    current.fill(old_password, timeout = 30_000)
 
 
 def click_and_wait_for_response(

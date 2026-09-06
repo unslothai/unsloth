@@ -18,8 +18,9 @@ from playwright.sync_api import sync_playwright
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
-    PASSWORD_CHANGE_ENDPOINTS,
-    prepare_first_boot_form,
+    FIRST_BOOT_SUBMIT_ENDPOINTS,
+    fill_current_password_if_shown,
+    report_first_boot_form,
     click_and_wait_for_response,
     evaluate_fetch,
     install_view_transition_killer,
@@ -258,12 +259,13 @@ with sync_playwright() as p:
             pw_field = page.locator("#new-password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
             pw_field.fill(NEW, timeout = 60_000)
-            prepare_first_boot_form(page, OLD, info = lambda m: print(f"[ui]   {m}", flush = True))
+            report_first_boot_form(page, info = lambda m: print(f"[ui]   {m}", flush = True))
+            fill_current_password_if_shown(page, OLD)
             page.fill("#confirm-password", NEW, timeout = 60_000)
             # Click submit AND wait for the POST response together so a server-side reject surfaces now.
             status, _ = click_and_wait_for_response(
                 page,
-                url_substr = PASSWORD_CHANGE_ENDPOINTS,
+                url_substr = FIRST_BOOT_SUBMIT_ENDPOINTS,
                 method = "POST",
                 do_click = lambda: page.locator('button[type="submit"]').click(),
                 timeout_ms = 30_000,
