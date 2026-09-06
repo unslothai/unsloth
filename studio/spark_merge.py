@@ -169,9 +169,9 @@ def merge(
     # stages by construction, and rewriting it risks inventing a config nobody trained with.
     src_cfg = osp.join(plan["stages"][0]["path"], ADAPTER_CFG)
     if osp.isfile(src_cfg):
-        with open(src_cfg) as f:
+        with open(src_cfg, encoding = "utf-8") as f:
             cfg = json.load(f)
-        with open(osp.join(out, ADAPTER_CFG), "w") as f:
+        with open(osp.join(out, ADAPTER_CFG), "w", encoding = "utf-8") as f:
             json.dump(cfg, f, indent = 2)
 
     return {

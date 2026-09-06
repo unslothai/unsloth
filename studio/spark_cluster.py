@@ -82,7 +82,7 @@ def is_dgx_spark() -> bool:
             try:
                 # Both files are a few hundred bytes; cap anyway so a bad mount
                 # cannot make the gate expensive.
-                with open(path, "r", errors = "replace") as handle:
+                with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
                     if _SPARK_RE.search(handle.read(4096)):
                         result = True
                         break
@@ -125,7 +125,7 @@ def _int_or_none(text: str) -> Optional[int]:
 
 def _read(path: Path, limit: int = 256) -> str:
     try:
-        with open(path, "r", errors = "replace") as handle:
+        with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
             return handle.read(limit).strip()
     except OSError:
         return ""
@@ -473,7 +473,7 @@ def config_path() -> Path:
 
 def load_config() -> Dict[str, Any]:
     try:
-        with open(config_path(), "r") as handle:
+        with open(config_path(), "r", encoding = "utf-8") as handle:
             data = json.load(handle)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
@@ -485,7 +485,7 @@ def save_config(config: Dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents = True, exist_ok = True)
         tmp = path.with_suffix(".json.tmp")
-        with open(tmp, "w") as handle:
+        with open(tmp, "w", encoding = "utf-8") as handle:
             json.dump(config, handle, indent = 2, sort_keys = True)
         os.replace(tmp, path)
         # Peer credentials never land here, but the file names hosts and subnets.
@@ -689,7 +689,7 @@ def write_combining_broken() -> Optional[bool]:
     # Boot messages survive in the journal/kern.log even when dmesg is restricted.
     for log in ("/var/log/kern.log", "/var/log/dmesg"):
         try:
-            with open(log, "r", errors = "replace") as handle:
+            with open(log, "r", encoding = "utf-8", errors = "replace") as handle:
                 text = handle.read()
         except OSError:
             continue
@@ -4348,7 +4348,7 @@ def _consented(assume_yes: bool, prompt: str) -> bool:
     # question the user is sitting in front of. If /dev/tty cannot be opened -- a
     # container, cron, CI -- that is a real "no terminal" and the answer stays no.
     try:
-        with open("/dev/tty", "r") as tty:
+        with open("/dev/tty", "r", encoding = "utf-8") as tty:
             print(f"{prompt} [y/N] ", end = "", flush = True)
             return (tty.readline() or "").strip().lower() in ("y", "yes")
     except (OSError, EOFError, KeyboardInterrupt):
