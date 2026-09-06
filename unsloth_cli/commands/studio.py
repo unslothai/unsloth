@@ -2285,6 +2285,74 @@ _RUN_PANEL_SAMPLING = "Sampling"
 _RUN_PANEL_ADVANCED = "Advanced"
 
 
+def _spark_topology_hint(model: Optional[str], intent: str = "latency") -> None:
+    """On a clustered DGX Spark, say how this model should be spread across the nodes.
+
+    Advisory only -- it never changes what `run` does. Two measured rules it surfaces,
+    neither of which is guessable:
+
+    * a model that FITS on one Spark never decodes faster layer-split across two (0.85x
+      to 1.01x measured from 1 to 32 users): a split moves the same weight bytes per
+      token. Splitting buys capacity and prefill, never decode; two replicas of such a
+      model measured 1.30x to 1.91x at 8 to 32 users instead;
+    * tensor parallel is the ONLY axis that makes a single request faster (2.09x on two
+      Sparks, median TPOT 332.7ms -> 162.4ms). Pipeline parallel's TPOT is flat, and
+      replicas raise aggregate throughput while leaving per-request latency untouched.
+
+    `intent` defaults to latency because someone typing `unsloth run` is starting one
+    interactive session, not building a serving fleet. Node count comes from discovery,
+    so a three-Spark cluster stops being described as a pair.
+
+    Wrapped in a bare except and gated on `is_dgx_spark()` because a hint must never be
+    able to break `unsloth run` on any other machine -- and `spark_cluster` is stdlib-only,
+    so importing it costs nothing. Discovery is passed timeout=0 so no hint ever puts an
+    mDNS browse in front of a model load.
+    """
+    if not model:
+        return
+    try:
+        from studio import spark_cluster
+
+        if not spark_cluster.is_dgx_spark():
+            return
+        # Size first, and only then the peer: sizing is a filesystem read, while
+        # `peer_ip_for()` shells out to `ip` for each rail. A model we cannot size
+        # produces no hint at any node count, so paying for that fork before knowing
+        # whether there is anything to say puts a subprocess on the `run` hot path
+        # for nothing.
+        size = spark_cluster.model_size_gib(model)
+        if size is None or not spark_cluster.peer_ip_for():
+            return
+        try:
+            found = spark_cluster.discover_peers(timeout = 0.0).get("n_nodes", 2)
+        except Exception:
+            found = 2
+        nodes = max(2, int(found))
+        advice = spark_cluster.plan_deployment(
+            size,
+            n_nodes = nodes,
+            intent = intent,
+            model = model,
+        )
+        if advice["topology"] not in ("replicas", "single-or-replicas", "layer-split", "too-large"):
+            return
+        tag = f"[{nodes} Sparks]"
+        # `single-or-replicas` is new to this gate: it is the case where the model fits
+        # on one node, which is exactly when someone most needs to be told that tensor
+        # parallel would still halve their latency and that splitting would not.
+        if advice["topology"] in ("replicas", "layer-split", "too-large"):
+            typer.secho(f"  {tag} {advice['summary']}", fg = "cyan", err = True)
+        if advice.get("recommendation"):
+            typer.secho(f"  {tag} {advice['recommendation']}", fg = "cyan", err = True)
+        typer.secho(
+            f"  {tag} Details: unsloth spark plan --model {model} " f"--intent {intent}",
+            fg = "cyan",
+            err = True,
+        )
+    except Exception:
+        return
+
+
 @studio_app.command(
     context_settings = {
         "allow_extra_args": True,
@@ -2556,6 +2624,8 @@ def run(
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
+    _spark_topology_hint(model)
+
     # A newer outer CLI can re-exec into an older Unsloth venv; pass this signal via
     # env so an older child ignores it instead of treating it as a llama-server arg.
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
