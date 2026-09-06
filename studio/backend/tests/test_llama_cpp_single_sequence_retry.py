@@ -131,6 +131,6 @@ def test_the_retry_commits_the_one_slot_geometry_it_launched():
 
     src = inspect.getsource(LlamaCppBackend.load_model)
     start = src.index('label = "-single-seq"')
-    block = src[src.rindex("cmd = _kvu_cmd", 0, start):start]
+    block = src[src.rindex("cmd = _kvu_cmd", 0, start) : start]
     assert "n_parallel = 1" in block
     assert "kv_cache_unified = False" in block
