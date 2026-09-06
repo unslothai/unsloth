@@ -240,9 +240,9 @@ def test_keyless_cold_start_does_not_load_named_model(monkeypatch):
         lambda: type("_B", (), {"active_model_name": None})(),
     )
     monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
-    with pytest.raises(HTTPException) as excinfo:
-        _run_hook("unsloth/B-GGUF:Q4_K_M")
-    assert excinfo.value.status_code == 404
+    # Nothing is resident, so _reject_unservable_model is a no-op; the /v1 handler
+    # then answers with the existing "no model loaded" error. The load must not run.
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
     assert rec.calls == []
 
 
@@ -264,9 +264,7 @@ def test_keyless_cold_start_does_not_load_even_when_auto_switch_on(monkeypatch):
         lambda: type("_B", (), {"active_model_name": None})(),
     )
     monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
-    with pytest.raises(HTTPException) as excinfo:
-        _run_hook("unsloth/B-GGUF:Q4_K_M")
-    assert excinfo.value.status_code == 404
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
     assert rec.calls == []
 
 
@@ -294,13 +292,11 @@ def test_keyless_cold_start_reload_only_does_not_load_last_local(monkeypatch):
         lambda _s: {"id": "unsloth/A-GGUF", "kind": "gguf", "gguf_variant": "Q4_K_M"},
     )
     monkeypatch.setattr(authentication, "request_admitted_without_credential", lambda _r: True)
-    with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(
-            inference_route._maybe_auto_switch_model(
-                inference_route._RELOAD_ONLY_MODEL, object(), "tester"
-            )
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            inference_route._RELOAD_ONLY_MODEL, object(), "tester"
         )
-    assert excinfo.value.status_code == 404
+    )
     assert rec.calls == []
 
 
