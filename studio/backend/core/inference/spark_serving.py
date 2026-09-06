@@ -31,6 +31,12 @@ this module decides between three layouts and runs whichever one the workload al
                exactly as before, and ``UNSLOTH_SPARK_PIPELINE_GROUPS=0`` turns it off.
                The fork keeps the flag out of its usage text, so a build whose ``--help``
                does not name it is also tried for real (``llama_server_accepts``).
+               Groups and speculative decoding are no longer either/or: from
+               ``GROUPS_X_MTP_MIN_ROWS`` (16) concurrent rows up, a split asks for both on
+               a server that takes them together (the per-group speculative state of
+               unslothai/llama.cpp PR #187, probed for by passing the pair for real), and
+               below that crossover it keeps the speculation and drops the groups. See
+               ``reconcile_split_speculation``; the status says which of the three ran.
 
 In every topology a GGUF that ships its own MTP head (``<arch>.nextn_predict_layers`` in
 the header: Qwen3.5-4B-MTP, Qwen3.8-27B) self-speculates. The backend's own speculative
@@ -41,7 +47,7 @@ the bundle's llama-server for ``--spec-type`` and asks for the Spark-measured dr
 ``speculative_type``, ``spec_draft_n_max`` or ``--spec-type`` / draft flags are left
 alone, ``UNSLOTH_SPARK_MTP=0`` launches without speculation, and the status reports
 ``mtp`` (enabled / no head / server too old / user override / disabled by env) from the
-argv that actually launched.
+argv that actually launched, beside ``split_config`` and ``split_config_reason``.
 
 The decision is ``studio/spark_cluster.recommend_topology`` (pure, measured); this
 module only gathers its inputs (weights on disk, KV per slot from the GGUF header, the
@@ -72,7 +78,7 @@ import shlex
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
 from core.inference.spark_router import CONVERSATION_FIELD, Backend, SparkRouter
 
@@ -156,6 +162,47 @@ _SPEC_OWNER_FLAGS = frozenset(
     }
 )
 _SPEC_OWNER_PREFIXES = ("--spec-draft-", "--draft")
+# Flags the fork still refuses together with --pipeline-groups N > 1, unchanged by PR #187
+# (tools/server validate_pipeline_groups): one projector, one control vector set and one
+# idle timer per server, none of them per group. Studio's own projector for a vision model
+# is emitted by the backend rather than through these extras, so a caller's --mmproj is what
+# is visible here; a split of a vision model is not a supported combination either way.
+_GROUPS_REFUSED_FLAGS = frozenset(
+    {
+        "--mmproj",
+        "-mm",
+        "--mmproj-url",
+        "-mmu",
+        "--control-vector",
+        "--control-vector-scaled",
+        "--control-vector-layer-range",
+        "--sleep-idle-seconds",
+    }
+)
+# ── Pipeline groups AND speculation on the same split: the crossover ──────────────────
+# Mirrors of spark_cluster.GROUPS_X_MTP_* (spark_cluster carries the full table and
+# groups_x_mtp_note; these are here so this module needs nothing loaded to decide).
+# Measured on the pair, Qwen3.8-27B UD-Q4_K_XL split across the two Sparks with the fork of
+# PR #187, --parallel 32 --cache-ram 0, npp 128 / ntg 256, two repeats, decode tok/s:
+#
+#   rows | 1 context  | 1 context + MTP | 2 groups   | 2 groups + MTP | one Spark + MTP
+#      8 | 53.6  55.3 |   95.5   93.6   | 54.0  51.5 |   77.1   92.0  |      85.6
+#     32 | 95.5  96.9 |  112.9  114.2   |115.7 108.7 |  133.8  128.3  |      83.8
+#
+# At 32 rows the two together win: 131.1 tok/s on the repeat mean, 1.15x of one context with
+# MTP and 1.17x of the groups alone (1.17x and 1.16x on the best cells). At 8 rows one
+# context with MTP wins, 94.6 against 84.6, because two groups halve the rows per group.
+# Acceptance is unchanged by the second group (0.80 / 0.64 with one context, 0.72 / 0.68
+# with two). Nothing was measured in between, so the crossover is the geometric midpoint of
+# the two bracketing points and both sides of it are measured.
+GROUPS_X_MTP_MIN_ROWS = 16  # spark_cluster.GROUPS_X_MTP_CROSSOVER_ROWS
+GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.89, 32: 1.15}  # both over one context with MTP
+GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.60, 32: 1.17}  # both over two groups alone
+# What a layer split was launched as, for the status surface beside ``mtp``.
+SPLIT_CONFIG_BOTH = "groups + speculation"
+SPLIT_CONFIG_SPEC = "one context + speculation"
+SPLIT_CONFIG_GROUPS = "groups, no speculation"
+SPLIT_CONFIG_PLAIN = "one context, no speculation"
 HELP_PROBE_TIMEOUT_S = 20.0  # llama-server --help; a hung binary is a missing flag
 RELAUNCH_BACKOFF_S = (5.0, 15.0, 45.0)  # bounded: three attempts, then the peer stays down
 PEER_START_TIMEOUT_S = 20.0  # for the rpc-server port to accept; the model load is separate
@@ -682,22 +729,29 @@ def llama_server_supports(flag: str, binary: Optional[str] = None) -> bool:
     return re.search(re.escape(flag) + r"(?![\w-])", text) is not None
 
 
-# ``llama-server <flag> <value> --help`` exit codes keyed by (binary path, mtime, flag). The
-# fork's --pipeline-groups is taken out of argv by tools/server before the common parser runs
-# and is not in the --help text, so a flag the text does not name is tried for real: a build
-# that has it strips it and prints the usage (exit 0); every other build stops at "invalid
-# argument" (exit 1). One run per build and flag; a failure or a hang is cached as rejected.
-_ACCEPTS: Dict[Tuple[str, float, str], bool] = {}
+# ``llama-server <flag> <value> [more] --help`` exit codes keyed by (binary path, mtime, the
+# probed arguments). The fork's --pipeline-groups is taken out of argv by tools/server before
+# the common parser runs and is not in the --help text, so a flag the text does not name is
+# tried for real: a build that has it strips it and prints the usage (exit 0); every other
+# build stops at "invalid argument" (exit 1). The same probe answers whether a build takes
+# the flag TOGETHER with a drafter, which tools/server also decides at argv parse time: the
+# fork before PR #187 refuses that pair ("--pipeline-groups > 1 is not supported together
+# with speculative decoding", exit 1) and the fork from a1dd7c5e8 on accepts it. One run per
+# build and argument list; a failure or a hang is cached as rejected.
+_ACCEPTS: Dict[Tuple[str, float, Tuple[str, ...]], bool] = {}
 
 
 def llama_server_accepts(
     flag: str,
     value: str = "1",
     binary: Optional[str] = None,
+    *,
+    extra: Sequence[str] = (),
 ) -> bool:
-    """Whether the bundle's llama-server takes ``flag`` (with ``value``) ahead of ``--help``
-    without rejecting it. For flags a build hides from its usage text. Never raises; False
-    on every failure, so a flag the build may lack is never passed."""
+    """Whether the bundle's llama-server takes ``flag`` (with ``value``, and with ``extra``
+    after it) ahead of ``--help`` without rejecting it. For flags a build hides from its
+    usage text, and for combinations a build validates at argv parse time. Never raises;
+    False on every failure, so a flag the build may lack is never passed."""
     path = binary or llama_server_binary()
     if not path or not flag:
         return False
@@ -705,14 +759,15 @@ def llama_server_accepts(
         mtime = os.stat(path).st_mtime
     except OSError:
         return False
-    key = (str(path), mtime, str(flag))
+    probe = [str(flag), str(value), *(str(a) for a in extra)]
+    key = (str(path), mtime, tuple(probe))
     cached = _ACCEPTS.get(key)
     if cached is not None:
         return cached
     accepted = False
     try:
         done = subprocess.run(
-            [str(path), str(flag), str(value), "--help"],
+            [str(path), *probe, "--help"],
             stdin = subprocess.DEVNULL,
             stdout = subprocess.PIPE,
             stderr = subprocess.PIPE,
@@ -720,10 +775,37 @@ def llama_server_accepts(
         )
         accepted = done.returncode == 0 and bool((done.stdout or b"").strip())
     except Exception as exc:
-        logger.info("spark serving: llama-server %s probe failed for %s: %s", flag, path, exc)
+        logger.info(
+            "spark serving: llama-server %s probe failed for %s: %s",
+            " ".join(probe),
+            path,
+            exc,
+        )
         accepted = False
     _ACCEPTS[key] = accepted
     return accepted
+
+
+def llama_server_accepts_groups_with_drafter(
+    groups: int = PIPELINE_GROUPS_DEFAULT, binary: Optional[str] = None
+) -> bool:
+    """Whether the bundle's llama-server runs ``--pipeline-groups N > 1`` TOGETHER with a
+    drafter: the per-group speculative state of unslothai/llama.cpp PR #187 (a1dd7c5e8).
+
+    Neither half is in the usage text (the fork strips ``--pipeline-groups`` from argv before
+    the common parser), and the refusal is a validation, not a missing flag, so the only
+    working probe is to pass both for real ahead of ``--help``: the fork before that commit
+    exits 1 on the pair, the fork from it on strips them and prints the usage. Cached with
+    every other probe of this build; False on any doubt, which falls back to keeping the
+    speculation and dropping the groups."""
+    if int(groups or 0) <= 1:
+        return False
+    return llama_server_accepts(
+        PIPELINE_GROUPS_FLAG,
+        str(int(groups)),
+        binary,
+        extra = (SPEC_TYPE_FLAG, MTP_SPEC_TYPE),
+    )
 
 
 def _first_shard(path: str) -> str:
@@ -886,45 +968,106 @@ def reconcile_split_speculation(
     speculative_type: Optional[str] = None,
     extra_args: Optional[List[str]] = None,
 ) -> None:
-    """A layer split gets pipeline groups or speculative decoding, not both: the fork's
-    server refuses ``--pipeline-groups > 1`` together with any drafter (tools/server
-    ``validate_pipeline_groups``: a ``common_speculative`` and its draft context are
-    bound to one target context). Resolved in place, before the launch, so the server
-    never refuses a start:
+    """Which of the three layer-split configurations to launch, resolved in place before the
+    launch so the server never refuses a start.
 
-    * the GGUF's own MTP head wins over the groups: 1.59x at 8 users on one Spark against
-      the groups' 1.12x at 32 (pending the pair measurement of the two on a split);
-    * the caller's own speculation wins over the groups, unless it says off;
-    * a split that keeps its groups launches with ``speculative_type`` off, so a sidecar
-      drafter the backend would otherwise pick on its own cannot make the server refuse.
+    The choice is made on the concurrency the load asked for, which is
+    ``groups["requested_slots"]``: the pass-through ``--parallel`` / ``-np`` when the caller
+    set one, else the slot count the load carries (``pipeline_groups_plan`` rounds the
+    launched ``--parallel`` up from it to a multiple of the group count). The fork of
+    unslothai/llama.cpp PR #187 (a1dd7c5e8) gives every pipeline group its own speculative
+    state, so ``--pipeline-groups N > 1`` and a drafter are no longer either/or. Measured on
+    the pair with Qwen3.8-27B (``spark_cluster.GROUPS_X_MTP_DECODE_TOKS``), decode tok/s:
+
+        rows | 1 context + MTP | 2 groups | 2 groups + MTP
+           8 |      94.6       |   52.8   |      84.6
+          32 |     113.6       |  112.2   |     131.1
+
+    so from ``GROUPS_X_MTP_MIN_ROWS`` (16) rows up the two together win, 1.15x of one context
+    with MTP and 1.17x of the groups alone on the repeat means (1.17x and 1.16x on the best
+    cells), and below it one context with MTP wins, 1.12x of the two together, because two
+    groups halve the rows per group. The outcomes, recorded in ``split_config`` and
+    ``split_config_reason`` for the status surface:
+
+    * at or above the crossover on a build that takes both: keep both;
+    * below it, or on a build that refuses the combination (the old fork's
+      ``validate_pipeline_groups``: one ``common_speculative`` bound to one target context):
+      keep the speculation and drop the groups, which is what this always did;
+    * nothing to keep speculation for (no MTP head, a server without ``--spec-type``,
+      ``UNSLOTH_SPARK_MTP=0``): keep the groups and launch with ``speculative_type`` off, so a
+      sidecar drafter the backend would otherwise pick on its own is never in the launch. A
+      caller who says off keeps the groups too, and nothing of theirs is touched.
+
+    The caller's own speculation follows the same crossover: PR #187 takes ``--model-draft``
+    per group as well. ``--mmproj``, control vectors and ``--sleep-idle-seconds`` are still
+    refused with the groups whatever the speculation, and ``pipeline_groups_plan`` drops the
+    groups outright for those.
     """
-    if int(groups.get("pipeline_groups") or 0) <= 1:
-        return
+    planned = int(groups.get("pipeline_groups") or 0)
     verdict = mtp.get("mtp")
-    if verdict == "enabled":
-        groups["pipeline_groups"] = 0
-        groups["slots"] = groups.get("requested_slots", groups.get("slots"))
-        groups["reason"] = (
-            f"{PIPELINE_GROUPS_FLAG} not added: the server refuses it together with speculative "
-            f"decoding, and the GGUF's MTP head measured the larger gain"
+    callers = verdict == "user override"
+    speculating = verdict == "enabled" or (
+        callers and not caller_speculation_off(speculative_type, extra_args)
+    )
+    if planned <= 1:
+        groups["split_config"] = SPLIT_CONFIG_SPEC if speculating else SPLIT_CONFIG_PLAIN
+        groups["split_config_reason"] = str(
+            groups.get("reason") or f"{PIPELINE_GROUPS_FLAG} not added"
         )
         return
-    if verdict == "user override":
-        if caller_speculation_off(speculative_type, extra_args):
+    rows = int(groups.get("requested_slots") or groups.get("slots") or 1)
+    if speculating:
+        combined = llama_server_accepts_groups_with_drafter(planned)
+        if rows >= GROUPS_X_MTP_MIN_ROWS and combined:
+            hi = max(GROUPS_X_MTP_OVER_MTP_ONLY)
+            groups["split_config"] = SPLIT_CONFIG_BOTH
+            groups["split_config_reason"] = (
+                f"{rows} rows is at or above the measured crossover of "
+                f"{GROUPS_X_MTP_MIN_ROWS}, and this llama-server takes "
+                f"{PIPELINE_GROUPS_FLAG} {planned} together with a drafter: both, measured "
+                f"{GROUPS_X_MTP_OVER_MTP_ONLY[hi]:.2f}x of one context with speculation and "
+                f"{GROUPS_X_MTP_OVER_GROUPS_ONLY[hi]:.2f}x of {planned} groups alone at "
+                f"{hi} rows"
+            )
+            mtp["reason"] = (
+                f"{mtp.get('reason')}; kept together with {PIPELINE_GROUPS_FLAG} {planned}"
+            )
             return
+        lo = min(GROUPS_X_MTP_OVER_MTP_ONLY)
+        why = (
+            f"{rows} rows is below the measured crossover of {GROUPS_X_MTP_MIN_ROWS}, where "
+            f"{planned} groups halve the rows per group and measured "
+            f"{GROUPS_X_MTP_OVER_MTP_ONLY[lo]:.2f}x of one context with speculation at "
+            f"{lo} rows"
+            if rows < GROUPS_X_MTP_MIN_ROWS
+            else (
+                "this llama-server refuses it together with a drafter (no per-group "
+                "speculative state; see unslothai/llama.cpp PR #187)"
+            )
+        )
+        if callers:
+            why = f"{why}, and the speculation is the caller's"
         groups["pipeline_groups"] = 0
         groups["slots"] = groups.get("requested_slots", groups.get("slots"))
-        groups["reason"] = (
-            f"{PIPELINE_GROUPS_FLAG} not added: the server refuses it together with the "
-            f"caller's speculative decoding"
-        )
+        groups["reason"] = f"{PIPELINE_GROUPS_FLAG} not added: {why}"
+        groups["split_config"] = SPLIT_CONFIG_SPEC
+        groups["split_config_reason"] = groups["reason"]
+        return
+    groups["split_config"] = SPLIT_CONFIG_GROUPS
+    groups["split_config_reason"] = (
+        f"{PIPELINE_GROUPS_FLAG} {planned} and no speculation to keep: "
+        f"{mtp.get('reason') or verdict}"
+    )
+    if callers:
+        # Their "off" is left exactly as they wrote it.
         return
     request = mtp.setdefault("request", {})
     if request.get("speculative_type") != "off":
         request["speculative_type"] = "off"
         mtp["reason"] = (
             f"{mtp.get('reason')}; speculation off for {PIPELINE_GROUPS_FLAG} "
-            f"{groups['pipeline_groups']}, which the server refuses with a drafter"
+            f"{groups['pipeline_groups']}, which this GGUF has no head for and which a "
+            f"sidecar drafter loses on from 4 users on this pair"
         )
 
 
@@ -966,6 +1109,17 @@ def _extra_args_slots(extra_args: Optional[List[str]]) -> Optional[int]:
     return found
 
 
+def extra_args_refuse_pipeline_groups(extra_args: Optional[List[str]] = None) -> Optional[str]:
+    """The first pass-through flag the server still refuses together with
+    ``--pipeline-groups N > 1``, or None. A projector, a control vector and an idle timer
+    are one per server and not per group, and PR #187 did not change that."""
+    for arg in extra_args or []:
+        name = str(arg).partition("=")[0]
+        if name in _GROUPS_REFUSED_FLAGS:
+            return name
+    return None
+
+
 def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> Dict[str, Any]:
     """How many pipeline groups a layer-split llama-server should run, and with how
     many slots. Only ever consulted for a layer split.
@@ -976,9 +1130,13 @@ def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> 
     flag is looked for in the ``--help`` text first and, failing that, tried for real
     (``llama_server_accepts``): the fork takes it out of argv ahead of the common
     parser and does not print it in its usage.
+    It is also 0 when the pass-through carries a flag the server refuses with the groups
+    (``--mmproj``, a control vector, ``--sleep-idle-seconds``: still refused after
+    unslothai/llama.cpp PR #187, which only made a drafter per group work).
     Otherwise it is the env value or ``PIPELINE_GROUPS_DEFAULT`` (2), and ``slots`` is the
     launch's slot count rounded up to a multiple of it, at least one per group, so no
-    group is left without a slot. ``requested_slots`` is the count before rounding.
+    group is left without a slot, which is what the server means by "--parallel must be a
+    multiple of the group count". ``requested_slots`` is the count before rounding.
     """
     requested = _extra_args_slots(extra_args)
     base = max(1, int(requested if requested is not None else (slots or 1)))
@@ -1003,6 +1161,12 @@ def pipeline_groups_plan(slots: int, extra_args: Optional[List[str]] = None) -> 
             f"disabled by {ENV_PIPELINE_GROUPS}={raw}"
             if raw
             else f"{PIPELINE_GROUPS_FLAG} not added"
+        )
+        return out
+    refused = extra_args_refuse_pipeline_groups(extra_args)
+    if refused:
+        out["reason"] = (
+            f"{PIPELINE_GROUPS_FLAG} not added: the server refuses it together with {refused}"
         )
         return out
     if not (
@@ -1234,6 +1398,11 @@ class SparkServing:
         self.peer_model_present: Optional[bool] = None
         self.pipeline_groups: int = 0
         self.pipeline_groups_reason: Optional[str] = None
+        # Which of the three layer-split configurations the last split asked for, and why
+        # (reconcile_split_speculation): both, one context with speculation, or the groups
+        # alone. None until a split is planned.
+        self.split_config: Optional[str] = None
+        self.split_config_reason: Optional[str] = None
         # MTP self speculation for the most recent load on this node: mtp_plan's verdict
         # before the launch, then what the launched argv actually carries.
         self.mtp: str = "unknown"
@@ -1389,6 +1558,14 @@ class SparkServing:
             )
             self.pipeline_groups = int(groups["pipeline_groups"])
             self.pipeline_groups_reason = groups.get("reason")
+            self.split_config = groups.get("split_config")
+            self.split_config_reason = groups.get("split_config_reason")
+            if self.split_config:
+                logger.info(
+                    "spark serving: layer split as %s: %s",
+                    self.split_config,
+                    self.split_config_reason,
+                )
             if self.pipeline_groups:
                 logger.info(
                     "spark serving: %s %d with %d slots (%d asked for)",
@@ -1405,6 +1582,7 @@ class SparkServing:
             self.topology, self.reason = "single", reason
             self.plan = dict(plan, topology = "single", reason = reason)
             self.pipeline_groups, self.pipeline_groups_reason = 0, None
+            self.split_config, self.split_config_reason = None, None
             logger.warning("spark serving: %s", reason)
             return request
 
@@ -1519,6 +1697,7 @@ class SparkServing:
                     self.pipeline_groups_reason = (
                         "llama-server launched with a user-supplied --rpc; nothing added"
                     )
+                    self.split_config, self.split_config_reason = None, None
                 self._ensure_supervisor()
                 return
             if self.topology == "layer_split":
@@ -1826,6 +2005,7 @@ class SparkServing:
             self.attached_backend = None
             self.attached_port = None
             self.pipeline_groups, self.pipeline_groups_reason = 0, None
+            self.split_config, self.split_config_reason = None, None
             if self.topology != "single":
                 self.topology = "single"
                 self.reason = "detached"
@@ -1833,13 +2013,19 @@ class SparkServing:
     def status(self) -> Dict[str, Any]:
         # pipeline_groups: the --pipeline-groups value this node's llama-server was
         # launched with, or 0 and the reason (no flag in the bundle, disabled by env,
-        # or not a layer split at all). mtp: "enabled" when this node's llama-server
+        # or not a layer split at all). split_config: which of the three layer-split
+        # configurations was picked and why ("groups + speculation" above the measured
+        # crossover on a server that takes both, "one context + speculation" below it or
+        # on a server that refuses the pair, "groups, no speculation" when there is no
+        # head to speculate with). mtp: "enabled" when this node's llama-server
         # (and so every replica) runs the GGUF's own MTP head, else "no head", "server
         # too old", "user override", "disabled by env", "not launched" or "unknown".
         if self.topology == "layer_split":
             groups, groups_reason = self.pipeline_groups, self.pipeline_groups_reason
+            config, config_reason = self.split_config, self.split_config_reason
         else:
             groups, groups_reason = 0, f"not a layer split (topology {self.topology})"
+            config, config_reason = None, f"not a layer split (topology {self.topology})"
         return {
             "enabled": enabled(),
             "topology": self.topology,
@@ -1850,6 +2036,8 @@ class SparkServing:
             "peer_model_present": self.peer_model_present,
             "pipeline_groups": groups,
             "pipeline_groups_reason": groups_reason,
+            "split_config": config,
+            "split_config_reason": config_reason,
             "mtp": self.mtp,
             "mtp_reason": self.mtp_reason,
             "router": self.router.status() if self.router is not None else None,

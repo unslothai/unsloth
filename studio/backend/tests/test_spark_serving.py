@@ -142,11 +142,15 @@ def write_fake_llama_server(
     *,
     body: str = "",
     hidden_flags: tuple = (),
+    refuses_groups_with_drafter: bool = False,
 ) -> Path:
     """A stand-in for the real parser: any ``--pipeline-groups`` argument its usage does not
     name is rejected with llama.cpp's "invalid argument" and exit 1, unless the flag is in
     ``hidden_flags``, which is how the fork behaves (it takes the flag out of argv before
-    the common parser and never prints it)."""
+    the common parser and never prints it).
+
+    ``refuses_groups_with_drafter`` is the fork before PR #187: it takes the flag, and takes
+    a drafter, but stops at argv parse time when it is given both."""
     directory.mkdir(parents = True, exist_ok = True)
     script = directory / "llama-server"
     reject = "--pipeline-groups" not in help_text and "--pipeline-groups" not in hidden_flags
@@ -156,6 +160,13 @@ def write_fake_llama_server(
         if reject
         else ""
     )
+    if refuses_groups_with_drafter:
+        check += (
+            'g=; s=; for a in "$@"; do case "$a" in --pipeline-groups*) g=1;; '
+            "--spec-type*|--model-draft*|-md) s=1;; esac; done\n"
+            'if [ -n "$g" ] && [ -n "$s" ]; then echo "error: --pipeline-groups > 1 is not '
+            'supported together with speculative decoding" >&2; exit 1; fi\n'
+        )
     script.write_text(
         "#!/bin/sh\n"
         'echo run >> "$0.calls"\n' + check + body + "cat <<'EOF'\n" + help_text + "EOF\n",
@@ -1156,8 +1167,8 @@ def test_before_load_asks_for_the_spark_draft_depth_in_every_topology(
         status = ss.status()
         assert status["mtp"] == "enabled", status
         assert "--spec-draft-n-max 3" in status["mtp_reason"]
-    # A layer split: the head wins over the pipeline groups, which the fork's server
-    # refuses together with any drafter (see reconcile_split_speculation).
+    # A layer split at 4 rows, below the measured crossover: the head wins over the
+    # pipeline groups, which halve the rows per group (see reconcile_split_speculation).
     cluster.topology = "layer_split"
     out = run(ss.before_load(_FakeRequest(str(model)), 4))
     assert out.spec_draft_n_max == 3 and out.speculative_type is None
@@ -1174,18 +1185,23 @@ def test_before_load_asks_for_the_spark_draft_depth_in_every_topology(
     status = ss.status()
     assert status["topology"] == "layer_split" and status["mtp"] == "enabled"
     assert status["pipeline_groups"] == 0
+    assert status["split_config"] == ss.SPLIT_CONFIG_SPEC
+    assert status["pipeline_groups_reason"] == status["split_config_reason"]
     assert status["pipeline_groups_reason"] == (
-        "--pipeline-groups not added: the server refuses it together with speculative "
-        "decoding, and the GGUF's MTP head measured the larger gain"
+        "--pipeline-groups not added: 4 rows is below the measured crossover of 16, where 2 "
+        "groups halve the rows per group and measured 0.89x of one context with speculation "
+        "at 8 rows"
     )
     run(ss.shutdown())
     assert ss.status()["mtp"] == "enabled", "the peer going away does not touch this node's launch"
 
 
-def test_layer_split_keeps_its_groups_only_without_a_drafter(cluster, monkeypatch, tmp_path):
-    """PR 187's server refuses --pipeline-groups > 1 with speculative decoding, so a split
-    that keeps two groups must launch with speculation off, and a caller's drafter costs
-    the groups instead."""
+def test_layer_split_with_no_head_keeps_its_groups_and_launches_without_speculation(
+    cluster, monkeypatch, tmp_path
+):
+    """With nothing to speculate with, a split keeps its groups and says off, so the backend
+    cannot add a sidecar drafter of its own (a loss from 4 users on this pair). Below the
+    crossover a caller's drafter still costs the groups."""
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
     plain = write_gguf(tmp_path / "plain.gguf", "qwen35moe")
@@ -1198,6 +1214,8 @@ def test_layer_split_keeps_its_groups_only_without_a_drafter(cluster, monkeypatc
     assert out.spec_draft_n_max is None
     status = ss.status()
     assert status["pipeline_groups"] == 2 and status["mtp"] == "no head"
+    assert status["split_config"] == ss.SPLIT_CONFIG_GROUPS
+    assert "no speculation to keep" in status["split_config_reason"]
     assert "speculation off for --pipeline-groups 2" in status["mtp_reason"]
     run(ss.shutdown())
     # The env opt-out: same launch, its own reason.
@@ -1219,9 +1237,11 @@ def test_layer_split_keeps_its_groups_only_without_a_drafter(cluster, monkeypatc
     assert out.llama_extra_args[:2] == ["--spec-type", "ngram-simple"]
     status = ss.status()
     assert status["pipeline_groups"] == 0 and status["mtp"] == "user override"
+    assert status["split_config"] == ss.SPLIT_CONFIG_SPEC
     assert status["pipeline_groups_reason"] == (
-        "--pipeline-groups not added: the server refuses it together with the caller's "
-        "speculative decoding"
+        "--pipeline-groups not added: 3 rows is below the measured crossover of 16, where 2 "
+        "groups halve the rows per group and measured 0.89x of one context with speculation "
+        "at 8 rows, and the speculation is the caller's"
     )
     run(ss.shutdown())
     for request in (
@@ -1244,6 +1264,214 @@ def test_layer_split_keeps_its_groups_only_without_a_drafter(cluster, monkeypatc
     ss.reconcile_split_speculation(groups, mtp)
     assert groups["pipeline_groups"] == 0 and groups["reason"] == "x", "one context: no conflict"
     assert mtp["request"] == {"spec_draft_n_max": 3}
+
+
+def test_split_takes_groups_and_speculation_above_the_crossover(cluster, monkeypatch, tmp_path):
+    """From GROUPS_X_MTP_MIN_ROWS rows up, a llama-server with per-group speculative state
+    (unslothai/llama.cpp PR #187) is asked for both: measured on the pair at 32 rows, 133.8
+    tok/s against 112.9 for one context with MTP and 115.7 for two groups alone."""
+    script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    out = run(ss.before_load(_FakeRequest(str(head)), 32))
+    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "32"]
+    assert out.spec_draft_n_max == 3 and out.speculative_type is None
+    status = ss.status()
+    assert status["pipeline_groups"] == 2 and status["mtp"] == "enabled"
+    assert status["split_config"] == ss.SPLIT_CONFIG_BOTH == "groups + speculation"
+    assert "at or above the measured crossover of 16" in status["split_config_reason"]
+    assert "1.15x of one context with speculation" in status["split_config_reason"]
+    assert "1.17x of 2 groups alone" in status["split_config_reason"]
+    assert "kept together with --pipeline-groups 2" in status["mtp_reason"]
+    assert probe_runs(script) == 2, "one --help run plus one combined probe, both cached"
+
+
+def test_split_crossover_sits_at_the_measured_row_count(cluster, monkeypatch, tmp_path):
+    """8 rows and 32 rows are both measured; 16, the geometric midpoint, is where the rule
+    turns. Below it the groups halve the rows per group and lose to one context with MTP."""
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    for rows, config in (
+        (1, ss.SPLIT_CONFIG_SPEC),
+        (8, ss.SPLIT_CONFIG_SPEC),
+        (15, ss.SPLIT_CONFIG_SPEC),
+        (16, ss.SPLIT_CONFIG_BOTH),
+        (32, ss.SPLIT_CONFIG_BOTH),
+    ):
+        out = run(ss.before_load(_FakeRequest(str(head)), rows))
+        status = ss.status()
+        assert status["split_config"] == config, (rows, status)
+        assert status["mtp"] == "enabled", rows
+        assert out.spec_draft_n_max == 3, rows
+        if config == ss.SPLIT_CONFIG_BOTH:
+            assert status["pipeline_groups"] == 2, rows
+            assert out.llama_extra_args[-2:] == ["--parallel", str(rows)], rows
+        else:
+            assert status["pipeline_groups"] == 0, rows
+            assert "--pipeline-groups" not in out.llama_extra_args, rows
+            assert "below the measured crossover of 16" in status["split_config_reason"]
+        run(ss.shutdown())
+
+
+def test_split_keeps_todays_behaviour_when_the_server_refuses_the_pair(
+    cluster, monkeypatch, tmp_path
+):
+    """A build without per-group speculative state stops at argv parse time when it is given
+    both. The probe passes the pair for real (the fork prints neither flag in its usage), and
+    a refusal falls back to what this did before: keep the speculation, drop the groups."""
+    script = write_fake_llama_server(
+        cluster.bundle / "build" / "bin",
+        _FAKE_HELP_WITH_FLAG,
+        refuses_groups_with_drafter = True,
+    )
+    head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    plain = write_gguf(tmp_path / "plain.gguf", "qwen35moe")
+    _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    assert ss.llama_server_accepts(ss.PIPELINE_GROUPS_FLAG) is True
+    assert ss.llama_server_accepts_groups_with_drafter(2) is False
+    assert ss.llama_server_accepts_groups_with_drafter(1) is False, "one group is not the pair"
+    out = run(ss.before_load(_FakeRequest(str(head)), 32))
+    assert "--pipeline-groups" not in out.llama_extra_args
+    assert out.spec_draft_n_max == 3
+    status = ss.status()
+    assert status["pipeline_groups"] == 0 and status["mtp"] == "enabled"
+    assert status["split_config"] == ss.SPLIT_CONFIG_SPEC
+    assert "refuses it together with a drafter" in status["split_config_reason"]
+    run(ss.shutdown())
+    # The same build still gets its groups for a GGUF with nothing to speculate with.
+    out = run(ss.before_load(_FakeRequest(str(plain)), 32))
+    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "32"]
+    assert ss.status()["split_config"] == ss.SPLIT_CONFIG_GROUPS
+    assert probe_runs(script) >= 2
+
+
+def test_groups_keep_parallel_a_multiple_of_the_group_count(cluster, monkeypatch, tmp_path):
+    """The server takes --pipeline-groups N only with a --parallel that is a multiple of N,
+    so the launch rounds up; the crossover is judged on what the load asked for."""
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "3")
+    # A pass-through --parallel wins over the load's slot count, here and in the launch.
+    request = _FakeRequest(str(head), llama_extra_args = ["--parallel", "32"])
+    out = run(ss.before_load(request, 4))
+    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "3", "--parallel", "33"]
+    assert int(out.llama_extra_args[-1]) % 3 == 0
+    assert out.spec_draft_n_max == 3
+    assert ss.status()["split_config"] == ss.SPLIT_CONFIG_BOTH
+    run(ss.shutdown())
+    # 8 asked for is below the crossover, so the groups go and --parallel is untouched.
+    out = run(ss.before_load(_FakeRequest(str(head)), 8))
+    assert "--parallel" not in out.llama_extra_args
+    assert ss.status()["split_config"] == ss.SPLIT_CONFIG_SPEC
+
+
+def test_mmproj_control_vectors_and_idle_sleep_cost_the_groups_not_the_speculation(
+    cluster, monkeypatch, tmp_path
+):
+    """PR #187 made a drafter work per group; a projector, a control vector and an idle timer
+    are still one per server, and the groups go instead."""
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    for extras in (
+        ["--mmproj", "/models/mmproj-F16.gguf"],
+        ["-mm", "/models/mmproj-F16.gguf"],
+        ["--control-vector", "/models/happy.gguf"],
+        ["--sleep-idle-seconds", "30"],
+    ):
+        out = run(ss.before_load(_FakeRequest(str(head), llama_extra_args = list(extras)), 32))
+        assert "--pipeline-groups" not in out.llama_extra_args, extras
+        assert out.llama_extra_args[:2] == extras[:2], "the caller's flags are untouched"
+        assert out.spec_draft_n_max == 3, extras
+        status = ss.status()
+        assert status["pipeline_groups"] == 0 and status["mtp"] == "enabled", extras
+        assert status["split_config"] == ss.SPLIT_CONFIG_SPEC, extras
+        assert status["pipeline_groups_reason"] == (
+            f"--pipeline-groups not added: the server refuses it together with {extras[0]}"
+        ), extras
+        run(ss.shutdown())
+    # The pure rule, and the plan it feeds.
+    assert ss.extra_args_refuse_pipeline_groups(["--seed", "1"]) is None
+    assert ss.extra_args_refuse_pipeline_groups(None) is None
+    assert ss.extra_args_refuse_pipeline_groups(["--mmproj=/p.gguf"]) == "--mmproj"
+    assert ss.extra_args_refuse_pipeline_groups(["--control-vector-scaled", "/v", "0.5"]) == (
+        "--control-vector-scaled"
+    )
+    plan = ss.pipeline_groups_plan(32, ["--sleep-idle-seconds", "30"])
+    assert plan["pipeline_groups"] == 0 and plan["slots"] == 32
+
+
+def test_a_users_override_of_either_flag_wins_over_the_crossover(cluster, monkeypatch, tmp_path):
+    """Above the crossover too: the groups env turns the groups off, the MTP env turns the
+    speculation off, and a caller's own drafter is carried by the groups rather than dropping
+    them, because PR #187 takes --model-draft per group as well."""
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "0")
+    out = run(ss.before_load(_FakeRequest(str(head)), 32))
+    assert "--pipeline-groups" not in out.llama_extra_args and out.spec_draft_n_max == 3
+    status = ss.status()
+    assert status["split_config"] == ss.SPLIT_CONFIG_SPEC and status["mtp"] == "enabled"
+    assert ss.ENV_PIPELINE_GROUPS in status["split_config_reason"]
+    run(ss.shutdown())
+    monkeypatch.delenv(ss.ENV_PIPELINE_GROUPS)
+    monkeypatch.setenv(ss.ENV_MTP, "0")
+    out = run(ss.before_load(_FakeRequest(str(head)), 32))
+    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "32"]
+    assert out.speculative_type == "off" and out.spec_draft_n_max is None
+    status = ss.status()
+    assert status["split_config"] == ss.SPLIT_CONFIG_GROUPS and status["mtp"] == "disabled by env"
+    run(ss.shutdown())
+    monkeypatch.delenv(ss.ENV_MTP)
+    # Their own drafter, above the crossover: both, and nothing of theirs is touched.
+    request = _FakeRequest(str(head), llama_extra_args = ["--model-draft", "/models/draft.gguf"])
+    out = run(ss.before_load(request, 32))
+    assert out.llama_extra_args[:2] == ["--model-draft", "/models/draft.gguf"]
+    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "32"]
+    assert out.speculative_type is None and out.spec_draft_n_max is None
+    status = ss.status()
+    assert status["split_config"] == ss.SPLIT_CONFIG_BOTH and status["mtp"] == "user override"
+    run(ss.shutdown())
+    # Their "off", above the crossover: the groups stay, the request is left alone.
+    request = _FakeRequest(str(head), speculative_type = "off")
+    out = run(ss.before_load(request, 32))
+    assert out.llama_extra_args[-4:] == ["--pipeline-groups", "2", "--parallel", "32"]
+    assert out.speculative_type == "off"
+    assert ss.status()["split_config"] == ss.SPLIT_CONFIG_GROUPS
+
+
+def test_the_crossover_constants_are_the_planners_measured_numbers(cluster):
+    """spark_serving mirrors spark_cluster's table so the decision needs nothing loaded; the
+    two must not drift, and the ratios must stay the measured cells divided by each other."""
+    import importlib.util
+
+    path = Path(ss.__file__).resolve().parents[3] / "spark_cluster.py"
+    spec = importlib.util.spec_from_file_location("spark_cluster_for_crossover_test", path)
+    sc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sc)
+    assert ss.GROUPS_X_MTP_MIN_ROWS == sc.GROUPS_X_MTP_CROSSOVER_ROWS == 16
+    assert ss.GROUPS_X_MTP_OVER_MTP_ONLY == sc.GROUPS_X_MTP_OVER_MTP_ONLY
+    assert ss.GROUPS_X_MTP_OVER_GROUPS_ONLY == sc.GROUPS_X_MTP_OVER_GROUPS_ONLY
+    for rows, cells in sc.GROUPS_X_MTP_DECODE_TOKS.items():
+        _one_context, mtp_only, groups_only, both = cells
+        assert round(both / mtp_only, 2) == sc.GROUPS_X_MTP_OVER_MTP_ONLY[rows], rows
+        assert round(both / groups_only, 2) == sc.GROUPS_X_MTP_OVER_GROUPS_ONLY[rows], rows
+    # 16 is the geometric midpoint of the two measured points, and both sides are measured.
+    assert min(sc.GROUPS_X_MTP_DECODE_TOKS) == 8 and max(sc.GROUPS_X_MTP_DECODE_TOKS) == 32
+    assert sc.GROUPS_X_MTP_CROSSOVER_ROWS**2 == 8 * 32
+    assert sc.groups_x_mtp_wins(16) and sc.groups_x_mtp_wins(32)
+    assert not sc.groups_x_mtp_wins(8) and not sc.groups_x_mtp_wins(0)
+    note = sc.groups_x_mtp_note()
+    assert "PR #187" in note and "131.1" in note and "16 rows up" in note
 
 
 def test_before_load_leaves_the_callers_speculation_alone(cluster, monkeypatch, tmp_path):

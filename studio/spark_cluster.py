@@ -3044,6 +3044,46 @@ MTP_ACCEPTANCE_27B = {1: 0.88, 8: 0.74}
 MTP_ACCEPTANCE_4B = {1: 0.88, 8: 0.72}
 MTP_DRAFT_N_MAX = 3
 MTP_SMALL_MODEL_B = 8.0  # below this many B parameters the 4B table is the closer estimate
+# ── Pipeline groups AND speculative decoding on the same layer split ──────────────────
+# unslothai/llama.cpp PR #187 (feature/pipeline-groups, a1dd7c5e8) gives every pipeline group
+# its own speculative state, so --pipeline-groups N > 1 is now accepted together with
+# --spec-type draft-mtp and with --model-draft. It is still refused with --mmproj, with
+# --control-vector and with --sleep-idle-seconds, --parallel must stay a multiple of N, and
+# one group is byte-for-byte the build without the flag. Measured on the pair with that
+# build, Qwen3.8-27B-UD-Q4_K_XL split across the two Sparks (--device RPC0,CUDA0 -sm layer
+# --parallel 32 --cache-ram 0), real-text prompts, npp 128 / ntg 256, two repeats each:
+#
+#   rows | 1 context  | 1 context + MTP | 2 groups   | 2 groups + MTP | one Spark + MTP
+#      8 | 53.6  55.3 |   95.5   93.6   | 54.0  51.5 |   77.1   92.0  |      85.6
+#     32 | 95.5  96.9 |  112.9  114.2   |115.7 108.7 |  133.8  128.3  |      83.8
+#
+# MTP acceptance is 0.80 at 8 rows and 0.64 at 32 with one context, 0.72 and 0.68 with two
+# groups, so a second group costs the draft head nothing.
+#
+# At 32 rows the combination wins outright: 133.8 tok/s at best (131.1 mean) is 1.17x the
+# best one-context MTP cell and 1.16x the best two-group cell. At 8 rows one context with MTP
+# wins, 94.6 against 84.6 on the means and 95.5 against 77.1 on the first repeat, because two
+# groups halve the rows per group and neither group then fills a stage; at 8 rows one Spark
+# with MTP (85.6) is faster than either split arm, so a model that fits should not be split
+# at all there. Nothing was measured between 8 and 32 rows, so GROUPS_X_MTP_CROSSOVER_ROWS is
+# the geometric midpoint of the two bracketing points and both sides of it are measured.
+GROUPS_X_MTP_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL, llama-server --pipeline-groups 2 --spec-type draft-mtp with "
+    "--device RPC0,CUDA0, unslothai/llama.cpp PR #187 a1dd7c5e8, two DGX Sparks, 2026-09-06, "
+    "npp 128 / ntg 256, --parallel 32, two repeats"
+)
+# concurrent rows -> (split 1 context, + MTP, split 2 groups, + MTP) decode tok/s, repeat mean
+GROUPS_X_MTP_DECODE_TOKS = {
+    8: (54.5, 94.6, 52.8, 84.6),
+    32: (96.2, 113.6, 112.2, 131.1),
+}
+GROUPS_X_MTP_ONE_SPARK_MTP_TOKS = {8: 85.6, 32: 83.8}  # one Spark with MTP, for reference
+GROUPS_X_MTP_ACCEPTANCE = {8: (0.80, 0.72), 32: (0.64, 0.68)}  # (one context, two groups)
+GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.89, 32: 1.15}  # both over one context with MTP
+GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.60, 32: 1.17}  # both over two groups alone
+# At or above this many concurrent rows a split asks for groups AND speculation, below it for
+# one context with speculation. The geometric mean of the measured 8 and 32.
+GROUPS_X_MTP_CROSSOVER_ROWS = 16
 REPLICAS_MIN_USERS = 8
 REPLICAS_FEW_USERS_SPEEDUP = 1.13  # 2 to 4 users, prompt 512
 TOPOLOGIES = ("single", "replicas", "layer_split")
@@ -3117,6 +3157,41 @@ def mtp_note() -> str:
         f"what the topology gives; a no-op for a GGUF without the head. Draft models and "
         f"n-gram speculation are single-user tricks on this pair (about 2x at one user, a "
         f"loss from 4) and stay off."
+    )
+
+
+def groups_x_mtp_wins(users: int) -> bool:
+    """Whether a two-Spark layer split at this many concurrent rows should run pipeline
+    groups AND speculative decoding, rather than one context with speculation. True at or
+    above ``GROUPS_X_MTP_CROSSOVER_ROWS``: the two together measured 1.15x of one context
+    with MTP at 32 rows but 0.89x of it at 8, because two groups halve the rows per group.
+    The serving side also needs a build that accepts the two flags together (PR #187); this
+    function only carries the measured crossover."""
+    return max(1, int(users or 1)) >= GROUPS_X_MTP_CROSSOVER_ROWS
+
+
+def groups_x_mtp_note() -> str:
+    """What a layer split gets from pipeline groups and speculative decoding together, for
+    reasons and the ``spark plan`` text. Both sides of the crossover are stated: below it the
+    groups are dropped and the split runs one context with the GGUF's MTP head."""
+    hi, lo = 32, 8
+    both_hi = GROUPS_X_MTP_DECODE_TOKS[hi][3]
+    mtp_hi = GROUPS_X_MTP_DECODE_TOKS[hi][1]
+    both_lo = GROUPS_X_MTP_DECODE_TOKS[lo][3]
+    mtp_lo = GROUPS_X_MTP_DECODE_TOKS[lo][1]
+    return (
+        f"A layer split can run pipeline groups and speculative decoding together on a "
+        f"llama-server that gives each group its own speculative state (unslothai/llama.cpp "
+        f"PR #187): measured on the pair at {hi} concurrent rows {both_hi:.1f} tok/s against "
+        f"{mtp_hi:.1f} for one context with MTP and "
+        f"{GROUPS_X_MTP_DECODE_TOKS[hi][2]:.1f} for two groups alone "
+        f"({GROUPS_X_MTP_OVER_MTP_ONLY[hi]:.2f}x and "
+        f"{GROUPS_X_MTP_OVER_GROUPS_ONLY[hi]:.2f}x), but at {lo} rows {both_lo:.1f} against "
+        f"{mtp_lo:.1f} ({GROUPS_X_MTP_OVER_MTP_ONLY[lo]:.2f}x), because two groups halve the "
+        f"rows per group. So from {GROUPS_X_MTP_CROSSOVER_ROWS} rows up a split asks for "
+        f"both and below that for one context with MTP. The combination is still refused "
+        f"with --mmproj, --control-vector and --sleep-idle-seconds, and --parallel stays a "
+        f"multiple of the group count."
     )
 
 
