@@ -7542,9 +7542,7 @@ class TestRocmMiscomputingArchDemotion:
             monkeypatch.delenv(_var, raising = False)
         assert stack_mod._rocm_miscomputing_host() is False
 
-    def test_a_mixed_host_that_selects_the_bad_apu_demotes_rather_than_declines(
-        self, monkeypatch
-    ):
+    def test_a_mixed_host_that_selects_the_bad_apu_demotes_rather_than_declines(self, monkeypatch):
         """Declining to INSTALL ROCm is not enough when the venv already holds it.
 
         _rocm_miscomputing_host() needs EVERY physical AMD arch to be miscomputing, so a
@@ -7575,7 +7573,6 @@ class TestRocmMiscomputingArchDemotion:
         assert any(
             "download.pytorch.org/whl/cpu" in str(arg) for arg in calls[0]
         ), f"demoted somewhere other than the CPU index: {calls[0]}"
-
 
 
 if __name__ == "__main__":
