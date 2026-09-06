@@ -23,7 +23,7 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status
-from hub.utils.hf_tokens import is_anonymous
+from hub.utils.hf_tokens import cache_reads_authorized as hub_cache_reads_authorized
 from hub.utils.hf_cache_state import (
     incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
@@ -1274,7 +1274,7 @@ async def get_gguf_variants_answer(
         # The HF cache answers from disk without authorizing, so a denied caller could name
         # a cached private repo and read back its filenames, sizes and vision flag. A
         # local_path the caller named itself is not the Hub cache and stays available.
-        cache_reads_authorized = not is_anonymous(hf_token)
+        cache_reads_authorized = hub_cache_reads_authorized(hf_token, repo_id = repo_id)
 
         def _scoped_local_response():
             """The pinned snapshot's own answer, or None when it holds nothing."""
