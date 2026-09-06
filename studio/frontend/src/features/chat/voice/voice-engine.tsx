@@ -215,7 +215,7 @@ export const VoiceEngine: FC = () => {
     attempt(1);
   }, []);
 
-  const { isSpeaking, isPlaying, beginStream, feedText, endStream, stop, primeAudio } =
+  const { isSpeaking, isPlaying, speak, beginStream, feedText, endStream, stop, primeAudio } =
     useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
   isSpeakingRef.current = isSpeaking;
   isPlayingRef.current = isPlaying;
@@ -226,6 +226,12 @@ export const VoiceEngine: FC = () => {
   feedTextRef.current = feedText;
   const endStreamRef = useRef(endStream);
   endStreamRef.current = endStream;
+  const speakRef = useRef(speak);
+  speakRef.current = speak;
+  // Whether the run-start branch opened a TTS session for the run in flight. It
+  // only does so while voice mode is already active, so a run that started before
+  // the user switched voice mode on has no session for endStream to flush.
+  const streamBegunRef = useRef(false);
   // Interval that feeds the growing assistant reply into the TTS stream.
   const streamPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -468,6 +474,7 @@ export const VoiceEngine: FC = () => {
         // Begin streaming TTS and feed the reply as it generates so audio starts
         // on the first complete sentence, not after the whole reply.
         beginStreamRef.current();
+        streamBegunRef.current = true;
         if (streamPollRef.current) clearInterval(streamPollRef.current);
         streamPollRef.current = setInterval(() => {
           feedTextRef.current(latestAssistantText());
@@ -481,6 +488,8 @@ export const VoiceEngine: FC = () => {
     }
     if (!_prevRunning) return;
     _prevRunning = false;
+    const streamBegun = streamBegunRef.current;
+    streamBegunRef.current = false;
 
     if (streamPollRef.current) {
       clearInterval(streamPollRef.current);
@@ -496,9 +505,19 @@ export const VoiceEngine: FC = () => {
       resumeListen();
       return;
     }
-    // Flush the remaining sentences (incl. the trailing one) and finish; the
-    // stream's consumer calls resumeListen when playback drains.
-    endStreamRef.current(text);
+    if (streamBegun) {
+      // Flush the remaining sentences (incl. the trailing one) and finish; the
+      // stream's consumer calls resumeListen when playback drains.
+      endStreamRef.current(text);
+    } else {
+      // Voice mode was switched on while this run was already generating, so the
+      // run-start branch never opened a session: endStream would be a no-op, and
+      // on a batch engine armDuringTts below is skipped too, which left voice mode
+      // active with no dictation session until it was toggled off and on. Speak the
+      // finished reply whole, as endStream's browser branch does; every speak()
+      // path ends the turn through onPlaybackEnd -> resumeListen on either engine.
+      speakRef.current(text);
+    }
     // Arm the mic DURING TTS so barge-in works -- the streaming engine needs a
     // live session for its transcript to grow. The just-ended turn's dictation can
     // read as "set" for a few frames, and a single check would skip arming

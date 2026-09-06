@@ -296,9 +296,14 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
               </button>
               {model.isGguf && isExpanded && (
                 <div className="max-h-[240px] overflow-y-auto pl-2">
+                  {/* A browse listing, not an On Device one: onDevice honors the
+                      global "Show all quantizations" setting (off by default) and
+                      lists only quants already on disk, so the uncached default
+                      voice expanded to "No GGUF variants found" on a fresh install
+                      and its first-use download could never start. Every row here
+                      downloads a missing quant on pick, so every quant is offered. */}
                   <GgufVariantExpander
                     repoId={model.id}
-                    onDevice
                     onSelect={(id, meta) =>
                       handleSelect(id, meta.ggufVariant ?? null)
                     }
