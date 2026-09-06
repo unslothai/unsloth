@@ -259,3 +259,34 @@ def test_concurrent_distinct_calls_route_their_own_decisions():
 def test_rejected_message_is_user_facing_text():
     assert isinstance(TOOL_REJECTED_MESSAGE, str)
     assert TOOL_REJECTED_MESSAGE.strip()
+
+
+# ── Durable runs park the gate instead of auto-denying on timeout ───────
+# A durable run's cancel_event is never set on a browser disconnect, so a pending
+# approval must keep waiting for the returning session (resolved by id) rather than
+# silently denying at the 3600s ceiling. An explicit Stop still denies: setting the
+# event wins over parking.
+
+
+def test_durable_approval_parks_past_timeout():
+    """A durable gate waits past its timeout for the session to return, not deny."""
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel, timeout = 0.2).start()
+    # The short ceiling has long passed; the gate must still be parked, not auto-denied.
+    time.sleep(0.6)
+    assert _has_pending(aid), "durable gate must park past its timeout, not auto-deny"
+    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert w.join(timeout = 3.0) == "allow"
+
+
+def test_durable_cancel_still_denies():
+    """An explicit Stop (cancel_event set) denies even when the run is durable."""
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    cancel.set()
+    assert w.join(timeout = 3.0) == "deny"
+    assert _wait_until(lambda: not _has_pending(aid))
