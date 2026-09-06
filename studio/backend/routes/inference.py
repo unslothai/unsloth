@@ -25825,19 +25825,22 @@ def _public_embedding_identity(identity: str, model_name: str, label: str) -> st
     tag, leaving an identity no backend answers to and that _names_studio_embedder cannot
     match on the next request.
     """
-    if label == model_name:
-        return identity
     from core.rag.config import (
         EMBEDDING_IDENTITY_TAGS,
         _escape_identity_segment,
         _unescape_identity_segment,
         effective_gguf_repo_for_embedding_model,
     )
+    from utils.paths import is_local_path
 
     tag = next((t for t in EMBEDDING_IDENTITY_TAGS if identity.startswith(f"{t}:")), None)
     if tag is None:
         return identity
     repo = effective_gguf_repo_for_embedding_model(model_name)
+    # Both segments are checked: a hub model id can carry a GGUF companion that is a local path
+    # (RAG_EMBED_GGUF_REPO, or a stored repo), and that path is a segment of the identity too.
+    if not is_local_path(model_name) and not is_local_path(repo):
+        return identity
     public = {model_name: label, repo: _public_embedding_name(repo)}
     segments = [_unescape_identity_segment(s) for s in identity[len(tag) + 1 :].split(":")]
     redacted = [_escape_identity_segment(public.get(s, s)) for s in segments]
@@ -26186,7 +26189,11 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         # With the slot empty _reject_unservable_model defers to _no_model_loaded_error, so
         # without this the fallback would answer a decisive repo:QUANT this server does not
         # hold from the Settings embedder: another space under the caller's name (#7454).
+        # `{"model": 123}` gets this far: both pre-switch readers decline a non-string selector,
+        # and the alias lookup below strips whatever it is handed.
         _named = _raw_body_model(body)
+        if not isinstance(_named, str):
+            _named = None
         if _named and not await asyncio.to_thread(_names_studio_embedder, _named):
             _decisive = await asyncio.to_thread(_reference_is_decisive, _named)
         else:

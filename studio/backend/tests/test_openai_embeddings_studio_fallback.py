@@ -243,6 +243,41 @@ def test_identity_redaction_covers_the_gguf_repo_segment(monkeypatch):
     assert public == "llama-server:bge-1111:bge-GGUF-2222"
 
 
+def test_identity_redaction_covers_a_local_repo_under_a_hub_model(monkeypatch):
+    """A hub model id whose GGUF companion is a local path.
+
+    RAG_EMBED_GGUF_REPO takes any path, so the model segment can need no redaction while the
+    repo segment beside it is an absolute path on the server.
+    """
+    from core.rag import config as rag_config
+
+    monkeypatch.setattr(
+        rag_config,
+        "effective_gguf_repo_for_embedding_model",
+        lambda model: "/srv/private/embed.gguf",
+    )
+    monkeypatch.setattr(
+        inference_route,
+        "_public_embedding_name",
+        lambda name: "embed.gguf-3333" if name == "/srv/private/embed.gguf" else name,
+    )
+    public = inference_route._public_embedding_identity(
+        f"llama-server:{MODEL}:/srv/private/embed.gguf", MODEL, MODEL
+    )
+    assert public == f"llama-server:{MODEL}:embed.gguf-3333"
+    assert "/srv/private" not in public
+
+
+@pytest.mark.parametrize("named", [123, 1.5, True, ["a"], {"a": 1}])
+def test_a_non_string_model_is_not_a_server_error(studio_embedder, named):
+    """Both pre-switch readers decline a non-string selector, so the empty-slot branch sees it."""
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    payload = _call({"input": "alpha", "model": named})
+    assert payload["model"] == IDENTITY
+
+
 @pytest.mark.parametrize(
     "exc,fragment",
     [
