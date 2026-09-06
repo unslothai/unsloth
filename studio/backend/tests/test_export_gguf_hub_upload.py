@@ -4,11 +4,16 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import types
 from fnmatch import fnmatchcase
 from pathlib import Path
 
 import pytest
+
+
+# "*" is a reserved character in a Windows filename, so only POSIX can hold one.
+_STAR_IN_NAME_IS_LEGAL = os.name != "nt"
 
 
 _HELPERS_SPEC = importlib.util.spec_from_file_location(
@@ -253,7 +258,8 @@ def test_gguf_hub_export_allow_list_treats_gguf_names_literally(tmp_path, monkey
             calls.append("convert")
             output = Path(f"{model_save_path}_gguf")
             output.mkdir(parents = True)
-            (output / "a*.gguf").write_bytes(b"GGUF")
+            if _STAR_IN_NAME_IS_LEGAL:
+                (output / "a*.gguf").write_bytes(b"GGUF")
             (output / "llama-3[8b].Q4_K_M.gguf").write_bytes(b"GGUF")
 
         def push_to_hub_gguf(self, *args, **kwargs):
@@ -281,7 +287,10 @@ def test_gguf_hub_export_allow_list_treats_gguf_names_literally(tmp_path, monkey
     assert success is True, message
     # The bracketed name is published rather than skipped, and "a*.gguf" is matched as a
     # literal, so it neither misses itself nor sweeps in the earlier export's file.
-    assert seen["uploaded"] == ["a*.gguf", "llama-3[8b].Q4_K_M.gguf"]
+    expected = ["llama-3[8b].Q4_K_M.gguf"]
+    if _STAR_IN_NAME_IS_LEGAL:
+        expected = ["a*.gguf"] + expected
+    assert seen["uploaded"] == expected
 
 
 def test_gguf_hub_export_skips_an_earlier_export_left_in_the_folder(tmp_path, monkeypatch):
@@ -898,7 +907,8 @@ def test_gguf_hub_export_uploads_a_modelfile_it_could_not_place_locally(tmp_path
             output = Path(f"{model_save_path}_gguf")
             output.mkdir(parents = True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
-            (output / "Modelfile").write_text("FROM ./model.Q4_K_M.gguf\n")
+            # write_bytes, not write_text: text mode turns "\n" into "\r\n" on Windows.
+            (output / "Modelfile").write_bytes(b"FROM ./model.Q4_K_M.gguf\n")
 
         def push_to_hub_gguf(self, *args, **kwargs):
             calls.append("push_to_hub_gguf")
