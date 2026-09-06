@@ -1540,8 +1540,12 @@ if _IS_MLX:
 
 else:
     # GPU path: load everything from _gpu_init
-    from ._gpu_init import *
-    from ._gpu_init import __version__
+    from ._subprocess_encoding import replace_subprocess_decode_errors as _safe_subprocess_text
+
+    with _safe_subprocess_text():
+        from ._gpu_init import *
+        from ._gpu_init import __version__
+    del _safe_subprocess_text
 
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU device stats, peak memory, and total memory in GiB."""
