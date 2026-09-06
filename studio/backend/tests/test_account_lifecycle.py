@@ -513,3 +513,39 @@ def test_retirement_preserves_symlink_target_and_collision(auth_env, monkeypatch
     assert not root.is_symlink()
     with pytest.raises(ValueError):
         accounts.retire_account_roots(OWNER)
+
+
+def test_retirement_failure_stays_disabled_after_a_racing_reactivation(matrix, monkeypatch):
+    account = storage.get_account("alice")
+    set_active = storage.set_account_active
+    first = True
+
+    def reactivate_once(account_id, is_active):
+        nonlocal first
+        result = set_active(account_id, is_active)
+        if first:
+            first = False
+            set_active(account_id, True)
+        return result
+
+    def fail(_):
+        raise PermissionError("locked directory")
+
+    monkeypatch.setattr(storage, "set_account_active", reactivate_once)
+    with pytest.raises(PermissionError):
+        storage.delete_account(account.account_id, fail)
+    assert storage.get_user_record("alice")["is_active"] == 0
+
+
+def test_recreated_account_rejects_late_tokens_from_the_deleted_identity(matrix):
+    client, _, _ = matrix
+    old = storage.get_user_record("alice")
+    old_access = authentication.create_access_token("alice")
+    assert client.delete(f'/api/accounts/{old["account_id"]}', headers = headers()).status_code == 204
+    fresh = create(client, "alice").json()
+    # A request which verified before deletion may still insert its refresh row.
+    late_refresh = authentication.create_refresh_token("alice", secret = old["jwt_secret"])
+    assert storage.verify_refresh_token(late_refresh) is None
+    assert client.get("/api/auth/api-keys", headers = {"Authorization": "Bearer " + old_access}).status_code == 401
+    assert login(client, "alice", "alice-password").status_code == 401
+    assert login(client, "alice", fresh["setup_code"]).status_code == 200
