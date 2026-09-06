@@ -479,9 +479,7 @@ def test_the_installer_never_installs_what_the_guard_rejects(monkeypatch):
 
     for minor in range(5, 15):  # torch 2.5 .. 2.14, i.e. past the last lockstep row
         torch_v = f"2.{minor}.0"
-        specifier = SpecifierSet(
-            ips._select_torchcodec_spec(torch_v).split("torchcodec", 1)[1]
-        )
+        specifier = SpecifierSet(ips._select_torchcodec_spec(torch_v).split("torchcodec", 1)[1])
         admitted = [p for p in probes if specifier.contains(p)]
         assert admitted, f"torch {torch_v}: installer spec admits nothing"
         for codec_v in admitted:
