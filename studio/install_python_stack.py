@@ -5830,7 +5830,11 @@ def _uv_config_index_policy() -> "dict[str, object]":
         indexes = section.get("index")
         if isinstance(indexes, list):
             for entry in indexes:
-                if isinstance(entry, dict) and entry.get("default") is True and isinstance(entry.get("url"), str):
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("default") is True
+                    and isinstance(entry.get("url"), str)
+                ):
                     file_default = entry["url"]
                     break
         if file_default is None:

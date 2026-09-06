@@ -1112,22 +1112,54 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     @pytest.mark.parametrize(
         "body, reachable, why",
         [
-            ("no-index = false\n[pip]\nno-index = true\n", False, "[pip].no-index = true beats the top-level false"),
-            ("no-index = true\n[pip]\nno-index = false\n", True, "[pip].no-index = false beats the top-level true"),
-            ('index-url = "https://pypi.org/simple"\n[pip]\nindex-url = "https://pypi.corp.test/simple"\n', False, "[pip].index-url beats the top-level index-url"),
-            ('index-url = "https://pypi.corp.test/simple"\n[pip]\nindex-url = "https://pypi.org/simple"\n', True, "the other way round"),
-            ('[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n[pip]\nindex-url = "https://pypi.org/simple"\n', False, "[[index]] default = true beats [pip].index-url"),
-            ('[pip]\nindex-url = "https://pypi.corp.test/simple"\n[[index]]\nurl = "https://pypi.org/simple"\ndefault = true\n', True, "and still does when it comes later in the file"),
-            ('no-index = true\n[pip]\nindex-url = "https://pypi.org/simple"\n', False, "no-index disables every registry"),
+            (
+                "no-index = false\n[pip]\nno-index = true\n",
+                False,
+                "[pip].no-index = true beats the top-level false",
+            ),
+            (
+                "no-index = true\n[pip]\nno-index = false\n",
+                True,
+                "[pip].no-index = false beats the top-level true",
+            ),
+            (
+                'index-url = "https://pypi.org/simple"\n[pip]\nindex-url = "https://pypi.corp.test/simple"\n',
+                False,
+                "[pip].index-url beats the top-level index-url",
+            ),
+            (
+                'index-url = "https://pypi.corp.test/simple"\n[pip]\nindex-url = "https://pypi.org/simple"\n',
+                True,
+                "the other way round",
+            ),
+            (
+                '[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n[pip]\nindex-url = "https://pypi.org/simple"\n',
+                False,
+                "[[index]] default = true beats [pip].index-url",
+            ),
+            (
+                '[pip]\nindex-url = "https://pypi.corp.test/simple"\n[[index]]\nurl = "https://pypi.org/simple"\ndefault = true\n',
+                True,
+                "and still does when it comes later in the file",
+            ),
+            (
+                'no-index = true\n[pip]\nindex-url = "https://pypi.org/simple"\n',
+                False,
+                "no-index disables every registry",
+            ),
         ],
     )
-    def test_pip_scalars_outrank_top_level_and_index_default_outranks_both(self, ips, body, reachable, why):
+    def test_pip_scalars_outrank_top_level_and_index_default_outranks_both(
+        self, ips, body, reachable, why
+    ):
         """uv pip's own precedence, verified on uv 0.10.7 with a dry-run resolve."""
         self._write("proj/uv.toml", body)
         assert ips._public_pypi_is_reachable() is reachable, why
 
     def test_the_same_under_tool_uv_pip(self, ips):
-        self._write("proj/pyproject.toml", "[tool.uv]\nno-index = false\n[tool.uv.pip]\nno-index = true\n")
+        self._write(
+            "proj/pyproject.toml", "[tool.uv]\nno-index = false\n[tool.uv.pip]\nno-index = true\n"
+        )
         assert ips._public_pypi_is_reachable() is False
 
     def test_an_unreadable_file_is_not_guessed_at(self, ips):
