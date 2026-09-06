@@ -1,0 +1,223 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+/**
+ * The Downloads overlay is a transient card, not furniture.
+ *
+ * #9849 dropped `jobKeys.length === 0` from the early return so the panel would
+ * "always be there to open", and defaulted it to its collapsed FAB. The result
+ * was a download button pinned to the bottom-right corner of every hub route on
+ * a fresh install, with nothing to show. It had to be reverted wholesale by
+ * #10298, and nothing in either suite failed while it was on main.
+ *
+ * Two things go wrong when the guard is weakened, and only the first is
+ * obvious. The panel itself becomes permanent; and because the rail in
+ * provider.tsx is a `flex flex-col gap-2` column, a panel that returns a
+ * wrapper instead of `null` also takes a slot and its gap, pushing the loaded
+ * models card - the one overlay that IS meant to sit on the corner - up off it.
+ *
+ * Read from the source: the node suite has no DOM to render into. The guard is
+ * matched through the AST rather than as a string so that reformatting, a
+ * rename of `jobKeys`, or an extra clause in the condition do not silently
+ * turn this into a test of nothing.
+ */
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+import ts from "typescript";
+
+import { openingTag } from "./helpers/tsx-ast.ts";
+
+const parse = (relative: string, name: string): ts.SourceFile =>
+  ts.createSourceFile(
+    name,
+    readFileSync(new URL(`../src/${relative}`, import.meta.url), "utf8"),
+    ts.ScriptTarget.ESNext,
+    true,
+    ts.ScriptKind.TSX,
+  );
+
+const PANEL_PATH = "features/hub/download-manager/download-manager-panel.tsx";
+const panel = parse(PANEL_PATH, "download-manager-panel.tsx");
+const provider = parse("app/provider.tsx", "provider.tsx");
+
+/** The `DownloadManagerPanel` function declaration. */
+function panelComponent(): ts.FunctionDeclaration {
+  let found: ts.FunctionDeclaration | null = null;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name?.getText() === "DownloadManagerPanel"
+    ) {
+      found = node;
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(panel, visit);
+  assert.ok(found, `${PANEL_PATH} no longer exports a DownloadManagerPanel`);
+  return found;
+}
+
+/**
+ * The local that holds the ordered job keys, found by its initializer rather
+ * than by name: a rename must not be able to slip the guard past this file.
+ */
+function jobKeysBinding(component: ts.FunctionDeclaration): string {
+  let name: string | null = null;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      ts.isCallExpression(node.initializer) &&
+      node.initializer.expression.getText() === "useDownloadManagerStore" &&
+      node.initializer.arguments.some((arg) =>
+        /orderedJobKeys/i.test(arg.getText()),
+      )
+    ) {
+      name = node.name.getText();
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(component, visit);
+  assert.ok(
+    name,
+    `${PANEL_PATH}: no local is bound from useDownloadManagerStore with the
+ordered-job-keys selector, so the guard below cannot be located. If the
+selector was renamed, update this test; if the panel stopped reading the
+job list at all, it can no longer know when to unmount.`,
+  );
+  return name;
+}
+
+/** Does `condition` contain a test for an empty `jobKeys`? */
+function testsForAnEmptyList(condition: ts.Node, jobKeys: string): boolean {
+  let ok = false;
+  const visit = (node: ts.Node): void => {
+    // jobKeys.length === 0, jobKeys.length < 1, 0 === jobKeys.length
+    if (ts.isBinaryExpression(node)) {
+      const operands = [node.left.getText(), node.right.getText()];
+      const comparesLength = operands.includes(`${jobKeys}.length`);
+      const comparesZero =
+        operands.includes("0") ||
+        (node.operatorToken.kind === ts.SyntaxKind.LessThanToken &&
+          operands.includes("1"));
+      const equality =
+        node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        node.operatorToken.kind === ts.SyntaxKind.LessThanToken ||
+        node.operatorToken.kind === ts.SyntaxKind.LessThanEqualsToken;
+      if (comparesLength && comparesZero && equality) ok = true;
+    }
+    // !jobKeys.length
+    if (
+      ts.isPrefixUnaryExpression(node) &&
+      node.operator === ts.SyntaxKind.ExclamationToken &&
+      node.operand.getText() === `${jobKeys}.length`
+    ) {
+      ok = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(condition);
+  return ok;
+}
+
+/** `return null` directly, or as the only statement of a block. */
+function returnsNull(statement: ts.Statement): boolean {
+  const body = ts.isBlock(statement) ? statement.statements : [statement];
+  return body.some(
+    (node) =>
+      ts.isReturnStatement(node) &&
+      node.expression?.kind === ts.SyntaxKind.NullKeyword,
+  );
+}
+
+test("the Downloads overlay unmounts when there are no jobs", () => {
+  const component = panelComponent();
+  const jobKeys = jobKeysBinding(component);
+  const statements = component.body?.statements ?? ts.factory.createNodeArray();
+
+  // Top level of the component only. A guard nested inside another branch is
+  // not the same promise: it would leave states in which the panel is mounted
+  // with an empty list, which is the whole of what #9849 shipped.
+  const guarded = statements.some(
+    (statement) =>
+      ts.isIfStatement(statement) &&
+      returnsNull(statement.thenStatement) &&
+      testsForAnEmptyList(statement.expression, jobKeys),
+  );
+
+  assert.ok(
+    guarded,
+    `${PANEL_PATH}: DownloadManagerPanel must return null while ${jobKeys} is
+empty, at the top level of the component.
+
+Without it the Downloads overlay is permanent: a bottom-right FAB on
+every hub route of a fresh install, and a flex slot in the rail that
+pushes the loaded models card off the corner even when it paints
+nothing. That is PR #9849, which had to be reverted by PR #10298.
+
+Expected something of the shape:  if (... || ${jobKeys}.length === 0) return null;`,
+  );
+});
+
+test("the rail-facing wrapper can still be squeezed by the rail's cap", () => {
+  // min-h-0 on the non-positioned branch: a flex item's min-height defaults to
+  // auto, so without it a capped rail takes the height out of the update card
+  // above instead of out of this list, and the card clips its own buttons.
+  const source = readFileSync(
+    new URL(`../src/${PANEL_PATH}`, import.meta.url),
+    "utf8",
+  );
+  const ternary = source.match(/positioned\s*\?\s*"([^"]*)"\s*:\s*"([^"]*)"/);
+  assert.ok(
+    ternary,
+    `${PANEL_PATH}: the positioned/stacked className ternary is gone, so the
+rail-facing branch can no longer be checked`,
+  );
+  assert.match(
+    ternary[1],
+    /\bfixed\b.*\bbottom-4\b.*\bright-4\b/,
+    `${PANEL_PATH}: the standalone panel has left the bottom-right corner`,
+  );
+  assert.match(
+    ternary[2],
+    /\bmin-h-0\b/,
+    `${PANEL_PATH}: the stacked branch dropped min-h-0, so a capped rail will
+squeeze the update card above this list instead of the list`,
+  );
+});
+
+test("the Downloads panel sits above the loaded models card in both rails", () => {
+  // The loaded models card is the one overlay meant to hold the corner; the
+  // download panel is deliberately ordered above it because it comes and goes.
+  const tags: { name: string; at: number }[] = [];
+  const visit = (node: ts.Node): void => {
+    const opening = openingTag(node);
+    const name = opening?.tagName.getText();
+    if (name === "DownloadManagerPanel" || name === "LoadedModelsIndicator") {
+      tags.push({ name, at: node.getStart() });
+    }
+    ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(provider, visit);
+  tags.sort((a, b) => a.at - b.at);
+
+  const panels = tags.filter((t) => t.name === "DownloadManagerPanel");
+  const indicators = tags.filter((t) => t.name === "LoadedModelsIndicator");
+  assert.ok(
+    panels.length > 0 && panels.length === indicators.length,
+    `provider.tsx: expected the download panel and the loaded models card to be
+paired in every rail, found ${panels.length} and ${indicators.length}`,
+  );
+  for (let i = 0; i < panels.length; i += 1) {
+    assert.ok(
+      panels[i].at < indicators[i].at,
+      "provider.tsx: DownloadManagerPanel is rendered below LoadedModelsIndicator.\n" +
+        "The rail is a bottom-anchored column, so the last child is the one on\n" +
+        "the corner, and that is meant to be the loaded models card.",
+    );
+  }
+});
