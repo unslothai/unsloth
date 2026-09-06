@@ -479,8 +479,24 @@ _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
 _PREFIX_OPERAND_FLAGS: dict[str, frozenset[str]] = {
     "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
     "sudo": frozenset(
-        {"-u", "--user", "-g", "--group", "-p", "--prompt", "-C", "--close-from",
-         "-r", "--role", "-t", "--type", "-U", "--other-user", "-h", "--host"}
+        {
+            "-u",
+            "--user",
+            "-g",
+            "--group",
+            "-p",
+            "--prompt",
+            "-C",
+            "--close-from",
+            "-r",
+            "--role",
+            "-t",
+            "--type",
+            "-U",
+            "--other-user",
+            "-h",
+            "--host",
+        }
     ),
     "exec": frozenset({"-a"}),
     "time": frozenset({"-f", "--format", "-o", "--output"}),
@@ -531,6 +547,8 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
                 rest = tail
         text = rest
     return text, prefixed
+
+
 _PIP_WORD_RE = re.compile(r"(?:^|\s)((?:uv\s+)?pip|python[0-9.]*\s+-m\s+pip)\s+", re.IGNORECASE)
 
 _SHELL_TEST_KEYWORDS = frozenset({"if", "while", "until", "for", "case"})
