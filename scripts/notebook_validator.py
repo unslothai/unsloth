@@ -659,9 +659,7 @@ def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, str, b
                     lower, upper = version, _compatible_release_ceiling(version)
                     if not current_floor or cmp_versions(lower, current_floor) > 0:
                         current_floor = lower
-                    if upper and (
-                        not current_ceiling or cmp_versions(upper, current_ceiling) < 0
-                    ):
+                    if upper and (not current_ceiling or cmp_versions(upper, current_ceiling) < 0):
                         current_ceiling = upper
                 elif operator == ">=" and (
                     not current_floor or cmp_versions(version, current_floor) > 0
