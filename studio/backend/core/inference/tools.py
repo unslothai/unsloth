@@ -13,6 +13,7 @@ import hashlib
 import json
 import http.client
 import os
+from functools import partial
 import signal
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -79,6 +80,7 @@ from core.inference.mcp_client import (
 )
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
+from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 
 from loggers import get_logger
 
@@ -7159,6 +7161,36 @@ def _sandbox_preexec():
             _resource.setrlimit(_resource.RLIMIT_NOFILE, (target, target))
         except (ValueError, OSError, AttributeError):
             pass
+
+
+def _account_confinement():
+    """The OS-level confinement for the acting account's next child.
+
+    None for the installation owner (one context read, nothing else changes).
+    A managed account's child is confined to its own roots; when this host
+    has no mechanism the call raises ToolConfinementUnavailable and the tool
+    reports that instead of running. See core/inference/tool_confinement.py.
+    """
+    return account_confinement(_SANDBOX_SITE_DIR)
+
+
+def _run_preexecs(first, second):
+    """Both pre-exec steps in the forked child, in order; no closures, no imports."""
+    if first is not None:
+        first()
+    second()
+
+
+def _apply_confinement(confinement, popen_kwargs: dict, argv: list) -> list:
+    """Add the confinement to the Popen call: the Landlock pre-exec on Linux,
+    the sandbox-exec wrapper on macOS. Returns the argv to spawn."""
+    if confinement is None:
+        return argv
+    if confinement.preexec is not None and sys.platform != "win32":
+        popen_kwargs["preexec_fn"] = partial(
+            _run_preexecs, popen_kwargs.get("preexec_fn"), confinement.preexec
+        )
+    return confinement.wrap(argv)
 
 
 def _bypass_preexec():
@@ -16076,6 +16108,11 @@ def _python_exec(
             "/proc environment reads; refusing bypass execution."
         )
 
+    try:
+        confinement = _account_confinement()
+    except ToolConfinementUnavailable as exc:
+        return _truncate(f"Execution error: {exc}")
+
     tmp_path = None
     _scratch_name = None
     workdir = _get_workdir(session_id)
@@ -16125,7 +16162,8 @@ def _python_exec(
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
+        argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
@@ -16253,6 +16291,11 @@ def _bash_exec(
     spill_scope = None
     call_token = None
     try:
+        confinement = _account_confinement()
+    except ToolConfinementUnavailable as exc:
+        return _truncate(f"Execution error: {exc}")
+
+    try:
         workdir = _get_workdir(session_id)
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
         spill_scope = _spill_scope(session_id, thread_id)
@@ -16279,7 +16322,8 @@ def _bash_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
+        argv = _apply_confinement(confinement, popen_kwargs, _get_shell_cmd(command))
+        proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.
