@@ -34,6 +34,9 @@ from state import tool_approvals
 from state.tool_approvals import TOOL_REJECTED_MESSAGE, resolve_tool_decision
 
 
+_MCP_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAYAAAAGCAIAAABvrngfAAAAFElEQVR4nGM8ISfHgAqY0PhUFgIAdYgBEED+8ToAAAAASUVORK5CYII="
+
+
 def _sse(delta: dict) -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
 
@@ -7025,3 +7028,55 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
         f"the final pass sends {len(final_messages)} messages but the pool was last told "
         f"about {len(last_seen)}"
     )
+
+
+def _mcp_image_result() -> str:
+    from core.inference import mcp_images
+    image = {"data": _MCP_PNG_B64, "mimeType": "image/png"}
+    return "[1 image returned]\n" + mcp_images.SENTINEL + json.dumps([image])
+
+
+def _vision_backend(monkeypatch, streams, payloads, *, vision: bool):
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._is_vision = vision
+    backend._mmproj_accepts_image = vision
+    return backend
+
+
+def _run_mcp_image_turn(monkeypatch, *, vision: bool) -> list[dict]:
+    streams = [
+        _structured_tool_call("mcp__fs__read_media_file", {"path": "cat.png"}, "call_mcp"),
+        [_sse({"content": "A tabby cat."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _vision_backend(monkeypatch, streams, payloads, vision = vision)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: _mcp_image_result(),
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            max_tool_iterations = 2,
+        )
+    )
+    return payloads[1]["messages"]
+
+
+def test_mcp_images_reach_a_vision_model_as_their_own_user_turn(monkeypatch):
+    messages = _run_mcp_image_turn(monkeypatch, vision = True)
+
+    tool_message = next(m for m in messages if m["role"] == "tool")
+    assert "__MCP_IMAGES__" not in tool_message["content"]
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"][1]["type"] == "image_url"
+    assert messages[-1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_mcp_images_are_not_sent_to_a_text_only_model(monkeypatch):
+    messages = _run_mcp_image_turn(monkeypatch, vision = False)
+
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool"]
+    assert "__MCP_IMAGES__" not in messages[-1]["content"]

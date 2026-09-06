@@ -425,6 +425,7 @@ from core.inference.tool_call_parser import (
 )
 from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
 from core.inference.repetition_guard import is_repetition_dominated
+from core.inference.mcp_images import append_image_turn as append_mcp_image_turn
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
@@ -28610,6 +28611,7 @@ class LlamaCppBackend:
         self,
         messages: list[dict],
         tools: list[dict],
+        replayed_image_parts: "tuple" = (),
         temperature: float = 0.6,
         top_p: float = 0.95,
         top_k: int = 20,
@@ -29128,6 +29130,13 @@ class LlamaCppBackend:
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
         iteration = -1
+        # Outside the loop: the cap is across the whole run, and a per-iteration list
+        # would only ever see the current batch, leaving every earlier iteration's
+        # images in the conversation untrimmed.
+        # Seeded with what promotion already put in the conversation, not empty. The cap
+        # is across the CONVERSATION, so a resumed chat whose history already carries the
+        # allowance would otherwise get a second one for this run and send both.
+        loop_mcp_image_parts: list = list(replayed_image_parts)
         while True:
             iteration += 1
             # Here rather than at each append: six sites grow the conversation and all of
@@ -30726,6 +30735,9 @@ class LlamaCppBackend:
                 # Which tools those no-ops were about, so the flush below can tell
                 # whether the trailing result belongs to the same tool.
                 deferred_noop_tools: set = set()
+                # Per result, so a parallel batch is not squeezed into one
+                # result's worth of images.
+                batch_mcp_images: list = []
 
                 # The text-path provisional card uses the parser's default id ("call_0");
                 # a Mistral-style call carries its own id and would open a duplicate. Reuse
@@ -31544,6 +31556,9 @@ class LlamaCppBackend:
                     _forced_choice_resolved = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
+                    _completion_images = completion.mcp_images()
+                    if _completion_images:
+                        batch_mcp_images.append(_completion_images)
                     if _compact_after_execution and decision.tool_call_id:
                         # The promise the gate made when it let this run. Applied here
                         # rather than on the next pass because the next pass may not
@@ -31632,6 +31647,14 @@ class LlamaCppBackend:
                         )
                         assistant_appended = True
                     append_deferred_nudges(conversation, deferred_noop_msgs)
+
+                if batch_mcp_images and self.is_vision:
+                    append_mcp_image_turn(
+                        conversation,
+                        batch_mcp_images,
+                        per_result = True,
+                        owned = loop_mcp_image_parts,
+                    )
 
                 # Close provisional cards not resolved by execution/no-op handling.
                 for _pid, _pname in provisional_started_tool_calls.items():

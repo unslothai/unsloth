@@ -1182,6 +1182,11 @@ _PNG_1x1 = (
     "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
 )
 
+_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mNk"
+    "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
 
 def _vision_backend(*snapshots):
     backend = _ScriptedBackend(_fixed(*snapshots))
@@ -1223,3 +1228,252 @@ def test_legacy_image_field_keeps_the_client_tool_catalog(monkeypatch):
 
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
     assert backend.calls[0]["image"] is not None
+
+
+class _VisionToolLoopBackend(_ToolLoopBackend):
+    def __init__(self, responder, **kwargs):
+        super().__init__(responder, **kwargs)
+        self.models["sf-model"]["is_vision"] = True
+
+    @staticmethod
+    def resize_image(image):
+        return image
+
+
+def test_an_attached_image_still_reaches_the_tool_loop(monkeypatch):
+    backend = _VisionToolLoopBackend(_fixed("done"))
+    payload = _request(
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "what is in this picture"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{_PNG_B64}"},
+                    },
+                ],
+            )
+        ],
+        enable_tools = True,
+        stream = False,
+    )
+
+    _call(payload, monkeypatch, backend)
+
+    [call] = backend.calls
+    assert call["tools"], "tools must survive an attached image on a vision model"
+    assert call["images"], "the attachment has to ride into the loop"
+    markers = [
+        part
+        for message in call["messages"]
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image"
+    ]
+    assert len(markers) == len(call["images"])
+
+
+_TOKENIZER_TEMPLATE_WITH_TOOLS = (
+    "{% if tools %}<|im_start|>system\n"
+    "{% for t in tools %}{{ t.function.name }}\n{% endfor %}<|im_end|>\n{% endif %}"
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+)
+_PROCESSOR_TEMPLATE_WITHOUT_TOOLS = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+)
+
+
+def test_the_image_tool_loop_is_gated_on_the_body_that_renders(monkeypatch):
+    """The loop now runs on a vision model with an attachment, and generation renders
+    through the PROCESSOR template. Classifying its tool support from the tokenizer body
+    started the loop on a model whose prompt carries no schemas at all."""
+    import routes.inference as inf
+
+    backend = _VisionToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _TOKENIZER_TEMPLATE_WITH_TOOLS,
+        "processor_template": _PROCESSOR_TEMPLATE_WITHOUT_TOOLS,
+        "renders_image": True,
+    }
+    payload = _request(
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "what is in this picture"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{_PNG_B64}"},
+                    },
+                ],
+            )
+        ],
+        enable_tools = True,
+        stream = False,
+    )
+
+    _install(monkeypatch, backend)
+    monkeypatch.setattr(
+        inf,
+        "_detect_safetensors_features",
+        lambda _backend, template, **k: {
+            "supports_tools": template == _TOKENIZER_TEMPLATE_WITH_TOOLS
+        },
+    )
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    asyncio.run(_run())
+
+    assert backend.calls, "generation never ran"
+    assert not any(
+        call.get("tools") for call in backend.calls
+    ), "the tool loop was driven from a template the image render never selects"
+
+
+def test_a_client_catalog_keeps_an_image_out_of_the_server_loop(monkeypatch):
+    """Letting the loop take a picture must not take the request with it: #10092 routes
+    image-plus-tools to the passthrough so the CALLER's schemas are the ones rendered.
+    Claiming it here answered the client with Unsloth's built-ins instead."""
+    backend = _VisionToolLoopBackend(_fixed("a plain answer"))
+    payload = _request(
+        messages = [
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "what is in this picture"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{_PNG_B64}"},
+                    },
+                ],
+            )
+        ],
+        tools = [LOOKUP_TOOL],
+        enable_tools = True,
+        stream = False,
+    )
+
+    _call(payload, monkeypatch, backend)
+
+    assert backend.calls, "generation never ran"
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+    # The passthrough renders one turn; the loop would have run the built-ins instead.
+    assert "images" not in backend.calls[0] or not backend.calls[0].get("images")
+
+
+def test_a_detached_replay_block_does_not_claim_the_turn_above_it(monkeypatch):
+    """The passthrough flatten costs the markers their positions, so the block lands
+    away from the result that produced it. It must not still say "the tool call above",
+    which names whatever turn happens to precede it."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+
+    backend = _ScriptedBackend(_fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": "{% for m in messages %}{{ m['content'] }}{% endfor %}",
+        "renders_image": True,
+    }
+    payload = _request(
+        messages = [
+            ChatMessage(role = "user", content = "take a shot"),
+            ChatMessage(
+                role = "assistant",
+                content = "",
+                tool_calls = [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {"name": "mcp__fs__shot", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ChatMessage(
+                role = "tool",
+                tool_call_id = "call_0",
+                content = "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+            ),
+            ChatMessage(role = "assistant", content = "a blue square"),
+            ChatMessage(role = "user", content = "and what about now"),
+        ],
+        tools = [LOOKUP_TOOL],
+        stream = False,
+    )
+
+    _call(payload, monkeypatch, backend)
+
+    [call] = backend.calls
+    leads = [
+        part["text"]
+        for message in call["messages"]
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "text" and part["text"].startswith("Images returned by")
+    ]
+    assert leads, f"no replay block in {call['messages']}"
+    assert all(mcp_images.DETACHED_IMAGE_TURN_TEXT in text for text in leads), leads
+
+
+def test_a_replay_only_image_turn_also_keeps_the_client_catalog(monkeypatch):
+    """The gate read `image is None`, so a resumed chat whose only pictures are
+    replayed MCP ones looked image-free and the loop took the request -- swapping the
+    caller's schemas for Unsloth's on exactly the path this change adds."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (6, 6), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+
+    backend = _VisionToolLoopBackend(_fixed("a plain answer"))
+    payload = _request(
+        messages = [
+            ChatMessage(role = "user", content = "take a shot"),
+            ChatMessage(
+                role = "assistant",
+                content = "",
+                tool_calls = [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {"name": "mcp__fs__shot", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ChatMessage(
+                role = "tool",
+                tool_call_id = "call_0",
+                content = "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+            ),
+            ChatMessage(role = "user", content = "what colour was it"),
+        ],
+        tools = [LOOKUP_TOOL],
+        enable_tools = True,
+        stream = False,
+    )
+
+    _call(payload, monkeypatch, backend)
+
+    assert backend.calls, "generation never ran"
+    assert backend.calls[0]["tools"] == [LOOKUP_TOOL]

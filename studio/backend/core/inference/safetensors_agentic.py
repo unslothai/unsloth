@@ -51,6 +51,11 @@ from core.tool_healing import (
     _think_spans_outside_tool_markup,
     strip_outside_think,
 )
+from core.inference.mcp_images import (
+    append_placeholder_turn,
+    png_payloads_per_result,
+    trim_image_turns,
+)
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
@@ -535,6 +540,8 @@ def run_safetensors_tool_loop(
     context_length: Optional[int] = None,
     max_tokens: Optional[int] = None,
     generation_stats_holder: Optional[dict] = None,
+    images_sink: Optional[list] = None,
+    caller_image_indexes: "tuple[int, ...]" = (),
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -559,6 +566,12 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+    # Where the caller's own attachment sits in the seeded sink. The cap is about what
+    # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
+    # whole seed: a resumed chat seeds replayed pictures too, and exempting those would
+    # let the prompt carry a second full allowance. The route reserves the attachment's
+    # slot by trimming replay to limit - 1 before interleaving it.
+    caller_images = tuple(caller_image_indexes)
     # The branch this request is on, before the loop appends anything. A GGUF-compacted
     # thread keeps its archive across a switch to safetensors, so search_conversation is
     # advertised here too and needs the same filtering: the stored rows are the whole
@@ -1224,6 +1237,8 @@ def run_safetensors_tool_loop(
         # Collect no-op nudges and flush them after the batch, so a no-op doesn't
         # abort it and drop the parallel calls that follow.
         deferred_noop_msgs: list = []
+        # Per result; see append_image_turn's per_result note.
+        batch_mcp_images: list = []
 
         for _call_index, tc in enumerate(tool_calls or []):
             func = tc.get("function", {}) or {}
@@ -1485,8 +1500,26 @@ def run_safetensors_tool_loop(
             _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
+            _completion_images = completion.mcp_images()
+            if _completion_images:
+                batch_mcp_images.append(_completion_images)
 
         append_deferred_nudges(conversation, deferred_noop_msgs)
+        if batch_mcp_images and images_sink is not None:
+            # A sink only when the loaded model reads images; the pixels ride
+            # beside the prompt, so the turn carries markers rather than data.
+            encoded = png_payloads_per_result(batch_mcp_images)
+            if encoded:
+                images_sink.extend(encoded)
+                # Merged into the deferred nudge above when there was one: two
+                # user turns in a row is what a strict VLM template rejects.
+                append_placeholder_turn(
+                    conversation, len(encoded), sum(len(r) for r in batch_mcp_images)
+                )
+                # Rebased on the way out: this trim deletes entries before the
+                # attachment, and reusing the original index on the next batch
+                # would protect the wrong payload and delete the attachment.
+                caller_images = trim_image_turns(conversation, images_sink, keep = caller_images)
 
         # Clear the status badge before the next turn.
         yield {"type": "status", "text": ""}
