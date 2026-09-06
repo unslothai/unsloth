@@ -2249,9 +2249,7 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             strict_diff = True
         elif drifted_strict_keys:
             strict_diff = True
-            print(
-                f"  (rule-bearing key drifted: {', '.join(drifted_strict_keys)})"
-            )
+            print(f"  (rule-bearing key drifted: {', '.join(drifted_strict_keys)})")
         for k, v in new[:50]:
             print(f"  NEW      {k}=={v}")
         if len(new) > 50:
