@@ -91,7 +91,13 @@ function MediaIdleUnloadRow({
   );
 }
 
-export function ModelAutoSwitchSection() {
+export function ModelAutoSwitchSection({
+  onEnabledChange,
+}: {
+  // The usage examples below judge whether a snippet can run from this same flag, and
+  // their own poll idles at a minute once a model is resident. Tell them directly.
+  onEnabledChange?: (enabled: boolean) => void;
+} = {}) {
   const t = useT();
   const [settings, setSettings] = useState<OpenAIAutoSwitchSettings | null>(
     null,
@@ -109,6 +115,7 @@ export function ModelAutoSwitchSection() {
       .then((loaded) => {
         if (cancelled) return;
         setSettings(loaded);
+        onEnabledChange?.(loaded.enabled);
         setDraftIdleSeconds(String(loaded.autoUnloadIdleSeconds));
         setDraftMediaIdleSeconds(String(loaded.mediaAutoUnloadIdleSeconds));
         setError(null);
@@ -124,7 +131,7 @@ export function ModelAutoSwitchSection() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, onEnabledChange]);
 
   // Parse an idle-seconds draft: 0 (off) or >= MIN_IDLE_SECONDS; else null.
   const parseIdleSeconds = (draft: string): number | null => {
@@ -149,6 +156,7 @@ export function ModelAutoSwitchSection() {
     try {
       const saved = await updateOpenAIAutoSwitchSettings(update);
       setSettings(saved);
+      onEnabledChange?.(saved.enabled);
       if (update.mediaAutoUnloadIdleSeconds !== undefined) {
         setDraftMediaIdleSeconds(String(saved.mediaAutoUnloadIdleSeconds));
       }

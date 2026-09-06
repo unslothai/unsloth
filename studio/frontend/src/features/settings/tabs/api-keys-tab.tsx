@@ -41,6 +41,11 @@ export function ApiKeysTab() {
     tools: boolean;
     exposure: KeylessApiAccessExposure | null;
   }>({ scope: "off", tools: false, exposure: null });
+  // The section below owns this setting; its poll answers sooner than the examples'
+  // own catalog poll, which idles at a minute once a model is resident.
+  const [autoSwitchEnabled, setAutoSwitchEnabled] = useState<boolean | null>(
+    null,
+  );
   const reduced = useReducedMotion();
   const transition = reduced
     ? { duration: 0 }
@@ -188,13 +193,14 @@ export function ApiKeysTab() {
 
       <LanAccessSection />
 
-      <ModelAutoSwitchSection />
+      <ModelAutoSwitchSection onEnabledChange={setAutoSwitchEnabled} />
 
       <UsageExamples
         apiKey={revealed}
         keylessScope={keyless.scope}
         keylessTools={keyless.tools}
         keylessExposure={keyless.exposure}
+        autoSwitchEnabled={autoSwitchEnabled}
       />
 
       <Dialog

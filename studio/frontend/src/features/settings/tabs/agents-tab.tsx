@@ -67,14 +67,16 @@ import {
   isSpeechOnlyHubModel,
 } from "../lib/agent-hub-model.ts";
 import {
+  EXAMPLE_MODEL_REPO,
+  EXAMPLE_MODEL_VARIANT,
+} from "../lib/example-model-id";
+import {
   type ExampleOs,
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
 const FLAGS_DOCS_URL = `${DOCS_URL}#flags--options`;
-const EXAMPLE_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF";
-const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";
 const EXAMPLE_MODEL_FLAGS = "--reasoning-effort medium";
 const MODEL_RESULT_LIMIT = 7;
 const STATUS_POLL_MS = 5000;

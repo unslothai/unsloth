@@ -25263,6 +25263,22 @@ def _servable_catalog_rows(
     ]
 
 
+def _quant_list(first: str, quants) -> list[str]:
+    """`first`, then every other quant once, in the order the scan reported them.
+
+    Labels compare case-insensitively, like the resolver's own variant match: a
+    resident `q4_k_m` and a scanned `Q4_K_M` name one file, and listing both would
+    offer the picker two rows for it.
+    """
+    seen = {first.lower()}
+    out = [first]
+    for quant in quants:
+        if quant.lower() not in seen:
+            seen.add(quant.lower())
+            out.append(quant)
+    return out
+
+
 async def _openai_catalog_objects() -> list[dict]:
     """Every model the server knows about for ``GET /v1/models``: the loaded
     model(s) plus locally available (downloaded/cached) models discovered by
@@ -25271,6 +25287,55 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
+    # What each public id advertises as its on-disk quants, keyed the way
+    # `local_servable_index` keys aliases: lowercased. `collect_local_models` orders
+    # rows by updated_at while that index walks roots in a fixed order, so the first
+    # row seen here is not reliably the copy `resolve_local_gguf` reaches. When two
+    # physical copies of one id disagree about what is on disk, nothing here can tell
+    # which pin would resolve, so the listing drops `quants` for that id rather than
+    # hand out a `repo:quant` that 404s. Rows themselves are listed exactly as before.
+    quants_seen: dict[str, frozenset[str]] = {}
+    quants_owner: dict[str, dict] = {}
+    ambiguous_quants: set[str] = set()
+
+    def _offer_quants(row: dict, base: Optional[str], found) -> None:
+        """Record what this copy of ``row["id"]`` holds, and publish it if it is alone.
+
+        Only a copy that actually offers quants gets a say. An empty tuple is not a
+        competing opinion about what is on disk: a standalone ``.gguf`` and non-GGUF
+        weights both report ``()`` because they have no quant sub-selection at all, and
+        one sitting beside a repo directory must not cost that directory its quant
+        picker -- the common `./models` drop-in shape.
+        """
+        key = str(row.get("id", "")).lower()
+        if not key:
+            return
+        if key in ambiguous_quants:
+            # Empty, not absent: a client that sees no key at all cannot tell this
+            # from an older server that never sent the field, and would fall back to
+            # offering the singular `quant` -- the pin this id has no answer for.
+            row["quants"] = []
+            return
+        # Compare the way `_quant_list` dedupes, or two copies that hold the same
+        # files under different spellings read as a disagreement and lose their list.
+        # A set: two copies holding the same files disagree about nothing, whatever
+        # order their scans happened to walk them in. Display order still comes from
+        # whichever scan published first.
+        found_key = frozenset(q.lower() for q in found)
+        if not found_key:
+            return
+        seen = quants_seen.get(key)
+        if seen is None:
+            quants_seen[key] = found_key
+            if base and found_key:
+                row["quants"] = _quant_list(base, found)
+                quants_owner[key] = row
+            return
+        if seen != found_key:
+            ambiguous_quants.add(key)
+            quants_owner.pop(key, {})["quants"] = []
+            row["quants"] = []
+
     # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
     # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
     for entry in await asyncio.to_thread(_openai_model_objects):
@@ -25285,7 +25350,37 @@ async def _openai_catalog_objects() -> list[dict]:
         _servable_catalog_rows, catalog, catalog_at
     ):
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
-        if not cid or cid in by_id:
+        if not cid:
+            continue
+        if cid in by_id:
+            # Already listed: the resident row, or an earlier scan row for the same
+            # public id. Name its other on-disk quants beside it so a client can pin
+            # any; `_offer_quants` withdraws them if a second copy of this id disagrees
+            # about what is on disk.
+            listed = by_id[cid]
+            base = listed.get("quant")
+            if not base and quants and listed.get("loaded"):
+                # A cold resolver index withholds the resident quant, because a pin it
+                # cannot resolve is a dead pin. This scan just read the files, so a
+                # loaded variant that appears among them is exactly the proof that was
+                # missing; publish it now instead of after the next poll.
+                # Only from the llama backend's own row: `hf_variant` can outlive an
+                # unload, and a non-GGUF model resident under the same advertised id
+                # must not be labelled with a quant llama loaded some time ago.
+                _llama = get_llama_cpp_backend()
+                resident = (
+                    getattr(_llama, "hf_variant", None)
+                    if getattr(_llama, "is_loaded", False)
+                    else None
+                )
+                scanned = next(
+                    (q for q in quants if resident and q.lower() == resident.lower()),
+                    None,
+                )
+                if scanned:
+                    base = scanned
+                    listed["quant"] = scanned
+            _offer_quants(listed, base, quants)
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:
@@ -25305,6 +25400,7 @@ async def _openai_catalog_objects() -> list[dict]:
             obj["quant"] = resident_quant
         elif quants:
             obj["quant"] = quants[0]
+        _offer_quants(obj, obj.get("quant"), quants)
         display = getattr(info, "display_name", None)
         if display:
             obj["display_name"] = display
@@ -25360,6 +25456,9 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
+            # No `quants` here: filling it needs the servability scan this fast path
+            # exists to avoid, and a client that wants the alternatives reads the
+            # listing, which carries them for every model including this one.
             return {**entry, "loaded": True}
 
     objects = await _openai_catalog_objects()

@@ -1683,7 +1683,15 @@ export const fr = {
       revokeAction: 'Révoquer "{name}"',
       revoking: "Révocation...",
       usageNoModel:
-        "Chargez ou téléchargez un modèle pour voir des exemples exécutables. Aucun modèle n'est encore disponible sur ce serveur pour figurer dans les exemples.",
+        "Ce serveur n'a aucun modèle de chat disponible, donc cet exemple nomme un modèle qu'il n'a pas. Téléchargez un modèle de chat depuis le Hub et l'exemple le nommera.",
+      usageModelNotLoaded:
+        "{model} n'est pas chargé. Activez « Changer de modèle par requête » ci-dessus, ou chargez-le dans Chat, avant d'exécuter cet exemple.",
+      usageModelNotLoadedKeyless:
+        "{model} n'est pas chargé. Créez une clé API et utilisez-la dans cette requête, ou chargez le modèle dans Chat, avant d'exécuter cet exemple.",
+      exampleModel: "Modèle",
+      exampleModelFollow: "Suivre le modèle chargé",
+      exampleQuant: "Quantification",
+      modelLoaded: "Chargé",
     },
     about: {
       title: "À propos",
