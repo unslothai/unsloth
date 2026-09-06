@@ -473,6 +473,27 @@ def _torchcodec_python_is_supported(
 _TORCHCODEC_MIN_ON_TORCH_INDEX = (0, 3, 0)
 
 
+def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
+    """`"12"`, `"13"`, or `""` when this codec install needs no NPP runtime.
+
+    The resident torch's LOCAL TAG first, the index URL only as a fallback. Reading the URL
+    alone required it to end in `/cuNNN`, which a supported UNSLOTH_TORCH_INDEX_URL need not
+    do: an authenticated or query-bearing mirror ends in `/simple?token=...`, so a `+cu128`
+    host silently skipped NPP and the codec then failed to import on any machine without a
+    system CUDA toolkit. The tag is also the better source rather than merely the more
+    robust one, since _torchcodec_index_url only returns an index at all once it has seen a
+    `cpu` or `cuNNN` local tag, so the tag is always present and always says which.
+    """
+    local = str(torch_version or "").partition("+")[2].strip().lower()
+    match = re.fullmatch(r"cu(\d+)", local)
+    if match:
+        return match.group(1)[:2]
+    # No usable local tag: a torch from PyPI carries none. Fall back to the leaf, which
+    # still answers for the public download.pytorch.org form.
+    match = re.search(r"/cu(\d+)/?$", index_url or "")
+    return match.group(1)[:2] if match else ""
+
+
 def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str | None":
     """The torchcodec index serving the resident torch's build, or None to stay unpinned.
 
@@ -7677,14 +7698,13 @@ def install_python_stack() -> int:
                 f"could not install {_codec_spec} -- audio decoding stays disabled, "
                 "the rest of the install is unaffected"
             )
-        elif _codec_index and re.search(r"/cu(\d+)/?$", _codec_index):
+        elif _codec_index and _cuda_major_for_npp(_codec_torch_ver, _codec_index):
             # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is NOT in
             # torch's own dependency set, so a --no-deps install from a cuNNN index reports
             # success and then fails to import, disabling audio for a reason nothing here
             # would otherwise name. docker/Dockerfile installs nvidia-npp-cu12 beside the
-            # same wheel for exactly this. The major follows the index leaf, since cu13x
-            # wheels want nvidia-npp-cu13.
-            _npp_major = re.search(r"/cu(\d+)/?$", _codec_index).group(1)[:2]
+            # same wheel for exactly this. cu13x wheels want nvidia-npp-cu13.
+            _npp_major = _cuda_major_for_npp(_codec_torch_ver, _codec_index)
             if not pip_install_try(
                 "Installing torchcodec CUDA runtime (NPP)",
                 "--no-cache-dir",

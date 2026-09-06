@@ -1641,3 +1641,100 @@ def test_a_cuda_index_codec_also_installs_npp():
     # The Dockerfile this mirrors still pairs the two, so the rationale stays checkable.
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding = "utf-8")
     assert "nvidia-npp-cu12" in dockerfile
+
+
+def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():
+    """UNSLOTH_TORCH_INDEX_URL may be an authenticated mirror ending in `/simple?token=...`,
+    and matching `/cuNNN$` against it skipped NPP on a `+cu128` host, so the codec installed
+    and then failed to import wherever no system CUDA toolkit was present."""
+    import re as _re
+
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    namespace: dict = {"re": _re}
+    exec(
+        _re.search(r"def _cuda_major_for_npp.*?\n(?=\n\ndef )", source, _re.S).group(0),
+        namespace,
+    )
+    npp_major = namespace["_cuda_major_for_npp"]
+
+    # The local tag answers whatever the index URL looks like.
+    opaque = "https://mirror.example/simple?token=abc"
+    assert npp_major("2.11.0+cu128", opaque) == "12"
+    assert npp_major("2.11.0+cu130", opaque) == "13"
+    # cpu and rocm ask for nothing, on any URL.
+    assert npp_major("2.11.0+cpu", "https://download.pytorch.org/whl/cpu") == ""
+    assert npp_major("2.11.0+rocm6.4", "https://download.pytorch.org/whl/rocm6.4") == ""
+    # An untagged torch still falls back to the public leaf.
+    assert npp_major("2.11.0", "https://download.pytorch.org/whl/cu126") == "12"
+    assert npp_major("2.11.0", opaque) == ""
+
+    # And the call site reads the tag rather than re-matching the URL.
+    assert "_cuda_major_for_npp(_codec_torch_ver, _codec_index)" in source
+
+
+def test_a_dry_run_install_changes_nothing():
+    """`--dry-run` is "Don't actually install anything, just print what would be"
+    (https://pip.pypa.io/en/stable/cli/pip_install/), so replaying its bounds reported a
+    version the cell never installed and raised a false R-INST-004."""
+    from scripts import notebook_validator as nv
+
+    assert nv._effective_version(
+        "!pip install --dry-run torch==2.12.0", "torch", "2.11.0") == ("2.11.0", True)
+    # The documented pairing with --report is if anything the likelier spelling.
+    assert nv._effective_version(
+        "!pip install --dry-run --report - torch==2.12.0", "torch", "2.11.0") == ("2.11.0", True)
+    # A real install still lands.
+    assert nv._effective_version(
+        "!pip install torch==2.12.0", "torch", "2.11.0") == ("2.12.0", True)
+
+
+def test_an_exclusive_ceiling_beats_an_inclusive_cap():
+    """A requirement satisfies EVERY specifier it carries, so `>=0.8,<=0.11,<0.10` admits
+    0.8 through 0.9.x and pip takes the newest of those. Reading the cap alone recorded 0.11.
+
+    The upward move is the case `resolved_set()` cannot pre-clamp: the starting version is
+    already below the floor, so the cap is chosen here rather than applied earlier."""
+    from scripts import notebook_validator as nv
+
+    assert nv._effective_version(
+        '!pip install "torchcodec>=0.8,<=0.11,<0.10"', "torchcodec", "0.7.0") == ("0.9", True)
+    # The clamp downwards honours it too.
+    assert nv._effective_version(
+        '!pip install "torchcodec<=0.11,<0.10"', "torchcodec", "0.12.0") == ("0.9", True)
+    # Without the ceiling the cap is still exactly where pip lands.
+    assert nv._effective_version(
+        '!pip install "torchcodec>=0.8,<=0.11"', "torchcodec", "0.7.0") == ("0.11", True)
+
+
+def test_a_direct_archive_keeps_its_version_beside_a_marker():
+    """The `; marker` suffix rode into the archive regex, so the filename version was
+    unrecoverable and the package read as replaced by an unknown version -- R-INST-004 then
+    said nothing about a pairing the cell really installs."""
+    from scripts import notebook_validator as nv
+
+    wheel = ("https://example.com/"
+             "torchcodec-0.11.0-cp313-cp313-manylinux_2_28_x86_64.whl")
+    marked = f"!pip install \"torchcodec @ {wheel} ; python_version >= '3.10'\""
+    assert nv._effective_version(marked, "torchcodec", "0.9.0") == ("0.11.0", True)
+    # Unchanged without a marker.
+    assert nv._effective_version(
+        f'!pip install "torchcodec @ {wheel}"', "torchcodec", "0.9.0") == ("0.11.0", True)
+
+
+def test_a_quoted_word_survives_prefix_stripping():
+    """Splitting the raw text on whitespace broke `TOKEN="a b"` into two, left `b"` as the
+    supposed executable, and R-INST-001 then missed the prohibited `git+` source entirely."""
+    from scripts import notebook_validator as nv
+
+    assert nv._split_first_word('TOKEN="a b" pip install x') == ("TOKEN=a b", "pip install x")
+    assert nv._strip_exec_prefixes(
+        'env TOKEN="a b" pip install git+https://x/e.git') == ("pip install git+https://x/e.git", True)
+    assert nv._strip_exec_prefixes(
+        "env TOKEN='a b' pip install git+https://x/e.git") == ("pip install git+https://x/e.git", True)
+
+    findings = nv.rule_inst_001_git_plus(
+        '!env TOKEN="a b" pip install git+https://x/e.git', "nb.ipynb", 0)
+    assert [f.rule for f in findings] == ["R-INST-001"]
+    # An operand spelled `pip` is still consumed rather than read as the executable.
+    assert nv._strip_exec_prefixes(
+        "env -u pip pip install git+https://x/e.git") == ("pip install git+https://x/e.git", True)

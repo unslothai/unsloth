@@ -540,6 +540,46 @@ _PREFIX_OPERAND_FLAGS: dict[str, frozenset[str]] = {
 }
 
 
+def _split_first_word(text: str) -> tuple[str, str]:
+    """One shell word off the front, plus the RAW remainder.
+
+    `str.split(maxsplit = 1)` is wrong here because a shell word may contain whitespace:
+    `env TOKEN="a b" pip install ...` splits into `env` / `TOKEN="a` / `b" pip ...`, and the
+    second fragment then reads as the executable, so `parse_pip_line` returns nothing and a
+    prohibited `git+` source goes unreported.
+
+    The word comes back UNQUOTED, for comparing against prefix names and flags; the
+    remainder comes back verbatim, because everything downstream re-parses the original
+    text and would be changed by rebuilding it.
+    """
+    index, length = 0, len(text)
+    while index < length and text[index].isspace():
+        index += 1
+    word: list[str] = []
+    quote = ""
+    while index < length:
+        ch = text[index]
+        if quote:
+            if ch == "\\" and quote == '"' and index + 1 < length:
+                index += 1
+                word.append(text[index])
+            elif ch == quote:
+                quote = ""
+            else:
+                word.append(ch)
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\\" and index + 1 < length:
+            index += 1
+            word.append(text[index])
+        elif ch.isspace():
+            break
+        else:
+            word.append(ch)
+        index += 1
+    return "".join(word), text[index:].strip()
+
+
 def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
     """Drop `env -u VAR`, `sudo -u root`, `nohup`, `A=1` ... and return the command they run.
 
@@ -548,11 +588,9 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
     """
     prefixed = False
     while True:
-        parts = text.split(maxsplit = 1)
-        if not parts:
+        word, rest = _split_first_word(text)
+        if not word:
             break
-        word = parts[0]
-        rest = parts[1].strip() if len(parts) > 1 else ""
         if _ENV_ASSIGNMENT_RE.match(word):
             prefixed = True
             text = rest
@@ -563,9 +601,7 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
         prefixed = True
         operand_flags = _PREFIX_OPERAND_FLAGS.get(name, frozenset())
         while rest:
-            token_parts = rest.split(maxsplit = 1)
-            token = token_parts[0]
-            tail = token_parts[1].strip() if len(token_parts) > 1 else ""
+            token, tail = _split_first_word(rest)
             if token == "--":
                 rest = tail  # end of options; what follows is the command
                 break
@@ -575,8 +611,7 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
                 rest = tail  # `--unset=NAME` carries its operand inline
                 continue
             if token in operand_flags:
-                operand = tail.split(maxsplit = 1)
-                rest = operand[1].strip() if len(operand) > 1 else ""
+                _, rest = _split_first_word(tail)
             else:
                 rest = tail
         text = rest
@@ -1280,6 +1315,12 @@ def _archive_requirement(argument: str) -> tuple[str, str | None] | None:
     """
     named, sep, reference = argument.partition("@")
     if sep and "://" in reference:
+        # The PEP 508 marker rides on the end of a direct reference, and left in place it
+        # made the archive regex fail: the package then read as replaced by an unknown
+        # version, so R-INST-004 said nothing about a pairing the cell really installs.
+        # Only for the direct-reference branch, where the URL is already delimited; a `;`
+        # inside a bare path or filename is a legal character, not a separator.
+        reference = reference.split(";", 1)[0]
         argument = reference.strip()
         named = named.strip().split("[", 1)[0].replace("_", "-").lower()
     else:
@@ -1463,6 +1504,12 @@ def _effective_version(
     current = resolved
     exact_known = True
     for inv in unconditional_pip_invocations(install_cell):
+        if "--dry-run" in inv.flags:
+            # "Don't actually install anything, just print what would be"
+            # (https://pip.pypa.io/en/stable/cli/pip_install/). A resolution probe, often
+            # paired with --report, leaves the environment exactly as it was, so replaying
+            # its bounds reported a version the cell never installed.
+            continue
         # One command names a project once as far as pip is concerned: it intersects repeated
         # arguments into a single requirement, so they have to be one window here too.
         pins: list[tuple[str, str]] = []
@@ -1509,6 +1556,13 @@ def _effective_version(
             below = _highest_minor_below(ceiling)
             if below and (floor is None or cmp_versions(below, floor) >= 0):
                 landing = below
+        # A requirement has to satisfy EVERY specifier it carries, so an inclusive cap the
+        # exclusive ceiling rules out is not where pip lands: `>=0.8,<=0.11,<0.10` admits
+        # 0.8 through 0.9.x and takes the newest of those. Reading the cap alone reported
+        # 0.11 and raised a false R-INST-004.
+        cap_exact = True
+        if cap is not None and ceiling is not None and cmp_versions(cap, ceiling) >= 0:
+            cap, cap_exact = landing, landing is not None
         if exact is not None:
             current, exact_known = exact, True
         elif current is None:
@@ -1517,7 +1571,7 @@ def _effective_version(
             # least how low, and an exclusive ceiling names nothing: which release sits
             # just below it is only in the index.
             if cap is not None:
-                current, exact_known = cap, True
+                current, exact_known = cap, cap_exact
             elif floor is not None and not exclusive_floor:
                 current, exact_known = floor, landing is not None
         elif floor is not None and (
@@ -1526,7 +1580,7 @@ def _effective_version(
             or (exclusive_floor and cmp_versions(floor, current) == 0)
         ):
             if cap is not None:
-                current, exact_known = cap, True  # `<=V` allows V, so V is what pip picks
+                current, exact_known = cap, cap_exact  # `<=V` allows V, so V is what pip picks
             elif landing is not None:
                 current, exact_known = landing, True  # the window pins the minor
             elif exclusive_floor:
@@ -1534,7 +1588,7 @@ def _effective_version(
             else:
                 current, exact_known = floor, False  # at least the floor, possibly newer
         elif cap is not None and cmp_versions(current, cap) > 0:
-            current, exact_known = cap, True  # `<=V` allows V, so V is what pip picks
+            current, exact_known = cap, cap_exact  # `<=V` allows V, so V is what pip picks
         elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
             current, exact_known = landing, True
         # Whatever is left still has to satisfy the requirement's own exclusions.
