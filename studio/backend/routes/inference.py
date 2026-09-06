@@ -28024,6 +28024,32 @@ def _anthropic_selects_server_tools(
     return payload.enable_tools is True or bool(requested_studio_tools)
 
 
+def _guard_anthropic_client_tool_catalog(
+    openai_client_tools, openai_tool_choice, server_tools, llama_backend
+) -> None:
+    """400 a live client catalogue the loaded template would drop.
+
+    Otherwise the caller gets prose where it asked for a tool_use block. Narrower than the
+    OpenAI gate, which also rejects replayed history: _sanitize_anthropic_openai_messages
+    already folded that history for this same template, so a history-only turn has no
+    catalogue to drop and still answers. Shared with the token counter so a count can never
+    describe a request the completion rejects.
+    """
+    if server_tools or not openai_client_tools or openai_tool_choice == "none":
+        return
+    if getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools):
+        return
+    raise HTTPException(
+        status_code = 400,
+        detail = anthropic_error_body(
+            "Client-supplied tools require a GGUF chat template with tool-call support; "
+            "the current model/template does not advertise tools.",
+            status = 400,
+            err_type = "invalid_request_error",
+        ),
+    )
+
+
 def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
     requested: set[str] = set()
     for tool in tools or []:
@@ -28749,12 +28775,22 @@ async def anthropic_count_tokens(
         and llama_backend.supports_tools
         and not _anthropic_request_has_image(payload)
     )
+    _count_openai_client_tools = [
+        tool
+        for tool in anthropic_tools_to_openai(payload.tools or [])
+        if tool.get("function", {}).get("name") not in _count_studio_tools
+    ]
+    # Reject exactly what /messages rejects: a count that priced a request the completion
+    # refuses would hand an SDK a budget it can never spend.
+    _guard_anthropic_client_tool_catalog(
+        _count_openai_client_tools,
+        anthropic_tool_choice_to_openai(payload.tool_choice) or "auto",
+        _count_server_tools,
+        llama_backend,
+    )
     _count_client_tools = (
         not _count_server_tools
-        and any(
-            tool.get("function", {}).get("name") not in _count_studio_tools
-            for tool in anthropic_tools_to_openai(payload.tools or [])
-        )
+        and bool(_count_openai_client_tools)
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
     if not _count_client_tools:
@@ -29052,21 +29088,9 @@ async def anthropic_messages(
     )
     client_tools = not server_tools and len(openai_client_tools) > 0 and supports_tool_passthrough
 
-    # A live catalogue would be dropped and the caller would get prose where it asked for a
-    # tool_use block. Narrower than the OpenAI gate, which also rejects replayed history:
-    # _sanitize_anthropic_openai_messages already folded that history for this same template,
-    # so a history-only turn has no catalogue to drop and still answers.
-    _has_client_tool_catalog = bool(openai_client_tools) and openai_tool_choice != "none"
-    if not server_tools and _has_client_tool_catalog and not supports_tool_passthrough:
-        raise HTTPException(
-            status_code = 400,
-            detail = anthropic_error_body(
-                "Client-supplied tools require a GGUF chat template with tool-call support; "
-                "the current model/template does not advertise tools.",
-                status = 400,
-                err_type = "invalid_request_error",
-            ),
-        )
+    _guard_anthropic_client_tool_catalog(
+        openai_client_tools, openai_tool_choice, server_tools, llama_backend
+    )
 
     # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
     # the caller's own request verbatim (mirrors the GGUF passthrough gate in /chat/completions).

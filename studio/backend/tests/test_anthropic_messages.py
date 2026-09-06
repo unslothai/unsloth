@@ -2664,6 +2664,57 @@ class TestAnthropicMessagesToolRouting:
         [(path, _kwargs)] = backend.calls
         assert path == "plain"
 
+    def test_count_tokens_rejects_the_catalog_messages_rejects(self, monkeypatch):
+        # The template renders no schemas, so the count matched with and without them
+        # (27 either way on a real gemma-3-270m) and handed an SDK a budget /messages 400s.
+        from routes.inference import anthropic_count_tokens
+
+        _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
+        payload = _basic_payload(tools = [{"name": "lookup", "input_schema": {"type": "object"}}])
+
+        with pytest.raises(HTTPException) as excinfo:
+            _drive(anthropic_count_tokens(payload, request = self._Request(), current_subject = "t"))
+
+        assert excinfo.value.status_code == 400
+        assert "does not advertise tools" in excinfo.value.detail["error"]["message"]
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {},
+            {
+                "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+                "tool_choice": {"type": "none"},
+            },
+            {
+                "messages": [
+                    {"role": "user", "content": "hi"},
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}],
+                    },
+                    {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "42"}],
+                    },
+                ]
+            },
+        ],
+        ids = ["no_tools", "tool_choice_none", "replayed_history"],
+    )
+    def test_count_tokens_still_counts_what_messages_still_answers(self, monkeypatch, fields):
+        from routes.inference import anthropic_count_tokens
+
+        _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
+
+        response = _drive(
+            anthropic_count_tokens(
+                _basic_payload(**fields), request = self._Request(), current_subject = "t"
+            )
+        )
+
+        assert response.status_code == 200
+
     def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
 
