@@ -12,7 +12,9 @@ the skip-link / nav / footer furniture, and the README rendered inside
 
 from __future__ import annotations
 
+import email
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -705,13 +707,149 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
 
     monkeypatch.setattr(
         "core.inference.tools._validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
     err, body, content_type = _fetch_url_raw("https://example.com/")
     assert err is None
     assert "hello" in body
     assert content_type == ""
+
+
+def _dual_stack_getaddrinfo(hostname, port, *args, **kwargs):
+    """example.com's real records: the AAAA sorts first for a dual-stack host."""
+    import socket as _socket
+    return [
+        (_socket.AF_INET6, _socket.SOCK_STREAM, 0, "", ("2606:2800:220:1::1", port, 0, 0)),
+        (_socket.AF_INET, _socket.SOCK_STREAM, 0, "", ("93.184.216.34", port)),
+    ]
+
+
+def test_validate_and_resolve_host_returns_every_validated_address(monkeypatch):
+    import socket as _socket
+
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _dual_stack_getaddrinfo)
+    ok, reason, ips = tools_mod._validate_and_resolve_host("example.com", 443)
+
+    assert (ok, reason) == (True, "")
+    assert ips == ["2606:2800:220:1::1", "93.184.216.34"]
+
+
+def test_fetch_url_raw_falls_back_to_the_next_resolved_address(monkeypatch):
+    # A configured but blackholed IPv6 sorts first for dual-stack hosts. Pinning one
+    # address against DNS rebinding must not drop the walk urllib does for everyone else.
+    import email
+    import socket as _socket
+    import urllib.error
+    import urllib.request
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"served by the second address"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    tried = []
+
+    class _FakeOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            tried.append(req.full_url)
+            if "[" in req.full_url:
+                raise urllib.error.URLError(OSError(101, "Network is unreachable"))
+            return _FakeResp()
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _dual_stack_getaddrinfo)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
+
+    err, body, _content_type = _fetch_url_raw("https://example.com/")
+
+    assert err is None
+    assert "served by the second address" in body
+    assert tried == ["https://[2606:2800:220:1::1]/", "https://93.184.216.34/"]
+
+
+def test_a_blackholed_first_address_leaves_the_working_one_a_usable_budget(monkeypatch):
+    # The headline case: a configured-but-blackholed IPv6 DROPs the SYN, so the
+    # attempt fails only by running out its socket timeout rather than erroring
+    # straight away. Handing that address the whole remaining deadline left the
+    # working one the 0.001s floor, so the walk reached it and still failed.
+    import socket as _socket
+    import urllib.error
+    import urllib.request
+
+    from core.inference import tools as tools_mod
+
+    attempts = []
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"served by the second address"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    class _BlackholeOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            attempts.append((req.full_url, timeout))
+            if "[" in req.full_url:
+                time.sleep(timeout)
+                raise urllib.error.URLError(TimeoutError("timed out"))
+            return _FakeResp()
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _dual_stack_getaddrinfo)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _BlackholeOpener())
+
+    err, body, _content_type = tools_mod._fetch_url_raw(
+        "https://example.com/",
+        timeout = 4,
+        deadline = time.monotonic() + 4,
+    )
+
+    assert err is None
+    assert "served by the second address" in body
+    # The blackholed address gets a share, not the whole budget, so the address
+    # that actually answers is still given a timeout it can connect within.
+    assert attempts[0][1] <= 2.5
+    assert attempts[1][1] > 0.5
+
+
+def test_fetch_url_raw_reports_the_last_error_when_no_address_connects(monkeypatch):
+    import socket as _socket
+    import urllib.error
+    import urllib.request
+
+    class _FakeOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            raise urllib.error.URLError(OSError(101, "Network is unreachable"))
+
+    monkeypatch.setattr(_socket, "getaddrinfo", _dual_stack_getaddrinfo)
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FakeOpener())
+
+    err, body, _content_type = _fetch_url_raw("https://example.com/")
+
+    assert err.startswith("Failed to fetch URL:")
+    assert body == ""
 
 
 @pytest.mark.parametrize(
@@ -758,7 +896,7 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
 
     def resolve(host, port):
         resolved.append((host, port))
-        return True, "", "203.0.113.7"
+        return True, "", ["203.0.113.7"]
 
     monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1" if disable_dns_pinning else "0")
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", resolve)
@@ -818,7 +956,7 @@ def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "getproxies", lambda: {"HTTPS": "http://proxy.corp:3128"})
     monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
@@ -891,7 +1029,7 @@ def test_fetch_url_raw_no_proxy_routing(monkeypatch, no_proxy, disable_dns_pinni
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", fake_build_opener)
 
@@ -1166,7 +1304,7 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _RedirectingOpener())
 
@@ -1204,7 +1342,7 @@ def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
 
@@ -1279,7 +1417,7 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
     monkeypatch.setattr(
         tools_mod,
         "_validate_and_resolve_host",
-        lambda host, port: (True, "", "203.0.113.7"),
+        lambda host, port: (True, "", ["203.0.113.7"]),
     )
     monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
 
@@ -1306,7 +1444,7 @@ def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):
 
     def slow_resolve(host, port):
         release.wait(5.0)  # block until released; the budget should abort first
-        return True, "", "203.0.113.7"
+        return True, "", ["203.0.113.7"]
 
     monkeypatch.setattr(tools_mod, "_validate_and_resolve_host", slow_resolve)
 
