@@ -460,6 +460,10 @@ class ChatGenerationSupervisor:
                 pass
             return True
         cancel_event = threading.Event()
+        # Durable marker read by state.tool_approvals.wait_tool_decision: a confirm-mode ("ask") call
+        # parked mid-run must wait for the returning session (resolved by approval_id) rather than auto-
+        # deny on the 3600s ceiling. In-memory only — a backend restart still loses the slot.
+        cancel_event.durable = True
         activity = InferenceActivityReservation()
         activity.reserve()
         registration = active_generations.ActiveGeneration(

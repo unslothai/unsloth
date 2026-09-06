@@ -5140,7 +5140,15 @@ export function createOpenAIStreamAdapter(
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
-        incomplete: { reason: "cancelled" as const },
+        // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
+        // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
+        // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
+        // their reconnect path marks state via recovery, and an explicit Stop still reads as cancelled below.
+        incomplete: {
+          reason: (generationDecision === "durable"
+            ? "cancelled"
+            : "interrupted") as IncompleteReason,
+        },
         ...generationCustom(),
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -5552,6 +5560,9 @@ export function createOpenAIStreamAdapter(
           return;
         }
         generationStopRequested = true;
+        // An explicit Stop is a cancel, not a walk-away interruption: override the provisional reason so a
+        // deliberate Stop still reads as "cancelled" even though streamed yields carried the legacy default.
+        incompleteReason = "cancelled";
         const stopPlan = chatGenerationStopPlan(
           generationDecision,
           generationRunId,
@@ -6173,10 +6184,13 @@ export function createOpenAIStreamAdapter(
                 requestPayload as unknown as { tools?: unknown }
               ).tools;
               if (
-                requestPayload.enable_tools === true ||
-                (Array.isArray(clientTools) && clientTools.length > 0)
+                // Only a tool chain the BROWSER must execute still needs the live tab. Server-executed tools
+                // (`enable_tools`) run on the server and stream as chunk events, so they are durable like plain
+                // text: an auto/bypass loop runs to completion while you're away, and a confirm ("ask") call parks
+                // on its approval_id (see tool_approvals.wait_tool_decision) and is resolved by id on return.
+                Array.isArray(clientTools) && clientTools.length > 0
               ) {
-                // Confirmation and browser-executed tool chains still use the subscriber-owned stream.
+                // Browser-executed tool chains have no server-side executor to run while you're gone.
                 generationDecision = "legacy";
               } else {
                 const admission = explicitStopSignal(runSignal);
