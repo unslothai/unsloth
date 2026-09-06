@@ -61,11 +61,22 @@ Environment:
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         if (-not (Test-Path -LiteralPath $Path)) { return }
-        for ($attempt = 1; $attempt -le 4; $attempt++) {
+        # Escalating backoff rather than a flat 700ms x4. That old ~2.1s budget was
+        # shorter than the teardown of a Studio that had actually been used: torch
+        # inductor's compile workers keep handles on the .py files they wrote under
+        # <root>\TORCHINDUCTOR_CACHE_DIR for several seconds after the server is
+        # stopped. Those are plain data handles on files the worker did not load as a
+        # module, so neither the ExecutablePath pass nor the loaded-module pass in
+        # _StopProcessesLockingRoots can find a process to kill -- waiting is the only
+        # move. Giving up at 2.1s left the entire install tree, studio.db included, on
+        # disk while the summary told the user to go delete it by hand.
+        $delays = @(250, 500, 1000, 2000, 4000, 4000, 4000, 4000)
+        for ($attempt = 0; $attempt -le $delays.Count; $attempt++) {
+            $lastTry = ($attempt -eq $delays.Count)
             try {
                 Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
             } catch {
-                if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
+                if (-not $lastTry) { Start-Sleep -Milliseconds $delays[$attempt]; continue }
                 _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
                 # The closing summary must not promise the data is gone.
                 $script:RemoveFailed = $true
@@ -78,7 +89,7 @@ Environment:
                 _Substep "removed: $Path" "Green"
                 return
             }
-            if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
+            if (-not $lastTry) { Start-Sleep -Milliseconds $delays[$attempt]; continue }
             _Substep "still present (files held open): $Path" "Yellow"
             $script:RemoveFailed = $true
         }
