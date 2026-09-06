@@ -108,10 +108,9 @@ def test_openai_stream_control_yields_are_gated():
 
 
 def test_dropped_frames_still_pace_a_keepalive():
-    # A gated-off frame writes nothing but still restarts the stall-keepalive wait, and a
-    # tool streaming stdout emits them faster than tool_stream_exec's heartbeat interval.
-    # Without this pacing the stream is silent for the whole tool run and a Cloudflare
-    # quick tunnel drops it at ~100s idle.
+    # A gated-off frame writes nothing but still restarts the stall-keepalive wait, and
+    # tool_stream_exec's own heartbeat, so an unpaced stream is silent for the whole tool
+    # run and a Cloudflare quick tunnel drops it at ~100s idle (_DroppedFrameKeepalive).
     keepalive = _DroppedFrameKeepalive(now = 0.0)
     assert keepalive.due(now = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S - 0.01) is False
     assert keepalive.due(now = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S) is True
@@ -188,9 +187,7 @@ def _gate_payload(**kwargs):
 
 
 def test_confirm_gate_needs_both_a_stream_and_the_frames():
-    # The approval_id only reaches the caller inside tool_start, so hiding the frames
-    # leaves wait_tool_decision parked for the full decision timeout on a prompt nobody
-    # was shown. Either channel missing means the gate has nowhere to ask.
+    # Either channel missing means the gate has nowhere to ask.
     assert _confirm_gate_has_no_channel(_gate_payload(), False) is True
     assert _confirm_gate_has_no_channel(_gate_payload(), True) is False
     # Non-streaming keeps the reading it has always had: an unset mode stays lenient

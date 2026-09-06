@@ -21253,10 +21253,9 @@ async def produce_openai_chat_completions(
         # the epoch is replayed from the boundary, so the thread never recovers on its
         # own. Measured on a non-streaming request with permission_mode ask, and equally
         # on auto and on a bare confirm_tool_calls, which the validator folds to ask.
-        # Non-streaming only, deliberately: that request is refused wherever the loop is
-        # reached, so the epoch must never open behind it. A stream that merely hid the
-        # control frames is refused by the tool branch alone, and widening the rolling
-        # window to it would change what a plain request is handed (tools_withheld).
+        # Non-streaming only, deliberately: a stream that merely hid the control frames is
+        # refused by the tool branch alone, and widening the window to it would change what
+        # a plain request is handed (tools_withheld).
         or (
             _confirm_gate_needs_stream(payload)
             and not payload.bypass_permissions
@@ -21886,8 +21885,8 @@ async def produce_openai_chat_completions(
                                 # Tool card is client-visible output; stamp the turn here.
                                 # Not decoded output: the tool run (or a human confirming
                                 # it) before the next turn is not decoding time. Gated with
-                                # the card: the stamp is set once, so a caller that never
-                                # sees it would report the tool run as time-to-first-token.
+                                # the card: the stamp is set once, so a caller that cannot
+                                # see it would report the tool run as its TTFT.
                                 if _ui_events:
                                     api_monitor.mark_first_token(monitor_id, decoded = False)
                                 for chunk in _flush_reasoning_extractor():
@@ -23525,8 +23524,8 @@ async def produce_openai_chat_completions(
 
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
-                            # Same as the GGUF loop: visible output, but not decoded. Only
-                            # when the caller can see the card, since the stamp is set once.
+                            # Same as the GGUF loop, and gated with the card for the same
+                            # reason: the stamp is set once.
                             if _ui_events:
                                 api_monitor.mark_first_token(monitor_id, decoded = False)
                             # Flush reasoning before tool_start so the thinking block closes ahead of the card.

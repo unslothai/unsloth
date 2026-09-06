@@ -56,8 +56,7 @@ def _request(authorization = None):
     if authorization:
         headers["authorization"] = authorization
     return SimpleNamespace(
-        # The confirm gate can only ask over the opt-in control frames, which the
-        # Studio UI sends on every chat request.
+        # The confirm gate can only ask over these frames.
         headers = headers,
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,

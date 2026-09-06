@@ -3881,7 +3881,7 @@ class TestGgufVisionToolRouting:
         method = "POST"
 
         def __init__(self, ui_events = False):
-            # Tool cards and the approval handshake ride the opt-in control frames.
+            # Tool cards and the approval handshake ride these frames.
             self.headers = {"X-Unsloth-Events": "1"} if ui_events else {}
 
         async def is_disconnected(self):
@@ -4285,9 +4285,8 @@ class TestGgufVisionToolRouting:
         assert monitor.active_count() == 0
 
     def test_streaming_confirm_gate_refuses_a_caller_that_hid_the_frames(self, monkeypatch):
-        # The approval_id only reaches the caller inside tool_start, so a stream without
-        # X-Unsloth-Events has nowhere to be asked: the loop would park in
-        # wait_tool_decision for the full decision timeout on a prompt nobody was shown.
+        # A stream without X-Unsloth-Events has nowhere to be asked, so the loop would
+        # park in wait_tool_decision for the full timeout (_confirm_gate_has_no_channel).
         import routes.inference as inf_mod
 
         reset_tool_policy()
@@ -4324,12 +4323,11 @@ class TestGgufVisionToolRouting:
         assert exc.value.status_code == 400
         message = exc.value.detail["error"]["message"]
         assert "X-Unsloth-Events" in message
-        # The refusal names the way out, or a client that cannot render a prompt is stuck.
+        # Names the way out, or a client that cannot render a prompt is stuck.
         assert "permission_mode" in message
 
     def test_streaming_confirm_gate_admits_a_caller_that_opted_in(self, monkeypatch):
-        # Same request with the frames on runs the loop, so the guard above refuses only
-        # the callers that really have nowhere to confirm.
+        # Same request with the frames on runs the loop: the guard refuses no one else.
         def _tools(**_kwargs):
             yield {"type": "content", "text": "done"}
             yield {
@@ -4692,8 +4690,7 @@ class TestGgufVisionToolRouting:
             )
             response = await openai_chat_completions(
                 payload,
-                # The approval_id only reaches the caller inside tool_start, so a request
-                # that can be gated has to opt into the control frames.
+                # A gateable request has to opt in: tool_start carries the approval_id.
                 request = self._Request(ui_events = True),
                 current_subject = "test",
             )

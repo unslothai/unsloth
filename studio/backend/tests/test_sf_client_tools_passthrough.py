@@ -53,8 +53,7 @@ class _Request:
     url = SimpleNamespace(path = "/v1/chat/completions")
     method = "POST"
     scope: dict = {}
-    # These cases drive Unsloth's own tool loop, whose approval handshake rides the opt-in
-    # control frames; the Studio UI sends this header on every chat request.
+    # These cases drive the tool loop, whose confirm gate asks over these frames.
     headers = {"X-Unsloth-Events": "1"}
 
     async def is_disconnected(self):

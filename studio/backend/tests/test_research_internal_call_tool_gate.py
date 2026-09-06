@@ -78,9 +78,8 @@ def _entry_point(monkeypatch, *, policy, opt_out):
     response = _client(monkeypatch, backend).post(
         "/chat/completions",
         json = _research_payload(opt_out),
-        # Without the opt-out the selection is unrestricted, so the confirm gate arms and
-        # needs the control frames to ask on. Research itself sends enabled_tools: [] and
-        # never arms it; this keeps the no-opt-out control measuring tool reachability.
+        # Unrestricted without the opt-out, so the confirm gate arms and needs a channel.
+        # Research sends enabled_tools: [] and never arms it.
         headers = {"X-Unsloth-Events": "1"},
     )
     assert response.status_code == 200

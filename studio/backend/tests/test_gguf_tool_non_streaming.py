@@ -92,8 +92,8 @@ def test_non_streaming_tool_call_returns_single_json(monkeypatch):
 
 
 def test_streaming_tool_call_still_streams(monkeypatch):
-    # The parallel path is untouched: stream:true keeps returning SSE. enable_tools with no
-    # enabled_tools arms the confirm gate, which asks over the opt-in control frames.
+    # The parallel path is untouched: stream:true keeps returning SSE. An unrestricted
+    # enable_tools arms the confirm gate, which asks over the control frames.
     response = _client(monkeypatch).post(
         "/chat/completions",
         json = _payload(stream = True),

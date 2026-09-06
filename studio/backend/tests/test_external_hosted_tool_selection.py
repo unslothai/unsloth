@@ -52,8 +52,7 @@ def _request():
         return False
 
     return SimpleNamespace(
-        # These cases drive Unsloth's own tool loop, whose approval handshake rides the
-        # opt-in control frames; the Studio UI sends this header on every chat request.
+        # These cases drive the tool loop, whose confirm gate asks over these frames.
         headers = {"X-Unsloth-Events": "1"},
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
