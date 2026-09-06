@@ -148,6 +148,68 @@ del _nvd, _cgroup_pinned
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
+
+def _nvidia_smi_gpu_name():
+    try:
+        smi = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            # Decoding is the one probe failure that would otherwise escape the handler below
+            # and replace the original error with a UnicodeDecodeError.
+            errors = "replace",
+            timeout = 5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if smi.returncode != 0 or not smi.stdout.strip():
+        return None
+    return smi.stdout.strip().splitlines()[0].strip()
+
+
+def _cuda_visible_devices_hides_nvidia():
+    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if mask is None:
+        return False
+    mask = "".join(mask.split())
+    return mask in ("", "-1")
+
+
+def _reraise_device_type_error_with_gpu_hint(exception):
+    # Zoo's generic error lists AMD, so only "ROCm" identifies its ROCm advice.
+    if "ROCm" in str(exception):
+        raise exception
+    if _cuda_visible_devices_hides_nvidia():
+        raise exception
+    gpu_name = _nvidia_smi_gpu_name()
+    if gpu_name is None:
+        raise exception
+    try:
+        import torch as _torch
+        torch_cuda_build = getattr(getattr(_torch, "version", None), "cuda", None) or "unknown"
+    except Exception:
+        torch_cuda_build = "unknown"
+    # Non-empty masks can also select no devices, so report them without parsing them.
+    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+    mask_note = ""
+    if mask is not None:
+        mask_note = (
+            f"CUDA_VISIBLE_DEVICES is set to {mask!r}; if it selects no installed GPU, "
+            f"PyTorch may be working correctly.\n"
+        )
+    # The install guide handles platform, GPU generation, and companion package constraints.
+    raise NotImplementedError(
+        f"Unsloth: nvidia-smi detects an NVIDIA GPU ({gpu_name}), but PyTorch cannot use it "
+        f"(torch.cuda.is_available() is False).\n"
+        f"PyTorch CUDA build: {torch_cuda_build}.\n"
+        f"{mask_note}"
+        f"This usually means PyTorch does not match this machine's CUDA driver or platform. "
+        f"Follow the installation guide to replace PyTorch and its companion packages in "
+        f"the environment that raised this error ({sys.executable}):\n"
+        f"    https://github.com/unslothai/unsloth#-install"
+    ) from exception
+
+
 # Try importing PyTorch and check version
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
@@ -161,6 +223,8 @@ except PackageNotFoundError:
     raise ImportError(
         f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
     )
+except NotImplementedError as device_type_error:
+    _reraise_device_type_error_with_gpu_hint(device_type_error)
 except:
     raise
 del PackageNotFoundError, importlib_version
@@ -215,15 +279,29 @@ if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
         pass
     del _force_single_compile_worker_in_zoo
 
-from unsloth_zoo.device_type import (
-    is_hip,
-    get_device_type,
-    DEVICE_TYPE,
-    DEVICE_TYPE_TORCH,
-    DEVICE_COUNT,
-    ALLOW_PREQUANTIZED_MODELS,
+try:
+    from unsloth_zoo.device_type import (
+        is_hip,
+        get_device_type,
+        DEVICE_TYPE,
+        DEVICE_TYPE_TORCH,
+        DEVICE_COUNT,
+        ALLOW_PREQUANTIZED_MODELS,
+    )
+except NotImplementedError as device_type_error:
+    _reraise_device_type_error_with_gpu_hint(device_type_error)
+
+# Under UNSLOTH_ZOO_DISABLE_GPU_INIT (Studio's light-init path) zoo answers "cpu" instead of
+# raising, and this check, which does not read that flag, is then the one that raises.
+try:
+    from .device_type import arch_lacks_bf16, hip_visible_archs
+except NotImplementedError as device_type_error:
+    _reraise_device_type_error_with_gpu_hint(device_type_error)
+del (
+    _reraise_device_type_error_with_gpu_hint,
+    _nvidia_smi_gpu_name,
+    _cuda_visible_devices_hides_nvidia,
 )
-from .device_type import arch_lacks_bf16, hip_visible_archs
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
