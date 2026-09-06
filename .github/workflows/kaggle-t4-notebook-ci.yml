@@ -480,6 +480,7 @@ jobs:
           python .github/scripts/kaggle_t4_ci/gate.py \
             --percent 15 \
             --head-sha '${{ github.event.pull_request.head.sha || github.sha }}' \
+            --kind notebook \
             --force '${{ inputs.force || (github.event_name == 'schedule' && 'true' || 'false') }}' \
             --labels "$PR_LABELS" \
             --label-name kaggle-t4-ci \

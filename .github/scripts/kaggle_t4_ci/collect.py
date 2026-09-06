@@ -513,7 +513,9 @@ def delete_collected(result_path: Path, posted_path: Path | None) -> int:
         if posted_path and posted_path.exists()
         else {}
     )
-    failed = set(posted.get("failed") or [])
+    # Refused (the API said no) and rejected (the poster would not send a
+    # malformed record) alike: nothing reached GitHub, so the kernel stays.
+    failed = set(posted.get("failed") or []) | set(posted.get("invalid") or [])
     if posted_path and not posted_path.exists():
         # No record of delivery: the poster never ran. Keep every kernel that
         # had something to post, or their verdicts are lost.
@@ -652,10 +654,13 @@ def main() -> int:
     result["owner"] = owner
     _log(f"authenticated as {owner}")
 
+    # The budget starts BEFORE the listing: five slow pages under the socket
+    # timeout are minutes, and a deadline started after them is that much
+    # later than the job timeout was sized for.
+    deadline = time.time() + BUDGET_SEC
     ours = find_ours(api, max_age_hours = args.max_age_hours)
     _log(f"{len(ours)} kernel(s) of ours on this account")
 
-    deadline = time.time() + BUDGET_SEC
     for entry in ours:
         if time.time() >= deadline:
             # Safe by construction: nothing was deleted that was not first

@@ -358,6 +358,30 @@ def scaled_reserve(reserve_hours: float, total_hours: float, basis_hours: float)
     return round(reserve_hours * (total_hours / basis_hours), 3)
 
 
+def in_flight_for_commit(own_busy: list[str], head_sha: str, kind: str) -> str | None:
+    """The ref of a busy kernel of ours already running THIS commit for THIS
+    workflow, or None.
+
+    Asked of every account the gate surveys, not only the one it picks: the
+    draw is keyed on the commit, but a handover (the preferred account full,
+    or unreadable) lands a retry on the other account, whose GPU job collects
+    with only its own token and would see nothing in flight.
+    """
+    sha = (head_sha or "").strip().lower()
+    if not sha or not kind:
+        return None
+    import launch  # noqa: PLC0415  (sibling script; loaded lazily to keep the gate importable alone)
+
+    for entry in own_busy:
+        ref = entry.split(" (", 1)[0]
+        parsed = launch.parse_slug(ref)
+        if not parsed or parsed.get("kind") != kind or not parsed.get("sha"):
+            continue
+        if sha.startswith(parsed["sha"]) or parsed["sha"].startswith(sha):
+            return ref
+    return None
+
+
 def weighted_pick(key: str, weights: dict[str, float]) -> tuple[str, float]:
     """Deterministic weighted choice of account, keyed on the COMMIT under test
     (the run id when no commit is known).
@@ -676,6 +700,12 @@ def main() -> int:
         help = "the commit under test; the account draw is keyed on it so every run of one "
         "commit lands on the account holding its kernel",
     )
+    ap.add_argument(
+        "--kind",
+        default = "",
+        help = "notebook or studio: with --head-sha, a kernel of this kind already running "
+        "this commit on ANY account stands the run down instead of dispatching a duplicate",
+    )
     ap.add_argument("--force", default = "false", help = "workflow_dispatch force input")
     ap.add_argument("--labels", default = "", help = "comma or newline separated PR labels")
     ap.add_argument("--label-name", default = "kaggle-t4-ci")
@@ -927,6 +957,15 @@ def main() -> int:
             ),
             flush = True,
         )
+
+        already = in_flight_for_commit(survey["own"], args.head_sha, args.kind)
+        if already:
+            return _decide(
+                False,
+                f"a {args.kind} kernel for this commit is already running on account "
+                f"{account_id} ({already}); its result arrives as the commit status, so "
+                "nothing is dispatched",
+            )
 
         clear, why_not = concurrency_verdict(survey, args.kernels, args.allow_foreign_in_flight)
         if not clear:

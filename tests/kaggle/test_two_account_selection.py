@@ -475,3 +475,39 @@ def test_neither_token_name_can_reach_the_kernel():
         assert (
             f'"{name}"' in source
         ), f"{name} is not in the credential-leak guard, so a kernel could carry it"
+
+
+def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down():
+    """The draw is keyed on the commit, but a handover (the preferred account
+    full or unreadable) lands a retry on the other account, whose GPU job
+    collects with only its own token and sees nothing in flight. So the gate,
+    which surveys every account it considers, asks each one first."""
+    sha = "abcdef0123456789" + "0" * 24
+    own = [
+        "danielhanchen/unsloth-t4-ci-sabcdef012345-1111 (RUNNING)",  # studio, this commit
+        "danielhanchen/unsloth-t4-ci-nffffffffffff-2222 (RUNNING)",  # notebook, other commit
+        "danielhanchen/unsloth-t4-ci-nabcdef01-3333 (QUEUED)",  # notebook, old slug form
+    ]
+    assert gate.in_flight_for_commit(own, sha, "notebook") == (
+        "danielhanchen/unsloth-t4-ci-nabcdef01-3333"
+    )
+    assert gate.in_flight_for_commit(own, sha, "studio") == (
+        "danielhanchen/unsloth-t4-ci-sabcdef012345-1111"
+    )
+    assert gate.in_flight_for_commit(own, "1234567890ab", "notebook") is None
+    assert gate.in_flight_for_commit(own, sha, "") is None
+    assert gate.in_flight_for_commit(["someone/unsloth-probe-x (RUNNING)"], sha, "notebook") is None
+    source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
+    loop = source.split("for account_id in order:", 1)[1]
+    assert "in_flight_for_commit(survey" in loop.split("concurrency_verdict(", 1)[0], (
+        "the gate does not ask each surveyed account whether this commit is already running"
+    )
+    for path, kind in ((NOTEBOOK_WF, "notebook"), (STUDIO_WF, "studio")):
+        gate_steps = [
+            s
+            for _j, _n, s in _steps(_wf(path))
+            if "gate.py" in (s.get("run") or "") and "--percent" in s["run"]
+        ]
+        assert gate_steps, path.name
+        for step in gate_steps:
+            assert f"--kind {kind}" in step["run"], f"{path.name}: the gate is not told its kind"

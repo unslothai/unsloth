@@ -330,6 +330,7 @@ jobs:
           python .github/scripts/kaggle_t4_ci/gate.py \
             --percent 5 \
             --head-sha '${{ github.event.pull_request.head.sha || github.sha }}' \
+            --kind studio \
             --force '${{ inputs.force || 'false' }}' \
             --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
             --label-name kaggle-studio-gpu-ci \

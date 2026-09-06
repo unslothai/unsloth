@@ -1483,3 +1483,33 @@ def test_the_scheduled_collector_uploads_once_and_reports_real_deletions():
     assert (
         "delete_result.json" in summary["run"]
     ), "the summary reports the collect step's always-false deleted flag"
+
+
+def test_a_kernel_whose_status_record_was_rejected_is_kept(tmp_path, monkeypatch):
+    """The poster refuses a malformed record and posts nothing for it. Kept
+    only the refused posts, the release deleted that kernel with no status
+    delivered and its evidence gone."""
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
+    slug = "me/unsloth-t4-ci-nabcdef012345-1111"
+    result = tmp_path / "collect_result.json"
+    result.write_text(
+        json.dumps({"kernels": [{"slug": slug, "verdict": "pass"}], "statuses": []}),
+        encoding = "utf-8",
+    )
+    posted = tmp_path / "posted.json"
+    posted.write_text(json.dumps({"ok": [], "failed": [], "invalid": [slug]}), encoding = "utf-8")
+    collect.delete_collected(result, posted)
+    assert deleted == []
+    outcome = json.loads((tmp_path / "delete_result.json").read_text())
+    assert outcome["kept"] == [slug]
+
+
+def test_the_pass_budget_starts_before_the_kernel_listing():
+    """Five slow listing pages under the socket timeout are minutes. A budget
+    started after them is that much later than the job timeout was sized for."""
+    source = (CI_DIR / "collect.py").read_text(encoding = "utf-8")
+    body = source[source.index("def main("):]
+    assert body.index("deadline = time.time() + BUDGET_SEC") < body.index("ours = find_ours(")
