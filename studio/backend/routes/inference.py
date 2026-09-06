@@ -27,6 +27,7 @@ from fastapi import (
 )
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
+from pydantic import BaseModel, Field
 from starlette.requests import ClientDisconnect
 from typing import (
     Any,
@@ -107,6 +108,7 @@ from core.inference.llama_admission import (
     peek_llama_admission_snapshot,
 )
 from core.inference.tool_stream_exec import TOOL_APPROVAL_FLUSH_DELAY_S
+from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 
 
 def _positive_int_or_none(value: Any) -> Optional[int]:
@@ -6795,12 +6797,25 @@ def _resolve_model_identifier_for_request(
     return str(grant.canonical_path), display_label, True
 
 
-# GGUF inference backend (llama-server)
+# GGUF inference backend (llama-server) — chat / LLM slot
 _llama_cpp_backend = LlamaCppBackend()
+
+# Voice slot — independent llama-server subprocess for GGUF TTS models only
+_voice_llama_backend = LlamaCppBackend()
+# Its own pidfile record, so the two live llama-servers cannot overwrite each other's
+# and leave one unreachable to the orphan reaper after an unclean exit.
+_voice_llama_backend._pid_slot = "voice"
+
+# Audio types accepted by the voice slot (GGUF TTS via llama-server token generation)
+_VOICE_SLOT_AUDIO_TYPES: frozenset[str] = frozenset({"snac", "bicodec", "dac"})
 
 
 def get_llama_cpp_backend() -> LlamaCppBackend:
     return _llama_cpp_backend
+
+
+def get_voice_llama_backend() -> LlamaCppBackend:
+    return _voice_llama_backend
 
 
 # Serializes opt-in auto-switch loads so two requests can't race a swap. One
@@ -15836,6 +15851,220 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         raise HTTPException(status_code = 500, detail = "Failed to unload model")
 
 
+# =====================================================================
+# Voice Slot  (/voice/load  /voice/unload  /voice/status)
+# =====================================================================
+
+
+class _VoiceLoadRequest(BaseModel):
+    model_path: str = Field(..., description = "GGUF model identifier or local .gguf path")
+    gguf_variant: Optional[str] = Field(
+        None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
+    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated models")
+    # Same ceiling as LoadRequest.max_seq_length: the handler models the load as a chat
+    # LoadRequest for the training-coexistence guard, so an oversized value used to fail
+    # there as a 500 (after the HF resolve) instead of a 422 at validation.
+    n_ctx: int = Field(
+        4096,
+        ge = 0,
+        le = MAX_REQUESTABLE_CONTEXT,
+        description = "Context length (0 = model default)",
+    )
+    parallel: int = Field(
+        1,
+        ge = 1,
+        le = 4,
+        description = "llama-server --parallel slots for the voice slot, i.e. how many "
+        "sentences may synthesize concurrently.",
+    )
+
+
+@router.post("/voice/load")
+async def voice_load_model(
+    request: _VoiceLoadRequest, current_subject: str = Depends(get_current_subject)
+):
+    """
+    Load a TTS model into the voice slot (independent of the main chat slot).
+
+    Only GGUF models whose detected audio_type is snac, bicodec, or dac are
+    accepted.  Any other model (text LLM, csm, whisper, audio_vlm) is rejected
+    with HTTP 400 after detection and the slot is left empty.
+    """
+    from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+    from utils.models import ModelConfig
+
+    model_identifier = request.model_path.strip()
+    voice_backend = get_voice_llama_backend()
+
+    # Resolve model config — auto-selects GGUF variant when gguf_variant is None,
+    # mirroring the ModelConfig.from_identifier() call in /load, including how it
+    # runs: from_identifier scans the HF cache and can resolve Hub metadata, so it
+    # goes to a worker thread under the same offline guard rather than stalling every
+    # other request on the event loop while it does.
+    def _resolve_config():
+        with _hf_offline_if_unreachable_for(model_identifier):
+            return ModelConfig.from_identifier(
+                model_id = model_identifier,
+                hf_token = request.hf_token,
+                gguf_variant = request.gguf_variant,
+            )
+
+    try:
+        config = await asyncio.to_thread(_resolve_config)
+    except Exception as e:
+        raise HTTPException(status_code = 400, detail = f"Could not resolve model: {e}")
+
+    if not config or not config.is_gguf:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Voice slot only accepts GGUF models. The provided identifier did not resolve to a GGUF.",
+        )
+
+    # The voice slot starts a second llama-server, so it takes memory exactly like a
+    # chat load does. /load refuses one that would not fit beside a running trainer;
+    # without the same guard here, enabling a voice while training is active would
+    # download and place another model and could OOM or disrupt the run. Modelled as
+    # the equivalent chat load, since that is what the guard is written against.
+    guard_request = LoadRequest(
+        model_path = model_identifier,
+        hf_token = request.hf_token,
+        gguf_variant = config.gguf_variant,
+        max_seq_length = request.n_ctx,
+        load_in_4bit = False,
+    )
+    placement = await _prepare_load_placement(config, guard_request, None)
+    # Off-loop and offline-guarded, exactly as /load runs it: the guard does sync
+    # nvidia-smi and HF work, and an unwrapped call would burn the retry backoff the
+    # forced-offline window exists to skip.
+    await asyncio.to_thread(
+        _offline_guarded,
+        (model_identifier, config.identifier, getattr(config, "base_model", None)),
+        _guard_chat_load_against_training,
+        config,
+        guard_request,
+        load_in_4bit = False,
+        placement = placement,
+        n_parallel = request.parallel,
+    )
+
+    # Already loaded with the same resolved config — skip reload. Include the
+    # --parallel slot count so changing it in the UI forces a relaunch.
+    if (
+        voice_backend.is_loaded
+        and voice_backend.model_identifier
+        and voice_backend.model_identifier.lower() == config.identifier.lower()
+        and (not config.gguf_variant or voice_backend.hf_variant == config.gguf_variant)
+        and getattr(voice_backend, "_n_parallel", 1) == request.parallel
+        and getattr(voice_backend, "_is_audio", False)
+    ):
+        return {
+            "status": "already_loaded",
+            "model": voice_backend.model_identifier,
+            "audio_type": getattr(voice_backend, "_audio_type", None),
+        }
+
+    # One immutable intent, the same shape /load hands the backend. Everything the
+    # chat slot negotiates -- draft models, vision projectors, tensor split, inherited
+    # extra args -- is deliberately left at its default: a TTS slot loads one small
+    # codec model and none of that applies to it.
+    intent = GgufLoadIntent(
+        model_identifier = config.identifier,
+        # -hf when the repo is known, -m for a local file; never both, or the
+        # loader would have two sources for one slot.
+        hf_repo = config.gguf_hf_repo or None,
+        gguf_path = None if config.gguf_hf_repo else config.gguf_file,
+        hf_variant = config.gguf_variant,
+        hf_token = request.hf_token,
+        n_ctx = request.n_ctx,
+        n_parallel = request.parallel,
+    )
+    try:
+        ok = await asyncio.to_thread(voice_backend.load_model, intent)
+    except Exception as e:
+        logger.error("Voice slot load error: %s", e, exc_info = True)
+        raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
+
+    if not ok:
+        # load_model returned False (e.g. the server became healthy but audio
+        # codec init failed). Tear the half-started slot down before raising so
+        # the llama-server process doesn't linger and occupy memory. Off-loop,
+        # like every other unload here: teardown waits on the subprocess.
+        try:
+            await asyncio.to_thread(voice_backend.unload_model)
+        except Exception:
+            pass
+        raise HTTPException(status_code = 500, detail = "Voice model failed to start.")
+
+    audio_type = getattr(voice_backend, "_audio_type", None)
+    is_audio = getattr(voice_backend, "_is_audio", False)
+
+    if not is_audio or audio_type not in _VOICE_SLOT_AUDIO_TYPES:
+        # Not a supported TTS type — reject and leave slot empty.
+        try:
+            await asyncio.to_thread(voice_backend.unload_model)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"Model is not a supported TTS type for the voice slot "
+                f"(detected: {audio_type!r}). "
+                f"Only snac, bicodec, and dac GGUF models are accepted."
+            ),
+        )
+
+    # Prime the pipeline so the FIRST real /speech is fast. The llama-server
+    # completion graph and the codec's first decode each pay a one-time cold cost
+    # (kernel compile / cache alloc -- seconds on ROCm). Run one tiny throwaway
+    # synth now, while the slot still reads as "loading" (voiceSlotLoading), so the
+    # warm-up phase absorbs it instead of freezing the user's first spoken reply.
+    # Best-effort: a priming failure must never fail an otherwise-good load.
+    try:
+        await asyncio.to_thread(voice_backend.generate_audio_response, "Hi there.", audio_type)
+    except Exception as e:
+        logger.warning("Voice slot warmup synth failed (first /speech may be slower): %s", e)
+
+    logger.info("Voice slot loaded: %s (audio_type=%s)", voice_backend.model_identifier, audio_type)
+    return {
+        "status": "loaded",
+        "model": voice_backend.model_identifier,
+        "audio_type": audio_type,
+    }
+
+
+@router.post("/voice/unload")
+async def voice_unload_model(current_subject: str = Depends(get_current_subject)):
+    """Unload whatever model is in the voice slot."""
+    voice_backend = get_voice_llama_backend()
+    if not voice_backend.is_active:
+        return {"status": "not_loaded"}
+    model_id = voice_backend.model_identifier
+    # Off the event loop, as /unload runs the chat slot's teardown: unload_model
+    # waits on the llama-server subprocess, and a sync call would block every
+    # other request for the whole of that wait.
+    try:
+        await asyncio.to_thread(voice_backend.unload_model)
+    except Exception as e:
+        logger.error("Voice slot unload error: %s", e, exc_info = True)
+        raise HTTPException(status_code = 500, detail = f"Failed to unload voice model: {e}")
+    logger.info("Voice slot unloaded: %s", model_id)
+    return {"status": "unloaded", "model": model_id}
+
+
+@router.get("/voice/status")
+async def voice_slot_status(current_subject: str = Depends(get_current_subject)):
+    """Return the current state of the voice slot."""
+    voice_backend = get_voice_llama_backend()
+    loaded = voice_backend.is_loaded
+    return {
+        "loaded": loaded,
+        "loading": voice_backend.is_active and not loaded,
+        "model": voice_backend.model_identifier if loaded else None,
+        "audio_type": getattr(voice_backend, "_audio_type", None) if loaded else None,
+    }
+
+
 @studio_router.post("/cancel")
 async def cancel_inference(request: Request, current_subject: str = Depends(get_current_subject)):
     """Cancel in-flight inference requests.
@@ -16546,9 +16775,13 @@ async def _generate_tts_wav(
     current_subject: str,
     *,
     speech_api_default_max_tokens: bool = False,
+    voice: Optional[str] = None,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate and /audio/speech. Returns
-    (wav_bytes, sample_rate, model_name, audio_type)."""
+    (wav_bytes, sample_rate, model_name, audio_type).
+
+    ``voice`` names a speaker for models that have them (Orpheus/SNAC); it is
+    ignored by codecs with a single fixed speaker."""
     _raise_if_prompt_leaves_no_speech_budget(text)
     # Restore an idle-evicted GGUF before selecting a backend: this path is
     # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
@@ -16561,9 +16794,19 @@ async def _generate_tts_wav(
     # the client model through the resolver could load a text- or vision-only target
     # and evict the working audio model before the audio backend check fails. Only
     # the idle-stash restore runs here; switching TTS models is an explicit /load.
-    await _maybe_auto_switch_model(
-        _RELOAD_ONLY_MODEL, request, current_subject, claim_resident = False
+    #
+    # Skipped entirely when the voice slot holds the TTS model: the restore targets the
+    # chat slot, which in voice mode is the user's LLM. Reloading it here would be at
+    # best wasted work between spoken sentences and at worst an unasked-for chat-model
+    # load, and the speech is not coming from that slot anyway.
+    _voice_backend = get_voice_llama_backend()
+    _voice_slot_serves = bool(
+        _voice_backend.is_loaded and getattr(_voice_backend, "_is_audio", False)
     )
+    if not _voice_slot_serves:
+        await _maybe_auto_switch_model(
+            _RELOAD_ONLY_MODEL, request, current_subject, claim_resident = False
+        )
     # Again, now that a context exists to measure against. The check above runs before the
     # restore so an invalid request never triggers a reload, but with nothing loaded it has
     # no context length and passes everything, so the first request after an idle eviction
@@ -16576,7 +16819,11 @@ async def _generate_tts_wav(
     prompt_for_budget = text
 
     # Pick backend - both return (wav_bytes, sample_rate)
-    llama_backend = get_llama_cpp_backend()
+    # The voice slot is a second llama-server holding a TTS model so the chat slot can
+    # hold an LLM at the same time. When it is loaded it owns speech: without this the
+    # request would go to the chat slot, which in voice mode is a text model, and fail
+    # the is_audio check below with a voice sitting loaded next to it.
+    llama_backend = _voice_backend if _voice_slot_serves else get_llama_cpp_backend()
     # GGUF TTS goes straight to llama-server /completion, holding a slot with no
     # admission lease, so only the direct counter can show it in the slot readout.
     _direct_llama_tts = bool(llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False))
@@ -16590,6 +16837,7 @@ async def _generate_tts_wav(
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
+            voice = (voice or "").strip().lower() or "tara",
             temperature = payload.temperature,
             top_p = payload.top_p,
             top_k = payload.top_k,
@@ -16925,9 +17173,11 @@ async def openai_audio_speech(
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
     With ``provider_id`` the request is proxied to that connection, forwarding
-    model/voice/speed/instructions. Otherwise the loaded model is used: ``model`` is informational,
-    ``voice``/``speed`` ignored, and only WAV exists, so another ``response_format`` is
-    a 400 rather than a silent container mismatch."""
+    model/voice/speed/instructions. Otherwise the loaded model is used (the voice slot
+    when one is loaded, else the chat slot): ``model`` is informational, ``voice`` picks
+    the speaker on models that have named ones and is ignored elsewhere, ``speed`` is
+    ignored, and only WAV exists, so another ``response_format`` is a 400 rather than a
+    silent container mismatch."""
     if body.provider_id:
         fmt = (body.response_format or "wav").strip().lower()
         if fmt != "wav":
@@ -16991,12 +17241,137 @@ async def openai_audio_speech(
             request,
             current_subject,
             speech_api_default_max_tokens = body.max_new_tokens is None,
+            voice = body.voice,
         )
         api_monitor.relabel(monitor_id, model_name)
         await asyncio.to_thread(
             _persist_tts_clip, wav_bytes, sample_rate, body.input, model_name, audio_type
         )
     return Response(content = wav_bytes, media_type = "audio/wav")
+
+
+# Streaming counterpart to /audio/speech. Dual-mounted like it, so /v1/audio/speech/stream
+# answers too; the [x-unsloth] extension is namespaced by the /stream suffix rather than a
+# body flag so an OpenAI client that knows only /audio/speech is unaffected.
+@router.post("/audio/speech/stream")
+async def openai_audio_speech_stream(
+    body: AudioSpeechRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+) -> Response:
+    """[x-unsloth] Streaming text-to-speech (POST /v1/audio/speech/stream).
+
+    Yields raw little-endian 16-bit PCM (mono, 24 kHz -- see the X-Sample-Rate and
+    X-Audio-Format headers) as it synthesizes, so playback starts on the first
+    fraction of a second instead of after the whole clip. SNAC (Orpheus) only: it is
+    the one codec that decodes incrementally from a growing code list. Everything
+    else, and every external connection, uses the blocking /audio/speech.
+
+    Not persisted to the audio gallery: the gallery stores finished clips and this
+    route never holds one. Use /audio/speech for a clip you want kept.
+    """
+    if body.provider_id:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Streaming speech is local-only. Use /audio/speech for an external "
+                "TTS connection."
+            ),
+        )
+    text = body.input.strip()
+    if not text:
+        raise HTTPException(status_code = 400, detail = "input must not be empty.")
+
+    # The voice slot first, for the same reason as _generate_tts_wav: in voice mode the
+    # chat slot holds the LLM.
+    backend = None
+    for candidate in (get_voice_llama_backend(), get_llama_cpp_backend()):
+        if candidate.is_loaded and getattr(candidate, "_audio_type", None) == "snac":
+            backend = candidate
+            break
+    if backend is None:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Streaming speech requires a loaded SNAC (Orpheus) voice.",
+        )
+    # IQ1/IQ2/Q2 Orpheus quants read the "voice:" speaker prefix aloud. The blocking
+    # route trims that spoken name off the clip, which needs the whole clip and so has
+    # no streaming equivalent (see generate_audio_response_stream). Refuse up front,
+    # before the monitor row opens, so the client falls back to /audio/speech instead
+    # of hearing the speaker's name before every sentence.
+    if not backend._orpheus_voice_prefix_ok():
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Streaming speech is unavailable for IQ1/IQ2/Q2 Orpheus quants, which "
+                "speak the voice prefix aloud. Use /audio/speech, which trims it."
+            ),
+        )
+
+    voice_name = (body.voice or "").strip().lower() or "tara"
+    max_new_tokens = body.max_new_tokens or AUDIO_GENERATION_MAX_TOKENS
+
+    # The monitor row is driven by hand rather than through _monitored_media_request:
+    # that closes the row when its block exits, and this route's block exits the moment
+    # the StreamingResponse is handed back -- before a single sample is generated. The
+    # row would then read "succeeded" for a synthesis that had not started, and stay
+    # that way even if it later failed. Opened here and closed by the generator, so it
+    # covers the work it claims to.
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            method = request.method,
+            via_api_key = _request_used_api_key(request),
+            model = public_model_id(body.model) or body.model or "",
+            prompt = body.input,
+            subject = current_subject,
+        )
+        api_monitor.relabel(monitor_id, _llama_public_model_id(backend))
+
+    # The row is closed exactly once, on whichever arm the stream actually takes.
+    # else runs only when no exception escaped, so "closed already" is structural
+    # rather than a flag to keep in sync.
+    def gen():
+        try:
+            yield from backend.generate_audio_response_stream(
+                text = text,
+                audio_type = "snac",
+                voice = voice_name,
+                max_new_tokens = max_new_tokens,
+                seed = body.seed if body.seed is not None else 42,
+            )
+        except GeneratorExit:
+            # The client went away mid-clip (a barge-in, a closed tab). Not a failure,
+            # and re-raising is mandatory: swallowing it makes the runtime complain
+            # that the generator ignored GeneratorExit.
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except Exception as e:
+            # The status line is long gone by the time synthesis can fail, so the only
+            # signal left on the wire is a short stream. Log it and mark the row failed
+            # rather than raising into the response body, which the client decodes as
+            # audio.
+            logger.error("Streaming speech error: %s", e, exc_info = True)
+            api_monitor.fail(monitor_id, _friendly_error(e))
+            # The route is a tracked inference path and this arm ends the stream cleanly
+            # at 200, so without the flag the keep-warm middleware would read the failed
+            # clip as a successful completion and claim a preview-owned chat slot.
+            from core.inference.llama_keepwarm import mark_current_response_failed
+
+            mark_current_response_failed()
+        else:
+            api_monitor.finish(monitor_id)
+
+    return StreamingResponse(
+        gen(),
+        media_type = "application/octet-stream",
+        headers = {
+            "X-Sample-Rate": "24000",
+            "X-Audio-Format": "pcm_s16le_mono",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 async def _external_stt_transcription(

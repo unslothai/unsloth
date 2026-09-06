@@ -4360,14 +4360,19 @@ class ImageGenerationResponse(BaseModel):
 class AudioSpeechRequest(BaseModel):
     """OpenAI ``CreateSpeechRequest`` for ``POST /v1/audio/speech``.
 
-    ``voice`` and ``speed`` are accepted for client compatibility but unused: no loaded
-    TTS backend has voice or rate plumbing (CSM is fixed to speaker 0)."""
+    ``voice`` names a speaker for the codecs that have them (Orpheus/SNAC) and is
+    ignored by codecs with a single fixed speaker (CSM is fixed to speaker 0).
+    ``speed`` is accepted for client compatibility but unused: no loaded TTS backend
+    has rate plumbing."""
 
     input: str = Field(..., min_length = 1, description = "The text to synthesize.")
     model: Optional[str] = Field(
         None, description = "Model id (informational; the loaded audio model is used)."
     )
-    voice: Optional[str] = Field(None, description = "Voice name (accepted, unused).")
+    voice: Optional[str] = Field(
+        None,
+        description = "Speaker name, for codecs that have named speakers (Orpheus/SNAC).",
+    )
     response_format: Optional[str] = Field(
         "wav", description = "Output container. Only 'wav' is supported."
     )
