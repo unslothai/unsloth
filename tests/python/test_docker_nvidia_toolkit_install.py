@@ -358,7 +358,9 @@ def test_a_failed_source_list_download_keeps_the_existing_file(tmp_path: Path):
     (tmp_path / "list-download-fails").write_text("", encoding = "utf-8")
     res = _run(env)
     assert res.returncode != 0
-    assert lst.read_text(encoding = "utf-8").startswith("deb [signed-by=/usr/share/keyrings/x.gpg] https://old")
+    assert lst.read_text(encoding = "utf-8").startswith(
+        "deb [signed-by=/usr/share/keyrings/x.gpg] https://old"
+    )
     assert not any(c.startswith("nvidia-ctk") for c in _calls(log))
 
 
