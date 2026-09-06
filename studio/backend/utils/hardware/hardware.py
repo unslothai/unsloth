@@ -31,6 +31,7 @@ import threading
 import time
 import types
 from contextlib import contextmanager
+from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 import structlog
 from loggers import get_logger
@@ -2850,8 +2851,248 @@ def rocm_windows_free_is_untrusted() -> bool:
     return sys.platform == "win32" and IS_ROCM
 
 
+# Host headroom kept off a unified-memory part's budget: its "VRAM" is system RAM,
+# so a load sized to every last available byte leaves the OS nothing. Same margin as
+# the iGPU reserve on the llama.cpp side, and only ever subtracted.
+_UMA_HOST_RESERVE_BYTES = 1024 * 1024 * 1024
+
+
+# Asks the CUDA driver which devices are integrated (memory shared with the host)
+# and how big each pool is. Printed as "<ordinal> <integrated> <total_bytes>" lines.
+#
+# This runs in a SHORT LIVED CHILD, never in the caller. cuInit initialises the
+# driver in whichever process calls it, and a process that has done so cannot
+# usefully fork: the child's own cuInit returns CUDA_ERROR_NOT_INITIALIZED, which
+# surfaces in torch as cuda.is_available() == False. Measured here, forking after
+# this probe turned a child that computed on the GPU into one that could not see
+# it at all, and the same trap is documented in vllm-project/vllm#32611 (pynvml
+# initialising the driver before a fork) and numba's explicit "CUDA initialized
+# before forking" error. Studio's backend is long lived and spawns workers, so the
+# probe has to stay out of it. Not torch either, for the same reason plus one more:
+# torch.cuda.get_device_properties creates a primary context that lives as long as
+# the process, and on a unified-memory part that context is system RAM the model
+# then cannot have.
+_CUDA_UMA_PROBE_SOURCE = """
+import ctypes
+lib = None
+for _name in ("nvcuda.dll", "libcuda.so.1", "libcuda.so"):
+    try:
+        lib = ctypes.CDLL(_name)
+        break
+    except OSError:
+        continue
+if lib is not None and lib.cuInit(0) == 0:
+    count = ctypes.c_int()
+    if lib.cuDeviceGetCount(ctypes.byref(count)) == 0:
+        total_mem = getattr(lib, "cuDeviceTotalMem_v2", None) or lib.cuDeviceTotalMem
+        total_mem.argtypes = [ctypes.POINTER(ctypes.c_size_t), ctypes.c_int]
+        for ordinal in range(count.value):
+            handle = ctypes.c_int()
+            if lib.cuDeviceGet(ctypes.byref(handle), ordinal) != 0:
+                continue
+            # CU_DEVICE_ATTRIBUTE_INTEGRATED. 1 on parts whose memory is the
+            # host's: GB10 / N1X ("DGX Spark"), Jetson, any on-package design.
+            integrated = ctypes.c_int()
+            if lib.cuDeviceGetAttribute(ctypes.byref(integrated), 18, handle) != 0:
+                continue
+            total = ctypes.c_size_t()
+            if total_mem(ctypes.byref(total), handle) != 0:
+                continue
+            # The PCI bus id is how a caller matches this device to an
+            # nvidia-smi row without assuming the two enumerate alike. They do
+            # not have to: nvidia-smi indexes by bus id, while CUDA's default
+            # CUDA_DEVICE_ORDER is FASTEST_FIRST.
+            bus = ctypes.create_string_buffer(64)
+            if lib.cuDeviceGetPCIBusId(bus, 64, handle) != 0:
+                bus.value = b""
+            print(ordinal, integrated.value, total.value,
+                  (bus.value.decode("ascii", "replace") or "-"))
+"""
+
+
+def _cuda_visibility_key() -> str:
+    """The visibility mask the driver will honour, as a cache key.
+
+    Driver ordinals are assigned under whatever CUDA_VISIBLE_DEVICES said when the
+    driver initialised, so a process that changes it must not be handed a
+    classification made under the old mask.
+    """
+    return "\x00".join(
+        os.environ.get(name, "\x01") for name in ("CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES")
+    )
+
+
+@lru_cache(maxsize = None)
+def _cuda_integrated_map_cached(visibility: str) -> dict:
+    """``{ordinal: (is_integrated, total_bytes)}``, or ``{}`` when unknown.
+
+    Empty on ROCm (which reuses the ``torch.cuda`` namespace but has its own APU
+    classifier), when there is no driver, and on any error or timeout, so a machine
+    this cannot read keeps every discrete-card default it had before.
+    """
+    if IS_ROCM:
+        return {}
+    # The child is told to emit utf-8 as well as being decoded as utf-8: -I ignores
+    # PYTHON* variables, so PYTHONIOENCODING is set on top of the copy the helper makes.
+    from utils.child_stdio import utf8_child_env
+
+    kwargs = {}
+    if sys.platform == "win32":
+        # Never flash a console window out of a GUI backend.
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-X", "utf8", "-I", "-c", _CUDA_UMA_PROBE_SOURCE],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 30,
+            env = utf8_child_env(),
+            **kwargs,
+        )
+    except Exception as e:
+        logger.debug("CUDA integrated-memory probe could not run: %s", e)
+        return {}
+    if result.returncode != 0:
+        logger.debug("CUDA integrated-memory probe exited %s", result.returncode)
+        return {}
+    devices = {}
+    for line in (result.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            ordinal, integrated, total = int(parts[0]), int(parts[1]), int(parts[2])
+        except ValueError:
+            continue
+        bus_id = parts[3].strip().lower() if len(parts) > 3 else ""
+        devices[ordinal] = (bool(integrated), total, "" if bus_id == "-" else bus_id)
+    return devices
+
+
+def _cuda_integrated_map() -> dict:
+    """``{ordinal: (is_integrated, total_bytes, pci_bus_id)}``, or ``{}``.
+
+    ``IS_ROCM`` is re-read here rather than only inside the cache. Hardware
+    detection clears that flag and sets it again a few lines later, and a probe
+    landing inside that window on a ROCm host that also has an NVIDIA driver
+    loadable would otherwise cache an answer from the wrong vendor for the rest
+    of the process.
+    """
+    if IS_ROCM:
+        return {}
+    return _cuda_integrated_map_cached(_cuda_visibility_key())
+
+
+def _cuda_device_integrated_and_total(index: int) -> Optional[tuple[bool, int]]:
+    """``(is_integrated, total_bytes)`` for one CUDA device, or None when unknown.
+
+    Callers keep their discrete-card default on ``None``. ``index`` is a driver
+    ordinal, which is what ``CUDA_VISIBLE_DEVICES`` filters, so it matches torch's
+    ordinals rather than physical ids.
+    """
+    found = _cuda_integrated_map().get(index)
+    return None if found is None else (found[0], found[1])
+
+
+def canonical_pci_bus_id(text: Any) -> str:
+    """One spelling for a PCI address, so two sources can be compared.
+
+    They do not agree out of the box: for the same device nvidia-smi prints
+    ``0000000F:01:00.0`` and the CUDA driver prints ``000f:01:00.0`` -- different
+    domain width, different case. Normalising each field through int() makes the
+    match exact instead of textual. Returns "" for anything unparseable, which
+    callers read as "no bus id", never as a match.
+    """
+    raw = str(text or "").strip().lower()
+    if not raw or raw.startswith("["):
+        return ""
+    try:
+        head, _, function = raw.rpartition(".")
+        fields = head.split(":")
+        if len(fields) == 2:  # bus:device, no domain
+            fields = ["0"] + fields
+        if len(fields) != 3 or not function:
+            return ""
+        domain, bus, device = (int(field, 16) for field in fields)
+        return f"{domain:x}:{bus:02x}:{device:02x}.{int(function, 16):x}"
+    except (ValueError, TypeError):
+        return ""
+
+
+def cuda_integrated_by_pci_bus_id() -> dict:
+    """``{pci_bus_id: (is_integrated, total_bytes)}`` for every visible device.
+
+    The exact way to match a CUDA device to an ``nvidia-smi`` row: nvidia-smi
+    enumerates by bus id while CUDA's default ``CUDA_DEVICE_ORDER`` is
+    FASTEST_FIRST, so index and ordinal agree only by luck on a mixed host.
+    """
+    found = {}
+    for entry in _cuda_integrated_map().values():
+        key = canonical_pci_bus_id(entry[2])
+        if key:
+            found[key] = (entry[0], entry[1])
+    return found
+
+
+def _cuda_ordinal_for(device: Any) -> int:
+    """A ``mem_get_info`` device argument as a plain ordinal.
+
+    ``None`` means the current device, and every caller here is single-device or
+    passes an explicit index; anything unrecognisable falls back to 0 rather than
+    raising, since this only chooses which device to ask about.
+    """
+    if device is None:
+        try:
+            import torch
+            return int(torch.cuda.current_device())
+        except Exception:
+            return 0
+    if isinstance(device, bool):
+        return 0
+    if isinstance(device, int):
+        return device
+    index = getattr(device, "index", None)
+    if isinstance(index, int):
+        return index
+    try:
+        return int(str(device).rsplit(":", 1)[-1])
+    except Exception:
+        return 0
+
+
+def cuda_device_is_unified_memory(index: int = 0) -> bool:
+    """Whether this CUDA device's memory is the host's. False when unreadable."""
+    answer = _cuda_device_integrated_and_total(index)
+    return bool(answer and answer[0])
+
+
+def available_system_memory_bytes() -> Optional[int]:
+    """Available system RAM, or None when it cannot be read.
+
+    On a unified-memory part this, not the driver's free figure, is the ceiling
+    that decides whether a load fits: the weights land in the same RAM the OS is
+    using, and the driver counts memory it would have to take from the host.
+    """
+    try:
+        import psutil
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        pass
+    try:
+        with open("/proc/meminfo", encoding = "utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    return None
+
+
 def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int, int]:
-    """``mem_get_info`` with the Windows ROCm free over-report capped (#8403).
+    """``mem_get_info`` with the Windows ROCm free over-report capped (#8403), and
+    a unified-memory part's free capped against the RAM the host can actually spare.
 
     Guards that budget against free VRAM (the image activation refusal, llama.cpp
     slot fitting, the video preflight) cannot be handed a figure that says the
@@ -2876,6 +3117,20 @@ def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int
     mod = module if module is not None else torch.cuda
     free_bytes, total_bytes = mod.mem_get_info() if device is None else mod.mem_get_info(device)
     free_bytes, total_bytes = int(free_bytes), int(total_bytes)
+
+    # A unified-memory part reports the whole shared pool as free VRAM, which on this
+    # class of machine is larger than the RAM the host can actually spare -- an N1X
+    # laptop offers 46.3 GiB of CUDA "free" while the OS has 39 GiB available. Sizing
+    # a load to the driver's figure is how a fit that the arithmetic says works pushes
+    # the host into swap. Total is left alone: the pool really is that big, and callers
+    # that reason about capacity rather than this moment's headroom want it.
+    if mod is getattr(torch, "cuda", None) and cuda_device_is_unified_memory(
+        _cuda_ordinal_for(device)
+    ):
+        available = available_system_memory_bytes()
+        if available is not None:
+            free_bytes = min(free_bytes, max(0, available - _UMA_HOST_RESERVE_BYTES))
+
     if not rocm_windows_free_is_untrusted():
         return free_bytes, total_bytes
     try:
