@@ -4309,6 +4309,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         hf_dataset = config.get("hf_dataset", "")
         training_type = config.get("training_type", "LoRA/QLoRA")
         is_cpt_for_dataset = training_type == "Continued Pretraining"
+        is_grpo_for_dataset = training_type == "GRPO"
 
         # Filled in below, after the model probe; the closure runs after both.
         max_train_rows = None
@@ -4329,6 +4330,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 dataset_slice_start = config.get("dataset_slice_start"),
                 dataset_slice_end = config.get("dataset_slice_end"),
                 is_cpt = is_cpt_for_dataset,
+                is_grpo = is_grpo_for_dataset,
                 s3_config = config.get("s3_config"),
                 dataset_local_files_only = dataset_local_only,
                 dataset_local_path = config.get("dataset_snapshot_path"),
@@ -4484,7 +4486,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
         training_type = config.get("training_type", "LoRA/QLoRA")
         is_cpt = training_type == "Continued Pretraining"
-        use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining")
+        is_grpo = training_type == "GRPO"
+        use_lora = training_type in ("LoRA/QLoRA", "Continued Pretraining", "GRPO")
         cpt_trains_embeddings = False
 
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
@@ -4796,6 +4799,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
             is_cpt = is_cpt,
+            is_grpo = is_grpo,
+            reward_functions = config.get("reward_functions"),
+            num_generations = config.get("num_generations", 4),
+            max_prompt_length = config.get("max_prompt_length", 256),
+            max_completion_length = config.get("max_completion_length", 512),
+            grpo_temperature = config.get("grpo_temperature", 1.0),
+            grpo_top_p = config.get("grpo_top_p", 1.0),
+            grpo_beta = config.get("grpo_beta", 0.04),
+            grpo_loss_type = config.get("grpo_loss_type"),
             resume_from_checkpoint = resume_from_checkpoint,
         )
 
@@ -4990,6 +5002,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
             progress.num_tokens,
             progress.epoch,
             progress.eval_loss,
+            progress.reward,
         )
         is_repeat = metrics == last_metrics[0]
         if (
@@ -5012,6 +5025,11 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "grad_norm": progress.grad_norm,
                     "num_tokens": progress.num_tokens,
                     "eval_loss": progress.eval_loss,
+                    "reward": progress.reward,
+                    "reward_std": progress.reward_std,
+                    "reward_breakdown": progress.reward_breakdown,
+                    "kl": progress.kl,
+                    "completion_length": progress.completion_length,
                     "status_message": progress.status_message,
                     "ts": time.time(),
                 }

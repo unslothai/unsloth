@@ -112,6 +112,7 @@ from models.training import (
     DiffusionTrainingStartResponse,
     DiffusionTrainingStatusResponse,
     DiffusionTrainingStopRequest,
+    RewardFunctionPresetsResponse,
     TRAINING_REQUEST_ID_PATTERN,
 )
 from models.responses import TrainingStopResponse, TrainingMetricsResponse
@@ -867,6 +868,11 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "Continued Pretraining is not supported for MLX training yet.",
         )
+    if request.training_type == "GRPO":
+        raise HTTPException(
+            status_code = 400,
+            detail = "GRPO training is not supported for MLX training yet.",
+        )
     if request.is_embedding:
         raise HTTPException(
             status_code = 400,
@@ -1475,6 +1481,14 @@ async def start_training(
             "use_loftq": request.use_loftq,
             "use_dora": request.use_dora,
             "train_on_completions": request.train_on_completions,
+            "reward_functions": [selection.model_dump() for selection in request.reward_functions],
+            "num_generations": request.num_generations,
+            "max_prompt_length": request.max_prompt_length,
+            "max_completion_length": request.max_completion_length,
+            "grpo_temperature": request.grpo_temperature,
+            "grpo_top_p": request.grpo_top_p,
+            "grpo_beta": request.grpo_beta,
+            "grpo_loss_type": request.grpo_loss_type,
             "finetune_vision_layers": request.finetune_vision_layers,
             "finetune_language_layers": request.finetune_language_layers,
             "finetune_attention_modules": request.finetune_attention_modules,
@@ -1972,6 +1986,11 @@ def _build_training_status(
             "grad_norm_steps": list(getattr(backend, "grad_norm_step_history", [])),
             "eval_loss": list(backend.eval_loss_history),
             "eval_steps": list(backend.eval_step_history),
+            "reward": list(getattr(backend, "reward_history", [])),
+            "reward_steps": list(getattr(backend, "reward_step_history", [])),
+            "reward_std": list(getattr(backend, "reward_std_history", [])),
+            "kl": list(getattr(backend, "kl_history", [])),
+            "completion_length": list(getattr(backend, "completion_length_history", [])),
         }
 
     return TrainingStatus(
@@ -1987,6 +2006,15 @@ def _build_training_status(
         details = details,
         metric_history = metric_history,
     )
+
+
+@router.get("/reward-functions", response_model = RewardFunctionPresetsResponse)
+async def get_reward_function_presets(current_subject: str = Depends(get_current_subject)):
+    """
+    List the built-in GRPO reward functions the Train page can select and weight.
+    """
+    from core.training.grpo_rewards import reward_preset_catalog
+    return RewardFunctionPresetsResponse(presets = reward_preset_catalog())
 
 
 @router.get("/status")
@@ -2155,6 +2183,15 @@ async def stream_training_progress(
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
+                reward = getattr(progress, "reward", None) if progress else None,
+                reward_std = getattr(progress, "reward_std", None) if progress else None,
+                reward_breakdown = (
+                    getattr(progress, "reward_breakdown", None) if progress else None
+                ),
+                kl = getattr(progress, "kl", None) if progress else None,
+                completion_length = (
+                    getattr(progress, "completion_length", None) if progress else None
+                ),
             )
 
         def format_sse(

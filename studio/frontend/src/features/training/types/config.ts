@@ -14,6 +14,12 @@ import type { BackendModelConfig } from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 
+/** One preset GRPO reward function enabled for the run, with its weight. */
+export interface RewardFunctionSelection {
+  id: string;
+  weight: number;
+}
+
 export interface ModelCacheReferenceOptions {
   knownCached?: boolean;
   localPath?: string | null;
@@ -103,6 +109,13 @@ export interface TrainingConfigState {
   evalSteps: number;
   packing: boolean;
   trainOnCompletions: boolean;
+  rewardFunctions: RewardFunctionSelection[];
+  numGenerations: number;
+  maxPromptLength: number;
+  maxCompletionLength: number;
+  grpoTemperature: number;
+  grpoTopP: number;
+  grpoBeta: number;
   gradientCheckpointing: GradientCheckpointing;
   randomSeed: number;
   enableWandb: boolean;
@@ -237,6 +250,13 @@ export interface TrainingConfigActions {
   setEvalSteps: (value: number) => void;
   setPacking: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;
+  setRewardFunctions: (value: RewardFunctionSelection[]) => void;
+  setNumGenerations: (value: number) => void;
+  setMaxPromptLength: (value: number) => void;
+  setMaxCompletionLength: (value: number) => void;
+  setGrpoTemperature: (value: number) => void;
+  setGrpoTopP: (value: number) => void;
+  setGrpoBeta: (value: number) => void;
   setGradientCheckpointing: (value: GradientCheckpointing) => void;
   setRandomSeed: (value: number) => void;
   setEnableWandb: (value: boolean) => void;

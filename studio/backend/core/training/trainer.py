@@ -74,6 +74,7 @@ from utils.datasets import format_and_template_dataset
 from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
+from utils.datasets.prompt_only import prepare_prompt_only_dataset
 from utils.paths import (
     dataset_files_in_dir,
     ensure_dir,
@@ -83,6 +84,7 @@ from utils.paths import (
 )
 from trl import SFTTrainer, SFTConfig
 
+from .grpo_rewards import build_reward_functions
 from .training import (
     TrainingProgress,
     create_mlx_trainer_adapter,
@@ -95,6 +97,42 @@ logger = get_logger(__name__)
 
 # Streaming eval has no __len__, so cap it or an unbounded eval iterates the whole source on every eval step.
 STREAMING_EVAL_MAX_SAMPLES = 500
+
+
+def _grpo_metrics_from_logs(logs: dict) -> dict:
+    """Pull GRPO's reward / KL / completion-length signal out of a TRL log record.
+
+    TRL renamed several of these between releases (``completion_length`` became
+    ``completions/mean_length``), so both spellings are accepted.
+    """
+
+    def _number(*keys):
+        for key in keys:
+            value = logs.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return float(value)
+        return None
+
+    breakdown = {}
+    for key, value in logs.items():
+        if not isinstance(key, str) or not key.startswith("rewards/"):
+            continue
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        name = key[len("rewards/") :]
+        if name.endswith("/mean"):
+            name = name[: -len("/mean")]
+        elif name.endswith("/std"):
+            continue
+        breakdown[name] = float(value)
+
+    return {
+        "reward": _number("reward", "rewards/mean"),
+        "reward_std": _number("reward_std", "reward/std"),
+        "kl": _number("kl", "objective/kl"),
+        "completion_length": _number("completion_length", "completions/mean_length"),
+        "reward_breakdown": breakdown or None,
+    }
 
 
 def _build_report_targets(training_args) -> list[str] | str:
@@ -288,7 +326,8 @@ class UnslothTrainer:
         self.save_on_stop = True
         self.load_in_4bit = True
 
-        self.is_cpt = False
+        self.is_cpt = False  # Continued Pretraining
+        self.is_grpo = False  # GRPO (RL)
         self.is_vlm = False
         self.is_audio = False
         self.is_audio_vlm = False
@@ -598,7 +637,10 @@ class UnslothTrainer:
 
                 num_tokens = getattr(state, "num_input_tokens_seen", None)
 
+                grpo_metrics = _grpo_metrics_from_logs(logs) if trainer_ref.is_grpo else {}
+
                 trainer_ref._update_progress(
+                    **grpo_metrics,
                     step = current_step,
                     epoch = round(state.epoch, 2) if state.epoch else 0,
                     loss = loss_value,
@@ -690,6 +732,86 @@ class UnslothTrainer:
             config.update(extra_args)
 
         return config
+
+    def _build_grpo_config_args(self, training_args, output_dir, config_args) -> dict:
+        """Narrow the shared config to what GRPOConfig accepts, plus the rollout knobs.
+
+        Filtered rather than hand-listed: GRPOConfig has no dataset_text_field /
+        packing / max_seq_length, and which TrainingArguments it re-exports moves
+        between TRL releases.
+        """
+        from dataclasses import fields as dataclass_fields
+        from trl import GRPOConfig
+
+        accepted = {field.name for field in dataclass_fields(GRPOConfig)}
+        grpo_args = {k: v for k, v in config_args.items() if k in accepted}
+        grpo_args.update(
+            {
+                "output_dir": output_dir,
+                "num_generations": training_args.get("num_generations", 4),
+                "max_prompt_length": training_args.get("max_prompt_length", 256),
+                "max_completion_length": training_args.get("max_completion_length", 512),
+                "temperature": training_args.get("grpo_temperature", 1.0),
+                "top_p": training_args.get("grpo_top_p", 1.0),
+                "beta": training_args.get("grpo_beta", 0.04),
+                # HF generate, never vLLM: fast_inference is a separate decision.
+                "use_vllm": False,
+            }
+        )
+        loss_type = training_args.get("grpo_loss_type")
+        if loss_type:
+            grpo_args["loss_type"] = loss_type
+        return {k: v for k, v in grpo_args.items() if k in accepted}
+
+    def _train_grpo(self, dataset, output_dir, training_args, config_args) -> None:
+        """Run a GRPO (RL) job: prompt-only rollouts scored by preset reward functions."""
+        from trl import GRPOConfig, GRPOTrainer
+
+        train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset
+
+        reward_functions, reward_names = build_reward_functions(
+            training_args.get("reward_functions")
+        )
+        logger.info(f"GRPO reward functions: {', '.join(reward_names)}\n")
+
+        grpo_args = self._build_grpo_config_args(training_args, output_dir, config_args)
+        logger.info(f"GRPO configuration: {grpo_args}\n")
+
+        self.trainer = GRPOTrainer(
+            model = self.model,
+            processing_class = self.tokenizer,
+            reward_funcs = reward_functions,
+            train_dataset = train_dataset,
+            args = GRPOConfig(**grpo_args),
+        )
+        logger.info("GRPO trainer initialized\n")
+
+        self.trainer.add_callback(self._create_progress_callback())
+        # Studio publishes progress itself, so HF's stdout callbacks are pure
+        # duplication in a log that has no terminal. --verbose keeps them.
+        _drop_hf_stdout_callbacks(self.trainer)
+
+        if detect_streaming_dataset(train_dataset):
+            max_steps = int(training_args.get("max_steps") or 0)
+            if max_steps <= 0:
+                raise ValueError(
+                    "Streaming mode requires max_steps > 0 because the training "
+                    "dataset has no length."
+                )
+            total_steps = max_steps
+        else:
+            total_steps = self._calculate_total_steps(
+                len(train_dataset),
+                training_args.get("batch_size", 2),
+                training_args.get("gradient_accumulation_steps", 4),
+                training_args.get("num_epochs", 3),
+                int(training_args.get("max_steps") or 0),
+            )
+
+        self._update_progress(total_steps = total_steps, status_message = "Starting GRPO training...")
+        logger.info("Starting GRPO training...\n")
+        self.trainer.train(resume_from_checkpoint = training_args.get("resume_from_checkpoint"))
+        self._finalize_training(output_dir, "GRPO")
 
     def _finalize_training(
         self,
@@ -2499,6 +2621,7 @@ class UnslothTrainer:
         dataset_slice_start: Optional[int] = None,
         dataset_slice_end: Optional[int] = None,
         is_cpt: bool = False,
+        is_grpo: bool = False,
         s3_config: dict = None,
         dataset_local_files_only: bool = False,
         dataset_local_path: Optional[str] = None,
@@ -3036,6 +3159,46 @@ class UnslothTrainer:
             elif self._audio_type == "dac":
                 processed = self._preprocess_dac_dataset(dataset, custom_format_mapping)
                 return ({"dataset": processed, "final_format": "audio_dac"}, None)
+
+            # ========== PROMPT-ONLY (GRPO) BYPASS ==========
+            if is_grpo:
+                logger.info("GRPO mode: reducing dataset to prompt-only rows\n")
+                try:
+                    prepared = prepare_prompt_only_dataset(
+                        dataset,
+                        split_name = "train",
+                        custom_format_mapping = custom_format_mapping,
+                        system_prompt = (custom_format_mapping or {}).get("__system_prompt"),
+                    )
+                except ValueError as exc:
+                    logger.error(str(exc))
+                    self._update_progress(error = str(exc))
+                    return None
+
+                for notice in prepared.notices:
+                    if notice.level == "warning":
+                        logger.warning(notice.message)
+                        if notice.update_status:
+                            self._update_progress(status_message = notice.message)
+                    else:
+                        logger.info(f"{notice.message}\n")
+
+                n = len(prepared.dataset) if hasattr(prepared.dataset, "__len__") else None
+                n_display = f"{n:,}" if isinstance(n, int) else "streaming"
+                self._update_progress(status_message = f"Dataset ready ({n_display} prompts, GRPO)")
+                logger.info(f"Prompt-only dataset ready ({n_display} prompts)\n")
+
+                # No eval split: GRPO scores its own rollouts, so an eval pass has
+                # nothing to compute a loss against.
+                return (
+                    {
+                        "dataset": prepared.dataset,
+                        "detected_format": "prompt_only",
+                        "final_format": "prompt_only",
+                        "success": True,
+                    },
+                    None,
+                )
 
             # ========== RAW TEXT BYPASS ==========
             if raw_text_mode:
@@ -3970,6 +4133,15 @@ class UnslothTrainer:
             else:
                 logger.info(f"Training for {config_args['num_train_epochs']} epochs\n")
 
+            # ========== GRPO (RL) BRANCH ==========
+            # Before the eval and SFT-specific config below: GRPO scores its own
+            # rollouts, so it takes neither an eval dataset nor a text field.
+            self.is_grpo = training_args.get("is_grpo", False)
+            if self.is_grpo:
+                self._train_grpo(dataset, output_dir, training_args, config_args)
+                return
+
+            # ========== EVAL CONFIGURATION ==========
             eval_dataset = training_args.get("eval_dataset", None)
             eval_steps_val = training_args.get("eval_steps", 0.00)
             if eval_dataset is not None:
@@ -4363,7 +4535,9 @@ class UnslothTrainer:
             with open(config_path, "r", encoding = "utf-8") as f:
                 config = json.load(f)
 
-            if self.is_cpt:
+            if self.is_grpo:
+                method = "GRPO"
+            elif self.is_cpt:
                 method = "CPT"
             elif self.load_in_4bit:
                 method = "qlora"

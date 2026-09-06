@@ -1275,6 +1275,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           notifyStreamingCompat(streamingPatch);
         },
         setPacking: (packing) => setUserEdit({ packing }),
+        setRewardFunctions: (rewardFunctions) =>
+          setUserEdit({ rewardFunctions }),
+        setNumGenerations: (numGenerations) => setUserEdit({ numGenerations }),
+        setMaxPromptLength: (maxPromptLength) =>
+          setUserEdit({ maxPromptLength }),
+        setMaxCompletionLength: (maxCompletionLength) =>
+          setUserEdit({ maxCompletionLength }),
+        setGrpoTemperature: (grpoTemperature) =>
+          setUserEdit({ grpoTemperature }),
+        setGrpoTopP: (grpoTopP) => setUserEdit({ grpoTopP }),
+        setGrpoBeta: (grpoBeta) => setUserEdit({ grpoBeta }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
           setUserEdit({
