@@ -263,19 +263,17 @@ test("training validation allows audio-capable vision models on MLX with image d
 });
 
 test("training validation rejects unsupported LoRA variants on MLX", () => {
-  for (const loraVariant of ["loftq", "dora"] as const) {
-    assert.deepEqual(
-      validateTrainingConfig({ ...validConfig, loraVariant }, "mac"),
-      {
-        ok: false,
-        errorKey: "studio.params.notSupportedAppleSilicon",
-      },
-    );
-    assert.deepEqual(
-      validateTrainingConfig({ ...validConfig, loraVariant }, "linux"),
-      { ok: true, errorKey: null },
-    );
-  }
+  assert.deepEqual(
+    validateTrainingConfig({ ...validConfig, loraVariant: "loftq" }, "mac"),
+    {
+      ok: false,
+      errorKey: "studio.params.notSupportedAppleSilicon",
+    },
+  );
+  assert.deepEqual(
+    validateTrainingConfig({ ...validConfig, loraVariant: "loftq" }, "linux"),
+    { ok: true, errorKey: null },
+  );
   assert.deepEqual(
     validateTrainingConfig(
       { ...validConfig, trainingMethod: "full", loraVariant: "dora" },
@@ -283,6 +281,22 @@ test("training validation rejects unsupported LoRA variants on MLX", () => {
     ),
     { ok: true, errorKey: null },
   );
+});
+
+test("training validation accepts DoRA on MLX under an adapter method", () => {
+  for (const trainingMethod of ["lora", "qlora", "cpt"] as const) {
+    assert.deepEqual(
+      validateTrainingConfig(
+        { ...validConfig, trainingMethod, loraVariant: "dora" },
+        "mac",
+      ),
+      // cpt is refused on MLX for its own reason, which must not be read as
+      // DoRA being refused.
+      trainingMethod === "cpt"
+        ? { ok: false, errorKey: "studio.params.notSupportedAppleSilicon" }
+        : { ok: true, errorKey: null },
+    );
+  }
 });
 
 test("training validation keeps CPT and embedding training available off MLX", () => {

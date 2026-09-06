@@ -59,6 +59,11 @@ export function LoraParamsSection(): ReactElement | null {
   const [open, setOpen] = useState(true);
   const isCpt = store.trainingMethod === "cpt";
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
+  // MLX refuses DoRA once vision layers are in the run. `isVisionModel` is
+  // fetched metadata that can go stale, so this only stops the combination
+  // being newly selected; the loaded model still settles an existing one.
+  const doraNeedsVisionOff =
+    deviceType === "mac" && showVisionLora && store.finetuneVisionLayers;
 
   if (!isAdapterMethod(store.trainingMethod)) {
     return null;
@@ -260,11 +265,13 @@ export function LoraParamsSection(): ReactElement | null {
                 store.trainingMethod,
                 deviceType,
               );
+              const needsVisionOff =
+                option.value === "dora" && doraNeedsVisionOff;
               return (
                 <button
                   key={option.value}
                   type="button"
-                  disabled={unsupportedOnMlx}
+                  disabled={unsupportedOnMlx || needsVisionOff}
                   aria-pressed={store.loraVariant === option.value}
                   onClick={() => store.setLoraVariant(option.value)}
                   className={`flex-1 corner-squircle rounded-[14px] border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selectableOptionStateClassName(store.loraVariant === option.value)}`}
@@ -273,7 +280,9 @@ export function LoraParamsSection(): ReactElement | null {
                   <p className="text-ui-10 text-muted-foreground">
                     {unsupportedOnMlx
                       ? t("studio.params.notSupportedAppleSilicon")
-                      : option.desc}
+                      : needsVisionOff
+                        ? t("studio.params.doraNeedsVisionLayersOff")
+                        : option.desc}
                   </p>
                 </button>
               );
