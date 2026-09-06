@@ -37,7 +37,11 @@ class _Capture:
         pass
 
 
-def _drive(snaps, monkeypatch, tick_s = _TICK_S):
+def _drive(
+    snaps,
+    monkeypatch,
+    tick_s = _TICK_S,
+):
     """Run _run() over `snaps` on a clock that advances tick_s per scrape."""
     clock = {"t": 1000.0}
     monkeypatch.setattr(ls.time, "monotonic", lambda: clock["t"])
@@ -61,7 +65,12 @@ def _drive(snaps, monkeypatch, tick_s = _TICK_S):
     return [kw for ev, kw in cap.events if ev == "engine_stats"]
 
 
-def _busy(predicted = 0.0, prompt = 0.0, decode = 0.0, running = 1.0):
+def _busy(
+    predicted = 0.0,
+    prompt = 0.0,
+    decode = 0.0,
+    running = 1.0,
+):
     """One scrape with no throughput gauges, so the counter path is exercised."""
     return {
         "tokens_predicted_total": predicted,
@@ -74,9 +83,7 @@ def _busy(predicted = 0.0, prompt = 0.0, decode = 0.0, running = 1.0):
 def test_a_generation_is_not_attributed_to_the_tick_it_was_counted_on(monkeypatch):
     """The 183.7 tok/s record. 1837 tokens appear in one scrape after 70 seconds of
     a held slot, so the honest rate is 1837/80, not 1837/10."""
-    snaps = [_busy(decode = float(i)) for i in range(8)] + [
-        _busy(predicted = 1837.0, decode = 8.0)
-    ]
+    snaps = [_busy(decode = float(i)) for i in range(8)] + [_busy(predicted = 1837.0, decode = 8.0)]
     stats = _drive(snaps, monkeypatch)
 
     reported = max(s["gen_tok_s"] for s in stats)
@@ -140,9 +147,7 @@ def test_a_build_without_the_decode_counter_still_reports(monkeypatch):
 def test_a_prompt_counter_gets_the_same_treatment(monkeypatch):
     """prompt_tokens_total flushes only on a decode that produced output, so a long
     prefill lands in one tick the same way."""
-    snaps = [_busy(decode = float(i)) for i in range(5)] + [
-        _busy(prompt = 9000.0, decode = 5.0)
-    ]
+    snaps = [_busy(decode = float(i)) for i in range(5)] + [_busy(prompt = 9000.0, decode = 5.0)]
     stats = _drive(snaps, monkeypatch)
 
     # 9000 tokens over the 50 seconds of held slot this poller actually observed.
