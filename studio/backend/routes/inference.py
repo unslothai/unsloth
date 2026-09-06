@@ -1840,6 +1840,19 @@ def _openai_llama_admission_output_allowance(
     cache, where 1024 is most of a share on its own (4096 over four slots admitted three).
     A prompt already past its share keeps the flat allowance, since it does not fit either
     way and a zero allowance would only hide that it will still generate.
+
+    Under a known ``share`` the charge is the WHOLE share, not the smaller of the share and
+    the flat allowance. Charging less than is permitted is what made the reservation
+    unsafe: a small prompt was charged ``prompt + 1024`` and then allowed to generate up to
+    its share, so admitting it beside a large-prompt request let the permitted total pass
+    the cache even though the charged total fit. Measured on a 262144 cache over four
+    slots, prompts of 1 / 65537 / 189139 / 1 charged 258774 and permitted 385750.
+    Charging exactly what is permitted makes ``sum(charged) <= budget`` imply
+    ``sum(prompt + permitted) <= budget``.
+
+    This costs no concurrency. ``capacity * share <= budget`` by construction, so a full
+    ``capacity`` of unstated requests still fit; the flat allowance never admitted more
+    than that, it only undercharged the ones it did admit.
     """
     window = context_window or budget
     if cap is not None and cap < window:
@@ -1847,7 +1860,7 @@ def _openai_llama_admission_output_allowance(
     # Clamped to the WINDOW: a request cannot occupy more KV than its own slot holds.
     allowance = min(_OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens))
     if share is not None and share > prompt_tokens:
-        allowance = min(allowance, share - prompt_tokens)
+        allowance = min(share - prompt_tokens, max(0, window - prompt_tokens))
     return allowance
 
 
@@ -2016,6 +2029,37 @@ def _openai_llama_admission_injected_tool_tokens(injected_tools) -> int:
     return estimate_messages_tokens_dense([{"role": "system", "content": text}])
 
 
+def _openai_llama_admission_prompt_tokens(
+    payload,
+    *,
+    image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
+    injected_tools = None,
+) -> Optional[int]:
+    """Estimated prompt KV, or None when the shape carries no messages to measure.
+
+    Shared by the reservation and by the cap that enforces it, so the two cannot
+    drift into charging for one figure and permitting another.
+    """
+    messages = getattr(payload, "messages", None)
+    if not isinstance(messages, list) or not messages:
+        return None
+    try:
+        estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+            messages
+        )
+        prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
+        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
+        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
+        prompt_tokens += _openai_llama_admission_media_tokens(
+            payload,
+            message_image_parts = message_image_parts,
+            image_tokens = image_tokens,
+        )
+    except Exception:
+        return None
+    return prompt_tokens
+
+
 def _openai_llama_admission_tokens(
     payload,
     *,
@@ -2038,24 +2082,9 @@ def _openai_llama_admission_tokens(
     """
     if not budget:
         return None
-    messages = getattr(payload, "messages", None)
-    if isinstance(messages, list) and messages:
-        try:
-            estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-                messages
-            )
-            prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
-            prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
-            prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
-            prompt_tokens += _openai_llama_admission_media_tokens(
-                payload,
-                message_image_parts = message_image_parts,
-                image_tokens = image_tokens,
-            )
-        except Exception:
-            prompt_tokens = None
-    else:
-        prompt_tokens = None
+    prompt_tokens = _openai_llama_admission_prompt_tokens(
+        payload, image_tokens = image_tokens, injected_tools = injected_tools
+    )
     if prompt_tokens is None:
         return max(1, budget // max(1, capacity))
     # The same helper generation honours, not the raw field. A request that sets only
@@ -2108,6 +2137,58 @@ def _openai_llama_admission_tokens(
     # admits it alone rather than stranding it, and llama-server refuses it with a
     # message naming both counts.
     return max(1, min(budget, prompt_tokens + output_tokens))
+
+
+def _openai_llama_admission_enforced_max_tokens(
+    payload,
+    *,
+    request: Optional[Request],
+    llama_backend,
+    injected_tools = None,
+) -> Optional[int]:
+    """The cap to SEND, so the reservation is enforced instead of merely recorded.
+
+    Admission charges an unstated "Max Tokens: Max" a bounded allowance, but the wire
+    request still said the whole window, so four chats admitted at a share each could
+    all generate into one ``--kv-unified`` pool until llama-server errored EVERY
+    processing slot at once (measured: four chats, ``-c 16384 --parallel 4``, all lost).
+    Sending the figure that was charged makes ``sum(prompt + allowance) <= budget`` an
+    invariant rather than a hope, and turns an overrun into a plain ``length`` finish
+    that the existing continuation path already resumes.
+
+    Bounded by the SHARE, not by the smaller figure admission charges. The charge is a
+    deliberately optimistic estimate so more chats fit; the bound only has to be
+    physically safe. At most ``capacity`` requests hold a slot at once and each is held
+    to ``prompt + (share - prompt) == share``, so the total cannot pass
+    ``capacity * share <= budget``. Clamping to the charged estimate instead would cut a
+    lone chat to about a thousand tokens for no safety gain.
+
+    Returns None to leave the caller's value alone. A client that named its own cap is
+    already honest and is never clamped.
+    """
+    cap = _positive_int_or_none(_effective_openai_max_tokens(payload))
+    budget = _openai_llama_admission_budget(llama_backend)
+    if not budget:
+        return None
+    window = _openai_llama_admission_context_window(llama_backend)
+    if cap is not None and cap < (window or budget):
+        return None
+    capacity = _openai_llama_admission_capacity(request, llama_backend)
+    share = max(1, budget // max(1, capacity))
+    if share >= (window or budget):
+        # One slot, or a share as large as the window: nothing to enforce.
+        return None
+    prompt_tokens = _openai_llama_admission_prompt_tokens(
+        payload,
+        image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+        injected_tools = injected_tools,
+    )
+    if prompt_tokens is None:
+        return None
+    # A prompt past its share leaves nothing, but a request must be able to say
+    # something, and llama-server would refuse a zero. Such a request is already charged
+    # more than a share, so the queue admits fewer than ``capacity`` of them.
+    return max(1, share - prompt_tokens)
 
 
 def _openai_llama_admission_reserve(
@@ -21106,6 +21187,13 @@ async def produce_openai_chat_completions(
     # carry `tool_calls` (content=None) - both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
+    # Carried BESIDE the caller's cap, never folded into it. `_loop_budget_left` reads
+    # `max_tokens` as "what the caller allowed" and stops continuing once it is spent, so
+    # assigning this into effective_max_tokens would turn the crash into a silent
+    # truncation at one share instead of an answer that resumes.
+    _admission_output_allowance = _openai_llama_admission_enforced_max_tokens(
+        payload, request = request, llama_backend = llama_backend
+    )
 
     _has_tool_messages = _has_openai_tool_history(payload.messages)
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
@@ -21526,6 +21614,7 @@ async def produce_openai_chat_completions(
                     top_k = payload.top_k,
                     min_p = payload.min_p,
                     max_tokens = effective_max_tokens,
+                    admission_output_allowance = _admission_output_allowance,
                     repetition_penalty = payload.repetition_penalty,
                     presence_penalty = payload.presence_penalty,
                     frequency_penalty = payload.frequency_penalty,
@@ -22273,6 +22362,7 @@ async def produce_openai_chat_completions(
                 top_k = payload.top_k,
                 min_p = payload.min_p,
                 max_tokens = effective_max_tokens,
+                admission_output_allowance = _admission_output_allowance,
                 repetition_penalty = payload.repetition_penalty,
                 presence_penalty = payload.presence_penalty,
                 frequency_penalty = payload.frequency_penalty,
@@ -32093,7 +32183,15 @@ def _build_openai_passthrough_body(
         payload.top_p,
         payload.top_k,
         # Honor max_completion_tokens on the tools/response_format passthrough too.
-        _effective_openai_max_tokens(payload),
+        # Clamped here as well: this body is assembled independently of the caller's
+        # effective_max_tokens, so without it the client-tools surface would be admitted
+        # on one figure and permitted the whole window.
+        (
+            _openai_llama_admission_enforced_max_tokens(
+                payload, request = None, llama_backend = llama_backend
+            )
+            or _effective_openai_max_tokens(payload)
+        ),
         payload.stream,
         stop = payload.stop,
         min_p = payload.min_p,

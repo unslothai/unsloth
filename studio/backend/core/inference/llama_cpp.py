@@ -28213,6 +28213,7 @@ class LlamaCppBackend:
         top_k: int = 20,
         min_p: float = 0.01,
         max_tokens: Optional[int] = None,
+        admission_output_allowance: Optional[int] = None,
         repetition_penalty: float = 1.0,
         presence_penalty: float = 0.0,
         frequency_penalty: float = 0.0,
@@ -28296,6 +28297,10 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
+        # What admission actually reserved. Applied to the wire only: `max_tokens` stays
+        # the caller's figure so `_loop_budget_left` keeps answering "they set no cap".
+        if admission_output_allowance is not None:
+            payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)
         if context_overflow == "truncate_oldest" and self._effective_context_length:
             try:
                 _before_fit = openai_messages
@@ -28615,6 +28620,7 @@ class LlamaCppBackend:
         top_k: int = 20,
         min_p: float = 0.01,
         max_tokens: Optional[int] = None,
+        admission_output_allowance: Optional[int] = None,
         repetition_penalty: float = 1.0,
         presence_penalty: float = 0.0,
         frequency_penalty: float = 0.0,
@@ -29377,6 +29383,10 @@ class LlamaCppBackend:
             if _continuation_max_tokens is not None:
                 payload["max_tokens"] = _continuation_max_tokens
                 _continuation_max_tokens = None
+            # After the continuation override: every attempt, first or resumed, has to
+            # fit the share this run was admitted on.
+            if admission_output_allowance is not None:
+                payload["max_tokens"] = min(payload["max_tokens"], admission_output_allowance)
             if stop:
                 payload["stop"] = stop
             _apply_seeded_llama_request(payload, seed)
