@@ -1306,12 +1306,17 @@ class ExportBackend:
                                 "GGUF conversion produced a symlinked Modelfile, "
                                 f"refusing to relocate it: {modelfile}"
                             )
-                        # Optional artifact: a locked or read-only destination must not fail an export whose GGUFs all
-                        # landed.
-                        # Optional artifact: unsloth generates it best-effort, so a locked or read-only
-                        # destination must not fail an export whose GGUFs all landed.
+                        # Optional artifact: a locked or read-only destination must not fail an
+                        # export whose GGUFs all landed. It is published from memory instead.
+                        modelfile_dest = os.path.join(abs_save_dir, "Modelfile")
                         try:
-                            shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
+                            if os.path.isdir(modelfile_dest):
+                                # move would nest it at Modelfile/Modelfile, which the
+                                # allow-list never matches.
+                                raise OSError(
+                                    f"a directory named Modelfile is already in {abs_save_dir}"
+                                )
+                            shutil.move(str(modelfile), modelfile_dest)
                             exported_modelfile = True
                             logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                         except OSError as exception:

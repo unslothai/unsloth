@@ -1110,3 +1110,54 @@ def test_gguf_hub_export_rejects_a_directory_where_a_gguf_should_land(tmp_path, 
     # The new file is not buried inside the directory, and the stale one is untouched.
     assert list((save_dir / "model.Q4_K_M.gguf").iterdir()) == []
     assert (save_dir / "an-earlier-export.Q8_0.gguf").is_file()
+
+
+def test_gguf_hub_export_publishes_a_modelfile_blocked_by_a_directory(tmp_path, monkeypatch):
+    """A directory named Modelfile would nest it where the allow-list cannot match."""
+    save_dir = tmp_path / "export"
+    save_dir.mkdir(parents = True)
+    (save_dir / "Modelfile").mkdir()
+
+    _install_export_backend_stubs(monkeypatch)
+    export_module = _load_module(
+        "test_export_gguf_hub_upload_modelfile_dir_backend", "core/export/export.py", monkeypatch
+    )
+
+    calls: list[str] = []
+    seen: dict = {}
+
+    class Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output = Path(f"{model_save_path}_gguf")
+            output.mkdir(parents = True)
+            (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
+            (output / "Modelfile").write_bytes(b"FROM ./model.Q4_K_M.gguf\n")
+
+        def push_to_hub_gguf(self, *args, **kwargs):
+            calls.append("push_to_hub_gguf")
+
+    hf_api, model_card = _hub_doubles(calls, seen)
+    monkeypatch.setattr(export_module, "HfApi", hf_api)
+    monkeypatch.setattr(export_module, "ModelCard", model_card)
+    monkeypatch.setattr(export_module, "resolve_export_write_dir", lambda value: Path(value))
+
+    backend = export_module.ExportBackend.__new__(export_module.ExportBackend)
+    backend.current_model = Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, output_path = backend.export_gguf(
+        str(save_dir),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    # The GGUFs landed, so the optional Modelfile must not fail the export...
+    assert success is True, message
+    assert seen["uploaded"] == ["model.Q4_K_M.gguf"]
+    # ...and it is published from memory rather than silently dropped or nested.
+    assert seen["Modelfile"] == b"FROM ./model.Q4_K_M.gguf\n"
+    assert list((Path(output_path) / "Modelfile").iterdir()) == []
