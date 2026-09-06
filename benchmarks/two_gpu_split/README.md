@@ -17,20 +17,54 @@ split/unsplit/re-split cycles with no hook or shim growth.
 What this script adds is **your hardware**, which we do not have: RTX 5090, DGX Spark, RTX Spark
 laptops, and Windows rather than Linux.
 
+## What each machine can and cannot run
+
+This script needs **two CUDA devices visible to one process**. That constrains where it applies:
+
+| machine | two-GPU split | what it can run |
+|---|---|---|
+| 1x RTX 5090 | **no**, single card | `--devices 0`: single-GPU baseline, sm_120 kernels, Windows |
+| 1x DGX Spark | **no**, single GB10 | `--devices 0`: single-GPU baseline, sm_121 kernels |
+| 2x DGX Spark | **no**, see below | nothing here; needs a multi-node variant |
+| 2 cards in one box | yes | the full matrix |
+
+**Two DGX Sparks are two nodes, not two GPUs.** They link over ConnectX-7 200GbE with RoCE and are
+driven by NCCL across a network, not by `.to(device)` inside one process. This script deliberately
+uses no `torch.distributed` and no NCCL, so it cannot address that pair at all. A cross-node split
+is a different design, and the numbers say it is also a much worse one:
+
+| path | bandwidth |
+|---|---|
+| direct device-to-device, same box, 64 MiB | 582 GiB/s |
+| host-staged, same box | 26 GiB/s |
+| two Sparks over 200GbE RoCE | about 12 GiB/s (~106 Gbit/s measured by others) |
+
+Both 200G ports also share two PCIe Gen5 x4 lanes, so a second cable buys little. A layer boundary
+crossed every forward at 12 GiB/s costs roughly **50x** what the in-box case costs, so pipeline
+placement across two Sparks is likely the wrong shape; tensor parallelism through vLLM or Ray,
+which is what NVIDIA's own two-Spark guidance uses, is the better fit.
+
+Note also that one Spark carries 128 GB of unified memory, which is more than two 5090s combined.
+The "it does not fit on one card" problem this feature targets is a **two consumer GPU** problem,
+so that is the configuration worth measuring.
+
 ## Run it
 
 ```bash
 pip install torch diffusers transformers accelerate safetensors pillow
 
+# two cards in one box, the full matrix
 python bench_two_gpu_split.py --repo Tongyi-MAI/Z-Image-Turbo --steps 9 --size 1024 \
-    --devices 0,1 --reps 5 --out split_5090.json
+    --devices 0,1 --reps 5 --out split.json
+
+# single card: baseline, kernel portability and Windows check
+python bench_two_gpu_split.py --repo Tongyi-MAI/Z-Image-Turbo --steps 9 --size 1024 \
+    --devices 0 --reps 5 --out single_5090.json
 ```
 
 Add `--compile` for the deployment path. Compile time is reported in its own column and never
 folded into the per-render seconds, because moving a block to another card puts the device in the
 Dynamo guards and forces a genuine one-off recompile that a single-GPU run does not pay.
-
-One card only, or want the single-GPU baseline alone, is fine: pass `--devices 0`.
 
 ## What matters in the output
 
