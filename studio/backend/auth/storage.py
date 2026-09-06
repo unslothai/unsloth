@@ -421,11 +421,47 @@ def get_account(username: str):
     return AccountContext(record["account_id"], record["username"], record["role"])
 
 
-def count_active_accounts() -> int:
+def get_account_by_id(account_id: str):
+    """The AccountContext for an active account id, or None."""
+    from utils.account_context import AccountContext
+
     conn = get_connection()
     try:
-        row = conn.execute("SELECT COUNT(*) AS c FROM auth_user WHERE is_active = 1").fetchone()
-        return int(row["c"])
+        row = conn.execute(
+            "SELECT account_id, username, role, is_active FROM auth_user WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None or not row["is_active"]:
+        return None
+    return AccountContext(row["account_id"], row["username"], row["role"])
+
+
+def count_active_accounts() -> int:
+    return account_counts()[0]
+
+
+def count_managed_accounts() -> int:
+    return account_counts()[1]
+
+
+def account_counts() -> tuple[int, int]:
+    """``(active accounts, managed accounts of any state)`` in one query.
+
+    The first decides the login form; the second decides whether the host may
+    be opened up at all: a deactivated account still has its files on disk.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0) AS active,
+                   COALESCE(SUM(CASE WHEN role IS NOT NULL AND role != 'owner' THEN 1 ELSE 0 END), 0) AS managed
+            FROM auth_user
+            """
+        ).fetchone()
+        return int(row["active"]), int(row["managed"])
     finally:
         conn.close()
 
@@ -1538,7 +1574,21 @@ def validate_api_key(raw_key: str) -> Optional[str]:
 def validate_api_key_with_credential(
     raw_key: str, *, touch: bool = True
 ) -> Optional[Tuple[str, str]]:
-    """Validate *raw_key* and return ``(username, jwt_secret)``, or ``None``.
+    """Validate *raw_key* and return ``(username, jwt_secret)``, or ``None``."""
+    verified = validate_api_key_account(raw_key, touch = touch)
+    return (verified[0]["username"], verified[1]) if verified else None
+
+
+def validate_api_key_account(
+    raw_key: str, *, touch: bool = True
+) -> Optional[Tuple[dict, str]]:
+    """Validate *raw_key* and return ``(account record, jwt_secret)``, or ``None``.
+
+    The record carries ``account_id``, ``username``, ``role`` and ``is_active``,
+    read in the same statement that matched the key. A request is bound to that
+    identity and never to a second lookup by username: a username can be deleted
+    and created again while a request is in flight, an account id cannot. A key
+    whose account is deactivated does not validate.
 
     Also updates ``last_used_at`` on success. The key check and the credential
     read share one write transaction, so the returned version is the one the key
@@ -1558,7 +1608,12 @@ def validate_api_key_with_credential(
         if touch:
             conn.execute("BEGIN IMMEDIATE")
         cur = conn.execute(
-            "SELECT id, username, is_active, expires_at FROM api_keys WHERE key_hash = ?",
+            """
+            SELECT k.id, k.username, k.is_active, k.expires_at,
+                   u.account_id, u.role, u.is_active AS account_active, u.jwt_secret
+            FROM api_keys k JOIN auth_user u ON u.username = k.username
+            WHERE k.key_hash = ?
+            """,
             (key_hash,),
         )
         row = cur.fetchone()
@@ -1579,7 +1634,9 @@ def validate_api_key_with_credential(
             expires = datetime.fromisoformat(row["expires_at"])
             if datetime.now(timezone.utc) > expires:
                 return None
-        secret = _current_secret(conn, row["username"])
+        if not row["account_active"]:
+            return None
+        secret = row["jwt_secret"]
         if secret is None:
             return None
         if touch:
@@ -1588,7 +1645,13 @@ def validate_api_key_with_credential(
                 (datetime.now(timezone.utc).isoformat(), row["id"]),
             )
             conn.commit()
-        return row["username"], secret
+        record = {
+            "account_id": row["account_id"],
+            "username": row["username"],
+            "role": row["role"],
+            "is_active": int(row["account_active"]),
+        }
+        return record, secret
     finally:
         conn.rollback()
         conn.close()

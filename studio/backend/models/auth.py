@@ -44,6 +44,13 @@ class AuthStatusResponse(BaseModel):
             "'multi' when a username has to be entered. Never lists accounts."
         ),
     )
+    full_access: bool = Field(
+        True,
+        description = (
+            "Whether the unsandboxed tool modes (Full access, bypass permissions) may be "
+            "offered. False whenever another account exists, active or not."
+        ),
+    )
     requires_password_change: bool = Field(
         ...,
         description = "True if the seeded admin must still change the default password",

@@ -466,3 +466,39 @@ test("creating an account hides full access in peer tabs without a status reques
   unsubscribe();
   assert.equal(handlers.size, 0);
 });
+
+test("a deactivated account keeps full access hidden while the form is back in single mode", async (t) => {
+  environment(t);
+  window.localStorage.setItem("unsloth_chat_permission_mode", "full");
+  const api = client();
+  assert.equal(api.getFullAccessAllowed(), true);
+  globalThis.fetch = async () =>
+    Response.json({
+      initialized: true,
+      requires_password_change: false,
+      login_mode: "single",
+      full_access: false,
+    });
+  await api.fetchAuthStatus();
+  assert.equal(api.getLoginMode(), "single");
+  assert.equal(api.getFullAccessAllowed(), false);
+  assert.equal(
+    window.localStorage.getItem("unsloth_chat_permission_mode"),
+    "auto",
+  );
+  assert.equal(window.localStorage.getItem(api.LOGIN_MODE_HINT_KEY), null);
+  // A status without the flag keeps what is known; the next explicit answer wins.
+  api.setLoginMode("single");
+  assert.equal(api.getFullAccessAllowed(), false);
+  globalThis.fetch = async () =>
+    Response.json({
+      initialized: true,
+      requires_password_change: false,
+      login_mode: "single",
+      full_access: true,
+    });
+  await api.fetchAuthStatus();
+  assert.equal(api.getFullAccessAllowed(), true);
+  api.setLoginMode("multi");
+  assert.equal(api.getFullAccessAllowed(), false);
+});

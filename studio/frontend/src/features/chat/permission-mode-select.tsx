@@ -4,7 +4,7 @@
 import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
 import type { ComponentType } from "react";
 import { useEffect, useState } from "react";
-import { useLoginMode } from "@/features/auth/account-session";
+import { useFullAccessAllowed } from "@/features/auth/account-session";
 
 import {
   AlertDialog,
@@ -86,15 +86,15 @@ export function permissionModeOption(mode: PermissionMode) {
 /** The option rows shared by every permission dropdown or submenu. Non-full levels apply
  *  directly; picking Full access must go through the caller's danger confirmation. */
 function useAccountPermissionMode() {
-  const loginMode = useLoginMode();
+  const fullAccessAllowed = useFullAccessAllowed();
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
   useEffect(() => {
-    if (loginMode === "multi" && permissionMode === "full") setPermissionMode("auto");
-  }, [loginMode, permissionMode, setPermissionMode]);
+    if (!fullAccessAllowed && permissionMode === "full") setPermissionMode("auto");
+  }, [fullAccessAllowed, permissionMode, setPermissionMode]);
   return {
-    permissionMode: loginMode === "multi" && permissionMode === "full" ? "auto" : permissionMode,
-    fullAccessAllowed: loginMode !== "multi",
+    permissionMode: !fullAccessAllowed && permissionMode === "full" ? "auto" : permissionMode,
+    fullAccessAllowed,
   };
 }
 

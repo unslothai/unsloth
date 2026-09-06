@@ -4,6 +4,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import {
   ensureLoginMode,
+  getFullAccessAllowed,
   getLoginMode,
   subscribeLoginMode,
 } from "./login-client";
@@ -60,4 +61,14 @@ export function useLoginMode() {
   );
   useEffect(ensureLoginMode, []);
   return mode;
+}
+/** Whether Full access may be offered; false whenever another account exists, active or not. */
+export function useFullAccessAllowed(): boolean {
+  const allowed = useSyncExternalStore(
+    subscribeLoginMode,
+    getFullAccessAllowed,
+    () => true,
+  );
+  useEffect(ensureLoginMode, []);
+  return allowed;
 }

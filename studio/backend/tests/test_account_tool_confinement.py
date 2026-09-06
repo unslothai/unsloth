@@ -30,6 +30,9 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
     monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
     monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_UNCONFINED_TOOLS", raising = False)
+    # The sandbox caps the child at 10000 processes per user; a busy CI host can
+    # already be above that, and then bash cannot fork at all. Not what is tested here.
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_NPROC", "4000000")
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(tools, "_workdirs", {})
     monkeypatch.setattr(tools, "_active_sessions", {})

@@ -429,12 +429,13 @@ def auth_status() -> AuthStatusResponse:
         else True
     )
     # Only while the default password stands: that is what the deadline fires on.
-    from auth.policy import login_mode
+    from auth.policy import full_access_permitted, login_mode
 
     return AuthStatusResponse(
         initialized = storage.is_initialized(),
         default_username = storage.DEFAULT_ADMIN_USERNAME,
         login_mode = login_mode(),
+        full_access = full_access_permitted(),
         requires_password_change = requires_change,
         bootstrap_deadline_seconds = (
             bootstrap_deadline_remaining_seconds() if requires_change else None

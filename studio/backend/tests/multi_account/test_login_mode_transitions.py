@@ -11,7 +11,7 @@ import pytest
 from auth import policy
 
 
-def status(client, *, count: int) -> None:
+def status(client, *, count: int, full_access: bool | None = None) -> None:
     response = client.get("/api/auth/status")
     assert response.status_code == 200
     body = response.json()
@@ -21,12 +21,17 @@ def status(client, *, count: int) -> None:
         "requires_password_change",
         "bootstrap_deadline_seconds",
         "login_mode",
+        "full_access",
     }
     assert body["initialized"] == (count > 0)
     assert body["default_username"] == "unsloth"
     assert body["login_mode"] == ("multi" if count > 1 else "single")
     assert "alice" not in response.text and "bob" not in response.text
-    assert policy.full_access_permitted() == (count <= 1)
+    # Full access needs the install to itself: no managed account, active or not.
+    if full_access is None:
+        full_access = count <= 1
+    assert policy.full_access_permitted() == full_access
+    assert body["full_access"] == full_access
 
 
 def test_zero_one_two_back_to_one_and_zero(isolated_auth, account_client):
@@ -50,7 +55,8 @@ def test_activation_changes_mode_when_mutator_invalidates_cache(isolated_auth, a
             conn.execute("UPDATE auth_user SET is_active=? WHERE username='alice'", (active,))
             conn.commit()
         policy.invalidate_account_cache()
-        status(account_client, count = count)
+        # alice is deactivated, not deleted: her files are still there.
+        status(account_client, count = count, full_access = False)
 
 
 def test_concurrent_creation_refreshes_a_warm_single_mode(isolated_auth, account_client):
@@ -98,15 +104,15 @@ def test_duplicate_concurrent_creation_has_one_winner(isolated_auth):
 def test_invalidation_racing_a_stale_count_does_not_poison_cache(isolated_auth, monkeypatch):
     isolated_auth.create_initial_user("unsloth", "owner-password", "owner-secret" * 4)
     entered, release = threading.Event(), threading.Event()
-    real_count = isolated_auth.count_active_accounts
+    real_counts = isolated_auth.account_counts
 
     def delayed_count():
-        count = real_count()
+        counts = real_counts()
         entered.set()
         assert release.wait(10)
-        return count
+        return counts
 
-    monkeypatch.setattr(isolated_auth, "count_active_accounts", delayed_count)
+    monkeypatch.setattr(isolated_auth, "account_counts", delayed_count)
     with ThreadPoolExecutor(max_workers = 1) as pool:
         pending = pool.submit(policy.login_mode)
         try:
@@ -115,7 +121,7 @@ def test_invalidation_racing_a_stale_count_does_not_poison_cache(isolated_auth, 
         finally:
             release.set()
         assert pending.result(timeout = 10) == "single"
-    monkeypatch.setattr(isolated_auth, "count_active_accounts", real_count)
+    monkeypatch.setattr(isolated_auth, "account_counts", real_counts)
     assert policy.login_mode() == "multi"
 
 

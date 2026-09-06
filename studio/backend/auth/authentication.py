@@ -23,6 +23,7 @@ from .storage import (
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
+    validate_api_key_account,
     validate_api_key_with_credential,
     verify_refresh_token,
 )
@@ -196,25 +197,6 @@ security = _BearerOrKeyless(scheme_name = "HTTPBearer")
 
 def _bind_owner() -> None:
     bind_account(OWNER)
-
-
-async def _bind_for(username: str) -> None:
-    """Bind a login resolved without its record in hand (API keys)."""
-    if username == OWNER.username:
-        bind_account(OWNER)
-        return
-    record = await run_in_threadpool(get_user_record, username)
-    account = (
-        AccountContext(record["account_id"], record["username"], record["role"])
-        if record and record.get("is_active", 1)
-        else None
-    )
-    if account is None:
-        raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Invalid or expired token",
-        )
-    bind_account(account)
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -519,15 +501,19 @@ async def _get_current_credential(
     token = credentials.credentials
 
     if token.startswith(API_KEY_PREFIX):
-        verified = await run_in_threadpool(validate_api_key_with_credential, token)
+        verified = await run_in_threadpool(validate_api_key_account, token)
         if verified is None:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = _invalid_api_key_detail(token),
             )
-        username, secret = verified
-        await _bind_for(username)
-        return username, credential_generation(secret)
+        record, secret = verified
+        # Bound to the identity the key was validated against, from the same
+        # statement. A second lookup by username would bind whatever account
+        # owns that name now, which after a delete and re-create is not the
+        # account this key belonged to.
+        bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
+        return record["username"], credential_generation(secret)
 
     subject = _decode_subject_without_verification(token)
     if subject is None:

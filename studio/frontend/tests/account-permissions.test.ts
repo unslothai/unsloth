@@ -39,7 +39,9 @@ function permissionUi(loginMode: string, permissionMode: string) {
         Hand: "Hand",
         ShieldCheck: "ShieldCheck",
       },
-      "@/features/auth/account-session": { useLoginMode: () => loginMode },
+      "@/features/auth/account-session": {
+        useFullAccessAllowed: () => loginMode !== "multi",
+      },
       "@/components/ui/alert-dialog": { AlertDialog: "AlertDialog" },
       "@/components/ui/button": { Button: "Button" },
       "@/components/ui/dropdown-menu": { DropdownMenuItem: "DropdownMenuItem" },

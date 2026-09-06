@@ -13,6 +13,7 @@ export type AuthStatusResponse = {
   requires_password_change: boolean;
   bootstrap_deadline_seconds?: number | null;
   login_mode?: LoginMode;
+  full_access?: boolean;
 };
 export type TokenResponse = {
   access_token: string;
@@ -60,19 +61,30 @@ function onLoginModeStorage(event: StorageEvent): void {
   )
     setLoginMode("multi");
 }
-export function setLoginMode(mode: LoginMode): void {
+// Whether Full access may be offered. The server refuses it whenever another
+// account exists, active or not, so a deactivated account keeps it hidden while
+// the login form is already back in single mode. Until a status arrives the
+// login-mode hint is the only knowledge: multi means no.
+let fullAccessAllowed: boolean = initialLoginMode() !== "multi";
+export const getFullAccessAllowed = (): boolean => fullAccessAllowed;
+export function setLoginMode(mode: LoginMode, fullAccess?: boolean): void {
   statusKnown = true;
+  // Without an explicit answer, multi is a no and single keeps what is known.
+  const allowed = fullAccess ?? (mode === "multi" ? false : fullAccessAllowed);
   if (typeof window !== "undefined") {
-    if (mode === "multi") {
+    if (mode === "multi" || !allowed) {
       resetFullAccessForMultiUser(window.localStorage);
+    }
+    if (mode === "multi") {
       window.localStorage.setItem(LOGIN_MODE_HINT_KEY, "multi");
     } else if (window.localStorage.getItem(LOGIN_MODE_HINT_KEY) !== null) {
       window.localStorage.removeItem(LOGIN_MODE_HINT_KEY);
     }
   }
-  if (loginMode === mode) return;
+  const changed = loginMode !== mode || fullAccessAllowed !== allowed;
   loginMode = mode;
-  listeners.forEach((listener) => listener());
+  fullAccessAllowed = allowed;
+  if (changed) listeners.forEach((listener) => listener());
 }
 export async function fetchAuthStatus(): Promise<AuthStatusResponse> {
   if (inflight) return inflight;
@@ -80,7 +92,7 @@ export async function fetchAuthStatus(): Promise<AuthStatusResponse> {
     const response = await fetch(apiUrl("/api/auth/status"));
     if (!response.ok) throw new Error("Failed to load auth status.");
     const result = (await response.json()) as AuthStatusResponse;
-    setLoginMode(result.login_mode ?? "single");
+    setLoginMode(result.login_mode ?? "single", result.full_access);
     return result;
   })();
   try {

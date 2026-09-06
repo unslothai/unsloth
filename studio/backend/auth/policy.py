@@ -21,7 +21,7 @@ LOGIN_MODE_MULTI = "multi"
 
 _lock = threading.Lock()
 _generation = 0
-_cached: Optional[tuple[int, int]] = None  # (generation, active account count)
+_cached: Optional[tuple[int, int, int]] = None  # (generation, active accounts, managed accounts)
 
 
 def invalidate_account_cache() -> None:
@@ -32,22 +32,34 @@ def invalidate_account_cache() -> None:
         _cached = None
 
 
-def active_account_count() -> int:
+def _account_counts() -> tuple[int, int]:
     global _cached
     with _lock:
         if _cached is not None and _cached[0] == _generation:
-            return _cached[1]
+            return _cached[1], _cached[2]
         generation = _generation
     from auth import storage
 
     try:
-        count = storage.count_active_accounts()
+        active, managed = storage.account_counts()
     except Exception:  # noqa: BLE001 - an unreadable auth.db is a one-user install
-        count = 1
+        # One login, so the form stays single; but nothing is known about other
+        # accounts' files, so the host is not opened up either.
+        active, managed = 1, 1
     with _lock:
         if generation == _generation:
-            _cached = (generation, count)
-    return count
+            _cached = (generation, active, managed)
+    return active, managed
+
+
+def active_account_count() -> int:
+    return _account_counts()[0]
+
+
+def managed_account_count() -> int:
+    """Managed accounts of any state. A deactivated account cannot log in but
+    its files are still on disk, so it still counts here."""
+    return _account_counts()[1]
 
 
 def installation_is_multi_user() -> bool:
@@ -65,9 +77,11 @@ def full_access_permitted() -> bool:
     multi-user install means every other account's workspace. It is a
     single-user feature, so it is refused install-wide the moment a second
     account exists, for the owner too: the owner's own sandbox is also where
-    another account's uploads would be reachable from.
+    another account's uploads would be reachable from. Deactivating the last
+    managed account puts the login form back to single mode but does not
+    open the host: that account's files are still there until it is deleted.
     """
-    return not installation_is_multi_user()
+    return not installation_is_multi_user() and managed_account_count() == 0
 
 
 def _forbid(detail: str) -> HTTPException:
