@@ -334,11 +334,9 @@ def _is_gguf_file(path: str) -> bool:
 def _gguf_file_as_the_loader_opens_it(path: str) -> str:
     """*path*, collapsed to shard 1 when the LOADER reads it as a complete split family.
 
-    Asked of ``_local_gguf_load_path`` rather than restated here, because the shard grammars
-    differ by layer: the scan's ``_GGUF_SPLIT_RE`` takes three or more digits and the loader's
-    ``_GGUF_SPLIT_FILE_RE`` exactly five. A local rule would rewrite ``model-002-of-003.gguf``
-    to a sibling that ``detect_gguf_model`` still opens as its own model, which is the
-    wrong-file selection this fix removes.
+    Asked of _local_gguf_load_path, not restated: the scan's _GGUF_SPLIT_RE takes three or more
+    digits and the loader's _GGUF_SPLIT_FILE_RE exactly five, so a local rule would rewrite
+    model-002-of-003.gguf onto a sibling detect_gguf_model still opens as its own model.
     """
     try:
         from utils.models.model_config import _local_gguf_load_path
@@ -354,14 +352,12 @@ def _gguf_file_as_the_loader_opens_it(path: str) -> str:
 def _gguf_load_target(target: str) -> str:
     """The GGUF a picker row should load.
 
-    A row naming a ``.gguf`` loads that file: resolving it through its folder returned the best
-    quant across every unrelated single-file GGUF beside it (#10352). Shard rows are the one
-    exception, collapsed to the shard the loader opens anyway so ``_dedup_key`` sees one inode
-    and a split family is offered once instead of once per shard.
+    A row naming a .gguf loads that file: resolving it through the folder returned the best quant
+    across every unrelated GGUF beside it (#10352). Shards are the exception, collapsed to the
+    one the loader opens anyway so _dedup_key offers a split family once.
 
-    A FOLDER still resolves: detect_gguf_model takes the largest complete file, commonly the
-    F16, while cached and exported rows resolve a Q4-class quant, so the same folder loads
-    dramatically bigger by source alone, an OOM rather than a preference.
+    A FOLDER still resolves: detect_gguf_model takes the largest complete file, commonly the F16,
+    where cached and exported rows take a Q4-class quant. An OOM by source alone, not a taste.
     """
     if _is_gguf_file(target):
         return _gguf_file_as_the_loader_opens_it(target)

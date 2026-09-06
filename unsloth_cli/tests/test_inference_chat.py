@@ -2494,11 +2494,8 @@ def test_catalog_loose_gguf_file_rows_load_their_own_file(monkeypatch, tmp_path)
 
 
 def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_path):
-    """The scan lists every loose shard as its own row, and they are one model.
-
-    Every shard resolving to the first is what lets _dedup_key collapse them: it keys on the
-    inode, so three distinct shard paths would be offered as three identical picks.
-    """
+    """Loose shards are listed one row each; resolving them to the first is what lets
+    _dedup_key, which keys on the inode, offer a split family as a single pick."""
     from unsloth_cli._inference import ensure_studio_backend_path
     from unsloth_cli import _model_catalog as cat
 
