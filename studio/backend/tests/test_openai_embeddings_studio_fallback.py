@@ -869,6 +869,62 @@ def test_llama_max_tokens_is_capped_by_the_running_context(tmp_path, monkeypatch
     assert backend.max_tokens() == 254
 
 
+def test_llama_max_tokens_is_capped_by_the_ubatch_we_launched_with(tmp_path, monkeypatch):
+    """/props reports n_ctx and no batch field, so the launch value is the only one there is.
+
+    A prompt past one physical batch is refused by llama-server with a 500, which this route
+    turns into a 502; the limit exists to answer 400 before that.
+    """
+    from core.rag import embed_llama_server
+
+    backend = embed_llama_server.LlamaServerBackend()
+    backend._model_path = _gguf(
+        tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)]
+    )
+    monkeypatch.setattr(backend, "_ensure_ready", lambda model_name = None: None)
+    monkeypatch.setattr(backend, "_server_context", lambda: 8192)
+    monkeypatch.setattr(backend, "_server_props", lambda: {"default_generation_settings": {"n_ctx": 8192}})
+    monkeypatch.setattr(backend, "_post", lambda *a, **k: {"tokens": [101, 102]})
+    assert backend.max_tokens() == embed_llama_server._UBATCH_SIZE - 2
+    assert "-ub" in backend._build_cmd("llama-server", "m.gguf", 1, use_gpu = False)
+
+
+def test_a_reported_batch_field_wins_over_the_launch_value(monkeypatch):
+    from core.rag import embed_llama_server
+
+    backend = embed_llama_server.LlamaServerBackend()
+    monkeypatch.setattr(backend, "_server_props", lambda: {"n_ubatch": 2048})
+    assert backend._server_batch() == 2048
+
+
+def test_a_stale_tagged_identity_is_refused_not_answered(studio_embedder):
+    """The current space is llama-server; the client resubmits the sentence-transformers tag."""
+    from fastapi import HTTPException
+
+    studio_embedder.setattr(
+        rag_config, "effective_gguf_repo_for_embedding_model", lambda model: f"{model}-GGUF"
+    )
+    studio_embedder.setattr(
+        rag_embeddings, "embedding_identity", lambda model_name = None: f"llama-server:{MODEL}"
+    )
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    # A warm index is what makes this reachable: cold, the name falls back to "has a slash".
+    from core.inference import local_model_resolver
+
+    studio_embedder.setattr(local_model_resolver, "index_is_built", lambda: True)
+    studio_embedder.setattr(local_model_resolver, "resolve_local_gguf", lambda *a, **k: None)
+    stale = IDENTITY
+    assert inference_route._names_studio_embedder(stale) is None
+    assert inference_route._reference_is_decisive(stale) is True
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route.openai_embeddings(_Request({"input": "alpha", "model": stale}), "tester")
+        )
+    assert exc.value.status_code == 503
+
+
 @pytest.mark.parametrize(
     ("body", "switched"),
     [
@@ -1180,7 +1236,10 @@ def test_the_embed_server_does_not_enlarge_its_batch(tmp_path):
     backend = embed_llama_server.LlamaServerBackend()
     model = _gguf(tmp_path, [("general.architecture", 8, "bert"), ("bert.context_length", 4, 8192)])
     cmd = backend._build_cmd("llama-server", model, 9999, use_gpu = True)
-    assert "-ub" not in cmd and "-b" not in cmd
+    assert "-b" not in cmd
+    # Pinned at llama.cpp's own default, so nothing is allocated that was not already, and
+    # max_tokens has a batch to bound the advert with (/props publishes none).
+    assert cmd[cmd.index("-ub") + 1] == str(embed_llama_server._UBATCH_SIZE)
 
 
 def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
@@ -1208,8 +1267,9 @@ def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
 def test_props_probe_never_raises_before_the_server_is_up():
     from core.rag import embed_llama_server
 
-    # An un-started server has no port, so the URL itself is invalid.
-    assert embed_llama_server.LlamaServerBackend()._server_batch() is None
+    # An un-started server has no port, so the URL itself is invalid: the probe must swallow
+    # that and fall back to the batch we launch with rather than propagate.
+    assert embed_llama_server.LlamaServerBackend()._server_batch() == embed_llama_server._UBATCH_SIZE
 
 
 def test_cancel_during_the_final_disconnect_probe_releases_the_permit(studio_embedder):

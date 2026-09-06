@@ -25947,10 +25947,17 @@ def _reference_is_decisive(requested: str) -> bool:
         split_model_ref,
     )
 
+    from core.rag.config import embedding_identity_model
+
     base, variant = split_model_ref(requested)
     # Shape alone, no index needed: an explicit quant label and a GGUF hub repo id are
     # references no vendor alias carries.
     if looks_like_quant(variant) or looks_like_gguf_hub_repo_id(base):
+        return True
+    # A tag names one exact vector space, and this runs only once _names_studio_embedder has
+    # declined it -- so it is a space this server no longer holds. Answering from the current
+    # one files two spaces under the identity the client asked us to distinguish.
+    if embedding_identity_model(requested) is not None:
         return True
     try:
         from core.inference.local_model_resolver import (

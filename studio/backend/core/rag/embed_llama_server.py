@@ -51,6 +51,10 @@ _TRANSPORT_ERRORS = (
 
 _GGUF_SCALAR_WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 
+# llama.cpp's own -ub default. An embedding prompt is not splittable, so one longer than this
+# is refused with a 500 no matter how large the model's context is.
+_UBATCH_SIZE = 512
+
 
 def _skip_gguf_value(f, vtype: int) -> None:
     if vtype == 8:
@@ -722,9 +726,11 @@ class LlamaServerBackend:
             "--fit",
             "off",
         ]
-        # No -b/-ub: raising the batch allocates n_vocab * n_ubatch * 4 up front (~938 MiB
-        # at 8192 with a 30k vocab), against the 1024 MiB free this backend calls enough to
-        # offload every layer. max_tokens advertises the batch actually running instead.
+        # -ub at llama.cpp's own default, so nothing is allocated that was not already: raising
+        # the batch allocates n_vocab * n_ubatch * 4 up front (~938 MiB at 8192 with a 30k
+        # vocab), against the 1024 MiB free this backend calls enough to offload every layer.
+        # Passed rather than read back because /props publishes n_ctx and no batch field.
+        cmd += ["-ub", str(_UBATCH_SIZE)]
         # -1 offloads every layer (matches the chat server); 0 keeps it on CPU.
         cmd += ["-ngl", "-1" if use_gpu else "0"]
         return cmd
@@ -1128,7 +1134,9 @@ class LlamaServerBackend:
             found = self._positive(props, key)
             if found:
                 return found
-        return None
+        # No build publishes either today, so the value we launched with is the only one there
+        # is. Read first anyway, so a build that starts reporting it wins over the assumption.
+        return _UBATCH_SIZE
 
     def max_tokens(self, *, model_name = None) -> int | None:
         with self._operation(), self._serve_lock:
