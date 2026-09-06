@@ -119,6 +119,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
+import { modalLayerActive } from "@/lib/modal-layer-active";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowRightIcon,
@@ -3780,6 +3781,14 @@ export function AppSidebar() {
                             data-menu-open={moreOpen ? "true" : undefined}
                             onPointerDownCapture={(event) => {
                               if (event.button !== 0 || event.ctrlKey) return;
+                              // A modal Radix dialog sets pointer-events:none
+                              // on <body>, which shields every other trigger —
+                              // but this one drives open state in JS after
+                              // preventDefault, so the layer does not stop it
+                              // and the menu opened over the dialog (#9244).
+                              if (modalLayerActive()) {
+                                return;
+                              }
                               event.preventDefault();
                               event.stopPropagation();
                               event.currentTarget.focus({ preventScroll: true });
