@@ -498,11 +498,7 @@ MLX_KV_QUANT_NO_REUSE = (
     "The installed mlx-lm cannot measure a quantized cache entry, so prompt-cache "
     "reuse across turns is disabled while this is on."
 )
-MLX_KV_QUANT_VLM_CACHE_NOTE = (
-    "On vision models, quantization starts once the cache reaches {start} tokens."
-)
-# RotatingKVCache.to_quantized raises and mlx-lm converts from the first token, so the
-# two are resolved here rather than failing generation on its first step.
+# A limited cache is rotating in every layer, so nothing in it could be quantized.
 MLX_KV_QUANT_PINNED_CONTEXT = (
     "Context Length is set for this model, which limits the KV cache, and the installed "
     "mlx-lm cannot quantize a limited cache. Reset it to quantize instead."
@@ -618,13 +614,40 @@ def _restore_mlx_rng_key(words):
     mx.random.seed((pair[0] << 32) | pair[1])
 
 
+def _kv_entry_windowed(entry):
+    return any(getattr(entry, name, None) is not None for name in ("max_size", "window_size"))
+
+
+def _kv_quant_targets(entries):
+    """Indices to convert, and how many were held back: windowed entries keep their ring,
+    and deeper than two entries the last full-attention layer stays unquantized as the
+    most sensitive.
+    """
+    targets = [
+        index
+        for index, entry in enumerate(entries)
+        if getattr(entry, "to_quantized", None) is not None and not _kv_entry_windowed(entry)
+    ]
+    if len(entries) > 2 and targets:
+        targets.pop()
+        return targets, 1
+    return targets, 0
+
+
+def _quantize_kv_entries(entries, bits):
+    for index in _kv_quant_targets(entries)[0]:
+        entries[index] = entries[index].to_quantized(group_size = MLX_KV_GROUP_SIZE, bits = bits)
+    return entries
+
+
 def _kv_quant_probe(language_model, entries, bits):
-    """Attempt the conversion the runtime will perform, on a real cache.
+    """Attempt the conversion generation will perform, on a real cache.
 
     Static proxies proved wrong in both directions: a model can declare a
     head_dim it does not use for the cache, and a window can be spelled
-    differently from entry to entry. So populate one token and try the
-    conversion that generation would do.
+    differently from entry to entry. So populate one token, convert, and run a
+    second token through the converted cache, where attention that cannot consume a
+    quantized entry fails.
 
     Returns ``(converted, skipped, failure, retainable)``. ``retainable`` is
     False when a converted entry's size cannot be read, because the prompt
@@ -632,20 +655,13 @@ def _kv_quant_probe(language_model, entries, bits):
     """
     import mlx.core as mx
 
-    convertible = [entry for entry in entries if getattr(entry, "to_quantized", None) is not None]
-    if not convertible:
+    targets, held = _kv_quant_targets(entries)
+    skipped = len(entries) - len(targets) - held
+    if not targets:
         # Verdict already known, so skip the cost of a full model call.
-        return 0, len(entries), None, True
-    if any(
-        getattr(entry, name, None) is not None
-        for entry in convertible
-        for name in ("max_size", "window_size")
-    ):
-        # A bounded ring cannot be probed unwrapped, and wrapped its conversion
-        # keeps an absolute offset past its storage. Refuse before the forward pass.
-        return 0, 0, "it uses a bounded sliding window", True
+        return 0, skipped, None, True
 
-    # The forward pass below draws random numbers, so keep sampled output stable.
+    # The forward passes below draw random numbers, so keep sampled output stable.
     rng_key = _mlx_rng_key_words()
     try:
         try:
@@ -653,24 +669,19 @@ def _kv_quant_probe(language_model, entries, bits):
             mx.eval([getattr(entry, "state", None) for entry in entries])
         except Exception as exc:
             return 0, 0, f"its cache could not be exercised ({type(exc).__name__})", True
-
-        converted = skipped = 0
-        retainable = True
-        for entry in entries:
-            convert = getattr(entry, "to_quantized", None)
-            if convert is None:
-                skipped += 1
-                continue
-            try:
-                quantized = convert(group_size = MLX_KV_GROUP_SIZE, bits = bits)
-                mx.eval(quantized.state)
-                converted += 1
-            except Exception as exc:
-                return converted, skipped, f"MLX cannot quantize it ({type(exc).__name__})", True
-            # Same helper insertion uses, so the caveat matches what insertion sees.
-            if retainable and _kv_entry_nbytes(quantized) is None:
-                retainable = False
-        return converted, skipped, None, retainable
+        try:
+            _quantize_kv_entries(entries, bits)
+            mx.eval([entries[index].state for index in targets])
+        except Exception as exc:
+            return 0, 0, f"MLX cannot quantize it ({type(exc).__name__})", True
+        try:
+            language_model(mx.array([[0]]), cache = entries)
+            mx.eval([getattr(entry, "state", None) for entry in entries])
+        except Exception as exc:
+            return 0, 0, f"it cannot attend over a quantized cache ({type(exc).__name__})", True
+        # Same helper insertion uses, so the caveat matches what insertion sees.
+        retainable = all(_kv_entry_nbytes(entries[index]) is not None for index in targets)
+        return len(targets), skipped, None, retainable
     finally:
         _restore_mlx_rng_key(rng_key)
 
@@ -722,19 +733,10 @@ def _kv_quant_eligibility(
 ):
     """Whether KV quantization can apply to this model, before generating.
 
-    Returns ``(verdict, reason, retainable)``, verdict in
-    full/partial/none/refused. Eligibility only: what the runtime converts stays
-    its own decision. Refusing here is what stops an ineligible model raising
-    mid-generation, once the leading entries are already converted.
+    Returns ``(verdict, reason, retainable)``, verdict in full/partial/none/refused.
     """
-    language_model = getattr(model, "language_model", model) if is_vlm else model
     try:
-        if is_vlm:
-            from mlx_vlm.models import cache as vlm_cache
-            entries = vlm_cache.make_prompt_cache(language_model)
-        else:
-            from mlx_lm.models import cache as lm_cache
-            entries = lm_cache.make_prompt_cache(language_model)
+        entries = _make_kv_entries(model, is_vlm)
     except Exception as exc:
         logger.warning("MLX KV quantization eligibility probe failed: %s", exc)
         return "none", "this model's KV cache layout could not be inspected", True
@@ -742,6 +744,9 @@ def _kv_quant_eligibility(
     if not entries:
         return "none", "this model builds no KV cache to quantize", True
 
+    total = len(entries)
+    windowed = sum(_kv_entry_windowed(entry) for entry in entries)
+    language_model = getattr(model, "language_model", model) if is_vlm else model
     converted, skipped, failure, retainable = _kv_quant_probe(language_model, entries, bits)
     # Released only here, once the probe's own locals are gone, or the pages stay
     # in the allocator.
@@ -754,19 +759,38 @@ def _kv_quant_eligibility(
     if failure is not None:
         return "refused", f"this model's KV cache cannot be quantized: {failure}", True
     if not converted:
-        return "none", "this model's KV cache layout cannot be quantized", True
-    verdict = "partial" if skipped else "full"
-    reason = "only some of this model's layers use a quantizable KV cache" if skipped else ""
-    return verdict, reason, retainable
+        if skipped < total:
+            reason = (
+                "it has a single full-attention layer, and the last full-attention "
+                "layer stays unquantized"
+            )
+        else:
+            reason = "this model's KV cache layout cannot be quantized"
+        return "none", reason, True
+    if not skipped:
+        return "full", "", retainable
+    if windowed == skipped:
+        reason = (
+            "its sliding-window layers keep a fixed-size cache, so only the "
+            "full-attention layers are quantized"
+        )
+    else:
+        reason = "only some of this model's layers use a quantizable KV cache"
+    return "partial", reason, retainable
 
 
-def _vlm_quantized_kv_start():
-    """Token offset at which mlx-vlm begins quantizing, per its own default."""
-    try:
-        from mlx_vlm.generate.common import DEFAULT_QUANTIZED_KV_START
-        return int(DEFAULT_QUANTIZED_KV_START)
-    except Exception:
-        return 5000
+def _make_kv_entries(
+    model,
+    is_vlm,
+    max_kv_size = None,
+):
+    language_model = getattr(model, "language_model", model) if is_vlm else model
+    if is_vlm:
+        from mlx_vlm.models import cache as vlm_cache
+        return vlm_cache.make_prompt_cache(language_model, max_kv_size = max_kv_size)
+    from mlx_lm.models import cache as lm_cache
+
+    return lm_cache.make_prompt_cache(language_model, max_kv_size = max_kv_size)
 
 
 # An override replaces an existing template, never creates one: both render
@@ -1038,14 +1062,8 @@ def _kv_window_enforced(model, is_vlm, window):
     Both runtimes defer to a model's own make_cache when it has one and ignore
     max_kv_size there. Returns None when no cache could be built to judge.
     """
-    language_model = getattr(model, "language_model", model) if is_vlm else model
     try:
-        if is_vlm:
-            from mlx_vlm.models import cache as vlm_cache
-            entries = vlm_cache.make_prompt_cache(language_model, max_kv_size = window)
-        else:
-            from mlx_lm.models import cache as lm_cache
-            entries = lm_cache.make_prompt_cache(language_model, max_kv_size = window)
+        entries = _make_kv_entries(model, is_vlm, max_kv_size = window)
         # Inside the guard with the build: an unjudgeable shape must read as unknown,
         # since load_model calls this unguarded and a raise would fail the load.
         flattened = list(_flatten_kv_entries(entries))
@@ -1081,12 +1099,7 @@ def _kv_quant_status(
     status["reason"] = reason
     if verdict in ("full", "partial"):
         status["kv_bits"] = requested_bits
-        notes = []
-        if is_vlm:
-            notes.append(MLX_KV_QUANT_VLM_CACHE_NOTE.format(start = _vlm_quantized_kv_start()))
-        if not retainable:
-            notes.append(MLX_KV_QUANT_NO_REUSE)
-        status["note"] = " ".join(notes)
+        status["note"] = "" if retainable else MLX_KV_QUANT_NO_REUSE
     else:
         logger.info("MLX KV quantization not applied: %s", reason)
     return status
@@ -1163,12 +1176,14 @@ class _MLXPromptCacheHistory:
         max_entries,
         max_bytes,
         max_kv_size = None,
+        prepare = None,
     ):
         api = _mlx_prompt_cache_api()
         if api is None:
             raise RuntimeError("mlx-lm is too old for LRUPromptCache")
         lru_cls, make, can_trim, trim = api
         self._max_kv_size = max_kv_size
+        self._prepare = prepare
         self._make_prompt_cache = make
         self._can_trim = can_trim
         self._trim = trim
@@ -1189,8 +1204,10 @@ class _MLXPromptCacheHistory:
                 covered = len(head) - len(rest)
                 return cache, list(tokens[covered:])
         if self._max_kv_size is None:
-            return self._make_prompt_cache(model), list(tokens)
-        return self._make_prompt_cache(model, max_kv_size = self._max_kv_size), list(tokens)
+            cache = self._make_prompt_cache(model)
+        else:
+            cache = self._make_prompt_cache(model, max_kv_size = self._max_kv_size)
+        return cache if self._prepare is None else self._prepare(cache), list(tokens)
 
     def insert(self, key, tokens, cache):
         # An over-budget entry evicts itself and every other conversation.
@@ -1501,6 +1518,7 @@ class MLXInferenceBackend:
                 PROMPT_CACHE_ENTRIES,
                 max_bytes,
                 self._kv_cache_window,
+                prepare = self._prepare_kv_entries,
             )
         except Exception as exc:
             self._prompt_cache_unavailable = True
@@ -1532,14 +1550,22 @@ class MLXInferenceBackend:
             return prompt, None, None, None, 0
         return rest, cache, key, tokens, len(tokens) - len(rest)
 
-    def _kv_quant_generate_kwargs(self):
-        """Load-time runtime knobs for a generate call, empty when unset.
+    def _kv_quant_bits(self):
+        return (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
 
-        quantized_kv_start is deliberately not passed: mlx-lm and mlx-vlm ship
-        different defaults (0 and 5000) and each runtime keeps its own.
+    def _prepare_kv_entries(self, entries):
+        bits = self._kv_quant_bits()
+        return entries if bits is None else _quantize_kv_entries(entries, bits)
+
+    def _kv_quant_generate_kwargs(self):
+        """A pre-quantized cache in place of kv_bits, which would make either runtime
+        convert every entry from its own start offset and raise on a rotating one.
         """
-        kv_bits = (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
-        return {} if kv_bits is None else {"kv_bits": kv_bits}
+        if self._kv_quant_bits() is None:
+            return {}
+        return {
+            "prompt_cache": self._prepare_kv_entries(_make_kv_entries(self._model, self._is_vlm))
+        }
 
     def _kv_window_generate_kwargs(self):
         """The cache bound for a generation that builds its own cache, empty when unset.
@@ -1786,9 +1812,7 @@ class MLXInferenceBackend:
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
             self._model, max_seq_length
         )
-        # Classify before the first generation: an ineligible cache would otherwise
-        # raise inside maybe_quantize_kv_cache mid-stream, after converting the
-        # leading entries.
+        # Classified now so a cache the model cannot attend over is refused here, not on a token.
         self._kv_quant, self._kv_cache_window, _ctx_enforced = self._resolve_kv_policy(
             is_vision, kv_bits, max_seq_length, _served_ctx
         )
@@ -2341,10 +2365,11 @@ class MLXInferenceBackend:
                     max_tokens = max_new_tokens,
                     sampler = sampler,
                 )
-                gen_kwargs.update(self._kv_quant_generate_kwargs())
                 gen_kwargs.update(self._kv_window_generate_kwargs())
                 if prompt_cache is not None:
                     gen_kwargs["prompt_cache"] = prompt_cache
+                else:
+                    gen_kwargs.update(self._kv_quant_generate_kwargs())
                 if logits_processors is not None:
                     gen_kwargs["logits_processors"] = logits_processors
                 for response in stream_generate(
