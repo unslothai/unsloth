@@ -1627,6 +1627,7 @@ def test_a_cuda_index_codec_also_installs_npp():
 
     # The major follows the index leaf, and a cpu or rocm index asks for nothing.
     import re
+
     for url, want in (
         ("https://download.pytorch.org/whl/cu128", "12"),
         ("https://download.pytorch.org/whl/cu130", "13"),
