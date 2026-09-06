@@ -574,11 +574,14 @@ def test_a_replaced_python_script_is_refused_before_anything_runs(tmp_path):
             attacker.write_text("print('attacker')", encoding = "utf-8")
             os.replace(str(attacker), str(script))
             assert tools._scratch_script_was_swapped(str(script), identity)
-        # A script that vanished entirely is a swap too, never a silent pass.
     finally:
         tools._release_batch_script(handle)
     os.unlink(str(script))
-    assert tools._scratch_script_was_swapped(str(script), identity)
+    if sys.platform != "win32":
+        # A script that vanished entirely is a swap too, never a silent pass.
+        # Windows records no identity, because there the handle prevents the
+        # swap outright, so there is nothing to re-check.
+        assert tools._scratch_script_was_swapped(str(script), identity)
 
 
 def test_the_python_launch_checks_the_script_after_preparing_it(tmp_path):
