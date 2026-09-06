@@ -824,6 +824,7 @@ class TestTheCudaWheelProbeIsNotFooled:
                 "  return ($Base.TrimEnd('/') + '/' + $Path.TrimStart('/')) }",
                 f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
                 _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTagsUsable"),
                 _ps_function(INSTALL_PS1, "Get-WoaCudaWheelVersion"),
                 f"$v = Get-WoaCudaWheelVersion -IndexUrl 'https://x.test/i' -PythonMinor '{minor}' -Project '{project}'",
                 'Write-Output "[$v]"',
@@ -1127,6 +1128,10 @@ class TestTheSuppliedPyarrowWheelIsValidated:
                 "function Invoke-RestMethod { throw 'no network in this test' }",
                 "$script:WoaWheelhouse = 'https://example.test/wheels'",
                 _function_source(text, "Test-WoaWheelTags"),
+                # Test-WoaPyarrowWheelUsable gates on Test-WoaWheelTagsUsable now, and a
+                # helper the prelude does not lift is a command-not-found that aborts the
+                # statement rather than answering false.
+                _function_source(text, "Test-WoaWheelTagsUsable"),
                 _function_source(text, "Test-WoaVersionAtLeast"),
                 # Every pyarrow candidate is floored against constraints.txt now.
                 '$script:WoaPyarrowFloor = "21.0.0"',
@@ -1262,6 +1267,7 @@ class TestTheProbeAsksForTheInterpretersAbi:
                 "  return ($Base.TrimEnd('/') + '/' + $Path.TrimStart('/')) }",
                 f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
                 _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTagsUsable"),
                 _ps_function(INSTALL_PS1, "Get-WoaCudaWheelVersion"),
                 f"$v = Get-WoaCudaWheelVersion -IndexUrl 'https://x.test/i' -PythonMinor '3.13' -AbiTag '{abi}'",
                 'Write-Output "[$v]"',
@@ -1719,6 +1725,10 @@ class TestTheWheelTagsAreMatchedAsFields:
         script = "\n".join(
             [
                 _function_source(text, "Test-WoaWheelTags"),
+                # Test-WoaPyarrowWheelUsable gates on Test-WoaWheelTagsUsable now, and a
+                # helper the prelude does not lift is a command-not-found that aborts the
+                # statement rather than answering false.
+                _function_source(text, "Test-WoaWheelTagsUsable"),
                 f"Write-Output (Test-WoaWheelTags -Name '{name}' -PyTag '{py}' -AbiTag '{abi}')",
             ]
         )
@@ -1926,6 +1936,10 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
                 f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
                 "$script:WoaWheelhouse = $null",
                 _function_source(text, "Test-WoaWheelTags"),
+                # Test-WoaPyarrowWheelUsable gates on Test-WoaWheelTagsUsable now, and a
+                # helper the prelude does not lift is a command-not-found that aborts the
+                # statement rather than answering false.
+                _function_source(text, "Test-WoaWheelTagsUsable"),
                 _function_source(text, "Test-WoaWheelTagsUsable"),
                 _function_source(text, "Test-WoaVersionAtLeast"),
                 _function_source(text, "Test-WoaPyPIWheel"),
@@ -1951,6 +1965,10 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
                 "function Invoke-RestMethod { param([Parameter(ValueFromRemainingArguments=$true)]$a) throw 'offline' }",
                 "$script:WoaWheelhouse = $null",
                 _function_source(text, "Test-WoaWheelTags"),
+                # Test-WoaPyarrowWheelUsable gates on Test-WoaWheelTagsUsable now, and a
+                # helper the prelude does not lift is a command-not-found that aborts the
+                # statement rather than answering false.
+                _function_source(text, "Test-WoaWheelTagsUsable"),
                 _function_source(text, "Test-WoaWheelTagsUsable"),
                 _function_source(text, "Test-WoaVersionAtLeast"),
                 _function_source(text, "Test-WoaPyPIWheel"),
@@ -2540,6 +2558,16 @@ class TestAWheelhousePyarrowMustClearTheFloor:
         [
             ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", "True", "at the floor"),
             ("pyarrow-23.0.1-cp313-cp313-win_arm64.whl", "True", "above it"),
+            # The shape upstream is actually going to ship. apache/arrow#48539 is held behind
+            # apache/arrow#50398, whose plan is an abi3 floor of 3.11, so the first win_arm64
+            # pyarrow on PyPI will be cp311-abi3. Rejecting it would keep us on our own
+            # 24.0.0.dev260 silently and forever.
+            ("pyarrow-26.0.0-cp311-abi3-win_arm64.whl", "True", "abi3 from below this venv"),
+            ("pyarrow-26.0.0-cp39-abi3-win_arm64.whl", "True", "abi3 from further below"),
+            # abi3 reaches forward from what it was built against, never backward.
+            ("pyarrow-26.0.0-cp314-abi3-win_arm64.whl", "False", "abi3 built for a newer one"),
+            # A floor still applies to an abi3 wheel; the tag is not a bypass.
+            ("pyarrow-19.0.0-cp311-abi3-win_arm64.whl", "False", "abi3 below the floor"),
             ("pyarrow-19.0.1-cp313-cp313-win_arm64.whl", "False", "below it"),
             ("pyarrow-21.0.0-cp312-cp312-win_arm64.whl", "False", "wrong interpreter"),
             ("pyarrow-notaversion-cp313-cp313-win_arm64.whl", "False", "unreadable version"),
@@ -2549,6 +2577,7 @@ class TestAWheelhousePyarrowMustClearTheFloor:
         script = "\n".join(
             [
                 _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTagsUsable"),
                 _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
                 '$script:WoaPyarrowFloor = "21.0.0"',
                 _ps_function(INSTALL_PS1, "Test-WoaPyarrowWheelUsable"),
@@ -2848,11 +2877,39 @@ class TestAFloorIsPep440AboutPrereleases:
             )
 
     @requires_pwsh
+    def test_abi3_is_refused_on_a_free_threaded_venv(self):
+        """Free-threaded CPython has no stable ABI (CPython #111506), so abi3 is not an option
+        there. Accepting usable tags must not have loosened this."""
+        script = "\n".join(
+            [
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTagsUsable"),
+                _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
+                '$script:WoaPyarrowFloor = "21.0.0"',
+                _ps_function(INSTALL_PS1, "Test-WoaPyarrowWheelUsable"),
+                "Write-Output ([bool](Test-WoaPyarrowWheelUsable "
+                "-Name 'pyarrow-26.0.0-cp311-abi3-win_arm64.whl' "
+                "-PyTag 'cp313' -AbiTag 'cp313t'))",
+            ]
+        )
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output = True,
+            text = True,
+            timeout = 120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip() == "False", (
+            "an abi3 wheel was accepted on a free-threaded venv, where it cannot import"
+        )
+
+    @requires_pwsh
     def test_the_wheel_the_gb10_run_staged_is_still_accepted(self):
         """Named explicitly: a floor that rejected it would break a verified install."""
         script = "\n".join(
             [
                 _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTagsUsable"),
                 _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
                 '$script:WoaPyarrowFloor = "21.0.0"',
                 _ps_function(INSTALL_PS1, "Test-WoaPyarrowWheelUsable"),
@@ -3461,6 +3518,7 @@ class TestTheMandatoryPyarrowWheelIsOpened:
                 "function Invoke-RestMethod { throw 'no network in this test' }",
                 f"$script:WoaWheelhouse = '{tmp_path}'",
                 _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTagsUsable"),
                 _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
                 '$script:WoaPyarrowFloor = "21.0.0"',
                 _ps_function(INSTALL_PS1, "Test-WoaPyarrowWheelUsable"),
@@ -3776,6 +3834,7 @@ class TestThePypiPyarrowWheelIsPinnedToo:
                 "$script:WoaWheelhouse = ''",
                 "function Test-WoaResolveReachesPyPI { $true }",
                 _ps_function(INSTALL_PS1, "Test-WoaWheelTags"),
+                _ps_function(INSTALL_PS1, "Test-WoaWheelTagsUsable"),
                 _ps_function(INSTALL_PS1, "Test-WoaVersionAtLeast"),
                 '$script:WoaPyarrowFloor = "21.0.0"',
                 _ps_function(INSTALL_PS1, "Test-WoaPyarrowWheelUsable"),
@@ -4619,6 +4678,11 @@ class TestThePyPIProbeHonoursUvConfiguration:
                 f"Set-Location -LiteralPath '{tmp_path / 'proj'}'",
                 setenv,
                 _ps_function(INSTALL_PS1, "Test-WoaUrlIsPublicPyPI"),
+                # Read-WoaUvTomlIndexKeys scans for quotes now, so its two scanners come with
+                # it. Omitting one is a command-not-found, which aborts the statement instead
+                # of answering, and the caller then reports PyPI as reachable.
+                _ps_function(INSTALL_PS1, "Remove-WoaTomlComment"),
+                _ps_function(INSTALL_PS1, "Split-WoaTomlKey"),
                 _ps_function(INSTALL_PS1, "Read-WoaUvTomlIndexKeys"),
                 _ps_function(INSTALL_PS1, "Get-WoaUvConfigIndexPolicy"),
                 _ps_function(INSTALL_PS1, "Test-WoaResolveReachesPyPI"),

@@ -817,7 +817,16 @@ function Install-UnslothStudio {
     $script:WoaPyarrowFloor = "21.0.0"
     function Test-WoaPyarrowWheelUsable {
         param([string]$Name, [string]$PyTag, [string]$AbiTag)
-        if (-not (Test-WoaWheelTags -Name $Name -PyTag $PyTag -AbiTag $AbiTag)) { return $false }
+        # Usable, not exact. pyarrow has never published a win_arm64 wheel, and the one it is
+        # going to publish is abi3: apache/arrow#48539 is held behind apache/arrow#50398, whose
+        # plan is an abi3 floor of 3.11, so the file will be named cp311-abi3. An exact-tag test
+        # answers false for that on every interpreter, which is the worst possible failure mode
+        # here -- silent and permanent. The day upstream ships, we would go on selecting our own
+        # 24.0.0.dev260 and writing it into the override file as an exact pin, and nothing would
+        # report anything wrong. Test-WoaWheelTagsUsable still refuses an abi3 wheel built
+        # against a NEWER interpreter than this venv, and refuses abi3 entirely on free-threaded
+        # builds, which is the whole of what exactness was buying.
+        if (-not (Test-WoaWheelTagsUsable -Name $Name -PyTag $PyTag -AbiTag $AbiTag)) { return $false }
         $fields = ($Name -replace '(?i)\.whl$', '') -split '-'
         if ($fields.Count -lt 5) { return $false }
         return (Test-WoaVersionAtLeast -Version $fields[1] -Floor $script:WoaPyarrowFloor)
