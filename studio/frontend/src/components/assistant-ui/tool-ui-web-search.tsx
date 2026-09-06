@@ -194,6 +194,22 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         icon={GlobeIcon}
       />
       <ToolFallbackContent>
+        {isUrlFetch ? (
+          <div
+            data-slot="tool-web-fetch-url"
+            className="flex min-w-0 items-start gap-2 text-xs"
+          >
+            <span className="shrink-0 font-medium text-muted-foreground">
+              URL:
+            </span>
+            <code
+              dir="ltr"
+              className="min-w-0 break-all text-foreground/85 [unicode-bidi:plaintext]"
+            >
+              {url}
+            </code>
+          </div>
+        ) : null}
         {isRunning ? (
           <div className="flex items-center text-sm text-muted-foreground">
             <span>
