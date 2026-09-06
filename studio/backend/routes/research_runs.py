@@ -22,6 +22,7 @@ from core.inference.message_content import message_text_with_pastes
 from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
 from core.inference.providers import provider_runs_local_tools
+from models.providers import MAX_JSON_SAFE_INTEGER
 from storage import providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
@@ -215,6 +216,7 @@ def _sanitize_config(
         "temperature",
         "topP",
         "maxTokens",
+        "maxOutputTokens",
         "enableThinking",
         "reasoningEffort",
     }
@@ -281,6 +283,15 @@ def _sanitize_config(
         if "maxTokens" in request:
             request["maxTokens"] = int(request["maxTokens"])
             if not 1 <= request["maxTokens"] <= 8192:
+                raise ValueError
+        if "maxOutputTokens" in request:
+            # Strict, like the saved-connection schema this mirrors: bool is an int subclass,
+            # and int() would silently truncate a float or raise OverflowError on a non-finite
+            # one, which is a 500 rather than the 400 an invalid field deserves.
+            budget = request["maxOutputTokens"]
+            if isinstance(budget, bool) or not isinstance(budget, int):
+                raise ValueError
+            if not 1 <= budget <= MAX_JSON_SAFE_INTEGER:
                 raise ValueError
         if "enableThinking" in request and not isinstance(request["enableThinking"], bool):
             raise ValueError
