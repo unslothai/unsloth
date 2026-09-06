@@ -84,42 +84,62 @@ full control to the LocalSystem account, administrators, and the creator owner.
 They also grant read access to members of the Everyone group and the anonymous
 account." That descriptor is a fixed one the named pipe filesystem supplies, not
 the token's default DACL, so the ``SetTokenInformation(TokenDefaultDacl)`` below
-never reaches it. ``CREATOR OWNER`` is replaced at assignment with the child's own
-user SID, so the *first* access check passes and the create succeeds; CPython then
-opens the client half with ``GENERIC_READ | GENERIC_WRITE`` (``GENERIC_WRITE``
-alone for the ``duplex = False`` pipe a ``Queue`` uses), which is a write, so the
-*second* check runs, and of the three restricting SIDs the launch SID and the
-logon SID are absent from that DACL while Everyone holds read alone.
+never reaches it. The create succeeds, because a create is granted the access it
+asks for without its own DACL being checked; CPython then *opens* the client half
+with ``GENERIC_READ | GENERIC_WRITE`` (``GENERIC_WRITE`` alone for the
+``duplex = False`` pipe a ``Queue`` uses), and that open is checked twice against
+a descriptor holding nothing either check can use. Of the restricting SIDs the
+launch SID and the logon SID are absent from it and Everyone holds read alone, so
+the second refuses; and ``CREATOR OWNER`` is replaced at assignment with the
+token's *owner* rather than its user, which for an account that is an
+administrator LSA sets to ``BUILTIN\\Administrators``, the one group this token
+holds deny-only, so on an elevated Studio the first refuses as well.
 ``ERROR_ACCESS_DENIED``, at ``CreateFile`` and not at ``CreateNamedPipe``.
 
-Nothing this launcher can reach fixes that. The only restricting SID that would
-satisfy the second check on that descriptor is the token's own user SID, because
-``CREATOR OWNER`` became it, and adding the user SID to ``SidsToRestrict`` would
-make the second check a formality on every object the account owns. The write
-fence would be gone, and the probe's own ``granted-user`` directory would begin
-taking writes, which is the requirement that exists to catch exactly that. So
-named pipes are a *disclosure*, ``named_pipes_denied``, on the same footing as an
-unreadable user profile, and the probe says what it costs.
+Nothing this launcher can reach fixes that, and neither half of it. Setting
+``TokenOwner`` to the user SID would answer the first check and leave the second
+exactly where it was; the only restricting SID that could answer the second is
+the user SID itself, and adding it to ``SidsToRestrict`` would make that check a
+formality on every object the account owns. The write fence would be gone, and
+the probe's own ``granted-user`` directory would begin taking writes, which is
+the requirement that exists to catch exactly that. So named pipes are a
+*disclosure*, ``named_pipes_denied``, on the same footing as an unreadable user
+profile, and the probe prints the descriptor and the owner it saw so a host is
+free to refute the reading rather than take it.
 
 What it costs is bounded, and the bound is what makes disclosing it defensible
 rather than merely convenient. ``multiprocessing.Process`` ships its child the
-pickled work through ``_winapi.CreatePipe``, an *anonymous* pipe, which is created
-with a NULL descriptor and therefore does take the token's default DACL and does
-work; so do ``subprocess``, threads, sockets, and the named semaphores
-``multiprocessing.synchronize`` builds under ``\\BaseNamedObjects``. ``import
-torch`` creates no pipe of either kind (``multiprocessing.resource_sharer`` builds
-its ``Listener`` on the first shared resource, not at import), so unlike the LPAC
-AppContainer, where ``NUL`` is denied as well, the interpreter and the entire
-single-process torch path are intact. What is lost is what is built on
-``connection.Pipe``: ``multiprocessing.Queue``, ``SimpleQueue``, ``Pool``,
-``Manager``, ``concurrent.futures.ProcessPoolExecutor``, and therefore a
-``DataLoader`` with ``num_workers > 0``. Work that needs those has Full access.
+pickled work through ``_winapi.CreatePipe``, an *anonymous* pipe, which Microsoft
+documents separately and differently: "if you specify NULL, the pipe gets a
+default security descriptor. The ACLs in the default security descriptor for a
+pipe come from the primary or impersonation token of the creator". That is the
+token's default DACL, which this launcher writes, so anonymous pipes are
+something it can keep; so are ``subprocess``, threads, sockets, and the named
+semaphores ``multiprocessing.synchronize`` builds under ``\\BaseNamedObjects``.
+``import torch`` creates no pipe of either kind
+(``multiprocessing.resource_sharer`` builds its ``Listener`` on the first shared
+resource, not at import), so unlike the LPAC AppContainer, where ``NUL`` is denied
+as well, the interpreter and the entire single-process torch path are intact.
+What is lost is what is built on ``connection.Pipe``: ``multiprocessing.Queue``,
+``SimpleQueue``, ``Pool``, ``Manager``, ``concurrent.futures.ProcessPoolExecutor``,
+and therefore a ``DataLoader`` with ``num_workers > 0``. Work that needs those has
+Full access.
 
 The anonymous pipe is a *requirement* rather than a disclosure, because unlike the
 named one it is something this launcher promises: it is the whole point of the
-default DACL edit. A host that refuses it is a host where that edit did not take,
-which is a defect here and not a property of the account, so Limited falls back
-rather than running on a model that is wrong.
+default DACL edit. Staging round 20 refused it anyway, on the same two hosted
+runners, with every other requirement holding, and the defect was here: that edit
+granted the launch SID and nothing else. A restricted token is judged twice
+against its default DACL exactly as it is against a directory, the launch SID
+reaches only the second check, and the DACL a restricted token inherits from an
+elevated administrator's is ``BUILTIN\\Administrators`` and ``SYSTEM`` with full
+control and the logon SID with read and execute. Administrators is deny-only
+here, so nothing on it grants the first check a *write*, which is why every
+observation that merely creates an object passed and the one that creates a pipe
+and then opens its second half did not. ``_set_default_dacl`` now grants the
+token's own user SID beside the launch SID, which is what Chromium's sandbox does
+to its lockdown token for the same reason, and the probe prints the DACL so the
+next run confirms the mechanism instead of the outcome.
 
 "Usually" is the part hosted Windows CI corrected. ``WRITE_RESTRICTED`` leaves
 reads to the *first* access check, and that check runs against a token whose
@@ -1408,43 +1428,72 @@ def _grant_token_user(identity: _LaunchIdentity, token: wintypes.HANDLE) -> None
 
 
 def _set_default_dacl(api: Any, token: wintypes.HANDLE, sid: ctypes.c_void_p) -> None:
-    """Add the launch SID to the token's default DACL.
+    """Put *both* of this launch's SIDs on the token's default DACL.
 
     Objects the child creates without an explicit descriptor (anonymous pipes,
-    events, sections) get this DACL. The write-restricted check needs a
-    restricting SID on them, otherwise the child could not even write to a pipe
-    it just created.
+    events, sections, and the child's own process and thread objects) are
+    assigned this DACL, and a restricted token is judged twice against it exactly
+    as it is against a directory. Granting the launch SID alone is therefore the
+    same half-fix ``_grant_token_user`` exists to undo on the filesystem roots,
+    and it was never carried across to here.
+
+    The launch SID satisfies the *second* access check and only that one: it
+    lives in ``TokenRestrictedSids`` and in none of the token's groups. What the
+    *first* check has to work with is whatever the source token's default DACL
+    already carried, which for a token of an account that is an administrator is
+    ``BUILTIN\\Administrators`` and ``SYSTEM`` rather than the user. This token
+    holds Administrators deny-only (``SidsToDisable``, and ``LUA_TOKEN``), and
+    "the system uses only enabled SIDs to grant access", so on an elevated Studio
+    the first check finds nothing on that DACL that grants and every object the
+    child creates is one it cannot then open for write. ``CreatePipe`` is
+    precisely that shape, a create followed by an open of the second half, which
+    is why the anonymous pipe was refused on hosted Windows while everything that
+    only ever *creates* an object (a ``multiprocessing`` semaphore) was not.
+
+    So the token's own user SID, read off the token that was built, is granted
+    beside the launch SID. That is what Chromium's sandbox does with the same two
+    SIDs, for the same reason, before it assigns its lockdown token. It widens
+    nothing this launcher fences: the default DACL is consulted only for objects
+    the child itself creates, which the account already owns, and the second
+    access check still decides every write on them.
     """
     buffer = _token_information(api, token, _TOKEN_DEFAULT_DACL)
     current = ctypes.cast(buffer, ctypes.POINTER(_TOKEN_DEFAULT_DACL_INFO))[0].DefaultDacl
-    trustee = _lpac._TRUSTEE_W(
-        None,
-        _lpac._NO_MULTIPLE_TRUSTEE,
-        _lpac._TRUSTEE_IS_SID,
-        _lpac._TRUSTEE_IS_UNKNOWN,
-        ctypes.cast(sid, wintypes.LPWSTR),
-    )
-    entry = _lpac._EXPLICIT_ACCESS_W(_lpac._GENERIC_ALL, _lpac._GRANT_ACCESS, _NO_INHERITANCE, trustee)
-    new_acl = ctypes.c_void_p()
-    result = api.advapi32.SetEntriesInAclW(
-        1,
-        ctypes.byref(entry),
-        ctypes.c_void_p(current) if current else None,
-        ctypes.byref(new_acl),
-    )
-    if result != 0:
-        raise _lpac._winerror("SetEntriesInAclW(default DACL)", result)
-    try:
-        default_dacl = _TOKEN_DEFAULT_DACL_INFO(new_acl)
-        if not api.advapi32.SetTokenInformation(
-            token,
-            _TOKEN_DEFAULT_DACL,
-            ctypes.byref(default_dacl),
-            ctypes.sizeof(default_dacl),
-        ):
-            raise _lpac._winerror("SetTokenInformation(TokenDefaultDacl)")
-    finally:
-        api.kernel32.LocalFree(new_acl)
+    with _sid_of(_token_user_sid_text(api, token)) as user_sid:
+        entries = (_lpac._EXPLICIT_ACCESS_W * 2)()
+        for index, principal in enumerate((sid, user_sid)):
+            entries[index] = _lpac._EXPLICIT_ACCESS_W(
+                _lpac._GENERIC_ALL,
+                _lpac._GRANT_ACCESS,
+                _NO_INHERITANCE,
+                _lpac._TRUSTEE_W(
+                    None,
+                    _lpac._NO_MULTIPLE_TRUSTEE,
+                    _lpac._TRUSTEE_IS_SID,
+                    _lpac._TRUSTEE_IS_UNKNOWN,
+                    ctypes.cast(principal, wintypes.LPWSTR),
+                ),
+            )
+        new_acl = ctypes.c_void_p()
+        result = api.advapi32.SetEntriesInAclW(
+            len(entries),
+            entries,
+            ctypes.c_void_p(current) if current else None,
+            ctypes.byref(new_acl),
+        )
+        if result != 0:
+            raise _lpac._winerror("SetEntriesInAclW(default DACL)", result)
+        try:
+            default_dacl = _TOKEN_DEFAULT_DACL_INFO(new_acl)
+            if not api.advapi32.SetTokenInformation(
+                token,
+                _TOKEN_DEFAULT_DACL,
+                ctypes.byref(default_dacl),
+                ctypes.sizeof(default_dacl),
+            ):
+                raise _lpac._winerror("SetTokenInformation(TokenDefaultDacl)")
+        finally:
+            api.kernel32.LocalFree(new_acl)
 
 
 def _user_object_name(api: Any, handle: wintypes.HANDLE) -> str:
@@ -2083,6 +2132,11 @@ def loadable(path):
 in_job = wintypes.BOOL()
 kernel32.IsProcessInJob(kernel32.GetCurrentProcess(), None, ctypes.byref(in_job))
 secret, sibling, user_only = sys.argv[1], sys.argv[2], sys.argv[3]
+# argv[4] is the private temp and argv[5] the launch SID, both substituted by the
+# host once the launch identity exists. The SID is what the descriptor controls
+# below are built from; a child that was not given one says so rather than
+# quietly running the control against a descriptor that grants nobody.
+launch_sid = sys.argv[5]
 findings = {
     "restricted": bool(advapi32.IsTokenRestricted(token)),
     "restricted_sids": sids(11),
@@ -2173,26 +2227,57 @@ advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [wintyp
 advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
 advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR), ctypes.c_void_p]
 advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = wintypes.BOOL
+advapi32.InitializeSecurityDescriptor.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+advapi32.InitializeSecurityDescriptor.restype = wintypes.BOOL
+advapi32.SetSecurityDescriptorDacl.argtypes = [ctypes.c_void_p, wintypes.BOOL, ctypes.c_void_p, wintypes.BOOL]
+advapi32.SetSecurityDescriptorDacl.restype = wintypes.BOOL
+kernel32.CreatePipe.argtypes = [ctypes.POINTER(wintypes.HANDLE), ctypes.POINTER(wintypes.HANDLE), ctypes.c_void_p, wintypes.DWORD]
+kernel32.CreatePipe.restype = wintypes.BOOL
+kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+kernel32.CreateEventW.restype = wintypes.HANDLE
+kernel32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+kernel32.OpenEventW.restype = wintypes.HANDLE
 
 def failure(call):
     code = ctypes.get_last_error()
     return "%s: [WinError %d] %s" % (call, code, ctypes.FormatError(code))
 
-def pipe_dacl(handle):
+def descriptor_sddl(descriptor):
+    text = wintypes.LPWSTR()
+    if not advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, 1, 4, ctypes.byref(text), None):
+        return failure("ConvertSecurityDescriptorToStringSecurityDescriptorW")
+    value = text.value
+    kernel32.LocalFree(text)
+    return value
+
+def object_dacl(handle):
     # SE_KERNEL_OBJECT (6) and DACL_SECURITY_INFORMATION (4). GetSecurityInfo
     # returns a Win32 error code rather than a BOOL.
     descriptor = ctypes.c_void_p()
     code = advapi32.GetSecurityInfo(handle, 6, 4, None, None, None, None, ctypes.byref(descriptor))
     if code != 0:
         return "GetSecurityInfo failed: %d" % code
-    text = wintypes.LPWSTR()
-    if advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, 1, 4, ctypes.byref(text), None):
-        value = text.value
-        kernel32.LocalFree(text)
-    else:
-        value = failure("ConvertSecurityDescriptorToStringSecurityDescriptorW")
+    value = descriptor_sddl(descriptor)
     kernel32.LocalFree(descriptor)
     return value
+
+def token_default_dacl():
+    """The DACL every object the child creates without a descriptor is assigned.
+
+    The one mechanism this launcher promises rather than discloses, so it is read
+    off the token and printed rather than inferred from what it produced. An
+    absolute descriptor is built around the ACL because SDDL is a descriptor's
+    text form and not an ACL's; SECURITY_DESCRIPTOR_MIN_LENGTH is 40 bytes here.
+    """
+    acl = ctypes.cast(info(6), ctypes.POINTER(ctypes.c_void_p))[0]
+    if not acl:
+        return "the token carries no default DACL"
+    descriptor = ctypes.create_string_buffer(64)
+    if not advapi32.InitializeSecurityDescriptor(descriptor, 1):
+        return failure("InitializeSecurityDescriptor")
+    if not advapi32.SetSecurityDescriptorDacl(descriptor, True, ctypes.c_void_p(acl), False):
+        return failure("SetSecurityDescriptorDacl")
+    return descriptor_sddl(descriptor)
 
 def pipe_pair(sddl):
     """One connection.Pipe() by hand, on the same flags, reporting each step.
@@ -2222,7 +2307,7 @@ def pipe_pair(sddl):
             report["refused"] = failure("CreateNamedPipe")
             return report
         try:
-            report["dacl"] = pipe_dacl(server)
+            report["dacl"] = object_dacl(server)
             # GENERIC_READ | GENERIC_WRITE, no sharing, OPEN_EXISTING,
             # FILE_FLAG_OVERLAPPED: the client half connection.Pipe() opens.
             client = kernel32.CreateFileW(name, 0x80000000 | 0x40000000, 0, None, 3, 0x40000000, None)
@@ -2239,19 +2324,103 @@ def pipe_pair(sddl):
         if descriptor:
             kernel32.LocalFree(descriptor)
 
-try:
-    findings["pipe_default_sd"] = pipe_pair("")
-    # The token's user SID satisfies the first access check and the launch SID is
-    # the only one of the restricting SIDs the second can be satisfied with, so
-    # this is the descriptor a working pipe would need and nothing more.
-    principals = [s for s in (findings.get("user_sid"), sys.argv[5]) if s]
-    findings["pipe_launch_sid"] = (
-        pipe_pair("D:" + "".join("(A;;GA;;;%s)" % s for s in principals))
-        if principals
-        else "neither SID this descriptor needs was known to the child"
-    )
-except Exception as exc:
-    findings["pipe_forensics"] = describe(exc)
+def anonymous_pair(sddl):
+    """One os.pipe() by hand, reporting the descriptor the pipe was actually given.
+
+    CreatePipe is documented to take that descriptor from somewhere this launcher
+    controls: "If you specify NULL, the pipe gets a default security descriptor.
+    The ACLs in the default security descriptor for a pipe come from the primary
+    or impersonation token of the creator" (Anonymous Pipe Security and Access
+    Rights). The named pipe the same call is built on is documented to take a
+    fixed one instead, so reading the DACL off a pipe that was created is the only
+    thing that says which of the two an anonymous pipe really gets here.
+    """
+    report = {}
+    descriptor = ctypes.c_void_p()
+    attributes = None
+    if sddl:
+        if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(descriptor), None):
+            report["created"] = failure("ConvertStringSecurityDescriptorToSecurityDescriptorW")
+            return report
+        attributes = SECURITY_ATTRIBUTES(ctypes.sizeof(SECURITY_ATTRIBUTES), descriptor, False)
+    read = wintypes.HANDLE()
+    write = wintypes.HANDLE()
+    try:
+        if not kernel32.CreatePipe(
+            ctypes.byref(read), ctypes.byref(write),
+            ctypes.byref(attributes) if attributes is not None else None, 0,
+        ):
+            report["created"] = failure("CreatePipe")
+            return report
+        report["created"] = True
+        # The read handle carries GENERIC_READ, which includes READ_CONTROL, so
+        # the pipe can be asked what descriptor it was assigned.
+        report["dacl"] = object_dacl(read)
+        kernel32.CloseHandle(read)
+        kernel32.CloseHandle(write)
+        return report
+    finally:
+        if descriptor:
+            kernel32.LocalFree(descriptor)
+
+def event_pair():
+    """The object manager's own answer to the question the pipes cannot settle.
+
+    An event is created by the object manager and not by a filesystem, so a NULL
+    descriptor there is unambiguously the token's default DACL rather than
+    anything a driver supplied. Reopening it for EVENT_MODIFY_STATE is a write, so
+    both access checks run against exactly the DACL printed above. A pipe that is
+    refused while this pair works says the pipe is not taking that DACL; both
+    refused says the DACL itself is what neither check can be satisfied with.
+    """
+    report = {}
+    name = "Local\\unsloth-limited-probe-%d-%s" % (os.getpid(), os.urandom(8).hex())
+    handle = kernel32.CreateEventW(None, True, False, name)
+    if not handle:
+        report["created"] = failure("CreateEvent")
+        return report
+    try:
+        report["created"] = True
+        report["dacl"] = object_dacl(handle)
+        opened = kernel32.OpenEventW(0x0002, False, name)  # EVENT_MODIFY_STATE
+        if not opened:
+            report["opened"] = failure("OpenEvent")
+        else:
+            report["opened"] = True
+            kernel32.CloseHandle(opened)
+    finally:
+        kernel32.CloseHandle(handle)
+    return report
+
+# The token's user SID satisfies the first access check and the launch SID is
+# the only one of the restricting SIDs the second can be satisfied with, so this
+# is the descriptor a working pipe would need and nothing more.
+principals = [s for s in (findings.get("user_sid"), launch_sid) if s]
+granting = "D:" + "".join("(A;;GA;;;%s)" % s for s in principals) if principals else ""
+def missing():
+    return "neither SID this descriptor needs was known to the child"
+
+# Each observation stands on its own: one that raises must not take the rest of
+# the diagnosis with it, which is what a single try around all of them did.
+for key, observe in (
+    ("token_default_dacl", token_default_dacl),
+    # What CREATOR OWNER is replaced with in every descriptor the child is
+    # assigned. TokenOwner (4) is the Administrators group rather than the user
+    # on an elevated Studio, and this token holds that group deny-only.
+    ("token_owner_sid", lambda: one_sid(4)),
+    ("default_dacl_object", event_pair),
+    ("anonymous_pipe_default_sd", lambda: anonymous_pair("")),
+    ("anonymous_pipe_granted_sd", (lambda: anonymous_pair(granting)) if granting else missing),
+    ("pipe_default_sd", lambda: pipe_pair("")),
+    ("pipe_granted_sd", (lambda: pipe_pair(granting)) if granting else missing),
+):
+    try:
+        findings[key] = observe()
+    except (Exception, SystemExit) as exc:
+        # SystemExit as well: info() raises it, and it is a BaseException, so an
+        # unreadable token class would otherwise end the child with everything
+        # above it observed and nothing printed.
+        findings[key] = describe(exc)
 print(json.dumps(findings))
 '''
 
@@ -2534,7 +2703,7 @@ def _named_pipe_note(findings: dict[str, Any]) -> str:
     point of printing it is that a host is free to refute it.
     """
     default = findings.get("pipe_default_sd")
-    granted = findings.get("pipe_launch_sid")
+    granted = findings.get("pipe_granted_sd")
     if not isinstance(default, dict):
         return (
             "which access check refused the pipe is unconfirmed: the child could not take it "
@@ -2562,6 +2731,62 @@ def _named_pipe_note(findings: dict[str, Any]) -> str:
         f"{outcome} and carried {default.get('dacl') or 'a descriptor this host would not read'}, "
         f"{remedy}"
     )
+
+
+def _default_dacl_note(findings: dict[str, Any]) -> str:
+    """What the token's default DACL holds, and what was actually assigned it.
+
+    The launcher's one promised mechanism, so the record prints the DACL itself
+    rather than the outcome it produced. Three observations decide it and they
+    are printed together because only their disagreement is informative: the DACL
+    the child read off its own token, the descriptor an object the *object
+    manager* created was given (an event, where a NULL descriptor is
+    unambiguously that DACL and nothing supplied it but this token), and the
+    descriptor the anonymous pipe was given. Microsoft documents the last as
+    coming from the same place, "the ACLs in the default security descriptor for
+    a pipe come from the primary or impersonation token of the creator", while
+    documenting a fixed filesystem-supplied one for the named pipe that
+    ``CreatePipe`` is built on, and those two cannot both be true here.
+
+    An event that reopens for write while the pipe is refused says the DACL is
+    right and the pipe never took it, which is the reading that makes the
+    anonymous pipe unfixable. Both refused says the DACL is what neither access
+    check can be satisfied with, which is fixable and is what this launcher
+    assumes until a run says otherwise.
+    """
+    parts = [f"the token's default DACL was {findings.get('token_default_dacl') or 'not read'}"]
+    if findings.get("token_owner_sid"):
+        parts.append(f"CREATOR OWNER resolves to {findings['token_owner_sid']} under this token")
+    event = findings.get("default_dacl_object")
+    if isinstance(event, dict):
+        if event.get("created") is True:
+            parts.append(
+                "an event created with that DACL carried "
+                f"{event.get('dacl') or 'a descriptor this host would not read'} and reopening it "
+                f"for write {_reported(event.get('opened'))}"
+            )
+        else:
+            parts.append(f"an event could not be created to compare against ({event.get('created')})")
+    anonymous = findings.get("anonymous_pipe_default_sd")
+    if isinstance(anonymous, dict):
+        if anonymous.get("created") is True:
+            parts.append(
+                "the anonymous pipe carried "
+                f"{anonymous.get('dacl') or 'a descriptor this host would not read'}"
+            )
+        else:
+            granted = findings.get("anonymous_pipe_granted_sd")
+            remedy = (
+                "and the same call with a descriptor naming the token's user SID and the launch "
+                "SID "
+                + (
+                    "worked, so the descriptor is the whole of it"
+                    if isinstance(granted, dict) and granted.get("created") is True
+                    else f"did not either ({granted.get('created') if isinstance(granted, dict) else granted})"
+                )
+            )
+            parts.append(f"the anonymous pipe was refused at {anonymous.get('created')}, {remedy}")
+    return "; ".join(parts)
 
 
 def _refused(findings: dict[str, Any], key: str) -> bool:
@@ -2664,18 +2889,32 @@ def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> _ProbeVerdict
             "the NUL device is available",
             f"the NUL device was unavailable: {findings.get('devnull')}",
         ),
-        # The anonymous pipe, and not the named one. This is the pipe the launcher
-        # promises: it is created with a NULL descriptor, so it takes the token's
-        # default DACL, and adding the launch SID to that DACL is the one thing
-        # _set_default_dacl exists to do. A host that refuses it is a host where
-        # that edit did not take, which is this launcher's defect rather than the
-        # account's, so it fails closed. Named pipes take a descriptor the
-        # launcher cannot reach and are disclosed below instead.
+        # The anonymous pipe, and not the named one. This is the pipe the
+        # launcher promises: "the ACLs in the default security descriptor for a
+        # pipe come from the primary or impersonation token of the creator"
+        # (CreatePipe), and that DACL is the one thing _set_default_dacl exists
+        # to write. A host that refuses it is a host where that edit did not
+        # reach both access checks, which is this launcher's defect rather than
+        # the account's, so it fails closed rather than disclosing a promise it
+        # did not keep. Named pipes are documented to take a fixed descriptor of
+        # the filesystem's own instead and are disclosed below.
+        #
+        # If a round ever reports this refused while _default_dacl_note shows the
+        # DACL holding both SIDs and the event control reopening for write, then
+        # the anonymous pipe is not taking that DACL at all, CreatePipe's page is
+        # describing a code path that no longer exists, and no edit here can fix
+        # it. That is the point to demote this to a disclosure rather than to
+        # keep failing closed: the fallback a refusal selects is the software
+        # guard, which has no write fence, no stripped privileges and no
+        # deny-only Administrators, so refusing would trade every one of those
+        # for a capability the child only needs when a tool shells out and
+        # captures the output itself. Studio's own stdio is unaffected either
+        # way, because those handles are created by this process and inherited,
+        # and an inherited handle is never re-checked against the child's token.
         (
             findings.get("anonymous_pipe") is True,
             "anonymous pipes are available",
-            "anonymous pipes were unavailable, so the launch SID is not on the token's default "
-            f"DACL: {findings.get('anonymous_pipe')}",
+            f"anonymous pipes were unavailable: {findings.get('anonymous_pipe')}",
         ),
     )
     named_pipes = findings.get("pipe") is True
@@ -2722,10 +2961,14 @@ def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> _ProbeVerdict
             "under Limited mode here; importing torch, single-process training and "
             "multiprocessing.Process itself are unaffected"
         )
-        if findings.get("pipe_dacl"):
-            # The descriptor the named pipe filesystem supplied, so the next run
-            # decides the diagnosis above instead of restating it.
-            notes.append(f"the pipe the child created carried {findings['pipe_dacl']}")
+        # The descriptor the named pipe filesystem supplied, so the next run
+        # decides the diagnosis above instead of restating it.
+        notes.append(_named_pipe_note(findings))
+    # Always, and not only when something failed: the default DACL is the one
+    # mechanism this launcher promises rather than discloses, and a passing run
+    # that does not say what it promised on is a run that proved the outcome
+    # without the mechanism.
+    notes.append(_default_dacl_note(findings))
     return _ProbeVerdict(
         failures = tuple(failure for held, _name, failure in requirements if not held),
         held = tuple(name for held, name, _failure in requirements if held),
@@ -2827,7 +3070,7 @@ class WindowsRestrictedTokenBackend:
                 ToolLaunchPlan(
                     argv = (
                         sys.executable, "-I", "-S", "-c", _PROBE_PAYLOAD, secret, sibling,
-                        user_only, "",
+                        user_only, "", "",
                     ),
                     workdir = workdir,
                     env = {
@@ -2870,7 +3113,14 @@ class WindowsRestrictedTokenBackend:
                     logger.warning(
                         "Could not grant the Limited probe's user-SID directory", exc_info = True
                     )
-                prepared.argv = (*prepared.argv[:-1], identity.private_temp)
+                # The two placeholders the payload reads as argv[4] and argv[5].
+                # Neither exists until prepare has built the launch identity, and
+                # the launch SID is what the child's descriptor controls are made
+                # of: without it the pipe forensics run against a descriptor that
+                # grants nobody and prove nothing.
+                prepared.argv = (
+                    *prepared.argv[:-2], identity.private_temp, identity.sid_string
+                )
                 process = prepared.spawn_callback(
                     prepared,
                     {

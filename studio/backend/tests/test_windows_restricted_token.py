@@ -138,6 +138,19 @@ def _good_findings(sid_text: str) -> dict:
         # second takes the token's default DACL, which this launcher edits.
         "pipe": True,
         "anonymous_pipe": True,
+        # The mechanism behind that requirement, reported rather than graded: the
+        # DACL itself, an object the object manager created with it, and the pipe.
+        "token_default_dacl": f"D:(A;;GA;;;{sid_text})(A;;GA;;;S-1-5-21-1-2-3-1001)(A;;GA;;;SY)",
+        "token_owner_sid": "S-1-5-21-1-2-3-1001",
+        "default_dacl_object": {
+            "created": True,
+            "dacl": f"D:(A;;GA;;;{sid_text})(A;;GA;;;S-1-5-21-1-2-3-1001)(A;;GA;;;SY)",
+            "opened": True,
+        },
+        "anonymous_pipe_default_sd": {
+            "created": True,
+            "dacl": f"D:(A;;GA;;;{sid_text})(A;;GA;;;S-1-5-21-1-2-3-1001)(A;;GA;;;SY)",
+        },
     }
 
 
@@ -315,6 +328,120 @@ def test_probe_evaluation_requires_every_observation():
     )
 
 
+def test_the_verdict_prints_the_default_dacl_and_not_only_what_it_produced():
+    """Round 20 promised this and shipped a note keyed to a finding nothing set.
+
+    The record read ``pipe_dacl`` while the child reported ``pipe_default_sd``,
+    and ``_named_pipe_note`` was never called, so the round that was supposed to
+    settle the descriptor question printed no descriptor at all. Both mechanisms
+    are now in the reason text on every run, passing or failing, because a run
+    that proves the outcome without the mechanism cannot be acted on.
+    """
+    sid = "S-1-5-21-1-2-3-4"
+    findings = _good_findings(sid)
+    reason = token_launcher._evaluate_probe(findings, sid_text = sid).reason()
+    assert findings["token_default_dacl"] in reason
+    assert "CREATOR OWNER resolves to S-1-5-21-1-2-3-1001" in reason
+    assert "reopening it for write worked" in reason
+    assert "the anonymous pipe carried" in reason
+
+    # A refused pipe reports which call refused it and whether a descriptor
+    # naming both SIDs was refused too, which is what separates "this DACL is
+    # wrong" from "the pipe never took this DACL".
+    refused = _good_findings(sid)
+    refused["anonymous_pipe"] = "PermissionError: [WinError 5] Access is denied."
+    refused["anonymous_pipe_default_sd"] = {
+        "created": "CreatePipe: [WinError 5] Access is denied."
+    }
+    refused["anonymous_pipe_granted_sd"] = {"created": True, "dacl": "D:(A;;GA;;;WD)"}
+    verdict = token_launcher._evaluate_probe(refused, sid_text = sid)
+    assert verdict.available is False
+    # The failure states the observation and stops there; the mechanism is the
+    # note's job, and asserting a cause in the failure text is how round 20 came
+    # to claim the launch SID was missing from a DACL that in fact held it.
+    assert verdict.failures == ("anonymous pipes were unavailable: PermissionError: [WinError 5] Access is denied.",)
+    assert "the anonymous pipe was refused at CreatePipe" in verdict.reason()
+    assert "worked, so the descriptor is the whole of it" in verdict.reason()
+
+    # The named pipe's own descriptor, on the run that disclosed it.
+    denied = _good_findings(sid)
+    denied["pipe"] = "PermissionError: [WinError 5] Access is denied."
+    denied["pipe_default_sd"] = {
+        "opened": False,
+        "refused": "CreateFile: [WinError 5] Access is denied.",
+        "dacl": "D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x120089;;;WD)",
+    }
+    denied["pipe_granted_sd"] = {"opened": True, "dacl": "D:(A;;GA;;;WD)"}
+    reason = token_launcher._evaluate_probe(denied, sid_text = sid).reason()
+    assert "D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x120089;;;WD)" in reason
+    assert "the pipe's own DACL is what the access check refused" in reason
+
+    # A child that could report none of it says so rather than reading a missing
+    # finding as a passing one.
+    silent = token_launcher._evaluate_probe({}, sid_text = sid).reason()
+    assert "the token's default DACL was not read" in silent
+
+
+def test_the_probe_child_is_given_the_private_temp_and_the_launch_sid(tmp_path, monkeypatch):
+    """Both placeholders are substituted, and the second one is why.
+
+    The payload builds its descriptor controls out of the launch SID, and the
+    host passed five arguments while the child read six. ``sys.argv[5]`` raised
+    ``IndexError``, the whole forensic block reported that one exception, and the
+    round that was meant to name the descriptor named nothing.
+    """
+    identity = _launch_identity(tmp_path)
+    identity.user_sid_string = "S-1-5-21-9-9-9-500"
+    seen: dict[str, tuple[str, ...]] = {}
+
+    def spawn(prepared, popen_kwargs):
+        seen["argv"] = prepared.argv
+        return SimpleNamespace(
+            wait = lambda timeout = None: None,
+            returncode = 0,
+            stdout = SimpleNamespace(
+                read = lambda: json.dumps(_good_findings(identity.sid_string))
+            ),
+        )
+
+    spawn._launch_identity = identity
+
+    def prepare(self, plan):
+        return os_sandbox.PreparedSandboxLaunch(
+            argv = plan.argv,
+            workdir = plan.workdir,
+            env = plan.env,
+            preexec_fn = None,
+            backend = token_launcher._BACKEND_IDENTITY,
+            spawn_callback = spawn,
+        )
+
+    @contextmanager
+    def unlocked(root, **kwargs):
+        yield
+
+    monkeypatch.setattr(token_launcher, "_private_root", lambda name: str(tmp_path / name))
+    monkeypatch.setattr(token_launcher.WindowsRestrictedTokenBackend, "prepare", prepare)
+    monkeypatch.setattr(token_launcher, "_sid_from_text", lambda text: ctypes.c_void_p(1))
+    monkeypatch.setattr(token_launcher, "_root_acl_edit", unlocked)
+    monkeypatch.setattr(windows_lpac, "_grant_modify", lambda path, sid: None)
+    monkeypatch.setattr(windows_lpac, "_revoke_sid", lambda path, sid: None)
+    monkeypatch.setattr(
+        windows_lpac, "_api",
+        lambda: SimpleNamespace(kernel32 = SimpleNamespace(LocalFree = lambda sid: None)),
+    )
+
+    verdict = token_launcher.WindowsRestrictedTokenBackend()._live_probe()
+
+    assert verdict.available is True, verdict.failures
+    argv = seen["argv"]
+    # python, -I, -S, -c, the payload, then argv[1:5] as the child reads them.
+    assert len(argv) == 10
+    assert argv[-2] == identity.private_temp
+    assert argv[-1] == identity.sid_string
+    assert "" not in argv  # neither placeholder survived into the launch
+
+
 def test_an_unreadable_user_profile_is_disclosed_rather_than_failed_closed():
     """A child that cannot read the user's documents is confined more tightly
     than Limited mode documents, not less, so it is not a probe failure.
@@ -454,9 +581,48 @@ def test_the_probe_payload_reports_values_rather_than_bare_booleans():
     assert "return False" not in payload
     assert payload.count("describe(exc)") >= 4
     # argv: the secret, the sibling, the user-SID directory, then the private
-    # temp the host substitutes in once the launch identity exists.
+    # temp and the launch SID the host substitutes in once the launch identity
+    # exists. The SID was read as argv[5] while the host passed five arguments,
+    # so the descriptor controls raised IndexError and every forensic below them
+    # was reported as one line of exception text instead.
     assert "secret, sibling, user_only = sys.argv[1], sys.argv[2], sys.argv[3]" in payload
     assert "os.path.normcase(sys.argv[4])" in payload
+    assert "launch_sid = sys.argv[5]" in payload
+
+
+def test_the_probe_payload_reads_back_the_dacl_it_was_launched_with():
+    """The mechanism, not only its outcome.
+
+    The anonymous pipe is the one capability this launcher promises rather than
+    discloses, and it promises it through the token's default DACL. A round that
+    reports only "the pipe was refused" cannot say whether the DACL was wrong or
+    whether the pipe never took it, which is the whole of the round 20 diagnosis,
+    so the child reads the DACL off its own token and off three objects created
+    under it.
+    """
+    payload = token_launcher._PROBE_PAYLOAD
+    ast.parse(payload)
+    for fragment in (
+        '"token_default_dacl"',
+        '"token_owner_sid"',
+        # The object manager's own answer: an event's NULL descriptor is
+        # unambiguously the token's default DACL, and EVENT_MODIFY_STATE is a
+        # write, so it separates a bad DACL from a pipe that does not take it.
+        "kernel32.CreateEventW",
+        "kernel32.OpenEventW",
+        '"default_dacl_object"',
+        # os.pipe() by hand, so a refusal reports which call refused it and a
+        # success reports the descriptor the pipe was actually given.
+        "kernel32.CreatePipe",
+        '"anonymous_pipe_default_sd"',
+        '"anonymous_pipe_granted_sd"',
+        "InitializeSecurityDescriptor",
+        "SetSecurityDescriptorDacl",
+    ):
+        assert fragment in payload, fragment
+    # Every observation stands alone: one that raises must not take the rest of
+    # the diagnosis with it, which is what a single try around all of them did.
+    assert "findings[key] = observe()" in payload
 
 
 def _probing_backend(monkeypatch, verdict_for):
@@ -3035,15 +3201,25 @@ def test_live_token_child_writes_only_the_workdir_and_private_temp(live_token_ba
         secret.unlink(missing_ok = True)
 
 
-def test_live_token_child_keeps_nul_pipes_and_multiprocessing(live_token_backend, tmp_path):
+def test_live_token_child_keeps_nul_and_the_anonymous_pipe(live_token_backend, tmp_path):
+    """What Limited promises: NUL, an anonymous pipe, and a captured grandchild.
+
+    The named pipe is deliberately not asserted here. It takes a descriptor the
+    named pipe filesystem supplies rather than the token's default DACL, and
+    hosted Windows refuses it, so requiring it would make this test a test of the
+    host's account. The anonymous pipe is the promise, and
+    ``capture_output = True`` is the same promise one level up: it is two
+    ``CreatePipe`` calls in the child.
+    """
     work = tmp_path / "work"
     work.mkdir()
     output, returncode, _ = _run_live(
         live_token_backend, work,
         "import os\n"
         "open(os.devnull, 'r+b').close()\n"
-        "import multiprocessing.connection as c\n"
-        "a, b = c.Pipe(); a.send('ping'); assert b.recv() == 'ping'\n"
+        "r, w = os.pipe()\n"
+        "os.write(w, b'ping'); assert os.read(r, 4) == b'ping'\n"
+        "os.close(r); os.close(w)\n"
         "import subprocess, sys\n"
         "print(subprocess.run([sys.executable, '-I', '-S', '-c', 'print(\"grandchild ok\")'],"
         " capture_output=True, text=True).stdout.strip())\n"
@@ -3059,7 +3235,11 @@ def test_live_token_is_restricted_lua_and_privilege_stripped(live_token_backend,
     output, returncode, _ = _run_live(
         live_token_backend, work,
         token_launcher._PROBE_PAYLOAD,
-        str(work / "missing-secret"), str(work), str(work / "missing-user-only"), "",
+        # argv[4] is the private temp and argv[5] the launch SID. This test drives
+        # the payload by hand, so it has neither before the launch exists; the
+        # child falls back to its own user SID for the descriptor controls and
+        # reads the launch SID it is actually running under off the token.
+        str(work / "missing-secret"), str(work), str(work / "missing-user-only"), "", "",
     )
     assert returncode == 0, output
     findings = json.loads(output.strip().splitlines()[-1])
@@ -3067,9 +3247,23 @@ def test_live_token_is_restricted_lua_and_privilege_stripped(live_token_backend,
     assert findings["privileges"] <= 1
     assert findings["in_job"] is True
     assert "S-1-1-0" in findings["restricted_sids"]
-    assert any(token_launcher._is_launch_sid_text(s) for s in findings["restricted_sids"])
-    assert findings["devnull"] is True and findings["pipe"] is True
+    launch_sid = next(s for s in findings["restricted_sids"] if token_launcher._is_launch_sid_text(s))
+    assert findings["devnull"] is True
     assert findings["interpreter_readable"] is True
+    # The mechanism this launcher promises, read off the token by the child that
+    # is running under it. Both SIDs are on it: the launch SID answers the second
+    # access check and the user SID the first, and an object created with only
+    # one of them is an object the child cannot open for write.
+    assert launch_sid in findings["token_default_dacl"]
+    assert findings["user_sid"] in findings["token_default_dacl"]
+    # The anonymous pipe is the requirement, and its descriptor is what says the
+    # requirement was met for the documented reason rather than by accident.
+    assert findings["anonymous_pipe"] is True
+    assert findings["anonymous_pipe_default_sd"]["created"] is True
+    assert launch_sid in findings["anonymous_pipe_default_sd"]["dacl"]
+    # The object manager's own object, for comparison: same DACL, and a write
+    # open of it that the two access checks both allow.
+    assert findings["default_dacl_object"]["opened"] is True
     # The principal the first access check is decided against, which is what makes
     # an unreadable user profile diagnosable rather than merely surprising.
     assert findings["user_sid"].startswith("S-1-")
@@ -3174,16 +3368,62 @@ def test_token_information_class_constants_are_integers():
     assert issubclass(token_launcher._TOKEN_DEFAULT_DACL_INFO, ctypes.Structure)
 
 
+def _trustee_sid(entry) -> int | None:
+    """The raw SID pointer an EXPLICIT_ACCESS_W names.
+
+    Read out of the structure's bytes rather than off ``entry.Trustee.ptstrName``,
+    because ctypes dereferences an ``LPWSTR`` field into a Python string and this
+    one holds a SID.
+    """
+    offset = (
+        windows_lpac._EXPLICIT_ACCESS_W.Trustee.offset + windows_lpac._TRUSTEE_W.ptstrName.offset
+    )
+    return ctypes.c_void_p.from_address(ctypes.addressof(entry) + offset).value
+
+
 def test_set_default_dacl_passes_the_integer_class_and_frees_the_acl(monkeypatch):
+    """Both of the launch's SIDs, because the DACL is judged by both access checks.
+
+    Staging round 20: every other requirement held and the anonymous pipe was
+    refused with ``WinError 5``. ``CreatePipe`` takes its descriptor from "the
+    primary or impersonation token of the creator", creates the read half (a
+    create is granted what it asks for) and then *opens* the write half, which is
+    checked twice. The launch SID answers only the second check; the DACL a
+    restricted token inherits from an administrator's grants
+    ``BUILTIN\\Administrators``, which this token holds deny-only, so the first
+    check had nothing to grant a write through until the token's own user SID
+    was granted here as well. Chromium's sandbox adds the same two SIDs to its
+    lockdown token's default DACL, both with ``GENERIC_ALL``.
+    """
     calls: list[tuple] = []
     # GetTokenInformation hands back a raw buffer; a zeroed one means no default DACL.
     info = ctypes.create_string_buffer(ctypes.sizeof(token_launcher._TOKEN_DEFAULT_DACL_INFO))
     monkeypatch.setattr(
         token_launcher, "_token_information", lambda api, token, kind: calls.append(("query", kind)) or info
     )
+    # The user SID is read off the token that was built, never Studio's own.
+    monkeypatch.setattr(
+        token_launcher, "_token_user_sid_text",
+        lambda api, token: calls.append(("user sid", token)) or "S-1-5-21-9-9-9-500",
+    )
+    monkeypatch.setattr(token_launcher, "_sid_from_text", lambda text: ctypes.c_void_p(0x4242))
 
     def set_entries(count, entries, old_acl, new_acl_ref):
-        calls.append(("SetEntriesInAclW", int(count), old_acl))
+        calls.append((
+            "SetEntriesInAclW",
+            int(count),
+            old_acl,
+            [
+                (
+                    entry.grfAccessPermissions,
+                    entry.grfAccessMode,
+                    entry.grfInheritance,
+                    entry.Trustee.TrusteeForm,
+                    _trustee_sid(entry),
+                )
+                for entry in entries
+            ],
+        ))
         new_acl_ref._obj.value = 0x5150
         return 0
 
@@ -3197,11 +3437,48 @@ def test_set_default_dacl_passes_the_integer_class_and_frees_the_acl(monkeypatch
         ),
         kernel32 = SimpleNamespace(LocalFree = lambda handle: calls.append(("LocalFree", handle.value if hasattr(handle, "value") else handle))),
     )
+    monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     token_launcher._set_default_dacl(api, 77, ctypes.c_void_p(0x1234))
     assert calls[0] == ("query", 6)
-    assert calls[1][:2] == ("SetEntriesInAclW", 1)
+    acl_call = next(call for call in calls if call[0] == "SetEntriesInAclW")
+    assert acl_call[1] == 2  # the count must match the array it describes
+    # The launch SID first, then the token's own user SID, both GENERIC_ALL,
+    # granted, and never inherited: a default DACL's ACEs apply to the object
+    # itself and to nothing under it.
+    assert acl_call[3] == [
+        (windows_lpac._GENERIC_ALL, windows_lpac._GRANT_ACCESS, 0, windows_lpac._TRUSTEE_IS_SID, 0x1234),
+        (windows_lpac._GENERIC_ALL, windows_lpac._GRANT_ACCESS, 0, windows_lpac._TRUSTEE_IS_SID, 0x4242),
+    ]
     set_call = next(call for call in calls if call[0] == "SetTokenInformation")
     assert set_call[1] == 77
     assert isinstance(set_call[2], int) and set_call[2] == 6
     assert set_call[3] == ctypes.sizeof(token_launcher._TOKEN_DEFAULT_DACL_INFO)
     assert ("LocalFree", 0x5150) in calls
+    # The SID converted here is this function's own and is released on the way out.
+    assert ("LocalFree", 0x4242) in calls
+
+
+def test_a_default_dacl_that_cannot_name_the_user_declines_the_launch(monkeypatch):
+    """A token whose user SID is unreadable gets no half-written default DACL.
+
+    The edit is what makes objects the child creates usable by the child. Half of
+    it is the exact state round 20 failed in, so an unanswerable user SID
+    declines the launch to the process guard instead of writing the launch SID
+    alone.
+    """
+    info = ctypes.create_string_buffer(ctypes.sizeof(token_launcher._TOKEN_DEFAULT_DACL_INFO))
+    monkeypatch.setattr(token_launcher, "_token_information", lambda api, token, kind: info)
+
+    def unreadable(api, token):
+        raise os_sandbox.SandboxUnavailableError("could not read the user SID")
+
+    monkeypatch.setattr(token_launcher, "_token_user_sid_text", unreadable)
+    api = SimpleNamespace(
+        advapi32 = SimpleNamespace(
+            SetEntriesInAclW = lambda *a: pytest.fail("the ACL was built anyway"),
+            SetTokenInformation = lambda *a: pytest.fail("the token was written anyway"),
+        ),
+        kernel32 = SimpleNamespace(LocalFree = lambda handle: None),
+    )
+    with pytest.raises(os_sandbox.SandboxUnavailableError):
+        token_launcher._set_default_dacl(api, 77, ctypes.c_void_p(0x1234))
