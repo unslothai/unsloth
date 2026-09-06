@@ -460,3 +460,32 @@ def _guard_reports(fixes, monkeypatch, torch_version: str, codec_version: str) -
     _stub_torch(monkeypatch, torch_version)
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: codec_version)
     return fixes._torchcodec_version_mismatch_hint() is not None
+
+
+def test_the_installer_never_installs_what_the_guard_rejects(monkeypatch):
+    """End-to-end invariant across all three checkers, past the table as well as inside it.
+
+    test_select_torchcodec_spec_matches_compat_matrix ties the installer to the matrix, but
+    it iterates the rows that EXIST, so a torch minor past the last row is not covered -- and
+    that is exactly where the ABI half-port hid. This asks the question that actually matters
+    instead: for every torch minor the installer will see, is every codec its own spec admits
+    accepted by the runtime guard?
+    """
+    from packaging.specifiers import SpecifierSet
+
+    fixes = _load_import_fixes_module()
+    ips = _load_install_python_stack()
+    probes = [f"0.{n}.0" for n in range(0, 20)]
+
+    for minor in range(5, 15):  # torch 2.5 .. 2.14, i.e. past the last lockstep row
+        torch_v = f"2.{minor}.0"
+        specifier = SpecifierSet(
+            ips._select_torchcodec_spec(torch_v).split("torchcodec", 1)[1]
+        )
+        admitted = [p for p in probes if specifier.contains(p)]
+        assert admitted, f"torch {torch_v}: installer spec admits nothing"
+        for codec_v in admitted:
+            assert not _guard_reports(fixes, monkeypatch, torch_v, codec_v), (
+                f"installer would put torchcodec {codec_v} on torch {torch_v}, "
+                f"which the runtime guard then reports as incompatible"
+            )
