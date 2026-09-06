@@ -102,11 +102,68 @@ class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
         self.active = active
         super().__init__(owner)
 
+    @property
+    def retry_after(self) -> int:
+        from core.inference.llama_admission import estimate_gpu_retry_after
+        return estimate_gpu_retry_after()
+
+    def as_http_exception(self, path: Optional[str] = None):
+        """A retryable refusal without another account's model or conversation ids."""
+        from fastapi import HTTPException
+        from utils.api_errors import error_body_for_path
+
+        retry_after = self.retry_after
+        message = "Another account is generating on the resident model. Retry after it finishes."
+        detail = (
+            error_body_for_path(path, message, status = 409, code = "gpu_busy", param = "model")
+            if path and path.startswith("/v1/")
+            else {"error": "gpu_busy", "message": message, "retry_after": retry_after}
+        )
+        return HTTPException(
+            status_code = 409,
+            detail = detail,
+            headers = {"Retry-After": str(retry_after)},
+        )
+
 
 def other_accounts_active(account_id: str) -> int:
     """Generations in flight that do not belong to ``account_id``."""
     from state import active_generations
     return active_generations.foreign_count(account_id)
+
+
+def raise_if_other_accounts_active(account_id: Optional[str] = None) -> None:
+    """Guard a destructive reload or training teardown in a multi-account install.
+
+    Call under the existing lifecycle gate before touching any backend. This is
+    also needed for replacements within CHAT or DIFFUSION, where the modality
+    owner itself does not change. Single-account installs keep their old policy.
+    """
+    from auth.policy import installation_is_multi_user
+    from utils.account_context import current_account_id
+
+    if installation_is_multi_user():
+        busy = other_accounts_active(account_id or current_account_id())
+        if busy:
+            raise GpuBusyForAnotherAccountError(_owner or CHAT, busy)
+
+
+def require_no_foreign_generations(
+    account_id: Optional[str] = None, *, path: Optional[str] = None
+) -> None:
+    """HTTP boundary for the shared pre-teardown guard."""
+    try:
+        raise_if_other_accounts_active(account_id)
+    except GpuBusyForAnotherAccountError as exc:
+        raise exc.as_http_exception(path) from exc
+
+
+def acquire_for_request(owner: str, register = None, **kwargs) -> Any:
+    """The request boundary for an arbiter acquisition, including media loads."""
+    try:
+        return acquire_for(owner, register, **kwargs)
+    except GpuBusyForAnotherAccountError as exc:
+        raise exc.as_http_exception() from exc
 
 
 def acquire_for(
@@ -116,6 +173,7 @@ def acquire_for(
     expected_current: Optional[tuple[Optional[str], int]] = None,
     allow_evict: bool = True,
     account_id: Optional[str] = None,
+    replacing: bool = False,
 ) -> Any:
     """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
 
@@ -124,6 +182,10 @@ def acquire_for(
     closes the window where a competing acquire could evict this owner before its load is in-flight,
     letting both loaders allocate VRAM at once. It must be quick and not re-enter the arbiter; if it
     raises, ownership stays with ``owner``.
+
+    A ``register`` callback marks a real load within the same backend too;
+    ``replacing`` also protects callers that load without a callback. A plain
+    ownership reassertion leaves both unset so accounts share the llama slots.
     """
     global _owner, _owner_epoch, _owner_account
     if owner not in _EVICTORS:
@@ -134,6 +196,8 @@ def acquire_for(
     with _lock:
         if expected_current is not None and (_owner, _owner_epoch) != expected_current:
             raise OwnerChangedError("The resident GPU model changed; retry the load.")
+        if register is not None or replacing:
+            raise_if_other_accounts_active(acting)
         if _owner is not None and _owner != owner:
             if not allow_evict:
                 raise GpuOwnerBusyError(_owner)

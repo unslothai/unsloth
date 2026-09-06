@@ -87,14 +87,14 @@ def slow_switch(kind: str, openai_errors: bool):
     )
 
 
-def busy(kind: str, openai_errors: bool):
+def busy(kind: str, openai_errors: bool, *, retry_after: int = RETRY_AFTER_S):
     """The refusal for a backend that stayed busy for the whole drain."""
     return refuse(
         BUSY_MSG.format(kind = kind),
         status_code = 409,
         openai_errors = openai_errors,
         code = "model_busy",
-        retry_after = RETRY_AFTER_S,
+        retry_after = retry_after,
     )
 
 

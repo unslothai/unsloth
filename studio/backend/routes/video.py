@@ -256,7 +256,7 @@ async def load_video_model_gated(
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
     )
-    from core.inference.gpu_arbiter import VIDEO, acquire_for, release
+    from core.inference.gpu_arbiter import VIDEO, acquire_for_request, release
     from core.inference.media_keepwarm import note_load_origin
     from hub.utils.gguf import extract_quant_token
     from core.inference.video import (
@@ -360,7 +360,7 @@ async def load_video_model_gated(
             from routes.inference import _diffusion_training_admission
             def _acquire_and_begin():
                 with _diffusion_training_admission():
-                    return acquire_for(VIDEO, _begin_load)
+                    return acquire_for_request(VIDEO, _begin_load)
 
             status_dict = await asyncio.to_thread(_acquire_and_begin)
         else:

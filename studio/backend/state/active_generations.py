@@ -75,7 +75,11 @@ class ActiveGeneration:
             # tracker with that same event and run, so borrow the outer registration.
             if self.run_id:
                 for entry in _ACTIVE.values():
-                    if entry["run_id"] != self.run_id or entry["event"] is not self.cancel_event:
+                    if (
+                        entry["run_id"] != self.run_id
+                        or entry["event"] is not self.cancel_event
+                        or entry["account_id"] != self.account_id
+                    ):
                         continue
                     if self.thread_id:
                         entry["thread_id"] = self.thread_id
