@@ -500,8 +500,8 @@ def test_export_gguf_push_refuses_the_forced_anonymous_sentinel(monkeypatch):
 @pytest.mark.parametrize(
     "hf_token, expected",
     [
-        (False, False),      # denied the ambient token: force anonymous, do not omit token=
-        (None, "absent"),    # ambient allowed: omitting token= is what grants it
+        (False, False),  # denied the ambient token: force anonymous, do not omit token=
+        (None, "absent"),  # ambient allowed: omitting token= is what grants it
         ("  tok  ", "tok"),
     ],
 )
