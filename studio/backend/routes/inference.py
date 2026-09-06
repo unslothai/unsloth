@@ -3031,6 +3031,8 @@ from models.inference import (
     InstallLatestTransformersResponse,
     TextContentPart,
     ImageContentPart,
+    InputAudioContentPart,
+    UnknownContentPart,
     ImageUrl,
     ResponsesRequest,
     ResponsesInputTextPart,
@@ -16773,6 +16775,17 @@ async def generate_audio(
     Works with both GGUF (llama-server) and Unsloth/transformers backends."""
     import base64
 
+    # _extract_content_parts keeps only text, so a part this cannot voice would be spoken past
+    # in silence. Refuse it the way the completion does rather than voicing the text alone.
+    _reject_unsupported_content_parts(payload)
+    # Also the field: /chat/completions routes a TTS model here after the lift has already
+    # replaced the part with audio_base64, so a parts-only guard would not see the attachment.
+    if _messages_have_input_audio(payload.messages) or getattr(payload, "audio_base64", None):
+        _raise_unsupported_openai_parameter(
+            "messages",
+            "Audio input is not supported here; this route speaks the message text.",
+        )
+
     # Extract text from the last user message
     _, chat_messages, _ = _extract_content_parts(payload.messages)
     if not chat_messages:
@@ -18605,6 +18618,79 @@ def _inject_video_part(messages: list[dict], video_b64: str) -> None:
             return
 
 
+def _reject_unsupported_content_parts(payload) -> None:
+    """Refuse content parts no route can serve, before local or external routing.
+
+    The external proxy rebuilds messages from an allowlist, so a part left standing here is
+    dropped silently and the provider answers a prompt the caller did not send.
+    """
+    for msg in payload.messages:
+        if not isinstance(msg.content, list):
+            continue
+        for part in msg.content:
+            if isinstance(part, UnknownContentPart):
+                _raise_unsupported_openai_parameter(
+                    "messages",
+                    f"Message content parts of type '{part.type}' are not supported.",
+                )
+
+
+def _messages_have_input_audio(messages) -> bool:
+    return any(
+        isinstance(getattr(msg, "content", None), list)
+        and any(isinstance(part, InputAudioContentPart) for part in msg.content)
+        for msg in messages
+    )
+
+
+def _normalise_chat_content_parts(payload) -> None:
+    """Lift the request's ``input_audio`` part onto ``audio_base64``, in place.
+
+    Everything that makes audio safe to serve reads that field: the capability check that keeps
+    a text-only target from being loaded for it, the size bound, the decoder, the duration limit,
+    and /chat/count_tokens' refusal. So the part is lifted rather than left standing -- a part the
+    field never sees is a recording none of those checks can act on.
+
+    The field holds one recording and ``_inject_audio_part`` appends it to the last user message,
+    so a recording carried on an earlier turn is replayed on the latest one. That loses the turn
+    it was authored on, which is the price of a positionless field; carrying several recordings
+    with their turns is a larger change than this, so two of them are refused rather than silently
+    reduced to one. An explicit ``audio_base64`` still wins over a part.
+    """
+    # Only a user turn can carry a recording into the model, and the strip below clears the part
+    # from every role. Say so rather than deleting an assistant-history clip in silence.
+    for msg in payload.messages:
+        if msg.role == "user" or not isinstance(msg.content, list):
+            continue
+        if any(isinstance(part, InputAudioContentPart) for part in msg.content):
+            _raise_unsupported_openai_parameter(
+                "messages",
+                f"Audio input is supported on a user message, not on a '{msg.role}' one.",
+            )
+    parts = [
+        part
+        for msg in payload.messages
+        if isinstance(msg.content, list) and msg.role == "user"
+        for part in msg.content
+        if isinstance(part, InputAudioContentPart)
+    ]
+    if len(parts) > 1:
+        _raise_unsupported_openai_parameter(
+            "messages",
+            "Only one audio recording per request is supported, and this one carries "
+            f"{len(parts)}.",
+        )
+    lifted = parts[0].input_audio.data if parts else None
+    for msg in payload.messages:
+        if not isinstance(msg.content, list):
+            continue
+        kept = [part for part in msg.content if not isinstance(part, InputAudioContentPart)]
+        if len(kept) != len(msg.content):
+            msg.content = kept
+    if lifted and not getattr(payload, "audio_base64", None):
+        payload.audio_base64 = lifted
+
+
 def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
     """Append an input_audio part to the last user message, in place.
 
@@ -20393,6 +20479,11 @@ async def produce_openai_chat_completions(
             "top_logprobs", "top_logprobs is not supported for chat completions."
         )
 
+    # Before routing splits: the external proxy rebuilds messages from an allowlist and the
+    # local path flattens them, so a part neither can serve has to be refused while both are
+    # still reachable. Otherwise it is dropped in silence and the answer looks legitimate.
+    _reject_unsupported_content_parts(payload)
+
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
@@ -20419,7 +20510,18 @@ async def produce_openai_chat_completions(
                 status_code = 400,
                 detail = "Video input is only supported on a local GGUF model with video support.",
             )
+        # _build_external_messages carries no input_audio case, so the recording would be
+        # stripped and the provider would answer the text alone -- a plausible reply to a
+        # question about audio nobody heard. Refuse it the way video is refused.
+        if _messages_have_input_audio(payload.messages):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Audio input is only supported on a local model with audio support.",
+            )
         return await _proxy_to_external_provider(payload, request, current_subject)
+
+    # Local path only: the lift targets audio_base64, which the proxy never reads.
+    _normalise_chat_content_parts(payload)
 
     # Reject a malformed function tool here: it would otherwise reach
     # llama-server and surface as an opaque 500 "Failed to parse tools".
@@ -28480,6 +28582,10 @@ async def chat_count_tokens(
     for _m in payload.messages:
         if _m.role == "developer":
             _m.role = "system"
+    # And the same refusal and lift, so a part this cannot price is refused the way the
+    # completion refuses it, and the audio guard below sees a part the way it sees the field.
+    _reject_unsupported_content_parts(payload)
+    _normalise_chat_content_parts(payload)
     # And the same default it applies to a function tool that omits the discriminator: a
     # template serializing the whole entry renders it, so the count has to carry it too.
     for _tool in payload.tools or []:
