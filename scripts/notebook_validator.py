@@ -386,6 +386,12 @@ def cmp_versions(a: str, b: str) -> int:
         return tuple(int(x) for x in re.findall(r"\d+", normalise_version(v)))
 
     ta, tb = to_tuple(a), to_tuple(b)
+    # PEP 440 pads the shorter release segment with zeros, so `0.11` and `0.11.0` are the
+    # same version. Comparing the raw tuples made `0.11` sort BELOW `0.11.0`, which discarded
+    # a ceiling-derived minor whenever the floor spelled out its patch.
+    width = max(len(ta), len(tb))
+    ta = ta + (0,) * (width - len(ta))
+    tb = tb + (0,) * (width - len(tb))
     if ta < tb:
         return -1
     if ta > tb:
@@ -410,10 +416,22 @@ class PipInvocation:
 # `python -m pip` is pip's own recommended invocation, so it has to parse to the same
 # thing as bare `pip`. Without it a cell still matched _PIP_CELL_RE, yielded no
 # invocation, and R-INST-001 missed a prohibited `git+` install outright.
+# The interpreter spellings `python -m pip` really appears under. Kept in step with
+# docker/unsloth_nb_pip_magic.py::_PY_M_PIP, which rewrites the same forms at runtime: a
+# notebook the shim handles must not be one the validator reads as running no pip at all.
+# Transformers see the RAW cell text (IPython expands `{sys.executable}` later), so the
+# braced form and quoted or bare interpreter paths have to be matched here too.
+_INTERPRETER_RE = r"""(?:
+        (?:python[0-9.]*|py)
+      | ["']?\{\s*sys\.executable\s*\}["']?
+      | "(?:[^"]*[/\\])python[0-9.]*(?:\.exe)?"
+      | '(?:[^']*[/\\])python[0-9.]*(?:\.exe)?'
+      | \S*[/\\]python[0-9.]*(?:\.exe)?
+    )"""
 PIP_LINE_RE = re.compile(
-    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip|python[0-9.]*\s+-m\s+pip)\s+"
+    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip|" + _INTERPRETER_RE + r"\s+-m\s+pip)\s+"
     r"(?P<action>install|uninstall)\b(?P<rest>.*)$",
-    re.IGNORECASE,
+    re.IGNORECASE | re.VERBOSE,
 )
 NON_PKG_FLAG_TAKES_VAL = {
     "-r",
@@ -677,7 +695,18 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     # the command: a bare rstrip(")}") ate it, so `x) echo $(pip install ...)` came back as
     # `echo $(pip install ...` and _substitution_bodies could no longer read the body out.
     # A piece can also be a lone `}` when a group spans a separator, which still strips.
-    stripped = stripped.lstrip("({").strip()
+    # `{` opens a shell group only as its OWN token (POSIX reserved word), so `{ pip
+    # install x; }` is a group while IPython's `{sys.executable}` is a single word that
+    # expands to an interpreter path. Stripping it unconditionally left `sys.executable}`
+    # as the executable and hid the pip command behind it. `(` needs no such space.
+    while stripped:
+        if stripped[0] == "(":
+            stripped = stripped[1:].lstrip()
+        elif stripped[0] == "{" and (len(stripped) == 1 or stripped[1].isspace()):
+            stripped = stripped[1:].lstrip()
+        else:
+            break
+    stripped = stripped.strip()
     while stripped[-1:] in (")", "}") and not _final_bracket_closes_substitution(stripped):
         stripped = stripped[:-1].rstrip()
     conditional = False
@@ -1808,6 +1837,13 @@ def rule_l12_exceptions_coverage(notebooks_dir: pathlib.Path) -> list[Finding]:
             continue
         nb = load_notebook(path)
         for idx, cell in install_cells(nb):
+            # install_cells is a text heuristic, so a documentation-only line such as
+            # `!echo "pip install peft"` reaches here running no pip at all. `applies` then
+            # sees the package name in the prose and demands a policy clause the notebook
+            # has no install to carry, which is a blocking R-EXC-001. cmd_lint gates on a
+            # parsed invocation for the same reason; this path had no such gate.
+            if not any(True for _ in iter_pip_invocations(cell)):
+                continue
             for cid, pat, applies in clauses:
                 if not applies(cell):
                     continue

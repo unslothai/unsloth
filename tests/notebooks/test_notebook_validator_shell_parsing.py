@@ -2000,3 +2000,69 @@ def test_python_version_drift_in_the_os_oracle_fails_strict():
     assert "apt-list-gpu.txt" not in nv.COLAB_STRICT_ORACLE_KEYS
     # The key is the one _parse_os_lines actually emits for that line.
     assert nv._parse_os_lines("Python 3.13.15\nUbuntu 22.04\n")["python"] == "3.13.15"
+
+
+def test_expanded_interpreter_forms_run_pip():
+    """`!{sys.executable} -m pip` and an absolute interpreter path are the notebook-standard
+    spellings, and docker/unsloth_nb_pip_magic.py rewrites both at runtime. Accepting only a
+    literal `python*` left them matching _PIP_CELL_RE while yielding no invocation, so
+    R-INST-001 and every compatibility replay skipped the cell."""
+    nv = _load_notebook_validator_module()
+
+    for line in (
+        "!{sys.executable} -m pip install git+https://example.com/pkg.git",
+        '!"{sys.executable}" -m pip install git+https://example.com/pkg.git',
+        "!/usr/bin/python3 -m pip install git+https://example.com/pkg.git",
+        "!python3.11 -m pip install git+https://example.com/pkg.git",
+    ):
+        invocations = list(nv.iter_pip_invocations(line))
+        assert len(invocations) == 1, line
+        assert invocations[0].tool == "pip", line
+        assert invocations[0].packages == ["git+https://example.com/pkg.git"], line
+        assert nv.rule_inst_001_git_plus(line, "nb/T.ipynb", 0), line
+
+    # A real shell brace group still unwraps, and a lookalike is still not pip.
+    assert [i.packages for i in nv.iter_pip_invocations("!{ pip install foo; }")] == [["foo"]]
+    assert [
+        i.packages for i in nv.iter_pip_invocations("!pip install foo && { pip install bar; }")
+    ] == [["foo"], ["bar"]]
+    assert not list(nv.iter_pip_invocations("!{sys.executable} -m pipx install foo"))
+
+
+def test_exception_coverage_skips_cells_that_run_no_pip(tmp_path):
+    """install_cells is a text heuristic, so `!echo "pip install peft"` reaches
+    rule_l12_exceptions_coverage running no pip. Its `applies` predicate saw the package name
+    in the prose and emitted a blocking R-EXC-001 for a clause the notebook has no install to
+    carry. cmd_lint gates on a parsed invocation; this path did not."""
+    nv = _load_notebook_validator_module()
+
+    (tmp_path / "nb").mkdir()
+    (tmp_path / "update_all_notebooks.py").write_text(
+        'DONT_UPDATE_EXCEPTIONS = ["Doc_Only.ipynb"]\n', encoding = "utf-8"
+    )
+
+    def write(source: str) -> None:
+        notebook = {
+            "cells": [{
+                "cell_type": "code",
+                "metadata": {},
+                "source": [source],
+                "outputs": [],
+                "execution_count": None,
+            }],
+            "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3"},
+                         "language_info": {"name": "python"}},
+            "nbformat": 4,
+            "nbformat_minor": 0,
+        }
+        (tmp_path / "nb" / "Doc_Only.ipynb").write_text(json.dumps(notebook), encoding = "utf-8")
+
+    write('!echo "pip install peft"\n')
+    assert nv.rule_l12_exceptions_coverage(tmp_path) == []
+
+    # A real install missing the clause is still a finding, so the gate did not mute the rule.
+    write("!pip install peft\n")
+    assert [f.rule for f in nv.rule_l12_exceptions_coverage(tmp_path)] == ["R-EXC-001"]
+
+    write('!pip install peft "torchao>=0.16.0"\n')
+    assert nv.rule_l12_exceptions_coverage(tmp_path) == []

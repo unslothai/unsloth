@@ -1212,3 +1212,44 @@ def test_an_exclusion_rules_out_the_installed_version():
     assert [
         f.rule for f in nv.rule_inst_004_torchcodec_torch(untouched, colab, "nb.ipynb", 0)
     ] == ["R-INST-004"]
+
+
+def test_versions_are_compared_with_pep440_zero_padding():
+    """PEP 440 pads the shorter release segment, so `0.11` and `0.11.0` are one version.
+    Comparing the raw tuples sorted `0.11` below `0.11.0`, which silently changed which
+    branch answered for a window whose floor spells out its patch."""
+    from scripts import notebook_validator as nv
+
+    assert nv.cmp_versions("0.11", "0.11.0") == 0
+    assert nv.cmp_versions("2.12", "2.12.0.0") == 0
+    assert nv.cmp_versions("0.11", "0.11.1") == -1
+    assert nv.cmp_versions("0.12", "0.11.9") == 1
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    strict_window = '!pip install "torch==2.12.0" "torchcodec>0.11.0,<0.12.0"'
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(strict_window, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+
+def test_the_codec_index_honours_an_explicitly_pinned_torch_mirror(monkeypatch):
+    """UNSLOTH_TORCH_INDEX_URL names the index torch itself came from. Rebuilding a public
+    download.pytorch.org URL from the local tag sent an authenticated or air-gapped mirror to
+    the internet, and the `--index-url` that follows also drops the inherited index
+    configuration, so the codec install fails outright where public PyTorch is unreachable."""
+    from studio import install_python_stack as ips
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    assert ips._torchcodec_index_url("2.11.0+cu128") == "https://download.pytorch.org/whl/cu128"
+
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://mirror.corp.example/pytorch/cu128/")
+    assert ips._torchcodec_index_url("2.11.0+cu128") == "https://mirror.corp.example/pytorch/cu128"
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
+    assert ips._torchcodec_index_url("2.11.0+cu128") == "https://download.pytorch.org/whl/cu126"
+
+    # The override does not make an untagged or rocm torch start pinning.
+    assert ips._torchcodec_index_url("2.11.0") is None
+    assert ips._torchcodec_index_url("2.11.0+rocm7.0") is None
