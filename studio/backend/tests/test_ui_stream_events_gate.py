@@ -19,7 +19,10 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from core.inference.sse_control_frames import is_ui_control_sse_line
+from core.inference.sse_control_frames import (
+    is_ui_control_sse_line,
+    strip_server_executed_tool_call,
+)
 from routes.inference import (
     _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
     UI_STREAM_EVENTS_HEADER,
@@ -280,6 +283,56 @@ def test_a_structured_type_field_does_not_crash_the_relay():
     for value in ('{"a": 1}', "[1, 2]", "3", "null", "true"):
         line = 'data: {"type": %s, "choices": []}' % value
         assert is_ui_control_sse_line(line) is False, line
+
+
+def test_the_loops_bare_status_frames_are_held_back_too():
+    # build_synthetic_search_exchange brackets a RAG autoinjection with {"type": "status"}
+    # frames, which stream_with_studio_tools writes straight onto the relayed stream.
+    # "status" is not in the provider-forgery vocabulary, but it carries no choices, so a
+    # strict client fails on it exactly like a tool card.
+    assert is_ui_control_sse_line('data: {"type": "status", "text": "Searching: x"}') is True
+    assert is_ui_control_sse_line('data: {"type": "status", "text": ""}') is True
+    # usage and error are the provider's own vocabulary; a client reads them.
+    assert is_ui_control_sse_line('data: {"type": "error", "error": {"message": "x"}}') is False
+    assert is_ui_control_sse_line('data: {"type": "x", "usage": {"total_tokens": 3}}') is False
+    # A context_truncated chunk keeps its choices, so it is a chunk, not a frame.
+    assert is_ui_control_sse_line('data: {"choices": [], "context_truncated": {}}') is False
+
+
+def test_a_call_the_server_runs_itself_is_not_offered_to_the_caller():
+    # The loop relays the provider's delta.tool_calls and the finish_reason that ends that
+    # turn, for a call Unsloth executes and answers in a later turn. Its catalogue is
+    # Unsloth's own, so a client acting on those chunks runs the tool a second time, or
+    # stops at the finish_reason before the real answer arrives.
+    assert strip_server_executed_tool_call(
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"id": "c1"}]}}]}'
+    ) is None
+    assert strip_server_executed_tool_call(
+        'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}'
+    ) is None
+    # A chunk that also carries prose keeps the prose.
+    kept = strip_server_executed_tool_call(
+        'data: {"choices": [{"index": 0, "delta": {"content": "hi", "tool_calls": [{"id": "c"}]}}]}'
+    )
+    assert kept is not None and "tool_calls" not in kept and '"content":"hi"' in kept
+    # Everything else passes through byte-for-byte.
+    for line in (
+        'data: {"choices": [{"index": 0, "delta": {"content": "hi"}}]}',
+        'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}',
+        'data: {"choices": [], "usage": {"total_tokens": 3}}',
+        "data: [DONE]",
+        ": keep-alive",
+    ):
+        assert strip_server_executed_tool_call(line) == line, line
+
+
+def test_the_relay_only_strips_calls_the_loop_owns():
+    # On a plain proxy the calls are the caller's own, so the strip is gated on the loop
+    # running: policy on the Codex branch, run_studio_tool_loop on the other.
+    src = inspect.getsource(_proxy_to_external_provider)
+    assert "if not _ui_events and policy is not None:" in src
+    assert "if not _ui_events and run_studio_tool_loop:" in src
+    assert src.count("strip_server_executed_tool_call(line)") == 2
 
 
 def test_external_provider_relay_drops_control_frames_too():

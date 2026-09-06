@@ -3213,7 +3213,10 @@ from core.inference.providers import (
 )
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.external_tool_transport import OAICompatTransport
-from core.inference.sse_control_frames import is_ui_control_sse_line
+from core.inference.sse_control_frames import (
+    is_ui_control_sse_line,
+    strip_server_executed_tool_call,
+)
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
     ToolLoopRun,
@@ -19778,6 +19781,12 @@ async def _proxy_to_external_provider(
                         if _drop_keepalive.due():
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
+                    if not _ui_events and policy is not None:
+                        # policy is set only when the loop owns the catalogue, so a call
+                        # here is one this server runs, not one to hand to the caller.
+                        line = strip_server_executed_tool_call(line)
+                        if line is None:
+                            continue
                     yield f"{line}\n\n"
                 yield "data: [DONE]\n\n"
             except asyncio.CancelledError:
@@ -20095,6 +20104,12 @@ async def _proxy_to_external_provider(
                     if _drop_keepalive.due():
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
+                if not _ui_events and run_studio_tool_loop:
+                    # Only inside the loop: on a plain proxy the calls are the caller's
+                    # own and must pass through untouched.
+                    line = strip_server_executed_tool_call(line)
+                    if line is None:
+                        continue
                 yield f"{line}\n\n"
                 # Parsed from the line itself, not from monitor_event: with the
                 # monitor disabled the helper returns None for every line, and
