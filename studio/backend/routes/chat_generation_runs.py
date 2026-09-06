@@ -10,6 +10,7 @@ import json
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -17,6 +18,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
+from auth import policy
+from state import active_generations
+from utils.account_context import current_account, current_account_id, run_as
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
@@ -215,6 +219,34 @@ def _require_run(run_id: str) -> dict[str, Any]:
     return run
 
 
+def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -> None:
+    """Signal only the caller's registration when supervisor IDs are shared.
+
+    Durable chat producers reserve their event before starting. Research workers
+    also observe cancellation/deletion through their account's persisted lease.
+    Never stash a bare cancel ID in a multi-account installation: a later request
+    from another account can legitimately reuse it.
+    """
+    if policy.installation_is_multi_user():
+        active_generations.cancel_run(run_id, account_id = current_account_id())
+        return
+    supervisor = getattr(request.app.state, supervisor_name, None)
+    if supervisor is not None:
+        supervisor.cancel(run_id)
+    elif supervisor_name == "chat_generation_supervisor":
+        from routes.inference import _cancel_by_cancel_id_or_stash
+        active_generations.cancel_run(run_id)
+        _cancel_by_cancel_id_or_stash(run_id)
+
+
+def _require_available_supervisor_run_id(run_id: str) -> None:
+    """A legacy supervisor keys tasks by bare ID; refuse a foreign active slot."""
+    if policy.installation_is_multi_user():
+        for entry in active_generations.snapshot():
+            if entry["run_id"] == run_id:
+                policy.require_account_scope(entry.get("account_id"))
+
+
 def _event_cursor(after: int | None, last_event_id: str | None) -> int:
     if after is not None and after > _SQLITE_MAX_INTEGER:
         raise HTTPException(status_code = 400, detail = "Event cursor is too large")
@@ -242,6 +274,7 @@ async def create_chat_generation_run(
     # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or
     # after an unload/swap, never mid-swap.
     async with inference_lifecycle_gate():
+        _require_available_supervisor_run_id(payload.runId)
         try:
             run, created = await asyncio.to_thread(
                 db.create_run,
@@ -292,9 +325,11 @@ def cancel_chat_generation_run(
     run = db.request_cancel(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = "Chat generation run not found")
-    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
-    if supervisor is not None and run["status"] in {"cancelling", "cancelled"}:
-        supervisor.cancel(run_id)
+    if run["status"] in {"cancelling", "cancelled"} and (
+        getattr(request.app.state, "chat_generation_supervisor", None) is not None
+        or policy.installation_is_multi_user()
+    ):
+        cancel_account_run(request, run_id, supervisor_name = "chat_generation_supervisor")
     return run
 
 
@@ -308,6 +343,10 @@ async def chat_generation_events(
 ):
     _require_run(run_id)
     cursor = _event_cursor(after, last_event_id)
+    wait_for_events = db.wait_for_events
+    if policy.installation_is_multi_user():
+        # run_in_executor does not copy ContextVars, unlike asyncio.to_thread.
+        wait_for_events = partial(run_as, current_account(), db.wait_for_events)
 
     async def stream():
         nonlocal cursor
@@ -322,7 +361,7 @@ async def chat_generation_events(
         while True:
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
-                db.wait_for_events,
+                wait_for_events,
                 run_id,
                 cursor,
                 15,

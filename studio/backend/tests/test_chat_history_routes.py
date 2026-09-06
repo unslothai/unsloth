@@ -1193,12 +1193,13 @@ def test_the_clear_and_its_image_snapshot_share_one_threadpool_hop():
     source = inspect.getsource(chat_history.clear_history)
     assert source.count("run_in_threadpool(_clear_rows)") == 1
     assert (
-        "run_in_threadpool(snapshot_and_fence_registrations)" not in source
+        "run_in_threadpool(_snapshot_chat_images)" not in source
     ), "a second hop for the snapshot reopens the gap the first one closed"
     body = source.split("def _clear_rows(", 1)[1].split("\n    # The clear reports", 1)[0]
     assert (
-        "snapshot_and_fence_registrations()" in body
+        "_snapshot_chat_images()" in body
     ), "the snapshot belongs inside the clear's hop, and it carries the registration fence"
+    assert "snapshot_and_fence_registrations()" in inspect.getsource(chat_history._snapshot_chat_images)
 
 
 def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeypatch, tmp_path):
