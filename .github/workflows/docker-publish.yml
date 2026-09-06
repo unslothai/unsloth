@@ -75,6 +75,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     outputs:
       # the nightly pin's date; computed once so a rerun of failed jobs keeps it
       pin_date: ${{ steps.pin.outputs.date }}
@@ -85,7 +86,20 @@ jobs:
     steps:
       - name: Date of this run, for the nightly pins
         id: pin
-        run: echo "date=$(date -u +%Y.%m.%d)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The run's creation time, not the clock: created_at is fixed at the first
+          # attempt (run_started_at resets), so a rerun of an older scheduled run on
+          # a later day keeps its own date instead of claiming that day's pin with
+          # an older commit and racing the real daily run for it.
+          created="$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq .created_at || true)"
+          case "$created" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*) ;;
+            *) echo "::error::Could not read this run's creation time (got '${created}')"; exit 1 ;;
+          esac
+          day="${created%%T*}"
+          echo "date=${day//-/.}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve llama.cpp prebuilt tag
         id: llama
@@ -324,10 +338,18 @@ jobs:
             name="${t##*:}"
             case "$name" in
               nightly-[0-9]*|core-nightly-[0-9]*)
-                if [ "$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}")" = "200" ]; then
-                  echo "::notice::${t} already exists and stays as it is"
-                  continue
-                fi ;;
+                # Only a 404 frees the name. A transport error (000), 429 or 5xx is
+                # retried, then stops the merge: it must not become an overwrite.
+                for i in 1 2 3 4 5; do
+                  code="$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}" || true)"
+                  case "$code" in 200|404) break ;; esac
+                  echo "probe of ${t} returned HTTP ${code} (attempt $i)"; sleep 15
+                done
+                case "$code" in
+                  200) echo "::notice::${t} already exists and stays as it is"; continue ;;
+                  404) ;;
+                  *) echo "::error::Cannot tell whether ${t} exists (HTTP ${code}); not risking an overwrite"; exit 1 ;;
+                esac ;;
             esac
             TAGS="${TAGS} -t ${t}"
           done
@@ -504,10 +526,18 @@ jobs:
             name="${t##*:}"
             case "$name" in
               nightly-[0-9]*|core-nightly-[0-9]*)
-                if [ "$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}")" = "200" ]; then
-                  echo "::notice::${t} already exists and stays as it is"
-                  continue
-                fi ;;
+                # Only a 404 frees the name. A transport error (000), 429 or 5xx is
+                # retried, then stops the merge: it must not become an overwrite.
+                for i in 1 2 3 4 5; do
+                  code="$(curl -sS -o /dev/null -w '%{http_code}' "https://hub.docker.com/v2/repositories/${{ env.IMAGE_NAME }}/tags/${name}" || true)"
+                  case "$code" in 200|404) break ;; esac
+                  echo "probe of ${t} returned HTTP ${code} (attempt $i)"; sleep 15
+                done
+                case "$code" in
+                  200) echo "::notice::${t} already exists and stays as it is"; continue ;;
+                  404) ;;
+                  *) echo "::error::Cannot tell whether ${t} exists (HTTP ${code}); not risking an overwrite"; exit 1 ;;
+                esac ;;
             esac
             TAGS="${TAGS} -t ${t}"
           done

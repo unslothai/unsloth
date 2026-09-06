@@ -72,6 +72,57 @@ def test_each_image_has_a_per_run_handle_and_a_dated_pin(
     assert doc["jobs"]["prepare"]["outputs"]["pin_date"] == "${{ steps.pin.outputs.date }}"
 
 
+def _pin_step(doc: dict) -> dict:
+    return [s for s in doc["jobs"]["prepare"]["steps"] if s.get("id") == "pin"][0]
+
+
+def _run_pin(step: dict, tmp_path: Path, *, gh: str) -> tuple[subprocess.CompletedProcess, str]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text("#!/usr/bin/env bash\n" + gh + "\n", encoding = "utf-8")
+    (bin_dir / "gh").chmod(0o755)
+    out = tmp_path / "output"
+    out.write_text("", encoding = "utf-8")
+    script = step["run"].replace("${{ github.repository }}", "unslothai/unsloth").replace(
+        "${{ github.run_id }}", "424242"
+    )
+    assert "${{" not in script
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
+    env["GITHUB_OUTPUT"] = str(out)
+    res = subprocess.run(
+        ["bash", "-e", "-c", script], capture_output = True, text = True, env = env, timeout = 60
+    )
+    return res, out.read_text(encoding = "utf-8")
+
+
+def test_the_pin_date_is_the_run_creation_date(doc: dict, tmp_path: Path):
+    """created_at is fixed at the first attempt while run_started_at and the clock
+    move, so a rerun of an older scheduled run on a later day keeps its own date
+    instead of claiming that day's pin with an older commit."""
+    step = _pin_step(doc)
+    assert doc["jobs"]["prepare"]["permissions"].get("actions") == "read"
+    assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert "actions/runs/${{ github.run_id }}" in step["run"]
+    assert "date -u" not in step["run"]
+    res, out = _run_pin(
+        step,
+        tmp_path,
+        gh = 'echo "$*" >&2; printf \'2026-09-05T18:17:03Z\\n\'',
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert out == "date=2026.09.05\n"
+    assert "repos/unslothai/unsloth/actions/runs/424242 --jq .created_at" in res.stderr
+
+
+@pytest.mark.parametrize("gh", ["exit 1", "printf ''", "printf 'null'"])
+def test_an_unreadable_creation_time_fails_prepare(doc: dict, tmp_path: Path, gh: str):
+    res, out = _run_pin(_pin_step(doc), tmp_path, gh = gh)
+    assert res.returncode != 0
+    assert "::error::" in res.stdout
+    assert out == ""
+
+
 def test_the_digest_export_resolves_the_handle(doc: dict):
     for job, needle in (("merge", ":core-build-"), ("merge-studio", ":build-")):
         step = [s for s in doc["jobs"][job]["steps"] if s.get("name") == "Export manifest digest"][
@@ -110,21 +161,26 @@ def _manifest_step(doc: dict, job: str) -> str:
 
 
 def _run_manifest(
-    step: str, tmp_path: Path, *, existing: list[str], tags: list[str]
+    step: str, tmp_path: Path, *, existing: list[str], tags: list[str], probe_code: str = "404"
 ) -> tuple[subprocess.CompletedProcess, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "docker.log"
+    (bin_dir / "sleep").write_text("#!/usr/bin/env bash\n", encoding = "utf-8")
+    (bin_dir / "sleep").chmod(0o755)
     (bin_dir / "docker").write_text(
         "#!/usr/bin/env bash\n" + f"printf '%s\\n' \"$*\" >> {log}\n", encoding = "utf-8"
     )
     (bin_dir / "docker").chmod(0o755)
+    probes = tmp_path / "curl.log"
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
+        f'echo "$*" >> {probes}\n'
         'case "$*" in\n'
         + "".join(f"  */tags/{e}) printf '200' ;;\n" for e in existing)
-        + "  *) printf '404' ;;\n"
-        "esac\n",
+        # curl prints 000 and exits 7 when the connection fails
+        + ("  *) printf '000'; exit 7 ;;\n" if probe_code == "000" else f"  *) printf '{probe_code}' ;;\n")
+        + "esac\n",
         encoding = "utf-8",
     )
     (bin_dir / "curl").chmod(0o755)
@@ -149,6 +205,11 @@ def _run_manifest(
         timeout = 60,
     )
     return res, log.read_text(encoding = "utf-8") if log.exists() else ""
+
+
+def _probes(tmp_path: Path) -> list[str]:
+    path = tmp_path / "curl.log"
+    return path.read_text(encoding = "utf-8").splitlines() if path.exists() else []
 
 
 @pytest.mark.parametrize("job", ["merge", "merge-studio"])
@@ -181,6 +242,27 @@ def test_a_new_dated_pin_is_created(doc: dict, job: str, tmp_path: Path):
     assert res.returncode == 0, res.stdout + res.stderr
     for t in ("latest", "nightly-2026.09.06", "build-777"):
         assert f"-t docker.io/unsloth/unsloth:{t} " in log
+    assert len(_probes(tmp_path)) == 1, "only the dated pin is probed, once"
+
+
+@pytest.mark.parametrize("job", ["merge", "merge-studio"])
+@pytest.mark.parametrize("code", ["000", "429", "503"])
+def test_an_unanswered_probe_stops_the_merge(doc: dict, job: str, code: str, tmp_path: Path):
+    """Anything but a 404 used to count as absent, and the probe sits in a condition
+    where bash -e is off, so a transport failure or a 429 became an overwrite."""
+    step = _manifest_step(doc, job)
+    res, log = _run_manifest(
+        step,
+        tmp_path,
+        existing = [],
+        tags = ["latest", "nightly-2026.09.06", "build-777"],
+        probe_code = code,
+    )
+    assert res.returncode != 0
+    assert f"(HTTP {code})" in res.stdout
+    assert "::error::" in res.stdout
+    assert log == "", "no manifest may be written while the pin's state is unknown"
+    assert len(_probes(tmp_path)) == 5, "the probe is retried before giving up"
 
 
 def _run_cleanup(
