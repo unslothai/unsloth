@@ -2,20 +2,20 @@
 # Published as unsloth/unsloth:studio (and default :latest); layers Studio on the
 # lean core image and runs Studio:8000, JupyterLab:8888, sshd:22.
 #
-# Build (local):
-#   docker buildx build --build-arg BASE_IMAGE=unsloth-blackwell:test \
-#     -f docker/Dockerfile.studio -t unsloth-blackwell:studio docker/
+# Build (local, on top of the published base or one built from docker/Dockerfile):
+#   docker buildx build --build-arg BASE_IMAGE=unsloth/unsloth:core \
+#     -f docker/Dockerfile.studio -t unsloth/unsloth:studio docker/
 # Run:
 #   docker run --rm --gpus all -p 8000:8000 -p 8888:8888 \
-#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface unsloth-blackwell:studio
+#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface unsloth/unsloth:studio
 #
-# Studio on :8000 (first-boot admin password in the logs, persisted under
-# /opt/unsloth-studio/auth/); JupyterLab on :8888 (JUPYTER_PASSWORD env, else a
-# random one is printed). Without GPU passthrough add -e UNSLOTH_ALLOW_CPU=1:
+# Studio on :8000 (user unsloth; UNSLOTH_STUDIO_PASSWORD env, else a generated one
+# is printed in the logs; persisted under /opt/unsloth-studio/auth/); JupyterLab on
+# :8888 (JUPYTER_PASSWORD env, else a random one is printed). Without GPU passthrough add -e UNSLOTH_ALLOW_CPU=1:
 # training is unavailable but Studio chat / Data Recipes / GGUF / Jupyter work.
 # CI pins BASE_IMAGE to the published base digest so both images ship the same stack.
 
-ARG BASE_IMAGE=unsloth-blackwell:test
+ARG BASE_IMAGE=unsloth/unsloth:core
 
 # Builds the "Unsloth Dark" (Monokai) theme + Colab-style cell-nav keymap. Node
 # lives only in this throwaway stage; the final image copies just the prebuilt
@@ -152,6 +152,8 @@ RUN set -eux \
 
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch
+COPY studio_password.sh /usr/local/bin/unsloth-studio-password
+COPY studio_run.sh /usr/local/bin/unsloth-studio-run
 # In-place updaters (no image pull):
 #   unsloth-studio-update  refresh Studio packages (backend + frontend) and restart
 #   unsloth-llama-update   swap the baked llama.cpp prebuilt to the latest release
@@ -207,6 +209,8 @@ RUN SP="$(/opt/unsloth-venv/bin/python -c 'import sysconfig; print(sysconfig.get
  && rm -rf /tmp/unsloth-branding-guard \
  && /opt/unsloth-venv/bin/python -m unsloth_branding --verify
 RUN chmod +x /usr/local/bin/unsloth-studio-launch \
+             /usr/local/bin/unsloth-studio-password \
+             /usr/local/bin/unsloth-studio-run \
              /usr/local/bin/unsloth-studio-update \
              /usr/local/bin/unsloth-llama-update \
              /usr/local/bin/unsloth-jupyter-tunnel

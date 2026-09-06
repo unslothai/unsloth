@@ -2,7 +2,8 @@
 # Default CMD of the full Unsloth image (Dockerfile.studio).
 #
 # Bootstraps the three services managed by supervisord:
-#   studio   port 8000   first-boot admin password printed in `docker logs`
+#   studio   port 8000   user unsloth; password from UNSLOTH_STUDIO_PASSWORD, or
+#                        the generated one printed in `docker logs` (studio-password)
 #   jupyter  port 8888   password from JUPYTER_PASSWORD, or a random one
 #                        printed in `docker logs` when unset
 #   sshd     port 22     key-only; enabled when PUBLIC_KEY / SSH_KEY is set
@@ -10,6 +11,8 @@
 # Environment:
 #   JUPYTER_PORT       Jupyter port inside the container       (default 8888)
 #   JUPYTER_PASSWORD   Jupyter login password (unset: generated and printed)
+#   UNSLOTH_STUDIO_PASSWORD  initial Studio admin password (unset: generated and
+#                      printed); ignored once a password is stored
 #   PUBLIC_KEY/SSH_KEY OpenSSH public key for root login; sshd stays disabled
 #                      when neither is set (nothing to authenticate with --
 #                      password login is never enabled for root)
@@ -104,7 +107,28 @@ if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
     fi
 fi
 
-echo "Unsloth Studio  -> http://localhost:8000   (first-boot password below)"
+export UNSLOTH_JUPYTER_NOTE="${JUPYTER_NOTE}"  # for the ready summary (studio-password)
+# UNSLOTH_STUDIO_PASSWORD only sets the initial admin password, and `unsloth studio`
+# exits 1 when handed one after that. So it goes to a root-only file that
+# unsloth-studio-run consumes while nothing is stored, and never into supervisord's
+# environment, where every respawn of the studio program would see it again.
+INITIAL_FILE="${UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE:-/run/unsloth/studio-initial-password}"
+rm -f "$INITIAL_FILE"
+if unsloth-studio-run --stored; then
+    STUDIO_NOTE="user unsloth, password set on an earlier boot"
+    UNSLOTH_STUDIO_PASSWORD_STATE=stored
+elif [[ -n "${UNSLOTH_STUDIO_PASSWORD:-}" ]]; then
+    mkdir -p "$(dirname "$INITIAL_FILE")"
+    (umask 077 && printf '%s' "$UNSLOTH_STUDIO_PASSWORD" > "$INITIAL_FILE")
+    STUDIO_NOTE="user unsloth, password from UNSLOTH_STUDIO_PASSWORD env"
+    UNSLOTH_STUDIO_PASSWORD_STATE=initial
+else
+    STUDIO_NOTE="user unsloth, generated password printed below once Studio is up"
+    UNSLOTH_STUDIO_PASSWORD_STATE=generated
+fi
+unset UNSLOTH_STUDIO_PASSWORD
+export UNSLOTH_STUDIO_PASSWORD_STATE  # read by unsloth-studio-password
+echo "Unsloth Studio  -> http://localhost:8000   (${STUDIO_NOTE})"
 echo "JupyterLab      -> http://localhost:${JUPYTER_PORT}   (${JUPYTER_NOTE})"
 if [[ "${UNSLOTH_JUPYTER_CLOUDFLARE}" == "1" ]]; then
     echo "JupyterLab tunnel-> enabled; public trycloudflare URL appears below once it is up"
