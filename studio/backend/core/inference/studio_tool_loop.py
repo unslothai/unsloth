@@ -1714,10 +1714,16 @@ async def stream_with_studio_tools(
         for call in calls:
             if cancel_event.is_set():
                 break
-            # `len(pending_calls)` are launched and will each spend one when they settle,
-            # so a parallel round must not start a call the budget cannot pay for. In a
-            # sequential round the list is empty and this is the check it always was.
-            if not unlimited and remaining - len(pending_calls) <= 0:
+            # The LAUNCHED entries are the ones that will each spend one when they
+            # settle, so a parallel round must not start a call the budget cannot pay for.
+            # Counting the whole list instead counted the `"lines"` entries too -- a
+            # duplicate the controller turned into a no-op, a denied call, a call the
+            # budget already refused -- and none of those ever decrements `remaining`. With
+            # two calls left, a round of {duplicate, new, new} refused the second new call
+            # for a budget it had not spent, which in a sequential round it would have run.
+            # In a sequential round the list is empty and this is the check it always was.
+            _launched = sum(1 for _entry in pending_calls if _entry[0] != "lines")
+            if not unlimited and remaining - _launched <= 0:
                 # Budget spent.
                 _exhausted_lines = list(
                     _unrun_call_card(

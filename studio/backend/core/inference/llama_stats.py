@@ -22,8 +22,14 @@ _METRIC_RE = re.compile(r"^llamacpp:(\w+)(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.MUL
 _OFF = {"0", "false", "no", "off"}
 
 
-def fetch_llama_slots(base_url, timeout_s = 3.0):
+def fetch_llama_slots(base_url, timeout_s = 3.0, headers = None):
     """One ``GET /slots`` read as a list, or None if it could not be read.
+
+    ``headers`` carries the backend's ``Authorization`` when the load was launched with
+    ``--api-key`` (``UNSLOTH_DIRECT_STREAM=1``). llama.cpp exempts only ``/health`` and
+    ``/v1/health`` from the key check, so an unauthenticated read of ``/slots`` answers
+    401 and the ``except`` below turns that into None -- "cannot tell" -- which silently
+    switches the whole exact-residency probe off in a supported mode.
 
     Added against the advice in the original design, which said to reuse the /metrics
     scraper and NOT add a slots poller. That advice was written before the residue was
@@ -38,7 +44,9 @@ def fetch_llama_slots(base_url, timeout_s = 3.0):
     """
     url = f"{str(base_url).rstrip('/')}/slots"
     try:
-        with urllib.request.urlopen(url, timeout = timeout_s) as r:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers = dict(headers or {})), timeout = timeout_s
+        ) as r:
             if r.status != 200:
                 return None
             payload = json.loads(r.read().decode("utf-8", "replace"))
@@ -51,6 +59,7 @@ def erase_llama_slot(
     base_url,
     slot_id,
     timeout_s = 3.0,
+    headers = None,
 ) -> int:
     """Drop one idle slot's cached prompt. Returns tokens erased, 0 on any failure.
 
@@ -59,7 +68,12 @@ def erase_llama_slot(
     """
     url = f"{str(base_url).rstrip('/')}/slots/{int(slot_id)}?action=erase"
     try:
-        request = urllib.request.Request(url, method = "POST", data = b"")
+        # Authorized for the same reason the read above is: a 401 here returns 0 tokens
+        # erased, so a paused slot's cells are never released and the waiter it was freed
+        # for waits out its deadline.
+        request = urllib.request.Request(
+            url, method = "POST", data = b"", headers = dict(headers or {})
+        )
         with urllib.request.urlopen(request, timeout = timeout_s) as r:
             if r.status != 200:
                 return 0
