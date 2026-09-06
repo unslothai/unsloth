@@ -3131,3 +3131,39 @@ def test_editable_install_source_trees_are_readable(monkeypatch, tmp_path):
 def test_linux_system_roots_cover_libexec_and_usr_local():
     for root in ("/usr/libexec", "/usr/local/bin", "/usr/local/lib"):
         assert root in os_sandbox._LINUX_SYSTEM_ROOTS
+
+
+@pytest.mark.parametrize(
+    "release, wsl_env, expected",
+    [
+        ("5.15.153.1-microsoft-standard-wsl2", {}, "wsl2"),
+        ("4.4.0-19041-microsoft", {}, "wsl1"),
+        ("4.4.0-22621-microsoft", {"WSL_DISTRO_NAME": "Ubuntu"}, "wsl1"),
+        ("6.6.87.2-microsoft-standard-WSL2".lower(), {"WSL_INTEROP": "/run/WSL/1_interop"}, "wsl2"),
+    ],
+)
+def test_wsl1_is_told_apart_from_wsl2(monkeypatch, release, wsl_env, expected):
+    # WSL 1 translates syscalls and has no user namespaces, so its remediation is a
+    # distribution upgrade rather than a package or an AppArmor profile.
+    monkeypatch.setattr(
+        os_sandbox, "_read_text", lambda path: release if "osrelease" in path else ""
+    )
+    for key in ("WSL_INTEROP", "WSL_DISTRO_NAME"):
+        monkeypatch.delenv(key, raising = False)
+    for key, value in wsl_env.items():
+        monkeypatch.setenv(key, value)
+    assert os_sandbox._linux_environment(run_detector = False) == expected
+
+
+def test_wsl1_probe_failure_names_the_distribution_upgrade(monkeypatch):
+    monkeypatch.setattr(os_sandbox, "_linux_environment", lambda **_: "wsl1")
+    failure = os_sandbox.SandboxCapability(
+        "linux-bubblewrap", False, "bwrap: setting up uid map: Permission denied"
+    )
+    explained = os_sandbox._explain_linux_probe_failure(failure)
+    assert "WSL 1" in explained.reason
+    assert "wsl --set-version" in explained.remediation
+    assert "apparmor" not in explained.remediation.lower()
+    # A qualified capability is never rewritten.
+    good = os_sandbox.SandboxCapability("linux-bubblewrap", True, "ok")
+    assert os_sandbox._explain_linux_probe_failure(good) is good

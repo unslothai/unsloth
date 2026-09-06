@@ -658,6 +658,22 @@ def _emit_tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bo
     print(_tool_policy_notice(host, secure, enable_tools), flush = True)
 
 
+def _emit_sandbox_capability_notice(enable_tools: "Optional[bool]") -> None:
+    """Say once, at startup, when OS isolation is unavailable.
+
+    Tools default to os_isolation_required and fail closed, so on such a host every
+    Python and terminal tool call refuses; without this the operator only finds out
+    from a refused tool call. Nothing to say when tools are off entirely, and
+    nothing to say when the sandbox is healthy."""
+    if enable_tools is False:
+        return
+    try:
+        from core.inference.sandbox_startup import print_sandbox_startup_notice
+        print_sandbox_startup_notice()
+    except Exception:  # noqa: BLE001 -- a startup notice never breaks the banner
+        pass
+
+
 def _emit_secure_startup_output(port: int, enable_tools: "Optional[bool]" = None) -> None:
     """Secure-mode banner: only the Cloudflare link (loopback has no public raw URL)."""
     print("")
@@ -667,6 +683,7 @@ def _emit_secure_startup_output(port: int, enable_tools: "Optional[bool]" = None
     print(f"  On this machine only: http://127.0.0.1:{port}/")
     print("─" * 52)
     _emit_tool_policy_notice("127.0.0.1", True, enable_tools)
+    _emit_sandbox_capability_notice(enable_tools)
     print_studio_stop_hint()
 
 
@@ -705,6 +722,7 @@ def _emit_startup_output(
         _verify_global_reachability(display_host, port)
         _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
     _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
+    _emit_sandbox_capability_notice(enable_tools)
     print_studio_stop_hint()
 
 

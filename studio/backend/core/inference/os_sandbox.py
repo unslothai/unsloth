@@ -62,6 +62,13 @@ _CLONE_NEWUSER = 0x10000000
 _LIMITATION_NESTED_USERNS_SECCOMP = "nested_userns_blocked_by_seccomp"
 _LIMITATION_IPV6_UNAVAILABLE = "ipv6_unavailable_on_host"
 _LIMITATION_NETWORK_ALLOWLIST_INVALID = "network_allowlist_invalid"
+_WSL1_REMEDIATION = (
+    "This distribution runs under WSL 1, which translates Linux syscalls instead of running a "
+    "kernel, so it has no user namespaces and Bubblewrap cannot create a sandbox here. Convert "
+    "the distribution to WSL 2 from Windows with `wsl --set-version <distro> 2` (check the "
+    "current version with `wsl -l -v`), then start Studio again and choose Check again. Until "
+    "then, use Limited mode only for a trusted task."
+)
 _GENERIC_REMEDIATION = (
     "Use Limited mode only for a trusted task, or install and enable a qualified OS sandbox backend."
 )
@@ -1006,6 +1013,14 @@ def _linux_environment(*, run_detector: bool = True) -> str:
     release = ""
     release = _read_text("/proc/sys/kernel/osrelease").lower()
     if "microsoft" in release or os.environ.get("WSL_INTEROP") or os.environ.get("WSL_DISTRO_NAME"):
+        # WSL2 runs a real Linux kernel and reports "microsoft-standard-WSL2" or
+        # similar; WSL1 translates syscalls and its osrelease is "<ver>-Microsoft"
+        # with no standard suffix. WSL1 has no namespaces, so Bubblewrap can never
+        # work there and the remediation is a distro upgrade, not a package.
+        if release and "microsoft" in release and not (
+            "wsl2" in release or "microsoft-standard" in release
+        ):
+            return "wsl1"
         return "wsl2"
     if os.environ.get("COLAB_RELEASE_TAG") or "google.colab" in sys.modules:
         return "colab"
@@ -1295,7 +1310,7 @@ def _nproc_limit() -> int:
 
 
 def _validate_linux_workdir_environment(workdir: str) -> None:
-    if _linux_environment() != "wsl2":
+    if _linux_environment() not in ("wsl1", "wsl2"):
         return
     mount = _linux_mount_for_path(workdir)
     if mount is None:
@@ -1323,7 +1338,7 @@ def _nested_exposed_mounts(roots: tuple[str, ...]) -> tuple[_LinuxMount, ...]:
 
 def _sanitize_linux_environment(env: dict[str, str], environment: str) -> dict[str, str]:
     sanitized = dict(env)
-    if environment == "wsl2":
+    if environment in ("wsl1", "wsl2"):
         for key in (
             "WSL_INTEROP",
             "WSLENV",
@@ -1536,7 +1551,7 @@ class LinuxBubblewrapBackend:
                 argv.extend(("--tmpfs", mount.mount_point))
             else:
                 argv.extend(("--ro-bind", empty_mask, mount.mount_point))
-        if environment == "wsl2":
+        if environment in ("wsl1", "wsl2"):
             for path in _WSL_HIDDEN_PATHS:
                 argv.extend(("--tmpfs", path))
         argv.extend(("--dir", workdir, "--remount-ro", "/"))
@@ -1665,6 +1680,13 @@ def _explain_linux_probe_failure(
     """
     if result.qualified:
         return result
+    if _linux_environment() == "wsl1":
+        # No namespaces at all under WSL 1, so no package or profile can help.
+        return replace(
+            result,
+            reason = f"WSL 1 has no Linux user namespaces: {result.reason}",
+            remediation = _WSL1_REMEDIATION,
+        )
     if _read_text(_APPARMOR_USERNS_SYSCTL).strip() != "1":
         return result
     if not any(marker in result.reason for marker in _APPARMOR_USERNS_MARKERS):
