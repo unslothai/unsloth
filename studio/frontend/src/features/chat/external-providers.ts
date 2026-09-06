@@ -79,7 +79,8 @@ export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
 }
 
 // Provider types exposing the connection-level "reasoning model" toggle. vLLM's OpenAI-compat
-// endpoint does not advertise this per model.
+// endpoint does not advertise this per model. Ollama is not here: its native /api/tags names a
+// "thinking" capability per model, a truer answer than one checkbox on a connection serving both.
 const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
 
 export function supportsProviderReasoningToggle(
@@ -115,9 +116,17 @@ export function providerTypeSupportsVision(
 }
 
 
+/** What one model on a provider is known to support. */
+export type ProviderModelCapability = {
+  vision?: boolean;
+  studio_tools?: boolean;
+  /** Ollama's /api/tags is the only catalog that reports this per model. */
+  thinking?: boolean;
+};
+
 const REGISTRY_MODEL_CAPABILITIES = new Map<
   string,
-  Record<string, { vision?: boolean; studio_tools?: boolean }>
+  Record<string, ProviderModelCapability>
 >();
 
 const REGISTRY_MODEL_CAPABILITIES_KEY =
@@ -131,10 +140,7 @@ function hydrateProviderModelCapabilities(): void {
   try {
     const parsed = JSON.parse(
       localStorage.getItem(REGISTRY_MODEL_CAPABILITIES_KEY) ?? "{}",
-    ) as Record<
-      string,
-      Record<string, { vision?: boolean; studio_tools?: boolean }>
-    >;
+    ) as Record<string, Record<string, ProviderModelCapability>>;
     for (const [providerType, capabilities] of Object.entries(parsed)) {
       if (capabilities && typeof capabilities === "object") {
         REGISTRY_MODEL_CAPABILITIES.set(providerType, capabilities);
@@ -159,14 +165,14 @@ function persistProviderModelCapabilities(): void {
 
 export function getProviderModelCapabilities(
   providerType: string,
-): Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined {
+): Record<string, ProviderModelCapability> | undefined {
   hydrateProviderModelCapabilities();
   return REGISTRY_MODEL_CAPABILITIES.get(providerType);
 }
 
 export function setProviderModelCapabilities(
   providerType: string,
-  capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+  capabilities: Record<string, ProviderModelCapability> | undefined,
 ): void {
   hydrateProviderModelCapabilities();
   if (capabilities) REGISTRY_MODEL_CAPABILITIES.set(providerType, capabilities);
@@ -225,6 +231,53 @@ export function providerModelSupportsStudioTools(
   }
   const providerDefault = capabilities?.[PROVIDER_CAPABILITY_WILDCARD]?.studio_tools;
   return typeof providerDefault === "boolean" ? providerDefault : null;
+}
+
+/** Whether this exact model reasons, per the provider's own catalog.
+ *
+ * No wildcard fallback: "thinking" is a property of the model, and Ollama hosts
+ * a mix of thinking and non-thinking ones under one connection. `null` means the
+ * catalog never described the model — a hand-typed id, or a host too old to
+ * report capabilities — and callers must not read that as a yes.
+ */
+export function providerModelSupportsThinking(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean | null {
+  if (!providerType || !modelId) return null;
+  hydrateProviderModelCapabilities();
+  const value =
+    REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.thinking;
+  return typeof value === "boolean" ? value : null;
+}
+
+/** Fold a freshly fetched model catalog's capability names into the stored map.
+ *
+ * The catalog is the truth for the rows it describes, so a model that has
+ * stopped reporting "thinking" (a re-pulled tag, a downgraded host) is written
+ * back as false instead of latching on its last yes. Rows carrying no capability
+ * list are left untouched: an Ollama too old to report them is saying nothing,
+ * which is not the same as saying no.
+ */
+export function learnCatalogModelCapabilities(
+  providerType: string,
+  models: readonly { id: string; capabilities?: string[] | null }[],
+): void {
+  if (!providerType) return;
+  const stored = getProviderModelCapabilities(providerType) ?? {};
+  const merged: Record<string, ProviderModelCapability> = { ...stored };
+  let learned = false;
+  for (const model of models) {
+    const names = model.capabilities;
+    const modelId = model.id?.trim();
+    if (!modelId || !Array.isArray(names)) continue;
+    merged[modelId] = {
+      ...stored[modelId],
+      thinking: names.includes("thinking"),
+    };
+    learned = true;
+  }
+  if (learned) setProviderModelCapabilities(providerType, merged);
 }
 
 /** Whether the connection behind an `external::` model id runs Unsloth tools. Resolves the

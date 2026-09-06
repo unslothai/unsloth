@@ -4,6 +4,7 @@
 import {
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
+  providerModelSupportsThinking,
 } from "./external-providers";
 
 /** Per-provider sampling capability matrix from each provider's chat docs (2026-05).
@@ -893,15 +894,33 @@ export interface ExternalReasoningResolveOptions {
   baseUrl?: string | null;
 }
 
-// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle.
-function resolveConnectionLevelReasoning(
+// ollama's /v1/chat/completions also accepts "none", which Thinking off sends.
+// https://docs.ollama.com/api/openai-compatibility
+const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
+
+// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle. Ollama does:
+// /api/tags names a "thinking" capability per model, learned into the capability map when the
+// catalog is fetched, and Ollama errors a thinking request at a model that cannot think, so the
+// ladder appears only once that model is known to reason (#9649).
+function resolveProviderReasoning(
   normalizedProvider: string,
+  modelId: string,
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
+    });
+  }
+  if (
+    normalizedProvider === "ollama" &&
+    providerModelSupportsThinking(normalizedProvider, modelId) === true
+  ) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: OLLAMA_EFFORT_LEVELS,
     });
   }
   return null;
@@ -914,14 +933,18 @@ export function getExternalReasoningCapabilities(
   modelId: string | null | undefined,
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
-  const normalizedModel = modelId?.trim().toLowerCase() ?? "";
+  // The capability map is keyed by the id the catalog reported, so the lookup
+  // gets the trimmed id rather than the case-folded one used for matching.
+  const catalogModel = modelId?.trim() ?? "";
+  const normalizedModel = catalogModel.toLowerCase();
   const normalizedProvider = providerType?.trim().toLowerCase() ?? "";
-  const connectionLevel = resolveConnectionLevelReasoning(
+  const providerLevel = resolveProviderReasoning(
     normalizedProvider,
+    catalogModel,
     options,
   );
-  if (connectionLevel) {
-    return connectionLevel;
+  if (providerLevel) {
+    return providerLevel;
   }
   if (!normalizedModel) {
     return withEnableThinkingStyle();

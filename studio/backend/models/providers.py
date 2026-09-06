@@ -163,6 +163,14 @@ class ProviderModelInfo(BaseModel):
     display_name: str = Field("", description = "Human-readable model name")
     context_length: Optional[int] = Field(None, description = "Maximum context length in tokens")
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
+    capabilities: Optional[list[str]] = Field(
+        None,
+        description = (
+            "Capability names the provider advertises for this model "
+            "(Ollama /api/tags: thinking, tools, vision, ...). None when the "
+            "provider does not describe capabilities per model."
+        ),
+    )
 
 
 class ProviderModelsRequest(BaseModel):
