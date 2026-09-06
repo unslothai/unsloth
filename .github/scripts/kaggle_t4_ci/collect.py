@@ -255,7 +255,11 @@ def _evidence_lines(dest: Path):
         yield from launch.flatten_kernel_log(raw).splitlines()
 
 
-def expected_reports(dest: Path, default: int, kind: str = "") -> int | None:
+def expected_reports(
+    dest: Path,
+    default: int,
+    kind: str = "",
+) -> int | None:
     """How many payload reports this kernel was built to produce.
 
     Read off the kernel's own evidence, the only record that survives dispatch.
@@ -421,10 +425,13 @@ def collect_one(
         # the set is complete, so no pass is claimed.
         verdict, reason = verdict_of(reports, len(reports))
         if verdict == "pass":
-            verdict, reason = "infra", (
-                f"{len(reports)} payload report(s) read, but the kernel predates the "
-                "record of how many it was built to produce, so completeness cannot be "
-                "judged and no pass is claimed"
+            verdict, reason = (
+                "infra",
+                (
+                    f"{len(reports)} payload report(s) read, but the kernel predates the "
+                    "record of how many it was built to produce, so completeness cannot be "
+                    "judged and no pass is claimed"
+                ),
             )
     else:
         verdict, reason = verdict_of(reports, expect)

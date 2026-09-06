@@ -505,9 +505,9 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
     sweep, selection = main.split("for account_id in order:", 2)[1:]
     assert "in_flight_for_commit(survey" in sweep and "concurrency_verdict(" not in sweep
     assert "concurrency_verdict(" in selection and "in_flight_for_commit(" not in selection
-    assert "_survey(account_id)" in sweep and "_survey(account_id)" in selection, (
-        "surveys are not shared between the sweep and the selection"
-    )
+    assert (
+        "_survey(account_id)" in sweep and "_survey(account_id)" in selection
+    ), "surveys are not shared between the sweep and the selection"
     for path, kind in ((NOTEBOOK_WF, "notebook"), (STUDIO_WF, "studio")):
         gate_steps = [
             s
@@ -552,7 +552,9 @@ def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
     def survey(api, *a, **k):
         account_id = next(i for i, obj in apis.items() if obj is api)
         surveys_asked.append(account_id)
-        own = [f"user{other}/unsloth-t4-ci-n{sha[:12]}-1111 (RUNNING)"] if account_id == other else []
+        own = (
+            [f"user{other}/unsloth-t4-ci-n{sha[:12]}-1111 (RUNNING)"] if account_id == other else []
+        )
         return {
             "busy": list(own),
             "own": own,
@@ -592,7 +594,9 @@ def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
     )
     code = gate.main()
     outputs = dict(
-        line.split("=", 1) for line in (tmp_path / "out.txt").read_text().splitlines() if "=" in line
+        line.split("=", 1)
+        for line in (tmp_path / "out.txt").read_text().splitlines()
+        if "=" in line
     )
     assert code == 0
     assert outputs["should_run"] == "false", outputs["reason"]
