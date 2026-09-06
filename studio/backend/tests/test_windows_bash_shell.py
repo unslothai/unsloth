@@ -446,11 +446,18 @@ def test_os_isolated_windows_launch_uses_cmd_even_with_bash(monkeypatch):
 
 
 def test_isolated_batch_script_carries_every_line_with_echo_off(tmp_path):
-    path = tools._write_isolated_batch_script("echo one\necho two\r\nexit /b 3", str(tmp_path))
+    path = tools._reserve_isolated_batch_script(str(tmp_path))
     assert os.path.basename(path).startswith("studio_exec_") and path.endswith(".cmd")
+    # Reserving the name must not create the file: it is written only after the
+    # sandbox is prepared, so that it inherits the container's ACE.
+    assert not os.path.exists(path)
+    tools._write_isolated_batch_script("echo one\necho two\r\nexit /b 3", path)
     with open(path, "rb") as handle:
         body = handle.read()
     assert body == b"@echo off\r\necho one\r\necho two\r\nexit /b 3\r\n"
+    # Exclusive creation: the name is never reused over an existing file.
+    with pytest.raises(FileExistsError):
+        tools._write_isolated_batch_script("echo again", path)
 
 
 def test_os_isolated_description_names_cmd_only_on_windows_with_bash(monkeypatch):
