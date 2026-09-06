@@ -120,3 +120,23 @@ def sanitize_provider_sse_line(line: str) -> str | None:
         # client parse nothing.
         return None
     return "data: " + json.dumps(cleaned, separators = (",", ":"))
+
+
+def is_ui_control_sse_line(line: str) -> bool:
+    """Whether ``line`` is one of the control frames above rather than a provider chunk.
+
+    Read by the OpenAI-compatible route to hold these back from a caller that did not
+    opt in: they carry no ``choices``, so a strict client fails schema validation on
+    them. The vocabulary lives here so one edit covers both readers; a chunk that merely
+    carries a ``_toolEvent``-style key is a valid chunk and stays.
+    """
+    if not line.startswith("data:"):
+        return False
+    raw = line[5:].strip()
+    if not raw or raw == "[DONE]":
+        return False
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("type") in _CONTROL_TYPES
