@@ -24,6 +24,7 @@ import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -88,6 +89,7 @@ import {
   isHiddenModelId,
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
+import { routableToMediaPage } from "./lib/local-path";
 import { residentModelIdMatches } from "./lib/model-identity";
 import {
   createHubModelConfigHandoff,
@@ -1425,9 +1427,27 @@ export function ModelsPage() {
     },
     [navigate, setModelsTab, setOwnerScope],
   );
-  const handleOpenRunConfig = useCallback(
-    async (selection: HubModelRunSelection) => {
+  const handleRun = useCallback(
+    async (
+      selection: HubModelRunSelection,
+      mediaPage: ReturnType<typeof studioPageForTask>,
+    ) => {
       if (!selectedModel) return;
+      if (mediaPage) {
+        runConfigOpenCoordinator.cancel();
+        setRunConfigOpening(null);
+        if (
+          !selectedModel.hubRepoId ||
+          !routableToMediaPage(selectedModel.kind, selectedModel.localSource)
+        ) {
+          return;
+        }
+        void navigate({
+          to: `/${mediaPage}`,
+          search: diffusionRouteSearch(selectedModel.hubRepoId, selection),
+        });
+        return;
+      }
       const controller = runConfigOpenCoordinator.begin();
       setRunConfigOpening({ modelId: selectedModel.id, controller });
       try {
@@ -1504,11 +1524,11 @@ export function ModelsPage() {
     () => ({
       onInventoryChange: refreshInventory,
       onSearchHub: handleSearchHub,
-      onOpenRunConfig: handleOpenRunConfig,
+      onRun: handleRun,
       runConfigPending: runConfigOpening?.modelId === selectedModel?.id,
     }),
     [
-      handleOpenRunConfig,
+      handleRun,
       handleSearchHub,
       refreshInventory,
       runConfigOpening,

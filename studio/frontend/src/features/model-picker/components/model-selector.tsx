@@ -633,15 +633,12 @@ function ModelSelectorContent({
               target={visibleConfigTarget}
               onBack={() => setConfigTarget(null)}
               onRun={(config, isDiffusion) =>
-                onSelect(
-                  visibleConfigTarget.configId ?? visibleConfigTarget.id,
-                  {
-                    ...visibleConfigTarget.meta,
-                    config,
-                    isDiffusion,
-                    forceReload: true,
-                  },
-                )
+                onSelect(visibleConfigTarget.id, {
+                  ...visibleConfigTarget.meta,
+                  config,
+                  isDiffusion,
+                  forceReload: true,
+                })
               }
               loadedConfig={visibleLoadedConfig}
               loadedContextLength={

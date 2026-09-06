@@ -4,6 +4,7 @@
 import type { ModelConfigHandoffRequest } from "@/features/model-picker";
 import type { SelectedModelView } from "../types";
 import { EMBEDDING_TAGS } from "./hf-model-meta.ts";
+import { routableToMediaPage } from "./local-path.ts";
 
 export interface HubModelRunSelection {
   ggufVariant?: string;
@@ -21,7 +22,8 @@ function hasSupportedFormat(model: SelectedModelView): boolean {
   }
   return (
     (model.modelFormat === "safetensors" ||
-      model.modelFormat === "checkpoint") &&
+      model.modelFormat === "checkpoint" ||
+      model.modelFormat === "adapter") &&
     !model.isGguf
   );
 }
@@ -51,13 +53,15 @@ function isEmbeddingOnly(model: SelectedModelView): boolean {
   );
 }
 
-function hasRunnableInventoryModel(model: SelectedModelView): boolean {
+function hasCompleteInventoryModel(model: SelectedModelView): boolean {
+  return model.isDownloaded && !model.isPartial && isPresent(model.loadId);
+}
+
+function hasRunnableChatModel(model: SelectedModelView): boolean {
   return (
     model.runtimeCanChat &&
-    model.isDownloaded &&
-    !model.isPartial &&
+    hasCompleteInventoryModel(model) &&
     !isEmbeddingOnly(model) &&
-    isPresent(model.loadId) &&
     hasSupportedFormat(model)
   );
 }
@@ -81,7 +85,7 @@ function createHandoffMeta(
 ): ModelConfigHandoffRequest["meta"] {
   const meta: ModelConfigHandoffRequest["meta"] = {
     source: usesLocalIdentity ? "local" : "hub",
-    isLora: false,
+    isLora: model.modelFormat === "adapter",
     loadId: model.loadId,
     isDownloaded: true,
     isGguf: model.modelFormat === "gguf",
@@ -114,21 +118,23 @@ export function isHubModelRunEligible({
   mediaRuntime: boolean;
   nonGgufRuntimeAvailable: boolean;
 }): boolean {
-  if (
-    !model ||
-    isDataset ||
-    mediaRuntime ||
-    !hasRunnableInventoryModel(model)
-  ) {
+  if (!model || isDataset) {
     return false;
   }
 
-  return (
-    model.modelFormat === "gguf" ||
-    ((model.modelFormat === "safetensors" ||
-      model.modelFormat === "checkpoint") &&
-      nonGgufRuntimeAvailable)
-  );
+  if (mediaRuntime) {
+    return (
+      hasCompleteInventoryModel(model) &&
+      isPresent(model.hubRepoId) &&
+      routableToMediaPage(model.kind, model.localSource)
+    );
+  }
+
+  if (!hasRunnableChatModel(model)) {
+    return false;
+  }
+
+  return model.modelFormat === "gguf" || nonGgufRuntimeAvailable;
 }
 
 export function createHubModelConfigHandoff({
@@ -143,7 +149,7 @@ export function createHubModelConfigHandoff({
   if (!isPresent(requestId)) {
     return null;
   }
-  if (!hasRunnableInventoryModel(model)) {
+  if (!hasRunnableChatModel(model)) {
     return null;
   }
 

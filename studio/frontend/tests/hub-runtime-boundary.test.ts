@@ -168,7 +168,7 @@ test("residency remains a cache mutation safety input", () => {
   );
 });
 
-test("the Hub hands Run to shared configuration without owning runtime actions", () => {
+test("the Hub routes Run to its owning workflow without owning runtime actions", () => {
   const hubPage = readFileSync(path.join(HUB_ROOT, "hub-page.tsx"), "utf8");
   const modelInspector = readFileSync(
     path.join(HUB_ROOT, "catalog/model-inspector.tsx"),
@@ -195,6 +195,18 @@ test("the Hub hands Run to shared configuration without owning runtime actions",
   );
   assert.match(hubPage, /requestModelConfigHandoff\(request\)/);
   assert.match(hubPage, /to: "\/chat", search: \{ new: requestId \}/);
+  assert.match(
+    modelInspector,
+    /const mediaPage = studioPageForTask\([\s\S]*?taskForMediaPick\(model\.pipelineTag, model\.task\)/,
+  );
+  assert.match(
+    hubPage,
+    /routableToMediaPage\(selectedModel\.kind, selectedModel\.localSource\)/,
+  );
+  assert.match(
+    hubPage,
+    /to: `\/\$\{mediaPage\}`,[\s\S]*?diffusionRouteSearch\(selectedModel\.hubRepoId, selection\)/,
+  );
   assert.match(
     hubPage,
     /const controller = runConfigOpenCoordinator\.begin\(\);[\s\S]*?await waitForRunConfigRefresh\(\s*refreshResidentModelStatus\(\),\s*controller\.signal,\s*\);\s*if \(controller\.signal\.aborted\) return;/,
@@ -245,9 +257,10 @@ test("the Hub hands Run to shared configuration without owning runtime actions",
     modelInspector,
     /nonGgufRuntimeAvailable:\s*!chatOnlyMeasured &&\s*unslothSupport\.status !== "unsupported"/,
   );
+  assert.match(modelInspector, /const runEligible = isHubModelRunEligible\(/);
   assert.match(
     modelInspector,
-    /const openRunConfig = isHubModelRunEligible\(/,
+    /\? \(selection: HubModelRunSelection\) => onRun\(selection, mediaPage\)/,
   );
   assert.match(
     ggufCard,
@@ -301,6 +314,14 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
   assert.match(
     modelSelector,
     /modelConfigInstanceKey\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*visibleConfigTarget\.ggufVariant,\s*visibleLoadedConfig,/,
+  );
+  assert.match(
+    modelSelector,
+    /onRun=\{\(config, isDiffusion\) =>\s*onSelect\(visibleConfigTarget\.id, \{/,
+  );
+  assert.doesNotMatch(
+    modelSelector,
+    /onSelect\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,/,
   );
   assert.match(
     modelSelector,

@@ -463,7 +463,7 @@ test("configure carries the same rule, because Run replays its metadata", () => 
   );
   assert.match(
     selector,
-    /onRun=\{\(config, isDiffusion\) =>\n\s*onSelect\(\n\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\n\s*\{\n\s*\.\.\.visibleConfigTarget\.meta,/,
+    /onRun=\{\(config, isDiffusion\) =>\n\s*onSelect\(visibleConfigTarget\.id, \{\n\s*\.\.\.visibleConfigTarget\.meta,/,
   );
 });
 

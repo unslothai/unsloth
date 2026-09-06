@@ -12,6 +12,9 @@ registerBundlerResolver();
 const { createHubModelConfigHandoff, isHubModelRunEligible } = await import(
   "../src/features/hub/lib/model-run-selection.ts"
 );
+const { modelConfigTarget } = await import(
+  "../src/features/model-picker/model-config/model-config-handoff.ts"
+);
 
 function selectedModel(
   overrides: Partial<SelectedModelView> = {},
@@ -72,7 +75,7 @@ function eligible(
   });
 }
 
-test("only complete chat-loadable whole models in supported formats are eligible", () => {
+test("only complete chat-loadable models in supported formats are eligible", () => {
   assert.equal(eligible(selectedModel()), true);
   assert.equal(
     eligible(
@@ -86,7 +89,6 @@ test("only complete chat-loadable whole models in supported formats are eligible
     true,
   );
   assert.equal(eligible(selectedModel(), { isDataset: true }), false);
-  assert.equal(eligible(selectedModel(), { mediaRuntime: true }), false);
   assert.equal(
     eligible(selectedModel(), { nonGgufRuntimeAvailable: false }),
     false,
@@ -97,16 +99,66 @@ test("only complete chat-loadable whole models in supported formats are eligible
   assert.equal(eligible(selectedModel({ loadId: null })), false);
 
   assert.equal(eligible(selectedModel({ modelFormat: "checkpoint" })), true);
+  assert.equal(eligible(selectedModel({ modelFormat: "adapter" })), true);
   assert.equal(
     eligible(selectedModel({ modelFormat: "checkpoint" }), {
       nonGgufRuntimeAvailable: false,
     }),
     false,
   );
+  assert.equal(
+    eligible(selectedModel({ modelFormat: "adapter" }), {
+      nonGgufRuntimeAvailable: false,
+    }),
+    false,
+  );
+  assert.equal(eligible(selectedModel({ modelFormat: "unknown" })), false);
+});
 
-  for (const modelFormat of ["adapter", "unknown"] as const) {
-    assert.equal(eligible(selectedModel({ modelFormat })), false, modelFormat);
-  }
+test("complete Hub-backed media models are eligible for their dedicated runtime", () => {
+  const mediaModel = selectedModel({
+    pipelineTag: "text-to-image",
+    runtimeCanChat: false,
+  });
+
+  assert.equal(
+    eligible(mediaModel, {
+      mediaRuntime: true,
+      nonGgufRuntimeAvailable: false,
+    }),
+    true,
+  );
+  assert.equal(
+    eligible(mediaModel, { mediaRuntime: true, isDataset: true }),
+    false,
+  );
+  assert.equal(
+    eligible(selectedModel({ isDownloaded: false }), { mediaRuntime: true }),
+    false,
+  );
+  assert.equal(
+    eligible(selectedModel({ isPartial: true }), { mediaRuntime: true }),
+    false,
+  );
+  assert.equal(
+    eligible(selectedModel({ hubRepoId: null }), { mediaRuntime: true }),
+    false,
+  );
+  assert.equal(
+    eligible(localModel("/models/image-model"), { mediaRuntime: true }),
+    false,
+  );
+  assert.equal(
+    eligible(
+      localModel("/inactive-cache/image-model", {
+        hubRepoId: "Org/Image-Model",
+        localSource: "hf_cache",
+        runtimeCanChat: false,
+      }),
+      { mediaRuntime: true },
+    ),
+    true,
+  );
 });
 
 test("embedding-only non-GGUF models never enter the Chat run flow", () => {
@@ -166,6 +218,58 @@ test("checkpoint handoffs use the whole-model Chat identity", () => {
     }),
     null,
   );
+});
+
+test("adapter handoffs preserve loader identity and LoRA intent", () => {
+  const loadId = String.raw`C:\Models\adapter`;
+  const localRequest = createHubModelConfigHandoff({
+    requestId: "request-adapter",
+    model: localModel(loadId, {
+      modelFormat: "adapter",
+    }),
+    selection: {},
+  });
+
+  assert.deepEqual(localRequest, {
+    requestId: "request-adapter",
+    id: loadId,
+    displayName: "Model",
+    meta: {
+      source: "local",
+      isLora: true,
+      loadId,
+      isDownloaded: true,
+      isGguf: false,
+      pipelineTag: null,
+    },
+  });
+
+  const cachedLoadId =
+    "/inactive-cache/models--Org--Adapter/snapshots/revision";
+  const cachedRequest = createHubModelConfigHandoff({
+    requestId: "request-cached-adapter",
+    model: localModel(cachedLoadId, {
+      hubRepoId: "Org/Adapter",
+      localSource: "hf_cache",
+      modelFormat: "adapter",
+    }),
+    selection: {},
+  });
+
+  assert.ok(cachedRequest);
+  assert.equal(cachedRequest.id, "Org/Adapter");
+  assert.equal(cachedRequest.meta.source, "hub");
+  assert.equal(cachedRequest.meta.loadId, cachedLoadId);
+  assert.equal(cachedRequest.meta.isLora, true);
+
+  const target = modelConfigTarget(
+    cachedRequest.id,
+    cachedRequest.meta,
+    cachedRequest.displayName,
+  );
+  assert.equal(target.id, cachedLoadId);
+  assert.equal(target.configId, "Org/Adapter");
+  assert.equal(target.meta.isLora, true);
 });
 
 test("MLX safetensors follow runtime availability", () => {

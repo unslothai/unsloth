@@ -400,7 +400,10 @@ export type ModelInspectorRuntime = {
 export type ModelInspectorActions = {
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
-  onOpenRunConfig?: (selection: HubModelRunSelection) => void;
+  onRun?: (
+    selection: HubModelRunSelection,
+    mediaPage: ReturnType<typeof studioPageForTask>,
+  ) => void;
   runConfigPending?: boolean;
 };
 
@@ -437,7 +440,7 @@ export const ModelInspector = memo(function ModelInspector({
   const {
     onInventoryChange,
     onSearchHub,
-    onOpenRunConfig,
+    onRun,
     runConfigPending = false,
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -548,18 +551,20 @@ export const ModelInspector = memo(function ModelInspector({
     : "N/A";
   // Media models use a separate runtime, so the llama.cpp memory estimate does
   // not describe their load.
-  const runsOnMediaRuntime =
-    studioPageForTask(
-      taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
-    ) !== undefined;
-  const openRunConfig = isHubModelRunEligible({
+  const mediaPage = studioPageForTask(
+    taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
+  );
+  const runsOnMediaRuntime = mediaPage !== undefined;
+  const runEligible = isHubModelRunEligible({
     model,
     isDataset,
     mediaRuntime: runsOnMediaRuntime,
     nonGgufRuntimeAvailable:
       !chatOnlyMeasured && unslothSupport.status !== "unsupported",
-  })
-      ? onOpenRunConfig
+  });
+  const runAction =
+    runEligible && onRun
+      ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
       : undefined;
 
   const languages = parseLanguageTags(model.tags);
@@ -689,7 +694,7 @@ export const ModelInspector = memo(function ModelInspector({
                   ? (unslothSupport.reason ?? "Unsupported format")
                   : null
               }
-              onRun={openRunConfig}
+              onRun={runAction}
               runPending={runConfigPending}
               onChange={onInventoryChange}
             />
@@ -711,7 +716,7 @@ export const ModelInspector = memo(function ModelInspector({
               systemRamGb={systemRamGb}
               cachePath={model.path}
               knownBytes={model.cachedBytes}
-              onRun={openRunConfig}
+              onRun={runAction}
               runPending={runConfigPending}
               onChange={onInventoryChange}
             />
