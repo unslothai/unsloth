@@ -348,7 +348,9 @@ function ToolIsolationMenuSection({
           <p className="text-xs leading-snug text-muted-foreground">
             Process Guard, sanitized environment, resource limits, descriptor
             closure, workdir policy, timeout, cancellation, and cleanup remain
-            active. Limited is not an OS sandbox.
+            active, and code and commands are still analysed for known-dangerous
+            patterns. That analysis is best effort, not a boundary: Limited is not
+            an OS sandbox.
           </p>
         ) : null}
         {error ? (

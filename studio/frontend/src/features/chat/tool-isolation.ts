@@ -105,7 +105,7 @@ export function toolIsolationPresentation(
       state: "limited",
       label: "Limited · no OS isolation",
       description:
-        "Software safeguards remain active, but Limited is not an OS sandbox.",
+        "Software safeguards remain active and code is analysed before it runs, but that analysis is best effort and Limited is not an OS sandbox.",
     };
   }
   if (!capability) {
