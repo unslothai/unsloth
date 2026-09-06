@@ -3028,7 +3028,7 @@ def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
         )
     )
 
-    assert calls == [("web_search", {"query": big_query})]
+    assert calls == [("web_search", {"query": big_query.strip()})]
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
     # Empty-args card = provisional open; full-args card = reconciled real start.
     provisional = [e for e in tool_starts if not e.get("arguments")]

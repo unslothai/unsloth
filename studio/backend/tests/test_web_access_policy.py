@@ -329,3 +329,127 @@ def test_empty_sweep_is_reported_as_no_results_not_as_a_failure(monkeypatch):
     result = _search_with_raising_ddgs(monkeypatch, DDGSException("No results found."))
     assert result == tools.EMPTY_SEARCH_RESULTS[0]
     assert not is_tool_error(result)
+
+
+def _raise_if_search_backend(monkeypatch):
+    """Fail if an empty/invalid call would have reached DuckDuckGo or a page fetch."""
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("web_search backend must not run without query or url")
+
+    monkeypatch.setattr(tools, "_fetch_page_text", boom)
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = boom))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"query": ""},
+        {"url": ""},
+        {"query": "   ", "url": "\n"},
+        {"query": None, "url": None},
+    ],
+)
+def test_web_search_empty_arguments_are_a_recoverable_error(monkeypatch, arguments):
+    # The schema allows {} and local models emit it. The result string is main's, and
+    # already a TOOL_ERROR_PREFIXES entry; what is new is that no backend call is made.
+    _raise_if_search_backend(monkeypatch)
+    result = tools.execute_tool("web_search", arguments)
+    assert result == "No query provided."
+    assert is_tool_error(result) is True
+
+
+def test_web_search_description_names_the_usable_arguments():
+    # Asserted in fragments: the sentence around them is prompt text and gets reworded.
+    description = tools.WEB_SEARCH_TOOL["function"]["description"]
+    assert "non-empty `query`" in description
+    assert "non-empty `url`" in description
+    assert "no usable arguments" in description
+
+
+# The truthy values are the point: a falsy non-string was already short-circuited by
+# `not query`, while 123 or {"a": 1} reached .strip() and raised out of _web_search.
+@pytest.mark.parametrize("key", ["query", "url"])
+@pytest.mark.parametrize("value", [False, 0, [], {}, 123, {"a": 1}])
+def test_web_search_rejects_non_string_arguments(monkeypatch, key, value):
+    _raise_if_search_backend(monkeypatch)
+    result = tools.execute_tool("web_search", {key: value})
+    assert result == "No query provided."
+
+
+def test_web_search_heals_query_aliases(monkeypatch):
+    queries = []
+
+    class FakeDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
+            queries.append(query)
+            return [{"title": "T", "href": "https://example.com/1", "body": "B"}]
+
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    for arguments in (
+        {"q": "unsloth studio"},
+        {"search_query": "unsloth studio"},
+        {"search": "unsloth studio"},
+        {"text": "unsloth studio"},
+        {"query": {}, "q": "unsloth studio"},
+    ):
+        queries.clear()
+        result = tools.execute_tool("web_search", arguments)
+        assert queries == ["unsloth studio"]
+        assert "https://example.com/1" in result
+
+
+def test_web_search_heals_url_aliases(monkeypatch):
+    fetched = []
+
+    def fake_fetch(url, **_kwargs):
+        fetched.append(url)
+        return f"PAGE:{url}"
+
+    monkeypatch.setattr(tools, "_fetch_page_text", fake_fetch)
+    for arguments in (
+        {"uri": "https://example.com/a"},
+        {"href": "https://example.com/b"},
+        {"link": "https://example.com/c"},
+        {"url": [], "href": "https://example.com/d"},
+    ):
+        fetched.clear()
+        result = tools.execute_tool("web_search", arguments)
+        assert fetched == [next(value for value in arguments.values() if isinstance(value, str))]
+        assert result.startswith("PAGE:")
+
+
+def test_web_search_query_mode_still_searches(monkeypatch):
+    class FakeDDGS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
+            return [{"title": "Hit", "href": "https://arxiv.org/abs/1", "body": "Ok"}]
+
+    monkeypatch.setitem(sys.modules, "ddgs", SimpleNamespace(DDGS = FakeDDGS))
+    result = tools.execute_tool("web_search", {"query": "latest paper"})
+    assert "https://arxiv.org/abs/1" in result
+    assert not is_tool_error(result)
+
+
+def test_web_search_url_mode_still_fetches(monkeypatch):
+    monkeypatch.setattr(
+        tools,
+        "_fetch_page_text",
+        lambda url, **_kwargs: f"fetched {url}",
+    )
+    result = tools.execute_tool("web_search", {"url": "https://arxiv.org/abs/1"})
+    assert result == "fetched https://arxiv.org/abs/1"
