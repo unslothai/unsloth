@@ -271,6 +271,38 @@ def test_version_answers_on_the_bare_path_only():
     assert prefixed.status_code == 404
 
 
+@pytest.mark.parametrize("path", ["/models/unload", "/models/unload/"])
+def test_open_webui_unload_translates_the_llama_cpp_payload(path):
+    """Open WebUI sends llama.cpp's ``model`` field to the bare engine route."""
+    mod = _load()
+    calls = []
+
+    async def _unload(request, current_subject):
+        calls.append((request.model_path, current_subject))
+        return {"status": "unloaded", "model": request.model_path}
+
+    mod._inference().unload_model = _unload
+    with _client(mod) as c:
+        response = c.post(path, json = {"model": "unsloth/Qwen3.8-27B-GGUF"})
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "unloaded", "model": "unsloth/Qwen3.8-27B-GGUF"}
+    assert calls == [("unsloth/Qwen3.8-27B-GGUF", "test")]
+
+
+def test_open_webui_unload_keeps_the_canonical_auth_boundary():
+    mod = _load()
+    routes = {route.path: route for route in mod.router.routes}
+    for path in ("/models/unload", "/models/unload/"):
+        dependencies = [dependency.call for dependency in routes[path].dependant.dependencies]
+        assert mod.get_current_subject in dependencies
+
+    # Match /v1/unload: model teardown is never admitted by keyless inference scope.
+    from utils.keyless_api_access import _INFERENCE_ROUTES
+
+    assert ("POST", "/models/unload") not in _INFERENCE_ROUTES
+
+
 # ── platform and robustness, from the sandbox run ─────────────────────────────
 
 
@@ -524,7 +556,7 @@ def test_the_deny_list_matches_llama_servers_own_route_table():
         "tokenize",
         "tools",
     }
-    served = {"props"}
+    served = {"props", "models/unload"}
     for route in bare_llama_routes - served:
         assert mod.is_engine_probe_path(route), route
     assert not mod.is_engine_probe_path("props"), "Studio serves /props"
