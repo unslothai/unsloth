@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,8 +66,12 @@ class StubCluster:
     def llama_bundle_dir(self) -> Path:
         return self.bundle or Path.home() / ".unsloth" / "llama.cpp"
 
+    rpc_binary: Optional[str] = None
+
     def rpc_server_binary(self) -> Optional[str]:
-        return str(Path.home() / ".unsloth" / "llama.cpp" / "build" / "bin" / "ggml-rpc-server")
+        return self.rpc_binary or str(
+            Path.home() / ".unsloth" / "llama.cpp" / "build" / "bin" / "ggml-rpc-server"
+        )
 
     def rpc_protocol_preflight(
         self,
@@ -104,6 +109,22 @@ def cluster(monkeypatch, tmp_path):
     # never decides whether a layer split gets pipeline groups.
     stub.bundle = tmp_path / "bundle"
     stub.bundle.mkdir()
+    # The orchestrator probes the binary the BACKEND would launch, so the fixture pins
+    # the backend's own resolver at this bundle and at nothing else. HOME and PATH are
+    # redirected into tmp_path as well: without that the resolver walks on to
+    # ~/.unsloth/llama.cpp and to llama-server on PATH, and every one of these tests
+    # would depend on what the machine running them happens to have installed.
+    (tmp_path / "home").mkdir(exist_ok = True)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *a, **k: None if "llama-server" in str(cmd) else _which(cmd, *a, **k),
+    )
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(stub.bundle))
+    monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     ss.reset_for_tests()
     monkeypatch.setattr(ss, "_CLUSTER", stub)
     monkeypatch.setattr(ss, "_CLUSTER_LOOKED_UP", True)
@@ -440,16 +461,54 @@ def test_peer_binary_candidates_prefer_the_local_bundle_path(cluster):
     assert script.endswith("echo MISSING; exit 1") and "command -v llama-server" in script
 
 
-def test_peer_process_remote_command_prints_pid_then_execs():
+def test_peer_process_remote_command_prints_the_servers_pid_and_reaps_it():
+    """The peer process must not outlive the Studio that started it.
+
+    A Studio that dies without running its shutdown path used to leave the peer's
+    ggml-rpc-server running and holding the peer's GPU, with nothing to reap it. The
+    remote command now starts the server, reports ITS pid (which teardown and the
+    status surface both use), and watches the sshd session it was started by --
+    killing the one pid it started, and only that one, when the session goes.
+    """
     process = ss.PeerProcess(
         "llama-server", "192.168.200.13", ["/b/llama-server", "-m", "/p/a b.gguf"]
     )
-    assert (
-        process.remote_command == "echo UNSLOTH_SPARK_PID=$$; exec /b/llama-server -m '/p/a b.gguf'"
-    )
+    command = process.remote_command
+    assert command.startswith("/b/llama-server -m '/p/a b.gguf' & srv=$!")
+    assert "echo UNSLOTH_SPARK_PID=$srv" in command, "the reported pid is the server's own"
+    assert "watch=$PPID" in command and 'kill -0 "$watch"' in command
+    assert 'kill "$srv"' in command and 'kill -9 "$srv"' in command
+    assert 'wait "$srv"' in command, "a server that exits on its own still reports its status"
+    # Every kill in the reaper names $srv, the pid this session started. Nothing
+    # matches on a name, so another Studio's rpc-server, or a hand-run experiment on
+    # the same peer, can never be hit.
+    for statement in command.split(";"):
+        if "kill " in statement and "kill -0" not in statement:
+            assert (
+                '"$srv"' in statement
+            ), f"the reaper kills something it did not start: {statement}"
+    assert "pkill" not in command and "pgrep" not in command and "killall" not in command
+    # And it can never become the stuck process itself: it polls kill -0 and sleeps,
+    # rather than reading the ssh channel, which never returns on a half-open socket.
+    assert "read" not in command
+    assert f"sleep {ss.PEER_REAP_POLL_S}" in command
     assert not process.alive
     snap = process.snapshot()
     assert snap["remote_pid"] is None and snap["alive"] is False
+
+
+def test_the_ssh_client_carrying_the_peer_cannot_outlive_this_process():
+    """The other half of the reaper: without PR_SET_PDEATHSIG the ssh client is simply
+    reparented to init when Studio is killed, keeps the remote session open, and the
+    peer-side watch never fires. Verified against the real pair: SIGKILL to the parent
+    took the ssh client with it and the peer process was gone within one poll."""
+    import inspect
+
+    source = inspect.getsource(ss.PeerProcess.start)
+    assert "preexec_fn = _die_with_parent" in source
+    assert "PR_SET_PDEATHSIG" in inspect.getsource(ss._die_with_parent)
+    # Best effort by design: it must not raise, on any platform.
+    ss._die_with_parent()
 
 
 # ── Load hooks ───────────────────────────────────────────────────────────
@@ -881,7 +940,12 @@ def test_llama_server_supports_is_false_without_the_flag_or_binary(cluster, tmp_
     assert ss.llama_server_binary() is None
     assert ss.llama_server_supports("--pipeline-groups") is False, "no binary in the bundle"
     assert ss.llama_server_supports("--pipeline-groups", str(tmp_path / "missing")) is False
-    script = write_fake_llama_server(cluster.bundle / "bin", _FAKE_HELP_WITHOUT_FLAG)
+    # <root>/bin is NOT a layout the backend launches from, so it must not be one the
+    # orchestrator probes from either; see the divergence test below.
+    write_fake_llama_server(cluster.bundle / "bin", _FAKE_HELP_WITH_FLAG)
+    assert ss.llama_server_binary() is None
+    assert ss.llama_server_supports("--pipeline-groups") is False
+    script = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITHOUT_FLAG)
     assert ss.llama_server_binary() == str(script)
     assert ss.llama_server_supports("--pipeline-groups") is False
     assert ss.llama_server_supports("", str(script)) is False
@@ -893,6 +957,61 @@ def test_llama_server_supports_is_false_without_the_flag_or_binary(cluster, tmp_
     dud.parent.mkdir()
     dud.write_text("not a program")
     assert ss.llama_server_supports("--pipeline-groups", str(dud)) is False
+
+
+def test_the_orchestrator_probes_the_binary_the_backend_launches(cluster, monkeypatch, tmp_path):
+    """One resolver for llama-server, or the orchestrator decides for a binary that never runs.
+
+    ``spark_serving`` used to walk ``spark_cluster``'s bundle layouts, which include
+    ``<root>/bin``; the backend's (``utils.llama_cpp_path_settings.llama_server_candidates``)
+    do not. Live, with ``UNSLOTH_LLAMA_CPP_PATH`` on a ``<root>/bin`` build, the orchestrator
+    probed the fork under ``bin/`` and provisioned the peer from beside it while the backend
+    launched the managed prebuilt: two builds on the two ends of the RPC link, and every
+    groups / speculation verdict about a binary that was not launched. This test fails the
+    moment the two resolvers disagree again, for any layout either of them accepts.
+    """
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    for parts in (("build", "bin"), (), ("bin",), ("build", "bin", "Release"), ("nowhere",)):
+        root = tmp_path / ("layout_" + ("_".join(parts) or "flat"))
+        write_fake_llama_server(root.joinpath(*parts), _FAKE_HELP_WITH_FLAG)
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
+        cluster.bundle = root
+        ss.reset_for_tests()
+        backend_choice = LlamaCppBackend._find_llama_server_binary()
+        assert ss.llama_server_binary() == backend_choice, (
+            f"layout {parts or ('flat',)}: the orchestrator would probe "
+            f"{ss.llama_server_binary()} while the backend launches {backend_choice}"
+        )
+    # And the layouts are not vacuously equal: the supported one resolves, and the
+    # <root>/bin layout that only spark_cluster accepts resolves to nothing on both sides.
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "layout_build_bin"))
+    ss.reset_for_tests()
+    assert ss.llama_server_binary() == str(tmp_path / "layout_build_bin/build/bin/llama-server")
+    monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path / "layout_bin"))
+    ss.reset_for_tests()
+    assert ss.llama_server_binary() is None
+
+
+def test_the_rpc_server_is_taken_from_beside_the_launched_llama_server(cluster, tmp_path):
+    """Both ends of the RPC link have to be one build, so the peer's copy is looked up
+    from the directory of the llama-server this node launches, not from the bundle."""
+    launched = write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    beside = launched.parent / "ggml-rpc-server"
+    beside.write_text("#!/bin/sh\nexit 0\n")
+    beside.chmod(0o755)
+    other = tmp_path / "other" / "ggml-rpc-server"
+    other.parent.mkdir(parents = True, exist_ok = True)
+    other.write_text("#!/bin/sh\nexit 0\n")
+    other.chmod(0o755)
+    cluster.rpc_binary = str(other)
+    assert ss.rpc_server_binary() == str(beside)
+    assert ss.peer_binary_candidates(ss.rpc_server_binary(), "ggml-rpc-server")[0].endswith(
+        "/build/bin/ggml-rpc-server"
+    )
+    # Only when there is none beside it does spark_cluster's own bundle search answer.
+    beside.unlink()
+    assert ss.rpc_server_binary() == str(other)
 
 
 def test_llama_server_supports_treats_a_hang_as_no_flag(cluster, monkeypatch, tmp_path):

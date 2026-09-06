@@ -52,9 +52,11 @@ argv that actually launched, beside ``split_config`` and ``split_config_reason``
 
 The decision is ``studio/spark_cluster.recommend_topology`` (pure, measured); this
 module only gathers its inputs (weights on disk, KV per slot from the GGUF header, the
-slot count the load asked for) and runs the processes the answer needs. Paths come
-from ``spark_cluster.llama_bundle_dir`` and ``rpc_server_binary`` so the peer, which
-``unsloth spark provision`` mirrors from this node, is launched from the same bundle.
+slot count the load asked for) and runs the processes the answer needs. The
+llama-server it probes is the one the backend will launch, resolved by the backend's
+own ``_find_llama_server_binary`` and never by a search of this module's own, and the
+rpc-server is taken from beside it, so the peer -- which ``unsloth spark provision``
+mirrors from this node -- runs the same build as this node does.
 
 Nothing here runs on the normal single-machine path. ``enabled()`` is the gate every
 entry point calls first: it answers False from ``spark_cluster.is_dgx_spark()`` (two
@@ -666,30 +668,73 @@ def rpc_server_argv(binary: str, *, bind: str, port: int, cache: bool) -> List[s
     return argv
 
 
-# Where a bundle keeps its executables: the Linux/macOS layout, the Windows layout, the
-# raw tarball layout, a flat directory. Same order as spark_cluster._BUNDLE_SUBDIRS.
-_BUNDLE_SUBDIRS = (("build", "bin"), ("build", "bin", "Release"), ("bin",), ())
+# The rpc-server under every name the bundles have used, in ``spark_cluster``'s order.
+_RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server", "ggml-rpc-server.exe", "rpc-server.exe")
 
 
 def llama_server_binary() -> Optional[str]:
-    """The managed bundle's llama-server, or None. Resolved through
-    ``spark_cluster.llama_bundle_dir`` so it is the binary the peer was provisioned
-    with and the one this node launches on a default install."""
+    """The llama-server this node will actually LAUNCH, or None.
+
+    There is exactly one resolver for that binary and it is the llama.cpp backend's
+    own ``LlamaCppBackend._find_llama_server_binary``: the load path launches
+    ``_exec_path_for_launch(_find_llama_server_binary())`` and the backend's
+    capability probe probes the same unwrapped path. This module must ask it rather
+    than search for itself, because everything it decides -- pipeline groups,
+    speculation, the draft depth, and the build the peer is handed -- is a statement
+    about the binary that launches. A second search order here is not a duplicate, it
+    is a defect.
+
+    It was one. This function used to walk ``spark_cluster``'s bundle layouts, which
+    include ``<root>/bin``; the backend's layouts (``utils.llama_cpp_path_settings``)
+    do not. With ``UNSLOTH_LLAMA_CPP_PATH`` pointing at a ``<root>/bin`` build the
+    orchestrator probed the fork under ``bin/`` and provisioned the peer from beside
+    it, while the backend launched ``~/.unsloth/llama.cpp/llama-server``. The two ends
+    of the RPC link then ran different builds and the preflight refused the split with
+    a malformed HELLO; every capability verdict was about a binary that never ran.
+
+    None when the backend cannot be imported or finds nothing. There is deliberately
+    no fallback to another layout: falling back is how the two came apart.
+    """
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+    except Exception as exc:  # pragma: no cover - the backend package is always there
+        logger.info("spark serving: cannot import the llama.cpp backend resolver: %s", exc)
+        return None
+    try:
+        found = LlamaCppBackend._find_llama_server_binary()
+    except Exception as exc:
+        logger.info("spark serving: the backend's llama-server resolver failed: %s", exc)
+        return None
+    return str(found) if found else None
+
+
+def rpc_server_binary() -> Optional[str]:
+    """``ggml-rpc-server`` for THIS node, taken from beside the llama-server that
+    launches whenever it is there, and only then from ``spark_cluster``'s bundle
+    search.
+
+    Both ends of the RPC link have to be one build: the peer's copy is looked up from
+    the directory of this path (``peer_binary_candidates`` leads with it), so resolving
+    the rpc-server out of the managed bundle while the backend launched a different
+    llama-server is the same defect as above, seen from the other side. The bundle
+    search stays as the fallback for a build tree that ships llama-server alone.
+    """
+    launched = llama_server_binary()
+    if launched:
+        directory = Path(launched).parent
+        for name in _RPC_SERVER_NAMES:
+            candidate = directory / name
+            try:
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate)
+            except OSError:
+                continue
     sc = _cluster()
     try:
-        bundle = Path(sc.llama_bundle_dir()) if sc is not None else None
+        found = sc.rpc_server_binary() if sc is not None else None
     except Exception:
         return None
-    if bundle is None:
-        return None
-    for parts in _BUNDLE_SUBDIRS:
-        candidate = bundle.joinpath(*parts, "llama-server")
-        try:
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return str(candidate)
-        except OSError:
-            continue
-    return None
+    return str(found) if found else None
 
 
 # ``llama-server --help`` text keyed by (binary path, mtime): one run per build, and a
@@ -1419,12 +1464,48 @@ def layer_split_extra_args(
     return out
 
 
+def _die_with_parent() -> None:  # pragma: no cover - runs in the forked child
+    """``PR_SET_PDEATHSIG(SIGKILL)``, so the ssh client cannot outlive this process.
+
+    Linux only, and best effort: on anything else, and on any failure, the child is
+    simply left as it was. Runs between fork and exec, so it must not raise and must
+    not allocate anything interesting.
+    """
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, 9, 0, 0, 0)  # PR_SET_PDEATHSIG, SIGKILL
+    except Exception:
+        pass
+
+
+# How often the peer-side reaper looks at the ssh session that started it. A poll of
+# ``kill -0`` and ``sleep``: neither can block, which is why this is a poll and not a
+# read on the ssh channel (a half-open TCP connection never delivers the EOF).
+PEER_REAP_POLL_S = 5
+
+
 class PeerProcess:
     """A long-lived process on the peer, driven through one ssh session.
 
-    The remote command prints its own pid and ``exec``s the server, so the ssh channel
-    is the server's lifetime and teardown can ``kill`` exactly that pid rather than
-    matching a name on a machine that may be serving something else.
+    The remote command prints the server's pid, so teardown can ``kill`` exactly that
+    pid rather than matching a name on a machine that may be serving something else.
+
+    It also reaps itself. A Studio that dies without running its shutdown path used to
+    leave the peer's ggml-rpc-server running and holding the peer's GPU, with nothing
+    on either machine to reap it; the next Studio did not notice it either, since the
+    preflight only sees a stale server when it speaks a different protocol. Two links
+    now make the peer process die with the Studio that started it:
+
+    * locally, the ssh client is given ``PR_SET_PDEATHSIG`` so it cannot outlive this
+      process. Without it the client is simply reparented to init on a SIGKILL and
+      keeps the remote session open, which is exactly how the orphan survived.
+    * on the peer, the launched shell watches the sshd session it was started by and
+      kills the ONE pid it started when that session goes away.
+
+    Both are polls of ``kill -0`` or a signal disposition; neither waits on anything
+    that can wedge, so the reaper cannot itself become the stuck process. And the
+    remote half kills nothing but its own child, so another Studio's rpc-server, or a
+    hand-run experiment on the same peer, is never touched.
     """
 
     def __init__(
@@ -1448,7 +1529,24 @@ class PeerProcess:
 
     @property
     def remote_command(self) -> str:
-        return "echo UNSLOTH_SPARK_PID=$$; exec " + " ".join(shlex.quote(a) for a in self.argv)
+        """Start the server, report ITS pid, then watch the ssh session that started us.
+
+        ``$PPID`` here is the sshd session serving this command. When this Studio goes,
+        its ssh client goes with it (PR_SET_PDEATHSIG below), that sshd session exits,
+        and the loop kills ``$srv`` -- the pid this shell started and no other. If the
+        server exits first the loop ends and the shell waits for it, so a normal exit
+        still reports a normal status through the channel.
+        """
+        launch = " ".join(shlex.quote(a) for a in self.argv)
+        return (
+            f"{launch} & srv=$!; echo UNSLOTH_SPARK_PID=$srv; watch=$PPID; "
+            f'while kill -0 "$srv" 2>/dev/null; do '
+            f'if ! kill -0 "$watch" 2>/dev/null; then '
+            f'kill "$srv" 2>/dev/null; sleep {PEER_REAP_POLL_S}; '
+            f'kill -9 "$srv" 2>/dev/null; exit 143; fi; '
+            f"sleep {PEER_REAP_POLL_S}; done; "
+            f'wait "$srv"'
+        )
 
     @property
     def redacted_command(self) -> str:
@@ -1470,6 +1568,7 @@ class PeerProcess:
             stdout = asyncio.subprocess.PIPE,
             stderr = asyncio.subprocess.STDOUT,
             stdin = asyncio.subprocess.DEVNULL,
+            preexec_fn = _die_with_parent,
         )
         self.started_at = time.time()
         self.exited_at = None
@@ -1858,11 +1957,9 @@ class SparkServing:
                 )
             for note in self.preflight.get("notes", []):
                 logger.info("spark serving: preflight: %s", note)
-        local_rpc = None
-        try:
-            local_rpc = sc.rpc_server_binary() if sc is not None else None
-        except Exception:
-            local_rpc = None
+        # Beside the llama-server the backend launches first, so both ends of the link
+        # are one build; spark_cluster's bundle search is the fallback inside this.
+        local_rpc = rpc_server_binary()
         rc, out, _err = await ssh_run(
             peer, find_binary_script(peer_binary_candidates(local_rpc, "ggml-rpc-server"))
         )
