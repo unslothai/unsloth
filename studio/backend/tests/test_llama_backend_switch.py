@@ -915,7 +915,12 @@ def test_an_explicit_recheck_re_resolves_the_backend(monkeypatch, tmp_path):
     seen: list = []
     real = upd._pending_backend_migration
 
-    def _spy(binary, marker, *, force_refresh = False):
+    def _spy(
+        binary,
+        marker,
+        *,
+        force_refresh = False,
+    ):
         seen.append(force_refresh)
         return real(binary, marker, force_refresh = force_refresh)
 
