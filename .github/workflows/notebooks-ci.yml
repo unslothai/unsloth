@@ -144,10 +144,16 @@ jobs:
           python unsloth/scripts/notebook_validator.py colab-diff \
               --snapshot-dir unsloth/scripts/data
 
-      - name: Refresh Colab pip-freeze (best-effort; falls back to snapshot)
+      - name: Refresh Colab oracles (best-effort; falls back to snapshot)
+        # --all, not just pip-freeze: marker evaluation reads the Python version out of
+        # colab_os_info.gpu.txt, so refreshing the package set on its own would judge the
+        # live packages against the previous image's Python after a Colab version rotation,
+        # skipping requirements that apply or replaying ones that do not. --all writes
+        # nothing unless it fetched every oracle, so the fallback is the committed pair,
+        # which is at least self-consistent.
         run: |
           python unsloth/scripts/notebook_validator.py refresh-colab \
-              --out unsloth/scripts/data/colab_pip_freeze.gpu.txt \
+              --all --snapshot-dir unsloth/scripts/data \
             || echo "::warning::refresh-colab failed; using committed snapshot"
 
       - name: Drift check (re-run update_all_notebooks.py + git diff)

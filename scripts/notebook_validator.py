@@ -175,11 +175,16 @@ COLAB_ORACLE_FILES: dict[str, str] = {
     "apt-list-gpu.txt": "colab_apt_list.gpu.txt",
     "os-info-gpu.txt": "colab_os_info.gpu.txt",
 }
-# Only the pip oracle feeds a rule: `lint --colab-pin` reads it, and that is
-# what R-INST-002/003/004/005 resolve against. apt-list / os-info are human
-# context (what else the image ships), so their drift is reported but never
-# fails --strict -- otherwise an Ubuntu security bump nothing can consult
-# turns the daily cron red.
+# The pip oracle is the one that fails --strict: `lint --colab-pin` reads it, and that is
+# what R-INST-002/003/004/005 resolve against. apt-list drift is reported but never fails,
+# otherwise an Ubuntu security bump nothing can consult turns the daily cron red.
+#
+# os-info is no longer purely human context, though it still does not fail --strict:
+# _marker_environment reads its Python version to decide which requirements pip would skip.
+# It therefore has to be refreshed WITH the pip snapshot, never on its own -- markers
+# evaluated at an old Python against a freshly pulled package set can skip a requirement
+# that applies to the live image, or replay one that does not. notebooks-ci.yml refreshes
+# both together via `refresh-colab --all` for that reason.
 COLAB_STRICT_ORACLE = "pip-freeze.gpu.txt"
 COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
 
@@ -847,8 +852,16 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         else:
             if ch in "({":
                 # `$(`, `<(` and `>(` open a substitution, which lives inside a word and runs
-                # its own commands; a bare `(` groups this line's.
-                groupings.append(not (ch == "(" and buf and buf[-1] in "$<>"))
+                # its own commands; a bare `(` groups this line's. `${ }` is a parameter
+                # expansion, which runs nothing at all: the `||` in `${X:-a||pip install ...}`
+                # is part of the fallback WORD, so splitting there manufactures a pip command
+                # bash never runs and R-INST-001 rejects a clean notebook over it.
+                groupings.append(
+                    not (
+                        (ch == "(" and buf and buf[-1] in "$<>")
+                        or (ch == "{" and buf and buf[-1] == "$")
+                    )
+                )
                 tails.append(False)
                 if not "".join(buf).strip():
                     buf_conditional = any(tails)  # the group opens before the command
@@ -1446,9 +1459,16 @@ def _effective_version(
         if exact is not None:
             current, exact_known = exact, True
         elif current is None:
-            # Absent, so the install puts it there. A floor is all that can be said about
-            # where; without one there is nothing to say at all.
-            if floor is not None and not exclusive_floor:
+            # Absent, so the install puts it there, and the question is only where. A `<=V`
+            # names it exactly: pip takes the highest release the requirement allows, which
+            # is V. Treating a cap-only requirement as "still absent" was a miss, since
+            # `pip uninstall torchcodec` then `pip install "torchcodec<=0.10"` really does
+            # leave 0.10 installed. A floor alone says at least how low it can be. An
+            # exclusive ceiling names nothing, because which release sits just below it
+            # depends on the index.
+            if cap is not None:
+                current, exact_known = cap, True
+            elif floor is not None and not exclusive_floor:
                 current, exact_known = floor, landing is not None
         elif floor is not None and (
             cmp_versions(floor, current) > 0

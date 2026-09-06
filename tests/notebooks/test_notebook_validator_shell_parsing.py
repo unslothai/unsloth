@@ -1748,3 +1748,64 @@ def test_an_arm_close_paren_is_not_stripped_off_a_substitution():
     assert nv._substitution_bodies(text) == ["pip install git+https://e.com/p.git"]
     # A real group still loses its brackets.
     assert nv._unwrap_shell_group("( pip install x )")[0] == "pip install x"
+
+
+# ----------------------------------------------------------------------------------
+# Codex review round 11 (2026-09-06), on the split-out branch.
+# ----------------------------------------------------------------------------------
+
+
+def test_operators_inside_a_parameter_expansion_stay_literal():
+    """`${X:-a||b}` is one word to bash; the `||` is part of the fallback, not a list.
+
+    Splitting there manufactured a pip command bash never runs, so R-INST-001 rejected a
+    notebook whose only install was an `echo`. A false positive, unlike the other three.
+    """
+    nv = _load_notebook_validator_module()
+
+    line = "!echo ${X:-plain||pip install git+https://example.com/pkg.git}"
+    assert len(nv._split_chained(line)) == 1
+    assert nv.rule_inst_001_git_plus(line, "nb.ipynb", 0) == []
+
+    # A `$( )` inside an expansion does run, and is still read.
+    ran = "!echo ${X:-$(pip install git+https://example.com/pkg.git)}"
+    assert [f.rule for f in nv.rule_inst_001_git_plus(ran, "nb.ipynb", 0)] == ["R-INST-001"]
+
+    # A real brace group still splits on its own separators.
+    grouped = "!{ echo a; pip install git+https://example.com/pkg.git; }"
+    assert [f.rule for f in nv.rule_inst_001_git_plus(grouped, "nb.ipynb", 0)] == ["R-INST-001"]
+
+
+def test_a_cap_only_install_after_an_uninstall_lands_on_the_cap():
+    """`pip install "x<=V"` on an absent package installs V, so it is not still absent.
+
+    Treating a cap-only requirement as "nothing was installed" made R-INST-004 silent on an
+    uninstall-then-downgrade, which is exactly the mismatch it exists to catch.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = '!pip uninstall -y torchcodec\n!pip install "torchcodec<=0.10"'
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    assert nv._effective_version(
+        cell, "torchcodec", colab["torchcodec"], nv._marker_environment(colab)
+    ) == ("0.10", True)
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+    # An exclusive ceiling names no landing version, so it stays unknown rather than guessing.
+    open_ceiling = '!pip uninstall -y torchcodec\n!pip install "torchcodec<0.11"'
+    assert nv._effective_version(
+        open_ceiling, "torchcodec", colab["torchcodec"], nv._marker_environment(colab)
+    ) == (None, True)
+
+
+def test_the_os_oracle_is_documented_as_feeding_marker_evaluation():
+    """os-info stopped being human-only when markers began reading its Python version.
+
+    The workflow has to refresh it with the pip snapshot; asserted here so the two cannot
+    drift apart silently again.
+    """
+    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text()
+    assert "refresh-colab \\\n              --all --snapshot-dir" in workflow
+    assert "--out unsloth/scripts/data/colab_pip_freeze.gpu.txt \\\n            ||" not in workflow
