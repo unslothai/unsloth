@@ -82,10 +82,10 @@ def test_a_timed_out_connection_is_not_reported_as_recipe_drift() -> None:
     connection = connection[: connection.index("\n  file-edit)")]
 
     timed_out = re.search(
-        r'if \[ "\$\{TIMED_OUT:-0\}" = 1 \]; then(.*?)\n    fi', connection, re.DOTALL
+        r'if \[ "\$\{TIMED_OUT:-0\}" = 1 \](.*?); then(.*?)\n    fi', connection, re.DOTALL
     )
     assert timed_out, "the connection case no longer distinguishes a timeout from a non-zero exit"
-    branch = timed_out.group(1)
+    condition, branch = timed_out.group(1), timed_out.group(2)
 
     assert "guide_fail" not in branch, (
         "a timed-out connection still goes through guide_fail, which states that "
@@ -97,6 +97,32 @@ def test_a_timed_out_connection_is_not_reported_as_recipe_drift() -> None:
     assert "exit 1" in branch, (
         "a timed-out connection must stay fatal; assert_reply cannot tell a "
         "finished reply from a startup banner"
+    )
+    # The one thing that may narrow it. assert_reply still cannot tell a reply
+    # from a banner, so the cap is not waived; what excuses it is a line the
+    # agent prints only when a run ends, which a banner cannot produce. Openclaw
+    # answered `pong` and logged `ended with stopReason=stop`, then held its
+    # session write lock for the remaining 1200s, and this branch called that a
+    # turn that never came back.
+    assert condition.strip() in ("", '&& [ "${TURN_DONE:-0}" != 1 ]'), (
+        "the connection cap may only be narrowed by TURN_DONE, which run_timed "
+        f"sets solely on an end-of-run marker; found {condition.strip()!r}"
+    )
+
+
+def test_only_a_marker_can_excuse_a_connection_cap() -> None:
+    """
+    TURN_DONE must never be settable without the agent's own end-of-run line,
+    or the connection guard is waived by anything that hangs.
+    """
+    body = _block("run_timed")
+    assert body.count("TURN_DONE=1") == body.count('grep -qF -- "$TURN_DONE_RE"'), (
+        "run_timed sets TURN_DONE somewhere that does not first match the marker"
+    )
+    source = _source()
+    declared = re.findall(r"TURN_DONE_RE='([^']*)'", source)
+    assert declared == ["ended with stopReason="], (
+        f"unexpected end-of-run markers declared: {declared}"
     )
 
 
