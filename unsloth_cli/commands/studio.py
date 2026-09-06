@@ -1268,6 +1268,13 @@ def _cli_update_password(
             )
         if revoke_api_keys:
             conn.execute("DELETE FROM api_keys WHERE username = ?", (username,))
+            if managed:
+                # The copy kept for the downgrade round trip (see auth/storage.py).
+                conn.execute(
+                    "DELETE FROM account_api_keys WHERE account_id = "
+                    "(SELECT account_id FROM auth_user WHERE username = ?)",
+                    (username,),
+                )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
             if "setup_code_hash" in columns:
                 conn.execute(

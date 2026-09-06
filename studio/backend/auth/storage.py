@@ -373,7 +373,7 @@ def get_connection() -> sqlite3.Connection:
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
     _ensure_account_columns(conn, columns)
-    _ensure_api_key_account_column(conn, api_key_columns)
+    _ensure_account_api_keys(conn, api_key_columns)
     refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
     if "is_desktop" not in refresh_columns:
         conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
@@ -439,29 +439,79 @@ def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
         raise
 
 
-def _ensure_api_key_account_column(conn: sqlite3.Connection, existing: set) -> None:
-    """Pin every managed account's API keys to its immutable id.
+_ACCOUNT_API_KEY_COLUMNS = (
+    "username, key_prefix, key_hash, name, created_at, expires_at, is_active, is_internal, account_id"
+)
+
+
+_account_keys_synced: set[str] = set()
+
+
+def _ensure_account_api_keys(conn: sqlite3.Connection, existing: set) -> None:
+    """Pin every managed account's API keys to its immutable id, and keep a
+    copy of them where an older build never looks.
 
     The key table names its account by username, and a username can be deleted
     and created again. A request that authenticated with a key of the old
     account must keep addressing the old account's keys, never the namesake's,
-    so listing and revoking scope on this column. The owner's rows keep NULL and
-    the username query they always had; an older build ignores the column.
+    so listing and revoking scope on ``account_id``. The owner's rows keep NULL
+    and the username query they always had.
+
+    A build without account support empties the whole key table when the
+    owner resets the password. Managed keys are therefore also written to
+    ``account_api_keys``, a table that build never touches, and any managed key
+    missing from the key table on the next start is put back from there for an
+    account that still exists. Both steps are idempotent, and they run once per
+    process per database, so a one-account install's requests carry no extra
+    statements.
     """
-    if "account_id" in existing:
+    db_key = str(DB_PATH)
+    if db_key in _account_keys_synced and "account_id" in existing:
         return
-    try:
-        conn.execute("ALTER TABLE api_keys ADD COLUMN account_id TEXT")
-    except sqlite3.OperationalError as exc:
-        if "duplicate column" not in str(exc).lower():
-            raise
+    if "account_id" not in existing:
+        try:
+            conn.execute("ALTER TABLE api_keys ADD COLUMN account_id TEXT")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
+        conn.execute(
+            """UPDATE api_keys SET account_id = (
+                   SELECT account_id FROM auth_user
+                   WHERE auth_user.username = api_keys.username AND auth_user.role != 'owner'
+               ) WHERE account_id IS NULL"""
+        )
     conn.execute(
-        """UPDATE api_keys SET account_id = (
-               SELECT account_id FROM auth_user
-               WHERE auth_user.username = api_keys.username AND auth_user.role != 'owner'
-           ) WHERE account_id IS NULL"""
+        """
+        CREATE TABLE IF NOT EXISTS account_api_keys (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            username    TEXT NOT NULL,
+            key_prefix  TEXT NOT NULL,
+            key_hash    TEXT NOT NULL UNIQUE,
+            name        TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL,
+            expires_at  TEXT,
+            is_active   INTEGER NOT NULL DEFAULT 1,
+            is_internal INTEGER NOT NULL DEFAULT 0,
+            account_id  TEXT NOT NULL
+        );
+        """
+    )
+    # Managed rows the copy does not have yet (rows written before this table).
+    conn.execute(
+        f"""INSERT INTO account_api_keys ({_ACCOUNT_API_KEY_COLUMNS})
+            SELECT {_ACCOUNT_API_KEY_COLUMNS} FROM api_keys k
+            WHERE k.account_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM account_api_keys b WHERE b.key_hash = k.key_hash)"""
+    )
+    # Managed rows an older build removed, for accounts that still exist.
+    conn.execute(
+        f"""INSERT INTO api_keys ({_ACCOUNT_API_KEY_COLUMNS})
+            SELECT {_ACCOUNT_API_KEY_COLUMNS} FROM account_api_keys b
+            WHERE NOT EXISTS (SELECT 1 FROM api_keys k WHERE k.key_hash = b.key_hash)
+              AND EXISTS (SELECT 1 FROM auth_user u WHERE u.account_id = b.account_id)"""
     )
     conn.commit()
+    _account_keys_synced.add(db_key)
 
 
 def _backfill_account_columns(conn: sqlite3.Connection, fence_added: bool) -> None:
@@ -634,6 +684,7 @@ def _revoke_account_credentials(conn: sqlite3.Connection, row) -> None:
     # the immutable account id, under the same write lock as the mutation.
     conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (row["username"],))
     conn.execute("DELETE FROM api_keys WHERE username = ?", (row["username"],))
+    conn.execute("DELETE FROM account_api_keys WHERE account_id = ?", (row["account_id"],))
     conn.execute(
         "UPDATE auth_user SET account_jwt_secret = ? WHERE account_id = ?",
         (secrets.token_urlsafe(64), row["account_id"]),
@@ -1563,6 +1614,8 @@ def create_api_key(
                 raise CredentialRotated(
                     "The credential this request authenticated with was revoked."
                 )
+        if account_id is None:
+            account_id = _managed_account_id(conn, username)
         conn.execute(
             """
             INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal, account_id)
@@ -1579,6 +1632,12 @@ def create_api_key(
                 account_id,
             ),
         )
+        if account_id is not None:
+            conn.execute(
+                f"""INSERT INTO account_api_keys ({_ACCOUNT_API_KEY_COLUMNS})
+                    SELECT {_ACCOUNT_API_KEY_COLUMNS} FROM api_keys WHERE key_hash = ?""",
+                (key_hash,),
+            )
         conn.commit()
         cur = conn.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,))
         row = cur.fetchone()
@@ -1612,6 +1671,24 @@ def list_api_keys(
         conn.close()
 
 
+def _managed_account_id(conn: sqlite3.Connection, username: str) -> Optional[str]:
+    """The immutable id of a managed account, None for the owner or an unknown name."""
+    row = conn.execute(
+        "SELECT account_id, role FROM auth_user WHERE username = ?", (username,)
+    ).fetchone()
+    if row is None or row["role"] in (None, "owner"):
+        return None
+    return row["account_id"]
+
+
+def _revoke_key_copy(conn: sqlite3.Connection, key_id: int) -> None:
+    conn.execute(
+        "UPDATE account_api_keys SET is_active = 0 "
+        "WHERE key_hash = (SELECT key_hash FROM api_keys WHERE id = ?)",
+        (key_id,),
+    )
+
+
 def _key_scope(username: str, account_id: Optional[str]) -> Tuple[str, tuple]:
     """WHERE clause selecting one account's keys: by name for the owner, by
     immutable id as well for a managed account."""
@@ -1629,6 +1706,8 @@ def revoke_api_key(username: str, key_id: int, account_id: Optional[str] = None)
             f"UPDATE api_keys SET is_active = 0 WHERE id = ? AND {scope}",
             (key_id, *params),
         )
+        if cursor.rowcount:
+            _revoke_key_copy(conn, key_id)
         conn.commit()
         return cursor.rowcount > 0
     finally:
@@ -1647,6 +1726,8 @@ def revoke_internal_api_key(key_id: int) -> bool:
             "UPDATE api_keys SET is_active = 0 WHERE id = ? AND is_internal = 1",
             (key_id,),
         )
+        if cursor.rowcount:
+            _revoke_key_copy(conn, key_id)
         conn.commit()
         return cursor.rowcount > 0
     finally:

@@ -62,8 +62,60 @@ def test_existing_managed_rows_are_pinned_on_upgrade(auth_db):
         conn.execute("INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at) VALUES ('alice', 'p', 'h1', 'k', 'now')")
         conn.execute("INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at) VALUES ('unsloth', 'p', 'h2', 'k', 'now')")
         conn.commit()
-        storage._ensure_api_key_account_column(conn, set())
+        storage._ensure_account_api_keys(conn, set())
         rows = dict(conn.execute("SELECT key_hash, account_id FROM api_keys").fetchall())
     finally:
         conn.close()
     assert rows["h1"] == alice and rows["h2"] is None
+
+
+def test_managed_keys_survive_an_older_builds_bulk_delete(auth_db):
+    """A build without account support empties the key table on an owner reset."""
+    alice = _alice()
+    raw, row = storage.create_api_key("alice", name = "cli", account_id = alice)
+    owner_raw, _owner_row = storage.create_api_key("unsloth", name = "owner-cli")
+    assert storage.validate_api_key_account(raw) is not None
+    conn = sqlite3.connect(storage.DB_PATH)
+    try:
+        conn.execute("DELETE FROM api_keys")
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM account_api_keys").fetchone()[0] == 1
+        conn.row_factory = sqlite3.Row
+        storage._account_keys_synced.clear()
+        storage._ensure_account_api_keys(conn, {"account_id"})
+    finally:
+        conn.close()
+    verified = storage.validate_api_key_account(raw)
+    assert verified is not None and verified[0]["account_id"] == alice
+    assert storage.validate_api_key_account(owner_raw) is None
+    assert [r["name"] for r in storage.list_api_keys("alice", account_id = alice)] == ["cli"]
+    # A revoked key stays revoked through the same round trip.
+    restored_id = storage.list_api_keys("alice", account_id = alice)[0]["id"]
+    assert storage.revoke_api_key("alice", restored_id, account_id = alice)
+    conn = sqlite3.connect(storage.DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("DELETE FROM api_keys")
+        conn.commit()
+        storage._account_keys_synced.clear()
+        storage._ensure_account_api_keys(conn, {"account_id"})
+    finally:
+        conn.close()
+    assert storage.validate_api_key_account(raw) is None
+
+
+def test_deleting_an_account_removes_its_key_copy(auth_db):
+    alice = _alice()
+    storage.create_api_key("alice", name = "cli", account_id = alice)
+    storage.delete_account(alice, lambda account: None)
+    conn = sqlite3.connect(storage.DB_PATH)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM account_api_keys").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_a_managed_key_minted_without_an_explicit_scope_is_still_pinned(auth_db):
+    alice = _alice()
+    _raw, row = storage.create_api_key("alice", name = "data-recipe workflow", internal = True)
+    assert row["account_id"] == alice
