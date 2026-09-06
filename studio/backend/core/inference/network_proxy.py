@@ -17,7 +17,9 @@ Design points, each of which a test pins down:
   allowlisted name resolves, every answer must be a public unicast address.
   A DNS answer that points at loopback, RFC 1918, link-local, CGNAT, multicast
   or an IPv4-mapped copy of those refuses the tunnel, so an allowlisted name
-  cannot become a bridge back to the host or the LAN.
+  cannot become a bridge back to the host or the LAN. Which IPv4-in-IPv6 forms
+  are decoded, which are refused outright and which are knowingly let through is
+  argued out in the block comment above ``_NAT64_WELL_KNOWN``.
 * Authenticated. Each launch mints a random credential that only travels to
   the sandboxed process through its environment; a request without it gets 407,
   so another local user on the same machine cannot use the tunnel.
@@ -84,14 +86,30 @@ MAX_TUNNELS = 64
 # Every proxy in this process shares this cap as well, so a session that opens
 # many launches at once cannot turn the backend into a few hundred threads.
 MAX_TOTAL_TUNNELS = 256
-# A ClientHello that does not fit in this many bytes is refused: a tunnel whose
-# first message is TLS has to name the CONNECT host before it carries traffic,
-# and a handshake this large is not one a client legitimately sends (even with
-# post-quantum key shares a ClientHello stays a few kilobytes).
+# A ClientHello whose handshake BODY does not fit in this many bytes is refused:
+# a tunnel whose first message is TLS has to name the CONNECT host before it
+# carries traffic, and a handshake this large is not one a client legitimately
+# sends (even with post-quantum key shares a ClientHello stays a few kilobytes).
 MAX_CLIENT_HELLO_BYTES = 8 * 1024
+_TLS_RECORD_HEADER_BYTES = 5
+_TLS_HANDSHAKE_HEADER_BYTES = 4
+# The most records one ClientHello may be cut into. Real stacks send one, and the
+# split hello a test pins down uses two; the bound is here so that a client
+# dribbling a byte per record cannot grow the wire allowance below without end.
+MAX_CLIENT_HELLO_RECORDS = 64
+# What the receive loop may buffer off the wire. The cap above bounds the
+# handshake body, which is what the reassembler measures, but the wire also
+# carries the four byte handshake header and five more bytes for every record the
+# body is cut into. Comparing wire bytes against the body cap refused a permitted
+# hello purely because it was framed, so the framing is budgeted separately.
+MAX_CLIENT_HELLO_WIRE_BYTES = (
+    MAX_CLIENT_HELLO_BYTES
+    + _TLS_HANDSHAKE_HEADER_BYTES
+    + MAX_CLIENT_HELLO_RECORDS * _TLS_RECORD_HEADER_BYTES
+)
 # The largest a single TLS record may be: 2^14 of plaintext plus the expansion
 # TLS 1.2 allows. Records are reassembled, so a hello spread over several of
-# them is still read; the cap above bounds the total either way.
+# them is still read; the caps above bound the total either way.
 _MAX_TLS_RECORD_BYTES = 16 * 1024 + 2048
 # How many sockets may be waiting to be told "no" at once. A refusal writes one
 # short response, but a client that never reads holds its worker until the
@@ -339,17 +357,99 @@ def proxy_environment(port: int, credential: ProxyCredential) -> dict[str, str]:
     return env
 
 
-def _openssl_default_paths() -> tuple[str | None, str | None]:
-    """OpenSSL's compiled-in cafile and capath as the host sees them (None when absent)."""
+def _openssl_verify_paths() -> object | None:
+    """``ssl.get_default_verify_paths()``, or None on a build that cannot report it."""
     try:
         import ssl
 
-        paths = ssl.get_default_verify_paths()
+        return ssl.get_default_verify_paths()
     except Exception:  # noqa: BLE001 - a broken ssl build is treated as no defaults
+        return None
+
+
+def _openssl_default_paths() -> tuple[str | None, str | None]:
+    """The cafile and capath OpenSSL will actually use (None when absent).
+
+    Not purely compiled-in: ``ssl.get_default_verify_paths`` lets ``SSL_CERT_FILE``
+    and ``SSL_CERT_DIR`` shadow the build paths, exactly as OpenSSL does for the
+    interpreter itself, so either of these may be a path an operator chose.
+    """
+    paths = _openssl_verify_paths()
+    if paths is None:
         return None, None
-    cafile = paths.cafile if paths.cafile and os.path.isfile(paths.cafile) else None
-    capath = paths.capath if paths.capath and os.path.isdir(paths.capath) else None
+    cafile = getattr(paths, "cafile", None)
+    capath = getattr(paths, "capath", None)
+    cafile = cafile if cafile and os.path.isfile(cafile) else None
+    capath = capath if capath and os.path.isdir(capath) else None
     return cafile, capath
+
+
+# The only names OpenSSL ever opens inside a hashed certificate directory:
+# ``<8 hex digits>.<n>`` for a certificate and ``<8 hex digits>.r<n>`` for a CRL.
+# A capath is looked up by name, never listed, so nothing else in one is needed.
+_HASHED_CERT_RE = re.compile(r"[0-9a-f]{8}\.r?[0-9]+")
+# How many of those one capath may contribute. A system store holds a few
+# hundred; past this the directory is dropped whole rather than turned into a
+# thousand bind arguments.
+MAX_CAPATH_ENTRIES = 256
+
+
+def _same_path(first: str, second: str) -> bool:
+    try:
+        return os.path.realpath(first) == os.path.realpath(second)
+    except OSError:  # pragma: no cover - realpath does not raise on Linux or macOS
+        return False
+
+
+def _capath_trust_paths(capath: str | None) -> tuple[str, ...]:
+    """What a capath may contribute to the set of paths the sandbox can read.
+
+    A capath is a directory, so handing it over hands over everything that sits
+    beside the certificates in it. Whose directory it is decides the treatment:
+
+    * the directory OpenSSL was built with is passed through as a directory. It
+      is a build constant rather than input, it is normally a system store the
+      backends already bind, and enumerating it would add one bind per
+      certificate to every launch for nothing.
+    * a directory ``SSL_CERT_DIR`` names is never passed through as a directory.
+      Only the entries OpenSSL can ever open in a hashed store are returned, so
+      an operator who points the variable at a directory that also holds a key
+      exposes the certificates and not the key. This is the sibling of the
+      cafile rule above: an environment-controlled path is not ours to widen.
+
+    Enumeration is a snapshot, so a certificate added after the launch is not
+    visible to it; a tool call is short and the alternative is exposing the whole
+    directory for the life of the sandbox.
+    """
+    if not capath:
+        return ()
+    paths = _openssl_verify_paths()
+    compiled = getattr(paths, "openssl_capath", "") if paths is not None else ""
+    if compiled and _same_path(capath, compiled):
+        return (capath,)
+    try:
+        names = sorted(os.listdir(capath))
+    except OSError:
+        return ()
+    entries: list[str] = []
+    for name in names:
+        if not _HASHED_CERT_RE.fullmatch(name):
+            continue
+        candidate = os.path.join(capath, name)
+        if not os.path.isfile(candidate):
+            # A directory named like a hashed certificate would be exposed with
+            # everything under it, which is the exposure this function exists to
+            # avoid.
+            continue
+        entries.append(candidate)
+        if len(entries) > MAX_CAPATH_ENTRIES:
+            logger.warning(
+                "Tool sandbox: SSL_CERT_DIR holds more than %d hashed certificates, "
+                "so none of them are exposed; set SSL_CERT_FILE to a bundle instead",
+                MAX_CAPATH_ENTRIES,
+            )
+            return ()
+    return tuple(entries)
 
 
 def _certifi_bundle() -> str | None:
@@ -371,18 +471,20 @@ def tls_trust_paths() -> tuple[str, ...]:
     backends bind. certifi's bundle is returned too so the environment fallback
     below has something readable to point at.
 
-    The cafile is returned as the file itself, never as its parent directory.
-    ``ssl.get_default_verify_paths`` honours the operator's ``SSL_CERT_FILE``,
-    so an operator pointing that at a bundle that happens to sit beside
-    unrelated secrets would otherwise have the whole directory exposed to the
-    sandbox. Both backends take a file here: the Linux one binds it with
-    ``--ro-bind-try`` and the macOS profile emits a ``literal`` filter, which is
-    what a single file needs.
+    Nothing an environment variable chose is returned as a directory. The cafile
+    is returned as the file itself, and a capath that ``SSL_CERT_DIR`` named is
+    returned as its hashed certificate entries rather than as the directory
+    holding them, so an operator pointing either variable at a path that happens
+    to sit beside unrelated secrets exposes the trust material and not the
+    secrets. Both backends take either shape: the Linux one binds each path with
+    ``--ro-bind-try`` and the macOS profile emits a ``literal`` filter, plus a
+    ``subpath`` filter for the directories, which is why which of the two a path
+    is matters.
     """
     cafile, capath = _openssl_default_paths()
     candidates = [
         cafile,
-        capath,
+        *_capath_trust_paths(capath),
         _certifi_bundle(),
     ]
     seen: list[str] = []
@@ -411,58 +513,188 @@ def tls_trust_environment(base: dict[str, str] | None = None) -> dict[str, str]:
     return {"SSL_CERT_FILE": bundle, "REQUESTS_CA_BUNDLE": bundle}
 
 
+# ---------------------------------------------------------------------------
+# IPv4 addresses hidden inside IPv6 answers, and where this proxy draws the line.
+#
+# The danger is an allowlisted name resolving to an IPv6 address that some
+# translator on the way out turns back into 127.0.0.1, 10.0.0.5 or
+# 169.254.169.254. RFC 6052 section 5.3 states the goal exactly: packets sent to
+# an IPv4-embedded IPv6 address "should ... be subject to the same filtering as
+# those directly sent to ... the embedded IPv4 addresses". The whole difficulty
+# is that doing so needs the translation prefix, and an answer's bytes do not
+# carry it.
+#
+# Two readings of that were argued over this code, and neither can win outright:
+#
+# * Too narrow. RFC 6052 section 1.3 lets an operator pick any Network-Specific
+#   Prefix, so a DNS64 under some prefix other than 64:ff9b can hand back
+#   Pref64::10.0.0.5 and it reads as an ordinary global address.
+# * Too broad. Decoding every address at every RFC 6052 offset and demanding all
+#   six decodes be public refuses most of the real IPv6 internet. The /32 offset
+#   is bytes 4 to 7, which are zero in nearly every address written with a "::"
+#   (0.0.0.0 is not public), and the /96 offset is bytes 12 to 15, so
+#   2001:4860:4860::8888 decodes to 0.0.136.136 and is refused.
+#
+# It is tempting to split the difference on structure: RFC 6052 section 2.2 does
+# require the reserved octet at byte 8 to be zero, and the suffix bits after the
+# embedded address to be zero, so an address failing that shape cannot be an
+# encoding at that length. As a security gate it does not hold. The same section
+# makes the suffix a SHOULD and then says translators receiving non-zero suffix
+# bits "SHOULD ignore the bits' value and proceed as if the bits' value were
+# zero", so an attacker sets one suffix bit, the shape test skips the offset, and
+# the translator still delivers to 10.0.0.5. A gate an attacker opens by
+# flipping a bit that changes nothing downstream is not a gate.
+#
+# RFC 7050 prefix discovery (query ipv4only.arpa, learn the real Pref64::/n) was
+# proposed as the way out. It is rejected here, on three grounds:
+#
+# * It is unauthenticatable by design. RFC 8880 section 5 requires ipv4only.arpa
+#   to be an insecure delegation and says validating resolvers "MUST NOT attempt
+#   to validate answers received in response to queries for the IPv6 AAAA address
+#   records", explicitly correcting RFC 7050's claim that DNSSEC could protect
+#   them. RFC 7050 section 7 spells out the consequence: "fake positive AAAA
+#   responses could cause hosts to erroneously detect Pref64::/n, thus allowing
+#   an attacker to inject malicious Pref64::/n".
+# * It fails open, and the same adversary decides when. RFC 7050 section 3 ends
+#   the heuristic with "the Pref64::/n cannot be determined and the heuristic
+#   procedure has failed" when the well-known addresses are not found, so anyone
+#   who can shape the DNS answer this check is meant to catch can withhold one
+#   more answer and switch the check off.
+# * It costs a DNS round trip on a path that has none today. The proxy is minted
+#   per launch, so that is per tool call, and RFC 8880 section 7.1 wants the
+#   query pinned to the interface's own resolver, which is not what the resolver
+#   this proxy is handed does.
+#
+# So the resolution is to stop guessing, and to say plainly what is refused and
+# what is admitted.
+#
+# REFUSED, on purpose:
+#
+# * The Well-Known Prefix 64:ff9b::/96 carrying a non-public IPv4. RFC 6052
+#   section 3.1: it "MUST NOT be used to represent non-global IPv4 addresses"
+#   and translators "MUST drop these packets". A public IPv4 behind it still
+#   tunnels, which is what an IPv6-only host with a NAT64 needs.
+# * Every other address spelled 64:ff9b, which is all of RFC 8215's local-use
+#   64:ff9b:1::/48 plus the unallocated remainder of 64:ff9b::/32. This is the
+#   class knowingly given up: an operator carving a /96 out of 64:ff9b:1::/48
+#   (RFC 8215 section 6 suggests exactly that) cannot tunnel through here. It is
+#   refused because RFC 8215 section 5 removes the section 3.1 protection there
+#   ("the restrictions on the use of the WKP ... do not apply"), so such an
+#   address may legally encode 169.254.169.254; because IANA's IPv6
+#   Special-Purpose registry marks the block Globally Reachable: False and
+#   CPython 3.13 already classifies it private; and because an allowlisted public
+#   host resolving into a local-use translation range is the bridge back to the
+#   LAN this proxy exists to refuse. Such an operator sets NAT64_PREFIX_ENV.
+# * Any address under a prefix the operator named in NAT64_PREFIX_ENV whose
+#   embedded IPv4, read at that prefix's own offset, is not public. This is the
+#   sound answer to the "too narrow" reading: the prefix comes from the operator
+#   rather than from the network, so it cannot be spoofed or withheld, it is
+#   decoded at one offset rather than six, and it costs no round trip.
+#
+# ADMITTED, on purpose, and this is the hole:
+#
+# * A Network-Specific Prefix that the operator did not name. With no
+#   configuration, an address under some other operator's /96 NAT64 prefix is
+#   judged as the ordinary global unicast address it is bit-for-bit
+#   indistinguishable from, and if that network's translator maps it to
+#   10.0.0.5 the tunnel is allowed. Closing this by inspection means refusing
+#   ordinary IPv6, so it is left open and named here instead of hidden.
+# ---------------------------------------------------------------------------
+
+# RFC 6052 section 2.1. The Well-Known Prefix is a /96 and section 2.2 says it
+# "can only be used in the last form of the table", so there is exactly one place
+# its IPv4 address can sit.
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
-_NAT64_LOCAL_USE = ipaddress.IPv6Network("64:ff9b:1::/48")
-# Every 64:ff9b address, which is the well-known /96 plus the RFC 8215 local-use
-# space a network-specific prefix is carved out of.
-_NAT64_SPACE = ipaddress.IPv6Network("64:ff9b::/32")
+# Every address spelled 64:ff9b: the Well-Known Prefix, RFC 8215's local-use
+# 64:ff9b:1::/48, and the unallocated space between them.
+_NAT64_RESERVED = ipaddress.IPv6Network("64:ff9b::/32")
 _SIX_TO_FOUR = ipaddress.IPv6Network("2002::/16")
-# Where RFC 6052 puts the four IPv4 bytes for each prefix length it allows. The
-# byte at offset 8 is reserved (it must be zero) and is skipped, so a /40 takes
-# bytes 5, 6, 7 and 9.
-_RFC6052_OFFSETS: tuple[tuple[int, ...], ...] = (
-    (4, 5, 6, 7),      # /32
-    (5, 6, 7, 9),      # /40
-    (6, 7, 9, 10),     # /48
-    (7, 9, 10, 11),    # /56
-    (9, 10, 11, 12),   # /64
-    (12, 13, 14, 15),  # /96
-)
+# Where RFC 6052 section 2.2 puts the four IPv4 bytes for each prefix length it
+# allows. Byte 8 is the reserved octet and is skipped, so a /40 takes bytes 5, 6,
+# 7 and 9 while a /64 takes bytes 9 to 12.
+_RFC6052_OFFSETS: dict[int, tuple[int, int, int, int]] = {
+    32: (4, 5, 6, 7),
+    40: (5, 6, 7, 9),
+    48: (6, 7, 9, 10),
+    56: (7, 9, 10, 11),
+    64: (9, 10, 11, 12),
+    96: (12, 13, 14, 15),
+}
+
+# Pref64::/n values the operator states their own network translates, comma or
+# whitespace separated. Only these six lengths are RFC 6052 encodings, so only
+# these can be decoded; anything else is dropped with a warning rather than
+# silently ignored.
+NAT64_PREFIX_ENV = "UNSLOTH_STUDIO_TOOL_NAT64_PREFIXES"
+_nat64_prefix_cache: tuple[str, tuple[ipaddress.IPv6Network, ...]] | None = None
 
 
-def _rfc6052_candidates(packed: bytes) -> tuple[ipaddress.IPv4Address, ...]:
-    """Every IPv4 address an RFC 6052 encoding could be carrying."""
-    return tuple(
-        ipaddress.IPv4Address(bytes(packed[index] for index in offsets))
-        for offsets in _RFC6052_OFFSETS
-    )
+def _parse_nat64_prefixes(raw: str) -> tuple[ipaddress.IPv6Network, ...]:
+    prefixes: list[ipaddress.IPv6Network] = []
+    for item in re.split(r"[,\s]+", raw.strip()):
+        if not item:
+            continue
+        try:
+            network = ipaddress.IPv6Network(item, strict = False)
+        except ValueError:
+            logger.warning(
+                "%s holds an entry that is not an IPv6 prefix: %r", NAT64_PREFIX_ENV, item
+            )
+            continue
+        if network.prefixlen not in _RFC6052_OFFSETS:
+            logger.warning(
+                "%s entry %r is not an RFC 6052 prefix length (32, 40, 48, 56, 64 or 96)",
+                NAT64_PREFIX_ENV,
+                item,
+            )
+            continue
+        prefixes.append(network)
+    return tuple(prefixes)
+
+
+def _configured_nat64_prefixes() -> tuple[ipaddress.IPv6Network, ...]:
+    """The operator's Pref64::/n list, parsed once per distinct value of the variable."""
+    global _nat64_prefix_cache
+    raw = os.environ.get(NAT64_PREFIX_ENV, "")
+    cached = _nat64_prefix_cache
+    if cached is not None and cached[0] == raw:
+        return cached[1]
+    parsed = _parse_nat64_prefixes(raw)
+    # A racing thread recomputes the same tuple, so no lock is needed.
+    _nat64_prefix_cache = (raw, parsed)
+    return parsed
+
+
+def _rfc6052_embedded(packed: bytes, prefix_length: int) -> ipaddress.IPv4Address:
+    """The IPv4 address an RFC 6052 prefix of this length embeds."""
+    offsets = _RFC6052_OFFSETS[prefix_length]
+    return ipaddress.IPv4Address(bytes(packed[index] for index in offsets))
 
 
 def _embedded_ipv4_candidates(
     ip: ipaddress.IPv6Address,
 ) -> tuple[ipaddress.IPv4Address, ...]:
-    """Every IPv4 address an IPv6 form may carry, for the forms ``ipv4_mapped`` misses.
+    """Every IPv4 address this IPv6 address is known to carry, for the forms ``ipv4_mapped`` misses.
 
-    ``ipv4_mapped`` only covers ``::ffff:0:0/96``. ``::7f00:1`` (deprecated
-    IPv4-compatible) and ``64:ff9b::7f00:1`` (the RFC 6052 NAT64 form of
-    127.0.0.1) are both reported global by ``ipaddress``, so on a host with a
-    NAT64 gateway an allowlisted name could resolve back to loopback.
+    ``ipv4_mapped`` only covers ``::ffff:0:0/96``. ``::7f00:1`` (the deprecated
+    IPv4-compatible form), ``2002:7f00:1::`` (6to4 on a Python whose
+    ``ipaddress`` does not yet list 2002::/16) and ``64:ff9b::7f00:1`` (the
+    RFC 6052 NAT64 form of 127.0.0.1) are all reported global by older
+    ``ipaddress`` modules, so on a host with a translator an allowlisted name
+    could resolve back to loopback.
 
-    RFC 6052 also allows network-specific prefixes of /32, /40, /48, /56 and
-    /64, each of which embeds the IPv4 address at a different offset, so inside
-    the 64:ff9b space every offset is decoded and the caller refuses the address
-    when any of them is not a public unicast IPv4.
-
-    This is deliberately conservative in one direction and deliberately narrow
-    in the other. Narrow, because an operator's network-specific prefix can be
-    any global /32 to /64: decoding every IPv6 address at every offset would
-    refuse ordinary addresses whose bytes 4 to 7 happen to be zero (almost every
-    address written with a "::"), so only the 64:ff9b space, which exists for
-    NAT64 and nothing else, is decoded that way. Conservative, because inside
-    that space a single bad decode at any offset refuses the address even though
-    only one offset is the real one; a false refusal there costs a tunnel to a
-    NAT64 address, while a false accept is a path back to loopback or the LAN.
+    "Known to carry" is the whole point: an offset is decoded only where the
+    prefix is known, never guessed. See the block comment above for what that
+    admits and what it refuses.
     """
+    configured = tuple(
+        _rfc6052_embedded(ip.packed, prefix.prefixlen)
+        for prefix in _configured_nat64_prefixes()
+        if ip in prefix
+    )
+    if configured:
+        # The operator named this prefix, so it outranks every guess below.
+        return configured
     mapped = ip.ipv4_mapped
     if mapped is not None:
         return (mapped,)
@@ -470,20 +702,10 @@ def _embedded_ipv4_candidates(
     if packed[:12] == b"\x00" * 12:
         return (ipaddress.IPv4Address(packed[12:16]),)
     if ip in _NAT64_WELL_KNOWN:
-        # The well-known prefix is defined as a /96 only, so there is exactly
-        # one place its IPv4 address can be.
         return (ipaddress.IPv4Address(packed[12:16]),)
-    if ip in _NAT64_SPACE or ip in _NAT64_LOCAL_USE:
-        return _rfc6052_candidates(packed)
     if ip in _SIX_TO_FOUR:
         return (ipaddress.IPv4Address(packed[2:6]),)
     return ()
-
-
-def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
-    """The first IPv4 address ``_embedded_ipv4_candidates`` finds, or None."""
-    candidates = _embedded_ipv4_candidates(ip)
-    return candidates[0] if candidates else None
 
 
 def _public_unicast(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -500,6 +722,11 @@ def public_address(address: str) -> bool:
         candidates = _embedded_ipv4_candidates(ip)
         if candidates:
             return all(_public_unicast(candidate) for candidate in candidates)
+        if ip in _NAT64_RESERVED:
+            # Translation space that is not the Well-Known Prefix and that no
+            # operator claimed. Which /96 inside it carries the IPv4 address is
+            # unknowable from the bytes, and RFC 8215 permits a private one.
+            return False
     return _public_unicast(ip)
 
 
@@ -1008,7 +1235,10 @@ class AllowlistProxy:
         buffer = pipelined
         deadline = time.monotonic() + self._header_timeout
         status, name = _client_hello_sni(buffer)
-        while status == "incomplete" and len(buffer) < MAX_CLIENT_HELLO_BYTES:
+        # The wire allowance, not the body cap: a hello inside the body cap still
+        # spends five bytes on every record header it arrives in, and measuring
+        # those against the body cap refused it before it could be parsed.
+        while status == "incomplete" and len(buffer) < MAX_CLIENT_HELLO_WIRE_BYTES:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break

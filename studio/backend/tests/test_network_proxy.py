@@ -894,36 +894,121 @@ def test_public_address_judges_every_embedded_ipv4_form(address, expected):
 @pytest.mark.parametrize(
     "address, expected",
     [
-        # RFC 6052 network-specific prefixes put the IPv4 address at a different
-        # offset for every prefix length, and the byte at offset 8 is skipped.
-        # Each of these hides 127.0.0.1 at one offset while the /48 offset the
-        # proxy used to read alone holds a routable address.
-        ("64:ff9b:1:ffff::7f00:1", False),        # /96 offset
-        ("64:ff9b:1:5db8:d8:2200:7f00:1", False), # /96, /48 reads 93.184.216.34
-        ("64:ff9b:1:5db8:7f:0:100:0", False),     # /64, /48 reads 93.184.127.0
-        ("64:ff9b:1:a00:1::", False),             # 10.0.0.1 at the /48 offset
-        # Ordinary global IPv6 is untouched: nothing outside the 64:ff9b space
-        # is decoded as an embedded IPv4 address.
+        # The Well-Known Prefix is a /96 and RFC 6052 section 3.1 forbids it from
+        # carrying a non-global IPv4, so it is decoded and judged.
+        ("64:ff9b::5db8:d822", True),
+        ("64:ff9b::7f00:1", False),
+        ("64:ff9b::", False),
+        # Everything else spelled 64:ff9b is refused whole. Which /96 inside
+        # RFC 8215's local-use /48 carries the IPv4 address is unknowable from
+        # the bytes, and section 5 of that RFC lets it be a private one.
+        ("64:ff9b:1::5db8:d822", False),
+        ("64:ff9b:1:abcd::5db8:d822", False),
+        ("64:ff9b:1:ffff::7f00:1", False),
+        ("64:ff9b:1:a00:1::", False),
+        ("64:ff9b:2::1", False),
+        ("64:ff9b:ffff:ffff:ffff:ffff:ffff:ffff", False),
+        # Reading every offset and refusing on the first non-public decode let
+        # this one through: 93.93.93.93 sits at all six of them at once.
+        ("64:ff9b:5d5d:5d5d:5d5d:5d5d:5d5d:5d5d", False),
+        # Ordinary global IPv6 is untouched. Decoding it at the RFC 6052 offsets
+        # without knowing the prefix would refuse most of the IPv6 internet: the
+        # /32 offset reads 0.0.0.0 out of any address written with a "::", and
+        # the /96 offset reads 0.0.136.136 out of the first address below.
         ("2001:4860:4860::8888", True),
         ("2a00:1450:4001:80e::200e", True),
         ("2606:4700::6810:84e5", True),
     ],
 )
-def test_public_address_checks_every_rfc6052_prefix_length(address, expected):
+def test_public_address_decodes_the_well_known_prefix_and_refuses_the_rest_of_the_reservation(
+    address, expected
+):
     assert public_address(address) is expected
+
+
+# 2001:67c:2960::/48 stands in for an operator's own Pref64. Each address below
+# is that prefix with an IPv4 address written in at the offset RFC 6052 section
+# 2.2 gives for the prefix's length.
+_NSP_PRIVATE = "2001:67c:2960:a00:0:100::"        # /48 of 10.0.0.1
+_NSP_METADATA = "2001:67c:2960:a9fe:a9:fe00::"    # /48 of 169.254.169.254
+_NSP_PUBLIC = "2001:67c:2960:5db8:d8:2200::"      # /48 of 93.184.216.34
+
+
+def test_an_unnamed_network_specific_prefix_is_the_hole_this_check_admits(monkeypatch):
+    """The documented gap: an operator prefix nobody named reads as ordinary IPv6."""
+    monkeypatch.delenv(network_proxy.NAT64_PREFIX_ENV, raising = False)
+    assert public_address(_NSP_PRIVATE) is True
+    assert public_address(_NSP_METADATA) is True
+
+
+def test_a_named_nat64_prefix_is_decoded_at_its_own_offset(monkeypatch):
+    monkeypatch.setenv(network_proxy.NAT64_PREFIX_ENV, "2001:67c:2960::/48")
+    assert public_address(_NSP_PRIVATE) is False
+    assert public_address(_NSP_METADATA) is False
+    # Only the offset that belongs to the named prefix is read, so a public IPv4
+    # behind the same prefix still tunnels.
+    assert public_address(_NSP_PUBLIC) is True
+    # Addresses outside the named prefix are judged as they always were.
+    assert public_address("2606:4700::6810:84e5") is True
+    assert public_address("2001:67c:2961:a00:0:100::") is True
+
+
+def test_a_named_nat64_prefix_readmits_the_rfc_8215_space_the_default_refuses(monkeypatch):
+    """The escape hatch for the traffic class the default deliberately gives up."""
+    monkeypatch.delenv(network_proxy.NAT64_PREFIX_ENV, raising = False)
+    assert public_address("64:ff9b:1:abcd::5db8:d822") is False
+    monkeypatch.setenv(network_proxy.NAT64_PREFIX_ENV, "64:ff9b:1:abcd::/96")
+    assert public_address("64:ff9b:1:abcd::5db8:d822") is True
+    assert public_address("64:ff9b:1:abcd::7f00:1") is False
+    # A sibling /96 inside the same reservation is still not claimed.
+    assert public_address("64:ff9b:1:abce::5db8:d822") is False
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2001:67c:2960::/44",   # not one of the six RFC 6052 lengths
+        "2001:67c:2960::/47",
+        "10.0.0.0/8",           # not IPv6
+        "not-a-prefix",
+        "",
+    ],
+)
+def test_a_nat64_prefix_that_is_not_an_rfc6052_encoding_is_ignored(monkeypatch, raw):
+    monkeypatch.setenv(network_proxy.NAT64_PREFIX_ENV, raw)
+    assert public_address(_NSP_PRIVATE) is True
+    assert public_address(_NSP_PUBLIC) is True
+
+
+def test_nat64_prefixes_are_reparsed_when_the_variable_changes(monkeypatch):
+    """The parse is cached, so a stale cache would outlive the value that filled it."""
+    monkeypatch.setenv(network_proxy.NAT64_PREFIX_ENV, "2001:67c:2960::/48")
+    assert public_address(_NSP_PRIVATE) is False
+    monkeypatch.setenv(network_proxy.NAT64_PREFIX_ENV, "2001:67c:2961::/48")
+    assert public_address(_NSP_PRIVATE) is True
+    monkeypatch.setenv(
+        network_proxy.NAT64_PREFIX_ENV, "2001:67c:2961::/48 2001:67c:2960::/48"
+    )
+    assert public_address(_NSP_PRIVATE) is False
 
 
 # --- server name checking ----------------------------------------------------
 
 
-def _client_hello(server_name: str | None) -> bytes:
-    """The smallest TLS 1.2 record that carries a ClientHello, with or without SNI."""
+def _client_hello(server_name: str | None, padding: int = 0) -> bytes:
+    """The smallest TLS 1.2 record that carries a ClientHello, with or without SNI.
+
+    ``padding`` adds an RFC 7685 padding extension of that many bytes, which is
+    how a real hello grows past a kilobyte.
+    """
     extensions = b""
     if server_name is not None:
         name = server_name.encode("ascii")
         entry = b"\x00" + len(name).to_bytes(2, "big") + name
         block = len(entry).to_bytes(2, "big") + entry
         extensions = b"\x00\x00" + len(block).to_bytes(2, "big") + block
+    if padding:
+        extensions += b"\x00\x15" + padding.to_bytes(2, "big") + b"\x00" * padding
     body = (
         b"\x03\x03"
         + b"\x2a" * 32
@@ -946,6 +1031,25 @@ def _split_hello(hello: bytes, at: int) -> bytes:
         b"\x16\x03\x01" + len(first).to_bytes(2, "big") + first
         + b"\x16\x03\x01" + len(second).to_bytes(2, "big") + second
     )
+
+
+def _hello_records(hello: bytes, chunk: int) -> bytes:
+    """The same handshake message, cut into TLS records of at most ``chunk`` bytes."""
+    handshake = hello[5:]
+    records = b""
+    for index in range(0, len(handshake), chunk):
+        piece = handshake[index : index + chunk]
+        records += b"\x16\x03\x01" + len(piece).to_bytes(2, "big") + piece
+    return records
+
+
+def _hello_at_the_body_cap(server_name: str) -> bytes:
+    """A ClientHello whose handshake body is exactly ``MAX_CLIENT_HELLO_BYTES``."""
+    base = len(_client_hello(server_name)) - 5 - 4
+    # A padding extension costs four bytes of header on top of its payload.
+    hello = _client_hello(server_name, padding = network_proxy.MAX_CLIENT_HELLO_BYTES - base - 4)
+    assert len(hello) - 5 - 4 == network_proxy.MAX_CLIENT_HELLO_BYTES
+    return hello
 
 
 def _tunnel(proxy: AllowlistProxy, upstream, host: str) -> socket.socket:
@@ -1032,6 +1136,44 @@ def test_a_client_hello_split_across_records_naming_the_host_still_tunnels(proxy
     client.close()
     assert proxy.audit.summary()["denied"] == {}
     assert proxy.audit.summary()["sni_absent"] == 0
+
+
+def test_a_client_hello_at_the_body_cap_is_not_refused_by_its_record_framing(proxy, upstream):
+    """The cap bounds the handshake body; the wire also carries a header per record."""
+    hello = _hello_at_the_body_cap("upstream.test")
+    wire = _hello_records(hello, 4096)
+    assert len(wire) > network_proxy.MAX_CLIENT_HELLO_BYTES, (
+        "the framing has to push this past the body cap or the test proves nothing"
+    )
+    assert len(wire) <= network_proxy.MAX_CLIENT_HELLO_WIRE_BYTES
+    client = _tunnel(proxy, upstream, "upstream.test")
+    client.sendall(wire)
+    client.settimeout(10)
+    echoed = b""
+    while len(echoed) < len(wire):
+        chunk = client.recv(65536)
+        assert chunk, "a permitted hello was refused by the record framing"
+        echoed += chunk
+    assert echoed == wire
+    client.close()
+    assert proxy.audit.summary()["denied"] == {}
+
+
+def test_a_client_hello_over_the_body_cap_is_still_refused(proxy, upstream):
+    """Widening the wire allowance must not widen what a hello may hold."""
+    hello = _client_hello("upstream.test", padding = network_proxy.MAX_CLIENT_HELLO_BYTES)
+    client = _tunnel(proxy, upstream, "upstream.test")
+    client.sendall(_hello_records(hello, 4096))
+    client.settimeout(10)
+    try:
+        assert client.recv(4096) == b""
+    except OSError:
+        pass
+    client.close()
+    denied = proxy.audit.summary()["denied"]
+    assert denied["upstream.test"]["reason"] == (
+        "the TLS ClientHello did not name the CONNECT host"
+    )
 
 
 def test_a_tls_stream_that_never_completes_its_hello_is_refused(upstream):
@@ -1158,3 +1300,85 @@ def test_an_operator_ssl_cert_file_exposes_the_bundle_and_nothing_beside_it(
             path.rstrip(os.sep) + os.sep
         ), f"{path} would expose {secret}"
     assert network_proxy.tls_trust_environment()["SSL_CERT_FILE"] == str(cafile)
+
+
+def _verify_paths(cafile: str | None, capath: str | None, compiled_capath: str):
+    import ssl
+
+    return ssl.DefaultVerifyPaths(
+        cafile = cafile,
+        capath = capath,
+        openssl_cafile_env = "SSL_CERT_FILE",
+        openssl_cafile = "/nonexistent/cert.pem",
+        openssl_capath_env = "SSL_CERT_DIR",
+        openssl_capath = compiled_capath,
+    )
+
+
+def _hashed_store(root):
+    store = root / "operator-capath"
+    store.mkdir()
+    (store / "3513523f.0").write_text("a root certificate")
+    (store / "3513523f.r0").write_text("its revocation list")
+    (store / "id_rsa").write_text("private key")
+    (store / "roots.pem").write_text("a bundle nobody looks up by name")
+    (store / "deadbeef.0").mkdir()  # a directory wearing a certificate's name
+    return store
+
+
+def test_an_operator_ssl_cert_dir_exposes_its_hashed_certificates_and_nothing_else(
+    monkeypatch, tmp_path
+):
+    """``SSL_CERT_DIR`` is an operator setting, so the directory is not ours to hand over."""
+    import ssl
+
+    store = _hashed_store(tmp_path)
+    compiled = tmp_path / "compiled-capath"
+    compiled.mkdir()
+    monkeypatch.setattr(
+        ssl, "get_default_verify_paths", lambda: _verify_paths(None, str(store), str(compiled))
+    )
+    paths = network_proxy.tls_trust_paths()
+    assert str(store / "3513523f.0") in paths
+    assert str(store / "3513523f.r0") in paths
+    assert str(store) not in paths
+    assert str(store / "id_rsa") not in paths
+    assert str(store / "roots.pem") not in paths
+    # A directory named like a certificate would be exposed with everything under it.
+    assert str(store / "deadbeef.0") not in paths
+    for path in paths:
+        assert not os.path.isdir(path) or not str(store / "id_rsa").startswith(
+            path.rstrip(os.sep) + os.sep
+        ), f"{path} would expose the key beside the certificates"
+
+
+def test_the_capath_openssl_was_built_with_is_passed_through_as_a_directory(
+    monkeypatch, tmp_path
+):
+    """A build constant is not operator input, and enumerating it every launch buys nothing."""
+    import ssl
+
+    store = _hashed_store(tmp_path)
+    monkeypatch.setattr(
+        ssl, "get_default_verify_paths", lambda: _verify_paths(None, str(store), str(store))
+    )
+    paths = network_proxy.tls_trust_paths()
+    assert str(store) in paths
+    assert str(store / "3513523f.0") not in paths
+
+
+def test_a_capath_with_more_certificates_than_the_bound_is_dropped_whole(monkeypatch, tmp_path):
+    import ssl
+
+    store = tmp_path / "huge-capath"
+    store.mkdir()
+    for index in range(network_proxy.MAX_CAPATH_ENTRIES + 2):
+        (store / f"{index:08x}.0").write_text("cert")
+    compiled = tmp_path / "compiled-capath"
+    compiled.mkdir()
+    monkeypatch.setattr(
+        ssl, "get_default_verify_paths", lambda: _verify_paths(None, str(store), str(compiled))
+    )
+    paths = network_proxy.tls_trust_paths()
+    assert str(store) not in paths
+    assert not any(path.startswith(str(store) + os.sep) for path in paths)
