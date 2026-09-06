@@ -331,6 +331,54 @@ def _is_gguf_file(path: str) -> bool:
         return False
 
 
+def _gguf_split_first_shard(path: Path) -> Optional[Path]:
+    """The shard-1 sibling of *path*'s own split family, or None when it is already first.
+
+    Same family rule as ``_gguf_file_is_loadable``: shared prefix and shard total.
+    """
+    try:
+        from hub.utils.inventory_scan import _GGUF_SPLIT_RE
+    except ImportError:
+        return None
+    split = _GGUF_SPLIT_RE.search(path.name)
+    if split is None or int(split.group(1)) == 1:
+        return None
+    total = int(split.group(2))
+    prefix = path.name[: split.start()]
+    try:
+        for sibling in path.parent.iterdir():
+            match = _GGUF_SPLIT_RE.search(sibling.name)
+            if (
+                match is not None
+                and sibling.name[: match.start()] == prefix
+                and int(match.group(2)) == total
+                and int(match.group(1)) == 1
+                and sibling.is_file()
+            ):
+                return sibling
+    except OSError:
+        return None
+    return None
+
+
+def _gguf_load_target(target: str) -> str:
+    """The GGUF a picker row should load.
+
+    A row naming a ``.gguf`` loads that file: resolving it through its folder returned the best
+    quant across every unrelated single-file GGUF beside it (#10352). A later shard redirects to
+    shard 1, which the scan also lists as a row and which is the only one llama.cpp accepts
+    ("model must be loaded with the first split", llama-model-loader.cpp).
+
+    A FOLDER still resolves: detect_gguf_model takes the largest complete file, commonly the
+    F16, while cached and exported rows resolve a Q4-class quant, so the same folder loads
+    dramatically bigger by source alone, an OOM rather than a preference.
+    """
+    if _is_gguf_file(target):
+        first = _gguf_split_first_shard(Path(target))
+        return str(first) if first is not None else target
+    return _preferred_complete_gguf(target) or target
+
+
 def _preferred_complete_gguf(path: str) -> Optional[str]:
     model_path = Path(path)
     try:
@@ -588,8 +636,8 @@ def local_folder_entries() -> List[ModelEntry]:
         if _local_is_a_diffusers_pipeline(model):
             continue
         target = model.load_id or model.id
-        if is_gguf and not _is_gguf_file(target):
-            target = _preferred_complete_gguf(target) or target
+        if is_gguf:
+            target = _gguf_load_target(target)
         entries.append(
             ModelEntry(
                 "Downloaded",

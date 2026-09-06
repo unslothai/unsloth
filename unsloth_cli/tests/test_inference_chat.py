@@ -2493,6 +2493,44 @@ def test_catalog_loose_gguf_file_rows_load_their_own_file(monkeypatch, tmp_path)
     }
 
 
+def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_path):
+    """The scan lists every loose shard as its own row, and llama.cpp refuses a later one."""
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    folder = tmp_path / "models"
+    folder.mkdir()
+    shards = [folder / f"BigModel-Q4_K_M-0000{n}-of-00003.gguf" for n in (1, 2, 3)]
+    for shard in shards:
+        shard.write_bytes(b"GGUF" + b"\0" * 4096)
+    # An unrelated single-file GGUF beside them: no shard may resolve to it, and it stays itself.
+    loose = folder / "Unrelated-F16.gguf"
+    loose.write_bytes(b"GGUF" + b"\0" * 4096 * 10)
+
+    def row(path):
+        return SimpleNamespace(
+            source = "models_dir",
+            partial = False,
+            model_format = "gguf",
+            path = str(path),
+            display_name = path.stem,
+            load_id = str(path),
+            id = str(path),
+        )
+
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(p) for p in (*shards, loose)])
+    monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
+
+    loads = {e.name: e.model for e in cat.local_folder_entries()}
+    assert loads == {
+        **{shard.stem: str(shards[0]) for shard in shards},
+        loose.stem: str(loose),
+    }
+
+
 def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
     """A LoRA resolved by bare repo id takes the REMOTE branch of
     get_base_model_from_lora_identifier, which downloads adapter_config.json with no
