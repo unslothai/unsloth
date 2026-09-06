@@ -679,17 +679,15 @@ def summarize(passes: list[list[TurnResult]]) -> dict:
 
 
 def print_report(summary: dict, meta: dict) -> None:
-    print("\n" + "=" * 78)
+    print("\n" + "=" * 84)
     print("VOICE PIPELINE LATENCY  (median over passes; lower time / higher rtf better)")
-    print("=" * 78)
+    print("=" * 84)
     print(f"  chat model : {meta.get('model')}")
     print(f"  tts voice  : {meta.get('tts_voice')}")
     print(f"  stt model  : {meta.get('stt_model') or '(server default)'}")
-    print(
-        f"  seed={meta.get('seed')} temp={meta.get('temperature')} passes={meta.get('repeats')} "
-        f"thinking={'ON' if meta.get('think') else 'off'}"
-    )
-    print("-" * 78)
+    print(f"  seed={meta.get('seed')} temp={meta.get('temperature')} passes={meta.get('repeats')} "
+          f"thinking={'ON' if meta.get('think') else 'off'}")
+    print("-" * 84)
     hdr = (
         f"{'turn':>4}  {'stt':>7} {'sttRTF':>6}  {'ttft':>7} {'chunk':>7} {'llm':>7} {'tok/s':>6}  "
         f"{'tts1':>7} {'ttsRTF':>6}  {'1st-audio':>9}  wer"
@@ -703,7 +701,7 @@ def print_report(summary: dict, meta: dict) -> None:
             f"{_fmt(t['tts_first_s']):>7} {_fmt(t['tts_rtf'],'',2):>6}  "
             f"{_fmt(t['first_audio_latency_s']):>9}  {_fmt(t['wer'],'',3)}"
         )
-    print("-" * 78)
+    print("-" * 84)
     tot, mean = summary["totals"], summary["means"]
     print(f"  TOTAL first-audio latency (drive this down) : {_fmt(tot['first_audio_latency_s'])}")
     print(f"  TOTAL full-pipeline wall                    : {_fmt(tot['pipeline_wall_s'])}")
@@ -728,7 +726,7 @@ def print_report(summary: dict, meta: dict) -> None:
         for gap in summary.get("incomplete", []):
             detail = "; ".join(gap["errors"]) or f"missing {', '.join(gap['missing'])}"
             print(f"    pass {gap['pass']} turn {gap['turn']}: {detail}")
-    print("=" * 78)
+    print("=" * 84)
 
 
 def diff_baseline(summary: dict, baseline_path: Path) -> None:

@@ -192,7 +192,10 @@ sidecar does today — re-run with `--baseline` before quoting them.
 
 ### Measured findings (gemma-4-E2B-it Q4 chat + orpheus-3b Q2_K_L voice, RX 9060 XT)
 
-Baseline vs optimized, 4-turn conversation, `first_audio_latency` totalled:
+Baseline vs optimized, 4-turn conversation, `first_audio_latency` totalled.
+These were recorded under the earlier `stt_s + llm_ttft_s + tts_first_s`
+definition; the current `llm_first_chunk_s` term is larger than `llm_ttft_s`, so
+re-run with `--baseline` before quoting absolute first-audio numbers.
 
 | stage | finding |
 | --- | --- |
