@@ -47,20 +47,45 @@ def isolated_capability_cache():
         os_sandbox._capability_cache.update(before)
 
 
+_DENIED = "PermissionError: [Errno 13] Permission denied"
+
+
 def _good_findings(sid_text: str) -> dict:
+    """What the probe child reports on a host that matches the documented model."""
     return {
         "restricted": True,
         "restricted_sids": [sid_text, "S-1-5-5-0-1234", "S-1-1-0"],
         "privileges": 1,
         "in_job": True,
+        "user_sid": "S-1-5-21-1-2-3-1001",
+        "integrity_sid": "S-1-16-8192",
+        "interpreter_readable": True,
+        "secret_exists": True,
         "secret_readable": True,
-        "secret_writable": False,
-        "sibling_writable": False,
+        "secret_writable": _DENIED,
+        "sibling_writable": _DENIED,
+        "workdir_readable": True,
         "workdir_writable": True,
         "temp_writable": True,
         "temp_is_private": True,
         "devnull": True,
         "pipe": True,
+    }
+
+
+def _profile_denied_findings(sid_text: str) -> dict:
+    """The same host with an administrator's ACLs: the fence holds, reads do not.
+
+    Staging round 16 on windows-2022 and windows-latest. The child starts, every
+    write outside the workdir is refused, and a file in the user profile cannot
+    be read at all because it is reachable only through a group this token
+    disabled.
+    """
+    return {
+        **_good_findings(sid_text),
+        "secret_exists": False,
+        "secret_readable": _DENIED,
+        "secret_writable": _DENIED,
     }
 
 
@@ -72,10 +97,21 @@ def test_public_api_profile_and_token_flags_are_pinned():
     backend = token_launcher.WindowsRestrictedTokenBackend()
     assert backend.identity == "windows-restricted-token"
     assert backend.profile_id == "windows-restricted-token-write-isolation-v1"
+    # The pre-probe default is the more disclosing of the two profile codes: a
+    # launch must never claim more confinement than the probe observed.
     assert backend.limitations == (
         "user_profile_readable",
         "network_unrestricted",
         "everyone_writable_objects_writable",
+    )
+    assert token_launcher._LIMITATIONS_PROFILE_UNREADABLE == (
+        "user_profile_unreadable",
+        "network_unrestricted",
+        "everyone_writable_objects_writable",
+    )
+    assert token_launcher._disclosed_limitations(True) == token_launcher._LIMITATIONS
+    assert token_launcher._disclosed_limitations(False) == (
+        token_launcher._LIMITATIONS_PROFILE_UNREADABLE
     )
     # DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED, the Codex / DeepSeek flag set.
     assert token_launcher._RESTRICTED_TOKEN_FLAGS == 0x1 | 0x4 | 0x8
@@ -143,17 +179,27 @@ def test_random_launch_sid_is_a_fresh_domain_sid():
 
 def test_probe_evaluation_requires_every_observation():
     sid = "S-1-5-21-1-2-3-4"
-    assert token_launcher._evaluate_probe(_good_findings(sid), sid_text = sid) is None
-    assert token_launcher._evaluate_probe({}, sid_text = sid) == "the token is not restricted"
+    passed = token_launcher._evaluate_probe(_good_findings(sid), sid_text = sid)
+    assert passed.available is True
+    assert passed.failures == ()
+    assert passed.limitations == token_launcher._LIMITATIONS
+    empty = token_launcher._evaluate_probe({}, sid_text = sid)
+    assert empty.available is False
+    assert empty.held == ()
+    # Each requirement is a separate failure, so a report of nothing names them all
+    # rather than the first one alphabetically.
+    assert "the token is not restricted" in empty.failures
+    assert "the child is not inside its Job Object" in empty.failures
     flips = {
         "restricted": (False, "not restricted"),
         "privileges": (3, "kept privileges"),
         "in_job": (False, "not inside its Job Object"),
-        "secret_readable": (False, "stronger than modelled"),
+        "interpreter_readable": (_DENIED, "interpreter could not be read"),
         "secret_writable": (True, "outside the workdir was writable"),
         "sibling_writable": (True, "another launch's temp"),
-        "workdir_writable": (False, "workdir was not writable"),
-        "temp_writable": (False, "private temp was not writable"),
+        "workdir_readable": (_DENIED, "workdir was not readable"),
+        "workdir_writable": (_DENIED, "workdir was not writable"),
+        "temp_writable": (_DENIED, "private temp was not writable"),
         "temp_is_private": (False, "TEMP was not redirected"),
         "devnull": ("PermissionError", "NUL device was unavailable"),
         "pipe": ("PermissionError", "named pipes were unavailable"),
@@ -161,14 +207,264 @@ def test_probe_evaluation_requires_every_observation():
     for key, (value, fragment) in flips.items():
         findings = _good_findings(sid)
         findings[key] = value
-        reason = token_launcher._evaluate_probe(findings, sid_text = sid)
-        assert reason is not None and fragment in reason, (key, reason)
+        verdict = token_launcher._evaluate_probe(findings, sid_text = sid)
+        assert verdict.available is False, key
+        assert any(fragment in failure for failure in verdict.failures), (key, verdict.failures)
+        # Only that one requirement failed; the rest are still reported as held.
+        assert len(verdict.failures) == 1, (key, verdict.failures)
+        assert len(verdict.held) == 13, (key, verdict.held)
+        assert fragment in verdict.reason()
+        assert "what held" in verdict.reason()
     without_launch_sid = _good_findings(sid)
     without_launch_sid["restricted_sids"] = ["S-1-1-0"]
-    assert "launch SID" in token_launcher._evaluate_probe(without_launch_sid, sid_text = sid)
+    assert token_launcher._evaluate_probe(without_launch_sid, sid_text = sid).failures == (
+        "the launch SID is not a restricting SID",
+    )
     without_everyone = _good_findings(sid)
     without_everyone["restricted_sids"] = [sid]
-    assert "Everyone" in token_launcher._evaluate_probe(without_everyone, sid_text = sid)
+    assert token_launcher._evaluate_probe(without_everyone, sid_text = sid).failures == (
+        "Everyone is not a restricting SID",
+    )
+
+
+def test_an_unreadable_user_profile_is_disclosed_rather_than_failed_closed():
+    """A child that cannot read the user's documents is confined more tightly
+    than Limited mode documents, not less, so it is not a probe failure.
+
+    Whether reads survive the token is a property of the account: on an
+    administrator's, a file reachable only through BUILTIN\\Administrators is
+    refused on the first access check, because that group is deny-only here. The
+    record says which of the two the launch actually got.
+    """
+    sid = "S-1-5-21-1-2-3-4"
+    verdict = token_launcher._evaluate_probe(_profile_denied_findings(sid), sid_text = sid)
+
+    assert verdict.available is True
+    assert verdict.failures == ()
+    assert verdict.limitations == token_launcher._LIMITATIONS_PROFILE_UNREADABLE
+    assert "user_profile_unreadable" in verdict.limitations
+    assert "user_profile_readable" not in verdict.limitations
+    reason = verdict.reason()
+    assert "passed" in reason
+    assert "were not readable" in reason
+    # The reason carries the observation that produced it, and the principal the
+    # denied access check was decided against.
+    assert _DENIED in reason
+    assert "S-1-5-21-1-2-3-1001" in reason
+    # The write fence is still the workdir against its sibling, both of which the
+    # child reached, so it is evidence even here.
+    assert "the workdir is writable" in verdict.held
+    assert "another launch's temp directory refused a write" in verdict.held
+
+    readable = token_launcher._evaluate_probe(_good_findings(sid), sid_text = sid)
+    assert readable.limitations == token_launcher._LIMITATIONS
+    assert "stayed readable" in readable.reason()
+    assert "user_profile_unreadable" not in readable.limitations
+
+
+def test_a_broken_sandbox_still_fails_closed_whatever_the_profile_reads():
+    """The disclosure never rescues a launch that would make Limited mode a lie."""
+    sid = "S-1-5-21-1-2-3-4"
+    for key, value in (
+        ("interpreter_readable", _DENIED),
+        ("secret_writable", True),
+        ("sibling_writable", True),
+        ("in_job", False),
+        ("workdir_writable", _DENIED),
+        ("restricted", False),
+    ):
+        for findings in (_good_findings(sid), _profile_denied_findings(sid)):
+            findings[key] = value
+            verdict = token_launcher._evaluate_probe(findings, sid_text = sid)
+            assert verdict.available is False, (key, findings["secret_readable"])
+            assert verdict.reason().startswith("the restricted-token live probe failed: ")
+
+
+def test_the_verdict_reports_every_failure_at_once():
+    """The old probe returned the first surprise and stopped, which is how a host
+    reported an unreadable profile without ever saying whether its workdir worked.
+    """
+    sid = "S-1-5-21-1-2-3-4"
+    findings = _profile_denied_findings(sid)
+    findings["workdir_writable"] = _DENIED
+    findings["in_job"] = False
+    findings["devnull"] = "PermissionError: NUL"
+
+    verdict = token_launcher._evaluate_probe(findings, sid_text = sid)
+
+    assert len(verdict.failures) == 3
+    reason = verdict.reason()
+    for fragment in ("workdir was not writable", "not inside its Job Object", "NUL device"):
+        assert fragment in reason, fragment
+    # And what did hold is still named, so the failure is diagnosable.
+    assert "the token is restricted" in verdict.held
+    assert "what held: " in reason
+
+
+def test_a_verdict_takes_host_side_notes_without_losing_its_own():
+    verdict = token_launcher._ProbeVerdict(held = ("a",), notes = ("first",))
+    assert verdict.noting("") is verdict
+    assert verdict.noting("second").notes == ("first", "second")
+    assert verdict.noting("second").held == ("a",)
+    assert verdict.notes == ("first",)  # frozen: the original is untouched
+
+
+def test_the_probe_payload_reports_values_rather_than_bare_booleans():
+    """The child reports what happened, and the host decides what it meant.
+
+    A bare False cannot separate "the sandbox refused this" from "the path was
+    not there", and staging round 16 turned on exactly that distinction.
+    """
+    payload = token_launcher._PROBE_PAYLOAD
+    ast.parse(payload)  # the child is never syntax-checked on a Windows host first
+    for fragment in (
+        "def describe(exc)",
+        '"interpreter_readable"',
+        '"workdir_readable"',
+        '"secret_exists"',
+        '"user_sid"',
+        '"integrity_sid"',
+        "input.txt",
+    ):
+        assert fragment in payload, fragment
+    assert "return False" not in payload
+    assert payload.count("describe(exc)") >= 4
+
+
+def _probing_backend(monkeypatch, verdict_for):
+    """A backend whose live probe is replaced, on a host pretending to be Windows."""
+    monkeypatch.setattr(token_launcher, "_is_windows", lambda: True)
+    monkeypatch.setattr(windows_lpac, "_api", lambda: SimpleNamespace())
+    monkeypatch.setattr(
+        token_launcher.WindowsRestrictedTokenBackend,
+        "reconcile_stale_manifests",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        token_launcher.WindowsRestrictedTokenBackend, "_live_probe", lambda self: verdict_for()
+    )
+    return token_launcher.WindowsRestrictedTokenBackend()
+
+
+def test_probe_publishes_the_disclosure_it_observed(monkeypatch):
+    """os_sandbox builds the execution record from backend.limitations, so the
+    probe has to replace the class default with what it actually saw.
+
+    Claiming user_profile_readable on a host where the profile was unreadable, or
+    the reverse, would be a false statement in the record and in the dropdown.
+    """
+    sid = "S-1-5-21-1-2-3-4"
+    for findings, expected in (
+        (_good_findings(sid), token_launcher._LIMITATIONS),
+        (_profile_denied_findings(sid), token_launcher._LIMITATIONS_PROFILE_UNREADABLE),
+    ):
+        backend = _probing_backend(
+            monkeypatch, lambda findings = findings: token_launcher._evaluate_probe(
+                findings, sid_text = sid
+            )
+        )
+        capability = backend.probe()
+        assert capability.available is True, capability.reason
+        assert capability.profile_id == token_launcher._PROFILE_ID
+        assert capability.protection_state == "preview"
+        assert capability.limitations == expected
+        assert backend.limitations == expected
+        assert backend.probe() is capability  # cached until forced
+
+
+def test_a_failed_probe_leaves_the_disclosure_at_its_cautious_default(monkeypatch):
+    sid = "S-1-5-21-1-2-3-4"
+    broken = _good_findings(sid)
+    broken["sibling_writable"] = True
+    backend = _probing_backend(
+        monkeypatch, lambda: token_launcher._evaluate_probe(broken, sid_text = sid)
+    )
+
+    capability = backend.probe()
+
+    assert capability.available is False
+    assert "another launch's temp directory was writable" in capability.reason
+    assert capability.limitations == ()
+    assert backend.limitations == token_launcher._LIMITATIONS
+
+
+def test_a_probe_that_cannot_run_at_all_is_reported_as_itself(monkeypatch):
+    def explode(self):
+        raise RuntimeError("ctypes exploded")
+
+    backend = _probing_backend(monkeypatch, lambda: None)
+    monkeypatch.setattr(token_launcher.WindowsRestrictedTokenBackend, "_live_probe", explode)
+
+    capability = backend.probe()
+
+    assert capability.available is False
+    assert capability.reason == (
+        "the restricted-token live probe could not run: ctypes exploded"
+    )
+
+
+def _dacl_api(kinds, *, result: int = 0):
+    """A fake ``_api()`` whose DACL walk hands back one ACE per entry in ``kinds``."""
+    aces = [windows_lpac._ACE_HEADER(kind, 0, 20) for kind in kinds]
+    acl = windows_lpac._ACL(2, 0, 64, len(kinds), 0)
+    names = iter(["S-1-5-18", "S-1-5-32-544", "S-1-5-21-1-2-3-1001", "S-1-1-0"])
+    freed: list[str] = []
+
+    def get_named(path, kind, information, owner, group, dacl, sacl, descriptor):
+        if result == 0:
+            dacl._obj.value = ctypes.addressof(acl)
+            descriptor._obj.value = 4242
+        return result
+
+    def get_ace(pointer, index, out):
+        out._obj.value = ctypes.addressof(aces[index])
+        return 1
+
+    def convert(sid, out):
+        out._obj.value = next(names)
+        return 1
+
+    api = SimpleNamespace(
+        advapi32 = SimpleNamespace(
+            GetNamedSecurityInfoW = get_named, GetAce = get_ace, ConvertSidToStringSidW = convert
+        ),
+        kernel32 = SimpleNamespace(LocalFree = lambda value: freed.append(getattr(value, "value", value))),
+    )
+    api.freed = freed
+    api.held = (aces, acl)  # kept alive for the duration of the walk
+    return api
+
+
+def test_a_denied_read_names_the_principals_the_file_does_grant(monkeypatch):
+    """The next question after "the read was refused" is "refused against what".
+
+    A file reachable only through BUILTIN\\Administrators explains the refusal by
+    itself, because that group is deny-only in this token.
+    """
+    api = _dacl_api((0, 0))
+    monkeypatch.setattr(windows_lpac, "_api", lambda: api)
+
+    assert token_launcher._dacl_trustees("C:\\probe\\secret.txt") == ("S-1-5-18", "S-1-5-32-544")
+    assert 4242 in api.freed  # the descriptor is released even on the happy path
+    assert token_launcher._denied_read_note("C:\\probe\\secret.txt").startswith("that file grants ")
+
+    # An object ACE puts its SID somewhere else, so a diagnostic skips it rather
+    # than reading the wrong bytes as a SID.
+    monkeypatch.setattr(windows_lpac, "_api", lambda: _dacl_api((5, 0)))
+    assert token_launcher._dacl_trustees("C:\\probe\\secret.txt") == ("S-1-5-18",)
+
+    # A descriptor that cannot be read is no diagnosis, never an exception.
+    monkeypatch.setattr(windows_lpac, "_api", lambda: _dacl_api((0,), result = 5))
+    assert token_launcher._dacl_trustees("C:\\probe\\secret.txt") == ()
+    assert token_launcher._denied_read_note("C:\\probe\\secret.txt") == ""
+
+
+def test_the_denied_read_note_never_replaces_the_diagnosis(monkeypatch):
+    def explode():
+        raise OSError(5, "GetNamedSecurityInfoW")
+
+    monkeypatch.setattr(windows_lpac, "_api", explode)
+    assert token_launcher._denied_read_note("C:\\probe\\secret.txt") == ""
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "the launcher is Windows-only")
@@ -1643,7 +1939,13 @@ def live_token_backend():
     print(f"restricted-token probe: {time.perf_counter() - started:.2f}s {capability.reason}")
     assert capability.available is True, capability.reason
     assert capability.profile_id == backend.profile_id
-    assert capability.limitations == token_launcher._LIMITATIONS
+    # Which of the two profile disclosures this host earns depends on the account
+    # the suite runs as, so the fixture pins the pair rather than one of them.
+    assert capability.limitations in (
+        token_launcher._LIMITATIONS,
+        token_launcher._LIMITATIONS_PROFILE_UNREADABLE,
+    ), capability.limitations
+    assert backend.limitations == capability.limitations
     return backend
 
 
@@ -1706,14 +2008,25 @@ def test_live_token_child_writes_only_the_workdir_and_private_temp(live_token_ba
             "        open(p, 'a').write('x'); return True\n"
             "    except OSError as e:\n"
             "        return type(e).__name__\n"
-            "print(json.dumps({'secret_read': open(sys.argv[1]).read(), 'secret_write': w(sys.argv[1]),"
+            "def r(p):\n"
+            "    try:\n"
+            "        return open(p).read()\n"
+            "    except OSError as e:\n"
+            "        return type(e).__name__\n"
+            "print(json.dumps({'secret_read': r(sys.argv[1]), 'secret_write': w(sys.argv[1]),"
             " 'work': w('out.txt'), 'temp': w(os.path.join(os.environ['TEMP'], 't.txt')),"
             " 'user_temp': w(os.path.join(sys.argv[2], 'u.txt')), 'exe': sys.executable}))",
             str(secret), str(secret_root),
         )
         assert returncode == 0, output
         report = json.loads(output.strip().splitlines()[-1])
-        assert report["secret_read"] == "secret"  # reads keep the user's access (disclosed)
+        # Reads usually keep the user's access, which the record discloses. On an
+        # administrator's account a file reachable only through BUILTIN\Administrators
+        # is refused instead, because that group is deny-only in this token; both are
+        # accepted here and the disclosure is what has to match, not the outcome.
+        assert report["secret_read"] in ("secret", "PermissionError"), report
+        readable = report["secret_read"] == "secret"
+        assert live_token_backend.limitations == token_launcher._disclosed_limitations(readable)
         assert report["secret_write"] == "PermissionError"
         assert report["user_temp"] == "PermissionError"
         assert report["work"] is True and (work / "out.txt").exists()
@@ -1758,6 +2071,14 @@ def test_live_token_is_restricted_lua_and_privilege_stripped(live_token_backend,
     assert "S-1-1-0" in findings["restricted_sids"]
     assert any(token_launcher._is_launch_sid_text(s) for s in findings["restricted_sids"])
     assert findings["devnull"] is True and findings["pipe"] is True
+    assert findings["interpreter_readable"] is True
+    # The principal the first access check is decided against, which is what makes
+    # an unreadable user profile diagnosable rather than merely surprising.
+    assert findings["user_sid"].startswith("S-1-")
+    # argv[1] is a file that was never created, so the read reports the error it
+    # got instead of a bare False.
+    assert findings["secret_exists"] is False
+    assert isinstance(findings["secret_readable"], str)
 
 
 def test_live_detached_grandchild_dies_with_the_job(live_token_backend, tmp_path):
@@ -1829,7 +2150,12 @@ def test_live_limited_tool_call_records_the_token_launcher(live_token_backend, t
     assert records[0].backend == "windows-restricted-token"
     assert records[0].effective_mode == "limited"
     assert "write_restricted_token" in records[0].retained_safeguards
-    assert records[0].limitations == token_launcher._LIMITATIONS
+    # The record repeats what the probe observed, never the class default.
+    assert records[0].limitations == live_token_backend.limitations
+    assert records[0].limitations in (
+        token_launcher._LIMITATIONS,
+        token_launcher._LIMITATIONS_PROFILE_UNREADABLE,
+    )
     assert not Path(result.strip().splitlines()[-1]).exists()  # private temp removed after the call
 
 

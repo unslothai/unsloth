@@ -25,6 +25,8 @@ export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = 
     "Inside the Windows sandbox, Python cannot open NUL or create named pipes, so multiprocessing and imports that need them (such as torch) fail; use Limited or Full access for that work.",
   user_profile_readable:
     "Limited mode on Windows can read your user profile, including documents and credentials stored as files, the temp folders of other Limited runs, and the memory of your other processes; only writes are confined.",
+  user_profile_unreadable:
+    "Limited mode on Windows could not read your user profile on this machine, so tools cannot see documents or credentials stored there. Writes stay confined to the chat working folder and a private temp folder, as they are in either case.",
   network_unrestricted:
     "Limited mode on Windows does not restrict the network; the tool can reach any host.",
   everyone_writable_objects_writable:

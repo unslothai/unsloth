@@ -39,10 +39,22 @@ it still does not start:
 * the child is created ``DETACHED_PROCESS`` (Chromium's broker flags), so no
   console is allocated for it while it starts under the restricted token.
 
-Reads and execution keep the user's normal access, so the selected interpreter
-runs from wherever it is installed, ``open(os.devnull)`` works, named pipes and
-``multiprocessing`` work, and the network stays reachable. None of that is OS
-isolation; the record says ``os_isolation = False`` and lists the limitations.
+Reads are *usually* left alone, so the selected interpreter runs from wherever
+it is installed, ``open(os.devnull)`` works, named pipes and ``multiprocessing``
+work, and the network stays reachable. None of that is OS isolation; the record
+says ``os_isolation = False`` and lists the limitations.
+
+"Usually" is the part hosted Windows CI corrected. ``WRITE_RESTRICTED`` leaves
+reads to the *first* access check, and that check runs against a token whose
+``BUILTIN\\Administrators`` membership is deny-only (``SidsToDisable``, and
+``LUA_TOKEN`` again). On a host where a file is reachable only through an ACE
+for a group this token had disabled, the read is refused, and every such host is
+one where the launching account is an administrator. So whether the user's own
+documents are readable is a property of the account, not of the launcher, and it
+is a *disclosure* question rather than a correctness one: the launch is stronger
+than documented, not broken. The probe below therefore evaluates each Limited
+requirement separately and discloses what it saw, ``user_profile_readable`` or
+``user_profile_unreadable``, instead of failing closed on the surprise.
 
 Every launch is bound to a kill-on-close Job Object carrying Studio's resource
 limits, attached at creation through ``PROC_THREAD_ATTRIBUTE_JOB_LIST`` (or
@@ -60,7 +72,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -90,8 +102,12 @@ _BACKEND_IDENTITY = "windows-restricted-token"
 _PROFILE_ID = "windows-restricted-token-write-isolation-v1"
 _MANIFEST_PREFIX = "unsloth.studio.limited."
 
-# Disclosed on every record produced by this launcher.
+# Disclosed on every record produced by this launcher. Exactly one of the first
+# two appears, decided by what the live probe observed rather than by what the
+# design expected: the token fences writes, and whether reads of the user's own
+# files survive it depends on the account (see the module docstring).
 _LIMITATION_USER_PROFILE_READABLE = "user_profile_readable"
+_LIMITATION_USER_PROFILE_UNREADABLE = "user_profile_unreadable"
 _LIMITATION_NETWORK_UNRESTRICTED = "network_unrestricted"
 _LIMITATION_EVERYONE_WRITABLE = "everyone_writable_objects_writable"
 # Disclosed by os_sandbox when a Limited launch on Windows could not use this
@@ -103,6 +119,24 @@ _LIMITATIONS = (
     _LIMITATION_NETWORK_UNRESTRICTED,
     _LIMITATION_EVERYONE_WRITABLE,
 )
+_LIMITATIONS_PROFILE_UNREADABLE = (
+    _LIMITATION_USER_PROFILE_UNREADABLE,
+    _LIMITATION_NETWORK_UNRESTRICTED,
+    _LIMITATION_EVERYONE_WRITABLE,
+)
+
+
+def _disclosed_limitations(profile_readable: bool) -> tuple[str, ...]:
+    """What a launch under this token may claim, given what the probe read.
+
+    ``everyone_writable_objects_writable`` stays on both sides. Everyone is a
+    restricting SID either way, so an object that grants Everyone write is still
+    writable as far as the second access check is concerned; a host that also
+    refuses it on the first check is disclosed as more open than it is, which is
+    the safe direction for a disclosure to be wrong in.
+    """
+    return _LIMITATIONS if profile_readable else _LIMITATIONS_PROFILE_UNREADABLE
+
 
 _TOKEN_ASSIGN_PRIMARY = 0x0001
 _TOKEN_DUPLICATE = 0x0002
@@ -1273,6 +1307,11 @@ def _spawn_restricted(
 
 # The live probe runs under the token it verifies. Everything it reports is
 # checked on the host (_evaluate_probe); the child only observes.
+#
+# Observations are values, not verdicts: every read and write reports either
+# True or the exception that stopped it. A bare False cannot tell "the sandbox
+# refused this" from "the path was not there", and staging round 16 needed
+# exactly that distinction, so it is no longer thrown away in the child.
 _PROBE_PAYLOAD = r'''
 import ctypes, json, os, sys
 from ctypes import wintypes
@@ -1308,6 +1347,14 @@ def info(kind):
         raise SystemExit("GetTokenInformation(%d) failed: %d" % (kind, ctypes.get_last_error()))
     return buf
 
+def sid_text(pointer):
+    text = wintypes.LPWSTR()
+    if not pointer or not advapi32.ConvertSidToStringSidW(ctypes.c_void_p(pointer), ctypes.byref(text)):
+        return ""
+    value = text.value
+    kernel32.LocalFree(text)
+    return value
+
 def sids(kind):
     buf = info(kind)
     count = ctypes.cast(buf, ctypes.POINTER(wintypes.DWORD))[0]
@@ -1315,26 +1362,46 @@ def sids(kind):
     out = []
     for i in range(count):
         entry = SA.from_address(base + i * ctypes.sizeof(SA))
-        text = wintypes.LPWSTR()
-        if entry.Sid and advapi32.ConvertSidToStringSidW(ctypes.c_void_p(entry.Sid), ctypes.byref(text)):
-            out.append(text.value)
-            kernel32.LocalFree(text)
+        value = sid_text(entry.Sid)
+        if value:
+            out.append(value)
     return out
+
+def one_sid(kind):
+    # TokenUser (1) and TokenIntegrityLevel (25) are each a single
+    # SID_AND_ATTRIBUTES, and between them they name the principal and the label
+    # a denied access check was decided against.
+    try:
+        buf = info(kind)
+    except SystemExit:
+        return ""
+    return sid_text(SA.from_address(ctypes.addressof(buf)).Sid)
+
+def describe(exc):
+    return "%s: %s" % (type(exc).__name__, exc)
 
 def writable(path):
     try:
         with open(path, "a", encoding = "utf-8") as stream:
             stream.write("x")
         return True
-    except OSError:
-        return False
+    except OSError as exc:
+        return describe(exc)
 
-def readable(path):
+def readable(path, expected):
     try:
         with open(path, "r", encoding = "utf-8") as stream:
-            return stream.read() == "secret"
-    except OSError:
-        return False
+            body = stream.read()
+    except OSError as exc:
+        return describe(exc)
+    return True if body == expected else "read %r" % body[:64]
+
+def loadable(path):
+    try:
+        with open(path, "rb") as stream:
+            return len(stream.read(4)) == 4
+    except OSError as exc:
+        return describe(exc)
 
 in_job = wintypes.BOOL()
 kernel32.IsProcessInJob(kernel32.GetCurrentProcess(), None, ctypes.byref(in_job))
@@ -1344,9 +1411,17 @@ findings = {
     "restricted_sids": sids(11),
     "privileges": int(ctypes.cast(info(3), ctypes.POINTER(wintypes.DWORD))[0]),
     "in_job": bool(in_job.value),
-    "secret_readable": readable(secret),
+    "user_sid": one_sid(1),
+    "integrity_sid": one_sid(25),
+    # The stdlib this payload already imported proves the interpreter tree is
+    # readable; reading the executable states it as an observation the host can
+    # fail the launch on.
+    "interpreter_readable": loadable(sys.executable),
+    "secret_exists": os.path.exists(secret),
+    "secret_readable": readable(secret, "secret"),
     "secret_writable": writable(secret),
     "sibling_writable": writable(os.path.join(sibling, "probe.txt")),
+    "workdir_readable": readable(os.path.join(os.getcwd(), "input.txt"), "input"),
     "workdir_writable": writable(os.path.join(os.getcwd(), "probe.txt")),
     "temp_writable": writable(os.path.join(os.environ["TEMP"], "probe.txt")),
     "temp_is_private": os.path.normcase(os.environ["TEMP"]) == os.path.normcase(sys.argv[3]),
@@ -1355,15 +1430,15 @@ try:
     with open(os.devnull, "r+b"):
         findings["devnull"] = True
 except OSError as exc:
-    findings["devnull"] = "%s" % exc
+    findings["devnull"] = describe(exc)
 try:
     import multiprocessing.connection as connection
     a, b = connection.Pipe()
     a.send("ping")
-    findings["pipe"] = b.recv() == "ping"
+    findings["pipe"] = True if b.recv() == "ping" else "the pipe echoed something else"
     a.close(); b.close()
 except Exception as exc:
-    findings["pipe"] = "%s" % exc
+    findings["pipe"] = describe(exc)
 print(json.dumps(findings))
 '''
 
@@ -1488,33 +1563,237 @@ def _probe_start_failure(
     return detail
 
 
-def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> str | None:
-    """The reason the probe failed, or ``None`` when every observation matches the model."""
-    checks = (
-        (findings.get("restricted") is True, "the token is not restricted"),
-        (sid_text in findings.get("restricted_sids", ()), "the launch SID is not a restricting SID"),
-        (_EVERYONE_SID in findings.get("restricted_sids", ()), "Everyone is not a restricting SID"),
+# Enough of a denied file's DACL to say whether the account, rather than the
+# launcher, is what refused the read; not so much that a reason text becomes a
+# security descriptor dump.
+_MAX_REPORTED_TRUSTEES = 8
+
+
+def _dacl_trustees(path: str) -> tuple[str, ...]:
+    """The SIDs a path's DACL names, best effort and never raising.
+
+    Only ever a diagnostic. When the probe child could not read a file the model
+    says it should have, the useful next fact is which principals the file
+    actually grants: a file reachable only through ``BUILTIN\\Administrators``
+    explains the refusal by itself, because that group is deny-only in this
+    token.
+    """
+    api = _lpac._api()
+    acl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    result = api.advapi32.GetNamedSecurityInfoW(
+        path,
+        _lpac._SE_FILE_OBJECT,
+        _DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        ctypes.byref(acl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if result != 0 or not acl:
+        return ()
+    try:
+        header = ctypes.cast(acl, ctypes.POINTER(_lpac._ACL)).contents
+        texts: list[str] = []
+        for index in range(header.count):
+            entry = ctypes.c_void_p()
+            if not api.advapi32.GetAce(acl, index, ctypes.byref(entry)):
+                break
+            ace = ctypes.cast(entry, ctypes.POINTER(_lpac._ACE_HEADER)).contents
+            if ace.kind not in (_lpac._ACCESS_ALLOWED_ACE_TYPE, _lpac._ACCESS_DENIED_ACE_TYPE):
+                # Object and callback ACEs put their SID somewhere else; a file
+                # DACL rarely carries one and a diagnostic may skip it.
+                continue
+            # ACCESS_ALLOWED_ACE / ACCESS_DENIED_ACE: header, Mask (4 bytes), SidStart.
+            sid = ctypes.c_void_p((entry.value or 0) + ctypes.sizeof(_lpac._ACE_HEADER) + 4)
+            texts.append(_lpac._sid_string(api, sid))
+        return tuple(dict.fromkeys(texts))[:_MAX_REPORTED_TRUSTEES]
+    finally:
+        if descriptor:
+            api.kernel32.LocalFree(descriptor)
+
+
+def _denied_read_note(path: str) -> str:
+    """One clause naming who the unreadable probe file does grant, or nothing."""
+    try:
+        trustees = _dacl_trustees(path)
+    except Exception:  # noqa: BLE001 - a diagnostic must not replace the diagnosis
+        logger.warning("Could not read the DACL of the Limited probe file", exc_info = True)
+        return ""
+    if not trustees:
+        return ""
+    return "that file grants " + ", ".join(trustees)
+
+
+@dataclass(frozen = True)
+class _ProbeVerdict:
+    """What every Limited requirement did on this host, and what may be claimed.
+
+    A verdict is not a single reason. The probe used to stop at the first
+    observation that did not match the model, which on an administrator's
+    account meant it reported an unreadable user profile and never looked at
+    whether the workdir was writable, whether writes outside it were refused or
+    whether the child was in its job. Those are the questions Limited mode is
+    actually made of, so all of them are answered and reported here, and the
+    launcher is accepted when the ones that matter held.
+    """
+
+    failures: tuple[str, ...] = ()
+    held: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+
+    @property
+    def available(self) -> bool:
+        return not self.failures
+
+    def noting(self, *extra: str) -> _ProbeVerdict:
+        """The same verdict with host-side observations the child could not make."""
+        additions = tuple(note for note in extra if note)
+        if not additions:
+            return self
+        return replace(self, notes = (*self.notes, *additions))
+
+    def reason(self) -> str:
+        """The capability text, listing what held beside anything that did not."""
+        if self.available:
+            parts = [
+                "write-restricted token live probe passed: "
+                + ", ".join(self.held or ("nothing was checked",))
+            ]
+        else:
+            parts = ["the restricted-token live probe failed: " + "; ".join(self.failures)]
+            if self.held:
+                parts.append("what held: " + ", ".join(self.held))
+        parts.extend(self.notes)
+        return ". ".join(parts)
+
+
+def _observed(value: Any) -> str:
+    """A failing observation as its own words, for the reason text."""
+    return "" if value is True else f": {value}"
+
+
+def _refused(findings: dict[str, Any], key: str) -> bool:
+    """Whether a write was attempted and did not succeed.
+
+    An observation the child never reported is not a refusal. Reading it as one
+    would let a truncated report satisfy the write fence, which is the one thing
+    the fence exists to prove.
+    """
+    return key in findings and findings[key] is not True
+
+
+def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> _ProbeVerdict:
+    """Every requirement's outcome, plus the disclosure the observations support.
+
+    A requirement is something Limited mode would be a lie without: the token is
+    the one that was built, the child is in its job, the interpreter and the
+    workdir are usable, and nothing outside the fence took a write. Reading the
+    user's own files is deliberately not one of them. A child that cannot is
+    confined more tightly than the documentation promises, so it is recorded in
+    the limitations and the launch is allowed to proceed.
+    """
+    restricted_sids = findings.get("restricted_sids") or ()
+    privileges = findings.get("privileges")
+    profile_readable = findings.get("secret_readable") is True
+    # (held, what held, why it did not). Every entry is evaluated; none of them
+    # short-circuit the rest.
+    requirements = (
+        (findings.get("restricted") is True, "the token is restricted", "the token is not restricted"),
         (
-            isinstance(findings.get("privileges"), int) and findings["privileges"] <= 1,
+            sid_text in restricted_sids,
+            "the launch SID restricts writes",
+            "the launch SID is not a restricting SID",
+        ),
+        (
+            _EVERYONE_SID in restricted_sids,
+            "Everyone restricts writes",
+            "Everyone is not a restricting SID",
+        ),
+        (
+            isinstance(privileges, int) and privileges <= 1,
+            "privileges are stripped",
             "the token kept privileges beyond SeChangeNotifyPrivilege",
         ),
-        (findings.get("in_job") is True, "the child is not inside its Job Object"),
+        (findings.get("in_job") is True, "the child is in its Job Object", "the child is not inside its Job Object"),
         (
-            findings.get("secret_readable") is True,
-            "the user's own files were not readable (the token is stronger than modelled)",
+            findings.get("interpreter_readable") is True,
+            "the interpreter is readable",
+            "the interpreter could not be read, so nothing would run"
+            + _observed(findings.get("interpreter_readable")),
         ),
-        (findings.get("secret_writable") is False, "a user-profile file outside the workdir was writable"),
-        (findings.get("sibling_writable") is False, "another launch's temp directory was writable"),
-        (findings.get("workdir_writable") is True, "the workdir was not writable"),
-        (findings.get("temp_writable") is True, "the private temp was not writable"),
-        (findings.get("temp_is_private") is True, "TEMP was not redirected to the private temp"),
-        (findings.get("devnull") is True, f"the NUL device was unavailable: {findings.get('devnull')}"),
-        (findings.get("pipe") is True, f"named pipes were unavailable: {findings.get('pipe')}"),
+        (
+            findings.get("workdir_readable") is True,
+            "the workdir is readable",
+            "the workdir was not readable" + _observed(findings.get("workdir_readable")),
+        ),
+        (
+            findings.get("workdir_writable") is True,
+            "the workdir is writable",
+            "the workdir was not writable" + _observed(findings.get("workdir_writable")),
+        ),
+        (
+            findings.get("temp_writable") is True,
+            "the private temp is writable",
+            "the private temp was not writable" + _observed(findings.get("temp_writable")),
+        ),
+        (
+            findings.get("temp_is_private") is True,
+            "TEMP is the private temp",
+            "TEMP was not redirected to the private temp",
+        ),
+        # The fence itself. The workdir and the sibling directory are siblings on
+        # disk with the same inherited ACL, and differ only in carrying the launch
+        # SID, so "the workdir took a write and the sibling did not" is the whole
+        # claim Limited mode makes about writes, and it stays evidence whether or
+        # not the user's own files are readable.
+        (
+            _refused(findings, "secret_writable"),
+            "a user-profile file outside the workdir refused a write",
+            "a user-profile file outside the workdir was writable",
+        ),
+        (
+            _refused(findings, "sibling_writable"),
+            "another launch's temp directory refused a write",
+            "another launch's temp directory was writable",
+        ),
+        (
+            findings.get("devnull") is True,
+            "the NUL device is available",
+            f"the NUL device was unavailable: {findings.get('devnull')}",
+        ),
+        (
+            findings.get("pipe") is True,
+            "named pipes are available",
+            f"named pipes were unavailable: {findings.get('pipe')}",
+        ),
     )
-    for passed, reason in checks:
-        if not passed:
-            return reason
-    return None
+    notes: list[str] = []
+    if profile_readable:
+        notes.append("the user's own files stayed readable, which the record discloses")
+    else:
+        notes.append(
+            "the user's own files were not readable under this token "
+            f"({findings.get('secret_readable')}), so this host confines reads as well as writes "
+            "and the record discloses that instead"
+        )
+        # Named because the difference is the account, not the launcher: an
+        # object reachable only through a group this token disabled is refused on
+        # the first access check, before the restricting SIDs are consulted, and
+        # the child's own user SID is what that check was decided against.
+        if findings.get("user_sid"):
+            note = f"the child ran as {findings['user_sid']}"
+            if findings.get("integrity_sid"):
+                note += f" at integrity {findings['integrity_sid']}"
+            notes.append(note)
+    return _ProbeVerdict(
+        failures = tuple(failure for held, _name, failure in requirements if not held),
+        held = tuple(name for held, name, _failure in requirements if held),
+        limitations = _disclosed_limitations(profile_readable),
+        notes = tuple(notes),
+    )
 
 
 class WindowsRestrictedTokenBackend:
@@ -1522,11 +1801,19 @@ class WindowsRestrictedTokenBackend:
 
     identity = _BACKEND_IDENTITY
     profile_id = _PROFILE_ID
+    # The disclosure a launch carries, and the one field of this class that is
+    # not a constant. os_sandbox.prepare_tool_launch reads it straight off the
+    # backend when it builds the execution record, and only ever after probe()
+    # has returned available, so the probe replaces it with what it observed.
+    # The class value is the pre-probe default, and it is the more disclosing of
+    # the two on purpose: promising the user less confinement than they get is
+    # the safe direction to be wrong in.
     limitations = _LIMITATIONS
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._capability: SandboxCapability | None = None
+        self.limitations = _LIMITATIONS
 
     def probe(self, *, force: bool = False) -> SandboxCapability:
         """Run (once per process unless forced) the live probe under a real restricted token."""
@@ -1540,32 +1827,42 @@ class WindowsRestrictedTokenBackend:
             try:
                 _lpac._api()
                 self.reconcile_stale_manifests()
-                failure = self._live_probe()
+                verdict = self._live_probe()
             except Exception as exc:  # noqa: BLE001 - an unprobeable launcher is unavailable
-                failure = f"the restricted-token live probe could not run: {exc}"
-            if failure is None:
-                capability = SandboxCapability(
-                    self.identity,
-                    True,
-                    "write-restricted token live probe passed: the workdir and a private temp are "
-                    "the only writable user paths, the interpreter runs from its installed "
-                    "location, privileges are stripped and the job kills detached children",
-                    available = True,
-                    protection_state = "preview",
-                    profile_id = self.profile_id,
-                    limitations = self.limitations,
-                )
-            else:
                 capability = SandboxCapability(
                     self.identity,
                     False,
-                    f"the restricted-token live probe failed: {failure}",
+                    f"the restricted-token live probe could not run: {exc}",
                     available = False,
+                )
+                self._capability = capability
+                return capability
+            if verdict.available:
+                self.limitations = verdict.limitations
+                capability = SandboxCapability(
+                    self.identity,
+                    True,
+                    verdict.reason(),
+                    available = True,
+                    protection_state = "preview",
+                    profile_id = self.profile_id,
+                    limitations = verdict.limitations,
+                )
+            else:
+                capability = SandboxCapability(
+                    self.identity, False, verdict.reason(), available = False
                 )
             self._capability = capability
             return capability
 
-    def _live_probe(self) -> str | None:
+    def _live_probe(self) -> _ProbeVerdict:
+        """Launch one real child under the token and grade every Limited requirement.
+
+        ``base/work`` and ``base/sibling`` are created together, so they carry
+        the same inherited ACL and differ only in the launch SID the workdir is
+        granted. That pair is the write fence's controlled comparison, and it
+        holds on a host where the user's own files cannot be read at all.
+        """
         base = os.path.join(_private_root("limited-probe"), secrets.token_hex(8))
         os.makedirs(base, mode = 0o700)
         try:
@@ -1573,6 +1870,10 @@ class WindowsRestrictedTokenBackend:
             sibling = os.path.join(base, "sibling")
             os.mkdir(workdir)
             os.mkdir(sibling)
+            # A tool that cannot read what the user put in the session workdir is
+            # useless, so the probe reads a file it was given rather than only
+            # one it wrote itself.
+            Path(os.path.join(workdir, "input.txt")).write_text("input", encoding = "utf-8")
             secret = os.path.join(base, "secret.txt")
             Path(secret).write_text("secret", encoding = "utf-8")
             prepared = self.prepare(
@@ -1614,19 +1915,26 @@ class WindowsRestrictedTokenBackend:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout = 10)
-                    return "the probe child did not finish within 20 s"
+                    return _ProbeVerdict(failures = ("the probe child did not finish within 20 s",))
                 output = process.stdout.read()
                 if process.returncode != 0:
-                    return _probe_start_failure(
-                        process.returncode, output, identity, prepared.env, prepared.argv
+                    return _ProbeVerdict(
+                        failures = (
+                            _probe_start_failure(
+                                process.returncode, output, identity, prepared.env, prepared.argv
+                            ),
+                        )
                     )
                 try:
                     findings = json.loads(output.strip().splitlines()[-1])
                 except (ValueError, IndexError):
-                    return f"the probe child produced no report: {output[-400:]}"
-                failure = _evaluate_probe(findings, sid_text = identity.sid_string)
-                if failure is not None:
-                    return failure
+                    return _ProbeVerdict(
+                        failures = (f"the probe child produced no report: {output[-400:]}",)
+                    )
+                verdict = _evaluate_probe(findings, sid_text = identity.sid_string)
+                if findings.get("secret_readable") is not True:
+                    verdict = verdict.noting(_denied_read_note(secret))
+                logger.info("Limited mode restricted-token probe: %s", findings)
             finally:
                 prepared.cleanup()
                 if prepared.cleanup_diagnostics:
@@ -1634,10 +1942,16 @@ class WindowsRestrictedTokenBackend:
                         "probe cleanup failed: " + "; ".join(prepared.cleanup_diagnostics)
                     )
             if os.path.exists(identity.private_temp) or os.path.exists(identity.manifest_path):
-                return "the probe launch left its private temp or manifest behind"
+                verdict = replace(
+                    verdict,
+                    failures = (
+                        *verdict.failures,
+                        "the probe launch left its private temp or manifest behind",
+                    ),
+                )
         finally:
             shutil.rmtree(base, ignore_errors = True)
-        return None
+        return verdict
 
     def prepare(self, spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         if not _is_windows():
