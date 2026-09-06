@@ -2529,10 +2529,7 @@ def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_pat
     monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
 
     loads = {e.name: e.model for e in cat.local_folder_entries()}
-    assert loads == {
-        **{shard.stem: str(shards[0]) for shard in shards},
-        loose.stem: str(loose),
-    }
+    assert loads == {**{shard.stem: str(shards[0]) for shard in shards}, loose.stem: str(loose)}
 
     for source in ("trained_entries", "exported_entries", "cached_entries"):
         monkeypatch.setattr(cat, source, list)
