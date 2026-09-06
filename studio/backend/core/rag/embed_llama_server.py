@@ -512,10 +512,8 @@ class LlamaServerBackend:
                 # Serve a stand-in rather than fail the index, but leave the marker: retiring on it would pin this
                 # model to the wrong quant.
                 return self._adopt_model_path(cached, desired)
-            # Typed, not a bare RuntimeError: this is the same user-fixable condition the
-            # sentence-transformers path raises, and /v1/embeddings answers it with a 409 and
-            # the message. Untyped it fell into the catch-all and came back as a 502 "An
-            # internal error occurred", which names neither the cause nor the fix.
+            # Typed: the same condition the ST path raises, and /v1/embeddings answers it
+            # with a 409. Bare, it fell into the catch-all as a 502 naming nothing.
             from .embeddings import EmbeddingModelDownloadRequiredError
 
             raise EmbeddingModelDownloadRequiredError(
@@ -724,13 +722,9 @@ class LlamaServerBackend:
             "--fit",
             "off",
         ]
-        # Deliberately no -b/-ub. Embedding is non-causal, so llama.cpp refuses a prompt
-        # longer than the physical batch rather than splitting it -- but raising the batch
-        # allocates n_vocab * n_ubatch * 4 up front (~938 MiB at 8192 with a 30k vocab),
-        # and this backend treats 1024 MiB free as enough to offload every layer. Buying
-        # long inputs that way costs a failed GPU start and a slow CPU retry. `max_tokens`
-        # reads the batch the server actually runs at and advertises no more, so an
-        # over-long input gets a clear 400 instead of a 502 from inside llama-server.
+        # No -b/-ub: raising the batch allocates n_vocab * n_ubatch * 4 up front (~938 MiB
+        # at 8192 with a 30k vocab), against the 1024 MiB free this backend calls enough to
+        # offload every layer. max_tokens advertises the batch actually running instead.
         # -1 offloads every layer (matches the chat server); 0 keeps it on CPU.
         cmd += ["-ngl", "-1" if use_gpu else "0"]
         return cmd
@@ -936,10 +930,8 @@ class LlamaServerBackend:
             if self._binary_path_revision != custom_llama_cpp_path_revision():
                 self._binary = None
                 self._binary_path_revision = None
-                # The limit is half a server fact: it clamps the GGUF's context by this
-                # server's n_ctx and n_ubatch, whose defaults differ between llama.cpp
-                # builds. _resolve_model_path fast-paths on an unchanged repo, so nothing
-                # else clears it when only the binary is swapped underneath.
+                # Half a server fact (n_ctx, n_ubatch differ between builds), and
+                # _resolve_model_path fast-paths on an unchanged repo, so nothing else clears it.
                 self._max_tokens = None
             self._spawn(model_name)
 
@@ -1148,8 +1140,7 @@ class LlamaServerBackend:
                     limit = min(limit, running)
                 elif running:
                     limit = running
-                # Never advertise more than one batch: past it llama.cpp returns a 500
-                # the caller sees as a 502, instead of the 400 this limit exists to give.
+                # Past one batch llama.cpp returns a 500, not the 400 this limit exists to give.
                 batch = self._server_batch()
                 if batch:
                     limit = min(limit, batch) if limit else batch
@@ -1161,10 +1152,8 @@ class LlamaServerBackend:
                     )
                     answer = max(1, limit - len(data.get("tokens", [])))
                     if running is None or batch is None:
-                        # /props did not answer, so the header context is a guess: this
-                        # server may run a smaller one. Answer with it, but do not freeze
-                        # it, or a limit that lets an over-long input reach a 502 would
-                        # outlive the readback that would have corrected it.
+                        # /props silent: answer with the header guess but do not freeze it,
+                        # or a too-large limit outlives the readback that would correct it.
                         return answer
                     self._max_tokens = answer
             return self._max_tokens

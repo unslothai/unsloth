@@ -25960,9 +25960,8 @@ def _reference_is_decisive(requested: str) -> bool:
         if resolve_local_gguf(requested, allow_scan = False) is not None:
             return True
         if not index_is_built():
-            # A cold index is missing evidence, not evidence of absence. Warm it so the
-            # next request is accurate; meanwhile a name shaped like something held here
-            # must not be waved through to a different embedding space.
+            # A cold index is missing evidence, not absence: warm it, and meanwhile do not
+            # wave a name shaped like a local model through to a different embedding space.
             warm_index_soon()
             return is_local_path(requested) or "/" in requested
         return False
@@ -25997,16 +25996,13 @@ async def _studio_embeddings(
     from core.rag import config as rag_config
     from core.rag import embeddings as rag_embeddings
 
-    # Served entirely by core.rag.embeddings, so the resident GGUF is never touched. Untrack before
-    # the encode: /embeddings is an _INFERENCE_SUFFIXES path that is not slot-excluded, so a 2xx
-    # here would otherwise claim the llama slot and clear preview ownership, hold the in-flight
-    # count for the whole encode (blocking a preview swap), and stamp the idle-unload TTL for a
-    # model that did no work.
+    # /embeddings is an _INFERENCE_SUFFIXES path that is not slot-excluded, so untrack before the
+    # encode: a 2xx would otherwise claim the llama slot, block a preview swap for the whole
+    # encode, and stamp the idle-unload TTL for a model that did no work.
     _scope = getattr(request, "scope", None)
     untrack_current_request(_scope)
-    # The auto-switch hook already admitted this request before the route knew it would be served
-    # here, and the preview busy guard reads the admitted tally rather than _inflight, so a slow
-    # encode would go on rejecting preview swaps with 503.
+    # The auto-switch hook admitted this request before the route knew it lands here, and the
+    # preview busy guard reads the admitted tally, not _inflight.
     untrack_admitted_inference(_scope)
 
     texts = _embeddings_texts(body)
@@ -26018,9 +26014,8 @@ async def _studio_embeddings(
     label = _public_embedding_name(model_name)
 
     def _embed():
-        # Every helper takes the model captured above. Left to default they each re-read the
-        # live setting, so a Settings change while this request queues on the semaphore would
-        # mix one model's limit and dimension with another model's vectors.
+        # Every helper takes the model captured above: left to default they re-read the live
+        # setting, mixing one model's limit and dimension with another's vectors.
         limit = rag_embeddings.max_tokens(model_name)
         count = rag_embeddings.token_counter(model_name)
         token_counts = [count(text) for text in texts]
@@ -26033,9 +26028,8 @@ async def _studio_embeddings(
             raise HTTPException(
                 status_code = 400, detail = f"'dimensions' is not supported by {label}."
             )
-        # encode_with_identity, not encode: an ST failure swaps the process to llama-server
-        # mid-encode, which is a different embedding space. Reporting the configured name for
-        # those vectors is how a client ends up storing two spaces under one label.
+        # encode_with_identity: an ST failure swaps the process to llama-server mid-encode, and
+        # reporting the configured name anyway files two spaces under one label.
         vectors, identity = rag_embeddings.encode_with_identity(
             texts, model_name = model_name, normalize = True
         )
@@ -26051,11 +26045,9 @@ async def _studio_embeddings(
             prompt = _flatten_monitor_prompt(body.get("input", "")),
             subject = current_subject,
         )
-    # Hold the permit for the worker's real lifetime, not the awaiting task's. Cancelling
-    # (client disconnect, timeout, shutdown) does NOT stop the thread behind to_thread, so
-    # releasing on cancellation would admit the next request while this one is still
-    # embedding and the limit above would stop meaning anything. Same reason as
-    # _drain_pending_worker on the blocking-generation path.
+    # The worker's lifetime, not the awaiting task's: cancelling does not stop the thread behind
+    # to_thread, so releasing there admits the next request mid-encode and the cap stops meaning
+    # anything. Same as _drain_pending_worker on the blocking-generation path.
     semaphore = _studio_embed_semaphore()
     acquire = asyncio.ensure_future(semaphore.acquire())
     try:
@@ -26096,18 +26088,14 @@ async def _studio_embeddings(
     except HTTPException as exc:
         api_monitor.fail(monitor_id, str(exc.detail))
         raise
-    # The two conditions the caller can actually act on, and only those. Both carry a
-    # message written for a human ("...is not downloaded yet. Finish its Settings
-    # download..."), which _friendly_error -- written for llama-server transport faults --
-    # flattens to "An internal error occurred". Behind an agent's memory search that is
-    # the whole diagnosis the user gets, so pass the model's own words through with a 409:
-    # the request is fine, the server is not ready to serve it yet.
+    # The two conditions the caller can act on. _friendly_error, written for llama-server
+    # transport faults, flattens both to "An internal error occurred", which behind an agent's
+    # memory search is the whole diagnosis the user gets. 409: not wrong, not ready yet.
     except (
         rag_embeddings.EmbeddingModelDownloadRequiredError,
         rag_embeddings.UnsafeEmbeddingModelError,
     ) as exc:
-        # Both name the configured model, which may be a local path. Every other field this
-        # route returns puts such a model through the label, so the message does too.
+        # The configured model may be a local path, which every other field here hashes.
         detail = str(exc).replace(repr(model_name), repr(label))
         api_monitor.fail(monitor_id, detail)
         raise HTTPException(status_code = 409, detail = detail) from exc
@@ -26129,9 +26117,8 @@ async def _studio_embeddings(
         "model": _public_embedding_identity(identity, model_name, label),
         "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
     }
-    # limit is the per-text token cap but prompt_tokens is the batch sum, so the monitor's
-    # total_tokens/context_length gauge only means anything for a single input; a batch would
-    # otherwise sit pinned at 100%.
+    # limit is per text, prompt_tokens is the batch sum, so the monitor's gauge only means
+    # anything for a single input; a batch would sit pinned at 100%.
     _monitor_openai_chunk(monitor_id, payload, limit if len(texts) == 1 else None)
     api_monitor.finish(monitor_id)
     return Response(content = json.dumps(payload), media_type = "application/json")
@@ -26196,13 +26183,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             return await _studio_embeddings(request, default_body, current_subject)
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
     if not llama_backend.is_loaded:
-        # With the slot empty, `_reject_unservable_model` returns without deciding
-        # (nothing is serving, so it defers to `_no_model_loaded_error`). The fallback
-        # below would then answer ANY name, including a decisive `repo:QUANT` this
-        # server does not hold, from the Settings embedder -- a different embedding
-        # space under the name the caller asked for, which is what #7454 forbids. Only
-        # a body that names nothing, or names the Settings embedder itself, may fall
-        # through here; anything else still gets the honest 503/404.
+        # With the slot empty _reject_unservable_model defers to _no_model_loaded_error, so
+        # without this the fallback would answer a decisive repo:QUANT this server does not
+        # hold from the Settings embedder: another space under the caller's name (#7454).
         _named = _raw_body_model(body)
         if _named and not await asyncio.to_thread(_names_studio_embedder, _named):
             _decisive = await asyncio.to_thread(_reference_is_decisive, _named)

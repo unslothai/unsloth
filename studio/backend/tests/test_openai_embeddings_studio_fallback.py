@@ -62,8 +62,7 @@ def studio_embedder(monkeypatch):
         model_name = None,
         normalize = True,
     ):
-        # Delegates to whatever encode the test installed, so a test that makes encode
-        # blow up or block still drives the real route.
+        # Delegates to the test's encode, so a blowing-up or blocking one still drives the route.
         return rag_embeddings.encode(texts, model_name = model_name, normalize = normalize), IDENTITY
 
     monkeypatch.setattr(rag_embeddings, "encode_with_identity", _encode_with_identity)
@@ -401,10 +400,8 @@ def test_studio_embedder_requests_are_admission_limited(studio_embedder):
 
 
 def test_studio_fallback_untracks_the_request_from_the_llama_slot(studio_embedder):
-    # /v1/embeddings is an _INFERENCE_SUFFIXES path and is NOT in _NON_LLM_SLOT_SUFFIXES, so a
-    # 2xx that reaches llama_keepwarm._finish claims the llama slot and clears preview ownership.
-    # The studio embedder never touches the resident GGUF, so it must untrack first -- the same
-    # contract the external-provider chat branch follows.
+    # An _INFERENCE_SUFFIXES path not in _NON_LLM_SLOT_SUFFIXES: a 2xx reaching _finish claims the
+    # llama slot the studio embedder never touched, so it untracks first, as the chat branch does.
     from core.inference import llama_keepwarm as kw
 
     studio_embedder.setattr(
@@ -456,9 +453,8 @@ def test_resident_embedding_gguf_still_claims_the_slot(studio_embedder):
 
 
 def test_context_gauge_is_not_pinned_by_a_batch(studio_embedder):
-    # _monitor_openai_chunk's 3rd arg is context_length, and api_monitor divides the batch's
-    # summed prompt_tokens by it. Passing the per-text limit for a multi-input request would
-    # report 100% context use for a request that used a fraction of it per text.
+    # api_monitor divides the batch's summed prompt_tokens by that 3rd arg, so passing the
+    # per-text limit reports 100% context use for a batch that used a fraction per text.
     seen = []
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
@@ -482,9 +478,8 @@ def test_context_gauge_is_not_pinned_by_a_batch(studio_embedder):
 
 
 def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
-    # to_thread cannot cancel the worker thread. If the permit were released when the awaiting
-    # task is cancelled, a client that disconnects (or a shutdown) would let the next batch in
-    # while the old threads are still embedding, so the concurrency cap would stop holding.
+    # to_thread cannot cancel the worker, so releasing on the awaiting task's cancellation lets
+    # the next batch in while the old threads still embed and the cap stops holding.
     lock = threading.Lock()
     gate = threading.Event()
     active = {"now": 0, "peak": 0}
@@ -535,9 +530,8 @@ def test_cancelled_requests_do_not_leak_admission_permits(studio_embedder):
 
 
 def test_reported_model_follows_the_backend_that_made_the_vectors(studio_embedder):
-    # _SentenceTransformersBackend.encode swaps the process to llama-server when ST encode
-    # fails, and that is a different embedding space. The response must name the space the
-    # vectors are actually in, or a client stores two spaces under one label.
+    # An ST failure swaps the process to llama-server, a different space: the response has to
+    # name the space the vectors are in, or a client files two under one label.
     llama_identity = f"llama-server:{MODEL}:unsloth/bge-small-en-v1.5-GGUF"
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
@@ -552,8 +546,7 @@ def test_reported_model_follows_the_backend_that_made_the_vectors(studio_embedde
 
 
 def test_embedding_helpers_are_pinned_to_the_captured_model(studio_embedder):
-    # A Settings change while the request queues must not mix one model's limit/dim with
-    # another model's vectors: every helper is called with the model captured up front.
+    # A Settings change while queued must not mix one model's limit/dim with another's vectors.
     seen = {"max_tokens": [], "token_counter": [], "dim": [], "encode": []}
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
@@ -591,9 +584,8 @@ def test_embedding_helpers_are_pinned_to_the_captured_model(studio_embedder):
 
 
 def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
-    # The auto-switch hook admits every /v1/embeddings request before the route decides how to
-    # serve it. load_model_for_preview reads the admitted tally, not _inflight, so without
-    # clearing it a slow studio encode keeps rejecting preview swaps with 503.
+    # Admission happens before the route decides how to serve, and load_model_for_preview reads
+    # the admitted tally, not _inflight, so a slow encode keeps 503ing preview swaps.
     from core.inference import llama_keepwarm as kw
 
     studio_embedder.setattr(
@@ -602,8 +594,7 @@ def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
         lambda: SimpleNamespace(is_loaded = True, is_embedding_gguf = False),
     )
     request = _Request({"input": "alpha"})
-    # Relative to whatever the tally already holds: it is module state shared with the rest of
-    # the suite, so an absolute count is only right when this file runs alone.
+    # Relative: the tally is module state shared with the suite, so absolutes need this file alone.
     before = kw.other_admitted_inference_count()
     kw.note_admitted_inference(request.scope)
     assert kw.other_admitted_inference_count() == before + 1
@@ -618,8 +609,8 @@ def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
 
 
 def test_cancelled_request_closes_its_monitor_row(studio_embedder):
-    # api_monitor.start() runs before admission. Running rows are excluded from retention
-    # trimming, so a request cancelled while queued (or mid-encode) must close its own row.
+    # start() runs before admission and running rows dodge retention trimming, so a request
+    # cancelled while queued has to close its own row.
     closed = []
     gate = threading.Event()
     studio_embedder.setattr(
@@ -1033,11 +1024,8 @@ def test_batch_cap_applies_only_to_the_studio_fallback():
 
 
 def test_a_decisively_named_model_is_refused_when_nothing_is_loaded(studio_embedder):
-    # #7454's rule: a reference this server can tell was meant for it must 404 rather
-    # than be answered by different weights. With the slot empty _reject_unservable_model
-    # defers to _no_model_loaded_error, so the fallback has to make that call itself --
-    # otherwise an explicit `repo:QUANT` came back 200 from the Settings embedder, in a
-    # different embedding space, under the name the caller asked for.
+    # #7454: a reference clearly meant for this server 404s rather than being answered by other
+    # weights. The slot being empty makes _reject_unservable_model defer, so the fallback decides.
     _identity_names(studio_embedder)
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
@@ -1048,8 +1036,7 @@ def test_a_decisively_named_model_is_refused_when_nothing_is_loaded(studio_embed
 
 
 def test_a_foreign_model_name_still_reaches_the_studio_embedder(studio_embedder):
-    # The other half of the same rule: a vendor id carries no evidence it was meant for
-    # this server, so it must keep falling through instead of 404ing.
+    # The other half: a vendor id is no evidence, so it keeps falling through instead of 404ing.
     _identity_names(studio_embedder)
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
@@ -1135,10 +1122,8 @@ def test_alias_match_pins_the_model_for_the_request(studio_embedder):
 
 
 def test_llama_max_tokens_never_exceeds_one_physical_batch(tmp_path, monkeypatch):
-    # Embedding is non-causal: llama.cpp refuses a prompt longer than the physical batch
-    # instead of splitting it, so a limit read from an 8k context but served by a 512
-    # batch turned a legitimate 600-token input into a 502 rather than the 400 this
-    # limit exists to give.
+    # Embedding is non-causal, so llama.cpp refuses rather than splits: an 8k-context limit on a
+    # 512 batch turned a legitimate 600-token input into a 502 instead of a 400.
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
@@ -1153,10 +1138,8 @@ def test_llama_max_tokens_never_exceeds_one_physical_batch(tmp_path, monkeypatch
 
 
 def test_the_embed_server_does_not_enlarge_its_batch(tmp_path):
-    # The batch is allocated at startup as n_vocab * n_ubatch * 4 -- hundreds of MiB at
-    # a large ubatch -- and this backend offloads every layer with as little as 1024 MiB
-    # free, so raising it to buy long inputs costs a failed GPU start and a CPU retry.
-    # max_tokens bounds what is advertised instead.
+    # n_vocab * n_ubatch * 4 is allocated at startup, hundreds of MiB, against the 1024 MiB free
+    # this backend calls enough to offload everything: max_tokens bounds the advert instead.
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
@@ -1166,9 +1149,8 @@ def test_the_embed_server_does_not_enlarge_its_batch(tmp_path):
 
 
 def test_an_unconfirmed_context_limit_is_not_cached(tmp_path, monkeypatch):
-    # A header context can exceed what the server actually runs at. Freezing it while
-    # /props is silent keeps a limit that lets an over-long input through to a 502, long
-    # after the readback that would have corrected it starts working.
+    # A header context can exceed what the server runs at, so freezing it while /props is silent
+    # outlives the readback that would have corrected it.
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
@@ -1242,8 +1224,7 @@ def test_cancel_during_the_final_disconnect_probe_releases_the_permit(studio_emb
 
 
 def test_a_boolean_is_not_a_token_id():
-    # bool subclasses int, so `[true]` was read as a token array and could swap the
-    # resident GGUF for a body llama-server then rejects.
+    # bool subclasses int, so `[true]` read as a token array could swap the resident GGUF.
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc:
@@ -1256,9 +1237,8 @@ def test_a_boolean_is_not_a_token_id():
 
 
 def test_a_cold_index_does_not_make_a_local_name_foreign(monkeypatch):
-    # Before the first scan the index is empty, so resolve_local_gguf answers None for a
-    # model that IS downloaded. Reading that as "foreign" served the request from the
-    # Studio embedder -- a different embedding space under the requested name.
+    # Before the first scan resolve_local_gguf answers None for a model that IS downloaded, and
+    # reading that as foreign served another embedding space under the requested name.
     from core.inference import local_model_resolver as _resolver
 
     monkeypatch.setattr(_resolver, "resolve_local_gguf", lambda ref, allow_scan = False: None)
