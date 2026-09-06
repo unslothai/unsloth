@@ -296,7 +296,9 @@ def test_every_run_of_one_commit_lands_on_the_same_account():
     sha = "0123456789abcdef0123456789abcdef01234567"
     assert len({gate.weighted_pick(sha, weights)[0] for _ in range(5)}) == 1
     source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
-    assert "account_key = (args.head_sha or" in source, "the gate does not key the draw on the commit"
+    assert (
+        "account_key = (args.head_sha or" in source
+    ), "the gate does not key the draw on the commit"
     for path in (NOTEBOOK_WF, STUDIO_WF):
         gate_steps = [
             s

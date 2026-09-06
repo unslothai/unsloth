@@ -297,7 +297,9 @@ def test_a_kernel_past_its_ceiling_is_reaped_and_reported(tmp_path, monkeypatch)
     rather than dropped, or the commit stays pending forever.
     """
     deleted: list[str] = []
-    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True)
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "RUNNING"})
     entry = {
         "slug": "me/unsloth-t4-ci-nabcdef01-1111",
@@ -317,7 +319,9 @@ def test_a_kernel_with_no_timestamp_is_never_reaped(tmp_path, monkeypatch):
     """A missing timestamp is not evidence that a kernel is old, and guessing in
     that direction DELETES A RUNNING SESSION."""
     deleted: list[str] = []
-    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True)
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "RUNNING"})
     entry = {
         "slug": "me/unsloth-t4-ci-nabcdef01-1111",
@@ -339,7 +343,9 @@ def test_evidence_is_downloaded_before_the_kernel_is_deleted(tmp_path, monkeypat
         launch, "fetch_evidence", lambda slug, dest, deadline = None: order.append("fetch") or {}
     )
     monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
-    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: order.append("delete") or True)
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: order.append("delete") or True
+    )
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
     entry = {
         "slug": "me/unsloth-t4-ci-nabcdef01-1111",
@@ -365,7 +371,9 @@ def test_a_kernel_whose_evidence_will_not_download_is_NOT_deleted(tmp_path, monk
 
     deleted: list[str] = []
     monkeypatch.setattr(launch, "fetch_evidence", _boom)
-    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True)
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
     entry = {
         "slug": "me/unsloth-t4-ci-nabcdef01-1111",
@@ -387,7 +395,9 @@ def test_an_unreadable_status_does_nothing_at_all(tmp_path, monkeypatch):
     """Both available actions are destructive: delete and we may kill a running
     session, report and we may fail a run that was fine. Ask again next pass."""
     deleted: list[str] = []
-    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True)
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": RuntimeError("503 upstream")})
     entry = {
         "slug": "me/unsloth-t4-ci-nabcdef01-1111",
@@ -725,7 +735,9 @@ def test_collection_never_deletes_and_the_release_step_comes_after_posting(path)
 
 def test_a_kernel_whose_status_did_not_post_is_KEPT_for_the_next_pass(tmp_path, monkeypatch):
     deleted: list[str] = []
-    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True)
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
     result = tmp_path / "collect_result.json"
     result.write_text(
         json.dumps(
@@ -754,7 +766,9 @@ def test_no_delivery_record_at_all_keeps_every_kernel_that_had_something_to_post
     """The poster never ran (the job died between the two steps). Deleting
     then would lose every verdict of the pass."""
     deleted: list[str] = []
-    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True)
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
     result = tmp_path / "collect_result.json"
     result.write_text(
         json.dumps(
@@ -876,7 +890,9 @@ def test_an_incomplete_download_judges_nothing_and_keeps_the_kernel(tmp_path, mo
         lambda slug, dest, deadline = None: {"notebooks": ["a"], "truncated": True},
     )
     monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
-    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True)
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
     record = collect.collect_one(api, _terminal_entry(), tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "pending", record
@@ -900,7 +916,9 @@ def test_a_kernel_another_collector_finished_first_posts_nothing(tmp_path, monke
 
     deleted: list[str] = []
     monkeypatch.setattr(launch, "fetch_evidence", _gone)
-    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True)
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: deleted.append(slug) or True
+    )
     api = _StubApi([], {"me/unsloth-t4-ci-nabcdef01-1111": "COMPLETE"})
     record = collect.collect_one(api, _terminal_entry(), tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "gone", record
@@ -1159,7 +1177,9 @@ def test_an_unrecognised_kernel_state_is_kept_and_not_judged(tmp_path, monkeypat
     monkeypatch.setattr(
         launch, "fetch_evidence", lambda slug, dest, deadline = None: touched.append(slug) or {}
     )
-    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: touched.append("delete") or True)
+    monkeypatch.setattr(
+        launch, "delete_kernel", lambda slug, deadline = None: touched.append("delete") or True
+    )
     api = _StubApi([], {_ENTRY["slug"]: "NEW_SCRIPT"})
     record = collect.collect_one(api, dict(_ENTRY), tmp_path, expect = 1, max_age_hours = 3.0)
     assert record["verdict"] == "pending"
@@ -1411,7 +1431,12 @@ def test_a_delete_is_clamped_to_the_deadline_it_is_handed(monkeypatch):
         stdout = ""
         stderr = "503"
 
-    def _run(cmd, capture_output = True, text = True, timeout = None):
+    def _run(
+        cmd,
+        capture_output = True,
+        text = True,
+        timeout = None,
+    ):
         timeouts.append(timeout)
         clock[0] += timeout  # the call uses its whole allowance
         return _Proc()
@@ -1432,7 +1457,12 @@ def test_the_release_hands_every_delete_its_deadline(tmp_path, monkeypatch):
     )
     result = tmp_path / "collect_result.json"
     result.write_text(
-        json.dumps({"kernels": [{"slug": "me/unsloth-t4-ci-nabcdef012345-1111", "verdict": "pass"}], "statuses": []}),
+        json.dumps(
+            {
+                "kernels": [{"slug": "me/unsloth-t4-ci-nabcdef012345-1111", "verdict": "pass"}],
+                "statuses": [],
+            }
+        ),
         encoding = "utf-8",
     )
     posted = tmp_path / "posted.json"
@@ -1443,9 +1473,13 @@ def test_the_release_hands_every_delete_its_deadline(tmp_path, monkeypatch):
 
 def test_the_scheduled_collector_uploads_once_and_reports_real_deletions():
     steps = [(n, s) for _j, n, s in _steps(_wf(COLLECT_WF))]
-    uploads = [s for _n, s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+    uploads = [
+        s for _n, s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")
+    ]
     assert len(uploads) == 1, "two uploads: the second one fails the job on an artifact outage"
     assert uploads[0].get("continue-on-error") is True
     assert "kaggle_collected/**" in uploads[0]["with"]["path"]
     summary = next(s for n, s in steps if n == "Summarise")
-    assert "delete_result.json" in summary["run"], "the summary reports the collect step's always-false deleted flag"
+    assert (
+        "delete_result.json" in summary["run"]
+    ), "the summary reports the collect step's always-false deleted flag"

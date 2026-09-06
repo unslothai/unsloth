@@ -784,7 +784,9 @@ def delete_kernel(slug: str, deadline: float | None = None) -> bool:
         if deadline is not None:
             left = deadline - time.time()
             if left <= 0:
-                _log(f"delete {slug}: budget spent before attempt {attempt + 1}; left for the next pass")
+                _log(
+                    f"delete {slug}: budget spent before attempt {attempt + 1}; left for the next pass"
+                )
                 return False
             timeout = min(timeout, left)
         try:
