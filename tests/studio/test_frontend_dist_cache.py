@@ -417,9 +417,9 @@ def test_the_posix_touch_still_touches() -> None:
     ), f"the POSIX branch no longer touches the dist directory: {_code(step)!r}"
 
 
-# What each branch has to do AFTER stamping the directory, expressed as the two things
-# that distinguish "I called the API" from "the dist actually ended up newer": re-READ
-# the timestamp, and COMPARE it against the sources with a branch that can fail.
+# What each branch has to do AFTER stamping the directory, expressed as the two things that distinguish "I called the
+# API" from "the dist actually ended up newer": re-READ the timestamp, and COMPARE it against the sources with a branch
+# that can fail.
 _READBACK = {
     # `find ... -newer "$DIST"` is setup.sh's own predicate, re-run.
     "posix": (r'-newer\s+"\$DIST"', r'if\s+\[\s+-n\s+"\$newer"\s+\]'),
@@ -863,11 +863,9 @@ def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
         }
         if "restore" not in idx:
             continue
-        # The step that INVOKES the installer, not every step that mentions it. These
-        # workflows also parse install.ps1 with the AST and grep logs/install.log, and a
-        # bare `install\.(ps1|sh)` match picks those up and reports a false ordering
-        # bug. Every call site passes --local (it is what overlays the checkout, so it
-        # is also what makes the workspace dist the one being built).
+        # The step that INVOKES the installer, not every step that mentions it.
+        # These workflows also parse install.ps1 with the AST and grep logs/install.log, and a bare `install\.(ps1|sh)`
+        # match picks those up and reports a false ordering bug.
         installs = [
             i
             for i, s in enumerate(steps)
@@ -883,12 +881,9 @@ def test_the_restore_comes_before_the_install_and_the_save_after_it() -> None:
     assert not offenders, "\n  ".join(["misordered frontend-dist steps:"] + offenders)
 
 
-# ---------------------------------------------------------------------------
-# Cold lanes.
+# Named, not detected: a lane whose whole point is a cold machine should have to be removed from this list
 # ---------------------------------------------------------------------------
 
-# Named, not detected: a lane whose whole point is a cold machine should have to be
-# removed from this list deliberately, in a diff someone reads.
 COLD_INSTALL_WORKFLOWS = (
     "clean-machine-install-ci.yml",
     "desktop-app-clean-machine-ci.yml",
@@ -897,7 +892,6 @@ COLD_INSTALL_WORKFLOWS = (
 )
 
 # Cold at JOB level, inside a workflow whose other jobs legitimately use the cache.
-# `no-vs-cpu` installs with no Visual Studio build tools present, on purpose.
 COLD_INSTALL_JOBS = (("studio-windows-inference-smoke.yml", "no-vs-cpu"),)
 
 

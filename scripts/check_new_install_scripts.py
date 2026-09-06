@@ -53,9 +53,6 @@ class Finding:
         )
 
 
-# Lockfile parsing.
-
-
 def _strip_nm_prefix(key: str) -> str:
     """Convert a v2/v3 `packages` key into a bare package name (leaf after last `node_modules/`)."""
     if not key:
@@ -76,7 +73,6 @@ def _collect_install_script_entries(lock: dict) -> dict[str, str]:
     seen: dict[str, str] = {}
     version = lock.get("lockfileVersion")
 
-    # v2 / v3: flat `packages` map.
     packages = lock.get("packages") or {}
     for key, entry in packages.items():
         if key == "" or not isinstance(entry, dict):
@@ -124,8 +120,6 @@ def _load_lockfile(path: Path) -> dict:
 
 
 # Registry lookup for the postinstall command body (best-effort).
-
-
 def _fetch_registry_scripts(name: str, version: str) -> dict[str, str] | None:
     """Return {hook: command} for lifecycle hooks in registry metadata; None on any error (never raises)."""
     safe_name = urllib.parse.quote(name, safe = "@/")
@@ -148,9 +142,6 @@ def _fetch_registry_scripts(name: str, version: str) -> dict[str, str] | None:
         if isinstance(cmd, str) and cmd.strip():
             keep[hook] = cmd
     return keep or None
-
-
-# Diff.
 
 
 def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
@@ -181,9 +172,6 @@ def diff_new_install_scripts(base_lock: dict, head_lock: dict) -> list[Finding]:
             )
         )
     return findings
-
-
-# CLI.
 
 
 def main(argv: list[str] | None = None) -> int:

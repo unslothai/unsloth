@@ -69,11 +69,7 @@ def _setup_source() -> str:
     return SETUP_PS1.read_text(encoding = "utf-8")
 
 
-# The two fixes, as (fixed, unfixed) pairs. Undoing them textually is what the red/green check
-# below runs against, rather than an older commit: a revision that is "before the fix" is only
-# before it until this merges, and reaching for it through git also fails in a shallow CI clone.
-# Reverting the wraps in memory keeps the comparison immutable and isolates the one thing under
-# test, since everything else about the two sources is identical by construction.
+# The two fixes, as (fixed, unfixed) pairs.
 _ARRAY_WRAPS = (
     (
         "$wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })",
@@ -168,8 +164,8 @@ def _driver(
             "$wmiGpus = $null",
             _prelude(src),
             _amd_scan_block(src),
-            # Captured from inside the arch block's own scope: $gpuNames is the value the indexing
-            # bug corrupts, and its first element is what Get-GfxArchFromGpuName is actually handed.
+            # Captured from inside the arch block's own scope: $gpuNames is the value the indexing bug corrupts, and
+            # its first element is what Get-GfxArchFromGpuName is actually handed.
             _arch_resolution_block(src).replace(
                 "$nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
                 "$script:GpuNamesProbe = $gpuNames\n            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count",
@@ -201,8 +197,8 @@ def _run(
     script.write_text(
         _driver(source or _setup_source(), adapters, ps51 = ps51, strict = strict), encoding = "utf-8"
     )
-    # Only what each case names may reach the child: a developer's own exported
-    # UNSLOTH_ROCM_GFX_ARCH would otherwise silently win every inference assertion here.
+    # Only what each case names may reach the child: a developer's own exported UNSLOTH_ROCM_GFX_ARCH would otherwise
+    # silently win every inference assertion here.
     child_env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
     child_env.update(env or {})
     proc = subprocess.run(
@@ -268,9 +264,6 @@ def test_setup_consumes_the_handoff_only_after_its_own_inference():
     assert block.index("gfx arch inferred from GPU name") < block.index(f"$env:{HANDOFF}")
 
 
-# ── runtime: the adapter scan ─────────────────────────────────────────────────────────────────
-
-
 @requires_pwsh
 @pytest.mark.parametrize("ps51", [False, True], ids = ["pwsh", "ps51"])
 @pytest.mark.parametrize("strict", [False, True], ids = ["lax", "strict"])
@@ -278,8 +271,8 @@ def test_single_amd_adapter_is_reported(tmp_path, ps51, strict):
     out = _run(tmp_path, [(_RADEON, 0)], ps51 = ps51, strict = strict)
     assert out["wmi_array"], f"one adapter must stay an array, got {out['wmi_type']}"
     assert out["labels"] == [_RADEON]
-    # A label alone still lands on the "AMD ROCm" branch with no arch and installs cpu torch, so
-    # "reported" has to mean the name reached the inference.
+    # A label alone still lands on the "AMD ROCm" branch with no arch and installs cpu torch, so "reported" has to mean
+    # the name reached the inference.
     assert out["arch"] == "gfx1151"
     assert out["label"] == "AMD ROCm (gfx1151)"
 
@@ -311,9 +304,6 @@ def test_a_host_with_no_amd_adapter_is_not_read_as_amd(tmp_path, adapters):
     assert out["labels"] == []
     assert out["label"] is None
     assert out["arch"] is None
-
-
-# ── runtime: name inference, where the second unwrapped if bites ──────────────────────────────
 
 
 @requires_pwsh
@@ -368,9 +358,6 @@ def test_a_discrete_card_is_preferred_over_a_shadowing_igpu(tmp_path):
 def test_a_pinned_mask_is_honoured_over_the_shadowing_preference(tmp_path):
     out = _run(tmp_path, [(_R780M, 0), (_RX9070, 0)], env = {"HIP_VISIBLE_DEVICES": "0"})
     assert out["arch"] == "gfx1103", "an explicit selection must never be repicked"
-
-
-# ── runtime: handoff precedence ───────────────────────────────────────────────────────────────
 
 
 @requires_pwsh
@@ -468,8 +455,8 @@ def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
-                # Both names: the routing scan asks WMI (unchanged by #8529), the
-                # report-only peer scan asks CIM. Same answer either way here.
+                # Both names:
+                # Both names: the routing scan asks WMI (unchanged by #8529), the report-only peer scan asks CIM.
                 f"function Get-CimInstance {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
                 "function substep { param($a, $b) }",
@@ -619,9 +606,6 @@ def test_only_this_runs_arch_is_handed_to_the_child(tmp_path, arch, inherited, e
     than forwarded as though the scan had produced it."""
     out = _run_handoff_lifecycle(tmp_path, arch = arch, inherited = inherited, fails = False)
     assert out["seen_by_child"] == expected
-
-
-# ── the guard on the guards ───────────────────────────────────────────────────────────────────
 
 
 @requires_pwsh

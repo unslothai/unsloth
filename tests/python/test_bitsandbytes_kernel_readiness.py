@@ -155,9 +155,8 @@ def test_the_ctypes_binds_are_gated_on_the_same_verdict():
         "if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):" in source
     ), "the ctypes bind block must take the _bnb_required branch on a dead library too"
     guarded = source.split("if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):")[1]
-    # Anchor on the symbol, not the module alias: #7580 renamed the binding from
-    # `bnb.functional.lib` to `bnb_functional.lib`, which is exactly the kind of rename
-    # this assertion should survive.
+    # Anchor on the symbol, not the module alias: #7580 renamed the binding from `bnb.functional.lib` to
+    # `bnb_functional.lib`, which is exactly the kind of rename this assertion should survive.
     assert "lib.cdequantize_blockwise_fp32" in guarded, "the binds must sit under that guard"
 
 
@@ -166,12 +165,11 @@ def test_the_kernel_check_reads_the_submodule_not_the_parent_attribute():
     the submodule stays in sys.modules, which ``import bitsandbytes.functional`` reads
     directly."""
     probe = _load_probe()
-    bnb = types.ModuleType("bitsandbytes")  # zombie: parent has no `functional`
+    bnb = types.ModuleType("bitsandbytes")
     bnb.__version__ = "0.50.0"
     import sys
 
     real = sys.modules.get("bitsandbytes.functional")
     if real is None:
         return  # bitsandbytes not importable here; the fallback has nothing to read
-    # Falls back to the cached submodule instead of raising on the missing attribute.
     assert probe.native_kernels_ready(bnb, "cuda") in (True, False)

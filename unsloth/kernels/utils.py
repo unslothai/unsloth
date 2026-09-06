@@ -142,7 +142,8 @@ try:
 
     # If an earlier `import bitsandbytes` died inside __init__, CPython evicts only the parent from
     # sys.modules and keeps its submodules, so this retry re-executes __init__ without rebinding
-    # bnb.functional. `import x.y as z` reads sys.modules directly and survives that.
+    # bnb.functional. `import x.y as z` reads sys.modules directly and survives that, plain attribute
+    # access does not.
     import bitsandbytes.functional as bnb_functional
 except Exception:
     # device_type.py already degrades to 16bit/full finetuning when bnb is missing (gfx906, whose
