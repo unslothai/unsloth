@@ -1,0 +1,279 @@
+diff --git a/studio/backend/core/inference/tools.py b/studio/backend/core/inference/tools.py
+index ba7f93c..6a560a1 100644
+--- a/studio/backend/core/inference/tools.py
++++ b/studio/backend/core/inference/tools.py
+@@ -139,7 +139,18 @@ def _env_int(name: str, default: int) -> int:
+ # Model-visible cap on python/terminal tool results (protects the context
+ # window). The live UI stream is capped separately and higher, so _truncate's
+ # notice stays mode-neutral (see tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS).
++#
++# UNSLOTH_TOOL_RESULT_MAX_CHARS is the install-wide (user-set) default; a single
++# call may additionally ask for a *smaller* cap via `max_output_chars` in its
++# arguments (see `_resolve_max_output_chars`). Neither path can raise the
++# effective cap above what `_tool_result_char_budget` already sized to the
++# loaded window -- only the install owner, via the env var, can do that.
+ _MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
++
++# Floor for a per-call `max_output_chars` request. Low enough to let a caller
++# ask for a terse result, high enough that the request itself is never the
++# reason a real error message or short output gets cut.
++_MIN_RESULT_CHARS = 500
+ _BLOCKED_COMMANDS_COMMON = frozenset(
+     {
+         "rm",
+@@ -9895,7 +9906,18 @@ PYTHON_TOOL = {
+                 "code": {
+                     "type": "string",
+                     "description": "The Python code to run",
+-                }
++                },
++                "max_output_chars": {
++                    "type": "integer",
++                    "description": (
++                        "Optional. Cap the returned stdout/stderr to at most this many "
++                        "characters instead of the server default. Useful when you only "
++                        "need a short confirmation and want to avoid a long paged result. "
++                        "Cannot raise the cap past what the server already allows for this "
++                        "conversation; requests above that ceiling are silently clamped to "
++                        "it, and requests below it are honoured as given."
++                    ),
++                },
+             },
+             "required": ["code"],
+         },
+@@ -9915,7 +9937,18 @@ TERMINAL_TOOL = {
+                 "command": {
+                     "type": "string",
+                     "description": "The command to run",
+-                }
++                },
++                "max_output_chars": {
++                    "type": "integer",
++                    "description": (
++                        "Optional. Cap the returned stdout/stderr to at most this many "
++                        "characters instead of the server default. Useful when you only "
++                        "need a short confirmation and want to avoid a long paged result. "
++                        "Cannot raise the cap past what the server already allows for this "
++                        "conversation; requests above that ceiling are silently clamped to "
++                        "it, and requests below it are honoured as given."
++                    ),
++                },
+             },
+             "required": ["command"],
+         },
+@@ -10562,6 +10595,7 @@ def execute_tool(
+                 disable_sandbox = disable_sandbox,
+                 output_callback = output_callback,
+                 thread_id = thread_id,
++                max_output_chars = arguments.get("max_output_chars"),
+             )
+     if name == "terminal":
+         with _session_in_flight(session_id):
+@@ -10573,6 +10607,7 @@ def execute_tool(
+                 disable_sandbox = disable_sandbox,
+                 output_callback = output_callback,
+                 thread_id = thread_id,
++                max_output_chars = arguments.get("max_output_chars"),
+             )
+     # Same in-flight guard as the two above: it writes into the session workdir,
+     # so a chat deleted mid-call must not unlink it underneath.
+@@ -12283,6 +12318,33 @@ def _tool_result_char_budget() -> int:
+     return _result_char_budget(_MAX_OUTPUT_CHARS)
+ 
+ 
++def _resolve_max_output_chars(requested) -> int | None:
++    """Turn a call's own `max_output_chars` argument into a `_truncate` limit.
++
++    Returns None when there is nothing usable to apply, which leaves `_truncate`
++    to size the result from `_tool_result_char_budget()` exactly as before this
++    argument existed -- an absent, non-numeric, or out-of-range request changes
++    nothing.
++
++    Deliberately one-directional: a request is only ever allowed to LOWER the
++    cap the window already earned, never raise it. `_tool_result_char_budget()`
++    is what keeps a small resident model from handing a large one's cap to a
++    call it cannot afford, and a per-call override that could exceed it would
++    reopen exactly that gap from inside a single tool call instead of from an
++    env var only the install owner controls.
++    """
++    if requested is None:
++        return None
++    try:
++        requested = int(requested)
++    except (TypeError, ValueError):
++        return None
++    if requested <= 0:
++        return None
++    ceiling = _tool_result_char_budget()
++    return max(_MIN_RESULT_CHARS, min(requested, ceiling))
++
++
+ def _page_char_budget() -> int:
+     """`_MAX_PAGE_CHARS`, lowered to what the serving window can actually hold.
+ 
+@@ -16015,6 +16077,7 @@ def _python_exec(
+     disable_sandbox: bool = False,
+     output_callback = None,
+     thread_id: str | None = None,
++    max_output_chars: int | None = None,
+ ) -> str:
+     """Execute Python code in a subprocess sandbox.
+ 
+@@ -16022,6 +16085,9 @@ def _python_exec(
+     pre-exec, and use the host env minus secrets.
+     output_callback: optional callable(str) streamed each stdout line as it is
+     produced; the returned result is unchanged.
++    max_output_chars: optional per-call cap on the returned result, resolved
++    against `_tool_result_char_budget()` by `_resolve_max_output_chars` -- it
++    may only lower the cap, never raise it. None keeps the previous behaviour.
+     """
+     if not code or not code.strip():
+         return "No code provided."
+@@ -16151,7 +16217,13 @@ def _python_exec(
+         # is not an envelope.
+         result = _defuse_sentinels(result)
+         result = (
+-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
++            _truncate(
++                result,
++                limit = _resolve_max_output_chars(max_output_chars),
++                workdir = spill_dir,
++                scope = spill_scope,
++                hint = hint,
++            )
+             if result.strip()
+             else "(no output)" + hint
+         )
+@@ -16189,6 +16261,7 @@ def _bash_exec(
+     disable_sandbox: bool = False,
+     output_callback = None,
+     thread_id: str | None = None,
++    max_output_chars: int | None = None,
+ ) -> str:
+     """Execute a bash command in a subprocess sandbox.
+ 
+@@ -16196,6 +16269,8 @@ def _bash_exec(
+     pre-exec, and use the host env minus secrets.
+     output_callback: optional callable(str) streamed each stdout line as it is
+     produced; the returned result is unchanged.
++    max_output_chars: optional per-call cap on the returned result; see
++    `_python_exec`.
+     """
+     if not command or not command.strip():
+         return "No command provided."
+@@ -16292,7 +16367,13 @@ def _bash_exec(
+         hint = _missing_path_hint(result, workdir)
+         result = _defuse_sentinels(result)  # before the fit; see _python_exec
+         result = (
+-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
++            _truncate(
++                result,
++                limit = _resolve_max_output_chars(max_output_chars),
++                workdir = spill_dir,
++                scope = spill_scope,
++                hint = hint,
++            )
+             if result.strip()
+             else "(no output)" + hint
+         )
+diff --git a/studio/backend/tests/test_max_output_chars_argument.py b/studio/backend/tests/test_max_output_chars_argument.py
+new file mode 100644
+index 0000000..496160c
+--- /dev/null
++++ b/studio/backend/tests/test_max_output_chars_argument.py
+@@ -0,0 +1,95 @@
++# SPDX-License-Identifier: AGPL-3.0-only
++# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
++
++"""A call may ask `_truncate` for less room than the window earned, never more.
++
++Filed against #10349: "Tool responses are truncated to arbitrary 16000 chars", asking
++for a user- and/or AI-set parameter on the truncation threshold. `UNSLOTH_TOOL_RESULT_MAX_CHARS`
++already covers the install-wide (user) side; this covers the per-call (AI) side -- a
++`max_output_chars` argument on `python`/`terminal` that `_resolve_max_output_chars` turns
++into a `_truncate` limit. It can only lower the cap `_tool_result_char_budget()` already
++sized to the loaded window, never raise it: that ceiling is what stops a small resident
++model's window from being handed a larger cap than it can afford, and a per-call override
++that could exceed it would reopen that gap from inside a single tool call.
++"""
++
++from __future__ import annotations
++
++import pytest
++
++from core.inference import tools
++
++
++@pytest.fixture(autouse = True)
++def _unknown_window(monkeypatch):
++    """Same default as test_tool_result_fits_window.py: no model loaded, no priced room."""
++    monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: 0)
++    tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
++    tools._REQUEST_RESULT_BUDGET.set(None)
++    yield
++
++
++class TestBothToolsAdvertiseTheArgument:
++    def test_python_schema_has_an_optional_max_output_chars(self):
++        props = tools.PYTHON_TOOL["function"]["parameters"]["properties"]
++        assert "max_output_chars" in props
++        assert "max_output_chars" not in tools.PYTHON_TOOL["function"]["parameters"]["required"]
++
++    def test_terminal_schema_has_an_optional_max_output_chars(self):
++        props = tools.TERMINAL_TOOL["function"]["parameters"]["properties"]
++        assert "max_output_chars" in props
++        assert "max_output_chars" not in tools.TERMINAL_TOOL["function"]["parameters"]["required"]
++
++
++class TestResolveOnlyEverLowersTheCap:
++    def test_none_changes_nothing(self):
++        assert tools._resolve_max_output_chars(None) is None
++
++    def test_a_request_under_the_ceiling_is_honoured(self):
++        assert tools._resolve_max_output_chars(2000) == 2000
++
++    def test_a_request_over_the_ceiling_is_clamped_to_it(self):
++        ceiling = tools._tool_result_char_budget()
++        assert tools._resolve_max_output_chars(ceiling * 100) == ceiling
++
++    def test_a_request_below_the_floor_is_raised_to_it(self):
++        assert tools._resolve_max_output_chars(1) == tools._MIN_RESULT_CHARS
++
++    def test_zero_and_negative_requests_are_ignored(self):
++        assert tools._resolve_max_output_chars(0) is None
++        assert tools._resolve_max_output_chars(-100) is None
++
++    def test_non_numeric_requests_are_ignored(self):
++        assert tools._resolve_max_output_chars("not a number") is None
++        assert tools._resolve_max_output_chars(object()) is None
++
++    def test_a_numeric_string_is_accepted(self):
++        assert tools._resolve_max_output_chars("2000") == 2000
++
++
++class TestPythonAndTerminalHonourTheArgumentEndToEnd:
++    def test_python_result_is_cut_to_the_requested_cap(self):
++        out = tools._python_exec("print('x' * 5000)", max_output_chars = 800)
++        assert "truncated to 800 chars for the model" in out
++        # The notice explains the cut; the kept body itself is bounded by the cap.
++        head = out.split("\n\n... (truncated")[0]
++        assert len(head) <= 800
++
++    def test_python_result_under_the_cap_is_untouched(self):
++        out = tools._python_exec("print('hi')", max_output_chars = 800)
++        assert out.strip() == "hi"
++        assert "truncated" not in out
++
++    def test_terminal_result_is_cut_to_the_requested_cap(self):
++        out = tools._bash_exec("printf 'x%.0s' {1..5000}", max_output_chars = 800)
++        assert "truncated to 800 chars for the model" in out
++
++    def test_an_oversized_request_falls_back_to_the_default_budget(self):
++        default_budget = tools._tool_result_char_budget()
++        capped = tools._python_exec("print('x' * (default_budget + 5000))".replace(
++            "default_budget", str(default_budget)
++        ), max_output_chars = default_budget * 1000)
++        uncapped = tools._python_exec("print('x' * (default_budget + 5000))".replace(
++            "default_budget", str(default_budget)
++        ))
++        assert len(capped) == len(uncapped)
