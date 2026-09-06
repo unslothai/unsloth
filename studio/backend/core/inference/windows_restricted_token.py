@@ -96,6 +96,18 @@ a write-ahead manifest under
 nothing behind that the next start does not reconcile. Only a Studio on the same
 window station and desktop can reconcile those last two, and the manifest names
 which they were.
+
+Reading a directory of manifests is a check and not a lock, so every DACL edit
+this launcher makes runs inside the ``windows_lpac`` ledger, keyed per root and
+per user object: a lock file opened with no sharing beside the manifests, behind
+a session mutex that is a fast path and never the lock. A ledger that cannot be
+taken fails **closed** for anything destructive. Revoking an ACE is skipped and
+left for the next reconciliation rather than performed unsynchronised, because
+an unsynchronised revoke is the exact damage the ledger exists to prevent, and
+because the token's own user SID is shared by every concurrent launch of the
+account: leaving that ACE costs nobody anything, taking it costs a sibling
+launch's running child its workdir. Granting is not destructive and proceeds
+with a logged diagnostic, so a busy ledger never fails a tool call.
 """
 
 from __future__ import annotations
@@ -226,14 +238,49 @@ _INTERACTIVE_DESKTOP = "WinSta0\\Default"
 _UOI_NAME = 2
 _DACL_SECURITY_INFORMATION = 0x00000004
 _READ_CONTROL = 0x00020000
-# The two objects a launch grants its SID, and the mutex namespace those edits
-# are serialised in. See _edit_user_object_dacl.
+# Both DACL edits below are serialised by the windows_lpac ledger, under a key
+# of this module's own, rather than by a named mutex of their own.
+#
+# A ``Local\`` mutex was what they used, and it is not a lock. It proceeds when
+# the wait fails or times out, so its holder is an observation rather than a
+# guarantee, and its namespace is one session while the state it guards is not:
+# the manifests that name every ACE a Limited launch owns live under
+# LOCALAPPDATA, so a console login and an RDP login of one account write and
+# reconcile the same records. windows_lpac reached that conclusion for its own
+# state and replaced the mutex with a lock file opened with ``dwShareMode`` 0
+# beside the manifests, keeping the mutex in front of it as a same-session fast
+# path that is explicitly not a lock on its own. Reusing that ledger is the whole
+# of this module's cross-process ordering; nothing here opens a lock file itself.
+#
+# The lock file lands beside the *LPAC* manifests rather than the Limited ones,
+# because ``_ledger_lock_path`` is what validates a key into a path and it names
+# one directory. Both are ``%LOCALAPPDATA%\Unsloth\Studio\*`` created 0700 for
+# this account, so the scope is identical, LPAC's own scans are all prefixed
+# ``unsloth.studio.*`` and never see these files, and one directory holding every
+# ledger lock on the account is what a key shared with the AppContainer launcher
+# would need anyway.
+#
+# These keys share windows_lpac's per-process mutex cache, which is capped at
+# _LEDGER_MUTEX_LIMIT and never evicts, and a private temp gives every launch a
+# key it has never seen. So a long-lived Studio fills that cache and later keys,
+# this module's and the AppContainer launcher's alike, are given no fast-path
+# mutex. That costs nothing that matters: the lock file is the lock, an
+# uncontended open takes it on the first try without sleeping, and the mutex only
+# ever saved a poll.
+#
+# Lock order, taken one way only:
+#   1. _ROOT_ACL_LOCK or _USER_OBJECT_LOCK, this process's own launches;
+#   2. windows_lpac._SHARED_GRANTS_LOCK, taken by _installation_ledger;
+#   3. the session mutex, then the lock file, both taken by _installation_ledger.
+# windows_lpac takes 2 and 3 and never 1, so neither launcher can wait on the
+# other in the opposite order. Only one ledger key is ever held at a time here,
+# so two roots cannot be taken in opposite orders either.
 _USER_OBJECT_KINDS = ("window station", "desktop")
-_USER_OBJECT_MUTEX_PREFIX = "limited-user-object."
+_USER_OBJECT_LEDGER_PREFIX = "limited-user-object."
 _USER_OBJECT_LOCK = threading.RLock()
 # The filesystem DACLs are the same read-modify-write as the user objects, and
 # were the same defect until this existed. See _root_acl_edit.
-_ROOT_ACL_MUTEX_PREFIX = "limited-root-acl."
+_ROOT_ACL_LEDGER_PREFIX = "limited-root-acl."
 _ROOT_ACL_LOCK = threading.RLock()
 _WINSTA_ACCESSCLIPBOARD = 0x0004
 _WINSTA_CREATEDESKTOP = 0x0008
@@ -570,6 +617,11 @@ class _LaunchIdentity:
         user_sid = ctypes.c_void_p()
         try:
             errors: list[str] = []
+            # A revoke the ledger refused, as opposed to one that failed. Only
+            # this kind is worth retrying inside this process: it was skipped
+            # because another Studio held the lock, and the next launch or
+            # reconciliation will hold it instead. See _defer_cleanup.
+            refused = False
             # Only where this launch added the ACE. SetEntriesInAclW(REVOKE_ACCESS)
             # drops every ACE for a trustee, so revoking the user's SID from a root
             # that granted it explicitly before the launch would hand back a workdir
@@ -581,30 +633,48 @@ class _LaunchIdentity:
                 except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
                     errors.append(f"user SID {self.user_sid_string}: {exc}")
             for path in reversed(self.granted_roots):
-                with _root_acl_edit(path):
-                    try:
-                        _lpac._revoke_sid(path, self.sid)
-                    except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
-                        errors.append(f"ACL {path}: {exc}")
-                    if user_sid and os.path.normcase(path) in user_roots:
+                try:
+                    with _root_acl_edit(path, destructive = True):
                         try:
-                            # Held inside the same lock as the revoke it guards,
-                            # so a launch cannot record its claim between the
-                            # question and the answer.
-                            if _user_sid_root_is_claimed(path, self.manifest_path):
-                                logger.info(
-                                    "Leaving the user-SID grant on %s: another live Limited "
-                                    "launch still records it",
-                                    path,
-                                )
-                            else:
-                                _lpac._revoke_sid(path, user_sid)
+                            _lpac._revoke_sid(path, self.sid)
                         except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
-                            errors.append(f"user ACL {path}: {exc}")
+                            errors.append(f"ACL {path}: {exc}")
+                        if user_sid and os.path.normcase(path) in user_roots:
+                            try:
+                                # Held inside the same ledger as the revoke it
+                                # guards, so a launch cannot record its claim
+                                # between the question and the answer. Without
+                                # the ledger the question has no answer worth
+                                # acting on, which is the other half of why this
+                                # whole block is skipped rather than run.
+                                if _user_sid_root_is_claimed(path, self.manifest_path):
+                                    logger.info(
+                                        "Leaving the user-SID grant on %s: another live Limited "
+                                        "launch still records it",
+                                        path,
+                                    )
+                                else:
+                                    _lpac._revoke_sid(path, user_sid)
+                            except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
+                                errors.append(f"user ACL {path}: {exc}")
+                except _lpac._LedgerUnavailableError as exc:
+                    # Left for reconciliation, whole: the manifest below is not
+                    # removed, self.cleaned stays false, and both SIDs keep every
+                    # ACE they own on this root.
+                    refused = True
+                    errors.append(f"ACL {path}: {exc}")
             try:
                 _revoke_user_objects(self)
+            except _lpac._LedgerUnavailableError as exc:
+                refused = True
+                errors.append(f"user objects: {exc}")
             except Exception as exc:  # noqa: BLE001 - a session object, see the docstring
                 errors.append(f"user objects: {exc}")
+            # Removed even when a revoke above was refused. This directory is
+            # named after 12 random bytes and is this launch's alone, so no other
+            # launch can be reading it, and removing it takes the ACEs on it with
+            # it. A retry that finds it gone revokes nothing, because _revoke_sid
+            # skips a path that does not exist.
             try:
                 _remove_private_temp(self.private_temp)
             except FileNotFoundError:
@@ -612,6 +682,8 @@ class _LaunchIdentity:
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"temp {self.private_temp}: {exc}")
             if errors:
+                if refused:
+                    _defer_cleanup(self)
                 raise OSError("; ".join(errors))
             try:
                 os.unlink(self.manifest_path)
@@ -628,6 +700,65 @@ class _LaunchIdentity:
             self.sid = ctypes.c_void_p()
             if user_sid:
                 _lpac._api().kernel32.LocalFree(user_sid)
+
+
+# Launch records whose destructive cleanup the ledger refused. Nothing of the
+# record is given back: the write-ahead manifest that names every ACE it owns is
+# still on disk, and the whole cleanup is retried under a ledger this process
+# does hold. Without this list a refusal would wait for the process to exit,
+# because reconcile_stale_manifests deliberately leaves a manifest whose owning
+# process is still alive alone, and while this Studio runs it is that process.
+_DEFERRED_CLEANUPS: list[_LaunchIdentity] = []
+_DEFERRED_CLEANUPS_LOCK = threading.Lock()
+# A host whose ledger is never available would otherwise queue one record per
+# tool call, forever. The oldest is dropped instead; its manifest still names
+# every ACE it owns, so the next Studio start reconciles it from there.
+_DEFERRED_CLEANUP_LIMIT = 256
+
+
+def _defer_cleanup(identity: _LaunchIdentity) -> None:
+    """Queue a cleanup the ledger refused, for the next launch to retry."""
+    with _DEFERRED_CLEANUPS_LOCK:
+        recorded = {os.path.normcase(entry.manifest_path) for entry in _DEFERRED_CLEANUPS}
+        # cleanup() is callable twice, and a retry that is refused again arrives
+        # back here, so the manifest a record is named by is what deduplicates.
+        if os.path.normcase(identity.manifest_path) not in recorded:
+            _DEFERRED_CLEANUPS.append(identity)
+        while len(_DEFERRED_CLEANUPS) > _DEFERRED_CLEANUP_LIMIT:
+            dropped = _DEFERRED_CLEANUPS.pop(0)
+            logger.warning(
+                "The Limited sandbox ledger has been unavailable for %d cleanups; the grants of "
+                "launch %s are now left entirely to a reconciliation after this process exits",
+                _DEFERRED_CLEANUP_LIMIT,
+                dropped.sid_string,
+            )
+
+
+def _drain_deferred_cleanups() -> None:
+    """Retry the cleanups the ledger refused, within one ledger budget.
+
+    A refused retry spends a whole ledger wait of its own, so a backlog on a host
+    whose ledger is wedged would otherwise turn one tool call into a stall of
+    that many waits. What the budget does not reach stays queued, and its
+    manifest still names every ACE it owns either way.
+    """
+    with _DEFERRED_CLEANUPS_LOCK:
+        pending = list(_DEFERRED_CLEANUPS)
+        del _DEFERRED_CLEANUPS[:]
+    deadline = time.monotonic() + _lpac._LEDGER_WAIT_SECONDS
+    for index, identity in enumerate(pending):
+        if time.monotonic() >= deadline:
+            for remaining in pending[index:]:
+                _defer_cleanup(remaining)
+            return
+        try:
+            identity.cleanup()
+        except Exception:  # noqa: BLE001 - a refusal requeues itself inside cleanup
+            logger.warning(
+                "Could not release the deferred Limited launch %s",
+                identity.sid_string,
+                exc_info = True,
+            )
 
 
 def _write_manifest(identity: _LaunchIdentity) -> None:
@@ -827,31 +958,52 @@ def _remove_orphan_temporary_manifests(root: str) -> None:
             )
 
 
+def _ledger_key(prefix: str, text: str) -> str:
+    """A windows_lpac ledger key naming one object of this launcher.
+
+    ``_ledger_lock_path`` turns a key into a file name beside the LPAC manifests
+    and accepts only what ``CreateAppContainerProfile`` accepts: at most 64
+    characters of ``[-_. A-Za-z0-9]``. Neither thing this module keys on is that.
+    A path carries separators, a colon and no length bound, and a window station
+    name carries a dollar sign on every session that is not interactive
+    (``Service-0x0-3e7$``). A key the ledger will not turn into a path is not a
+    slower lock, it is no lock at all: ``_open_ledger_lock`` reports it as
+    unavailable, and under the fail-closed rule that would silently defer every
+    revoke on such a host for as long as it runs. So the variable half is always
+    a digest, which is also what makes two Studio processes derive one key from
+    one object.
+    """
+    return prefix + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:32]
+
+
 def _root_acl_key(path: str) -> str:
-    """The mutex name one root's DACL is edited under.
+    """The ledger key one root's DACL is edited under.
 
-    A digest of the case-folded path rather than the path itself: a mutex name is
-    bounded in length and may not carry a backslash, and two Studio processes
-    have to derive the same name from the same directory. Per root, so a launch
-    editing its own private temp is never held up by one editing a workdir.
+    Case-folded before the digest, because two Studio processes have to derive
+    the same key from the same directory however either spelled it. Per root, so
+    a launch editing its own private temp is never held up by one editing a
+    workdir.
     """
-    digest = hashlib.sha256(os.path.normcase(os.path.abspath(path)).encode("utf-8", "replace"))
-    return _ROOT_ACL_MUTEX_PREFIX + digest.hexdigest()[:32]
+    return _ledger_key(_ROOT_ACL_LEDGER_PREFIX, os.path.normcase(os.path.abspath(path)))
 
 
-def _ledger_wait_deadline() -> float:
-    """The budget one ledger wait in this module gets, shared with the AppContainer one.
+def _ledger_section(key: str, operation: str, *, destructive: bool) -> Any:
+    """The windows_lpac ledger one DACL edit runs inside.
 
-    ``_named_mutex`` takes a deadline rather than a timeout so that a caller
-    holding several of them in sequence spends one budget between them. The one
-    place this module names it, so a change to the shared locking API lands here
-    rather than at every call site.
+    Fail-closed for a revoke and best effort for a grant, which is the whole of
+    the asymmetry: ``_destructive_ledger`` raises rather than run the block
+    without the lock file, ``_installation_ledger`` logs and proceeds. The
+    parameter that takes the key is called ``moniker`` because an LPAC
+    installation is what it usually names; it is only ever the name the lock file
+    beside the manifests takes.
     """
-    return time.monotonic() + _lpac._LEDGER_WAIT_SECONDS
+    if destructive:
+        return _lpac._destructive_ledger(key, operation)
+    return _lpac._installation_ledger(key)
 
 
 @contextmanager
-def _root_acl_edit(path: str) -> Iterator[None]:
+def _root_acl_edit(path: str, *, destructive: bool = False) -> Iterator[None]:
     """Serialise every DACL edit this launcher makes on one root.
 
     ``_grant_modify`` and ``_revoke_sid`` are a read-modify-write on a directory
@@ -864,19 +1016,33 @@ def _root_acl_edit(path: str) -> Iterator[None]:
     refused the workdir it was given. A launch racing a cleanup resurrects a
     revoked ACE the same way. Two ACEs per root now, so twice as many edits race.
 
-    This is the fix the window station and desktop already have, applied to the
-    objects it was always equally true of: the process-local lock orders the
-    launches of one Studio, and the named mutex orders two Studios, which is
-    where the manifests alone were only ever a check rather than a lock. The
-    mutex is best effort, so a host that will not give us one degrades to the
-    lock alone rather than failing the launch.
+    ``_ROOT_ACL_LOCK`` orders the launches of one Studio. What orders two Studios
+    is the windows_lpac ledger, which is a lock file opened with no sharing and
+    not the session mutex this used to hold: the mutex proceeds when it is not
+    acquired, and its namespace is narrower than the manifests it is ordering.
 
-    What it does not order is the AppContainer launcher, which serialises its own
-    grants under its installation ledger instead. A Required and a Limited launch
-    editing one workdir at the same instant can still lose an edit; closing that
-    needs one lock shared by both launchers.
+    ``destructive`` is the fail-closed half and every revoke sets it. A grant
+    proceeds without the ledger because it takes nothing away, so a busy ledger
+    never fails a tool call. A revoke performed unsynchronised is the damage
+    itself, so it is refused, and the ``_LedgerUnavailableError`` reaches
+    ``cleanup``, which keeps the write-ahead manifest and queues the record for a
+    retry. The two SIDs a revoke names are not equally bad to get wrong, and both
+    point the same way. The launch SID names one launch and no account, so a
+    skipped revoke of it leaves an ACE for a principal that does not exist. The
+    token's own user SID is shared by every launch of the account, so a skipped
+    revoke of it leaves the account an ACE on a directory it already owns, while
+    a revoke of it performed unsynchronised takes the workdir away from a sibling
+    launch's running child. Skipping is the harmless direction for both.
+
+    What this still does not order is the AppContainer launcher, which serialises
+    its own grants under its installation moniker rather than under the root
+    being edited. A Required and a Limited launch editing one workdir at the same
+    instant hold different keys of the same ledger and can still lose an edit;
+    closing that needs one key derived from the root, shared by both launchers.
     """
-    with _ROOT_ACL_LOCK, _lpac._named_mutex(_root_acl_key(path), _ledger_wait_deadline()):
+    with _ROOT_ACL_LOCK, _ledger_section(
+        _root_acl_key(path), f"the DACL revoke on {path}", destructive = destructive
+    ):
         yield
 
 
@@ -912,6 +1078,10 @@ def _user_sid_root_is_claimed(root: str, exclude_manifest: str) -> bool:
 
 def _create_identity(workdir: str) -> _LaunchIdentity:
     """Allocate a launch SID, its private temp and manifest, then grant the SID its writes."""
+    # Before anything of this launch exists, because a ledger that was busy for
+    # the last cleanup is usually free by now and an ACE left on the user's own
+    # window station should not wait for Studio to exit.
+    _drain_deferred_cleanups()
     api = _lpac._api()
     sid_text = _random_domain_sid_text()
     sid = _sid_from_text(sid_text)
@@ -1251,19 +1421,20 @@ def _launch_desktop(api: Any) -> str:
 
 
 def _user_object_key(api: Any, handle: Any) -> str:
-    """The mutex name one window station or desktop is edited under.
+    """The ledger key one window station or desktop is edited under.
 
-    The object's own name, so two launches editing the same object serialise and
-    a launcher connected to another desktop is not held up by them. A name that
-    cannot be read falls back to a session-wide one, which over-serialises rather
-    than letting an unordered edit through.
+    The object's own name, case-folded because Win32 object names are, so two
+    launches editing the same object serialise and a launcher connected to
+    another desktop is not held up by them. A name that cannot be read falls back
+    to a session-wide one, which over-serialises rather than letting an unordered
+    edit through.
     """
     try:
         name = _user_object_name(api, handle)
     except OSError:
         logger.warning("Could not name a Limited launcher user object", exc_info = True)
         name = ""
-    return _USER_OBJECT_MUTEX_PREFIX + (name or "session").replace("\\", ".").lower()
+    return _ledger_key(_USER_OBJECT_LEDGER_PREFIX, (name or "session").lower())
 
 
 def _edit_user_object_dacl(
@@ -1274,6 +1445,7 @@ def _edit_user_object_dacl(
     mode: int,
     access: int,
     inheritance: int,
+    destructive: bool = False,
 ) -> bool:
     """Add or remove one SID's ACE on a window station or desktop.
 
@@ -1288,11 +1460,17 @@ def _edit_user_object_dacl(
     second write puts back a DACL that never carried the first launch's ACE, so
     a child that is already running silently loses the window station it was
     given. A launch racing a cleanup resurrects a revoked ACE the same way, and
-    that one outlives the launch, on the user's interactive window station. The
-    process-local lock orders the launches of one Studio and the named mutex
-    orders two Studios, which both touch the same session objects; the mutex is
-    best effort, so a host that will not give us one degrades to the lock alone
-    rather than failing the launch.
+    that one outlives the launch, on the user's interactive window station.
+    ``_USER_OBJECT_LOCK`` orders the launches of one Studio; the windows_lpac
+    ledger orders two Studios, and unlike the session mutex it replaced it is a
+    lock rather than an observation.
+
+    ``destructive`` is set by the revoke alone, and without the ledger the revoke
+    is skipped rather than run. It is the one edit here that can outlive its
+    launch on the user's real interactive window station, so leaving it recorded
+    for the next reconciliation is strictly better than racing another launch's
+    grant for it. The grant proceeds either way: a lost grant costs this launch
+    its child, not another launch's.
 
     An object with no DACL is left alone, and ``False`` says so. A NULL DACL
     allows everyone everything, so the SID needs nothing added; writing a DACL
@@ -1300,8 +1478,10 @@ def _edit_user_object_dacl(
     the user's own session. Chromium's ``window.cc`` guards the same trap from
     the other direction, seeding an allow-everyone entry before it denies.
     """
-    with _USER_OBJECT_LOCK, _lpac._named_mutex(
-        _user_object_key(api, handle), _ledger_wait_deadline()
+    with _USER_OBJECT_LOCK, _ledger_section(
+        _user_object_key(api, handle),
+        "the user object DACL revoke",
+        destructive = destructive,
     ):
         return _write_user_object_dacl(
             api, handle, sid, mode = mode, access = access, inheritance = inheritance
@@ -1430,6 +1610,12 @@ def _revoke_user_objects(identity: _LaunchIdentity) -> None:
     naming a different one is left for the Studio that is on it. The SID names
     no account and is never reused, so an ACE that outlives every process that
     could remove it grants nobody anything and disappears with the session.
+
+    The window station and the desktop are two ledger keys, so a ledger that
+    refuses one says nothing about the other: both are attempted and the
+    refusals are reported together. ``identity.user_objects`` is left intact
+    across a refusal, because it is what a retry reads to know which objects it
+    still owes a revoke.
     """
     if not identity.user_objects:
         return
@@ -1444,17 +1630,24 @@ def _revoke_user_objects(identity: _LaunchIdentity) -> None:
             current,
         )
         return
+    refused: list[str] = []
     for kind, handle in _process_user_objects(api):
         if kind not in identity.user_objects:
             continue
-        _edit_user_object_dacl(
-            api,
-            handle,
-            identity.sid,
-            mode = _lpac._REVOKE_ACCESS,
-            access = 0,
-            inheritance = _NO_INHERITANCE,
-        )
+        try:
+            _edit_user_object_dacl(
+                api,
+                handle,
+                identity.sid,
+                mode = _lpac._REVOKE_ACCESS,
+                access = 0,
+                inheritance = _NO_INHERITANCE,
+                destructive = True,
+            )
+        except _lpac._LedgerUnavailableError as exc:
+            refused.append(f"{kind}: {exc}")
+    if refused:
+        raise _lpac._LedgerUnavailableError("; ".join(refused))
 
 
 def _create_restricted_token(identity: _LaunchIdentity) -> wintypes.HANDLE:
@@ -2486,7 +2679,9 @@ class WindowsRestrictedTokenBackend:
             # launcher made is an ACE this launcher takes back.
             if probe_user_sid:
                 try:
-                    with _sid_of(probe_user_sid) as user_sid, _root_acl_edit(user_only):
+                    with _sid_of(probe_user_sid) as user_sid, _root_acl_edit(
+                        user_only, destructive = True
+                    ):
                         _lpac._revoke_sid(user_only, user_sid)
                 except Exception:  # noqa: BLE001 - the tree removal is the real cleanup
                     logger.warning(
@@ -2557,6 +2752,10 @@ class WindowsRestrictedTokenBackend:
     def reconcile_stale_manifests(self) -> None:
         """Revoke grants and remove private temps whose owning Studio process is gone."""
         root = _manifest_root()
+        # This pass skips a manifest whose owning process is still alive, and
+        # this process is alive, so its own refused cleanups are only reachable
+        # through the queue.
+        _drain_deferred_cleanups()
         _remove_orphan_temporary_manifests(root)
         for manifest in Path(root).glob(_MANIFEST_PREFIX + "*.json"):
             payload = _parse_manifest(manifest)

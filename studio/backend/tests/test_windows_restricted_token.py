@@ -37,6 +37,64 @@ from core.inference import windows_restricted_token as token_launcher
 SOURCE = Path(token_launcher.__file__).read_text(encoding = "utf-8")
 
 
+class _FakeLedgerFiles:
+    """The ``CreateFileW``/``CloseHandle`` pair the windows_lpac ledger locks with.
+
+    Only the property the launcher depends on is modelled: an exclusive open
+    (``dwShareMode`` 0) of a path that is already open fails, and closing the
+    handle releases it. ``busy`` is the other Studio process this one cannot see,
+    holding the lock for a key this one must therefore not be given.
+    """
+
+    def __init__(self, busy = ()) -> None:
+        self.busy = {key + windows_lpac._LEDGER_LOCK_SUFFIX for key in busy}
+        self.opened: dict[int, str] = {}
+        self.attempts: list[tuple[str, int]] = []
+        self._next = 9000
+
+    def hold(self, *keys: str) -> None:
+        """Let another Studio process take these keys, from now on."""
+        self.busy |= {key + windows_lpac._LEDGER_LOCK_SUFFIX for key in keys}
+
+    def create_file(self, path, _access, share, _attributes, disposition, _flags, _template):
+        self.attempts.append((os.path.basename(path), share))
+        if share == 0 and (
+            path in self.opened.values() or os.path.basename(path) in self.busy
+        ):
+            return windows_lpac._INVALID_HANDLE_VALUE
+        self._next += 1
+        self.opened[self._next] = path
+        return self._next
+
+    def close(self, handle) -> None:
+        self.opened.pop(getattr(handle, "value", handle), None)
+
+    def locked(self, key: str) -> bool:
+        """Whether the lock file for one key was ever opened with no sharing."""
+        return (key + windows_lpac._LEDGER_LOCK_SUFFIX, 0) in self.attempts
+
+
+@pytest.fixture(autouse = True)
+def ledger_state(tmp_path_factory, monkeypatch):
+    """A windows_lpac ledger root of this test's own, and a wait it never sits out.
+
+    Every DACL edit the launcher makes now runs inside that ledger, whose lock
+    file lives beside the LPAC manifests. A test host with no LOCALAPPDATA cannot
+    place one, and a launcher that cannot place its lock refuses every revoke, so
+    without this fixture every cleanup test would be a test of the refusal path.
+    """
+    root = tmp_path_factory.mktemp("lpac-ledger")
+    monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(root))
+    # Handles and depths are process-lived, so each test starts from its own.
+    monkeypatch.setattr(windows_lpac, "_LEDGER_MUTEXES", {})
+    monkeypatch.setattr(windows_lpac, "_LEDGER_FILE_LOCKS", {})
+    monkeypatch.setattr(windows_lpac, "_LEDGER_DEPTH", {})
+    monkeypatch.setattr(windows_lpac, "_LEDGER_REFUSED", {})
+    monkeypatch.setattr(windows_lpac, "_LEDGER_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(token_launcher, "_DEFERRED_CLEANUPS", [])
+    return root
+
+
 @pytest.fixture
 def isolated_capability_cache():
     before = dict(os_sandbox._capability_cache)
@@ -598,6 +656,19 @@ def _manifest(root: Path, sid: str, **overrides) -> Path:
     return path
 
 
+def _ledger_kernel32(ledger: _FakeLedgerFiles | None = None, **extra) -> SimpleNamespace:
+    """A minimal ``kernel32`` that can still open and release the ledger lock file.
+
+    A host that answers no ``CreateFileW`` has no ledger, and a launcher with no
+    ledger refuses every revoke, so a fake meant to exercise a revoke has to
+    answer it.
+    """
+    ledger = ledger or _FakeLedgerFiles()
+    return SimpleNamespace(
+        CreateFileW = ledger.create_file, CloseHandle = ledger.close, **extra
+    )
+
+
 def _unmapped_sid_api(freed: list, *, resolves: bool = False) -> SimpleNamespace:
     """A fake ``_api()`` whose LookupAccountSidW resolves no SID unless asked to."""
 
@@ -605,7 +676,7 @@ def _unmapped_sid_api(freed: list, *, resolves: bool = False) -> SimpleNamespace
         return 1 if resolves else 0
 
     return SimpleNamespace(
-        kernel32 = SimpleNamespace(LocalFree = freed.append),
+        kernel32 = _ledger_kernel32(LocalFree = freed.append),
         advapi32 = SimpleNamespace(LookupAccountSidW = lookup),
     )
 
@@ -705,7 +776,7 @@ def test_identity_cleanup_is_idempotent_and_reports_every_failure(tmp_path, monk
     monkeypatch.setattr(windows_lpac, "_revoke_sid", revoke)
     freed: list = []
     monkeypatch.setattr(
-        windows_lpac, "_api", lambda: SimpleNamespace(kernel32 = SimpleNamespace(LocalFree = freed.append))
+        windows_lpac, "_api", lambda: SimpleNamespace(kernel32 = _ledger_kernel32(LocalFree = freed.append))
     )
     monkeypatch.setattr(token_launcher, "_sid_from_text", lambda text: ctypes.c_void_p(2))
     identity = token_launcher._LaunchIdentity(
@@ -754,7 +825,12 @@ class _WinApiRecorder:
         self.user_object_dacl = 4096  # 0 stands for a NULL DACL: allows everyone
         self.acl_error = 0
         self.desktop = None
+        # The ledger every DACL edit is now taken under. A recorder that could
+        # not answer CreateFileW would be a host with no lock at all, on which
+        # every revoke is refused rather than performed.
+        self.ledger = _FakeLedgerFiles()
         self.kernel32 = SimpleNamespace(
+            CreateFileW = self.ledger.create_file,
             GetCurrentProcess = lambda: 11,
             GetCurrentThreadId = lambda: 7,
             CloseHandle = self._close,
@@ -805,6 +881,7 @@ class _WinApiRecorder:
         return getattr(handle, "value", handle)
 
     def _close(self, handle) -> int:
+        self.ledger.close(handle)
         self.closed.append(self._value(handle))
         return self._note("CloseHandle", self._value(handle))
 
@@ -1397,7 +1474,11 @@ def test_a_user_object_with_no_dacl_is_left_exactly_as_it_was(tmp_path, monkeypa
 
 
 def _mutex_recorder(recorder: _WinApiRecorder, monkeypatch) -> None:
-    """Give a recorder a host that answers CreateMutexW, and a fresh handle cache."""
+    """Give a recorder a host that answers CreateMutexW, and a fresh handle cache.
+
+    The mutex is the ledger's same-session fast path and never the lock, so a
+    recorder without this is a host that falls straight through to the lock file.
+    """
     monkeypatch.setattr(windows_lpac, "_LEDGER_MUTEXES", {})
     recorder.kernel32.CreateMutexW = lambda _attributes, _owned, name: (
         recorder._note("CreateMutexW", name) and 900
@@ -1464,11 +1545,11 @@ def test_two_launches_never_interleave_one_user_object_dacl_edit(monkeypatch):
     assert len(order) == 6, order
     assert runs in (["first", "second"], ["second", "first"]), order
     # And the same edit is ordered against a second Studio process, which the
-    # in-process lock cannot reach.
-    assert (
-        "CreateMutexW",
-        "Local\\unsloth.studio.ledger.limited-user-object.winsta0",
-    ) in recorder.calls
+    # in-process lock cannot reach. The session mutex is the fast path; the lock
+    # file opened with no sharing is what actually says so.
+    key = token_launcher._user_object_key(recorder, 101)
+    assert ("CreateMutexW", windows_lpac._LEDGER_MUTEX_PREFIX + key) in recorder.calls
+    assert recorder.ledger.locked(key)
     names = recorder.names()
     for index, name in enumerate(names):
         if name != "SetUserObjectSecurity":
@@ -1990,13 +2071,15 @@ def test_two_launches_never_interleave_one_root_dacl_edit(monkeypatch):
     assert len(order) == 4, order
     assert runs in (["first", "second"], ["second", "first"]), order
     # And ordered against a second Studio process, which the in-process lock
-    # cannot reach, under a name derived from the root itself.
+    # cannot reach, under a key derived from the root itself. The session mutex
+    # is only the fast path in front of it; the lock file is the lock.
     key = token_launcher._root_acl_key(root)
     assert ("CreateMutexW", windows_lpac._LEDGER_MUTEX_PREFIX + key) in recorder.calls
     assert recorder.names().count("WaitForSingleObject") == 2
     assert recorder.names().count("ReleaseMutex") == 2
-    # A mutex name is bounded and may not carry a backslash, so it is a digest.
-    assert key.startswith(token_launcher._ROOT_ACL_MUTEX_PREFIX)
+    assert recorder.ledger.attempts.count((key + windows_lpac._LEDGER_LOCK_SUFFIX, 0)) == 2
+    # A ledger key becomes a file name beside the manifests, so it is a digest.
+    assert key.startswith(token_launcher._ROOT_ACL_LEDGER_PREFIX)
     assert "\\" not in key and "/" not in key and len(key) < 64
     # Per root: a launch editing its private temp is not held up by a workdir.
     assert key != token_launcher._root_acl_key(os.path.join(os.sep + "Work", "other"))
@@ -2026,10 +2109,10 @@ def test_every_root_dacl_edit_happens_under_that_roots_lock(tmp_path, monkeypatc
     revoke = windows_lpac._revoke_sid
 
     @contextmanager
-    def watched(path):
-        stack.append(path)
+    def watched(path, **kwargs):
+        stack.append((path, kwargs.get("destructive", False)))
         try:
-            with real_edit(path):
+            with real_edit(path, **kwargs):
                 yield
         finally:
             stack.pop()
@@ -2053,9 +2136,199 @@ def test_every_root_dacl_edit_happens_under_that_roots_lock(tmp_path, monkeypatc
     assert prepared.cleanup_diagnostics == []
 
     # Two SIDs on two roots, granted and revoked: eight edits, each one holding
-    # the lock for the root it is editing.
+    # the ledger for the root it is editing.
     assert len(edits) == 8, edits
-    assert all(held == path for path, held in edits), edits
+    assert all(held == path for path, (held, _destructive) in edits), edits
+    # And every revoke declared itself destructive, which is what makes a busy
+    # ledger skip it rather than run it unsynchronised. The four grants did not:
+    # a grant takes nothing away, so a busy ledger must not fail a tool call.
+    assert [destructive for _path, (_held, destructive) in edits] == [False] * 4 + [True] * 4
+
+
+def _launch_under_a_busy_ledger(tmp_path, monkeypatch):
+    """One prepared launch whose workdir key another Studio process holds."""
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+    recorder.ledger.hold(token_launcher._root_acl_key(str(host.work)))
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    return recorder, host, prepared
+
+
+def test_a_busy_ledger_skips_the_root_revoke_and_keeps_the_whole_record(tmp_path, monkeypatch):
+    """A revoke without the ledger is the damage the ledger exists to prevent.
+
+    The session mutex this used to hold proceeds when it is not acquired, so a
+    second Studio holding the workdir was no obstacle at all: the revoke ran
+    against a DACL that process was in the middle of rewriting, and the two SIDs
+    it takes are not equally cheap to get wrong. The launch SID names one launch,
+    but the token's own user SID is the account, shared by every concurrent
+    launch of it, and a revoke of that one lands on a sibling launch's running
+    child. Neither may run unsynchronised; both are left for reconciliation.
+
+    The grant is the other half. It takes nothing away, so it proceeds under the
+    same busy ledger with a diagnostic rather than failing the tool call.
+    """
+    recorder, host, prepared = _launch_under_a_busy_ledger(tmp_path, monkeypatch)
+    identity = prepared.spawn_callback._launch_identity
+
+    # The launch was not refused: all four grants were made, on the root whose
+    # ledger is busy as much as on the one whose is free.
+    assert host.granted == [
+        (str(host.work), _LAUNCH_SID_VALUE),
+        (identity.private_temp, _LAUNCH_SID_VALUE),
+        (str(host.work), _USER_SID_VALUE),
+        (identity.private_temp, _USER_SID_VALUE),
+    ]
+    assert identity.user_sid_roots == (str(host.work), identity.private_temp)
+
+    prepared.cleanup()
+
+    # The private temp's ledger was free, so its ACEs went. The workdir's was
+    # not, so neither of its ACEs was touched - including the account's, which
+    # another launch may be relying on this very second.
+    assert host.revoked == [
+        (identity.private_temp, _LAUNCH_SID_VALUE),
+        (identity.private_temp, _USER_SID_VALUE),
+    ]
+    # And the record survives whole, because the manifest is what reconciliation
+    # reads: the ACEs it names are still on the workdir.
+    assert Path(identity.manifest_path).exists()
+    assert identity.cleaned is False
+    assert any("could not be taken" in text for text in prepared.cleanup_diagnostics), (
+        prepared.cleanup_diagnostics
+    )
+    assert token_launcher._DEFERRED_CLEANUPS == [identity]
+
+
+def test_a_refused_cleanup_is_retried_once_the_other_studio_lets_go(tmp_path, monkeypatch):
+    """A skipped revoke has to be recoverable, and inside this process too.
+
+    reconcile_stale_manifests deliberately leaves a manifest whose owning process
+    is still alive alone, and while Studio runs it is that process, so the record
+    is reachable only through the queue the refusal put it on. Without that queue
+    a launch SID would sit on the user's own workdir until Studio exited.
+    """
+    recorder, host, prepared = _launch_under_a_busy_ledger(tmp_path, monkeypatch)
+    identity = prepared.spawn_callback._launch_identity
+    prepared.cleanup()
+    assert host.revoked == [
+        (identity.private_temp, _LAUNCH_SID_VALUE),
+        (identity.private_temp, _USER_SID_VALUE),
+    ]
+
+    recorder.ledger.busy.clear()  # the other Studio finished
+    token_launcher.WindowsRestrictedTokenBackend().reconcile_stale_manifests()
+
+    assert (str(host.work), _LAUNCH_SID_VALUE) in host.revoked
+    assert (str(host.work), _USER_SID_VALUE) in host.revoked
+    assert not Path(identity.manifest_path).exists()
+    assert identity.cleaned is True
+    assert token_launcher._DEFERRED_CLEANUPS == []
+
+
+def test_a_busy_ledger_skips_the_user_object_revoke_and_leaves_it_recorded(tmp_path, monkeypatch):
+    """The one ACE that outlives its launch on the user's real window station.
+
+    The window station and the desktop are separate keys, so a ledger that
+    refuses one says nothing about the other and both are attempted. What must
+    not happen is the revoke running while another launch is granting: this is
+    the user's own interactive session object, and the loser of that race is a
+    resurrected ACE nobody is left to remove.
+    """
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    identity = prepared.spawn_callback._launch_identity
+    assert identity.user_objects == ("window station", "desktop")
+    writes = recorder.names().count("SetUserObjectSecurity")
+
+    recorder.ledger.hold(token_launcher._user_object_key(recorder, 101))  # the window station
+    prepared.cleanup()
+
+    # The desktop's key was free and its ACE went; the window station's was not.
+    assert recorder.names().count("SetUserObjectSecurity") == writes + 1
+    assert identity.user_objects == ("window station", "desktop")
+    assert Path(identity.manifest_path).exists()
+    assert any("window station" in text for text in prepared.cleanup_diagnostics), (
+        prepared.cleanup_diagnostics
+    )
+    assert token_launcher._DEFERRED_CLEANUPS == [identity]
+
+
+def test_a_non_interactive_window_station_still_names_a_ledger_lock_file(ledger_state):
+    """``Service-0x0-3e7$`` is a window station name and not a profile name.
+
+    The ledger turns a key into a file beside the manifests and accepts only what
+    CreateAppContainerProfile accepts, so a key carrying a dollar sign is not a
+    slower lock, it is no lock: the open is refused, and under the fail-closed
+    rule every revoke on that host would be deferred for as long as it ran. The
+    variable half is a digest for exactly that reason.
+    """
+    recorder = _WinApiRecorder()
+    recorder.user_object_names = {101: "Service-0x0-3e7$", 102: "Default"}
+    key = token_launcher._user_object_key(recorder, 101)
+    path = windows_lpac._ledger_lock_path(key)
+    assert os.path.dirname(path) == str(ledger_state)
+    assert os.path.basename(path) == key + windows_lpac._LEDGER_LOCK_SUFFIX
+    # Still per object, and still the same key from either spelling of one name.
+    assert key != token_launcher._user_object_key(recorder, 102)
+    recorder.user_object_names[101] = "service-0x0-3e7$"
+    assert key == token_launcher._user_object_key(recorder, 101)
+    # The same holds of a root, whose path carries separators and has no length
+    # bound at all.
+    long_root = os.path.join(os.sep + "Work", "x" * 300)
+    windows_lpac._ledger_lock_path(token_launcher._root_acl_key(long_root))
+
+
+def test_the_two_ledgers_are_only_ever_taken_in_one_order(monkeypatch):
+    """Both launchers can be live in one Studio, so the order has to be stated.
+
+    This module takes its own process-local lock first, then goes through
+    windows_lpac._installation_ledger, which takes _SHARED_GRANTS_LOCK and only
+    then the session mutex and the lock file. windows_lpac takes the last three
+    and never the first, so neither launcher can wait on the other backwards.
+    """
+    recorder = _WinApiRecorder()
+    monkeypatch.setattr(windows_lpac, "_api", lambda: recorder)
+    root = os.path.join(os.sep + "Work", "ordered")
+    inside = threading.Event()
+
+    def edit() -> None:
+        with token_launcher._root_acl_edit(root):
+            inside.set()
+
+    # Holding what windows_lpac orders its own grants with is enough to hold a
+    # Limited DACL edit out, which is what makes the two launchers one order.
+    with windows_lpac._SHARED_GRANTS_LOCK:
+        waiting = threading.Thread(target = edit)
+        waiting.start()
+        assert not inside.wait(0.5)
+    waiting.join(timeout = 10)
+    assert inside.is_set()
+
+    # And it is taken second: a thread stopped on this module's own lock has not
+    # taken windows_lpac's, so no cycle exists between them.
+    inside.clear()
+    with token_launcher._ROOT_ACL_LOCK:
+        blocked = threading.Thread(target = edit)
+        blocked.start()
+        assert not inside.wait(0.2)
+        assert windows_lpac._SHARED_GRANTS_LOCK.acquire(timeout = 1.0)
+        windows_lpac._SHARED_GRANTS_LOCK.release()
+    blocked.join(timeout = 10)
+    assert inside.is_set()
 
 
 def test_a_second_live_launch_keeps_the_shared_user_sid_ace(tmp_path, monkeypatch):
