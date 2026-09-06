@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
 
 from core.inference.llama_admission import LlamaAdmissionLease, _bool_env
+from core.inference.llama_exact import EXACT_STATE_OFF, EXACT_STATES
 
 
 _SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
@@ -740,6 +741,13 @@ class PreemptionSnapshot:
     prefilling: int = 0
     # `studio` or `server`; see resolve_preempt_mode.
     mode: str = PREEMPT_MODE_STUDIO
+    # `on`, `off` or `unavailable`: whether this backend's llama-server decodes in exact
+    # concurrency, so a chat's tokens do not depend on who shares its KV cache. Carried
+    # here because it is the other half of what a pause means to a reader: under `server`
+    # mode a park is byte-identical, and under exact mode so is the concurrency the park
+    # returns to. Nothing in this module ACTS on it; it is reported, not policy. See
+    # core.inference.llama_exact.
+    exact: str = EXACT_STATE_OFF
 
 
 class PreemptionController:
@@ -766,6 +774,7 @@ class PreemptionController:
         "_drift_logged_at",
         "_progress_tokens",
         "_server_mode",
+        "_exact",
     )
 
     def __init__(self, key: str):
@@ -811,6 +820,8 @@ class PreemptionController:
         # ledger keeps counting, so the log and the length-continuation arithmetic stay
         # informed, but no sweep here ever chooses a victim.
         self._server_mode = False
+        # Reported, never acted on: see PreemptionSnapshot.exact.
+        self._exact = EXACT_STATE_OFF
 
     def configure(
         self,
@@ -821,6 +832,7 @@ class PreemptionController:
         slots: Optional[int] = None,
         batch_tokens: Optional[int] = None,
         server_mode: Optional[bool] = None,
+        exact: Optional[str] = None,
     ) -> None:
         """Re-read the cache this backend actually allocated.
 
@@ -841,6 +853,8 @@ class PreemptionController:
                 self._batch_tokens = max(0, int(batch_tokens or 0))
             if server_mode is not None:
                 self._server_mode = bool(server_mode)
+            if exact is not None:
+                self._exact = str(exact) if str(exact) in EXACT_STATES else EXACT_STATE_OFF
 
     @property
     def server_mode(self) -> bool:
@@ -1649,6 +1663,7 @@ class PreemptionController:
                 tools_running = states.count(ParticipantState.TOOLS_RUNNING),
                 prefilling = self._pending_prefill_locked(),
                 mode = PREEMPT_MODE_SERVER if self._server_mode else PREEMPT_MODE_STUDIO,
+                exact = self._exact,
             )
 
 

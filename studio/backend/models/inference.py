@@ -204,6 +204,20 @@ class LoadRequest(BaseModel):
             "copy. Ignored for non-GGUF models."
         ),
     )
+    exact_concurrency: Optional[Literal["auto", "off", "on"]] = Field(
+        None,
+        description = (
+            "Whether to ask llama-server for exact concurrency, which makes a "
+            "chat's generated tokens byte-identical whether it decodes alone or "
+            "beside other chats sharing the KV cache. 'off' is the default "
+            "because the mode costs roughly 9 percent of decode speed on a dense "
+            "model and more on a mixture of experts; 'auto' asks for it and "
+            "falls back to a normal launch when the server refuses; 'on' "
+            "requires it and fails the load when the server cannot. Omit to "
+            "follow the persisted setting. UNSLOTH_LLAMA_EXACT_CONCURRENCY "
+            "overrides both. Ignored for non-GGUF models."
+        ),
+    )
     spec_draft_cache_type: Optional[str] = Field(
         None,
         description = (
@@ -1336,6 +1350,24 @@ class _InferenceRuntimeFields(BaseModel):
             "load left it at the llama.cpp default. This is what was REQUESTED: "
             "the Model Memory settings can replace it, and what they emit is "
             "reported by the model-memory settings route instead."
+        ),
+    )
+    exact_concurrency: str = Field(
+        "off",
+        description = (
+            "Whether the running llama-server decodes in exact concurrency, where a "
+            "chat's tokens do not depend on the chats sharing its KV cache. 'on' the "
+            "server was launched with it and came up, 'off' it was not asked for, "
+            "'unavailable' it was asked for under 'auto' and the server refused, so "
+            "the load is running without it."
+        ),
+    )
+    requested_exact_concurrency: Optional[str] = Field(
+        None,
+        description = (
+            "The exact-concurrency setting this load resolved to (auto/off/on) after "
+            "the environment override, the request field and the stored setting. What "
+            "was ASKED for; exact_concurrency is what the server gave."
         ),
     )
     requested_spec_draft_cache_type: Optional[str] = Field(

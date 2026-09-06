@@ -425,6 +425,7 @@ from core.inference.tool_call_parser import (
     unfinished_thought_progress as _unfinished_thought_progress,
 )
 from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
+from core.inference import llama_exact as _exact
 from core.inference import llama_preemption as _preemption
 from core.inference.repetition_guard import is_repetition_dominated
 from core.inference.tool_loop_controller import (
@@ -607,6 +608,9 @@ class GgufLoadIntent:
     spec_draft_cache_type: Optional[str] = None
     ctx_checkpoints: Optional[int] = None
     cache_ram: Optional[int] = None
+    # auto / off / on, or none to follow the stored setting. The child reads the mode from
+    # an environment variable rather than a flag, so this never reaches extra_args.
+    exact_concurrency: Optional[str] = None
     extra_args: Optional[tuple[str, ...]] = None
     # The route materialises inherited extras from the live server, so the list alone
     # cannot say whether the caller named it. Duplicate-load checks need the difference:
@@ -6469,6 +6473,10 @@ class LlamaCppBackend:
         self._requested_spec_draft_cache_type: Optional[str] = None
         self._requested_ctx_checkpoints: Optional[int] = None
         self._requested_cache_ram: Optional[int] = None
+        # What the last load ASKED the child for (auto/off/on) and what it GOT
+        # (on/off/unavailable). Off on a backend that never launched: no child, no mode.
+        self._requested_exact_concurrency: str = _exact.EXACT_OFF
+        self._exact_concurrency: str = _exact.EXACT_STATE_OFF
         self._idle_slot_clearing_active: bool = False
         self._chat_template: Optional[str] = None
         self._markup_tokens: list = []
@@ -6960,6 +6968,104 @@ class LlamaCppBackend:
         return self._requested_load_mode
 
     @property
+    def requested_exact_concurrency(self) -> str:
+        """The exact-concurrency setting the last load resolved to: auto, off or on."""
+        return getattr(self, "_requested_exact_concurrency", _exact.EXACT_OFF)
+
+    @property
+    def exact_concurrency(self) -> str:
+        """What the RUNNING child does: on, off, or unavailable.
+
+        `unavailable` is only ever reached from `auto`: the mode was asked for, the server
+        named it as the reason it would not start, and the relaunch that came up is running
+        without it. Under `on` that outcome is a failed load instead, so it never lands
+        here, and under `off` the variable was never set.
+        """
+        return getattr(self, "_exact_concurrency", _exact.EXACT_STATE_OFF)
+
+    @staticmethod
+    def _exact_missing_launch_flags(
+        args: Optional[Sequence[str]],
+        caps: Mapping[str, Any],
+        *,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> list[str]:
+        """What Studio's own launch line is missing for exact concurrency.
+
+        One flag today. Studio never emits ``--cache-reuse`` and already emits
+        ``--no-context-shift``, so the only place its line contradicts the mode is
+        ``--parallel 1``, which skips ``--kv-unified``: the paged pool needs the unified
+        cache whether or not anything else is decoding, and a load that asked for the mode
+        and got a per-slot cache would be refused by the child for a flag the user never
+        chose to leave out. Nothing is added on a build that has no such flag; there the
+        child refuses and `auto` falls back, which is the honest outcome.
+        """
+        if _kv_unified_from_args(args, env = env) or not caps.get("supports_kv_unified"):
+            return []
+        return ["--kv-unified"]
+
+    @staticmethod
+    def _drop_exact_after_refusal(
+        env: dict,
+        *,
+        setting: str,
+        crashed: bool,
+        output: Optional[str],
+    ) -> bool:
+        """Take the mode off ``env`` when THIS crash was the server refusing it.
+
+        True means the caller should relaunch. Four things all have to hold, and each of
+        them is a way a relaunch would otherwise be wrong: the child died rather than came
+        up, it named the mode on the way out, the setting is `auto` (under `on` a refusal
+        is the answer, not a prompt to try something else), and the variable was still
+        there to remove, which is what makes a second call a no-op without a second flag.
+        """
+        if not crashed or setting != _exact.EXACT_AUTO:
+            return False
+        if not _exact.is_exact_refusal(output):
+            return False
+        return _exact.apply_child_env(env, on = False)
+
+    @staticmethod
+    def _exact_state_after_launch(
+        *,
+        setting: str,
+        env: Mapping[str, str],
+        args: Optional[Sequence[str]],
+    ) -> str:
+        """What to report for a child that has just come up healthy.
+
+        `on` needs three things at once: the load asked for the mode, the variable is
+        still on the environment the child was started with, and the launch it started
+        with can carry the mode at all -- a unified cache, flash attention, and none of
+        the flags the mode refuses. The third is what catches a respawn that dropped flash
+        attention after the variable was placed, which no amount of reading the request
+        would notice.
+
+        It cannot catch one thing, and nothing available can: a llama-server built before
+        unslothai/llama.cpp#194 ignores the variable and starts perfectly, so it is
+        reported as `on`. The mode has no flag, no `--help` entry and nothing in `/props`,
+        so trying it is the only probe there is, and a build that neither implements nor
+        refuses it is indistinguishable from one that granted it.
+        """
+        if not _exact.wants_exact(setting):
+            return _exact.EXACT_STATE_OFF
+        running = (
+            _exact.child_flag_set(env)
+            # The same two env-aware readers the rest of the load uses, rather than a
+            # second parser in llama_exact: both flags have LLAMA_ARG_ twins that llama.cpp
+            # applies before argv, and a launch judged on argv alone gets them wrong.
+            and _kv_unified_from_args(args, env = env)
+            and _flash_attn_enabled_from_args(args, env = env)
+            and not _exact.contradicting_args(args)
+        )
+        if running:
+            return _exact.EXACT_STATE_ON
+        # Asked for and not running, however it happened: the fallback rung dropped the
+        # variable, the pre-flight never placed it, or a respawn took away what it needs.
+        return _exact.EXACT_STATE_UNAVAILABLE
+
+    @property
     def requested_spec_draft_cache_type(self) -> Optional[str]:
         """Draft KV cache dtype the last load asked for; None means f16."""
         return self._requested_spec_draft_cache_type
@@ -7419,6 +7525,16 @@ class LlamaCppBackend:
             or self._requested_spec_draft_cache_type != intent.spec_draft_cache_type
             or self._requested_ctx_checkpoints != intent.ctx_checkpoints
             or self._requested_cache_ram != intent.cache_ram
+        ):
+            return False
+        # The mode is an environment variable on the child, so changing it needs a new
+        # child. Resolved on both sides rather than compared raw: a request that names
+        # nothing and a stored `on` are the same load, and would otherwise relaunch on
+        # every call. Under `auto` two loads match even when one of them came up
+        # `unavailable`, because retrying an auto that already fell back is what the
+        # fallback exists to avoid doing twice.
+        if not self._is_diffusion and self.requested_exact_concurrency != _exact.resolve_exact_setting(
+            intent.exact_concurrency
         ):
             return False
 
@@ -14219,6 +14335,10 @@ class LlamaCppBackend:
         self._swa_full = False
         self._kv_cache_unified = False
         self._server_preempts_kv = False
+        # The diffusion runner is not llama-server and reads no llama.cpp environment,
+        # so a previous GGUF's mode must not be reported against it.
+        self._requested_exact_concurrency = _exact.EXACT_OFF
+        self._exact_concurrency = _exact.EXACT_STATE_OFF
         self._memory_state = None
         self._memory_policy_active = False
         self._memory_mlock_applicable = True
@@ -16188,6 +16308,28 @@ class LlamaCppBackend:
         scrubbed for the same bytes without the heading).
         """
         lowered = (output or "").lower()
+
+        # Ahead of every pattern below, because the child said in plain words which of its
+        # own requirements it could not meet, and every other branch here is a guess by
+        # comparison. Only reachable with the setting on `on`: `auto` relaunches without
+        # the variable rather than arriving here, and `off` never sets it.
+        if _exact.is_exact_refusal(output):
+            _exact_line = next(
+                (
+                    line.strip()
+                    for line in (output or "").splitlines()
+                    if _exact.is_exact_refusal(line)
+                ),
+                "",
+            )
+            return (
+                "llama-server refused to start in exact concurrency, which is set to "
+                "'on'. " + (_exact_line + " " if _exact_line else "")
+                + "Exact concurrency needs a unified KV cache, every layer offloaded to "
+                "CUDA, flash attention, an f16 KV cache and no context shift or cache "
+                "reuse. Set it to 'auto' to load without it when the server refuses, or "
+                "'off' to stop asking."
+            )
 
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
@@ -22800,6 +22942,42 @@ class LlamaCppBackend:
                         draft_mla = self._draft_kv_symmetry(cmd),
                     )
 
+                # Exact concurrency, before the argv is read for anything else: the mode
+                # needs a unified cache, and adding one here is what keeps a single-slot
+                # load from being refused by the child for a flag Studio chose not to pass.
+                _exact_setting = _exact.resolve_exact_setting(intent.exact_concurrency)
+                _exact_wanted = _exact.wants_exact(_exact_setting)
+                if _exact_wanted and _flash_attn_known_off and _exact_setting == _exact.EXACT_AUTO:
+                    # V is left transposed without flash attention and the paged pool
+                    # refuses that, so this load is decided before it starts. Under `auto`
+                    # spend nothing proving it; under `on` the child still gets the
+                    # variable, so the refusal the user sees is the server's own.
+                    _exact_wanted = False
+                if _exact_wanted:
+                    # Studio never emits --cache-reuse and already emits
+                    # --no-context-shift, so its own line contradicts the mode in exactly
+                    # one place: --parallel 1 skips --kv-unified, which the paged pool
+                    # requires whether or not anything else is decoding.
+                    _exact_added = self._exact_missing_launch_flags(cmd, server_caps, env = None)
+                    if _exact_added:
+                        cmd.extend(_exact_added)
+                        logger.info(
+                            "Exact concurrency: added %s, which the paged KV pool requires.",
+                            " ".join(_exact_added),
+                        )
+                    # The user's extras are appended after everything Unsloth emits and
+                    # win by last-arg, so a contradiction there is theirs to resolve. Say
+                    # which flag it is rather than letting the child answer with a
+                    # message about a launch line the user did not compose.
+                    _exact_conflicts = _exact.contradicting_args(extra_args)
+                    if _exact_conflicts:
+                        self._record_load_warning(
+                            "Exact concurrency was requested, but the extra arguments "
+                            "pass " + ", ".join(_exact_conflicts) + ", which llama-server "
+                            "cannot combine with it. The load will run without exact "
+                            "concurrency, or fail, depending on the setting."
+                        )
+
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
                 logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
@@ -23370,6 +23548,18 @@ class LlamaCppBackend:
                 # fallback). A per-call flag left those successes unrecorded.
                 _did_rocm_retry = False
 
+                # The child's own variable (unslothai/llama.cpp#194). There is no flag and
+                # nothing in --help, so this is the whole interface. Applied last, after
+                # every other env mutation, and taken back OUT when the setting resolved
+                # to off: env starts as a copy of Studio's environment, so an inherited
+                # LLAMA_EXACT_CONCURRENCY would otherwise outvote an explicit off.
+                if _exact.apply_child_env(env, on = _exact_wanted):
+                    logger.info(
+                        "Exact concurrency %s: %s=%s on llama-server",
+                        _exact_setting,
+                        _exact.CHILD_ENV,
+                        env.get(_exact.CHILD_ENV, "<unset>"),
+                    )
                 def _drop_fit_load_mode_for_no_flash(fa_cmd: list) -> list:
                     """The fit's ``--load-mode none`` off a --flash-attn off respawn.
 
@@ -23431,7 +23621,12 @@ class LlamaCppBackend:
                         run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
-                    for _spawn_attempt in (0, 1, 2):
+                    _did_exact_retry = False
+                    # Four, not three: every rung below is one-shot, so the bound is the
+                    # number of rungs plus the first launch, and the exact-concurrency
+                    # fallback added one. Left at three it would be the ROCm correction or
+                    # the fit recovery that lost its slot to it.
+                    for _spawn_attempt in (0, 1, 2, 3):
                         # Defensive kill: drop an orphan Popen a concurrent load may
                         # have stored before we overwrite the reference (#5161).
                         # Also reaps the crashed first attempt on the retry pass.
@@ -23519,6 +23714,26 @@ class LlamaCppBackend:
                             _startup_output
                         ) or self._is_tensor_quant_kv_unsupported(_startup_output)
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
+                        # Ahead of every other rung: the server NAMED the mode as the
+                        # reason it would not start, so there is nothing to weigh. This is
+                        # also the only detection there is -- the mode has no flag, does
+                        # not appear in --help and is not reported by /props, so asking
+                        # for it and reading what comes back is the probe.
+                        if not _did_exact_retry and self._drop_exact_after_refusal(
+                            env,
+                            setting = _exact_setting,
+                            crashed = _startup_crashed,
+                            output = _startup_output,
+                        ):
+                            _did_exact_retry = True
+                            logger.warning(
+                                "llama-server refused exact concurrency (exit code %s); "
+                                "retrying once without it, as the setting is auto. "
+                                "Crash log: %s",
+                                self._process.returncode,
+                                self._llama_log_path,
+                            )
+                            continue
                         if (
                             not _did_rocm_retry
                             and _startup_crashed
@@ -24346,6 +24561,19 @@ class LlamaCppBackend:
                                 "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
                                 "--flash-attn off retry."
                             )
+                        # Exact concurrency needs a non-transposed V cache, which is
+                        # what flash attention buys, so the mode cannot survive this
+                        # respawn. Under `on` the child still refuses and the load
+                        # fails, which is the point of `on`; under `auto` this is the
+                        # fallback arriving one retry early.
+                        if _exact_setting == _exact.EXACT_AUTO and _exact.apply_child_env(
+                            env, on = False
+                        ):
+                            logger.info(
+                                "Dropped %s for the --flash-attn off retry; exact "
+                                "concurrency requires flash attention.",
+                                _exact.CHILD_ENV,
+                            )
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
                         cmd = _fa_cmd
@@ -24418,6 +24646,19 @@ class LlamaCppBackend:
                             logger.info(
                                 "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
                                 "--flash-attn off retry."
+                            )
+                        # Exact concurrency needs a non-transposed V cache, which is
+                        # what flash attention buys, so the mode cannot survive this
+                        # respawn. Under `on` the child still refuses and the load
+                        # fails, which is the point of `on`; under `auto` this is the
+                        # fallback arriving one retry early.
+                        if _exact_setting == _exact.EXACT_AUTO and _exact.apply_child_env(
+                            env, on = False
+                        ):
+                            logger.info(
+                                "Dropped %s for the --flash-attn off retry; exact "
+                                "concurrency requires flash attention.",
+                                _exact.CHILD_ENV,
                             )
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
@@ -24825,6 +25066,40 @@ class LlamaCppBackend:
                 # then the build's flag alone is no reason to stand down.
                 if _preempt_ram_disabled_in(_last_spawn_cmd or cmd):
                     self._server_preempts_kv = False
+                # What the load asked for, and what the child that came up actually runs.
+                # Read off the argv that LAUNCHED and the env it launched with, not the
+                # intent: several respawns rewrite one or the other (no flash attention,
+                # the arch fallback, the CPU replay), and a state derived from the request
+                # would keep claiming a guarantee that stopped holding three retries ago.
+                self._requested_exact_concurrency = _exact_setting
+                self._exact_concurrency = self._exact_state_after_launch(
+                    setting = _exact_setting,
+                    env = env,
+                    args = _last_spawn_cmd or cmd,
+                )
+                if self._exact_concurrency == _exact.EXACT_STATE_UNAVAILABLE:
+                    if _exact_setting == _exact.EXACT_ON:
+                        # `on` means require it, and a server that is up but not running
+                        # the mode is the one outcome `on` exists to rule out. Only
+                        # reachable when a respawn took away what the mode needs while
+                        # the build quietly ignored the variable; the child is healthy,
+                        # so it has to be stopped rather than left serving a guarantee
+                        # nobody can honour.
+                        self._kill_process()
+                        self._healthy = False
+                        _raise_terminal_load_failure(
+                            "Exact concurrency is set to 'on', but this llama-server "
+                            "came up without it: the launch it recovered to has no "
+                            "flash attention or no unified KV cache, which the mode "
+                            "requires. Set exact concurrency to 'auto' to load anyway, "
+                            "or 'off' to stop asking for it."
+                        )
+                    self._record_load_warning(
+                        "Exact concurrency was requested but this llama-server would not "
+                        "run with it, so the model is loaded without it: a chat's output "
+                        "can differ depending on which other chats share the KV cache. "
+                        "Set exact concurrency to 'on' to fail the load instead."
+                    )
                 # Re-derived from the slot count that LAUNCHED, not the one the sizing
                 # pass saw. The drafter drop and the non-MTP retry both hand slots back
                 # after the batch flag is emitted, and this is recorded next to
@@ -25824,6 +26099,8 @@ class LlamaCppBackend:
             self._swa_full = False
             self._kv_cache_unified = False
             self._server_preempts_kv = False
+            self._requested_exact_concurrency = _exact.EXACT_OFF
+            self._exact_concurrency = _exact.EXACT_STATE_OFF
             self._memory_state = None
             self._memory_policy_active = False
             self._memory_mlock_applicable = True

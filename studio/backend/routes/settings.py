@@ -52,6 +52,17 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.exact_concurrency_settings import (
+    get_exact_concurrency,
+    set_exact_concurrency,
+)
+from core.inference.llama_exact import (
+    DEFAULT_EXACT_SETTING,
+    EXACT_OFF,
+    EXACT_STATE_OFF,
+    exact_setting_env,
+    resolve_exact_setting,
+)
 from utils.xet_notice_settings import reserve_xet_notice
 from utils.chat_preferences_settings import (
     get_show_model_disclaimer,
@@ -657,6 +668,27 @@ class ModelMemoryResponse(BaseModel):
     memlock_limit_bytes: Optional[int] = None
 
 
+class ExactConcurrencyPayload(BaseModel):
+    exact_concurrency: Literal["auto", "off", "on"]
+
+
+class ExactConcurrencyResponse(BaseModel):
+    # The stored value, or None when nothing is stored (which is not the same as a stored
+    # "off": see utils.exact_concurrency_settings).
+    exact_concurrency: Optional[str] = None
+    # What the next load will actually resolve to, once the environment override, this
+    # stored value and an inherited LLAMA_EXACT_CONCURRENCY have all been read.
+    effective: str
+    default: str = DEFAULT_EXACT_SETTING
+    # Set when UNSLOTH_LLAMA_EXACT_CONCURRENCY is pinning the machine, in which case
+    # saving here changes nothing until the variable goes away. The UI has to say so
+    # rather than accept a value that will not be used.
+    env_override: Optional[str] = None
+    # What the RUNNING llama-server does: on, off, or unavailable.
+    active: str
+    reload_required: bool
+
+
 class VramBudgetPayload(BaseModel):
     # None clears the stored budget so env/default applies again; it cannot also mean "leave
     # untouched", hence required rather than defaulted: with a default, a client that dropped the
@@ -1246,6 +1278,73 @@ def update_model_memory(
             log = logger,
         ) from exc
     return _model_memory_response()
+
+
+def _exact_concurrency_active() -> str:
+    """What the running child does, or `off` when nothing is loaded."""
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+    except Exception:
+        return EXACT_STATE_OFF
+    if not getattr(backend, "is_active", False):
+        return EXACT_STATE_OFF
+    return str(getattr(backend, "exact_concurrency", EXACT_STATE_OFF) or EXACT_STATE_OFF)
+
+
+def _exact_concurrency_reload_required(effective: str) -> bool:
+    """True when a child is running under a setting the next load would not repeat.
+
+    Compared against what that child was ASKED for, not what it got: a load that resolved
+    to `auto` and came up `unavailable` is still the load this setting produces, and
+    nagging for a reload that would fall back again is advice with no action behind it.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+    except Exception:
+        return False
+    if not getattr(backend, "is_active", False):
+        return False
+    return str(getattr(backend, "requested_exact_concurrency", EXACT_OFF)) != effective
+
+
+def _exact_concurrency_response() -> ExactConcurrencyResponse:
+    stored = get_exact_concurrency()
+    effective = resolve_exact_setting(None, stored = stored)
+    return ExactConcurrencyResponse(
+        exact_concurrency = stored,
+        effective = effective,
+        env_override = exact_setting_env(),
+        active = _exact_concurrency_active(),
+        reload_required = _exact_concurrency_reload_required(effective),
+    )
+
+
+@router.get("/exact-concurrency", response_model = ExactConcurrencyResponse)
+def get_exact_concurrency_setting(
+    current_subject: str = Depends(get_current_subject),
+) -> ExactConcurrencyResponse:
+    return _exact_concurrency_response()
+
+
+@router.put("/exact-concurrency", response_model = ExactConcurrencyResponse)
+def update_exact_concurrency_setting(
+    payload: ExactConcurrencyPayload, current_subject: str = Depends(get_current_subject)
+) -> ExactConcurrencyResponse:
+    try:
+        set_exact_concurrency(payload.exact_concurrency)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid exact concurrency setting."),
+            event = "settings.update_exact_concurrency_failed",
+            log = logger,
+        ) from exc
+    return _exact_concurrency_response()
 
 
 LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"
