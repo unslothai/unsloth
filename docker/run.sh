@@ -94,11 +94,8 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
     printf "\n" >&2
 fi
 
-# A GPU host whose Docker has no nvidia runtime is missing the NVIDIA Container
-# Toolkit, which is the one thing the image cannot bring along. Offer to install it
-# (install_nvidia_toolkit.sh, NVIDIA's own recipe) rather than let --gpus fail at
-# the daemon with exit 125. UNSLOTH_INSTALL_TOOLKIT=1 says yes without a prompt,
-# =0 never asks; with neither and no terminal, print the one-liner and continue.
+# A GPU host with no nvidia runtime would fail --gpus at the daemon with exit 125, so offer the installer.
+# UNSLOTH_INSTALL_TOOLKIT=1 says yes without a prompt, =0 never asks; with neither and no terminal, print the one-liner and continue.
 DOCKER_INFO=""
 DOCKER_ERR=""
 if [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia; then
@@ -106,8 +103,6 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia; then
     DOCKER_INFO="$(docker info 2>&1)" || { DOCKER_ERR="$DOCKER_INFO"; DOCKER_INFO=""; }
 fi
 if [[ -n "$DOCKER_ERR" ]]; then
-    # no daemon, or no permission on its socket: an install offer would be the wrong
-    # answer, and the docker run below fails with the same message
     printf "\033[1;33mWARN:\033[0m 'docker info' failed, so the GPU runtime could not be checked:\n      %s\n" "${DOCKER_ERR##*$'\n'}" >&2
     printf "      Start the Docker daemon, or add yourself to the docker group (newgrp docker).\n\n" >&2
 elif [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
@@ -122,9 +117,7 @@ elif [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
     fi
     case "$answer" in
         1|[Yy]*)
-            # -E keeps UNSLOTH_TOOLKIT_VERIFY and proxy settings through sudo's env_reset.
-            # An offer, not a precondition: a failed, cancelled or driver-too-old install
-            # (exit 3, toolkit working) must not take run.sh down before docker run.
+            # -E keeps UNSLOTH_TOOLKIT_VERIFY and the proxy settings through env_reset; a failed, cancelled or driver-too-old install (exit 3) must not stop the docker run below.
             if [[ "$(id -u)" = 0 ]]; then bash "$INSTALLER" || true; else sudo -E bash "$INSTALLER" || true; fi
             ;;
         *)

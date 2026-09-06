@@ -1,23 +1,8 @@
 #!/usr/bin/env bash
-# Installs the NVIDIA Container Toolkit on a Linux host and wires it into Docker, so
-# `docker run --gpus all unsloth/unsloth` works. This is the host side that no image
-# can do for itself: Docker resolves --gpus in the daemon, before a container exists.
-#
+# Installs the NVIDIA Container Toolkit into Docker. Host side only: Docker resolves --gpus in the daemon, before a container exists, so no image can do this itself.
 #   curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh
-#
-# Follows NVIDIA's install guide (apt, dnf/yum, zypper), then
-# `nvidia-ctk runtime configure --runtime=docker`, restarts Docker and verifies with a
-# real `docker run --gpus all`. Idempotent: a host that is already set up only runs
-# the verification. The NVIDIA driver itself is a kernel module and is not installed
-# here; without one this stops and says how to get it.
-#
-# Environment:
-#   UNSLOTH_TOOLKIT_VERIFY=0   skip the final `docker run --gpus all` check
-#   UNSLOTH_DESTDIR            prefix for /etc and /usr/share paths (tests only)
-#   UNSLOTH_OS_RELEASE         alternative os-release file (tests only)
-#   UNSLOTH_PROC_VERSION       alternative /proc/version file (tests only)
-#   UNSLOTH_RUN_USER_DIR       alternative /run/user (tests only)
-#   UNSLOTH_WSL_LIB_DIR        alternative /usr/lib/wsl/lib (tests only)
+# UNSLOTH_TOOLKIT_VERIFY=0 skips the final `docker run --gpus all` check. UNSLOTH_DESTDIR, UNSLOTH_OS_RELEASE,
+# UNSLOTH_PROC_VERSION, UNSLOTH_RUN_USER_DIR and UNSLOTH_WSL_LIB_DIR redirect the host paths they name (tests only).
 set -euo pipefail
 
 DESTDIR="${UNSLOTH_DESTDIR:-}"
@@ -33,9 +18,7 @@ fail() { printf 'ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
 command -v docker >/dev/null 2>&1 \
     || fail "docker is not installed. Install Docker Engine first (https://docs.docker.com/engine/install/), then run this again." 2
 
-# Docker Desktop (macOS, or Windows with the WSL 2 backend) ships its own GPU
-# integration: nothing to install on that side, and apt inside the WSL distro would
-# configure a daemon Docker Desktop does not use. Checked before asking for sudo.
+# Docker Desktop ships its own GPU integration; installing here would configure a daemon it does not use. Checked before elevating.
 if docker info 2>/dev/null | grep -qi 'Operating System: Docker Desktop'; then
     if [[ "$(uname -s)" == Darwin ]]; then
         say "Docker Desktop on macOS: no NVIDIA GPU can be attached on a Mac, so there is nothing to install."
@@ -46,13 +29,11 @@ if docker info 2>/dev/null | grep -qi 'Operating System: Docker Desktop'; then
         say "Keep a current NVIDIA Windows driver installed (from nvidia.com; wsl --update updates WSL itself, not the driver)."
         exit 0
     fi
-    # Docker Desktop for Linux runs its daemon in a VM with no GPU passthrough
     fail "Docker Desktop for Linux has no NVIDIA GPU support. Install Docker Engine instead
        (https://docs.docker.com/engine/install/) and run this again." 2
 fi
 
-# 3. a CLI pointed at another machine: everything below edits THIS machine
-# DOCKER_CONTEXT overrides DOCKER_HOST, which overrides the selected context
+# Everything below edits THIS machine; DOCKER_CONTEXT overrides DOCKER_HOST, which overrides the selected context.
 if [[ -n "${DOCKER_CONTEXT:-}" || -z "${DOCKER_HOST:-}" ]]; then
     endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" \
         || fail "cannot inspect the Docker context '${DOCKER_CONTEXT:-current}' (it may exist only in the invoking user's Docker config); refusing to guess which daemon to configure." 2
@@ -65,11 +46,7 @@ case "$endpoint" in
     *) fail "the Docker CLI talks to a remote daemon (${endpoint}); run this script on that host, it configures the local Docker only." 2 ;;
 esac
 
-# Rootless Docker keeps its daemon and config under the user; the system-wide steps
-# below would configure a daemon that user never talks to. NVIDIA documents the
-# rootless procedure separately. Checked before elevating, because root sees another
-# daemon; `curl | sudo bash` arrives already root with DOCKER_HOST stripped, so the
-# invoking user's socket is looked up through SUDO_UID as well.
+# Rootless Docker keeps its own daemon, which the steps below would miss; root sees a different one, and `curl | sudo bash` arrives root with DOCKER_HOST stripped, so probe SUDO_UID's socket too.
 rootless_daemon() {
     docker info --format '{{join .SecurityOptions ","}}' 2>/dev/null | grep -q rootless && return 0
     [[ -n "${SUDO_UID:-}" && -S "${RUN_USER_DIR}/${SUDO_UID}/docker.sock" ]] \
@@ -90,8 +67,7 @@ if [[ "$(id -u)" != 0 ]]; then
     fail "run this as root: sudo -E bash install_nvidia_toolkit.sh" 2
 fi
 
-# On WSL 2 the Windows driver provides nvidia-smi under /usr/lib/wsl/lib, which
-# sudo's secure_path drops, so look there as well as on PATH.
+# On WSL 2 the Windows driver puts nvidia-smi under /usr/lib/wsl/lib, which sudo's secure_path drops from PATH.
 NVSMI="$(command -v nvidia-smi 2>/dev/null || true)"
 [[ -z "$NVSMI" && -x "${WSL_LIB_DIR}/nvidia-smi" ]] && NVSMI="${WSL_LIB_DIR}/nvidia-smi"
 if [[ -z "$NVSMI" ]] || ! "$NVSMI" -L 2>/dev/null | grep -q '^GPU'; then
@@ -111,8 +87,7 @@ driver_ok() {
     [[ -n "$DRIVER" ]] && [[ "$(printf '%s\n' "$MIN_DRIVER" "$DRIVER" | sort -V | head -1)" == "$MIN_DRIVER" ]]
 }
 
-# explicit platform for the checks below: a cached ubuntu image of the other arch
-# would otherwise be picked and fail on "exec nvidia-smi: no such file"
+# Explicit platform: a cached ubuntu image of the other arch would be picked and fail on "exec nvidia-smi: no such file".
 case "$(uname -m)" in
     aarch64|arm64) PLATFORM=linux/arm64 ;;
     x86_64|amd64)  PLATFORM=linux/amd64 ;;
@@ -120,15 +95,13 @@ case "$(uname -m)" in
 esac
 
 configured() {
-    # a legacy or hand-made registration counts too; nvidia-ctk is only needed to make one
     docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'
 }
 
 if configured; then
     say "Docker already lists the nvidia runtime; nothing to install."
 elif command -v nvidia-ctk >/dev/null 2>&1 && command -v nvidia-container-runtime >/dev/null 2>&1; then
-    # full toolkit present (nvidia-container-toolkit-base alone ships only the CLI),
-    # runtime entry missing: no network work, just register
+    # nvidia-container-toolkit-base ships nvidia-ctk without the runtime, so check both before skipping the install.
     say "nvidia-container-toolkit is installed but Docker does not list the nvidia runtime."
 else
     [[ -r "$OS_RELEASE" ]] || fail "cannot read $OS_RELEASE to pick a package manager." 2
@@ -140,8 +113,7 @@ else
             apt-get update -qq
             apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg2 >/dev/null
             mkdir -p "${DESTDIR}/usr/share/keyrings" "${DESTDIR}/etc/apt/sources.list.d"
-            # staged, then renamed: a failed download must not leave a truncated
-            # keyring or source list behind on a rerun
+            # Staged then renamed: a failed download must not leave a truncated keyring or list behind.
             keyring="${DESTDIR}/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
             list="${DESTDIR}/etc/apt/sources.list.d/nvidia-container-toolkit.list"
             curl -fsSL "${BASE}/gpgkey" | gpg --dearmor --yes -o "${keyring}.tmp"
@@ -183,7 +155,6 @@ fi
 if ! configured; then
     say "Registering the nvidia runtime with Docker."
     nvidia-ctk runtime configure --runtime=docker
-    # WSL 2 distros and containers often run without systemd; `service` covers them.
     if command -v systemctl >/dev/null 2>&1 && systemctl restart docker 2>/dev/null; then
         say "Docker restarted (systemctl)."
     elif command -v service >/dev/null 2>&1 && service docker restart 2>/dev/null; then
@@ -206,8 +177,6 @@ if grep -qi microsoft "$PROC_VERSION" 2>/dev/null; then
     say "WSL 2 host: the GPU comes from the Windows NVIDIA driver; update it with NVIDIA's Windows installer."
 fi
 if ! driver_ok; then
-    # the toolkit is in place, but the image's CUDA 12.8 stack will not start on this
-    # driver, so do not call it done
     fail "the toolkit works, but NVIDIA driver ${DRIVER:-unknown} is below ${MIN_DRIVER}, the minimum for
        the Unsloth images. Update the driver, reboot, then run: docker run --rm --gpus all --platform ${PLATFORM} ubuntu:24.04 nvidia-smi -L" 3
 fi

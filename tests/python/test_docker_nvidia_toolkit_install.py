@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""docker/install_nvidia_toolkit.sh sets up the one host-side piece the image cannot
-carry: the NVIDIA Container Toolkit. Every package manager, restart and verification
-path runs here against stubs, and docker/run.sh's offer to run it is checked too."""
+"""docker/install_nvidia_toolkit.sh against stubbed package managers, drivers and
+Docker daemons, plus docker/run.sh's offer to run it."""
 
 from __future__ import annotations
 
@@ -31,9 +30,8 @@ OS_RELEASE = {
 }
 
 
-# The scripts under test are given ONLY these real tools, next to the stubs. A branch
-# that reaches for an absent command (dnf gone, systemctl gone) must find nothing,
-# never the runner's own package manager or init.
+# Only these real tools, so a branch reaching for an absent command (dnf, systemctl)
+# finds nothing rather than the runner's own package manager or init.
 _REAL_TOOLS = (
     "bash",
     "grep",
@@ -106,8 +104,7 @@ def _setup(
         if driver
         else "exit 9\n",
     )
-    # the installer picks the verification platform from uname -m; pin it so the
-    # suite means the same thing on an arm64 runner
+    # pinned: the installer picks the verification platform from uname -m
     _stub(bindir / "uname", 'if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi\n')
     ctk = bindir / "nvidia-ctk"
     runtime = bindir / "nvidia-container-runtime"
@@ -314,8 +311,7 @@ def test_rootless_docker_is_refused_before_anything_runs(tmp_path: Path):
 
 
 def test_rootless_docker_is_still_caught_when_piped_into_sudo_bash(tmp_path: Path):
-    """`curl | sudo bash` arrives as root with the user's DOCKER_HOST stripped by
-    env_reset; SUDO_UID survives, so the user's socket is probed through it."""
+    """env_reset strips DOCKER_HOST but keeps SUDO_UID, so the user's socket is probed through it."""
     import socket
 
     _, log, env = _setup(tmp_path, rootless = "via_sudo_uid", uid = 0)
@@ -357,8 +353,7 @@ def test_docker_context_wins_over_a_local_docker_host(tmp_path: Path):
 
 
 def test_nvidia_smi_is_found_in_the_wsl_library_dir_after_sudo(tmp_path: Path):
-    """secure_path drops /usr/lib/wsl/lib even with sudo -E, where the Windows
-    driver keeps nvidia-smi on a WSL 2 distro running its own Docker Engine."""
+    """secure_path drops /usr/lib/wsl/lib, where the Windows driver keeps nvidia-smi."""
     _, log, env = _setup(tmp_path, wsl = True)
     smi = tmp_path / "bin" / "nvidia-smi"
     wsl_lib = tmp_path / "wsl-lib"
@@ -394,8 +389,7 @@ def test_an_unsupported_architecture_is_refused_before_any_install(tmp_path: Pat
 
 
 def test_an_installed_toolkit_is_only_registered(tmp_path: Path):
-    """nvidia-ctk present, runtime entry gone: no repository or package work, which
-    is what an offline host needs."""
+    """nvidia-ctk present, runtime entry gone: no repository or package work, as an offline host needs."""
     _, log, env = _setup(tmp_path, toolkit_installed = True)
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
@@ -432,8 +426,7 @@ def test_no_gpu_on_wsl_points_at_the_windows_driver(tmp_path: Path):
 
 
 def test_only_the_toolkit_cli_present_still_installs_the_full_package(tmp_path: Path):
-    """nvidia-container-toolkit-base ships nvidia-ctk without the runtime binary; a
-    registration on its own would be unusable."""
+    """nvidia-container-toolkit-base ships nvidia-ctk without the runtime binary."""
     _, log, env = _setup(tmp_path, toolkit_installed = True)
     (tmp_path / "bin" / "nvidia-container-runtime").unlink()
     res = _run(env)
@@ -601,7 +594,7 @@ def _run_sh_env(
     )
     _stub(bindir / "nvidia-smi", 'echo "GPU 0: NVIDIA H100 (UUID: GPU-abc)"\n')
     _stub(bindir / "sudo", rec + "exit 0\n")
-    # never root here: as uid 0 run.sh would execute the REAL installer against the host
+    # never root: as uid 0 run.sh would run the REAL installer against this host
     _stub(bindir / "id", "echo 1000\n")
     _stub(bindir / "getent", "exit 2\n")
     dev_root = tmp_path / "root"
@@ -637,8 +630,7 @@ def test_run_sh_installs_the_toolkit_when_told_to_then_runs(tmp_path: Path):
 
 
 def test_run_sh_still_runs_the_container_when_the_installer_fails(tmp_path: Path):
-    """Exit 3 means the toolkit works and only the driver is old; a cancelled sudo is
-    exit 1. Neither may stop the docker run the user asked for."""
+    """Exit 3 (only the driver is old) and exit 1 (cancelled sudo) must not stop the docker run."""
     log, argv, env = _run_sh_env(tmp_path, nvidia_runtime = False)
     _stub(tmp_path / "bin" / "sudo", f'echo "$(basename "$0") $*" >> {log}\nexit 3\n')
     env["UNSLOTH_INSTALL_TOOLKIT"] = "1"
