@@ -139,6 +139,11 @@ first call to each stage pays a cold-start cost (Whisper load, MIOpen kernel
 tuning, model warmup); that's shown separately as `cold-start` and kept out of
 the steady-state means via a warmup pass.
 
+The pure parts (aggregation, first-chunk timing, fixture cache, TTS route
+selection, argument validation) have server-free unit tests:
+`python -m unittest discover -s studio/benchmarks/voice -p 'test_*.py'` from the
+repo root.
+
 A run proceeds in this order: warmup (unless `--no-warmup`), input-fixture
 preparation (a first run synthesizes the four utterances here, before anything
 is timed), the measured passes, then the determinism check (its two extra LLM
