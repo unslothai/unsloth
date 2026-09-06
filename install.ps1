@@ -520,13 +520,19 @@ function Install-UnslothStudio {
     function Read-WoaUvTomlIndexKeys {
         param([string]$Path, [string]$Top)
         try { $lines = [System.IO.File]::ReadAllLines($Path) } catch { return $null }
-        $out = @{ NoIndex = $null; DefaultIndex = $null }
+        # uv pip gives [pip] scalars precedence over the top-level ones (verified on 0.10.7:
+        # [pip].no-index and [pip].index-url each beat their top-level twin), and an
+        # [[index]] entry with default = true beats [pip].index-url. Every value is collected
+        # first and ranked at the end, so file order cannot decide.
+        $topScope = @{ NoIndex = $null; IndexUrl = $null }
+        $pipScope = @{ NoIndex = $null; IndexUrl = $null }
         $section = ""
-        $inIndex = $false; $idxUrl = $null; $idxDefault = $false
+        # A hashtable, because an assignment inside the $flush script block would be local to it.
+        $inIndex = $false; $idxUrl = $null; $idxDefault = $false; $entry = @{ DefaultUrl = $null }
         $indexTable = if ($Top) { "$Top.index" } else { "index" }
         $pipTable = if ($Top) { "$Top.pip" } else { "pip" }
         $flush = {
-            if ($inIndex -and $idxDefault -and $idxUrl -and -not $out.DefaultIndex) { $out.DefaultIndex = $idxUrl }
+            if ($inIndex -and $idxDefault -and $idxUrl -and -not $entry.DefaultUrl) { $entry.DefaultUrl = $idxUrl }
         }
         foreach ($raw in $lines) {
             $line = ($raw -replace '(^|\s)#.*$', '').Trim()
@@ -546,22 +552,18 @@ function Install-UnslothStudio {
                 if ($key -eq 'default' -and $null -ne $bool) { $idxDefault = $bool }
                 continue
             }
-            if ($section -eq $Top -or $section -eq $pipTable) {
-                if ($key -eq 'no-index' -and $null -ne $bool -and $null -eq $out.NoIndex) { $out.NoIndex = $bool }
-                if (($key -eq 'default-index' -or $key -eq 'index-url') -and $str -and -not $out.DefaultIndex) { $out.DefaultIndex = $str }
-                if ($key -eq 'index') { return $null }
-            }
+            $scope = if ($section -eq $Top) { $topScope } elseif ($section -eq $pipTable) { $pipScope } else { $null }
+            if ($null -eq $scope) { continue }
+            if ($key -eq 'no-index' -and $null -ne $bool -and $null -eq $scope.NoIndex) { $scope.NoIndex = $bool }
+            if (($key -eq 'default-index' -or $key -eq 'index-url') -and $str -and -not $scope.IndexUrl) { $scope.IndexUrl = $str }
+            if ($key -eq 'index') { return $null }
         }
         & $flush
-        return $out
+        $noIndex = if ($null -ne $pipScope.NoIndex) { $pipScope.NoIndex } else { $topScope.NoIndex }
+        $defaultIndex = if ($entry.DefaultUrl) { $entry.DefaultUrl } elseif ($pipScope.IndexUrl) { $pipScope.IndexUrl } else { $topScope.IndexUrl }
+        return @{ NoIndex = $noIndex; DefaultIndex = $defaultIndex }
     }
 
-    # uv reads persistent configuration too, and environment variables outrank it: uv.toml in
-    # the current directory or the nearest parent (uv.toml beats pyproject [tool.uv] in the same
-    # directory), then the user file (%APPDATA%\uv\uv.toml), then the system one
-    # (%PROGRAMDATA%\uv\uv.toml). UV_CONFIG_FILE names one file instead of discovering;
-    # UV_NO_CONFIG discovers nothing. Project outranks user outranks system for a scalar, so
-    # the first file that sets a key decides it.
     function Get-WoaUvConfigIndexPolicy {
         $result = @{ NoIndex = $false; DefaultIndex = $null; Unreadable = $false }
         $noCfg = [string](Get-Item Env:UV_NO_CONFIG -ErrorAction SilentlyContinue).Value
@@ -5382,6 +5384,9 @@ exit 0
                     if (-not $script:WoaPyPIProvided.ContainsKey($_woaRedundantKey)) { $script:WoaPyPIProvided[$_woaRedundantKey] = @() }
                     $script:WoaPyPIProvided[$_woaRedundantKey] += [string]$script:WoaPyPIMatchedVersion
                     substep "windows on arm: PyPI publishes $($wheel.Name) itself -- taking it from there, not the wheelhouse."
+                    # The managed copy too, or UV_FIND_LINKS still offers it and wins the tie. When the
+                    # wheelhouse IS the managed directory, that copy is this file; an external one is untouched.
+                    Remove-Item -LiteralPath (Join-Path $WoaWheelDir $wheel.Name) -Force -ErrorAction SilentlyContinue
                     continue
                 }
                 # Opened, not just named: _find_links_wheel_versions reads only the filename, so a
@@ -5411,6 +5416,8 @@ exit 0
                         if (-not $script:WoaPyPIProvided.ContainsKey($_woaRedundantKey)) { $script:WoaPyPIProvided[$_woaRedundantKey] = @() }
                         $script:WoaPyPIProvided[$_woaRedundantKey] += [string]$script:WoaPyPIMatchedVersion
                         substep "windows on arm: PyPI publishes $name itself -- taking it from there, not the wheelhouse."
+                        # A copy staged by an earlier install would still be offered through UV_FIND_LINKS.
+                        Remove-Item -LiteralPath (Join-Path $WoaWheelDir $name) -Force -ErrorAction SilentlyContinue
                         continue
                     }
                     $dest = Join-Path $WoaWheelDir $name

@@ -45,6 +45,11 @@ HELPERS = (
     "Test-WoaVersionAtLeast",
     "Test-WoaWheelTags",
     "Test-WoaWheelTagsUsable",
+    # Everything Test-WoaResolveReachesPyPI calls: a missing helper is a non-terminating
+    # error inside it, which answered True and let a lookalike index pass unnoticed.
+    "Test-WoaUrlIsPublicPyPI",
+    "Read-WoaUvTomlIndexKeys",
+    "Get-WoaUvConfigIndexPolicy",
     "Test-WoaResolveReachesPyPI",
 )
 

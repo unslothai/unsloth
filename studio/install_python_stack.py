@@ -5818,23 +5818,30 @@ def _uv_config_index_policy() -> "dict[str, object]":
             section = section.get(part, {}) if isinstance(section, dict) else {}
         if not isinstance(section, dict):
             continue
-        scopes = [section, section.get("pip", {}) if isinstance(section.get("pip"), dict) else {}]
-        for scope in scopes:
-            if policy["no_index"] is None and isinstance(scope.get("no-index"), bool):
-                policy["no_index"] = scope["no-index"]
-            for key in ("default-index", "index-url"):
-                if policy["default_index"] is None and isinstance(scope.get(key), str):
-                    policy["default_index"] = scope[key]
+        # uv pip gives [pip] scalars precedence over the top-level ones (verified on 0.10.7:
+        # [pip].no-index and [pip].index-url each beat their top-level twin), and an [[index]]
+        # entry with default = true beats [pip].index-url.
+        pip_scope = section.get("pip", {}) if isinstance(section.get("pip"), dict) else {}
+        file_no_index = None
+        for scope in (pip_scope, section):
+            if file_no_index is None and isinstance(scope.get("no-index"), bool):
+                file_no_index = scope["no-index"]
+        file_default = None
         indexes = section.get("index")
-        if isinstance(indexes, list) and policy["default_index"] is None:
+        if isinstance(indexes, list):
             for entry in indexes:
-                if (
-                    isinstance(entry, dict)
-                    and entry.get("default") is True
-                    and isinstance(entry.get("url"), str)
-                ):
-                    policy["default_index"] = entry["url"]
+                if isinstance(entry, dict) and entry.get("default") is True and isinstance(entry.get("url"), str):
+                    file_default = entry["url"]
                     break
+        if file_default is None:
+            for scope in (pip_scope, section):
+                for key in ("default-index", "index-url"):
+                    if file_default is None and isinstance(scope.get(key), str):
+                        file_default = scope[key]
+        if policy["no_index"] is None and file_no_index is not None:
+            policy["no_index"] = file_no_index
+        if policy["default_index"] is None and file_default is not None:
+            policy["default_index"] = file_default
     return policy
 
 

@@ -4720,50 +4720,72 @@ class TestThePyPIProbeHonoursUvConfiguration:
                 "an inline table this parser does not model is not guessed at",
             ),
             # The host, not a substring: a lookalike that merely contains the name is not PyPI.
-            (
-                {},
-                {"UV_DEFAULT_INDEX": "https://pypi.org.corp.example/simple"},
-                "False",
-                "a subdomain lookalike in the environment",
-            ),
-            (
-                {},
-                {"UV_DEFAULT_INDEX": "https://packages.example/api/pypi/pypi.org/simple"},
-                "False",
-                "the name in the path",
-            ),
-            (
-                {},
-                {"UV_INDEX_URL": "HTTPS://PYPI.ORG/simple/"},
-                "True",
-                "case does not matter for a host",
-            ),
-            (
-                {},
-                {"PIP_INDEX_URL": "https://user:token@pypi.org/simple"},
-                "True",
-                "credentials do not hide the host",
-            ),
-            (
-                {},
-                {"UV_DEFAULT_INDEX": "https://test.pypi.org/simple"},
-                "False",
-                "TestPyPI does not carry these packages",
-            ),
-            (
-                {"proj/uv.toml": 'default-index = "https://pypi.org.corp.example/simple"\n'},
-                {},
-                "False",
-                "a subdomain lookalike in a config file",
-            ),
-            (
-                {"proj/uv.toml": 'default-index = "https://pypi.org/simple"\n'},
-                {},
-                "True",
-                "public PyPI named explicitly in a config file",
-            ),
+            ({}, {"UV_DEFAULT_INDEX": "https://pypi.org.corp.example/simple"}, "False", "a subdomain lookalike in the environment"),
+            ({}, {"UV_DEFAULT_INDEX": "https://packages.example/api/pypi/pypi.org/simple"}, "False", "the name in the path"),
+            ({}, {"UV_INDEX_URL": "HTTPS://PYPI.ORG/simple/"}, "True", "case does not matter for a host"),
+            ({}, {"PIP_INDEX_URL": "https://user:token@pypi.org/simple"}, "True", "credentials do not hide the host"),
+            ({}, {"UV_DEFAULT_INDEX": "https://test.pypi.org/simple"}, "False", "TestPyPI does not carry these packages"),
+            ({"proj/uv.toml": 'default-index = "https://pypi.org.corp.example/simple"\n'}, {}, "False", "a subdomain lookalike in a config file"),
+            ({"proj/uv.toml": 'default-index = "https://pypi.org/simple"\n'}, {}, "True", "public PyPI named explicitly in a config file"),
+            # uv pip: [pip] scalars outrank the top-level ones whatever their order in the file,
+            # and an [[index]] entry with default = true outranks [pip].index-url (uv 0.10.7).
+            ({"proj/uv.toml": "no-index = false\n[pip]\nno-index = true\n"}, {}, "False", "[pip].no-index = true beats the top-level false"),
+            ({"proj/uv.toml": "no-index = true\n[pip]\nno-index = false\n"}, {}, "True", "[pip].no-index = false beats the top-level true"),
+            ({"proj/uv.toml": '[pip]\nno-index = true\n\n[other]\nx = 1\nno-index = false\n'}, {}, "False", "a later section does not reopen the top level"),
+            ({"proj/uv.toml": 'index-url = "https://pypi.org/simple"\n[pip]\nindex-url = "https://pypi.corp.test/simple"\n'}, {}, "False", "[pip].index-url beats the top-level index-url"),
+            ({"proj/uv.toml": 'index-url = "https://pypi.corp.test/simple"\n[pip]\nindex-url = "https://pypi.org/simple"\n'}, {}, "True", "the other way round"),
+            ({"proj/uv.toml": '[[index]]\nurl = "https://pypi.corp.test/simple"\ndefault = true\n[pip]\nindex-url = "https://pypi.org/simple"\n'}, {}, "False", "[[index]] default = true beats [pip].index-url"),
+            ({"proj/uv.toml": '[pip]\nindex-url = "https://pypi.corp.test/simple"\n[[index]]\nurl = "https://pypi.org/simple"\ndefault = true\n'}, {}, "True", "and still does when it comes later in the file"),
+            ({"proj/uv.toml": 'no-index = true\n[pip]\nindex-url = "https://pypi.org/simple"\n'}, {}, "False", "no-index disables every registry, [pip].index-url included"),
+            ({"proj/pyproject.toml": '[tool.uv]\nno-index = false\n[tool.uv.pip]\nno-index = true\n'}, {}, "False", "the same under [tool.uv.pip]"),
         ],
     )
     def test_where_the_resolve_will_look(self, tmp_path, files, env, expected, why):
         env = {k: v.replace("__TMP__", str(tmp_path)) for k, v in env.items()}
         assert self._reaches(tmp_path, files, env) == expected, why
+
+
+class TestARedundantWheelLeavesTheManagedDirectoryToo:
+    """Skipping the copy was not enough: the managed directory is prepended to UV_FIND_LINKS,
+    so a copy already there (the offline-cache mode points the wheelhouse AT that directory,
+    and an earlier install may have staged one) still wins the tie over the upstream wheel."""
+
+    def _redundant_branches(self):
+        text = INSTALL_PS1.read_text(encoding = "utf-8")
+        out = []
+        for marker in (
+            'substep "windows on arm: PyPI publishes $($wheel.Name) itself -- taking it from there, not the wheelhouse."',
+            'substep "windows on arm: PyPI publishes $name itself -- taking it from there, not the wheelhouse."',
+        ):
+            i = text.index(marker)
+            out.append(text[i : text.index("continue", i)])
+        return out
+
+    def test_both_wheelhouse_modes_remove_the_managed_copy(self):
+        local, url = self._redundant_branches()
+        assert "Remove-Item -LiteralPath (Join-Path $WoaWheelDir $wheel.Name) -Force" in local
+        assert "Remove-Item -LiteralPath (Join-Path $WoaWheelDir $name) -Force" in url
+
+    def test_only_the_managed_copy_goes(self):
+        """An external wheelhouse file is never the target: the path is built from $WoaWheelDir."""
+        for branch in self._redundant_branches():
+            assert "$wheel.FullName" not in branch.split("Remove-Item")[1]
+            assert "$script:WoaWheelhouse" not in branch.split("Remove-Item")[1]
+
+    @requires_pwsh
+    def test_the_removal_line_deletes_a_stale_copy_and_leaves_the_source(self, tmp_path):
+        src = tmp_path / "house"; src.mkdir(); managed = tmp_path / "wheels"; managed.mkdir()
+        (src / "tiktoken-0.9.0-cp313-cp313-win_arm64.whl").write_bytes(b"x")
+        (managed / "tiktoken-0.9.0-cp313-cp313-win_arm64.whl").write_bytes(b"x")
+        local, _ = self._redundant_branches()
+        line = [l.strip() for l in local.splitlines() if l.strip().startswith("Remove-Item")][0]
+        script = "\n".join([
+            f"$WoaWheelDir = '{managed}'",
+            f"$wheel = Get-Item -LiteralPath '{src / 'tiktoken-0.9.0-cp313-cp313-win_arm64.whl'}'",
+            line,
+            "Write-Output ('SRC=' + (Test-Path -LiteralPath $wheel.FullName))",
+            f"Write-Output ('MANAGED=' + (Test-Path -LiteralPath '{managed / 'tiktoken-0.9.0-cp313-cp313-win_arm64.whl'}'))",
+        ])
+        done = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script], capture_output = True, text = True, timeout = 60)
+        assert done.returncode == 0, done.stderr
+        assert "SRC=True" in done.stdout and "MANAGED=False" in done.stdout, done.stdout
