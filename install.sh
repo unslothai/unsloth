@@ -638,12 +638,9 @@ _configure_uv_cache() {
         return 0
     fi
 
-    # Ask the verified uv binary for the path it will actually use. This includes
-    # uv.toml, pyproject, UV_CONFIG_FILE and platform defaults. A blank inherited
-    # variable is intentionally removed so it cannot override those sources.
-    # Take the LAST nonblank line: a wrapper or a future uv could print a notice
-    # ahead of the path, and a two-line value silently fails the -d test below,
-    # which reads as "no cache" and quietly picks the Studio path instead.
+    # Ask uv so uv.toml / UV_CONFIG_FILE / platform defaults count; -u so a blank
+    # inherited value cannot override them; last line so a notice ahead of the path
+    # does not become the path.
     _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null \
         | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 1) || _uv_default_cache=""
     if [ -z "$_uv_default_cache" ]; then
@@ -657,19 +654,8 @@ _configure_uv_cache() {
     _uv_default_populated=false
     _uv_scan_blocked=false
     if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
-        # uv venv alone creates root markers, interpreter metadata and empty
-        # sdists scaffolding. Reuse only when a package-data bucket contains an
-        # actual artifact; stop at the first file and never size or mutate it.
-        #
-        # The extension filter is what separates a warm cache from a merely
-        # visited one. Only archive-*, builds-* and the .whl/extracted contents of
-        # sdists-* hold package bytes. wheels-* is metadata: on a real uv 0.10
-        # cache it is .msgpack and .http exclusively, so a single `--dry-run`
-        # resolve -- or an install that failed before downloading anything --
-        # leaves a file there and used to be read as a warm cache. That sent the
-        # whole install to the global cache for no download saving at all.
-        # -L so a bucket symlinked onto another volume is still inspected, which
-        # is what Get-ChildItem -Recurse does on the PowerShell side.
+        # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
+        # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
         for _uv_bucket in \
             "$_uv_default_cache"/archive-* \
             "$_uv_default_cache"/builds-* \
@@ -677,9 +663,7 @@ _configure_uv_cache() {
             "$_uv_default_cache"/wheels-* \
             "$_uv_default_cache"/sdists-*; do
             [ -d "$_uv_bucket" ] || continue
-            # A bucket we cannot open is not an empty bucket. Remember that, so the
-            # studio-cache message below can say why it could not reuse the cache
-            # instead of leaving an unexplained multi-gigabyte download.
+            # Unreadable is not empty; remembered so the message below says why.
             if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
                 _uv_scan_blocked=true
                 continue
@@ -2235,8 +2219,7 @@ _maybe_reroute_strixhalo_to_2404() {
     _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
 
-    # Automatic paths belong to the origin distro. Let the target recompute its own
-    # platform default; only an explicit caller override is portable by intent.
+    # An automatic path belongs to the origin distro; only an override is portable.
     case "${UV_CACHE_DIR-}" in
         *[![:space:]]*)
             _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"

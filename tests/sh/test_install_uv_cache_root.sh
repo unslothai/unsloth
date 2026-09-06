@@ -181,11 +181,7 @@ for shell in sh bash; do
         "" unset "" "$ROOT" "" "$STUDIO_CACHE" studio \
         "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
 
-    # A cache that was only ever RESOLVED against, never downloaded into. On a real
-    # uv 0.10 cache `wheels-v*` holds .msgpack and .http exclusively, so one
-    # `uv pip install --dry-run` -- or an install that failed before fetching
-    # anything -- leaves a file there. Reusing that buys no download saving at all
-    # and puts the whole install outside the Studio root, so it must stay Studio.
+    # wheels-v* is .msgpack/.http only on uv 0.10: one `--dry-run` leaves a file.
     META_CACHE="$CASE/metadata only/uv"
     mkdir -p "$META_CACHE/wheels-v6/pypi/torch" "$META_CACHE/simple-v20/pypi" \
         "$META_CACHE/sdists-v9/pypi/pkg"
@@ -198,7 +194,6 @@ for shell in sh bash; do
         "$HOME_DIR" unset "" "$ROOT" "$META_CACHE" "$STUDIO_CACHE" studio \
         "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
 
-    # The same cache once a real artifact lands next to the metadata.
     mkdir -p "$META_CACHE/archive-v0/hash/torch"
     : > "$META_CACHE/archive-v0/hash/torch/_C.so"
     run_case "$shell" "package bytes beside metadata do count" unset "" false \
@@ -206,8 +201,7 @@ for shell in sh bash; do
         "reusing existing shared cache ($META_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
         "$STUDIO_CACHE"
 
-    # builds-v* is what modern uv calls the bucket this file used to look for under
-    # the name built-wheels-*.
+    # builds-v* is what modern uv calls the old built-wheels-* bucket.
     BUILDS_CACHE="$CASE/builds cache/uv"
     mkdir -p "$BUILDS_CACHE/builds-v0/pkg"
     : > "$BUILDS_CACHE/builds-v0/pkg/module.py"
@@ -216,9 +210,7 @@ for shell in sh bash; do
         "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
         "$STUDIO_CACHE"
 
-    # A bucket symlinked onto another volume still holds the packages. `find` does
-    # not descend a symlinked start point without -L, and Get-ChildItem -Recurse on
-    # the PowerShell side does, so without -L the two installers disagree here.
+    # `find` needs -L to descend a symlink; Get-ChildItem -Recurse already does.
     LINK_CACHE="$CASE/symlinked bucket/uv"
     LINK_TARGET="$CASE/symlinked bucket/elsewhere"
     mkdir -p "$LINK_CACHE" "$LINK_TARGET/pkg"
@@ -230,9 +222,7 @@ for shell in sh bash; do
             "$STUDIO_CACHE"
     fi
 
-    # An unreadable bucket is not an empty bucket. Falling back to the Studio cache
-    # is right, but it must say why: otherwise the user gets an unexplained
-    # multi-gigabyte download and no way to connect it to a permission problem.
+    # Unreadable is not empty: falling back is right, doing it silently is not.
     DENIED_CACHE="$CASE/denied bucket/uv"
     mkdir -p "$DENIED_CACHE/archive-v0/pkg"
     : > "$DENIED_CACHE/archive-v0/pkg/payload.so"
@@ -244,8 +234,6 @@ for shell in sh bash; do
         chmod 755 "$DENIED_CACHE/archive-v0" 2>/dev/null || true
     fi
 
-    # An unreadable corner deeper down must NOT change the verdict: the packages are
-    # still visible, so the cache is still warm.
     DEEP_CACHE="$CASE/denied leaf/uv"
     mkdir -p "$DEEP_CACHE/archive-v0/visible" "$DEEP_CACHE/archive-v0/aaa hidden"
     : > "$DEEP_CACHE/archive-v0/visible/payload.so"

@@ -1242,16 +1242,13 @@ public static class UnslothStudioFinalPathV2
             $sharedCachePopulated = $false
             $scanBlocked = $false
             try {
-                # Ask the verified uv binary for the path it will actually use, including
-                # uv.toml, pyproject, UV_CONFIG_FILE and the platform default. Remove a
-                # blank inherited variable so it cannot override those sources.
+                # Ask uv so uv.toml / UV_CONFIG_FILE / the default count; remove a
+                # blank inherited value so it cannot override them.
                 Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
                 if ($UvExecutable) {
                     $resolvedCache = @(& $UvExecutable cache dir 2>$null)
                     $uvCacheExit = $LASTEXITCODE
-                    # The LAST nonblank line, not the first: a wrapper or a future uv
-                    # could print a notice ahead of the path, and taking [0] would then
-                    # treat that notice as the cache directory.
+                    # Last nonblank line, not [0]: a notice would become the path.
                     $resolvedLine = $resolvedCache |
                         Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
                         Select-Object -Last 1
@@ -1263,24 +1260,13 @@ public static class UnslothStudioFinalPathV2
                     $sharedCache = Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"
                 }
                 if ($sharedCache -and (Test-Path -LiteralPath $sharedCache -PathType Container)) {
-                    # uv venv alone creates root markers, interpreter metadata and empty
-                    # sdists scaffolding. Reuse only when a package-data bucket contains
-                    # an actual artifact; stop on the first file and never mutate it.
-                    #
-                    # The extension filter is what separates a warm cache from a merely
-                    # visited one. Only archive-*, builds-* and the .whl/extracted contents
-                    # of sdists-* hold package bytes. wheels-* is metadata: on a real uv
-                    # 0.10 cache it is .msgpack and .http exclusively, so a single
-                    # `--dry-run` resolve -- or an install that failed before downloading
-                    # anything -- leaves a file there and used to be read as a warm cache.
+                    # Warm means package BYTES: wheels-* is metadata only (.msgpack/
+                    # .http on uv 0.10), so a bare `--dry-run` used to read as warm.
                     $buckets = Get-ChildItem -LiteralPath $sharedCache -Directory -Force -ErrorAction Stop |
                         Where-Object { $_.Name -match '^(archive|builds|built-wheels|wheels|sdists)-' }
                     foreach ($bucket in $buckets) {
-                        # SilentlyContinue, not Stop: one ACL-denied subdirectory, long path
-                        # or file removed mid-scan must not make a populated cache read as
-                        # empty and trigger the multi-gigabyte redownload this whole
-                        # selector exists to avoid. `find` on the sh side already skips what
-                        # it cannot read and keeps going; this keeps the two verdicts equal.
+                        # SilentlyContinue, not Stop: one denied subdirectory must not
+                        # make a populated cache read as empty. `find` also skips and continues.
                         $scanErrors = $null
                         $entry = Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force `
                                 -ErrorAction SilentlyContinue -ErrorVariable scanErrors |
@@ -1293,15 +1279,12 @@ public static class UnslothStudioFinalPathV2
                             $sharedCachePopulated = $true
                             break
                         }
-                        # A bucket we could not fully read is not an empty bucket. Remember
-                        # it so the studio-cache message can say why the cache was not
-                        # reused instead of leaving an unexplained multi-gigabyte download.
+                        # Unreadable is not empty; remembered so the message says why.
                         if ($scanErrors -and $scanErrors.Count -gt 0) { $scanBlocked = $true }
                     }
                 }
             } catch {
-                # An unavailable cache is not an installation error. Studio isolation is
-                # deterministic and safe when the effective cache cannot be inspected.
+                # An uninspectable cache is not an install error; isolation is safe.
                 $sharedCache = $null
                 $sharedCachePopulated = $false
                 $scanBlocked = $true
@@ -1348,9 +1331,7 @@ public static class UnslothStudioFinalPathV2
             [bool]$WasPresent,
             [AllowNull()][string]$PreviousValue
         )
-        # Use the PowerShell provider for both states. The .NET API maps an empty
-        # value to deletion on Windows and can leave the provider's view stale after
-        # deletion, so it cannot round-trip present-empty versus absent exactly.
+        # The provider, not the .NET API: that maps empty to deletion on Windows.
         if ($WasPresent) {
             Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $PreviousValue
         } else {

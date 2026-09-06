@@ -507,9 +507,7 @@ def _prepare_uv_default(local_app_data: Path, state: str) -> Path:
             "cached = True\n", encoding = "utf-8"
         )
     elif state == "metadata-only":
-        # A cache that was resolved against but never downloaded into. On a real uv
-        # 0.10 cache `wheels-v*` is .msgpack and .http exclusively, so a single
-        # `uv pip install --dry-run` leaves a file here while the cache stays cold.
+        # wheels-v* is .msgpack/.http only on uv 0.10: one `--dry-run` leaves a file.
         (shared / "wheels-v6" / "pypi" / "torch").mkdir(parents = True)
         (shared / "wheels-v6" / "pypi" / "torch" / "2.11.0-cp313.msgpack").write_bytes(b"meta")
         (shared / "wheels-v6" / "pypi" / "torch" / "2.11.0.http").write_bytes(b"meta")
@@ -517,8 +515,7 @@ def _prepare_uv_default(local_app_data: Path, state: str) -> Path:
         (shared / "sdists-v9" / "pypi" / "pkg" / "revision.rev").write_bytes(b"meta")
         (shared / "sdists-v9" / "pypi" / "pkg" / "download.lock").write_bytes(b"")
     elif state == "builds":
-        # What modern uv calls the bucket this selector used to look for as
-        # `built-wheels-*`.
+        # What modern uv calls the old built-wheels-* bucket.
         (shared / "builds-v0" / "pkg").mkdir(parents = True)
         (shared / "builds-v0" / "pkg" / "module.py").write_text("x = 1\n", encoding = "utf-8")
     elif state == "symlinked-bucket":
@@ -557,15 +554,11 @@ def _prepare_uv_default(local_app_data: Path, state: str) -> Path:
         ("custom", "CUSTOM", False, "populated", "custom"),
         ("custom-over-isolation", "CUSTOM", True, "populated", "custom"),
         ("forced-isolation", None, True, "populated", "isolated"),
-        # Metadata without package bytes is not a warm cache: reusing it would put
-        # the whole install outside the Studio root for no download saving.
         ("metadata-only", None, False, "metadata-only", "studio"),
         ("builds-bucket", None, False, "builds", "shared"),
         ("symlinked-bucket", None, False, "symlinked-bucket", "shared"),
-        # One unreadable corner must not make a warm cache read as cold.
         ("denied-leaf", None, False, "denied-leaf", "shared"),
-        # A bucket that cannot be opened at all is genuinely uninspectable. Falling
-        # back is right; doing it silently is what leaves an unexplained download.
+        # Uninspectable: falling back is right, doing it silently is not.
         ("denied-bucket", None, False, "denied-bucket", "studio"),
     ],
 )

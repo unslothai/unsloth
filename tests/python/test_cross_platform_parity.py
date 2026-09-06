@@ -1123,10 +1123,7 @@ class TestInstallUvCacheRootParity:
                 "so cached packages may download again",
             ):
                 assert message in source
-            # Both selectors must agree on which buckets hold package bytes and
-            # which file kinds are only metadata. A cache holding nothing but
-            # metadata is cold, and reusing it puts the install outside the Studio
-            # root for no download saving at all.
+            # Both selectors must agree: a metadata-only cache is cold.
             for bucket in ("archive", "builds", "built-wheels", "wheels", "sdists"):
                 assert bucket in source, bucket
             for metadata_suffix in (".msgpack", ".http", ".rev", ".lock"):
@@ -1140,14 +1137,10 @@ class TestInstallUvCacheRootParity:
         )[0]
         assert "Get-ChildItem -LiteralPath $sharedCache -Directory -Force" in selector
         assert "Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force" in selector
-        # The recursive scan must not fail closed. One ACL-denied subdirectory
-        # throwing into the catch-all would reclassify a populated cache as empty
-        # and trigger the multi-gigabyte redownload the selector exists to avoid;
-        # `find` on the sh side skips what it cannot read and keeps going.
+        # Must not fail closed: one denied subdirectory would read as an empty cache.
         assert "-ErrorAction SilentlyContinue -ErrorVariable scanErrors" in selector
         assert "-ErrorAction Stop" not in selector.split("foreach ($bucket in $buckets)", 1)[1]
-        # -L for the same reason on the sh side: a bucket symlinked onto another
-        # volume still holds the packages, and Get-ChildItem -Recurse follows it.
+        # -L on the sh side for the same reason Get-ChildItem -Recurse follows links.
         assert "find -L " in sh
 
     def test_shell_order_wsl_handoff_and_autostart_boundary(self):
