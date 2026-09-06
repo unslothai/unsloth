@@ -1839,6 +1839,9 @@ _MACOS_OPTIONAL_READ_LITERALS = (
     "/private/etc/gitconfig",
     "/etc/gitattributes",
     "/private/etc/gitattributes",
+    # xcrun's license check: the Xcode shims refuse ("You have not agreed to the
+    # Xcode license agreements") when they cannot read the system-wide record.
+    "/Library/Preferences/com.apple.dt.Xcode.plist",
 )
 _MACOS_DENIED_EXECUTABLES = (
     "/usr/bin/open",
@@ -1934,9 +1937,14 @@ def _sbpl_path_filters(paths: tuple[str, ...]) -> list[str]:
 def _sbpl_path_spellings(path: str) -> tuple[str, ...]:
     canonical, _ = _sbpl_path(path)
     selected = [os.path.abspath(path), json.loads(canonical)]
+    # /etc, /tmp and /var are symlinks into /private; tools spell paths through
+    # the symlink (git reads /etc/gitconfig), and resolving that spelling needs
+    # the symlink itself and its ancestors in the metadata rules, otherwise the
+    # access fails with EPERM before the canonical rule is ever consulted.
     for spelling in tuple(selected):
-        if spelling == "/private/var" or spelling.startswith("/private/var/"):
-            selected.append(spelling[len("/private") :])
+        for prefix in ("/private/var", "/private/etc", "/private/tmp"):
+            if spelling == prefix or spelling.startswith(prefix + "/"):
+                selected.append(spelling[len("/private") :])
     return tuple(dict.fromkeys(selected))
 
 
@@ -1981,6 +1989,14 @@ def _macos_seatbelt_profile(
         *_sbpl_path_filters(readable_paths),
     ]
     metadata_filters = _sbpl_ancestor_filters(readable_paths)
+    # The optional literals may not exist, so their ancestors are added by name.
+    for literal in _MACOS_OPTIONAL_READ_LITERALS:
+        current = os.path.dirname(literal)
+        while current and current != os.path.sep:
+            encoded = f"(literal {json.dumps(current)})"
+            if encoded not in metadata_filters:
+                metadata_filters.append(encoded)
+            current = os.path.dirname(current)
     write_filters = _sbpl_path_filters((workdir, private_tmp))
     temp_encoded, _ = _sbpl_path(private_tmp)
     device_filters = _sbpl_path_filters(_MACOS_DEVICES)

@@ -2917,6 +2917,11 @@ def test_macos_profile_admits_only_the_proxy_port_when_given(tmp_path):
     # git probes these on every run; absent files must read as absent, not denied.
     for literal in os_sandbox._MACOS_OPTIONAL_READ_LITERALS:
         assert f'(literal "{literal}")' in base
+    # Their ancestors are searchable even when the files are absent, and the /etc
+    # symlink spelling resolves (round 10 on macOS: EPERM on /etc/gitconfig).
+    metadata = base.split("(allow file-read-metadata ", 1)[1].split(")\n", 1)[0]
+    for ancestor in ('"/etc"', '"/private/etc"', '"/Library/Preferences"', '"/Library"'):
+        assert f"(literal {ancestor})" in metadata, ancestor
     with_proxy = os_sandbox._macos_seatbelt_profile(
         workdir = str(workdir),
         private_tmp = str(private_tmp),
@@ -3088,3 +3093,10 @@ def test_macos_developer_paths_include_the_enclosing_app_bundle(monkeypatch, tmp
     assert paths[0] == os.path.realpath(str(developer))
     assert str(tmp_path / "Xcode_16.4.app") in paths or os.path.realpath(str(tmp_path / "Xcode_16.4.app")) in paths
     monkeypatch.setattr(os_sandbox, "_developer_paths_cache", None)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason = "/private symlinks exist on macOS only")
+def test_sbpl_spellings_alias_the_private_symlinks():
+    assert "/etc" in os_sandbox._sbpl_path_spellings("/private/etc")
+    assert "/var/db" in os_sandbox._sbpl_path_spellings("/private/var/db")
+    assert "/tmp" in os_sandbox._sbpl_path_spellings("/private/tmp")
