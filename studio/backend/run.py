@@ -3137,6 +3137,17 @@ def _build_arg_parser():
             "(Parallel Slots) override it per load."
         ),
     )
+    parser.add_argument(
+        "--api-max-concurrency",
+        type = int,
+        default = None,
+        help = (
+            "Cap the number of concurrent inference API requests (admission "
+            "slots) independently of --parallel. Takes the minimum of this "
+            "value and the backend's slot count. Also reads "
+            "UNSLOTH_API_MAX_CONCURRENCY."
+        ),
+    )
     return parser
 
 
@@ -3170,6 +3181,11 @@ if __name__ == "__main__":
         os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
     else:
         os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "0")
+
+    if args.api_max_concurrency is not None:
+        if args.api_max_concurrency < 1:
+            parser.error("--api-max-concurrency must be at least 1")
+        os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(args.api_max_concurrency)
 
     kwargs = dict(
         host = args.host,
