@@ -30,7 +30,8 @@ What a stable SID changes
 * The AppContainer named-object namespace
   (``\\Sessions\\<n>\\AppContainerNamedObjects\\<SID>``) is now shared by every
   launch of the same installation, so two concurrent tool calls can see each
-  other's named objects instead of being in separate namespaces.
+  other's named objects, and one can create a name the other is about to open,
+  instead of each being in a namespace of its own.
 * Both launches also share the container profile directory, so one launch's
   private temp directory is reachable by a concurrent launch of the same
   installation. The private temp is still a fresh random subdirectory per
@@ -2859,9 +2860,9 @@ class WindowsLpacBackend:
                 payload["owner_created"],
                 workdir = payload.get("workdir", ""),
                 launch_id = payload.get("launch_id", ""),
-                # The owner is gone, so no live launch of this process shares
-                # these ACEs; the profile is this manifest's to delete only when
-                # the manifest is one of the single-use ones.
+                # Only a single-use manifest owns the profile it names. The
+                # shared one outlives every launch of the installation, and the
+                # SID here was derived locally, so it is this call's to free.
                 delete_profile = single_use,
                 free_sid = True,
             )

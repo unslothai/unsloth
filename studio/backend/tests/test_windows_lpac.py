@@ -1487,7 +1487,9 @@ def test_a_profile_whose_storage_was_deleted_is_created_again(monkeypatch, tmp_p
                 events.append(("delete-profile", moniker)) or 0
             ),
         ),
-        advapi32 = SimpleNamespace(FreeSid = lambda value: events.append(("free-sid", value.value))),
+        advapi32 = SimpleNamespace(
+            FreeSid = lambda value: events.append(("free-sid", value.value))
+        ),
     )
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: "S-1-15-2-1-2-3-4-5-6-7")
@@ -1820,7 +1822,9 @@ def test_a_profile_directory_that_cannot_be_rebuilt_refuses_the_launch(monkeypat
                 events.append(("delete-profile", moniker)) or 0
             ),
         ),
-        advapi32 = SimpleNamespace(FreeSid = lambda value: events.append(("free-sid", value.value))),
+        advapi32 = SimpleNamespace(
+            FreeSid = lambda value: events.append(("free-sid", value.value))
+        ),
     )
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: "S-1-15-2-1-2-3-4-5-6-7")
