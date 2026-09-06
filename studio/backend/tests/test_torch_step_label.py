@@ -26,7 +26,14 @@ def _load_module(monkeypatch):
     return install_python_stack
 
 
-def _label(monkeypatch, *, nvidia, rocm_probe, windows_rocm_torch, known_backend = ""):
+def _label(
+    monkeypatch,
+    *,
+    nvidia,
+    rocm_probe,
+    windows_rocm_torch,
+    known_backend = "",
+):
     mod = _load_module(monkeypatch)
     monkeypatch.setattr(mod, "_TORCH_BACKEND", known_backend)
     monkeypatch.setattr(mod, "_has_usable_nvidia_gpu", lambda: nvidia)
