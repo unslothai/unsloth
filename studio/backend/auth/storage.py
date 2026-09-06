@@ -9,11 +9,13 @@ import hashlib
 import hmac
 import ipaddress
 import os
+import re
 import secrets
 import sqlite3
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import uuid
 from typing import Iterator, Optional, Tuple
 
 from utils.paths import auth_db_path, ensure_dir
@@ -426,6 +428,196 @@ def count_active_accounts() -> int:
         return int(row["c"])
     finally:
         conn.close()
+
+
+def validate_account_username(username: str) -> str:
+    username = username.casefold()
+    if re.fullmatch(r"[a-z0-9_-]{3,32}", username) is None:
+        raise ValueError("Username must contain 3 to 32 letters, digits, underscores or hyphens")
+    if username in {"unsloth", "owner", "admin", "root", "system"}:
+        raise ValueError("This username is reserved")
+    return username
+
+
+def _public_account(row) -> dict:
+    return {
+        "account_id": row["account_id"],
+        "username": row["username"],
+        "role": row["role"],
+        "is_active": bool(row["is_active"]),
+        "created_at": row["created_at"],
+        # Expired codes still need regeneration; pending means setup is outstanding.
+        "setup_code_pending": bool(row["setup_code_hash"]),
+    }
+
+
+def list_accounts() -> list[dict]:
+    conn = get_connection()
+    try:
+        return [_public_account(row) for row in conn.execute("SELECT * FROM auth_user ORDER BY created_at, account_id")]
+    finally:
+        conn.close()
+
+
+def _managed_account(conn: sqlite3.Connection, account_id: str):
+    row = conn.execute("SELECT * FROM auth_user WHERE account_id = ?", (account_id,)).fetchone()
+    if row is None:
+        raise LookupError("Account not found")
+    if row["role"] == "owner" or account_id == "owner":
+        raise ValueError("The installation owner cannot be modified here")
+    return row
+
+
+def _revoke_account_credentials(conn: sqlite3.Connection, row) -> None:
+    # These frozen legacy tables reference usernames. Resolve that name only from
+    # the immutable account id, under the same write lock as the mutation.
+    conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (row["username"],))
+    conn.execute("DELETE FROM api_keys WHERE username = ?", (row["username"],))
+    conn.execute(
+        "UPDATE auth_user SET jwt_secret = ? WHERE account_id = ?",
+        (secrets.token_urlsafe(64), row["account_id"]),
+    )
+
+
+def issue_account_setup_code(*, username: Optional[str] = None, account_id: Optional[str] = None) -> dict:
+    """Create an account or replace its setup credential, returning plaintext once."""
+    from auth.hashing import hash_password
+    from auth.policy import invalidate_account_cache
+
+    if (username is None) == (account_id is None):
+        raise ValueError("Specify either a username or an account id")
+    if username is not None:
+        username = validate_account_username(username)
+    code = secrets.token_urlsafe(32)
+    salt, pwd_hash = hash_password(code)
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(minutes = 60)).isoformat()
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if username is not None:
+                account_id = uuid.uuid4().hex
+                conn.execute(
+                    """INSERT INTO auth_user
+                    (username, account_id, role, is_active, created_at, password_salt,
+                     password_hash, jwt_secret, must_change_password, setup_code_hash, setup_code_expires_at)
+                    VALUES (?, ?, 'user', 1, ?, ?, ?, ?, 1, ?, ?)""",
+                    (username, account_id, now.isoformat(), salt, pwd_hash,
+                     secrets.token_urlsafe(64), _hash_token(code), expires_at),
+                )
+            else:
+                row = _managed_account(conn, account_id)
+                _revoke_account_credentials(conn, row)
+                conn.execute(
+                    """UPDATE auth_user SET password_salt = ?, password_hash = ?, must_change_password = 1,
+                       setup_code_hash = ?, setup_code_expires_at = ? WHERE account_id = ?""",
+                    (salt, pwd_hash, _hash_token(code), expires_at, account_id),
+                )
+            account = _public_account(_managed_account(conn, account_id))
+    finally:
+        conn.close()
+    invalidate_account_cache()
+    return {"account": account, "setup_code": code, "setup_code_expires_at": expires_at}
+
+
+def authenticate_account_login(username: str, password: str) -> Optional[Tuple[str, str, str, bool]]:
+    """Managed login: consume a setup code once, retaining its password hash for setup.
+
+    A consumed code cannot log in again: must_change_password without a pending
+    code admits only the already-issued session's change-password request.
+    """
+    from auth.hashing import verify_password
+
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM auth_user WHERE username = ?", (username,)).fetchone()
+        if row is None or not row["is_active"]:
+            return None
+        if row["must_change_password"]:
+            if not row["setup_code_hash"] or not hmac.compare_digest(row["setup_code_hash"], _hash_token(password)):
+                return None
+            # Compare-and-swap includes expiry, activity and credential generation.
+            # Concurrent logins, resets or regeneration can never spend a code twice.
+            with conn:
+                cursor = conn.execute(
+                    """UPDATE auth_user SET setup_code_hash = NULL, setup_code_expires_at = NULL
+                       WHERE account_id = ? AND setup_code_hash = ? AND jwt_secret = ?
+                       AND is_active = 1 AND setup_code_expires_at > ?""",
+                    (row["account_id"], row["setup_code_hash"], row["jwt_secret"], datetime.now(timezone.utc).isoformat()),
+                )
+                if cursor.rowcount != 1:
+                    return None
+        elif not verify_password(password, row["password_salt"], row["password_hash"]):
+            return None
+        return row["password_salt"], row["password_hash"], row["jwt_secret"], bool(row["must_change_password"])
+    finally:
+        conn.close()
+
+
+def update_account_password(username: str, new_password: str, *, expect_password_hash: str, expect_secret: str) -> Optional[str]:
+    """Complete managed setup/password change without touching owner bootstrap or desktop state."""
+    from auth.hashing import hash_password
+
+    salt, pwd_hash = hash_password(new_password)
+    secret = secrets.token_urlsafe(64)
+    conn = get_connection()
+    try:
+        with conn:
+            cursor = conn.execute(
+                """UPDATE auth_user SET password_salt = ?, password_hash = ?, jwt_secret = ?,
+                   must_change_password = 0, setup_code_hash = NULL, setup_code_expires_at = NULL
+                   WHERE username = ? AND role = 'user' AND is_active = 1
+                   AND password_hash = ? AND jwt_secret = ?""",
+                (salt, pwd_hash, secret, username, expect_password_hash, expect_secret),
+            )
+            if cursor.rowcount != 1:
+                return None
+            conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        return secret
+    finally:
+        conn.close()
+
+
+def set_account_active(account_id: str, is_active: bool) -> dict:
+    from auth.policy import invalidate_account_cache
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = _managed_account(conn, account_id)
+            if not is_active:
+                _revoke_account_credentials(conn, row)
+            conn.execute("UPDATE auth_user SET is_active = ? WHERE account_id = ?", (int(is_active), account_id))
+            result = _public_account(_managed_account(conn, account_id))
+    finally:
+        conn.close()
+    invalidate_account_cache()
+    return result
+
+
+def delete_account(account_id: str, retire) -> None:
+    """Revoke first, then retire files and remove the identity under a write lock.
+
+    If retirement fails, the account remains disabled for an owner to retry.
+    ``retire(AccountContext)`` must not write to auth.db while this lock is held.
+    """
+    from auth.policy import invalidate_account_cache
+    from utils.account_context import AccountContext
+
+    set_account_active(account_id, False)
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = _managed_account(conn, account_id)
+            _revoke_account_credentials(conn, row)
+            retire(AccountContext(row["account_id"], row["username"], row["role"]))
+            conn.execute("DELETE FROM auth_user WHERE account_id = ?", (account_id,))
+    finally:
+        conn.close()
+        invalidate_account_cache()
 
 
 def _get_or_create_api_key_pbkdf2_salt() -> bytes:

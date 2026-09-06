@@ -5,9 +5,9 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from auth.storage import MIN_PASSWORD_LENGTH
+from auth.storage import MIN_PASSWORD_LENGTH, validate_account_username
 
 
 class AuthLoginRequest(BaseModel):
@@ -117,3 +117,35 @@ class ApiKeyListResponse(BaseModel):
     """List of API keys for the authenticated user."""
 
     api_keys: list[ApiKeyResponse]
+
+
+class CreateAccountRequest(BaseModel):
+    username: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        return validate_account_username(value)
+
+
+class AccountActiveRequest(BaseModel):
+    is_active: bool
+
+
+class AccountResponse(BaseModel):
+    account_id: str
+    username: str
+    role: str
+    is_active: bool
+    created_at: str
+    setup_code_pending: bool
+
+
+class AccountListResponse(BaseModel):
+    accounts: list[AccountResponse]
+
+
+class AccountSetupResponse(BaseModel):
+    account: AccountResponse
+    setup_code: str
+    setup_code_expires_at: str

@@ -1248,12 +1248,21 @@ def _cli_update_password(
             (password_salt, password_hash, secrets.token_urlsafe(64), username),
         )
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
-        conn.execute(
-            "DELETE FROM app_secrets WHERE key IN (?, ?)",
-            (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
-        )
+        if username == DEFAULT_ADMIN_USERNAME:
+            conn.execute(
+                "DELETE FROM app_secrets WHERE key IN (?, ?)",
+                (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
+            )
         if revoke_api_keys:
-            conn.execute("DELETE FROM api_keys")
+            conn.execute("DELETE FROM api_keys WHERE username = ?", (username,))
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+            if "setup_code_hash" in columns:
+                conn.execute(
+                    "UPDATE auth_user SET setup_code_hash = NULL, setup_code_expires_at = NULL WHERE username = ?",
+                    (username,),
+                )
+    if username != DEFAULT_ADMIN_USERNAME:
+        return
     for stale in (BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE):
         stale_path = STUDIO_HOME / "auth" / stale
         try:
@@ -4847,9 +4856,28 @@ def provision_desktop_auth():
     typer.echo("Desktop auth ready.")
 
 
+def _reset_password_username(conn: sqlite3.Connection, username: Optional[str]) -> str:
+    """Select the target under the reset's write lock, including legacy auth DBs."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+    active_filter = " WHERE is_active = 1" if "is_active" in columns else ""
+    count = conn.execute("SELECT COUNT(*) FROM auth_user" + active_filter).fetchone()[0]
+    if username is None and count > 1:
+        typer.echo("Error: --username is required when multiple accounts are active.", err = True)
+        raise typer.Exit(1)
+    target = DEFAULT_ADMIN_USERNAME if username is None else username.casefold()
+    if target == DEFAULT_ADMIN_USERNAME:
+        _ensure_cli_default_admin(conn)
+    elif conn.execute("SELECT 1 FROM auth_user WHERE username = ?", (target,)).fetchone() is None:
+        typer.echo("Error: account not found.", err = True)
+        raise typer.Exit(1)
+    return target
+
+
 @studio_app.command("reset-password")
-def reset_password():
-    """Reset the Unsloth admin password.
+def reset_password(
+    username: Optional[str] = typer.Option(None, "--username", help = "Account to reset; required with multiple active accounts."),
+):
+    """Reset an Unsloth account password.
 
     Rotates the credential in place: a running Unsloth accepts the new password on
     its next request, so there is nothing to restart. Shared /p preview links are
@@ -4868,15 +4896,16 @@ def reset_password():
         raise typer.Exit(1)
 
     try:
-        _ensure_cli_default_admin(conn)
-        _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, new_password, revoke_api_keys = True)
+        conn.execute("BEGIN IMMEDIATE")
+        target = _reset_password_username(conn, username)
+        _cli_update_password(conn, target, new_password, revoke_api_keys = True)
     except (OSError, sqlite3.Error) as exc:
         typer.echo(f"Error: could not reset the password ({exc}).", err = True)
         raise typer.Exit(1)
     finally:
         conn.close()
 
-    typer.echo(f"New password for '{DEFAULT_ADMIN_USERNAME}': {new_password}")
+    typer.echo(f"New password for '{target}': {new_password}")
     typer.echo(
         "Sessions and API keys revoked. A running Unsloth takes it on the next request, "
         "though repeated failed logins can hold the rate limit shut for up to a minute."
