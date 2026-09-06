@@ -92,10 +92,23 @@ _COLAB_OS_INFO_FILE = DATA_DIR / "colab_os_info.gpu.txt"
 _COLAB_PYTHON_RE = re.compile(r"^Python\s+(\d+\.\d+(?:\.\d+)?)", re.MULTILINE)
 
 
+# Directory the OS oracle is read from. Follows `lint --colab-pin` so the Python version
+# and the package snapshot always come from the SAME capture: a pin outside scripts/data
+# paired with this repo's committed os-info would evaluate markers against a different
+# image's interpreter than the packages being judged.
+_COLAB_ORACLE_DIR: pathlib.Path = DATA_DIR
+
+
+def _set_colab_oracle_dir(directory: pathlib.Path) -> None:
+    global _COLAB_ORACLE_DIR
+    _COLAB_ORACLE_DIR = directory
+    _colab_python_version.cache_clear()
+
+
 @functools.lru_cache(maxsize = 1)
 def _colab_python_version() -> str | None:
     try:
-        text = _COLAB_OS_INFO_FILE.read_text(encoding = "utf-8")
+        text = (_COLAB_ORACLE_DIR / _COLAB_OS_INFO_FILE.name).read_text(encoding = "utf-8")
     except OSError:
         return None
     match = _COLAB_PYTHON_RE.search(text)
@@ -1911,6 +1924,8 @@ def cmd_convert(args: argparse.Namespace) -> int:
 def cmd_lint(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     colab_path = pathlib.Path(args.colab_pin).resolve() if args.colab_pin else COLAB_FALLBACK_FILE
+    # Pair the marker oracle with the package snapshot actually being used.
+    _set_colab_oracle_dir(colab_path.parent)
     colab = parse_pip_freeze(colab_path)
     if not colab:
         print(

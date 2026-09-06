@@ -260,7 +260,7 @@ jobs:
         if: always()
         run: |
           python unsloth/scripts/notebook_validator.py refresh-colab \
-              --out unsloth/scripts/data/colab_pip_freeze.gpu.txt
+              --all --snapshot-dir unsloth/scripts/data
       - name: Lint with live PyPI metadata
         if: always()
         # Same backlog, same disposition as the PR-time `Lint` step above:

@@ -1874,3 +1874,36 @@ def test_notebooks_ci_watches_the_oracle_that_feeds_marker_evaluation():
     paths = workflow.split("paths:", 1)[1].split("jobs:", 1)[0]
     assert "'scripts/data/colab_os_info.gpu.txt'" in paths
     assert "'scripts/data/colab_pip_freeze.gpu.txt'" in paths
+
+
+def test_the_marker_oracle_follows_the_selected_pip_snapshot(tmp_path, monkeypatch):
+    """The Python version and the package snapshot must come from the SAME capture.
+
+    _colab_python_version read scripts/data unconditionally, so `lint --colab-pin` pointing
+    at a snapshot captured elsewhere evaluated markers against this repo's committed
+    os-info: a different image's interpreter than the packages being judged.
+    """
+    nv = _load_notebook_validator_module()
+
+    paired = tmp_path / "snap"
+    paired.mkdir()
+    (paired / "colab_os_info.gpu.txt").write_text("Python 3.11.9\n", encoding="utf-8")
+    nv._set_colab_oracle_dir(paired)
+    assert nv._colab_python_version() == "3.11.9"
+
+    # A directory with no os-info answers nothing rather than falling back to the repo's.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    nv._set_colab_oracle_dir(empty)
+    assert nv._colab_python_version() is None
+
+    nv._set_colab_oracle_dir(nv.DATA_DIR)
+
+
+def test_the_cron_refreshes_both_oracles_not_just_the_packages():
+    """The scheduled job linted with a freshly refreshed pip snapshot against a stale
+    os-info, so after a Colab Python rotation it judged the new packages with the old
+    interpreter. The PR-time step already uses --all; this one has to match."""
+    workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text()
+    assert "--out unsloth/scripts/data/colab_pip_freeze.gpu.txt" not in workflow
+    assert workflow.count("--all --snapshot-dir unsloth/scripts/data") >= 2
