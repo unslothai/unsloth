@@ -28,6 +28,7 @@ from routes.inference import (
     UI_STREAM_EVENTS_HEADER,
     _DroppedFrameKeepalive,
     _confirm_gate_has_no_channel,
+    _launcher_tool_default_applies,
     _proxy_to_external_provider,
     _ui_stream_events_enabled,
     produce_openai_chat_completions,
@@ -187,6 +188,12 @@ def _gate_payload(**kwargs):
         "enabled_tools": None,
         "tool_choice": None,
         "max_tool_calls_per_message": None,
+        # Explicit, so the launcher-default branch is not what is under test here.
+        "enable_tools": True,
+        # Read by _request_states_tool_intent when the launcher default is in play.
+        "tools": None,
+        "messages": [],
+        "response_format": None,
     }
     fields.update(kwargs)
     return SimpleNamespace(**fields)
@@ -339,6 +346,76 @@ def test_the_relay_only_strips_calls_the_loop_owns():
     assert "if not _ui_events and policy is not None:" in src
     assert "if not _ui_events and run_studio_tool_loop:" in src
     assert src.count("strip_server_executed_tool_call(line)") == 2
+
+
+def test_a_legacy_function_call_is_left_for_the_caller():
+    # The loop reads delta.tool_calls and nothing else, so a legacy function_call is one
+    # it never executes: stripping it would drop a call the caller is meant to run, and
+    # its matching finish_reason would arrive with no name or arguments behind it.
+    for line in (
+        'data: {"choices": [{"index": 0, "delta": {"function_call": {"name": "f"}}}]}',
+        'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "function_call"}]}',
+    ):
+        assert strip_server_executed_tool_call(line) == line, line
+    # And a finish_reason with no call withheld beside it is the caller's own turn ending.
+    plain = 'data: {"choices": [{"index": 0, "delta": {"content": "x"}, "finish_reason": "stop"}]}'
+    assert strip_server_executed_tool_call(plain) == plain
+
+
+def test_the_selected_catalog_beats_a_stale_mcp_flag():
+    # mcp_enabled arms the classifier on the flag alone. Once the catalogue is resolved it
+    # answers better: an MCP ask that discovery filtered to nothing leaves only always-safe
+    # built-ins, which never prompt.
+    payload = _gate_payload(mcp_enabled = True, enabled_tools = ["search_knowledge_base"])
+    assert _confirm_gate_has_no_channel(payload, False) is True
+    assert _confirm_gate_has_no_channel(payload, False, ["search_knowledge_base"]) is False
+    # A catalogue that kept something confirmable still needs the channel.
+    assert _confirm_gate_has_no_channel(payload, False, ["python"]) is True
+    # An MCP tool that survived is not an always-safe built-in, so it still does.
+    assert _confirm_gate_has_no_channel(payload, False, ["mcp__server__do_thing"]) is True
+
+
+def test_a_stripped_call_still_paces_a_keepalive():
+    # Same trap as the gated frames: a long argument stream drops every fragment and keeps
+    # the loop's stall timer from firing, so the relay must write something.
+    src = inspect.getsource(_proxy_to_external_provider)
+    assert src.count("strip_server_executed_tool_call(line)") == 2
+    # Each strip that drops the line pairs with the paced keepalive before continuing.
+    assert src.count("if line is None:") == 2
+    stripped_blocks = src.count("_drop_keepalive.due()")
+    assert stripped_blocks == 4, (
+        f"expected a paced keepalive on both control-frame and stripped-call drops, "
+        f"found {stripped_blocks}"
+    )
+
+
+def test_the_launcher_default_does_not_claim_a_stream_it_cannot_prompt(monkeypatch):
+    # `unsloth studio run` installs a tools-on default. A request that never mentions
+    # tools cannot be expected to know about the header either, so putting it behind a
+    # confirm gate would 400 every ordinary OpenAI call on that launcher, or park it in
+    # wait_tool_decision on the first high-risk call. It asked for plain chat.
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "get_tool_policy", lambda: None)
+    silent = _gate_payload(enable_tools = None, enabled_tools = None)
+    assert _launcher_tool_default_applies(silent, False) is False
+    assert _confirm_gate_has_no_channel(silent, False) is False
+    # The Studio UI takes the frames, so the default keeps answering for it.
+    assert _launcher_tool_default_applies(silent, True) is True
+    # A request that asked for tools itself is not the launcher's default, and still needs
+    # the channel; so does one that stated its intent through the standard fields.
+    asked = _gate_payload(enable_tools = True, enabled_tools = None)
+    assert _launcher_tool_default_applies(asked, False) is True
+    assert _confirm_gate_has_no_channel(asked, False) is True
+    assert _launcher_tool_default_applies(
+        _gate_payload(enable_tools = None, tool_choice = "none"), False
+    ) is False
+
+
+def test_both_local_branches_consult_the_launcher_default_rule():
+    # The suppression has to happen where tools are switched on, or the loop still opens.
+    src = inspect.getsource(produce_openai_chat_completions)
+    assert src.count("_launcher_tool_default_applies(payload, _ui_events)") == 2
 
 
 def test_external_provider_relay_drops_control_frames_too():

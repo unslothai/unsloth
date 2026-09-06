@@ -183,16 +183,23 @@ def strip_server_executed_tool_call(line: str) -> str | None:
             kept_choices.append(choice)
             continue
         choice = dict(choice)
+        withheld = False
         for src_key in ("delta", "message"):
             src = choice.get(src_key)
-            if isinstance(src, dict) and ("tool_calls" in src or "function_call" in src):
-                src = {k: v for k, v in src.items() if k not in ("tool_calls", "function_call")}
+            # tool_calls only. The loop reads no other form, so the legacy function_call
+            # is a call it never executes and the caller is the one meant to run it.
+            if isinstance(src, dict) and "tool_calls" in src:
+                src = {k: v for k, v in src.items() if k != "tool_calls"}
                 choice[src_key] = src
-                changed = True
+                withheld = True
         if choice.get("finish_reason") == "tool_calls":
-            # Not a rename: the turn has not finished, the loop answers in the next one.
+            # The arguments arrive in earlier chunks and this one usually carries an empty
+            # delta, so it cannot be keyed on a call withheld here. Not a rename either:
+            # the turn has not finished, the loop answers in the next one. A legacy call
+            # ends on "function_call", a different value, and is left alone with its delta.
             choice["finish_reason"] = None
-            changed = True
+            withheld = True
+        changed = changed or withheld
         kept_choices.append(choice)
 
     if not changed:

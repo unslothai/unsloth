@@ -3897,7 +3897,18 @@ def _permission_mode_confirm(payload) -> bool:
     return bool(getattr(payload, "stream", False))
 
 
-def _confirm_gate_needs_stream(payload) -> bool:
+def _catalog_names(tools) -> list[str]:
+    """Tool names out of a resolved catalogue, for the confirm-gate classifier."""
+    names = []
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
+def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
     """Whether Unsloth's local tool-loop confirm gate still requires stream=true.
 
     The gate can only prompt while streaming, so a non-streaming request that will
@@ -3907,6 +3918,12 @@ def _confirm_gate_needs_stream(payload) -> bool:
     always-safe (web_search / RAG) never prompts and needs no stream. ask,
     an explicit confirm flag, MCP tools, and an unrestricted or unsafe selection
     still require streaming.
+
+    ``selected_names`` is the RESOLVED catalogue, for the callers that have one. It
+    answers the selection and mcp_enabled together, and more accurately: an MCP ask that
+    discovery filtered down to nothing leaves only always-safe built-ins, which cannot
+    prompt. Without it the request's own fields are read, which is all the pre-switch and
+    non-streaming callers have.
     """
     if not _permission_mode_confirm(payload):
         return False
@@ -3914,9 +3931,12 @@ def _confirm_gate_needs_stream(payload) -> bool:
         return True
     if payload.confirm_tool_calls is True:
         return True
-    if getattr(payload, "mcp_enabled", False):
+    if selected_names is not None:
+        enabled = list(selected_names)
+    elif getattr(payload, "mcp_enabled", False):
         return True
-    enabled = getattr(payload, "enabled_tools", None)
+    else:
+        enabled = getattr(payload, "enabled_tools", None)
     if enabled is None:
         return True  # omitted enabled_tools resolves to ALL tools (incl. terminal/python)
     if not enabled:
@@ -3960,7 +3980,7 @@ def _tool_calls_are_disabled(payload) -> bool:
     return getattr(payload, "max_tool_calls_per_message", None) == 0
 
 
-def _confirm_gate_has_no_channel(payload, ui_events: bool) -> bool:
+def _confirm_gate_has_no_channel(payload, ui_events: bool, selected_names = None) -> bool:
     """Whether a confirm gate that will prompt has no way to ask this caller.
 
     Two ways to have nowhere to ask. The gate writes its prompt to the stream, so a
@@ -3983,15 +4003,40 @@ def _confirm_gate_has_no_channel(payload, ui_events: bool) -> bool:
         return False
     if _tool_calls_are_disabled(payload):
         return False
+    if _tools_on_by_launcher_default_only(payload):
+        # The request never asked for tools, so it cannot be asked to know about the
+        # header either. `unsloth studio run` installs a tools-on default, and refusing
+        # here would 400 every ordinary OpenAI request on that launcher. The default is
+        # withdrawn for this caller instead (see _launcher_tool_default_applies), so the
+        # loop it could not be prompted for never opens.
+        return False
     if getattr(payload, "permission_mode", None) is None:
         payload = _AutoPermissionMode(payload)
-    return _confirm_gate_needs_stream(payload)
+    return _confirm_gate_needs_stream(payload, selected_names)
+
+
+def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
+    """Whether the launcher's tools-on default still answers for this request.
+
+    It answers a request that said nothing about tools. A request that stated its own
+    intent has already answered (the sibling rule at the safetensors and GGUF branches),
+    and so, now, has a stream that cannot be prompted: the confirm gate asks over the
+    control frames, so running a default nobody asked for behind a gate nobody can
+    answer would park the caller in wait_tool_decision on the first high-risk call.
+    Plain chat is what such a request asked for and what it gets.
+    """
+    if not _tools_on_by_launcher_default_only(payload):
+        return True
+    if _request_states_tool_intent(payload):
+        return False
+    return not (getattr(payload, "stream", False) and not ui_events)
 
 
 def _reject_confirm_gate_without_channel(
     payload,
     ui_events: bool,
     monitor_id = None,
+    selected_names = None,
 ) -> None:
     """Refuse a request whose confirm gate would have nowhere to ask.
 
@@ -4003,7 +4048,7 @@ def _reject_confirm_gate_without_channel(
     would otherwise finish it is never reached from here, and a running entry is exempt
     from trimming, so leaving it open strands /api/inference/monitor in `generating`.
     """
-    if not _confirm_gate_has_no_channel(payload, ui_events):
+    if not _confirm_gate_has_no_channel(payload, ui_events, selected_names):
         return
     if monitor_id is not None:
         api_monitor.fail(monitor_id, "confirm_tool_calls requires an event channel")
@@ -19637,7 +19682,9 @@ async def _proxy_to_external_provider(
             if studio_tool_payloads:
                 # The loop runs iff the catalog is non-empty (policy below), and its
                 # approval handshake rides the control frames.
-                _reject_confirm_gate_without_channel(payload, _ui_events)
+                _reject_confirm_gate_without_channel(
+                    payload, _ui_events, selected_names = _catalog_names(studio_tool_payloads)
+                )
             # The Unsloth loop owns its schemas. Do not also expose a caller-supplied
             # catalog: Codex would return calls that this server is not authorized to run.
             tool_payloads = studio_tool_payloads
@@ -19786,6 +19833,10 @@ async def _proxy_to_external_provider(
                         # here is one this server runs, not one to hand to the caller.
                         line = strip_server_executed_tool_call(line)
                         if line is None:
+                            # A long argument stream drops every fragment here and, like a
+                            # gated frame, keeps the loop's stall timer from firing.
+                            if _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             continue
                     yield f"{line}\n\n"
                 yield "data: [DONE]\n\n"
@@ -19967,7 +20018,9 @@ async def _proxy_to_external_provider(
     if run_studio_tool_loop:
         # Only once the catalog is known: mcp_enabled with no MCP tools enabled leaves
         # this empty and skips the loop, so there is no prompt to find a channel for.
-        _reject_confirm_gate_without_channel(payload, _ui_events, monitor_id)
+        _reject_confirm_gate_without_channel(
+            payload, _ui_events, monitor_id, _catalog_names(external_studio_tools)
+        )
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
@@ -20109,6 +20162,8 @@ async def _proxy_to_external_provider(
                     # own and must pass through untouched.
                     line = strip_server_executed_tool_call(line)
                     if line is None:
+                        if _drop_keepalive.due():
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                 yield f"{line}\n\n"
                 # Parsed from the line itself, not from monitor_event: with the
@@ -21532,6 +21587,8 @@ async def produce_openai_chat_completions(
 
         _cli_policy = _get_tool_policy_g()
         _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
+        if _tools_on and not _launcher_tool_default_applies(payload, _ui_events):
+            _tools_on = False
         _mcp_allowed = (
             not _client_disabled_tool_calls
             and bool(payload.mcp_enabled)
@@ -21604,7 +21661,7 @@ async def produce_openai_chat_completions(
             # (the gate needs streaming to prompt) no longer applies. auto with an
             # always-safe-only selection never prompts, so it needs no stream even
             # though _effective_confirm stays true for the loop's per-call gate.
-            if _confirm_gate_has_no_channel(payload, _ui_events):
+            if _confirm_gate_has_no_channel(payload, _ui_events, _catalog_names(tools_to_use)):
                 raise _reject(
                     400,
                     openai_error_body(
@@ -23210,11 +23267,7 @@ async def produce_openai_chat_completions(
     # _client_disabled_tool_calls and _takes_tool_passthrough; an explicit
     # enable_tools/mcp_enabled ask, or a CLI --enable-tools, still claims the
     # request as before.
-    if (
-        _sf_tools_on
-        and _tools_on_by_launcher_default_only(payload)
-        and _request_states_tool_intent(payload)
-    ):
+    if _sf_tools_on and not _launcher_tool_default_applies(payload, _ui_events):
         _sf_tools_on = False
     _sf_mcp_allowed = bool(payload.mcp_enabled) and _sf_cli_policy is not False
 
@@ -23360,7 +23413,7 @@ async def produce_openai_chat_completions(
         # (the gate needs streaming to prompt) no longer applies. auto with an
         # always-safe-only selection never prompts, so it needs no stream even
         # though _sf_effective_confirm stays true for the loop's per-call gate.
-        if _confirm_gate_has_no_channel(payload, _ui_events):
+        if _confirm_gate_has_no_channel(payload, _ui_events, _catalog_names(_sf_tools_to_use)):
             raise _reject(
                 400,
                 openai_error_body(
