@@ -2545,6 +2545,44 @@ def test_catalog_loose_gguf_shard_rows_load_the_first_split(monkeypatch, tmp_pat
     )
 
 
+def test_catalog_drops_loose_gguf_companions(monkeypatch, tmp_path):
+    """A vision repo copied into models/ lists its projector as its own scan row.
+
+    _local_dir_holds_a_payload already requires a main GGUF inside a DIRECTORY, so this is the
+    same rule; without it the picker offers a projector that detect_gguf_model refuses.
+    """
+    from unsloth_cli._inference import ensure_studio_backend_path
+    from unsloth_cli import _model_catalog as cat
+
+    ensure_studio_backend_path()
+    folder = tmp_path / "models"
+    folder.mkdir()
+    model = folder / "gemma-3-4b-it-UD-Q4_K_XL.gguf"
+    model.write_bytes(b"GGUF" + b"\0" * 4096)
+    companions = [folder / n for n in ("mmproj-F16.gguf", "mtp-gemma-3-4b-it.gguf")]
+    for companion in companions:
+        # Bigger, so a folder-wide resolve would have preferred one of them.
+        companion.write_bytes(b"GGUF" + b"\0" * 4096 * 10)
+
+    def row(path):
+        return SimpleNamespace(
+            source = "models_dir",
+            partial = False,
+            model_format = "gguf",
+            path = str(path),
+            display_name = path.stem,
+            load_id = str(path),
+            id = str(path),
+        )
+
+    monkeypatch.setattr(cat, "_local_catalog_rows", lambda: [row(model), *map(row, companions)])
+    monkeypatch.setattr(cat, "_local_model_task", lambda m: None)
+    monkeypatch.setattr(cat, "_local_model_can_chat", lambda m: None)
+    monkeypatch.setattr(cat, "_local_is_a_diffusers_pipeline", lambda m: False)
+
+    assert {e.name: e.model for e in cat.local_folder_entries()} == {model.stem: str(model)}
+
+
 def test_catalog_pins_an_active_cache_adapter_to_its_snapshot(tmp_path):
     """A LoRA resolved by bare repo id takes the REMOTE branch of
     get_base_model_from_lora_identifier, which downloads adapter_config.json with no

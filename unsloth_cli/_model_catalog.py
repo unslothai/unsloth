@@ -331,6 +331,24 @@ def _is_gguf_file(path: str) -> bool:
         return False
 
 
+def _is_loose_gguf_companion(path: str) -> bool:
+    """Whether a scan row names a GGUF SIDECAR rather than a model.
+
+    ``_scan_models_dir`` screens mmproj, MTP drafter and imatrix files when it decides a
+    directory is a model, and ``_local_dir_holds_a_payload`` requires a main GGUF inside one,
+    but a loose ``.gguf`` child is listed on its extension alone. Resolving through the folder
+    used to hide that by rewriting the sidecar row onto the real model; loading the file the row
+    names offers a projector the loader refuses, so apply the same rule the directories get.
+    """
+    if not _is_gguf_file(path):
+        return False
+    try:
+        from hub.services.models.common import _is_main_gguf_filename
+    except ImportError:
+        return False
+    return not _is_main_gguf_filename(Path(path).name)
+
+
 def _gguf_file_as_the_loader_opens_it(path: str) -> str:
     """*path*, collapsed to shard 1 when the LOADER reads it as a complete split family.
 
@@ -617,6 +635,8 @@ def local_folder_entries() -> List[ModelEntry]:
         if _local_model_can_chat(model) is False:
             continue
         if not _local_dir_holds_a_payload(Path(model.path)):
+            continue
+        if _is_loose_gguf_companion(model.path):
             continue
         if _local_is_a_diffusers_pipeline(model):
             continue
