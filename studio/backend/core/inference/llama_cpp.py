@@ -17513,6 +17513,87 @@ class LlamaCppBackend:
         """
         return env.pop("LLAMA_ARG_FLASH_ATTN", None) is not None
 
+    # llama.cpp refusing a unified KV cache because this architecture needs one
+    # sequence per stream. Matched on llama.cpp's own wording rather than on an
+    # architecture name, so a second model with the same constraint is covered
+    # without a list to keep current.
+    _KV_UNIFIED_REFUSED_MARKERS = (
+        "a unified kv cache is only supported with a single sequence",
+        "needs one sequence per stream",
+    )
+
+    @staticmethod
+    def _is_kv_unified_refused(output: str) -> bool:
+        """Did the child refuse to build a context because of --kv-unified?"""
+        low = (output or "").lower()
+        return any(marker in low for marker in LlamaCppBackend._KV_UNIFIED_REFUSED_MARKERS)
+
+    @staticmethod
+    def _with_single_sequence(cmd: list[str]) -> Optional[list[str]]:
+        """Return cmd re-run as one sequence, or None when it already is one.
+
+        Studio appends --kv-unified whenever it asks for more than one slot, to
+        stop llama.cpp splitting -c into per-slot windows. Some architectures
+        reject that pairing outright and the model then cannot load at all, so
+        the retry reverses Studio's own choice rather than the user's context:
+        drop --kv-unified and pin --parallel to 1, which is the configuration
+        that would never have added the flag in the first place.
+
+        Every occurrence is rewritten, not just the emitted one. Extras are
+        appended after Unsloth's flags and llama.cpp is last-wins, so a --parallel
+        surviving in the tail would put the rejected geometry straight back.
+        """
+        out: list[str] = []
+        saw_kv_unified = False
+        multi_slot = False
+        skip_value = False
+        for i, tok in enumerate(cmd):
+            if skip_value:
+                skip_value = False
+                continue
+            name = _flag_name(tok)
+            if name in ("--kv-unified", "-kvu"):
+                saw_kv_unified = True
+                # llama.cpp's own form is bare, but an inline "=1" and a separate
+                # "1" both reach us through user extras.
+                if "=" not in tok and cmd[i + 1 : i + 2] and cmd[i + 1] in (
+                    _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES
+                ):
+                    skip_value = True
+                continue
+            if name in ("--parallel", "-np"):
+                if "=" in tok:
+                    value = tok.partition("=")[2]
+                elif tok != name:
+                    # The attached short, -np8, which _flag_name peels to -np.
+                    value = tok[len(name) :]
+                else:
+                    value = cmd[i + 1] if i + 1 < len(cmd) else ""
+                    skip_value = True
+                try:
+                    multi_slot = multi_slot or int(value.strip()) > 1
+                except (AttributeError, TypeError, ValueError):
+                    pass
+                out.extend([name, "1"])
+                continue
+            out.append(tok)
+        if not saw_kv_unified and not multi_slot:
+            return None
+        if not any(_flag_name(tok) in ("--parallel", "-np") for tok in out):
+            out.extend(["--parallel", "1"])
+        return out
+
+    @staticmethod
+    def _drop_env_single_sequence(env: MutableMapping[str, str]) -> bool:
+        """Drop inherited unified-cache and slot-count env before that retry.
+
+        llama.cpp applies the environment before parsing argv, so the argv wins
+        on --parallel. LLAMA_ARG_KV_UNIFIED has no negated twin to emit, so
+        dropping it is the only way the retry can be sure the flag is off.
+        """
+        dropped = env.pop("LLAMA_ARG_KV_UNIFIED", None) is not None
+        return env.pop("LLAMA_ARG_N_PARALLEL", None) is not None or dropped
+
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
         """Return cmd without the '--mmproj <path>' pair (text-only retry).
@@ -24243,6 +24324,36 @@ class LlamaCppBackend:
                             # the respawn runs, and the record has to match it.
                             self._memory_state = resolve_effective_memory_state(cmd, env)
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
+
+                # Some architectures need one sequence per stream and refuse to
+                # build a context under --kv-unified, which Studio appends on its
+                # own whenever it asks for more than one slot. The model is then
+                # unloadable no matter what the user changes, so reverse Studio's
+                # choice rather than theirs: one slot, no unified cache, the
+                # requested context intact. A clean refusal, not a crash, so this
+                # sits ahead of the flash-attn rung, which only fires on a signal.
+                if not healthy and not _load_cancelled():
+                    _kvu_cmd = (
+                        self._with_single_sequence(_last_spawn_cmd)
+                        if self._is_kv_unified_refused("\n".join(self._stdout_lines))
+                        else None
+                    )
+                    if _kvu_cmd is not None:
+                        logger.warning(
+                            "llama-server refused a unified KV cache with more than "
+                            "one sequence; retrying with one slot and --kv-unified "
+                            "dropped. Concurrent requests will queue."
+                        )
+                        self._kill_process()
+                        # llama.cpp reads the environment before argv, and
+                        # LLAMA_ARG_KV_UNIFIED has no negated flag to emit against it.
+                        if self._drop_env_single_sequence(env):
+                            logger.info(
+                                "Dropped inherited LLAMA_ARG_KV_UNIFIED / "
+                                "LLAMA_ARG_N_PARALLEL for the single-sequence retry."
+                            )
+                        cmd = _kvu_cmd
+                        healthy = _spawn_and_wait(_kvu_cmd, label = "-single-seq")
 
                 # Flash-attention kernels hard-crash at startup on some ROCm/GPU
                 # builds (frequently inside the vision tower). Disabling FA keeps
