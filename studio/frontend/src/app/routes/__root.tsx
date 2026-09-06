@@ -34,6 +34,7 @@ import {
 } from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
+import { LlmCompressorConsentDialog } from "@/features/export/components/llm-compressor-consent-dialog";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
 import {
@@ -543,6 +544,7 @@ function RootLayout() {
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
       <TransformersUpgradeDialog />
+      <LlmCompressorConsentDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}
       <StopRunningChatsDialog />
       {hideNavbar ? (
