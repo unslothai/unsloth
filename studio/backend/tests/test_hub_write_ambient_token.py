@@ -686,9 +686,7 @@ def test_the_worker_can_still_disable_implicit_tokens_when_it_starts():
         print("imported" if "huggingface_hub" in sys.modules else "clear")
         """
     ) % str(backend)
-    out = subprocess.run(
-        [sys.executable, "-c", probe], capture_output = True, text = True, timeout = 300
-    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output = True, text = True, timeout = 300)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().endswith("clear"), (
         "core.export.worker imports huggingface_hub at module scope, so "
