@@ -852,6 +852,82 @@ def mtp_plan(
     return out
 
 
+def caller_speculation_off(
+    speculative_type: Optional[str] = None, extra_args: Optional[List[str]] = None
+) -> bool:
+    """True when what the caller set says no speculative decoding at all: a
+    ``speculative_type`` of off/none, or extras whose only speculation flag is
+    ``--spec-type none``. Anything else of theirs may launch a drafter."""
+    mode = str(speculative_type or "").strip().lower()
+    if mode in ("off", "none", "disable", "disabled"):
+        return True
+    if mode:
+        return False
+    owner = extra_args_own_speculation(extra_args)
+    if owner is None:
+        return False
+    spec, _depth = launched_spec_flags(list(extra_args or []))
+    others = [
+        str(a).partition("=")[0]
+        for a in (extra_args or [])
+        if str(a).partition("=")[0] != SPEC_TYPE_FLAG
+        and (
+            str(a).partition("=")[0] in _SPEC_OWNER_FLAGS
+            or str(a).partition("=")[0].startswith(_SPEC_OWNER_PREFIXES)
+        )
+    ]
+    return spec == "none" and not others
+
+
+def reconcile_split_speculation(
+    groups: Dict[str, Any],
+    mtp: Dict[str, Any],
+    *,
+    speculative_type: Optional[str] = None,
+    extra_args: Optional[List[str]] = None,
+) -> None:
+    """A layer split gets pipeline groups or speculative decoding, not both: the fork's
+    server refuses ``--pipeline-groups > 1`` together with any drafter (tools/server
+    ``validate_pipeline_groups``: a ``common_speculative`` and its draft context are
+    bound to one target context). Resolved in place, before the launch, so the server
+    never refuses a start:
+
+    * the GGUF's own MTP head wins over the groups: 1.59x at 8 users on one Spark against
+      the groups' 1.12x at 32 (pending the pair measurement of the two on a split);
+    * the caller's own speculation wins over the groups, unless it says off;
+    * a split that keeps its groups launches with ``speculative_type`` off, so a sidecar
+      drafter the backend would otherwise pick on its own cannot make the server refuse.
+    """
+    if int(groups.get("pipeline_groups") or 0) <= 1:
+        return
+    verdict = mtp.get("mtp")
+    if verdict == "enabled":
+        groups["pipeline_groups"] = 0
+        groups["slots"] = groups.get("requested_slots", groups.get("slots"))
+        groups["reason"] = (
+            f"{PIPELINE_GROUPS_FLAG} not added: the server refuses it together with speculative "
+            f"decoding, and the GGUF's MTP head measured the larger gain"
+        )
+        return
+    if verdict == "user override":
+        if caller_speculation_off(speculative_type, extra_args):
+            return
+        groups["pipeline_groups"] = 0
+        groups["slots"] = groups.get("requested_slots", groups.get("slots"))
+        groups["reason"] = (
+            f"{PIPELINE_GROUPS_FLAG} not added: the server refuses it together with the "
+            f"caller's speculative decoding"
+        )
+        return
+    request = mtp.setdefault("request", {})
+    if request.get("speculative_type") != "off":
+        request["speculative_type"] = "off"
+        mtp["reason"] = (
+            f"{mtp.get('reason')}; speculation off for {PIPELINE_GROUPS_FLAG} "
+            f"{groups['pipeline_groups']}, which the server refuses with a drafter"
+        )
+
+
 def launched_spec_flags(argv: List[str]) -> Tuple[Optional[str], Optional[int]]:
     """The last ``--spec-type`` value and ``--spec-draft-n-max`` a llama-server argv
     carries (last wins, as in llama.cpp), or None for each that is absent."""
@@ -1261,7 +1337,9 @@ class SparkServing:
             else:
                 peer = peer_address()
                 if peer:
-                    out = await self._start_layer_split(request, peer, plan, local_file, users)
+                    out = await self._start_layer_split(
+                        request, peer, plan, local_file, users, mtp = mtp
+                    )
                 else:
                     out = request
             # After the topology step: a split may detach a previous replica first, and
@@ -1284,6 +1362,7 @@ class SparkServing:
         plan: Dict[str, Any],
         local_file: Optional[str],
         slots: int = 1,
+        mtp: Optional[Dict[str, Any]] = None,
     ) -> Any:
         sc = _cluster()
         port = int(getattr(sc, "RPC_DEFAULT_PORT", RPC_PORT_DEFAULT))
@@ -1292,6 +1371,13 @@ class SparkServing:
         groups = await asyncio.to_thread(
             pipeline_groups_plan, slots, list(getattr(request, "llama_extra_args", None) or [])
         )
+        if mtp is not None:
+            reconcile_split_speculation(
+                groups,
+                mtp,
+                speculative_type = getattr(request, "speculative_type", None),
+                extra_args = list(getattr(request, "llama_extra_args", None) or []),
+            )
 
         def _with_rpc_args(req: Any) -> Any:
             extra = list(getattr(req, "llama_extra_args", None) or [])

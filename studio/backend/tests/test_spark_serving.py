@@ -1156,9 +1156,11 @@ def test_before_load_asks_for_the_spark_draft_depth_in_every_topology(
         status = ss.status()
         assert status["mtp"] == "enabled", status
         assert "--spec-draft-n-max 3" in status["mtp_reason"]
+    # A layer split: the head wins over the pipeline groups, which the fork's server
+    # refuses together with any drafter (see reconcile_split_speculation).
     cluster.topology = "layer_split"
     out = run(ss.before_load(_FakeRequest(str(model)), 4))
-    assert out.spec_draft_n_max == 3
+    assert out.spec_draft_n_max == 3 and out.speculative_type is None
     assert out.llama_extra_args == [
         "--rpc",
         "192.168.200.13:50052",
@@ -1168,17 +1170,80 @@ def test_before_load_asks_for_the_spark_draft_depth_in_every_topology(
         "layer",
         "--cache-ram",
         "0",
-        "--pipeline-groups",
-        "2",
-        "--parallel",
-        "4",
     ]
-    assert "--spec-type" not in out.llama_extra_args
     status = ss.status()
     assert status["topology"] == "layer_split" and status["mtp"] == "enabled"
-    assert status["pipeline_groups"] == 2
+    assert status["pipeline_groups"] == 0
+    assert status["pipeline_groups_reason"] == (
+        "--pipeline-groups not added: the server refuses it together with speculative "
+        "decoding, and the GGUF's MTP head measured the larger gain"
+    )
     run(ss.shutdown())
     assert ss.status()["mtp"] == "enabled", "the peer going away does not touch this node's launch"
+
+
+def test_layer_split_keeps_its_groups_only_without_a_drafter(cluster, monkeypatch, tmp_path):
+    """PR 187's server refuses --pipeline-groups > 1 with speculative decoding, so a split
+    that keeps two groups must launch with speculation off, and a caller's drafter costs
+    the groups instead."""
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    head = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})
+    plain = write_gguf(tmp_path / "plain.gguf", "qwen35moe")
+    _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    grouped = ["--pipeline-groups", "2", "--parallel", "4"]
+    # No head: two groups, and the launch says off so no sidecar can make the server refuse.
+    out = run(ss.before_load(_FakeRequest(str(plain)), 3))
+    assert out.llama_extra_args[-4:] == grouped and out.speculative_type == "off"
+    assert out.spec_draft_n_max is None
+    status = ss.status()
+    assert status["pipeline_groups"] == 2 and status["mtp"] == "no head"
+    assert "speculation off for --pipeline-groups 2" in status["mtp_reason"]
+    run(ss.shutdown())
+    # The env opt-out: same launch, its own reason.
+    monkeypatch.setenv(ss.ENV_MTP, "0")
+    out = run(ss.before_load(_FakeRequest(str(head)), 3))
+    assert out.llama_extra_args[-4:] == grouped and out.speculative_type == "off"
+    assert ss.status()["pipeline_groups"] == 2 and ss.status()["mtp"] == "disabled by env"
+    run(ss.shutdown())
+    monkeypatch.delenv(ss.ENV_MTP)
+    # A GGUF not on disk yet has no size, so it is never a split before the load: the
+    # request is left alone and the verdict says the backend decides.
+    request = _FakeRequest(str(tmp_path / "later.gguf"))
+    assert run(ss.before_load(request, 3)) is request
+    assert ss.status()["mtp"] == "unknown" and ss.status()["topology"] == "single"
+    # The caller's drafter wins over the groups; the caller's "off" keeps them.
+    request = _FakeRequest(str(head), llama_extra_args = ["--spec-type", "ngram-simple"])
+    out = run(ss.before_load(request, 3))
+    assert "--pipeline-groups" not in out.llama_extra_args
+    assert out.llama_extra_args[:2] == ["--spec-type", "ngram-simple"]
+    status = ss.status()
+    assert status["pipeline_groups"] == 0 and status["mtp"] == "user override"
+    assert status["pipeline_groups_reason"] == (
+        "--pipeline-groups not added: the server refuses it together with the caller's "
+        "speculative decoding"
+    )
+    run(ss.shutdown())
+    for request in (
+        _FakeRequest(str(head), speculative_type = "off"),
+        _FakeRequest(str(head), llama_extra_args = ["--spec-type", "none"]),
+    ):
+        out = run(ss.before_load(request, 3))
+        assert out.llama_extra_args[-4:] == grouped, out.llama_extra_args
+        assert out.spec_draft_n_max is None
+        assert ss.status()["pipeline_groups"] == 2 and ss.status()["mtp"] == "user override"
+        run(ss.shutdown())
+    # The pure rule, on its own.
+    assert ss.caller_speculation_off("off") and ss.caller_speculation_off("NONE")
+    assert ss.caller_speculation_off(None, ["--spec-type=none"])
+    assert not ss.caller_speculation_off("mtp")
+    assert not ss.caller_speculation_off(None, ["--spec-type", "none", "--model-draft", "/d"])
+    assert not ss.caller_speculation_off(None, ["--seed", "1"])
+    groups = {"pipeline_groups": 0, "slots": 3, "requested_slots": 3, "reason": "x"}
+    mtp = {"mtp": "enabled", "reason": "r", "request": {"spec_draft_n_max": 3}}
+    ss.reconcile_split_speculation(groups, mtp)
+    assert groups["pipeline_groups"] == 0 and groups["reason"] == "x", "one context: no conflict"
+    assert mtp["request"] == {"spec_draft_n_max": 3}
 
 
 def test_before_load_leaves_the_callers_speculation_alone(cluster, monkeypatch, tmp_path):
