@@ -561,10 +561,8 @@ def test_notebook_validator_applies_exclusions_to_where_it_landed():
     nv = _load_notebook_validator_module()
 
     newer = {"torch": "2.10.0+cu128", "torchcodec": "0.15.0"}
-    # An earlier pin puts the codec above the cap, so the cap applies inside the replay
-    # rather than in resolved_set. It says 0.11, the exclusion rules the whole 0.11 line out,
-    # and pip lands below it: recording the cap reported a 0.11 codec against torch 2.10 when
-    # what actually installs there is a 0.10 release the row allows.
+    # The cap says 0.11, the exclusion rules that whole line out, and pip lands below it, so
+    # recording the cap reported a 0.11 codec where a 0.10 the row allows is what installs.
     capped = '!pip install "torchcodec==0.15"\n!pip install "torchcodec<=0.11,!=0.11.*"'
     assert nv.rule_inst_004_torchcodec_torch(capped, newer, "nb.ipynb", 0) == []
 
