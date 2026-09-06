@@ -627,23 +627,33 @@ def _highest_minor_below(ceiling: str) -> str:
     several minors lands at its top. The minor below the ceiling is derivable without an
     index; which patch inside it is not, and the rules only compare minors. Only 0.N
     ceilings are modelled, which is every window this table describes.
+
+    Only a ceiling ON a minor boundary excludes that whole minor. `<0.10.5` still admits
+    0.10.0 through 0.10.4, so it lands on 0.10; decrementing regardless modelled it as 0.9
+    and suppressed a real R-INST-004 mismatch.
     """
     parts = [p for p in re.split(r"[.]", ceiling.strip()) if p.isdigit()]
     if len(parts) < 2 or parts[0] != "0":
         return ""
     minor = int(parts[1])
+    if any(int(p) for p in parts[2:]):
+        return f"0.{minor}"
     return f"0.{minor - 1}" if minor >= 1 else ""
 
 
-def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, str, bool]:
-    """Floor, exclusive ceiling, inclusive cap and removed-flag from the LAST invocation
-    naming `package`.
+def _requested_bounds(
+    install_cell: str, package: str
+) -> list[tuple[str, str, str, str, bool, bool]]:
+    """`(exact, floor, ceiling, cap, floor_excludes_itself, removed)` per invocation naming
+    `package`, in the order pip runs them.
 
     Order matters and intersecting does not: pip runs the commands in sequence, so
     `torchcodec>=0.12.0` followed by `torchcodec<0.12.0` ends on a pre-0.12 codec, while
     taking the highest floor and lowest ceiling across both would invent a 0.12 that was
-    never installed. Only the last command decides, and if that command is an uninstall the
-    package is gone rather than pinned.
+    never installed. Nor does the last command decide on its own: after `>=0.12.0` a
+    following `>=0.10.0` is already satisfied and pip leaves the 0.12 in place, so the
+    sequence has to be REPLAYED against what the previous command left. An uninstall means
+    the package is gone rather than pinned.
 
     Names are matched the way pip compares them, case-insensitively (PEP 503), which is what
     parse_spec already does: `TorchCodec>=0.12.0` is the same requirement as the lowercase
@@ -654,11 +664,11 @@ def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, str, b
     move the answer between machines. Skipping leaves such a cell judged on the preinstalled
     version, which is what it was judged on before this function existed.
     """
-    floor = ceiling = cap = ""
-    removed = False
+    sequence: list[tuple[str, str, str, bool, bool]] = []
     for invocation in iter_pip_invocations(install_cell):
         uninstall = re.search(r"\bpip\s+uninstall\b", invocation.raw, re.IGNORECASE) is not None
-        current_floor = current_ceiling = current_cap = ""
+        current_exact = current_floor = current_ceiling = current_cap = ""
+        floor_excludes_itself = False
         named = False
         for requirement in invocation.packages:
             if ";" in requirement:
@@ -668,7 +678,12 @@ def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, str, b
                 continue
             named = True
             for operator, version in spec.pins:
-                if operator == "~=":
+                if operator == "==":
+                    # An exact pin names the landing outright; resolved_set reads it too,
+                    # but the replay has to carry it so a reinstall after an uninstall
+                    # restores a version rather than staying "gone".
+                    current_exact = version
+                elif operator == "~=":
                     # PEP 440 compatible release: `~=0.12.0` is `>=0.12.0,<0.13.0`, and
                     # `~=0.12` is `>=0.12,<1`. The last component is dropped and the one
                     # before it incremented.
@@ -677,10 +692,14 @@ def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, str, b
                         current_floor = lower
                     if upper and (not current_ceiling or cmp_versions(upper, current_ceiling) < 0):
                         current_ceiling = upper
-                elif operator == ">=" and (
+                elif operator in (">=", ">") and (
                     not current_floor or cmp_versions(version, current_floor) > 0
                 ):
+                    # `>V` names a floor pip will NOT land on. Which release it does land on
+                    # is only in the index, so the flag rides along and the caller declines
+                    # to name a version rather than keeping the one the cell excluded.
                     current_floor = version
+                    floor_excludes_itself = operator == ">"
                 elif operator == "<" and (
                     not current_ceiling or cmp_versions(version, current_ceiling) < 0
                 ):
@@ -692,44 +711,82 @@ def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, str, b
                     # one is above it. Unlike an exclusive ceiling this NAMES the landing.
                     current_cap = version
         if named:
-            floor, ceiling, cap, removed = (
-                current_floor,
-                current_ceiling,
-                current_cap,
-                uninstall,
+            sequence.append(
+                (
+                    current_exact,
+                    current_floor,
+                    current_ceiling,
+                    current_cap,
+                    floor_excludes_itself,
+                    uninstall,
+                )
             )
-    return floor, ceiling, cap, removed
+    return sequence
+
+
+def _apply_requested_bounds(
+    installed: str,
+    exact: str,
+    floor: str,
+    ceiling: str,
+    cap: str,
+    floor_excludes_itself: bool,
+) -> str:
+    """What one pip command leaves installed, given what was there before it ran.
+
+    `""` means "moved somewhere only the index names", which the rules treat as unjudgeable
+    rather than guessing a minor.
+    """
+    if exact:
+        return exact
+    if not floor and not ceiling and not cap:
+        return installed
+    if installed:
+        satisfied = True
+        if cap and cmp_versions(installed, cap) > 0:
+            satisfied = False
+        if ceiling and cmp_versions(installed, ceiling) >= 0:
+            satisfied = False
+        if floor:
+            below = cmp_versions(installed, floor)
+            if below < 0 or (floor_excludes_itself and below == 0):
+                satisfied = False
+        if satisfied:
+            return installed  # already inside the window, so pip leaves it alone
+    if ceiling:
+        # pip moves to the NEWEST release the window admits, which the ceiling names even
+        # offline. Returning the floor modelled `>=0.8,<0.11` as 0.8 and hid a 0.10 landing.
+        landing = _highest_minor_below(ceiling)
+        if landing and (not floor or cmp_versions(landing, floor) >= 0):
+            return landing
+    if cap and (not floor or cmp_versions(cap, floor) >= 0):
+        return cap  # `<=V` allows V, so V is what pip picks
+    if floor and not floor_excludes_itself:
+        return floor
+    return ""
 
 
 def _effective_requested_version(install_cell: str, package: str, oracle: str) -> str:
     """What pip actually leaves installed, when the cell's range rules the oracle out.
 
     resolved_set only overrides the oracle on an exact `==` pin, so a range such as
-    `torchcodec>=0.10.0,<0.11.0` still reads as whatever the image preinstalled. When the
-    oracle satisfies the range it does survive; otherwise pip must move, and the floor is
-    the version it moves to for the one-minor-wide ranges these rules care about.
+    `torchcodec>=0.10.0,<0.11.0` still reads as whatever the image preinstalled. Each
+    command is replayed in order against what the previous one left, because pip does not
+    reinstall a package that already satisfies the new requirement.
     """
-    floor, ceiling, cap, removed = _requested_bounds(install_cell, package)
-    if removed:
-        # Uninstalled and not put back, so there is nothing left to judge. Reporting the
-        # oracle here flagged a package the cell had just deleted.
-        return ""
-    if not floor and not ceiling and not cap:
-        return oracle
-    if cap and cmp_versions(oracle, cap) > 0:
-        return cap  # `<=V` allows V, so V is what pip picks
-    if floor and cmp_versions(oracle, floor) < 0:
-        return floor
-    if ceiling and cmp_versions(oracle, ceiling) >= 0:
-        # The request excludes what is installed, so pip moves -- to the NEWEST release the
-        # window admits, which the ceiling names even offline. Returning the floor modelled
-        # `>=0.8,<0.11` as 0.8 and hid a 0.10 landing; returning the excluded oracle
-        # reported the very pairing the cell ruled out.
-        landing = _highest_minor_below(ceiling)
-        if landing and (not floor or cmp_versions(landing, floor) >= 0):
-            return landing
-        return floor
-    return oracle
+    installed = oracle
+    for exact, floor, ceiling, cap, floor_excludes_itself, removed in _requested_bounds(
+        install_cell, package
+    ):
+        if removed:
+            # Uninstalled, so there is nothing left to judge unless a later command puts it
+            # back. Reporting the oracle here flagged a package the cell had just deleted.
+            installed = ""
+            continue
+        installed = _apply_requested_bounds(
+            installed, exact, floor, ceiling, cap, floor_excludes_itself
+        )
+    return installed
 
 
 def rule_inst_004_torchcodec_torch(

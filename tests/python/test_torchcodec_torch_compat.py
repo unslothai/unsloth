@@ -1121,3 +1121,55 @@ def test_a_bounded_window_lands_on_its_newest_candidate():
     # A window whose top IS supported stays silent, so this did not just become noisy.
     within = '!pip install torch==2.9.0 "torchcodec>=0.8.0,<0.10.0"'
     assert nv.rule_inst_004_torchcodec_torch(within, colab, "nb.ipynb", 0) == []
+
+
+def test_a_patch_level_ceiling_keeps_its_own_minor():
+    """`<0.10.5` still admits 0.10.0 through 0.10.4, so it lands on 0.10. Decrementing the
+    minor regardless modelled it as 0.9 and suppressed a real torch 2.9 mismatch."""
+    from scripts import notebook_validator as nv
+
+    assert nv._highest_minor_below("0.10.5") == "0.10"
+    assert nv._highest_minor_below("0.10.0") == "0.9"  # on the boundary, so 0.10 is excluded
+    assert nv._highest_minor_below("0.11") == "0.10"
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    cell = '!pip install torch==2.9.0 "torchcodec<0.10.5"'
+    assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == "0.10"
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
+
+
+def test_a_strict_lower_bound_excludes_the_installed_version():
+    """`>0.11.0` rules out the 0.11.0 the image ships, and which release pip picks instead is
+    only in the index. Recording nothing kept the excluded 0.11.0 and rejected the notebook."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    cell = '!pip install torch==2.12.0 "torchcodec>0.11.0"'
+    assert nv._effective_requested_version(cell, "torchcodec", "0.11.0") == ""
+    assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == []
+
+    # A strict bound the installed version already clears leaves it alone.
+    satisfied = '!pip install "torchcodec>0.10.0"'
+    assert nv._effective_requested_version(satisfied, "torchcodec", "0.11.0") == "0.11.0"
+
+
+def test_a_later_install_keeps_what_an_earlier_one_landed_on():
+    """pip does not reinstall a package that already satisfies the new requirement, so
+    `>=0.12.0` followed by the broader `>=0.10.0` ends on the 0.12. Reading only the last
+    command re-evaluated the broader range against the image's 0.11 and rejected it."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    widened = '!pip install torch==2.12.0 "torchcodec>=0.12.0"\n!pip install "torchcodec>=0.10.0"'
+    assert nv._effective_requested_version(widened, "torchcodec", "0.11.0") == "0.12.0"
+    assert nv.rule_inst_004_torchcodec_torch(widened, colab, "nb.ipynb", 0) == []
+
+    # A later command that does NOT admit the earlier landing still moves it back down.
+    narrowed = '!pip install "torchcodec>=0.12.0"\n!pip install "torchcodec<0.12.0"'
+    assert nv._effective_requested_version(narrowed, "torchcodec", "0.11.0") == "0.11"
+
+    # An exact pin after an uninstall restores a version rather than staying gone.
+    restored = '!pip uninstall -y torchcodec\n!pip install "torchcodec==0.11.1"'
+    assert nv._effective_requested_version(restored, "torchcodec", "0.11.0") == "0.11.1"
