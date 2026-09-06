@@ -727,12 +727,16 @@ def test_event_cursor_rejects_values_outside_sqlite_integer_range():
 
 
 @pytest.mark.parametrize("field", ["image_base64", "audio_base64", "video_base64"])
-def test_request_sanitization_rejects_inline_media(field):
-    """Media stays on the legacy stream on the server too, not only in the composer.
-
-    Recovery rebuilds text and reasoning deltas, and the request is persisted verbatim,
-    so admitting one of these would park a base64 blob in request_json for the life of
-    the thread and hand the client a transcript it has no way to replay.
+def test_media_turns_are_durable_and_persist_verbatim(field):
+    """Media turns are durable now that replay is faithful: once generation starts the client contributes
+    nothing, and persisted frames replay re-tagged exactly as the live stream yields them. The residual cost is
+    only the blob itself - it rides along in request_json verbatim, beside the thread's own copy of the message.
     """
+    assert _sanitize_request(_model(**{field: "iVBORw0KGgo="}))[field] == "iVBORw0KGgo="
+
+
+@pytest.mark.parametrize("field", ["image_base64", "audio_base64", "video_base64"])
+def test_media_turn_toggle_restores_the_legacy_refusal(monkeypatch, field):
+    monkeypatch.setenv("UNSLOTH_STUDIO_DURABLE_MEDIA_TURNS", "0")
     with pytest.raises(Exception, match = "legacy streaming path"):
         _sanitize_request(_model(**{field: "iVBORw0KGgo="}))
