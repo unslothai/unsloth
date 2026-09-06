@@ -40,11 +40,15 @@ if docker info 2>/dev/null | grep -qi 'Operating System: Docker Desktop'; then
     if [[ "$(uname -s)" == Darwin ]]; then
         say "Docker Desktop on macOS: no NVIDIA GPU can be attached on a Mac, so there is nothing to install."
         say "The image runs CPU-only there: drop --gpus and set UNSLOTH_ALLOW_CPU=1."
-    else
-        say "Docker Desktop detected: GPU support comes with it, nothing to install."
-        say "On Windows keep the WSL 2 backend on and the NVIDIA Windows driver current (wsl --update)."
+        exit 0
+    elif grep -qi microsoft "$PROC_VERSION" 2>/dev/null; then
+        say "Docker Desktop with the WSL 2 backend: GPU support comes with it, nothing to install here."
+        say "Keep a current NVIDIA Windows driver installed (from nvidia.com; wsl --update updates WSL itself, not the driver)."
+        exit 0
     fi
-    exit 0
+    # Docker Desktop for Linux runs its daemon in a VM with no GPU passthrough
+    fail "Docker Desktop for Linux has no NVIDIA GPU support. Install Docker Engine instead
+       (https://docs.docker.com/engine/install/) and run this again." 2
 fi
 
 # 3. a CLI pointed at another machine: everything below edits THIS machine
@@ -55,7 +59,8 @@ else
     endpoint="$DOCKER_HOST"
 fi
 case "$endpoint" in
-    ""|unix://*|npipe://*) ;;
+    ""|unix:///var/run/docker.sock|unix:///run/docker.sock|npipe://*) ;;
+    unix://*) fail "the Docker CLI talks to a daemon on ${endpoint}, not the system daemon this script configures (/etc/docker/daemon.json, service docker). Point it at the default socket or configure that daemon by hand." 2 ;;
     *) fail "the Docker CLI talks to a remote daemon (${endpoint}); run this script on that host, it configures the local Docker only." 2 ;;
 esac
 
@@ -109,11 +114,12 @@ case "$(uname -m)" in
 esac
 
 configured() {
-    command -v nvidia-ctk >/dev/null 2>&1 && docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'
+    # a legacy or hand-made registration counts too; nvidia-ctk is only needed to make one
+    docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'
 }
 
 if configured; then
-    say "NVIDIA Container Toolkit is already installed and Docker lists the nvidia runtime."
+    say "Docker already lists the nvidia runtime; nothing to install."
 elif command -v nvidia-ctk >/dev/null 2>&1; then
     # packages present, runtime entry missing: no network work, just register
     say "nvidia-container-toolkit is installed but Docker does not list the nvidia runtime."
@@ -184,13 +190,13 @@ fi
 if [[ "${UNSLOTH_TOOLKIT_VERIFY:-1}" != 0 ]]; then
     say "Verifying: docker run --rm --gpus all --platform ${PLATFORM} ubuntu:24.04 nvidia-smi -L"
     if ! docker run --rm --gpus all --platform "${PLATFORM}" ubuntu:24.04 nvidia-smi -L; then
-        fail "a container could not see the GPU. If this host is WSL 2 without Docker Desktop, make
-       sure the Windows NVIDIA driver is current (wsl --update); otherwise see
+        fail "a container could not see the GPU. On WSL 2 install a current NVIDIA Windows driver
+       from nvidia.com (wsl --update updates WSL itself, not the driver); otherwise see
        https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/troubleshooting.html"
     fi
 fi
 if grep -qi microsoft "$PROC_VERSION" 2>/dev/null; then
-    say "WSL 2 host: the GPU is the Windows driver's; keep it current with the NVIDIA installer."
+    say "WSL 2 host: the GPU comes from the Windows NVIDIA driver; update it with NVIDIA's Windows installer."
 fi
 if ! driver_ok; then
     # the toolkit is in place, but the image's CUDA 12.8 stack will not start on this

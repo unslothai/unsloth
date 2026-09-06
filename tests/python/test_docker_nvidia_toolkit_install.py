@@ -417,6 +417,43 @@ def test_a_remote_docker_endpoint_is_refused(tmp_path: Path):
     assert not any(c.startswith(("sudo", "apt-get", "nvidia-ctk")) for c in _calls(log))
 
 
+def test_docker_desktop_on_native_linux_is_refused(tmp_path: Path):
+    _, log, env = _setup(tmp_path, desktop = True, driver = False, uid = 1000)
+    res = _run(env)
+    assert res.returncode == 2
+    assert "Docker Desktop for Linux has no NVIDIA GPU support" in res.stderr
+    assert not any(c.startswith(("sudo", "apt-get")) for c in _calls(log))
+
+
+def test_a_runtime_registered_without_nvidia_ctk_is_left_alone(tmp_path: Path):
+    _, log, env = _setup(tmp_path, configured = True)
+    (tmp_path / "bin" / "nvidia-ctk").unlink()
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    calls = _calls(log)
+    assert not any(c.startswith(("apt-get", "dnf", "curl", "systemctl")) for c in calls)
+    assert "docker run --rm --gpus all --platform linux/amd64 ubuntu:24.04 nvidia-smi -L" in calls
+
+
+def test_a_second_daemon_on_its_own_socket_is_refused(tmp_path: Path):
+    _, log, env = _setup(tmp_path, uid = 1000)
+    env["DOCKER_HOST"] = "unix:///run/dockerd-b/docker.sock"
+    res = _run(env)
+    assert res.returncode == 2
+    assert "not the system daemon" in res.stderr
+    assert not any(c.startswith(("sudo", "apt-get")) for c in _calls(log))
+
+
+def test_the_default_sockets_are_accepted(tmp_path: Path):
+    for i, sock in enumerate(("unix:///var/run/docker.sock", "unix:///run/docker.sock")):
+        sub = tmp_path / f"case{i}"
+        sub.mkdir()
+        _, log, env = _setup(sub, uid = 1000)
+        env["DOCKER_HOST"] = sock
+        res = _run(env)
+        assert "not the system daemon" not in res.stderr, sock
+
+
 def test_docker_desktop_on_macos_says_cpu_only(tmp_path: Path):
     _, log, env = _setup(tmp_path, desktop = True, driver = False, uid = 1000)
     _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
@@ -438,17 +475,18 @@ def test_a_configured_host_only_verifies(tmp_path: Path):
     _, log, env = _setup(tmp_path, configured = True)
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "already installed" in res.stdout
+    assert "already lists the nvidia runtime" in res.stdout
     calls = _calls(log)
     assert not any(c.startswith(("apt-get", "nvidia-ctk", "systemctl", "service")) for c in calls)
     assert "docker run --rm --gpus all --platform linux/amd64 ubuntu:24.04 nvidia-smi -L" in calls
 
 
-def test_docker_desktop_needs_nothing(tmp_path: Path):
-    _, log, env = _setup(tmp_path, desktop = True, driver = False, uid = 1000)
+def test_docker_desktop_on_wsl_needs_nothing(tmp_path: Path):
+    _, log, env = _setup(tmp_path, desktop = True, driver = False, uid = 1000, wsl = True)
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "Docker Desktop detected" in res.stdout
+    assert "WSL 2 backend" in res.stdout and "nvidia.com" in res.stdout
+    assert "wsl --update updates WSL itself" in res.stdout
     assert [c for c in _calls(log) if not c.startswith("docker ")] == []
 
 
@@ -469,6 +507,7 @@ def test_a_failed_verification_is_an_error_with_a_pointer(tmp_path: Path):
     assert res.returncode == 1
     assert "could not see the GPU" in res.stderr
     assert "troubleshooting" in res.stderr
+    assert "wsl --update updates WSL itself" in res.stderr
 
 
 def test_verification_can_be_skipped(tmp_path: Path):
