@@ -1198,9 +1198,13 @@ async def stream_with_studio_tools(
     tool_choice = run.tool_choice if run.tool_choice is not None else "auto"
     allowed_tool_names = _tool_names(tools)
     tool_call_timeout = policy.timeout
-    permission_mode = policy.permission_mode
+    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+
+    permission_mode, bypass_permissions = normalize_tool_permissions(
+        policy.permission_mode, policy.bypass_permissions
+    )
+    scoped_tool_stream = account_tool_stream(stream_tool_execution)
     confirm_tool_calls = policy.confirm_calls
-    bypass_permissions = policy.bypass_permissions
     rag_scope = policy.rag_scope
 
     # The promotion allowlist is the selected catalog, never None: an unrestricted parse re-opens markerless tool-call
@@ -1686,7 +1690,7 @@ async def stream_with_studio_tools(
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long
             # call cannot idle the stream out.
-            tool_stream = stream_tool_execution(
+            tool_stream = scoped_tool_stream(
                 _invoke,
                 tool_name = name,
                 tool_call_id = card_id,

@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from utils.paths import studio_db_path, ensure_dir
+from utils.account_context import is_owner_context
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+_account_schema_ready: set[str] = set()
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -40,6 +42,18 @@ def get_connection() -> sqlite3.Connection:
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    if not is_owner_context():
+        key = str(db_path)
+        if key not in _account_schema_ready:
+            with _schema_lock:
+                if key not in _account_schema_ready:
+                    try:
+                        _ensure_schema(conn)
+                        _account_schema_ready.add(key)
+                    except Exception:
+                        conn.close()
+                        raise
+        return conn
     if not _schema_ready:
         with _schema_lock:
             if not _schema_ready:
@@ -60,6 +74,8 @@ def create_server(
     is_enabled: bool = True,
     use_oauth: bool = False,
 ) -> None:
+    from core.inference.mcp_client import validate_mcp_address
+    validate_mcp_address(url)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
@@ -90,6 +106,9 @@ def update_server(id: str, changes: dict) -> bool:
     """Apply column updates and bump ``updated_at``. Returns True on a hit."""
     if not changes:
         return False
+    if "url" in changes:
+        from core.inference.mcp_client import validate_mcp_address
+        validate_mcp_address(changes["url"])
     bool_cols = {"is_enabled", "use_oauth"}
     sets, params = [], []
     for col, value in changes.items():
