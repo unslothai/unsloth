@@ -304,12 +304,18 @@ def test_a_call_the_server_runs_itself_is_not_offered_to_the_caller():
     # turn, for a call Unsloth executes and answers in a later turn. Its catalogue is
     # Unsloth's own, so a client acting on those chunks runs the tool a second time, or
     # stops at the finish_reason before the real answer arrives.
-    assert strip_server_executed_tool_call(
-        'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"id": "c1"}]}}]}'
-    ) is None
-    assert strip_server_executed_tool_call(
-        'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}'
-    ) is None
+    assert (
+        strip_server_executed_tool_call(
+            'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"id": "c1"}]}}]}'
+        )
+        is None
+    )
+    assert (
+        strip_server_executed_tool_call(
+            'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}'
+        )
+        is None
+    )
     # A chunk that also carries prose keeps the prose.
     kept = strip_server_executed_tool_call(
         'data: {"choices": [{"index": 0, "delta": {"content": "hi", "tool_calls": [{"id": "c"}]}}]}'
