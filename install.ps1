@@ -517,6 +517,68 @@ function Install-UnslothStudio {
     # carrying default = true. A subset parser on purpose: PowerShell 5.1 has no TOML reader,
     # and these are the only keys that matter here. $null when the file cannot be read, and
     # an inline-table `index = [...]` is reported the same way rather than guessed at.
+    # A TOML comment, without cutting a `#` that is inside a string. Both halves matter and
+    # they pull against each other: `no-index = true# offline` is a comment with no space in
+    # front of it, which the old `(^|\s)#` cut missed entirely, while
+    # `index-url = "https://host/simple#frag"` is a fragment that a naive cut at the first `#`
+    # would eat. Only a scan that knows where the quotes are gets both right.
+    function Remove-WoaTomlComment {
+        param([string]$Line)
+        $inD = $false; $inS = $false
+        for ($i = 0; $i -lt $Line.Length; $i++) {
+            $c = $Line[$i]
+            if ($inD) {
+                if ($c -eq '\') { $i++; continue }
+                if ($c -eq '"') { $inD = $false }
+                continue
+            }
+            if ($inS) { if ($c -eq "'") { $inS = $false }; continue }
+            if ($c -eq '"') { $inD = $true; continue }
+            if ($c -eq "'") { $inS = $true; continue }
+            if ($c -eq '#') { return $Line.Substring(0, $i) }
+        }
+        return $Line
+    }
+
+    # The key half of a TOML assignment, split on its dots and unquoted: `no-index` ->
+    # @("no-index"), `"index-url"` -> @("index-url"), `pip.no-index` -> @("pip", "no-index").
+    # $null when the text is not a key at all. A dotted key is the same statement as writing
+    # the leaf under [pip], and a quoted one is the same key as the bare spelling, so reading
+    # either as one opaque atom -- which is what `^([A-Za-z0-9_.-]+)` did -- silently loses it.
+    function Split-WoaTomlKey {
+        param([string]$Text)
+        $parts = @()
+        $i = 0
+        while ($i -lt $Text.Length) {
+            while ($i -lt $Text.Length -and [char]::IsWhiteSpace($Text[$i])) { $i++ }
+            if ($i -ge $Text.Length) { return $null }
+            $c = $Text[$i]
+            if ($c -eq '"' -or $c -eq "'") {
+                $q = $c; $i++; $sb = ""
+                while ($i -lt $Text.Length -and $Text[$i] -ne $q) {
+                    # Basic strings escape; literal (single-quoted) ones do not.
+                    if ($q -eq '"' -and $Text[$i] -eq '\' -and ($i + 1) -lt $Text.Length) { $i++ }
+                    $sb += $Text[$i]; $i++
+                }
+                if ($i -ge $Text.Length) { return $null }   # unterminated
+                $i++
+                $parts += $sb
+            } else {
+                $sb = ""
+                while ($i -lt $Text.Length -and ([string]$Text[$i]) -match '[A-Za-z0-9_-]') { $sb += $Text[$i]; $i++ }
+                if (-not $sb) { return $null }
+                $parts += $sb
+            }
+            while ($i -lt $Text.Length -and [char]::IsWhiteSpace($Text[$i])) { $i++ }
+            if ($i -lt $Text.Length) {
+                if ($Text[$i] -ne '.') { return $null }
+                $i++
+            }
+        }
+        if ($parts.Count -eq 0) { return $null }
+        return ,$parts
+    }
+
     function Read-WoaUvTomlIndexKeys {
         param([string]$Path, [string]$Top)
         try { $lines = [System.IO.File]::ReadAllLines($Path) } catch { return $null }
@@ -535,7 +597,7 @@ function Install-UnslothStudio {
             if ($inIndex -and $idxDefault -and $idxUrl -and -not $entry.DefaultUrl) { $entry.DefaultUrl = $idxUrl }
         }
         foreach ($raw in $lines) {
-            $line = ($raw -replace '(^|\s)#.*$', '').Trim()
+            $line = (Remove-WoaTomlComment $raw).Trim()
             if (-not $line) { continue }
             if ($line -match '^\[\[(.+?)\]\]$') {
                 & $flush
@@ -543,16 +605,37 @@ function Install-UnslothStudio {
                 continue
             }
             if ($line -match '^\[(.+?)\]$') { & $flush; $section = $Matches[1].Trim(); $inIndex = $false; continue }
-            if ($line -notmatch '^([A-Za-z0-9_.-]+)\s*=\s*(.+)$') { continue }
-            $key = $Matches[1].Trim(); $val = $Matches[2].Trim()
+            # The first `=` that is not inside a string. A quoted key may contain one.
+            $eq = -1; $inD = $false; $inS = $false
+            for ($i = 0; $i -lt $line.Length; $i++) {
+                $c = $line[$i]
+                if ($inD) { if ($c -eq '\') { $i++ } elseif ($c -eq '"') { $inD = $false }; continue }
+                if ($inS) { if ($c -eq "'") { $inS = $false }; continue }
+                if ($c -eq '"') { $inD = $true; continue }
+                if ($c -eq "'") { $inS = $true; continue }
+                if ($c -eq '=') { $eq = $i; break }
+            }
+            if ($eq -lt 1) { continue }
+            $parts = Split-WoaTomlKey $line.Substring(0, $eq)
+            if (-not $parts) { continue }
+            $key = $parts[-1]
+            $prefix = if ($parts.Count -gt 1) { ($parts[0..($parts.Count - 2)] -join '.') } else { "" }
+            $val = $line.Substring($eq + 1).Trim()
+            if (-not $val) { continue }
             $str = if ($val -match '^"(.*)"$' -or $val -match "^'(.*)'$") { $Matches[1] } else { $null }
             $bool = if ($val -match '^(true|false)$') { $val -eq 'true' } else { $null }
             if ($inIndex) {
-                if ($key -eq 'url' -and $str) { $idxUrl = $str }
-                if ($key -eq 'default' -and $null -ne $bool) { $idxDefault = $bool }
+                # A dotted key inside [[index]] names some other table, not this entry.
+                if (-not $prefix) {
+                    if ($key -eq 'url' -and $str) { $idxUrl = $str }
+                    if ($key -eq 'default' -and $null -ne $bool) { $idxDefault = $bool }
+                }
                 continue
             }
-            $scope = if ($section -eq $Top) { $topScope } elseif ($section -eq $pipTable) { $pipScope } else { $null }
+            # `pip.no-index` under [tool.uv] is [tool.uv.pip]'s no-index, so the dotted prefix
+            # extends the section the line sits in before the scope is decided.
+            $scopeSection = if ($prefix) { if ($section) { "$section.$prefix" } else { $prefix } } else { $section }
+            $scope = if ($scopeSection -eq $Top) { $topScope } elseif ($scopeSection -eq $pipTable) { $pipScope } else { $null }
             if ($null -eq $scope) { continue }
             if ($key -eq 'no-index' -and $null -ne $bool -and $null -eq $scope.NoIndex) { $scope.NoIndex = $bool }
             if (($key -eq 'default-index' -or $key -eq 'index-url') -and $str -and -not $scope.IndexUrl) { $scope.IndexUrl = $str }
