@@ -17,7 +17,9 @@ import inspect
 import threading
 
 from routes.inference import (
+    _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
     UI_STREAM_EVENTS_HEADER,
+    _DroppedFrameKeepalive,
     _ui_stream_events_enabled,
     produce_openai_chat_completions,
 )
@@ -98,3 +100,39 @@ def test_openai_stream_control_yields_are_gated():
 
     ungated = sorted(candidate_lines - guarded)
     assert not ungated, f"ungated control-frame yields at producer lines {ungated}"
+
+
+def test_dropped_frames_still_pace_a_keepalive():
+    # A gated-off frame writes nothing but still restarts the stall-keepalive wait, and a
+    # tool streaming stdout emits them faster than tool_stream_exec's heartbeat interval.
+    # Without this pacing the stream is silent for the whole tool run and a Cloudflare
+    # quick tunnel drops it at ~100s idle.
+    keepalive = _DroppedFrameKeepalive(now = 0.0)
+    assert keepalive.due(now = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S - 0.01) is False
+    assert keepalive.due(now = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S) is True
+    # Paced, not per-frame: the window restarts from the one just written.
+    assert keepalive.due(now = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S + 0.01) is False
+    assert keepalive.due(now = 2 * _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S) is True
+
+
+def test_every_gated_frame_falls_back_to_a_keepalive():
+    # Companion to the gating check above: dropping a frame must never mean writing
+    # nothing, so each opt-in branch carries the paced keepalive on its else side.
+    src = inspect.getsource(produce_openai_chat_completions)
+    gates = [
+        node
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.If) and "_ui_events" in ast.dump(node.test)
+    ]
+    assert gates, "the per-request control-frame gate disappeared from the producer"
+
+    missing = [
+        node.lineno
+        for node in gates
+        if not (
+            len(node.orelse) == 1
+            and isinstance(node.orelse[0], ast.If)
+            and "_drop_keepalive" in ast.dump(node.orelse[0].test)
+        )
+    ]
+    assert not missing, f"gated frames dropped with no keepalive at producer lines {missing}"
