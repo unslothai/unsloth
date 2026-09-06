@@ -11,6 +11,7 @@ falls back). The second half runs only on Windows against a real restricted toke
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
 import json
@@ -64,6 +65,11 @@ def _good_findings(sid_text: str) -> dict:
         "secret_readable": True,
         "secret_writable": _DENIED,
         "sibling_writable": _DENIED,
+        # The directory granted the token's own user SID and never the launch
+        # SID: readable, because the first access check allows it, and refused a
+        # write, because only the restricting SIDs decide that.
+        "user_only_readable": True,
+        "user_only_writable": _DENIED,
         "workdir_readable": True,
         "workdir_writable": True,
         "temp_writable": True,
@@ -197,6 +203,7 @@ def test_probe_evaluation_requires_every_observation():
         "interpreter_readable": (_DENIED, "interpreter could not be read"),
         "secret_writable": (True, "outside the workdir was writable"),
         "sibling_writable": (True, "another launch's temp"),
+        "user_only_writable": (True, "granted to the token's user but not to the launch SID"),
         "workdir_readable": (_DENIED, "workdir was not readable"),
         "workdir_writable": (_DENIED, "workdir was not writable"),
         "temp_writable": (_DENIED, "private temp was not writable"),
@@ -212,7 +219,7 @@ def test_probe_evaluation_requires_every_observation():
         assert any(fragment in failure for failure in verdict.failures), (key, verdict.failures)
         # Only that one requirement failed; the rest are still reported as held.
         assert len(verdict.failures) == 1, (key, verdict.failures)
-        assert len(verdict.held) == 13, (key, verdict.held)
+        assert len(verdict.held) == 14, (key, verdict.held)
         assert fragment in verdict.reason()
         assert "what held" in verdict.reason()
     without_launch_sid = _good_findings(sid)
@@ -262,6 +269,39 @@ def test_an_unreadable_user_profile_is_disclosed_rather_than_failed_closed():
     assert "user_profile_unreadable" not in readable.limitations
 
 
+def test_the_write_fence_is_proved_where_the_first_access_check_cannot_explain_it():
+    """base/granted-user carries the token's user SID and never the launch SID.
+
+    That is the only place the fence can be demonstrated as the fence: its reads
+    pass the first access check, so a refused write there can only have come from
+    the second, which is what WRITE_RESTRICTED is. Without it, a host whose DACLs
+    refuse the child everything looks exactly like a host whose restricting SIDs
+    are doing the work, and the ACE this launcher now adds for the user SID would
+    have no evidence against it.
+    """
+    sid = "S-1-5-21-1-2-3-4"
+    verdict = token_launcher._evaluate_probe(_good_findings(sid), sid_text = sid)
+    assert verdict.available is True
+    assert "a directory the launch SID does not restrict refused a write" in verdict.held
+    assert "stayed readable, so its refused write was the restricting SIDs" in verdict.reason()
+
+    # A write that got through there is the fence failing, not a disclosure.
+    writable = {**_good_findings(sid), "user_only_writable": True}
+    broken = token_launcher._evaluate_probe(writable, sid_text = sid)
+    assert broken.available is False
+    assert broken.failures == (
+        "a directory granted to the token's user but not to the launch SID was writable",
+    )
+
+    # And a refusal that the DACL alone explains is still accepted, but it is
+    # named as the weaker evidence it is rather than counted as proof.
+    unreadable = {**_good_findings(sid), "user_only_readable": _DENIED}
+    weak = token_launcher._evaluate_probe(unreadable, sid_text = sid)
+    assert weak.available is True
+    assert "not by itself evidence about the restricting SIDs" in weak.reason()
+    assert _DENIED in weak.reason()
+
+
 def test_a_broken_sandbox_still_fails_closed_whatever_the_profile_reads():
     """The disclosure never rescues a launch that would make Limited mode a lie."""
     sid = "S-1-5-21-1-2-3-4"
@@ -269,6 +309,7 @@ def test_a_broken_sandbox_still_fails_closed_whatever_the_profile_reads():
         ("interpreter_readable", _DENIED),
         ("secret_writable", True),
         ("sibling_writable", True),
+        ("user_only_writable", True),
         ("in_job", False),
         ("workdir_writable", _DENIED),
         ("restricted", False),
@@ -324,11 +365,17 @@ def test_the_probe_payload_reports_values_rather_than_bare_booleans():
         '"secret_exists"',
         '"user_sid"',
         '"integrity_sid"',
+        '"user_only_readable"',
+        '"user_only_writable"',
         "input.txt",
     ):
         assert fragment in payload, fragment
     assert "return False" not in payload
     assert payload.count("describe(exc)") >= 4
+    # argv: the secret, the sibling, the user-SID directory, then the private
+    # temp the host substitutes in once the launch identity exists.
+    assert "secret, sibling, user_only = sys.argv[1], sys.argv[2], sys.argv[3]" in payload
+    assert "os.path.normcase(sys.argv[4])" in payload
 
 
 def _probing_backend(monkeypatch, verdict_for):
@@ -457,6 +504,47 @@ def test_a_denied_read_names_the_principals_the_file_does_grant(monkeypatch):
     monkeypatch.setattr(windows_lpac, "_api", lambda: _dacl_api((0,), result = 5))
     assert token_launcher._dacl_trustees("C:\\probe\\secret.txt") == ()
     assert token_launcher._denied_read_note("C:\\probe\\secret.txt") == ""
+
+
+def test_a_denied_root_is_named_with_the_principals_it_does_grant(monkeypatch):
+    """Round 18 reported three refusals and nothing about the DACLs behind them.
+
+    The child only sees "Permission denied". Whether the two ACEs this launcher
+    adds actually reached the directory is readable from the host side alone, and
+    it is what separates "the ACE was not enough" from "the ACE was never made".
+    """
+    monkeypatch.setattr(token_launcher, "_dacl_trustees", lambda path: ("S-1-5-18", "S-1-5-32-544"))
+    findings = {"workdir_readable": True, "workdir_writable": _DENIED, "temp_writable": True}
+    roots = (
+        ("the workdir", "C:\\w", ("workdir_readable", "workdir_writable")),
+        ("the private temp", "C:\\t", ("temp_writable",)),
+    )
+
+    # Only the roots the child could not reach; a root that worked is not noise.
+    assert token_launcher._denied_root_notes(findings, roots) == (
+        "the workdir grants S-1-5-18, S-1-5-32-544",
+    )
+
+    def explode(path):
+        raise OSError(5, "GetNamedSecurityInfoW")
+
+    monkeypatch.setattr(token_launcher, "_dacl_trustees", explode)
+    assert token_launcher._denied_root_notes(findings, roots) == (
+        "the workdir grants no DACL this host would read",
+    )
+
+
+def test_the_probes_user_sid_directory_is_best_effort():
+    """A host that will not let the evidence directory be granted still gets a launcher.
+
+    The refused write there is then explained by neither access check in
+    particular, so the verdict says that rather than counting it as proof.
+    """
+    assert "os.mkdir(user_only)" in SOURCE
+    assert 'granted-user"' in SOURCE
+    assert "carries neither of this launch's SIDs" in SOURCE
+    # And the grant is undone before the probe tree is removed, not only with it.
+    assert "_revoke_sid(user_only" in SOURCE
 
 
 def test_the_denied_read_note_never_replaces_the_diagnosis(monkeypatch):
@@ -1065,26 +1153,64 @@ def test_spawn_restricted_refuses_a_launch_whose_resources_are_gone(tmp_path, mo
         )
 
 
-def _prepare_environment(tmp_path, monkeypatch, recorder):
-    """Everything prepare() touches on a host, replaced by recorders."""
+# The two SIDs a launch puts on its roots, and the fake pointers they convert
+# to: 3 is the per-launch random SID (the second access check), 4 is the token's
+# own user SID (the first). Every grant and revoke below is recorded as a
+# (path, pointer) pair so the two can never be confused for one another.
+_TOKEN_USER_SID = "S-1-5-21-1-2-3-1001"
+_LAUNCH_SID_VALUE = 3
+_USER_SID_VALUE = 4
+
+
+def _prepare_environment(
+    tmp_path, monkeypatch, recorder, *, already_granted = (), already_named = None
+):
+    """Everything prepare() touches on a host, replaced by recorders.
+
+    ``already_granted`` names the roots whose DACL provably already grants the
+    token's user SID modify, so no ACE is needed there. ``already_named`` names
+    the roots that carry any ACE for that account at all, which is the weaker
+    condition cleanup keys off; it defaults to ``already_granted``.
+    """
     manifests = tmp_path / "manifests"
     temp_root = tmp_path / "temp"
     work = tmp_path / "work"
     for path in (manifests, temp_root, work):
         path.mkdir()
-    granted: list[str] = []
-    revoked: list[str] = []
+    granted: list[tuple[str, int]] = []
+    revoked: list[tuple[str, int]] = []
+    granted_already = {str(path) for path in already_granted}
+    named_already = (
+        granted_already if already_named is None else {str(path) for path in already_named}
+    )
     monkeypatch.setattr(token_launcher, "_is_windows", lambda: True)
     monkeypatch.setattr(token_launcher, "_last_error", lambda: recorder.last_error)
     monkeypatch.setattr(token_launcher, "_manifest_root", lambda: str(manifests))
     monkeypatch.setattr(token_launcher, "_temp_root", lambda: str(temp_root))
-    monkeypatch.setattr(token_launcher, "_sid_from_text", lambda text: ctypes.c_void_p(3))
+    monkeypatch.setattr(
+        token_launcher, "_sid_from_text",
+        lambda text: ctypes.c_void_p(
+            _USER_SID_VALUE if text == _TOKEN_USER_SID else _LAUNCH_SID_VALUE
+        ),
+    )
+    monkeypatch.setattr(
+        token_launcher, "_token_user_sid_text", lambda api, token: _TOKEN_USER_SID
+    )
+    monkeypatch.setattr(token_launcher, "_dacl_names_sid", lambda path, sid: path in named_already)
+    monkeypatch.setattr(
+        windows_lpac, "_existing_access",
+        lambda path, sids, required: path in granted_already,
+    )
     monkeypatch.setattr(windows_lpac, "_api", lambda: recorder)
     monkeypatch.setattr(windows_lpac, "_validate_workdir", lambda path: str(work))
     monkeypatch.setattr(windows_lpac, "_canonical_inner_argv", lambda argv, env: tuple(argv))
     monkeypatch.setattr(windows_lpac, "_process_identity", lambda pid = None: (os.getpid(), 5))
-    monkeypatch.setattr(windows_lpac, "_grant_modify", lambda path, sid: granted.append(path))
-    monkeypatch.setattr(windows_lpac, "_revoke_sid", lambda path, sid, **kw: revoked.append(path))
+    monkeypatch.setattr(
+        windows_lpac, "_grant_modify", lambda path, sid: granted.append((path, sid.value))
+    )
+    monkeypatch.setattr(
+        windows_lpac, "_revoke_sid", lambda path, sid, **kw: revoked.append((path, sid.value))
+    )
     return SimpleNamespace(
         manifests = manifests, temp_root = temp_root, work = work,
         granted = granted, revoked = revoked,
@@ -1105,7 +1231,15 @@ def test_prepare_builds_the_token_and_the_job_before_it_returns(tmp_path, monkey
     )
 
     identity = prepared.spawn_callback._launch_identity
-    assert host.granted == [str(host.work), identity.private_temp]
+    # Both SIDs, on both roots: the launch SID for the second access check and
+    # the token's own user SID for the first. One without the other is a root
+    # the child cannot use.
+    assert host.granted == [
+        (str(host.work), _LAUNCH_SID_VALUE),
+        (identity.private_temp, _LAUNCH_SID_VALUE),
+        (str(host.work), _USER_SID_VALUE),
+        (identity.private_temp, _USER_SID_VALUE),
+    ]
     assert Path(identity.manifest_path).exists()
     prepared.cleanup()
     assert prepared.cleanup_diagnostics == []
@@ -1113,7 +1247,12 @@ def test_prepare_builds_the_token_and_the_job_before_it_returns(tmp_path, monkey
     names = recorder.names()
     assert names.index("job.close") < recorder.calls.index(("LocalFree", 3))
     assert 4711 in recorder.closed
-    assert host.revoked == [identity.private_temp, str(host.work)]
+    assert host.revoked == [
+        (identity.private_temp, _LAUNCH_SID_VALUE),
+        (identity.private_temp, _USER_SID_VALUE),
+        (str(host.work), _LAUNCH_SID_VALUE),
+        (str(host.work), _USER_SID_VALUE),
+    ]
     assert not Path(identity.manifest_path).exists()
     assert list(host.temp_root.iterdir()) == []
 
@@ -1139,8 +1278,10 @@ def test_prepare_declines_and_cleans_up_when_the_token_cannot_be_created(tmp_pat
     # A token failure is a fallback, not a failed tool call, and it leaves no
     # grant, manifest, private temp or handle behind.
     # The grants were applied before the token failed, and all of them were undone.
-    assert len(host.granted) == 2 and host.granted[0] == str(host.work)
-    assert os.path.dirname(host.granted[1]) == str(host.temp_root)
+    # The user SID is never reached: it is read off a token that does not exist.
+    assert [sid for _path, sid in host.granted] == [_LAUNCH_SID_VALUE] * 2
+    assert host.granted[0][0] == str(host.work)
+    assert os.path.dirname(host.granted[1][0]) == str(host.temp_root)
     assert host.revoked == list(reversed(host.granted))
     assert list(host.manifests.iterdir()) == []
     assert list(host.temp_root.iterdir()) == []
@@ -1363,6 +1504,46 @@ def test_the_desktop_grant_is_the_loader_pair_and_not_every_desktop_right():
     assert not hasattr(token_launcher, "_DESKTOP_ALL_ACCESS")
 
 
+def test_the_window_station_grant_is_only_what_the_second_check_can_decide():
+    """The ACE names the launch SID, so most of WINSTA_ALL_ACCESS was inert.
+
+    A random S-1-5-21 value is in TokenRestrictedSids and in none of the token's
+    groups, so the first access check never consults this ACE; under
+    WRITE_RESTRICTED the second consults it only for write access. The
+    interactive window station's generic mapping puts exactly three object
+    rights on the write side, so the other six could never decide anything
+    whatever was written here.
+    """
+    write_side = {
+        "WINSTA_ACCESSCLIPBOARD": 0x0004,
+        "WINSTA_CREATEDESKTOP": 0x0008,
+        "WINSTA_WRITEATTRIBUTES": 0x0010,
+    }
+    read_or_execute_side = {
+        "WINSTA_ENUMDESKTOPS": 0x0001,
+        "WINSTA_READATTRIBUTES": 0x0002,
+        "WINSTA_ACCESSGLOBALATOMS": 0x0020,
+        "WINSTA_EXITWINDOWS": 0x0040,
+        "WINSTA_ENUMERATE": 0x0100,
+        "WINSTA_READSCREEN": 0x0200,
+    }
+    for name, right in read_or_execute_side.items():
+        assert not token_launcher._WINSTA_GRANT & right, name
+    # The clipboard is the one live right that reaches the user rather than the
+    # child: this is their real interactive window station. Chromium's own
+    # WinSta0 grant omits it and its sandbox document names clipboard denial as
+    # a property of a sandboxed target.
+    assert not token_launcher._WINSTA_GRANT & write_side["WINSTA_ACCESSCLIPBOARD"]
+    assert token_launcher._WINSTA_GRANT & write_side["WINSTA_CREATEDESKTOP"]
+    assert token_launcher._WINSTA_GRANT & write_side["WINSTA_WRITEATTRIBUTES"]
+    assert token_launcher._WINSTA_GRANT == 0x0008 | 0x0010 | 0x00020000
+    # Still never WRITE_DAC, WRITE_OWNER or DELETE, on either user object.
+    assert not (token_launcher._WINSTA_GRANT | token_launcher._DESKTOP_GRANT) & 0x000D0000
+    # WINSTA_ALL_ACCESS is gone the way _DESKTOP_ALL_ACCESS went: naming it
+    # invites granting it.
+    assert not hasattr(token_launcher, "_WINSTA_ALL_ACCESS")
+
+
 def _dead_owner_manifest(manifest: Path, text: str, **overrides) -> None:
     payload = {**json.loads(text), "owner_pid": 4242, "owner_created": 7, **overrides}
     manifest.write_text(json.dumps(payload), encoding = "utf-8")
@@ -1439,6 +1620,519 @@ def test_a_manifest_may_only_name_the_user_objects_this_launcher_grants(tmp_path
             _manifest(tmp_path, sid, user_objects = planted)
         ) is None, planted
     assert token_launcher._parse_manifest(_manifest(tmp_path, sid, desktop = ["a"])) is None
+
+
+# ── the first access check (staging round 18) ────────────────────────────────
+
+
+def test_the_user_sid_is_read_off_the_token_that_was_built(monkeypatch):
+    """TOKEN_USER is what the first access check is decided against, so it is queried.
+
+    Never the launcher's own process token and never a well-known SID: the SID
+    that has to appear on the workdir is whatever the token that will run the
+    child actually carries.
+    """
+    entry = token_launcher._SID_AND_ATTRIBUTES(0xBEEF, 0)
+    buffer = ctypes.create_string_buffer(
+        ctypes.string_at(ctypes.byref(entry), ctypes.sizeof(entry)), ctypes.sizeof(entry)
+    )
+    queried: list[tuple] = []
+    monkeypatch.setattr(
+        token_launcher, "_token_information",
+        lambda api, token, kind: queried.append((token, kind)) or buffer,
+    )
+    monkeypatch.setattr(windows_lpac, "_sid_string", lambda api, sid: f"S-1-5-21-{sid.value:x}")
+
+    assert token_launcher._token_user_sid_text(SimpleNamespace(), 4711) == "S-1-5-21-beef"
+    # TokenUser is 1, and the handle is the one passed in.
+    assert queried == [(4711, token_launcher._TOKEN_USER)]
+    assert token_launcher._TOKEN_USER == 1
+
+    empty = token_launcher._SID_AND_ATTRIBUTES(0, 0)
+    monkeypatch.setattr(
+        token_launcher, "_token_information",
+        lambda api, token, kind: ctypes.create_string_buffer(
+            ctypes.string_at(ctypes.byref(empty), ctypes.sizeof(empty)), ctypes.sizeof(empty)
+        ),
+    )
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "user SID"):
+        token_launcher._token_user_sid_text(SimpleNamespace(), 4711)
+
+
+def test_the_user_sid_ace_is_added_after_the_token_and_recorded_before_it(tmp_path, monkeypatch):
+    """Staging round 18: the child could not read or write the roots it was granted.
+
+    A restricted token is judged twice and both checks must allow. The per-launch
+    SID lives in TokenRestrictedSids alone, so the first check never sees it, and
+    an ACE naming only it leaves both the reads and the writes of the workdir to
+    whatever the directory inherited. Each root therefore gets a second ACE for
+    the token's own user SID, which only exists once the token does, and which is
+    recorded in the write-ahead manifest before it is applied.
+    """
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    order: list[str] = []
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token",
+        lambda identity: order.append("token") or wintypes.HANDLE(4711),
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+    recorded: list[dict] = []
+    write_manifest = token_launcher._write_manifest
+    grant_modify = windows_lpac._grant_modify
+
+    def record(identity):
+        write_manifest(identity)
+        recorded.append(json.loads(Path(identity.manifest_path).read_text(encoding = "utf-8")))
+        order.append("manifest")
+
+    monkeypatch.setattr(token_launcher, "_write_manifest", record)
+    monkeypatch.setattr(
+        windows_lpac, "_grant_modify",
+        lambda path, sid: grant_modify(path, sid) or order.append(f"grant {sid.value}"),
+    )
+
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    identity = prepared.spawn_callback._launch_identity
+
+    assert order == [
+        "manifest", f"grant {_LAUNCH_SID_VALUE}", f"grant {_LAUNCH_SID_VALUE}",
+        "token",
+        "manifest", f"grant {_USER_SID_VALUE}", f"grant {_USER_SID_VALUE}",
+    ]
+    # The first record cannot name a SID that did not exist yet; the second is
+    # written before the ACE it describes, so a crash between the two is
+    # reconcilable and never the other way round.
+    assert recorded[0]["user_sid"] == "" and recorded[0]["user_sid_roots"] == []
+    assert recorded[1]["user_sid"] == _TOKEN_USER_SID
+    assert recorded[1]["user_sid_roots"] == [str(host.work), identity.private_temp]
+    assert identity.user_sid_string == _TOKEN_USER_SID
+    assert identity.user_sid_roots == (str(host.work), identity.private_temp)
+
+    prepared.cleanup()
+    assert prepared.cleanup_diagnostics == []
+    # Every ACE this launch added, and both SIDs on both roots.
+    assert host.revoked == [
+        (identity.private_temp, _LAUNCH_SID_VALUE),
+        (identity.private_temp, _USER_SID_VALUE),
+        (str(host.work), _LAUNCH_SID_VALUE),
+        (str(host.work), _USER_SID_VALUE),
+    ]
+    assert not Path(identity.manifest_path).exists()
+
+
+def test_a_root_that_already_names_the_user_sid_keeps_its_dacl(tmp_path, monkeypatch):
+    """An ACE that was there before the launch is neither added nor taken away.
+
+    SetEntriesInAclW(REVOKE_ACCESS) drops every ACE for a trustee, an inherited
+    one included, so a cleanup that revoked the user's own SID unconditionally
+    would hand back a session workdir the user no longer reaches. The roots that
+    already grant it are left byte for byte as they were.
+    """
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(
+        tmp_path, monkeypatch, recorder, already_granted = (tmp_path / "work",)
+    )
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    identity = prepared.spawn_callback._launch_identity
+
+    assert identity.user_sid_roots == (identity.private_temp,)
+    assert (str(host.work), _USER_SID_VALUE) not in host.granted
+    assert (identity.private_temp, _USER_SID_VALUE) in host.granted
+    payload = json.loads(Path(identity.manifest_path).read_text(encoding = "utf-8"))
+    assert payload["user_sid_roots"] == [identity.private_temp]
+
+    prepared.cleanup()
+    assert prepared.cleanup_diagnostics == []
+    assert (str(host.work), _USER_SID_VALUE) not in host.revoked
+    assert (identity.private_temp, _USER_SID_VALUE) in host.revoked
+    # The launch SID is still revoked from both: it names nobody and this launch
+    # is the only thing that ever put it anywhere.
+    assert (str(host.work), _LAUNCH_SID_VALUE) in host.revoked
+
+
+def test_a_root_named_but_not_granted_is_widened_and_never_revoked(tmp_path, monkeypatch):
+    """The one case where "needs an ACE" and "may lose one" disagree.
+
+    A root that already carries an ACE for this account, but not one that covers
+    what the child needs, gets the grant (the child has to be able to work there)
+    and keeps it (a revoke would take the account's own ACE with it). That widens
+    nothing the account did not already hold on a directory of its own.
+    """
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(
+        tmp_path, monkeypatch, recorder, already_granted = (), already_named = (tmp_path / "work",)
+    )
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    identity = prepared.spawn_callback._launch_identity
+
+    assert (str(host.work), _USER_SID_VALUE) in host.granted
+    assert identity.user_sid_roots == (identity.private_temp,)
+    prepared.cleanup()
+    assert (str(host.work), _USER_SID_VALUE) not in host.revoked
+
+
+def test_the_grant_plan_answers_needed_and_revocable_separately(monkeypatch):
+    """_existing_access decides the grant, _dacl_names_sid decides the revoke.
+
+    The grant question has to be the access check's own, so a deny ACE, an
+    inherit-only ACE or a read-only ACE all still get the grant. The revoke
+    question has to be the weaker one, because SetEntriesInAclW(REVOKE_ACCESS)
+    takes every ACE for the trustee, and this trustee is a real account.
+    """
+    masks: list[int] = []
+    monkeypatch.setattr(
+        windows_lpac, "_existing_access",
+        lambda path, sids, required: masks.append(required) or "modify" in path,
+    )
+    # Anything the access check accepts is necessarily on the DACL, so the
+    # weaker question is true wherever the stronger one is.
+    monkeypatch.setattr(
+        token_launcher, "_dacl_names_sid", lambda path, sid: "named" in path or "modify" in path
+    )
+    sid = ctypes.c_void_p(4)
+
+    # Nothing there: granted, and cleanup takes it back.
+    assert token_launcher._root_grant_plan("C:\\fresh", sid) == (True, True)
+    # Already modify: left exactly as it was, and never revoked.
+    assert token_launcher._root_grant_plan("C:\\modify-named", sid) == (False, False)
+    # Named but not sufficient (read-only, inherit-only, or denied): granted,
+    # and never taken back.
+    assert token_launcher._root_grant_plan("C:\\named", sid) == (True, False)
+
+    # The rights asked about are exactly the ones _grant_modify leaves behind,
+    # in the specific form a stored ACE carries them: Explorer's "Modify".
+    assert set(masks) == {token_launcher._MODIFY_ACCESS}
+    assert token_launcher._MODIFY_ACCESS == 0x1301BF
+    assert not token_launcher._MODIFY_ACCESS & 0x00040000  # never WRITE_DAC
+    assert not token_launcher._MODIFY_ACCESS & 0x00080000  # never WRITE_OWNER
+
+
+def test_dacl_names_sid_asks_the_path_and_releases_its_descriptor(monkeypatch):
+    seen: list[tuple] = []
+    freed: list[int] = []
+
+    def get_named(path, kind, information, owner, group, dacl, sacl, descriptor):
+        seen.append((path, kind, information))
+        dacl._obj.value = 8192
+        descriptor._obj.value = 4242
+        return 0
+
+    api = SimpleNamespace(
+        advapi32 = SimpleNamespace(GetNamedSecurityInfoW = get_named),
+        kernel32 = SimpleNamespace(LocalFree = lambda value: freed.append(value.value)),
+    )
+    monkeypatch.setattr(windows_lpac, "_api", lambda: api)
+    monkeypatch.setattr(
+        windows_lpac, "_acl_contains_sid", lambda acl, sid: (acl.value, sid.value) == (8192, 4)
+    )
+
+    assert token_launcher._dacl_names_sid("C:\\w", ctypes.c_void_p(4)) is True
+    assert token_launcher._dacl_names_sid("C:\\w", ctypes.c_void_p(9)) is False
+    assert seen[0] == (
+        "C:\\w", windows_lpac._SE_FILE_OBJECT, token_launcher._DACL_SECURITY_INFORMATION
+    )
+    assert freed == [4242, 4242]
+
+    # A descriptor that cannot be read is a failure, never a silent "no ACE":
+    # answering False there would add an ACE the cleanup then cannot account for.
+    monkeypatch.setattr(
+        api.advapi32, "GetNamedSecurityInfoW",
+        lambda *arguments: 5,
+    )
+    monkeypatch.setattr(windows_lpac, "_winerror", lambda prefix, code = None: OSError(5, prefix))
+    with pytest.raises(OSError, match = "GetNamedSecurityInfoW"):
+        token_launcher._dacl_names_sid("C:\\w", ctypes.c_void_p(4))
+
+
+def test_a_manifest_may_only_point_a_user_sid_revoke_at_its_own_roots(tmp_path):
+    """The recorded user SID names a real account, so where it may be revoked is bounded.
+
+    granted_roots is already pinned to this launch's own workdir and private
+    temp; the user-SID roots are a subset of those, so a planted manifest cannot
+    aim a revoke of somebody's account at a directory of theirs.
+    """
+    sid = "S-1-5-21-1-2-3-4"
+    workdir = str(tmp_path / "work")
+    private_temp = str(tmp_path / "temp" / ("a" * 24))
+    # Absent in a record written before this grant existed: reconciled for its
+    # launch SID exactly as it was.
+    older = token_launcher._parse_manifest(_manifest(tmp_path, sid))
+    assert older["user_sid"] == "" and older["user_sid_roots"] == []
+    good = token_launcher._parse_manifest(
+        _manifest(tmp_path, sid, user_sid = "S-1-5-21-9-9-9-1001", user_sid_roots = [workdir])
+    )
+    assert good["user_sid_roots"] == [workdir]
+    for planted in (
+        [str(tmp_path / "documents")],
+        [workdir, str(tmp_path / "documents")],
+        ["relative"],
+        [1],
+        "workdir",
+    ):
+        assert token_launcher._parse_manifest(
+            _manifest(tmp_path, sid, user_sid = "S-1-5-21-9-9-9-1001", user_sid_roots = planted)
+        ) is None, planted
+    # Roots without a SID to revoke, or a SID that is not one, name nothing.
+    assert token_launcher._parse_manifest(
+        _manifest(tmp_path, sid, user_sid = "", user_sid_roots = [workdir])
+    ) is None
+    assert token_launcher._parse_manifest(
+        _manifest(tmp_path, sid, user_sid = "runneradmin", user_sid_roots = [private_temp])
+    ) is None
+    planted_sid = _manifest(tmp_path, sid, user_sid = ["S-1-5-18"])
+    assert token_launcher._parse_manifest(planted_sid) is None
+
+
+def test_reconcile_revokes_the_user_sid_only_for_this_studios_own_account(tmp_path, monkeypatch):
+    """A crashed launch's user-SID ACEs are reconcilable, and only by the account they name.
+
+    The launch SID is safe to revoke out of a record because it names nobody; a
+    real account's SID is not, so the record is acted on only where it matches
+    the account this Studio is running as, which is the only one whose ACEs this
+    launcher can have made.
+    """
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+    recorder.advapi32.LookupAccountSidW = lambda *_arguments: 0
+
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    identity = prepared.spawn_callback._launch_identity
+    manifest = Path(identity.manifest_path)
+    recorded = manifest.read_text(encoding = "utf-8")
+    prepared.cleanup()
+    host.revoked.clear()
+
+    monkeypatch.setattr(windows_lpac, "_process_identity", lambda pid = None: None)
+    recorder.last_error = token_launcher._ERROR_NONE_MAPPED
+    _dead_owner_manifest(manifest, recorded)
+
+    token_launcher.WindowsRestrictedTokenBackend().reconcile_stale_manifests()
+
+    assert host.revoked == [
+        (identity.private_temp, _LAUNCH_SID_VALUE),
+        (identity.private_temp, _USER_SID_VALUE),
+        (str(host.work), _LAUNCH_SID_VALUE),
+        (str(host.work), _USER_SID_VALUE),
+    ]
+    assert not manifest.exists()
+
+    # The same record under another account: its launch SID still goes, its
+    # user SID is left for the Studio that could have created it.
+    host.revoked.clear()
+    monkeypatch.setattr(token_launcher, "_process_user_sid_text", lambda: "S-1-5-21-7-7-7-500")
+    recorder.last_error = token_launcher._ERROR_NONE_MAPPED
+    _dead_owner_manifest(manifest, recorded)
+
+    token_launcher.WindowsRestrictedTokenBackend().reconcile_stale_manifests()
+
+    assert host.revoked == [
+        (identity.private_temp, _LAUNCH_SID_VALUE),
+        (str(host.work), _LAUNCH_SID_VALUE),
+    ]
+    assert not manifest.exists()
+
+
+def test_two_launches_never_interleave_one_root_dacl_edit(monkeypatch):
+    """The workdir DACL is the same read-modify-write the window station was.
+
+    Unsynchronised, two Limited launches in one chat, a Python tool and a
+    Terminal tool, each read the workdir DACL before either writes, and the
+    second write puts back a DACL that never carried the first launch's ACE: a
+    child that is already running is refused the workdir it was given. A launch
+    racing a cleanup resurrects a revoked ACE the same way. Two ACEs per root
+    now, so twice as many edits race.
+    """
+    recorder = _WinApiRecorder()
+    monkeypatch.setattr(windows_lpac, "_api", lambda: recorder)
+    _mutex_recorder(recorder, monkeypatch)
+    order: list[str] = []
+    root = os.path.join(os.sep + "Work", "session")
+
+    def edit() -> None:
+        with token_launcher._root_acl_edit(root):
+            # The window an unsynchronised read-modify-write loses: the DACL is
+            # in hand and the write has not happened yet.
+            order.append(threading.current_thread().name)
+            time.sleep(0.02)
+            order.append(threading.current_thread().name)
+
+    threads = [threading.Thread(target = edit, name = name) for name in ("first", "second")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 10)
+    assert not any(thread.is_alive() for thread in threads)
+
+    runs = [name for index, name in enumerate(order) if index == 0 or order[index - 1] != name]
+    assert len(order) == 4, order
+    assert runs in (["first", "second"], ["second", "first"]), order
+    # And ordered against a second Studio process, which the in-process lock
+    # cannot reach, under a name derived from the root itself.
+    key = token_launcher._root_acl_key(root)
+    assert ("CreateMutexW", windows_lpac._LEDGER_MUTEX_PREFIX + key) in recorder.calls
+    assert recorder.names().count("WaitForSingleObject") == 2
+    assert recorder.names().count("ReleaseMutex") == 2
+    # A mutex name is bounded and may not carry a backslash, so it is a digest.
+    assert key.startswith(token_launcher._ROOT_ACL_MUTEX_PREFIX)
+    assert "\\" not in key and "/" not in key and len(key) < 64
+    # Per root: a launch editing its private temp is not held up by a workdir.
+    assert key != token_launcher._root_acl_key(os.path.join(os.sep + "Work", "other"))
+    assert key == token_launcher._root_acl_key(root)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "normcase folds case only on Windows")
+def test_the_root_acl_mutex_name_folds_case_like_the_filesystem():
+    """Two Studios have to derive one name from one directory, spelled either way."""
+    assert token_launcher._root_acl_key("C:\\Work\\Session") == (
+        token_launcher._root_acl_key("c:\\work\\session")
+    )
+
+
+def test_every_root_dacl_edit_happens_under_that_roots_lock(tmp_path, monkeypatch):
+    """Not just the new ACE: the launch SID's grants and both revokes as well."""
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+    stack: list[str] = []
+    edits: list[tuple[str, str | None]] = []
+    real_edit = token_launcher._root_acl_edit
+    grant = windows_lpac._grant_modify
+    revoke = windows_lpac._revoke_sid
+
+    @contextmanager
+    def watched(path):
+        stack.append(path)
+        try:
+            with real_edit(path):
+                yield
+        finally:
+            stack.pop()
+
+    monkeypatch.setattr(token_launcher, "_root_acl_edit", watched)
+    monkeypatch.setattr(
+        windows_lpac, "_grant_modify",
+        lambda path, sid: edits.append((path, stack[-1] if stack else None)) or grant(path, sid),
+    )
+    monkeypatch.setattr(
+        windows_lpac, "_revoke_sid",
+        lambda path, sid, **kw: (
+            edits.append((path, stack[-1] if stack else None)) or revoke(path, sid, **kw)
+        ),
+    )
+
+    prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
+        os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    )
+    prepared.cleanup()
+    assert prepared.cleanup_diagnostics == []
+
+    # Two SIDs on two roots, granted and revoked: eight edits, each one holding
+    # the lock for the root it is editing.
+    assert len(edits) == 8, edits
+    assert all(held == path for path, held in edits), edits
+
+
+def test_a_second_live_launch_keeps_the_shared_user_sid_ace(tmp_path, monkeypatch):
+    """The launch SID names one launch; the account SID names every launch.
+
+    So the per-launch revoke that is right for the first is wrong for the
+    second: it would pull the workdir out from under a child that is still
+    running. The write-ahead manifests are the register of who holds what, so
+    that is what the revoke asks.
+    """
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+    backend = token_launcher.WindowsRestrictedTokenBackend()
+    plan = os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+
+    first = backend.prepare(plan)
+    second = backend.prepare(plan)
+    first_temp = first.spawn_callback._launch_identity.private_temp
+    host.revoked.clear()
+
+    first.cleanup()
+    assert first.cleanup_diagnostics == []
+    # This launch's own SID always goes, and so does the account SID on the temp
+    # directory no other launch shares.
+    assert (str(host.work), _LAUNCH_SID_VALUE) in host.revoked
+    assert (first_temp, _USER_SID_VALUE) in host.revoked
+    # The shared one on the shared workdir stays while the sibling is alive.
+    assert (str(host.work), _USER_SID_VALUE) not in host.revoked
+
+    host.revoked.clear()
+    second.cleanup()
+    assert second.cleanup_diagnostics == []
+    assert (str(host.work), _USER_SID_VALUE) in host.revoked
+
+
+def test_a_dead_launchs_record_is_litter_and_never_a_claim(tmp_path, monkeypatch):
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(
+        token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
+    )
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+    backend = token_launcher.WindowsRestrictedTokenBackend()
+    plan = os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    first = backend.prepare(plan)
+    second = backend.prepare(plan)
+    second_manifest = Path(second.spawn_callback._launch_identity.manifest_path)
+    _dead_owner_manifest(second_manifest, second_manifest.read_text(encoding = "utf-8"))
+    host.revoked.clear()
+
+    first.cleanup()
+
+    # The sibling's owner is gone, so its record holds nothing; the ACE goes and
+    # reconcile_stale_manifests deals with what it left behind.
+    assert (str(host.work), _USER_SID_VALUE) in host.revoked
+
+
+def test_the_process_user_sid_guard_refuses_rather_than_raises(monkeypatch):
+    recorder = _WinApiRecorder()
+    monkeypatch.setattr(windows_lpac, "_api", lambda: recorder)
+    monkeypatch.setattr(
+        token_launcher, "_token_user_sid_text", lambda api, token: "S-1-5-21-1-1-1-5"
+    )
+    assert token_launcher._process_user_sid_text() == "S-1-5-21-1-1-1-5"
+    assert 4321 in recorder.closed  # the token handle is released either way
+
+    def explode(api, token):
+        raise OSError(5, "GetTokenInformation(1)")
+
+    monkeypatch.setattr(token_launcher, "_token_user_sid_text", explode)
+    assert token_launcher._process_user_sid_text() == ""
+    recorder.advapi32.OpenProcessToken = lambda process, access, out: 0
+    assert token_launcher._process_user_sid_text() == ""
 
 
 def test_spawn_restricted_detaches_the_child_and_names_its_desktop(tmp_path, monkeypatch):
@@ -1969,6 +2663,11 @@ def _run_live(backend, workdir: Path, code: str, *argv: str, timeout: int = 60) 
     # in a start-up failure the child never survives to explain.
     assert identity.user_objects == ("window station", "desktop"), identity.user_object_reason
     assert identity.desktop and "\\" in identity.desktop
+    # The SID the first access check is decided against, read off the token that
+    # was built. Which roots needed an ACE for it depends on what the workdir
+    # already granted, so only the subset relation is pinned.
+    assert identity.user_sid_string.startswith("S-1-")
+    assert set(identity.user_sid_roots) <= set(identity.granted_roots)
     process = None
     output = ""
     try:
@@ -2061,7 +2760,8 @@ def test_live_token_is_restricted_lua_and_privilege_stripped(live_token_backend,
     work.mkdir()
     output, returncode, _ = _run_live(
         live_token_backend, work,
-        token_launcher._PROBE_PAYLOAD, str(work / "missing-secret"), str(work), "",
+        token_launcher._PROBE_PAYLOAD,
+        str(work / "missing-secret"), str(work), str(work / "missing-user-only"), "",
     )
     assert returncode == 0, output
     findings = json.loads(output.strip().splitlines()[-1])
@@ -2079,6 +2779,10 @@ def test_live_token_is_restricted_lua_and_privilege_stripped(live_token_backend,
     # got instead of a bare False.
     assert findings["secret_exists"] is False
     assert isinstance(findings["secret_readable"], str)
+    # Same for argv[3] here: this test drives the payload by hand rather than
+    # through _live_probe, so no user-SID directory exists to read or write.
+    assert findings["user_only_readable"] is not True
+    assert findings["user_only_writable"] is not True
 
 
 def test_live_detached_grandchild_dies_with_the_job(live_token_backend, tmp_path):

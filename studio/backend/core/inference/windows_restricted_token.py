@@ -21,6 +21,37 @@ runs the tool under a *restricted token* of the Studio user:
   objects that already grant Everyone or the session stay writable, which the
   execution record discloses.
 
+A restricted token is judged *twice*, and the two checks look at different
+lists. Restricting SIDs live in ``TokenRestrictedSids`` and are consulted in the
+second check alone; they are not added to the token's ordinary groups, so they
+say nothing in the first. The first check sees the token's user SID and its
+enabled groups, with ``BUILTIN\\Administrators`` deny-only. A per-launch random
+SID is therefore invisible to the first check, and an ACE naming only it leaves
+the first check to whatever the directory already carried. Where that DACL grants
+the child nothing, both reads *and* writes of the workdir are refused and Limited
+mode under this token is unusable rather than strict, which is what hosted
+Windows reported.
+
+That is not a hypothetical on this launcher's own directories, and the chain is
+documented at every link. ``os.makedirs(..., mode = 0o700)`` builds the private
+roots, and since CPython 3.12.4 (the CVE-2024-4030 fix) that mode is honoured on
+Windows with a *protected* descriptor,
+``D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)``: SYSTEM, builtin
+Administrators and OWNER RIGHTS, inherited by everything underneath and immune to
+the profile's own inheritable ACEs. Studio elevated makes the object owner the
+Administrators group rather than the user, so ``OWNER RIGHTS`` resolves to the
+group as well, and this token has that group deny-only, which "the system uses
+only enabled SIDs to grant access" then refuses to grant through. Three ACEs, and
+the child matches none of them.
+
+Each root the child must reach is consequently granted
+*two* ACEs: one for the token's own user SID, read from the token that was built,
+which satisfies the first check, and the existing per-launch SID, which is the
+only thing that can satisfy the second. The fence is unchanged, because the
+second check still decides every write: a directory the launch SID does not
+restrict stays unwritable however readable it is, and the live probe proves that
+on a directory granted the user SID and nothing else.
+
 Starting the child is its own problem, and a failure there is silent: the
 creation call succeeds and the process is terminated during initialisation, so
 the only evidence is an exit status. Three things the documentation asks for are
@@ -73,6 +104,7 @@ from contextlib import contextmanager
 import ctypes
 from ctypes import wintypes
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -149,6 +181,10 @@ _LUA_TOKEN = 0x4
 _WRITE_RESTRICTED = 0x8
 _RESTRICTED_TOKEN_FLAGS = _DISABLE_MAX_PRIVILEGE | _LUA_TOKEN | _WRITE_RESTRICTED
 
+# TOKEN_INFORMATION_CLASS. TokenUser is the principal the *first* access check
+# is decided against: "The buffer receives a TOKEN_USER structure that contains
+# the user account of the token", and TOKEN_USER is a single SID_AND_ATTRIBUTES.
+_TOKEN_USER = 1
 _TOKEN_GROUPS = 2
 _TOKEN_PRIVILEGES = 3
 _TOKEN_DEFAULT_DACL = 6  # TOKEN_INFORMATION_CLASS; the struct is _TOKEN_DEFAULT_DACL_INFO
@@ -157,6 +193,16 @@ _TOKEN_LOGON_SID = 28
 
 _EVERYONE_SID = "S-1-1-0"
 _ADMINISTRATORS_SID = "S-1-5-32-544"
+# What _grant_modify leaves on a root, in the specific rights a stored ACE
+# carries: the generic bits an EXPLICIT_ACCESS asks for are mapped through the
+# file generic mapping when the descriptor is written, so a DACL read back never
+# holds them. This is exactly the mask Explorer and icacls call "Modify".
+_FILE_GENERIC_READ = 0x00120089
+_FILE_GENERIC_WRITE = 0x00120116
+_FILE_GENERIC_EXECUTE = 0x001200A0
+_MODIFY_ACCESS = (
+    _FILE_GENERIC_READ | _FILE_GENERIC_WRITE | _FILE_GENERIC_EXECUTE | _lpac._DELETE
+)
 _NO_INHERITANCE = 0
 # The window station ACE is the object's own, never inherited by desktops that
 # do not exist yet (the interactive sample adds a second, inherit-only ACE for
@@ -185,13 +231,51 @@ _READ_CONTROL = 0x00020000
 _USER_OBJECT_KINDS = ("window station", "desktop")
 _USER_OBJECT_MUTEX_PREFIX = "limited-user-object."
 _USER_OBJECT_LOCK = threading.RLock()
-# Every WINSTA_* right, and READ_CONTROL so the child can read the DACL it is
-# being judged by. WRITE_DAC, WRITE_OWNER and DELETE are deliberately left out:
-# a sandboxed child that could rewrite the window station DACL could grant
-# itself anything. Codex's windows-sandbox-rs draws the same line for its
-# desktop participants.
-_WINSTA_ALL_ACCESS = 0x37F
-_WINSTA_GRANT = _WINSTA_ALL_ACCESS | _READ_CONTROL
+# The filesystem DACLs are the same read-modify-write as the user objects, and
+# were the same defect until this existed. See _root_acl_edit.
+_ROOT_ACL_MUTEX_PREFIX = "limited-root-acl."
+_ROOT_ACL_LOCK = threading.RLock()
+_WINSTA_ACCESSCLIPBOARD = 0x0004
+_WINSTA_CREATEDESKTOP = 0x0008
+_WINSTA_WRITEATTRIBUTES = 0x0010
+# This ACE names the per-launch SID, and that settles most of what may usefully
+# be in it. A random S-1-5-21 value is in TokenRestrictedSids and in none of the
+# token's groups, so the first access check never consults this ACE at all, and
+# under WRITE_RESTRICTED the second check is consulted "only when evaluating
+# write access". The interactive window station's generic mapping puts exactly
+# three object rights on the write side, ACCESSCLIPBOARD, CREATEDESKTOP and
+# WRITEATTRIBUTES (Window Station Security and Access Rights; Chromium's
+# base/win/security_descriptor.cc reproduces the same table), so those three are
+# the only bits this ACE can ever decide. WINSTA_ALL_ACCESS spent the other six,
+# ENUMDESKTOPS, READATTRIBUTES, ACCESSGLOBALATOMS, EXITWINDOWS, ENUMERATE and
+# READSCREEN, on rights that are read or execute mapped and were therefore
+# already settled, against the user's own SID, whatever was written here.
+#
+# Of the three that are live, the clipboard is the one that reaches the user
+# rather than the child: this is their real interactive window station, and a
+# non-interactive tool child has no use for reading or writing what they copied.
+# Chromium's own WinSta0 grant omits it (chrome/credential_provider/gaiacp/
+# os_process_manager.cc, "the minimum set of access rights needed for a simple
+# MFC app to run"), and its sandbox design document names "no read or write to
+# the clipboard" as a property of a correctly sandboxed target. CREATEDESKTOP
+# and WRITEATTRIBUTES are kept because that same Chromium grant keeps both, and
+# because nothing documents what a restricted-token child needs in order to
+# connect to a window station at all.
+#
+# READ_CONTROL is inert here for the same reason the six dropped bits are, and
+# is kept only so this ACE and the desktop's read as the same shape.
+#
+# WRITE_DAC, WRITE_OWNER and DELETE stay out: a sandboxed child that could
+# rewrite the window station DACL could grant itself anything.
+#
+# Not verified on a live Windows host. The connection is documented to be opened
+# for MAXIMUM_ALLOWED ("Process Connection to a Window Station"), so a narrower
+# DACL is documented to yield fewer rights rather than a refusal, and the
+# security half of STATUS_DLL_INIT_FAILED is documented against the desktop
+# (KB165194 names DESKTOP_CREATEWINDOW), not the window station. If a host
+# disagrees the child dies in start-up with 0xC0000142 and the probe failure
+# text already names the desktop and which objects carry the launch SID.
+_WINSTA_GRANT = _WINSTA_CREATEDESKTOP | _WINSTA_WRITEATTRIBUTES | _READ_CONTROL
 
 _DESKTOP_READOBJECTS = 0x0001
 _DESKTOP_WRITEOBJECTS = 0x0080
@@ -467,6 +551,13 @@ class _LaunchIdentity:
     # "<window station>\<desktop>" for STARTUPINFO.lpDesktop, and the session
     # whose objects a reconciliation may act on.
     desktop: str = ""
+    # The restricted token's own user SID, and the subset of granted_roots this
+    # launch put an ACE for it on. Empty until the token exists, because the SID
+    # is read off the token that was built rather than assumed. Unlike the launch
+    # SID this one names a real account, so the roots are tracked exactly: an ACE
+    # that was already there before the launch is neither added nor revoked.
+    user_sid_string: str = ""
+    user_sid_roots: tuple[str, ...] = ()
 
     def cleanup(self) -> None:
         if self.cleaned:
@@ -476,13 +567,40 @@ class _LaunchIdentity:
             # the record, so a retry converts it again rather than reusing memory
             # that is already back with the allocator.
             self.sid = _sid_from_text(self.sid_string)
+        user_sid = ctypes.c_void_p()
         try:
             errors: list[str] = []
-            for path in reversed(self.granted_roots):
+            # Only where this launch added the ACE. SetEntriesInAclW(REVOKE_ACCESS)
+            # drops every ACE for a trustee, so revoking the user's SID from a root
+            # that granted it explicitly before the launch would hand back a workdir
+            # the user no longer reaches.
+            user_roots = {os.path.normcase(path) for path in self.user_sid_roots}
+            if user_roots:
                 try:
-                    _lpac._revoke_sid(path, self.sid)
+                    user_sid = _sid_from_text(self.user_sid_string)
                 except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
-                    errors.append(f"ACL {path}: {exc}")
+                    errors.append(f"user SID {self.user_sid_string}: {exc}")
+            for path in reversed(self.granted_roots):
+                with _root_acl_edit(path):
+                    try:
+                        _lpac._revoke_sid(path, self.sid)
+                    except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
+                        errors.append(f"ACL {path}: {exc}")
+                    if user_sid and os.path.normcase(path) in user_roots:
+                        try:
+                            # Held inside the same lock as the revoke it guards,
+                            # so a launch cannot record its claim between the
+                            # question and the answer.
+                            if _user_sid_root_is_claimed(path, self.manifest_path):
+                                logger.info(
+                                    "Leaving the user-SID grant on %s: another live Limited "
+                                    "launch still records it",
+                                    path,
+                                )
+                            else:
+                                _lpac._revoke_sid(path, user_sid)
+                        except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
+                            errors.append(f"user ACL {path}: {exc}")
             try:
                 _revoke_user_objects(self)
             except Exception as exc:  # noqa: BLE001 - a session object, see the docstring
@@ -508,6 +626,8 @@ class _LaunchIdentity:
             if self.sid:
                 _lpac._api().kernel32.LocalFree(self.sid)
             self.sid = ctypes.c_void_p()
+            if user_sid:
+                _lpac._api().kernel32.LocalFree(user_sid)
 
 
 def _write_manifest(identity: _LaunchIdentity) -> None:
@@ -524,6 +644,12 @@ def _write_manifest(identity: _LaunchIdentity) -> None:
         # objects, and only a record can find them again.
         "user_objects": list(identity.recorded_user_objects),
         "desktop": identity.desktop,
+        # The token's own user SID and the roots this launch put an ACE for it
+        # on, recorded before the ACE is made like everything else here. This one
+        # names a real account, so reconciliation acts on it only when it is
+        # still this Studio's own account (see reconcile_stale_manifests).
+        "user_sid": identity.user_sid_string,
+        "user_sid_roots": list(identity.user_sid_roots),
         "owner_pid": identity.owner_pid,
         "owner_created": identity.owner_created,
     }
@@ -551,6 +677,10 @@ def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
     # such a launch is reconciled for its files exactly as it was.
     user_objects = payload.get("user_objects", [])
     desktop = payload.get("desktop", "")
+    # Absent in a manifest written before the token's user SID was granted at
+    # all; such a launch is reconciled for its launch SID exactly as it was.
+    user_sid = payload.get("user_sid", "")
+    user_sid_roots = payload.get("user_sid_roots", [])
     if (
         payload.get("version") != 1
         or payload.get("kind") != "restricted-token"
@@ -570,6 +700,13 @@ def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
         or not isinstance(desktop, str)
         or not isinstance(user_objects, list)
         or not set(user_objects) <= set(_USER_OBJECT_KINDS)
+        # A real account's SID, and the roots a revoke of it may name. Anything
+        # that is not a SID string, or a root that is not one of this launch's
+        # own, would point that revoke at somebody else's ACE.
+        or not isinstance(user_sid, str)
+        or not isinstance(user_sid_roots, list)
+        or not all(isinstance(path, str) and os.path.isabs(path) for path in user_sid_roots)
+        or (bool(user_sid_roots) and not user_sid.startswith("S-1-"))
     ):
         return None
     # The reconciler revokes an ACE on every granted root, so a planted manifest
@@ -579,7 +716,17 @@ def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
         os.path.normcase(private_temp),
     }:
         return None
-    return {**payload, "user_objects": user_objects, "desktop": desktop}
+    if not {os.path.normcase(path) for path in user_sid_roots} <= {
+        os.path.normcase(path) for path in roots
+    }:
+        return None
+    return {
+        **payload,
+        "user_objects": user_objects,
+        "desktop": desktop,
+        "user_sid": user_sid,
+        "user_sid_roots": user_sid_roots,
+    }
 
 
 def _sid_from_text(text: str) -> ctypes.c_void_p:
@@ -588,6 +735,16 @@ def _sid_from_text(text: str) -> ctypes.c_void_p:
     if not api.advapi32.ConvertStringSidToSidW(text, ctypes.byref(sid)) or not sid:
         raise _lpac._winerror(f"ConvertStringSidToSidW({text})")
     return sid
+
+
+@contextmanager
+def _sid_of(text: str) -> Iterator[ctypes.c_void_p]:
+    """A SID allocated from its string form for the body, freed on every exit."""
+    sid = _sid_from_text(text)
+    try:
+        yield sid
+    finally:
+        _lpac._api().kernel32.LocalFree(sid)
 
 
 def _sid_names_a_principal(api: Any, sid: ctypes.c_void_p) -> bool:
@@ -670,6 +827,89 @@ def _remove_orphan_temporary_manifests(root: str) -> None:
             )
 
 
+def _root_acl_key(path: str) -> str:
+    """The mutex name one root's DACL is edited under.
+
+    A digest of the case-folded path rather than the path itself: a mutex name is
+    bounded in length and may not carry a backslash, and two Studio processes
+    have to derive the same name from the same directory. Per root, so a launch
+    editing its own private temp is never held up by one editing a workdir.
+    """
+    digest = hashlib.sha256(os.path.normcase(os.path.abspath(path)).encode("utf-8", "replace"))
+    return _ROOT_ACL_MUTEX_PREFIX + digest.hexdigest()[:32]
+
+
+def _ledger_wait_deadline() -> float:
+    """The budget one ledger wait in this module gets, shared with the AppContainer one.
+
+    ``_named_mutex`` takes a deadline rather than a timeout so that a caller
+    holding several of them in sequence spends one budget between them. The one
+    place this module names it, so a change to the shared locking API lands here
+    rather than at every call site.
+    """
+    return time.monotonic() + _lpac._LEDGER_WAIT_SECONDS
+
+
+@contextmanager
+def _root_acl_edit(path: str) -> Iterator[None]:
+    """Serialise every DACL edit this launcher makes on one root.
+
+    ``_grant_modify`` and ``_revoke_sid`` are a read-modify-write on a directory
+    this process shares with every other launch: ``GetNamedSecurityInfoW``, then
+    ``SetEntriesInAclW`` on the DACL that came back, then
+    ``SetNamedSecurityInfoW``. Losing that race loses a whole edit. Two Limited
+    launches in one chat, a Python tool and a Terminal tool, each read the
+    workdir DACL before either writes, and the second write puts back a DACL that
+    never carried the first launch's ACE, so a child that is already running is
+    refused the workdir it was given. A launch racing a cleanup resurrects a
+    revoked ACE the same way. Two ACEs per root now, so twice as many edits race.
+
+    This is the fix the window station and desktop already have, applied to the
+    objects it was always equally true of: the process-local lock orders the
+    launches of one Studio, and the named mutex orders two Studios, which is
+    where the manifests alone were only ever a check rather than a lock. The
+    mutex is best effort, so a host that will not give us one degrades to the
+    lock alone rather than failing the launch.
+
+    What it does not order is the AppContainer launcher, which serialises its own
+    grants under its installation ledger instead. A Required and a Limited launch
+    editing one workdir at the same instant can still lose an edit; closing that
+    needs one lock shared by both launchers.
+    """
+    with _ROOT_ACL_LOCK, _lpac._named_mutex(_root_acl_key(path), _ledger_wait_deadline()):
+        yield
+
+
+def _user_sid_root_is_claimed(root: str, exclude_manifest: str) -> bool:
+    """Whether a live launch other than this one still needs the user SID on ``root``.
+
+    The launch SID names one launch and nothing else, so revoking it can never
+    take an ACE another launch is using. The token's user SID is the opposite:
+    every concurrent launch of this account resolves to the same SID, and the
+    first launch to finish would otherwise revoke the ACE out from under a child
+    that is still running in the same workdir.
+
+    The write-ahead manifests are the register of who holds what, so they are
+    what the question is asked of. A manifest whose owning process is gone is not
+    a claim; it is litter for ``reconcile_stale_manifests``. This launch's own
+    record is still on disk at cleanup time, so it is named and skipped.
+    """
+    target = os.path.normcase(root)
+    excluded = os.path.normcase(os.path.abspath(exclude_manifest))
+    for manifest in Path(_manifest_root()).glob(_MANIFEST_PREFIX + "*.json"):
+        if os.path.normcase(os.path.abspath(str(manifest))) == excluded:
+            continue
+        payload = _parse_manifest(manifest)
+        if payload is None or not payload["user_sid_roots"]:
+            continue
+        if target not in {os.path.normcase(path) for path in payload["user_sid_roots"]}:
+            continue
+        owner = (payload["owner_pid"], payload["owner_created"])
+        if _lpac._process_identity(owner[0]) == owner:
+            return True
+    return False
+
+
 def _create_identity(workdir: str) -> _LaunchIdentity:
     """Allocate a launch SID, its private temp and manifest, then grant the SID its writes."""
     api = _lpac._api()
@@ -706,7 +946,8 @@ def _create_identity(workdir: str) -> _LaunchIdentity:
         )
         _write_manifest(identity)
         for root in identity.granted_roots:
-            _lpac._grant_modify(root, sid)
+            with _root_acl_edit(root):
+                _lpac._grant_modify(root, sid)
         return identity
     except BaseException:
         if identity is not None:
@@ -753,6 +994,181 @@ def _token_group_sids(api: Any, token: wintypes.HANDLE, kind: int) -> list[str]:
         if entry.Sid:
             texts.append(_lpac._sid_string(api, ctypes.c_void_p(entry.Sid)))
     return texts
+
+
+def _token_user_sid_text(api: Any, token: wintypes.HANDLE) -> str:
+    """The ``TOKEN_USER`` SID of one token, as its string form.
+
+    Read off the token that was actually built, never assumed to equal the
+    launcher's own. ``CreateRestrictedToken`` is documented to disable SIDs, drop
+    privileges and add restricting SIDs, and to leave the user account alone, but
+    this SID is what every first access check against the child is decided by, so
+    it is queried rather than inferred. A launcher that later builds its token
+    from somewhere else (the linked filtered token, say) then needs no change
+    here.
+    """
+    buffer = _token_information(api, token, _TOKEN_USER)
+    # TOKEN_USER is a single SID_AND_ATTRIBUTES, so the SID pointer is at the
+    # start of the buffer.
+    entry = _SID_AND_ATTRIBUTES.from_address(ctypes.addressof(buffer))
+    if not entry.Sid:
+        raise SandboxUnavailableError(
+            "the Limited launcher could not read the user SID of its restricted token"
+        )
+    return _lpac._sid_string(api, ctypes.c_void_p(entry.Sid))
+
+
+def _process_user_sid_text() -> str:
+    """The account this Studio process runs as, or ``""`` when it cannot be read.
+
+    Only ever a guard. A manifest's recorded user SID names a real account and
+    drives an ACL revoke, so a reconciliation performs that revoke only when the
+    record is this process's own account. A guard that cannot answer refuses.
+    """
+    api = _lpac._api()
+    token = wintypes.HANDLE()
+    if not api.advapi32.OpenProcessToken(
+        api.kernel32.GetCurrentProcess(), _TOKEN_QUERY, ctypes.byref(token)
+    ):
+        logger.warning("Could not open Studio's own token to check a Limited manifest")
+        return ""
+    try:
+        return _token_user_sid_text(api, token)
+    except Exception:  # noqa: BLE001 - an unanswerable guard refuses, it does not raise
+        logger.warning("Could not read the user SID of Studio's own token", exc_info = True)
+        return ""
+    finally:
+        api.kernel32.CloseHandle(token)
+
+
+def _dacl_names_sid(path: str, sid: ctypes.c_void_p) -> bool:
+    """Whether a path's DACL carries any ACE for this SID at all, inherited included.
+
+    Deliberately the weakest question there is, and it decides only one thing:
+    whether cleanup may revoke this SID from this root.
+    ``SetEntriesInAclW(REVOKE_ACCESS)`` removes *every* ACE for a trustee, and
+    this trustee is the account Studio runs as. An inherited ACE would survive
+    anyway on a root whose DACL is not protected, because
+    ``SetNamedSecurityInfo`` builds the result "from the inherited ACEs of the
+    current security descriptor and noninherited ACEs of ModificationDescriptor";
+    an *explicit* one would not, and a protected DACL keeps neither. Rather than
+    lean on which of those a given root turns out to have, a root that already
+    carried any ACE for this account is never revoked, whatever this launch then
+    added to it.
+    """
+    api = _lpac._api()
+    acl = ctypes.c_void_p()
+    descriptor = ctypes.c_void_p()
+    result = api.advapi32.GetNamedSecurityInfoW(
+        path,
+        _lpac._SE_FILE_OBJECT,
+        _DACL_SECURITY_INFORMATION,
+        None,
+        None,
+        ctypes.byref(acl),
+        None,
+        ctypes.byref(descriptor),
+    )
+    if result != 0:
+        raise _lpac._winerror(f"GetNamedSecurityInfoW({path})", result)
+    try:
+        return _lpac._acl_contains_sid(acl, sid)
+    finally:
+        if descriptor:
+            api.kernel32.LocalFree(descriptor)
+
+
+def _root_grant_plan(path: str, sid: ctypes.c_void_p) -> tuple[bool, bool]:
+    """``(needs the ACE, cleanup may revoke it)`` for one root and the token's user SID.
+
+    Two different questions, and answering them with one check gets one of them
+    wrong. *Needed* is "does this DACL provably already grant the SID what the
+    child needs", which ``_existing_access`` answers the way an access check
+    would: deny ACEs win, inherit-only ACEs do not apply to the directory itself,
+    allow ACEs accumulate, and anything it cannot verify counts as not granted,
+    so the ACE is added. *Revocable* is the weaker "was there no ACE for this
+    trustee here at all", because a revoke takes every ACE for a trustee and this
+    one names a real account.
+
+    The two disagree exactly when a root already granted the account something
+    short of modify. There the launch adds to that ACE and never takes it back,
+    which widens nothing the account did not already hold on a directory of its
+    own, and is the only outcome of the four that loses nothing.
+    """
+    return (
+        not _lpac._existing_access(path, (sid,), _MODIFY_ACCESS),
+        not _dacl_names_sid(path, sid),
+    )
+
+
+def _grant_token_user(identity: _LaunchIdentity, token: wintypes.HANDLE) -> None:
+    """Give each root an ACE the child's *first* access check can actually see.
+
+    A restricted token is judged twice and both checks must allow: "the system
+    performs two access checks: one using the token's enabled SIDs, and another
+    using the list of restricting SIDs. Access is granted only if both access
+    checks allow the requested access rights" (CreateRestrictedToken). The
+    per-launch SID reaches only the second of those. It is in
+    ``TokenRestrictedSids`` and nowhere in the token's groups, so the first check
+    never sees it, and under ``WRITE_RESTRICTED`` ("restricting SIDs that are
+    considered only when evaluating write access") the second check is not even
+    consulted for a read. An ACE naming the launch SID alone therefore leaves
+    both the reads and the writes of the workdir to whatever that directory
+    already inherited, and on a host where the inherited DACL grants this token
+    nothing, every one of them is refused. Hosted Windows reported exactly that:
+    the workdir unreadable and unwritable, and the private temp unwritable, on
+    the two directories the launcher had just granted.
+
+    This does not widen the fence, and that is the whole reason it is safe. Every
+    write is still checked a second time against the restricting SIDs, so the
+    child can only write where the launch SID is granted; the user-SID ACE
+    unblocks the first check and the launch-SID ACE still decides the second. A
+    directory with neither remains unwritable, and a directory with only this one
+    is readable but not writable, which is what the live probe demonstrates on a
+    directory it grants the user SID and nothing else.
+
+    Only the roots that need the ACE get one, and only those that carried no ACE
+    for this account beforehand are recorded for cleanup to take back. See
+    ``_root_grant_plan`` for why those are two questions rather than one.
+    """
+    api = _lpac._api()
+    text = _token_user_sid_text(api, token)
+    with _sid_of(text) as sid:
+        # Every root is read and later written under that root's own lock, so no
+        # edit is ever interleaved with another. The plan is not held across the
+        # manifest write, and does not need to be: a concurrent launch that
+        # granted this same SID in between only makes the grant below a merge,
+        # and its revoke is held off by the claim check rather than by this lock.
+        plan = []
+        for root in identity.granted_roots:
+            with _root_acl_edit(root):
+                plan.append((root, *_root_grant_plan(root, sid)))
+        identity.user_sid_string = text
+        identity.user_sid_roots = tuple(
+            root for root, needed, revocable in plan if needed and revocable
+        )
+        # Write-ahead, for the same reason the launch SID's grants are: the
+        # record is made before the ACE is, so a Studio that dies between the two
+        # leaves something the next start can find and undo. Revoking an ACE that
+        # was never made is a no-op, because a recorded root is one whose DACL
+        # did not name this SID at all. The record is also what a concurrent
+        # launch reads to see that this root is still held, so it exists before
+        # anything could act on it.
+        _write_manifest(identity)
+        for root, needed, revocable in plan:
+            if not needed:
+                continue
+            if not revocable:
+                logger.info(
+                    "Widening the existing %s access of %s on %s for this Limited launch; the "
+                    "ACE is left in place, because revoking it would take the account's own "
+                    "with it",
+                    "workdir" if root == identity.workdir else "private temp",
+                    text,
+                    root,
+                )
+            with _root_acl_edit(root):
+                _lpac._grant_modify(root, sid)
 
 
 def _set_default_dacl(api: Any, token: wintypes.HANDLE, sid: ctypes.c_void_p) -> None:
@@ -884,7 +1300,9 @@ def _edit_user_object_dacl(
     the user's own session. Chromium's ``window.cc`` guards the same trap from
     the other direction, seeding an allow-everyone entry before it denies.
     """
-    with _USER_OBJECT_LOCK, _lpac._named_mutex(_user_object_key(api, handle)):
+    with _USER_OBJECT_LOCK, _lpac._named_mutex(
+        _user_object_key(api, handle), _ledger_wait_deadline()
+    ):
         return _write_user_object_dacl(
             api, handle, sid, mode = mode, access = access, inheritance = inheritance
         )
@@ -1405,7 +1823,7 @@ def loadable(path):
 
 in_job = wintypes.BOOL()
 kernel32.IsProcessInJob(kernel32.GetCurrentProcess(), None, ctypes.byref(in_job))
-secret, sibling = sys.argv[1], sys.argv[2]
+secret, sibling, user_only = sys.argv[1], sys.argv[2], sys.argv[3]
 findings = {
     "restricted": bool(advapi32.IsTokenRestricted(token)),
     "restricted_sids": sids(11),
@@ -1421,10 +1839,16 @@ findings = {
     "secret_readable": readable(secret, "secret"),
     "secret_writable": writable(secret),
     "sibling_writable": writable(os.path.join(sibling, "probe.txt")),
+    # A directory granted the token's own user SID and never the launch SID. The
+    # first access check lets the child read it; the second has no restricting
+    # SID to allow a write with. The pair is what separates "the fence held" from
+    # "the DACL refused everything anyway".
+    "user_only_readable": readable(os.path.join(user_only, "input.txt"), "input"),
+    "user_only_writable": writable(os.path.join(user_only, "probe.txt")),
     "workdir_readable": readable(os.path.join(os.getcwd(), "input.txt"), "input"),
     "workdir_writable": writable(os.path.join(os.getcwd(), "probe.txt")),
     "temp_writable": writable(os.path.join(os.environ["TEMP"], "probe.txt")),
-    "temp_is_private": os.path.normcase(os.environ["TEMP"]) == os.path.normcase(sys.argv[3]),
+    "temp_is_private": os.path.normcase(os.environ["TEMP"]) == os.path.normcase(sys.argv[4]),
 }
 try:
     with open(os.devnull, "r+b"):
@@ -1614,16 +2038,44 @@ def _dacl_trustees(path: str) -> tuple[str, ...]:
             api.kernel32.LocalFree(descriptor)
 
 
+def _safe_dacl_trustees(path: str) -> tuple[str, ...]:
+    """``_dacl_trustees`` for a diagnostic: an unreadable DACL is no diagnosis, never a raise."""
+    try:
+        return _dacl_trustees(path)
+    except Exception:  # noqa: BLE001 - a diagnostic must not replace the diagnosis
+        logger.warning("Could not read the DACL of the Limited probe path", exc_info = True)
+        return ()
+
+
 def _denied_read_note(path: str) -> str:
     """One clause naming who the unreadable probe file does grant, or nothing."""
-    try:
-        trustees = _dacl_trustees(path)
-    except Exception:  # noqa: BLE001 - a diagnostic must not replace the diagnosis
-        logger.warning("Could not read the DACL of the Limited probe file", exc_info = True)
-        return ""
+    trustees = _safe_dacl_trustees(path)
     if not trustees:
         return ""
     return "that file grants " + ", ".join(trustees)
+
+
+def _denied_root_notes(
+    findings: dict[str, Any], roots: tuple[tuple[str, str, tuple[str, ...]], ...]
+) -> tuple[str, ...]:
+    """For every probe root the child could not reach, which principals its DACL does name.
+
+    The child only ever sees ``Permission denied``. Whether the directory grants
+    the SIDs this launcher put on it, and who else it names, is readable from the
+    host side alone, and it is the fact that separates "the ACE was not enough"
+    from "the ACE was never applied". Staging round 18 had to be diagnosed
+    without it.
+    """
+    notes: list[str] = []
+    for label, path, keys in roots:
+        if all(findings.get(key) is True for key in keys):
+            continue
+        trustees = _safe_dacl_trustees(path)
+        notes.append(
+            f"{label} grants "
+            + (", ".join(trustees) if trustees else "no DACL this host would read")
+        )
+    return tuple(notes)
 
 
 @dataclass(frozen = True)
@@ -1759,6 +2211,17 @@ def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> _ProbeVerdict
             "another launch's temp directory refused a write",
             "another launch's temp directory was writable",
         ),
+        # The fence proved as the fence. This directory carries an ACE for the
+        # token's own user SID and none for the launch SID, so its reads pass the
+        # first access check and its writes can only be refused by the second.
+        # That is WRITE_RESTRICTED itself, and it is what makes the user-SID ACE
+        # on the workdir safe: it unblocks the first check and decides nothing
+        # about writes.
+        (
+            _refused(findings, "user_only_writable"),
+            "a directory the launch SID does not restrict refused a write",
+            "a directory granted to the token's user but not to the launch SID was writable",
+        ),
         (
             findings.get("devnull") is True,
             "the NUL device is available",
@@ -1788,6 +2251,21 @@ def _evaluate_probe(findings: dict[str, Any], *, sid_text: str) -> _ProbeVerdict
             if findings.get("integrity_sid"):
                 note += f" at integrity {findings['integrity_sid']}"
             notes.append(note)
+    # How much the refused write above is worth. A read that succeeded there
+    # proves the first access check let the child in and the restricting SIDs
+    # alone stopped the write; a read that did not means both checks refused and
+    # the refusal says nothing about WRITE_RESTRICTED on this host.
+    if findings.get("user_only_readable") is True:
+        notes.append(
+            "the directory granted only to the token's user stayed readable, so its refused "
+            "write was the restricting SIDs rather than its DACL"
+        )
+    else:
+        notes.append(
+            "the directory granted only to the token's user was not readable either "
+            f"({findings.get('user_only_readable')}), so its refused write is not by itself "
+            "evidence about the restricting SIDs"
+        )
     return _ProbeVerdict(
         failures = tuple(failure for held, _name, failure in requirements if not held),
         held = tuple(name for held, name, _failure in requirements if held),
@@ -1858,27 +2336,37 @@ class WindowsRestrictedTokenBackend:
     def _live_probe(self) -> _ProbeVerdict:
         """Launch one real child under the token and grade every Limited requirement.
 
-        ``base/work`` and ``base/sibling`` are created together, so they carry
-        the same inherited ACL and differ only in the launch SID the workdir is
-        granted. That pair is the write fence's controlled comparison, and it
-        holds on a host where the user's own files cannot be read at all.
+        ``base/work``, ``base/sibling`` and ``base/granted-user`` are created
+        together, so they carry the same inherited ACL and differ only in what
+        this launcher then grants them: the workdir gets both of the launch's
+        SIDs, the sibling gets neither, and ``granted-user`` gets the token's own
+        user SID alone. The three make the write fence a controlled comparison
+        rather than an inference, and the third is the one that distinguishes a
+        refusal by the restricting SIDs from a DACL that refused everything.
         """
         base = os.path.join(_private_root("limited-probe"), secrets.token_hex(8))
         os.makedirs(base, mode = 0o700)
+        probe_user_sid = ""
+        user_only = os.path.join(base, "granted-user")
         try:
             workdir = os.path.join(base, "work")
             sibling = os.path.join(base, "sibling")
             os.mkdir(workdir)
             os.mkdir(sibling)
+            os.mkdir(user_only)
             # A tool that cannot read what the user put in the session workdir is
             # useless, so the probe reads a file it was given rather than only
             # one it wrote itself.
             Path(os.path.join(workdir, "input.txt")).write_text("input", encoding = "utf-8")
+            Path(os.path.join(user_only, "input.txt")).write_text("input", encoding = "utf-8")
             secret = os.path.join(base, "secret.txt")
             Path(secret).write_text("secret", encoding = "utf-8")
             prepared = self.prepare(
                 ToolLaunchPlan(
-                    argv = (sys.executable, "-I", "-S", "-c", _PROBE_PAYLOAD, secret, sibling, ""),
+                    argv = (
+                        sys.executable, "-I", "-S", "-c", _PROBE_PAYLOAD, secret, sibling,
+                        user_only, "",
+                    ),
                     workdir = workdir,
                     env = {
                         "PYTHONIOENCODING": "utf-8",
@@ -1895,6 +2383,31 @@ class WindowsRestrictedTokenBackend:
                 identity = getattr(prepared.spawn_callback, "_launch_identity", None)
                 if identity is None:
                     raise SandboxUnavailableError("the Limited launch identity was lost")
+                if not identity.user_sid_string:
+                    raise SandboxUnavailableError(
+                        "the Limited launch did not record the user SID of its token"
+                    )
+                # The one root the launch SID is deliberately kept off. Granted
+                # after prepare because the SID it is granted to belongs to the
+                # token prepare built, and removed with the whole probe tree.
+                user_only_reason = ""
+                try:
+                    with _sid_of(identity.user_sid_string) as user_sid, _root_acl_edit(user_only):
+                        _lpac._grant_modify(user_only, user_sid)
+                    probe_user_sid = identity.user_sid_string
+                except OSError as exc:
+                    # Losing the evidence costs the evidence, not the launcher.
+                    # The child still finds a directory that has to refuse its
+                    # write; it is only no longer the controlled one. Stated as
+                    # what happened, because the verdict's own readable-or-not
+                    # note is what decides how much the refusal proves.
+                    user_only_reason = (
+                        f"the probe's user-SID directory could not be granted ({exc}), so it "
+                        "carries neither of this launch's SIDs"
+                    )
+                    logger.warning(
+                        "Could not grant the Limited probe's user-SID directory", exc_info = True
+                    )
                 prepared.argv = (*prepared.argv[:-1], identity.private_temp)
                 process = prepared.spawn_callback(
                     prepared,
@@ -1934,6 +2447,22 @@ class WindowsRestrictedTokenBackend:
                 verdict = _evaluate_probe(findings, sid_text = identity.sid_string)
                 if findings.get("secret_readable") is not True:
                     verdict = verdict.noting(_denied_read_note(secret))
+                # Read before the cleanup below revokes them: which principals a
+                # root the child could not reach does name is the only thing that
+                # says whether the two ACEs were applied and were not enough.
+                verdict = verdict.noting(
+                    *_denied_root_notes(
+                        findings,
+                        (
+                            ("the workdir", workdir, ("workdir_readable", "workdir_writable")),
+                            ("the private temp", identity.private_temp, ("temp_writable",)),
+                            ("the user-SID directory", user_only, ("user_only_readable",)),
+                        ),
+                    ),
+                    f"the child's user SID is {identity.user_sid_string}, granted on "
+                    + (", ".join(identity.user_sid_roots) or "no root, each already named it"),
+                    user_only_reason,
+                )
                 logger.info("Limited mode restricted-token probe: %s", findings)
             finally:
                 prepared.cleanup()
@@ -1950,6 +2479,19 @@ class WindowsRestrictedTokenBackend:
                     ),
                 )
         finally:
+            # The probe's own ACE, revoked before the tree that carries it goes,
+            # so a removal that loses a sharing violation does not leave one
+            # behind either. The tree is the launcher's private probe root, so a
+            # leftover would grant the user their own directory, but an ACE this
+            # launcher made is an ACE this launcher takes back.
+            if probe_user_sid:
+                try:
+                    with _sid_of(probe_user_sid) as user_sid, _root_acl_edit(user_only):
+                        _lpac._revoke_sid(user_only, user_sid)
+                except Exception:  # noqa: BLE001 - the tree removal is the real cleanup
+                    logger.warning(
+                        "Could not revoke the Limited probe's user-SID grant", exc_info = True
+                    )
             shutil.rmtree(base, ignore_errors = True)
         return verdict
 
@@ -1977,6 +2519,9 @@ class WindowsRestrictedTokenBackend:
                 # and desktop DACLs are then checked against.
                 _grant_user_objects(identity)
                 resources.token = _create_restricted_token(identity)
+                # After the token, because the SID that satisfies the first
+                # access check is the token's own and is read off it.
+                _grant_token_user(identity, resources.token)
                 resources.job = _lpac._job_object_with_limits()
             except OSError as exc:
                 raise SandboxUnavailableError(
@@ -2038,6 +2583,20 @@ class WindowsRestrictedTokenBackend:
                         manifest,
                     )
                     continue
+                # The recorded user SID names a real account, so unlike the launch
+                # SID it is never revoked on the strength of the record alone: a
+                # manifest is acted on for it only when it names the account this
+                # Studio is running as, which is the only one whose ACEs this
+                # launcher can have created.
+                user_sid_roots = tuple(payload["user_sid_roots"])
+                if user_sid_roots and payload["user_sid"] != _process_user_sid_text():
+                    logger.warning(
+                        "Not revoking the user-SID grants recorded in Limited launch manifest "
+                        "%s: they name %s, and this Studio is not running as that account",
+                        manifest,
+                        payload["user_sid"],
+                    )
+                    user_sid_roots = ()
                 identity = _LaunchIdentity(
                     sid,
                     payload["sid"],
@@ -2053,6 +2612,8 @@ class WindowsRestrictedTokenBackend:
                     # managed; a revoke of an ACE that is not there is a no-op.
                     user_objects = tuple(payload["user_objects"]),
                     desktop = payload["desktop"],
+                    user_sid_string = payload["user_sid"],
+                    user_sid_roots = user_sid_roots,
                 )
                 identity.cleanup()
             except Exception:  # noqa: BLE001 - keep the record for the next startup

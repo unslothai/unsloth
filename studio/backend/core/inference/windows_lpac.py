@@ -51,12 +51,19 @@ These are disclosed as ``concurrent_launches_share_the_container``.
 Everything in that list is shared with the launches of *other* Studio processes
 of the same installation, which this one sees only through their write-ahead
 manifests. Reading a directory of manifests is a check and not a lock, so every
-path that grants or revokes for an installation runs inside a named mutex keyed
-by its moniker (``_installation_ledger``): scan-and-revoke, prepare's
+path that grants or revokes for an installation runs inside a ledger keyed by
+its moniker (``_installation_ledger``): scan-and-revoke, prepare's
 create-and-grant, reconciliation and the persistent removal never interleave
-between processes. It is a session-namespace mutex and best effort, so two
-sessions of one account, and a host that will not give us one, are back to the
-manifests alone.
+between processes. The ledger is a lock file opened with no sharing beside the
+manifests, which is the scope the state actually has (per account, every
+session), behind a session mutex that keeps same-session contenders off it.
+
+A ledger that cannot be taken fails **closed** for anything destructive.
+Revoking an ACE, emptying the container temp and removing a persistent profile
+are skipped and left for the next reconciliation rather than performed
+unsynchronised, because an unsynchronised revoke is the exact damage the ledger
+exists to prevent. Granting is not destructive and proceeds with a logged
+diagnostic, so a busy ledger never fails a tool call.
 
 What it does not change
 -----------------------
@@ -107,6 +114,12 @@ _PROFILE_PREFIX = "unsloth.studio."
 # One profile per (user, installation); one manifest per launch of it.
 _INSTALL_PREFIX = _PROFILE_PREFIX + "sandbox."
 _LAUNCH_PREFIX = _PROFILE_PREFIX + "launch."
+# Everything CreateAppContainerProfile accepts in a profile name, which is also
+# everything a moniker read out of a manifest is allowed to contain: the ledger
+# turns one into a file name beside the manifests.
+_MONIKER_CHARACTERS = frozenset(
+    "-_. abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+)
 _MANIFEST_KIND_LAUNCH = "lpac-launch"
 _MANIFEST_KIND_PERSISTENT = "lpac-persistent"
 # Manifests written before the stable identity: one random profile per launch,
@@ -196,9 +209,52 @@ _JOB_DRAIN_SECONDS = 5.0
 _JOB_DRAIN_FIRST_POLL_SECONDS = 0.005
 _JOB_DRAIN_MAX_POLL_SECONDS = 0.1
 
-# The name of the cross-process ledger mutex, one per installation moniker.
+# The cross-process ledger, one per installation moniker.
+#
+# What the ledger protects is per account and machine-wide, not per session: the
+# manifests live under LOCALAPPDATA, the AppContainer profile is registered for
+# the account, and the ACEs name a package SID derived from a moniker that
+# already covers the interpreter, the account and LOCALAPPDATA. A console login
+# and an RDP login of one account share every byte of that state, so a session
+# namespace is the wrong scope for the lock on its own.
+#
+# The lock is therefore a file next to the manifests, opened with no sharing.
+# CreateFileW documents dwShareMode 0 as "cannot be shared and cannot be opened
+# again until the handle to the file or device is closed", and that the sharing
+# options "remain in effect until that handle is closed, regardless of process
+# context", so one handle excludes every process in every session. It needs no
+# privilege beyond the write access to LOCALAPPDATA the manifests already
+# require; and Windows closes the handle when the owning process dies, which is
+# the crashed Studio WAIT_ABANDONED was there for. No unprivileged account can
+# squat it either, because no unprivileged account can reach this account's
+# LOCALAPPDATA. An administrator can, but an administrator can already rewrite
+# the DACLs this whole ledger is about, so no defence is lost there.
+#
+# Global\ was the other candidate and was rejected on the squatting argument
+# alone, not the privilege one: SeCreateGlobalPrivilege gates only file-mapping
+# and symbolic-link objects, so a Global\ mutex is creatable by an ordinary
+# user. But the global namespace is flat across every account on the machine, so
+# any unprivileged local account can create this exact name first and then hold
+# it forever - and against a lock that now fails closed, that is a permanent
+# denial of sandbox cleanup handed to an unprivileged attacker.
+#
+# The Local\ mutex is kept in front of the file as a same-session fast path. It
+# blocks in the kernel instead of polling, so at most one process per session
+# ever polls the lock file. It is never sufficient on its own, and it is always
+# taken first, so no two holders can order the two primitives differently.
 _LEDGER_MUTEX_PREFIX = "Local\\unsloth.studio.ledger."
-_LEDGER_MUTEX_WAIT_MS = 30_000
+_LEDGER_LOCK_SUFFIX = ".ledger-lock"
+# One budget for both primitives, so a slow mutex cannot add to a slow file.
+_LEDGER_WAIT_SECONDS = 30.0
+_LEDGER_LOCK_FIRST_POLL_SECONDS = 0.005
+_LEDGER_LOCK_MAX_POLL_SECONDS = 0.25
+
+_FILE_SHARE_NONE = 0
+_OPEN_ALWAYS = 4
+_FILE_ATTRIBUTE_NORMAL = 0x00000080
+_INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+_ERROR_SHARING_VIOLATION = 32
+_ERROR_LOCK_VIOLATION = 33
 
 
 class _TRUSTEE_W(ctypes.Structure):
@@ -471,6 +527,14 @@ def _api() -> _WinApi:
     # DACLs for the window station and desktop must grant access to the user or
     # the logon session represented by the hToken parameter"; the restricted
     # token's per-launch SID is in neither until the launcher adds it.
+    #
+    # Declared here only because this module owns _api(). Nothing in this file
+    # calls GetUserObjectSecurity or SetUserObjectSecurity: an AppContainer is
+    # launched with CreateProcessW and a security-capabilities attribute, never
+    # with CreateProcessAsUserW, so the package SID is never added to a window
+    # station or a desktop DACL and no window-station right is widened for it.
+    # The narrowing question a reviewer raised belongs to the only caller,
+    # windows_restricted_token.
     user32.GetProcessWindowStation.argtypes = []
     user32.GetProcessWindowStation.restype = wintypes.HANDLE
     user32.GetThreadDesktop.argtypes = [wintypes.DWORD]
@@ -600,12 +664,23 @@ def _api() -> _WinApi:
     kernel32.ResumeThread.restype = wintypes.DWORD
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
-    # The cross-process ledger. A mutex is the only one of these namespaces that
-    # orders two Studio processes; the manifests alone are a check, not a lock.
+    # The cross-process ledger; the manifests alone are a check, not a lock. The
+    # mutex orders the Studio processes of one session, the exclusively opened
+    # lock file orders every session of the account. See _LEDGER_MUTEX_PREFIX.
     kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
     kernel32.CreateMutexW.restype = wintypes.HANDLE
     kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
     kernel32.ReleaseMutex.restype = wintypes.BOOL
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
     kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
     kernel32.GetExitCodeProcess.restype = wintypes.BOOL
     kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
@@ -1182,9 +1257,13 @@ _SHARED_GRANTS_LOCK = threading.RLock()
 _PERSISTENT_GRANT_LOCK = threading.RLock()
 
 # One named-mutex handle per key, for the life of the process. A host that
-# cannot give us one is recorded as None and never asked again.
+# cannot give us one is recorded as None and never asked again. Reconciliation
+# asks about every installation the manifest directory names, not only this one,
+# so the cache is capped: past the cap the fast path is simply given up and the
+# lock file, which is the actual lock, answers alone.
 _LEDGER_MUTEXES: dict[str, Any] = {}
 _LEDGER_MUTEX_LOCK = threading.Lock()
+_LEDGER_MUTEX_LIMIT = 64
 
 
 def _ledger_mutex(key: str) -> Any:
@@ -1192,6 +1271,8 @@ def _ledger_mutex(key: str) -> Any:
     with _LEDGER_MUTEX_LOCK:
         if key in _LEDGER_MUTEXES:
             return _LEDGER_MUTEXES[key]
+        if len(_LEDGER_MUTEXES) >= _LEDGER_MUTEX_LIMIT:
+            return None
         handle = None
         try:
             create = getattr(_api().kernel32, "CreateMutexW", None)
@@ -1212,28 +1293,28 @@ def _ledger_mutex(key: str) -> Any:
 
 
 @contextmanager
-def _named_mutex(key: str):
-    """Hold the named mutex ``key`` for the length of the block, best effort.
+def _named_mutex(key: str, deadline: float):
+    """Hold the session mutex ``key`` names, as a fast path in front of the lock file.
 
-    The session namespace (``Local\\``), not the global one. Two Studios of one
-    interactive session are the case these mutexes order; a ``Global\\`` name is
-    one any other account on the machine could create first and then hold,
-    turning a cleanup into a wait. Two sessions of the same account (a console
-    login and an RDP login) therefore still see each other only through the
-    manifests, which is where every process was before this existed.
+    The session namespace (``Local\\``) is deliberately narrower than the state
+    the ledger protects, which is per account and shared by every session. This
+    mutex is not the lock; ``_ledger_file_lock`` is. What it buys is a kernel
+    wait instead of a poll for the common case of two Studios in one session, so
+    at most one process per session ever polls the lock file.
 
-    A host that will not give us the mutex, and a holder that has not released it
-    within ``_LEDGER_MUTEX_WAIT_MS``, both continue without it rather than
-    failing a tool call; ``held`` says which happened. ``WAIT_ABANDONED`` is
-    ownership too, and is exactly the crashed Studio the manifests are
-    reconciled for. Win32 mutexes are owned by a thread and are recursive, so
-    the nesting the call sites do is one acquire per release.
+    It is therefore best effort: a host that will not give us the mutex, and a
+    holder that has not released it inside the ledger's budget, both fall
+    through to the lock file, which is what decides whether the ledger is held.
+    ``WAIT_ABANDONED`` is ownership too, and is exactly the crashed Studio the
+    manifests are reconciled for. Win32 mutexes are owned by a thread and are
+    recursive, so the nesting the call sites do is one acquire per release.
     """
     handle = _ledger_mutex(key)
     held = False
     if handle is not None:
+        milliseconds = max(0, int((deadline - time.monotonic()) * 1000))
         try:
-            result = _api().kernel32.WaitForSingleObject(handle, _LEDGER_MUTEX_WAIT_MS)
+            result = _api().kernel32.WaitForSingleObject(handle, milliseconds)
         except Exception:  # noqa: BLE001 - a wait that cannot run is not a launch failure
             logger.warning("Could not wait on the sandbox ledger mutex %s", key, exc_info = True)
             result = None
@@ -1241,8 +1322,8 @@ def _named_mutex(key: str):
             held = True
         else:
             logger.warning(
-                "The sandbox ledger mutex %s was not acquired (%s); another Studio process may "
-                "interleave with this one",
+                "The sandbox ledger mutex %s was not acquired (%s); the lock file beside the "
+                "manifests is what orders this section now",
                 key,
                 result,
             )
@@ -1256,8 +1337,169 @@ def _named_mutex(key: str):
                 logger.warning("Could not release the sandbox ledger mutex %s", key, exc_info = True)
 
 
+# The lock-file handle, the re-entrancy depth and the refusal depth of every
+# ledger a thread is inside, keyed by (thread, moniker) and read and written only
+# while _SHARED_GRANTS_LOCK is held, which _installation_ledger takes before
+# anything else. The thread is in the key rather than implied by that lock, so
+# that narrowing its scope later cannot silently make one thread's ledger answer
+# for another's.
+#
+# A depth above zero means this thread already owns the lock file, and a nested
+# section must not try to open it a second time: no-sharing is exclusive against
+# this process too. A refusal depth above zero means an enclosing section already
+# waited out the whole budget and was refused; a nested section is refused at
+# once rather than waiting the budget again, which is what turned one contended
+# prepare into two full waits before the tool process was even spawned.
+_LEDGER_FILE_LOCKS: dict[tuple[int, str], Any] = {}
+_LEDGER_DEPTH: dict[tuple[int, str], int] = {}
+_LEDGER_REFUSED: dict[tuple[int, str], int] = {}
+
+
+def _ledger_lock_path(key: str) -> str:
+    """The lock file ``key`` names, inside the manifest root and nowhere else.
+
+    ``key`` is a moniker, and a moniker can come out of a manifest this process
+    did not write. ``CreateAppContainerProfile`` accepts only
+    ``[-_. A-Za-z0-9]``, so anything outside that is not a profile name at all
+    and certainly not a path component: a planted ``..\\..\\`` would otherwise
+    take an exclusive handle on any file this account can write.
+    """
+    if not key or len(key) > 64 or any(character not in _MONIKER_CHARACTERS for character in key):
+        raise SandboxUnavailableError("an LPAC ledger key is not an AppContainer profile name")
+    root = _manifest_root()
+    path = os.path.join(root, key + _LEDGER_LOCK_SUFFIX)
+    if os.path.dirname(path) != root:
+        raise SandboxUnavailableError("an LPAC ledger lock escapes the manifest directory")
+    return path
+
+
+def _ledger_lock_last_error() -> int:
+    """The Win32 error the last ``CreateFileW`` left behind.
+
+    ``ctypes.get_last_error`` exists only on Windows. Where it does not, the
+    caller is the Linux test host driving a fake ``kernel32``, whose only way to
+    report contention is the invalid handle, so read that as the contended case
+    rather than as an unrecoverable one.
+    """
+    getter = getattr(ctypes, "get_last_error", None)
+    if getter is None:
+        return _ERROR_SHARING_VIOLATION
+    return int(getter())
+
+
+def _open_ledger_lock(key: str, deadline: float) -> Any:
+    """Open the ledger lock file for ``key`` exclusively, or ``None`` by ``deadline``.
+
+    ``dwShareMode`` 0 is the exclusion: the file cannot be opened again, in any
+    session and by any process, until this handle is closed, and Windows closes
+    it when this process dies. There is no blocking form of that, so contention
+    is polled with a backoff; a failure that is not contention is not retried,
+    because spinning for the whole budget would only delay a refusal.
+    """
+    try:
+        path = _ledger_lock_path(key)
+    except (SandboxUnavailableError, OSError):
+        logger.warning("Could not place the sandbox ledger lock file for %s", key, exc_info = True)
+        return None
+    create = getattr(_api().kernel32, "CreateFileW", None)
+    if create is None:
+        logger.warning("This host offers no CreateFileW for the sandbox ledger lock %s", path)
+        return None
+    delay = _LEDGER_LOCK_FIRST_POLL_SECONDS
+    started = time.monotonic()
+    while True:
+        try:
+            handle = create(
+                path,
+                _GENERIC_WRITE,
+                _FILE_SHARE_NONE,
+                None,
+                _OPEN_ALWAYS,
+                _FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+        except Exception:  # noqa: BLE001 - reported by the caller as "not held"
+            logger.warning("Could not open the sandbox ledger lock %s", path, exc_info = True)
+            return None
+        if handle and handle != _INVALID_HANDLE_VALUE:
+            return handle
+        error = _ledger_lock_last_error()
+        if error not in (_ERROR_SHARING_VIOLATION, _ERROR_LOCK_VIOLATION):
+            # A sharing violation is the documented answer to "another handle
+            # holds it", and the only one worth waiting on. Anything else, an
+            # access denial included, refuses now: the caller defers the work and
+            # the next tool call retries it, which beats stalling this one for
+            # thirty seconds on a condition that will not clear.
+            logger.warning("The sandbox ledger lock %s could not be opened (%s)", path, error)
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "The sandbox ledger lock %s is still held by another Studio process after %.2fs",
+                path,
+                time.monotonic() - started,
+            )
+            return None
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, _LEDGER_LOCK_MAX_POLL_SECONDS)
+
+
 @contextmanager
-def _installation_ledger(moniker: str = ""):
+def _nested_ledger_depth(counts: dict[tuple[int, str], int], entry: tuple[int, str], answer: bool):
+    """Count one more section on ``entry``, and drop the key when the last leaves."""
+    counts[entry] = counts.get(entry, 0) + 1
+    try:
+        yield answer
+    finally:
+        counts[entry] -= 1
+        if not counts[entry]:
+            del counts[entry]
+
+
+@contextmanager
+def _ledger_file_lock(key: str, deadline: float):
+    """Hold the machine-wide, per-account ledger lock file for ``key``."""
+    entry = (threading.get_ident(), key)
+    if _LEDGER_DEPTH.get(entry, 0):
+        # Already ours; a second exclusive open would fail against our own handle.
+        with _nested_ledger_depth(_LEDGER_DEPTH, entry, True) as held:
+            yield held
+        return
+    if _LEDGER_REFUSED.get(entry, 0):
+        # An enclosing section already spent the budget on this key and lost.
+        with _nested_ledger_depth(_LEDGER_REFUSED, entry, False) as held:
+            yield held
+        return
+    handle = _open_ledger_lock(key, deadline)
+    if handle is None:
+        with _nested_ledger_depth(_LEDGER_REFUSED, entry, False) as held:
+            yield held
+        return
+    _LEDGER_FILE_LOCKS[entry] = handle
+    try:
+        with _nested_ledger_depth(_LEDGER_DEPTH, entry, True) as held:
+            yield held
+    finally:
+        _LEDGER_FILE_LOCKS.pop(entry, None)
+        try:
+            _api().kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001 - never mask the body's own failure
+            logger.warning("Could not release the sandbox ledger lock %s", key, exc_info = True)
+
+
+def _ledger_is_held(key: str) -> bool:
+    """Whether this thread is inside a ledger section that actually took the lock.
+
+    For a destructive step nested inside a section that is allowed to run
+    unlocked: prepare grants without the ledger, but the temp it empties when a
+    launch fails to prepare is not something it may do unsynchronised.
+    """
+    with _SHARED_GRANTS_LOCK:
+        return _LEDGER_DEPTH.get((threading.get_ident(), key), 0) > 0
+
+
+@contextmanager
+def _installation_ledger(moniker: str = "", *, wait_seconds: float | None = None):
     """Hold this installation's ownership ledger against every thread and process.
 
     ``_SHARED_GRANTS_LOCK`` orders the launches of one Studio and nothing else.
@@ -1265,16 +1507,112 @@ def _installation_ledger(moniker: str = ""):
     is seen through, and reading them is a check, not a lock: it can write its
     manifest in the window between this process's scan and its revoke, and then
     lose the ACE it was just granted, under a container that is already running.
-    A named mutex keyed by the installation moniker closes that window. It is
-    held across scan-and-revoke, across prepare's create-and-grant, across
+    A ledger keyed by the installation moniker closes that window. It is held
+    across scan-and-revoke, across prepare's create-and-grant, across
     reconciliation and across the persistent removal, so no two of those
     interleave between processes.
 
-    ``_SHARED_GRANTS_LOCK`` is always taken first, so the process-local lock and
-    the mutex can never be acquired in opposite orders.
+    ``held`` is the whole contract: it is true only when the lock file was taken,
+    and every destructive step must refuse to run when it is false. Use
+    ``_destructive_ledger`` rather than reading it by hand.
+
+    ``_SHARED_GRANTS_LOCK`` is always taken first and the mutex before the lock
+    file, so no two holders can acquire the three in different orders.
+
+    ``wait_seconds`` of 0 asks for the ledger without waiting for it, which is
+    what background housekeeping wants: a reconciliation pass covers every
+    installation on the account, and waiting the full budget on each busy one in
+    turn would stall a Studio start by that many multiples of it for work the
+    next pass does anyway.
     """
-    with _SHARED_GRANTS_LOCK, _named_mutex(moniker or _install_moniker()) as held:
-        yield held
+    key = moniker or _install_moniker()
+    budget = _LEDGER_WAIT_SECONDS if wait_seconds is None else wait_seconds
+    with _SHARED_GRANTS_LOCK:
+        # Started after the process-local lock, not before it. The budget is for
+        # the wait on other processes; spending it queued behind this process's
+        # own 14 s first-launch propagation would fail a cleanup closed over a
+        # contention that was never cross-process at all.
+        deadline = time.monotonic() + budget
+        with _named_mutex(key, deadline):
+            with _ledger_file_lock(key, deadline) as held:
+                yield held
+
+
+class _LedgerUnavailableError(SandboxUnavailableError):
+    """The ledger could not be taken, so a destructive step was refused."""
+
+
+@contextmanager
+def _destructive_ledger(moniker: str, operation: str):
+    """The ledger for a block that revokes, empties or deletes, failing closed.
+
+    Revoking an ACE under another process's running container, emptying the
+    container temp under it, or deleting the profile it is using are the exact
+    damage the ledger exists to prevent, so a ledger that could not be taken
+    refuses the block instead of running it unsynchronised. Every one of these
+    is recoverable: the write-ahead manifest that named the state is still on
+    disk, and the next reconciliation that does hold the ledger releases it.
+    """
+    with _installation_ledger(moniker) as held:
+        if not held:
+            raise _LedgerUnavailableError(
+                f"the Studio sandbox ledger for {moniker} could not be taken, so {operation} was "
+                "left for the next reconciliation"
+            )
+        yield
+
+
+# Launch records whose destructive cleanup the ledger refused, by moniker. The
+# identity is kept whole - nothing of its claim is given back - and the whole
+# cleanup is retried under the next ledger of that installation this process
+# does hold, so a lock that was busy for one cleanup does not strand an ACE
+# until the process exits.
+_DEFERRED_CLEANUPS: dict[str, list[Any]] = {}
+# A host whose ledger is never available would otherwise queue one identity per
+# tool call, forever. The oldest is dropped instead: its manifest is still on
+# disk and still names every ACE it owns, so the next Studio that does hold the
+# ledger reconciles it from there.
+_DEFERRED_CLEANUP_LIMIT = 256
+
+
+def _defer_cleanup(identity: Any) -> None:
+    with _SHARED_GRANTS_LOCK:
+        pending = _DEFERRED_CLEANUPS.setdefault(identity.moniker, [])
+        pending.append(identity)
+        while len(pending) > _DEFERRED_CLEANUP_LIMIT:
+            dropped = pending.pop(0)
+            # Its count is given back even though its ACE is not revoked. The
+            # count is this process's own bookkeeping and the launch really has
+            # finished; leaving it would pin those paths as "in use" for the rest
+            # of the process, which refuses every later container release. The
+            # manifest still names the ACE, and is what releases it in the end.
+            if dropped.shared_roots and dropped._released is None:
+                dropped._released = _release_shared_grants(dropped.shared_roots)
+            logger.warning(
+                "The sandbox ledger for %s has been unavailable for %d cleanups; the grants of "
+                "launch %s are now left entirely to a reconciliation after this process exits",
+                identity.moniker,
+                _DEFERRED_CLEANUP_LIMIT,
+                dropped.launch_id,
+            )
+
+
+def _drain_deferred_cleanups(moniker: str) -> None:
+    """Retry the cleanups the ledger refused. Only ever called while holding it."""
+    with _SHARED_GRANTS_LOCK:
+        pending = _DEFERRED_CLEANUPS.pop(moniker, [])
+    for identity in pending:
+        try:
+            identity.cleanup()
+        except Exception:  # noqa: BLE001 - queued again rather than dropped
+            logger.warning(
+                "Could not release the deferred LPAC launch %s", identity.launch_id, exc_info = True
+            )
+            # Back on the queue, at the tail, so a record whose revoke keeps
+            # failing does not simply vanish from this process's retry list. The
+            # list was popped before the loop, so this is not retried until the
+            # next drain.
+            _defer_cleanup(identity)
 
 
 def _hold_shared_grants(paths: tuple[str, ...]) -> None:
@@ -1776,14 +2114,41 @@ class _InvocationIdentity:
     free_sid: bool = False
     _released: set[str] | None = field(default = None, repr = False, compare = False)
 
-    def cleanup(self) -> None:
+    def cleanup(self, *, defer_when_locked: bool = True) -> None:
+        """Revoke this launch's grants and give its share of the temp back.
+
+        Every step here is destructive, so all of it is inside the ledger and
+        none of it runs without it. ``defer_when_locked`` keeps the whole record
+        - the manifest, the in-process hold, the SID - and queues the identity
+        for the next ledger this process does hold. A reconciliation passes
+        ``False``: it already holds the ledger of the installation it is
+        processing, and its identity owns a SID that its own caller frees.
+        """
         if self.cleaned:
             return
         errors: list[str] = []
         # The ledger spans the release and the revokes, in this process and in
         # every other Studio of this installation: a launch starting in between
         # would otherwise see the ACE, skip its own grant, and lose it here.
-        with _installation_ledger(self.moniker):
+        with _installation_ledger(self.moniker) as held:
+            if not held:
+                # Nothing of the claim is given back: the manifest, the hold and
+                # the SID stay exactly as they are, so the retry has the same
+                # record to work from that a reconciliation would.
+                if not defer_when_locked:
+                    raise _LedgerUnavailableError(
+                        f"the Studio sandbox ledger for {self.moniker} could not be taken, so "
+                        "this launch's grants were left for the next reconciliation"
+                    )
+                _defer_cleanup(self)
+                logger.warning(
+                    "The sandbox ledger for %s could not be taken, so the grants of launch %s were "
+                    "left in place rather than revoked unsynchronised; they are released by the "
+                    "next reconciliation of this installation",
+                    self.moniker,
+                    self.launch_id,
+                )
+                return
             targets = self.granted_roots
             if self.shared_roots:
                 if self._released is None:
@@ -1819,23 +2184,29 @@ class _InvocationIdentity:
                 pass
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"temp {self.private_temp}: {exc}")
-        if errors:
-            raise OSError("; ".join(errors))
-        if self.delete_profile:
-            result = _api().userenv.DeleteAppContainerProfile(self.moniker)
-            unsigned_result = ctypes.c_uint32(result).value
-            if unsigned_result not in (0, 0x80070002):
-                raise OSError(f"DeleteAppContainerProfile: 0x{unsigned_result:08x}")
-        try:
-            os.unlink(self.manifest_path)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise OSError(f"manifest: {exc}") from exc
-        if self.free_sid:
-            _api().advapi32.FreeSid(self.sid)
-            self.sid = ctypes.c_void_p()
-        self.cleaned = True
+            if errors:
+                raise OSError("; ".join(errors))
+            # Still inside the ledger. Deleting the profile a single-use manifest
+            # names, and removing the record that says which ACEs this launch
+            # owns, are as destructive as the revokes above: a reconciliation
+            # that read the record between the revoke and the unlink would revoke
+            # the same paths a second time, and the profile is the directory
+            # another launch's temp lives in.
+            if self.delete_profile:
+                result = _api().userenv.DeleteAppContainerProfile(self.moniker)
+                unsigned_result = ctypes.c_uint32(result).value
+                if unsigned_result not in (0, 0x80070002):
+                    raise OSError(f"DeleteAppContainerProfile: 0x{unsigned_result:08x}")
+            try:
+                os.unlink(self.manifest_path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise OSError(f"manifest: {exc}") from exc
+            if self.free_sid:
+                _api().advapi32.FreeSid(self.sid)
+                self.sid = ctypes.c_void_p()
+            self.cleaned = True
 
 
 def _atomic_write_manifest(path: str, payload: dict[str, Any]) -> None:
@@ -1966,6 +2337,12 @@ def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
     if (
         not isinstance(moniker, str)
         or not moniker.startswith(_PROFILE_PREFIX)
+        or len(moniker) > 64
+        or any(character not in _MONIKER_CHARACTERS for character in moniker)
+        # A moniker names the ledger lock file as well as the profile, so it is
+        # held to what CreateAppContainerProfile itself accepts. Without this a
+        # planted record could put a path separator in it and make this process
+        # take an exclusive handle anywhere the account can write.
         or not _is_container_sid_text(payload.get("sid"))
         or not _absolute_string_list(roots)
         or not _absolute_string_list(traverse)
@@ -1994,6 +2371,10 @@ def _parse_manifest(manifest: Path) -> dict[str, Any] | None:
         workdir = payload.get("workdir")
         if (
             not moniker.startswith(_INSTALL_PREFIX)
+            # The only manifest kind whose file name does not repeat its moniker,
+            # so the moniker is pinned to the shape _install_moniker produces
+            # instead: the installation prefix and the 16 hex of its digest.
+            or not _is_hex(moniker[len(_INSTALL_PREFIX) :], 16)
             or not _is_hex(payload.get("launch_id"), 32)
             or manifest.name != _LAUNCH_PREFIX + payload["launch_id"] + ".json"
             or not isinstance(workdir, str)
@@ -2179,6 +2560,22 @@ def _revoke_persistent_manifest(manifest: Path, payload: dict[str, Any]) -> None
         pass
 
 
+def _recorded_monikers(root: str, prefix: str, kind: str | None = None) -> set[str]:
+    """Which installations the manifests under ``root`` belong to.
+
+    Every manifest carries the moniker of the installation that wrote it, which
+    is what says whose ledger orders the process that owns it. Reading it needs
+    no lock: it decides only which locks to take, and a record that appears
+    afterwards is skipped by the caller rather than acted on unlocked.
+    """
+    found: set[str] = set()
+    for manifest in Path(root).glob(prefix + "*.json"):
+        payload = _parse_manifest(manifest)
+        if payload is not None and (kind is None or payload["kind"] == kind):
+            found.add(payload["moniker"])
+    return found
+
+
 def _remove_persistent_grants(*, all_installations: bool = False) -> tuple[str, ...]:
     """Revoke the installation-wide grants and delete its container profile.
 
@@ -2192,26 +2589,51 @@ def _remove_persistent_grants(*, all_installations: bool = False) -> tuple[str, 
     launch path holds across its own manifest and grants. Checking outside it let
     a launch start in between and lose the profile it had just been prepared
     with. A launch of another Studio process of this installation is just as
-    live, is seen through its manifest, and is now ordered against by the same
-    named mutex rather than only looked for.
+    live, is seen through its manifest, and is ordered against by the same ledger
+    rather than only looked for.
+
+    ``all_installations`` removes the containers of installations this process is
+    not, and one installation's ledger orders nothing against the processes that
+    own another's. Every moniker about to be touched is therefore locked, in
+    sorted order so two concurrent resets cannot take two of them in opposite
+    orders, and the whole reset is refused if any one of them cannot be taken.
     """
     global _INSTALL_PROFILE
     removed: list[str] = []
     moniker = _install_moniker()
-    with _installation_ledger(moniker):
+    root = _manifest_root()
+    locked = {moniker}
+    if all_installations:
+        locked |= _recorded_monikers(root, _INSTALL_PREFIX, _MANIFEST_KIND_PERSISTENT)
+    with ExitStack() as stack:
+        for name in sorted(locked):
+            stack.enter_context(_destructive_ledger(name, f"releasing the container of {name}"))
+        # Before the liveness check, not after it. A cleanup the ledger refused
+        # keeps its hold and its manifest, so an undrained one looks exactly like
+        # a running tool call and would refuse this release for good.
+        for name in sorted(locked):
+            _drain_deferred_cleanups(name)
         if _held_shared_grants() or _live_launch_holds(
             moniker = None if all_installations else moniker
         ):
             raise SandboxUnavailableError(
                 "a sandboxed tool call is still running; its container cannot be released"
             )
-        root = _manifest_root()
         with _PERSISTENT_GRANT_LOCK:
             for manifest in sorted(Path(root).glob(_INSTALL_PREFIX + "*.json")):
                 payload = _parse_manifest(manifest)
                 if payload is None or payload["kind"] != _MANIFEST_KIND_PERSISTENT:
                     continue
                 if not all_installations and payload["moniker"] != moniker:
+                    continue
+                if payload["moniker"] not in locked:
+                    # Recorded after the monikers were enumerated, so no ledger of
+                    # ours covers it. The next reset sees it under its own lock.
+                    logger.warning(
+                        "The container of %s appeared after this reset took its ledgers and was "
+                        "left alone",
+                        payload["moniker"],
+                    )
                     continue
                 _revoke_persistent_manifest(manifest, payload)
                 result = ctypes.c_uint32(
@@ -2316,7 +2738,16 @@ def _create_identity(
                     os.unlink(manifest_path)
                 except FileNotFoundError:
                     pass
-            if private_temp:
+            if private_temp and not _ledger_is_held(install.moniker):
+                # Emptying the container temp is destructive, and prepare is
+                # allowed to run without the ledger. Leave it to the next
+                # reconciliation rather than clear it under another Studio.
+                logger.warning(
+                    "The sandbox ledger for %s is not held, so the container temp of a failed "
+                    "launch was left for the next reconciliation",
+                    install.moniker,
+                )
+            elif private_temp:
                 try:
                     _release_private_temp(
                         install.profile_folder,
@@ -3232,7 +3663,22 @@ class WindowsLpacBackend:
         # ancestors until the last of them is granted, so a concurrent cleanup -
         # in this process or in another Studio of this installation - cannot
         # revoke an ACE between the check that found it and its use.
-        with _installation_ledger(install.moniker):
+        with _installation_ledger(install.moniker) as held:
+            if held:
+                # The one place a deferred cleanup is cheap to retry: this
+                # section already holds the ledger it was refused, and it runs on
+                # every tool call. Before the grants below, so the launch that
+                # follows re-grants anything the retry revoked.
+                _drain_deferred_cleanups(install.moniker)
+            else:
+                # Granting is not destructive: an ACE this launch adds under a
+                # concurrent cleanup is re-added by the check-then-grant below,
+                # and refusing here would fail a tool call over housekeeping.
+                logger.warning(
+                    "The sandbox ledger for %s could not be taken; this launch grants without it "
+                    "and its cleanup is deferred rather than run unsynchronised",
+                    install.moniker,
+                )
             # The runtime grant belongs to the installation and survives this
             # launch; only the workdir, the private temp and their remaining
             # ancestors are granted and revoked here.
@@ -3302,19 +3748,57 @@ class WindowsLpacBackend:
         """
         root = _manifest_root()
         _remove_orphan_temporary_manifests(root)
-        # One critical section for the whole pass, in this process and in every
-        # other Studio of this installation: a launch that starts between the
-        # scan that found a record dead and the revoke it gates must not lose an
-        # ACE, and a second reconciliation must not revoke the same paths twice.
-        with _installation_ledger():
-            self._reconcile_pass(root)
+        self._reconcile_pass(root)
 
     def _reconcile_pass(self, root: str) -> None:
-        """One reconciliation sweep, under the installation ledger its caller holds."""
+        """One reconciliation sweep, each installation under its own ledger.
+
+        A pass reads the manifests of every installation on this account, not
+        only this one's, and the ledger of *this* installation orders nothing
+        against the Studio processes that own another's: it would revoke their
+        ACEs and empty their container temp with no lock between us at all. The
+        moniker is in every manifest, so each record is handled under the ledger
+        of the installation it belongs to.
+
+        One critical section per installation, in this process and in every other
+        Studio of it: a launch that starts between the scan that found a record
+        dead and the revoke it gates must not lose an ACE, and a second
+        reconciliation must not revoke the same paths twice. An installation
+        whose ledger is busy keeps its records for the next pass.
+        """
+        # One parse of the directory for the whole pass, grouped by the
+        # installation each record names, rather than one re-parse of every
+        # manifest per installation found.
+        grouped: dict[str, list[Path]] = {}
         for manifest in sorted(Path(root).glob(_PROFILE_PREFIX + "*.json")):
+            payload = _parse_manifest(manifest)
+            if payload is not None:
+                grouped.setdefault(payload["moniker"], []).append(manifest)
+        for moniker in sorted(grouped):
+            # Asked for, never waited on: this runs at every probe, over every
+            # installation on the account, and a busy one is handled next pass.
+            with _installation_ledger(moniker, wait_seconds = 0.0) as held:
+                if not held:
+                    logger.warning(
+                        "The sandbox ledger for %s could not be taken; its stale records are kept "
+                        "for the next reconciliation rather than released unsynchronised",
+                        moniker,
+                    )
+                    continue
+                _drain_deferred_cleanups(moniker)
+                self._reconcile_installation(grouped[moniker], moniker)
+
+    def _reconcile_installation(self, manifests: list[Path], moniker: str) -> None:
+        """The records of one installation, under the ledger its caller holds.
+
+        Re-read here rather than carried in from the grouping pass: the grouping
+        ran before this installation's ledger was taken, so only a payload read
+        inside it is one no other Studio of this installation could have replaced.
+        """
+        for manifest in manifests:
             try:
                 payload = _parse_manifest(manifest)
-                if payload is None:
+                if payload is None or payload["moniker"] != moniker:
                     continue
                 if payload["kind"] == _MANIFEST_KIND_PERSISTENT:
                     # Another installation's grant is not ours to release; a
@@ -3413,7 +3897,10 @@ class WindowsLpacBackend:
             _api().advapi32.FreeSid(sid)
             raise
         try:
-            identity.cleanup()
+            # Never deferred: the identity here owns a SID this call frees below,
+            # so queueing it would leave a freed pointer in the retry list. The
+            # caller already holds this installation's ledger anyway.
+            identity.cleanup(defer_when_locked = False)
         finally:
             # cleanup frees the SID only on the path that completes. A revoke or
             # an unremovable temp raises before that, and this manifest is retried

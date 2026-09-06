@@ -9,6 +9,7 @@ import ast
 import ctypes
 from contextlib import contextmanager
 from ctypes import wintypes
+import fnmatch
 import importlib.util
 import json
 import math
@@ -614,14 +615,89 @@ _CONTAINER_SID = "S-1-15-2-11-22-33-44-55-66-77"
 _INSTALL_MONIKER = "unsloth.studio.sandbox.0123456789abcdef"
 
 
-def _cleanup_recorder(monkeypatch, events):
+class _FakeLedger:
+    """A ``kernel32`` that answers the ledger primitives.
+
+    The lock file is what actually orders two Studio processes, so the fake
+    models the one property the code relies on: an exclusive open of a path that
+    is already open fails, and closing the handle releases it. ``busy`` is the
+    other Studio this process cannot see, holding a lock this one must not get.
+    """
+
+    def __init__(self, events, *, mutex = False, lock = True, busy = ()):
+        self.events = events
+        self.mutex = mutex
+        self.lock = lock
+        self.busy = {name + windows_lpac._LEDGER_LOCK_SUFFIX for name in busy}
+        self.attempts: list[str] = []
+        self.shares: set[int] = set()
+        self.dispositions: set[int] = set()
+        self.open_paths: set[str] = set()
+        self.handles: dict[int, str] = {}
+        self._next = 9000
+
+    def install(self, kernel32):
+        if self.mutex:
+            kernel32.CreateMutexW = lambda _attributes, _owned, name: (
+                self.events.append(("mutex-create", name)) or 900
+            )
+            kernel32.WaitForSingleObject = lambda handle, _ms: (
+                self.events.append(("mutex-wait", handle)) or windows_lpac._WAIT_OBJECT_0
+            )
+            kernel32.ReleaseMutex = lambda handle: (
+                self.events.append(("mutex-release", handle)) or True
+            )
+        if self.lock:
+            kernel32.CreateFileW = self.create_file
+        kernel32.CloseHandle = self.close_handle
+        return kernel32
+
+    def create_file(self, path, _access, share, _attributes, disposition, _flags, _template):
+        self.attempts.append(path)
+        self.shares.add(share)
+        self.dispositions.add(disposition)
+        if share == 0 and (path in self.open_paths or os.path.basename(path) in self.busy):
+            self.events.append(("lock-busy", os.path.basename(path)))
+            return windows_lpac._INVALID_HANDLE_VALUE
+        self._next += 1
+        self.open_paths.add(path)
+        self.handles[self._next] = path
+        self.events.append(("lock-open", os.path.basename(path)))
+        return self._next
+
+    def close_handle(self, handle):
+        path = self.handles.pop(handle, None)
+        if path is not None:
+            self.open_paths.discard(path)
+            self.events.append(("lock-close", os.path.basename(path)))
+        return True
+
+
+def _reset_ledger_state(monkeypatch):
+    """Every test starts from an empty ledger, and never waits 30 s for a busy one."""
+    # Handles are cached for the life of the process, so each test starts from a
+    # cache of its own rather than inheriting another test's "this host has no
+    # CreateMutexW" answer.
+    monkeypatch.setattr(windows_lpac, "_LEDGER_MUTEXES", {})
+    monkeypatch.setattr(windows_lpac, "_LEDGER_FILE_LOCKS", {})
+    monkeypatch.setattr(windows_lpac, "_LEDGER_DEPTH", {})
+    monkeypatch.setattr(windows_lpac, "_LEDGER_REFUSED", {})
+    monkeypatch.setattr(windows_lpac, "_DEFERRED_CLEANUPS", {})
+    monkeypatch.setattr(windows_lpac, "_LEDGER_WAIT_SECONDS", 0.05)
+
+
+def _cleanup_recorder(monkeypatch, events, *, ledger = None):
     sid = ctypes.c_void_p(1234)
+    ledger = ledger or _FakeLedger([])
     api = SimpleNamespace(
         userenv = SimpleNamespace(
             DeleteAppContainerProfile = lambda moniker: events.append(("profile", moniker)) or 0
         ),
         advapi32 = SimpleNamespace(FreeSid = lambda value: events.append(("sid", value.value))),
+        kernel32 = ledger.install(SimpleNamespace()),
     )
+    _reset_ledger_state(monkeypatch)
+    monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: "ledger-root")
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_SHARED_GRANTS", {})
     monkeypatch.setattr(
@@ -781,8 +857,10 @@ def test_reconciliation_accepts_only_owned_well_formed_manifests(monkeypatch, tm
     api = SimpleNamespace(
         userenv = SimpleNamespace(DeriveAppContainerSidFromAppContainerName = Derive()),
         advapi32 = SimpleNamespace(FreeSid = lambda _value: None),
+        kernel32 = _FakeLedger([]).install(SimpleNamespace()),
     )
     cleaned: list[tuple[str, bool, bool]] = []
+    _reset_ledger_state(monkeypatch)
     monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path))
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: _CONTAINER_SID)
@@ -795,7 +873,7 @@ def test_reconciliation_accepts_only_owned_well_formed_manifests(monkeypatch, tm
     monkeypatch.setattr(
         windows_lpac._InvocationIdentity,
         "cleanup",
-        lambda self: cleaned.append((self.moniker, self.delete_profile, self.free_sid)),
+        lambda self, **_kwargs: cleaned.append((self.moniker, self.delete_profile, self.free_sid)),
     )
 
     windows_lpac.WindowsLpacBackend().reconcile_stale_manifests()
@@ -962,6 +1040,8 @@ def _lpac_fakes(
     create_results = None,
     runtime_roots = None,
     ledger_mutex = False,
+    ledger_lock = True,
+    ledger_busy = (),
 ):
     """Drive the real prepare and cleanup paths with every Windows API recorded.
 
@@ -971,10 +1051,7 @@ def _lpac_fakes(
     monkeypatch.setattr(windows_lpac, "_INSTALL_PROFILE", None)
     monkeypatch.setattr(windows_lpac, "_ACCESS_MEMO", {})
     monkeypatch.setattr(windows_lpac, "_SHARED_GRANTS", {})
-    # Handles are cached for the life of the process, so each test starts from a
-    # cache of its own rather than inheriting another test's "this host has no
-    # CreateMutexW" answer.
-    monkeypatch.setattr(windows_lpac, "_LEDGER_MUTEXES", {})
+    _reset_ledger_state(monkeypatch)
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
     manifests = tmp_path / "manifests"
     manifests.mkdir()
@@ -999,19 +1076,11 @@ def _lpac_fakes(
         ),
         kernel32 = SimpleNamespace(LocalFree = lambda _value: None),
     )
-    if ledger_mutex:
-        # A host that answers CreateMutexW, so the cross-process ledger is real
-        # here. Every other test leaves it absent, which is the documented
-        # degradation to the manifest ledger alone.
-        api.kernel32.CreateMutexW = lambda _attributes, _owned, name: (
-            events.append(("mutex-create", name)) or 900
-        )
-        api.kernel32.WaitForSingleObject = lambda handle, _ms: (
-            events.append(("mutex-wait", handle)) or windows_lpac._WAIT_OBJECT_0
-        )
-        api.kernel32.ReleaseMutex = lambda handle: (
-            events.append(("mutex-release", handle)) or True
-        )
+    # The lock file is the ledger, so it answers by default; ``ledger_mutex``
+    # adds the same-session fast path in front of it, and ``ledger_busy`` names
+    # the installations another Studio process is holding right now.
+    ledger = _FakeLedger(events, mutex = ledger_mutex, lock = ledger_lock, busy = ledger_busy)
+    ledger.install(api.kernel32)
     monkeypatch.setattr(windows_lpac, "_api", lambda: api)
     monkeypatch.setattr(windows_lpac, "_sid_string", lambda _api, _sid: sid_text)
     monkeypatch.setattr(windows_lpac, "_profile_folder", lambda _api, _sid: str(profile))
@@ -1083,6 +1152,7 @@ def _lpac_fakes(
         sid_text = sid_text,
         moniker = windows_lpac._install_moniker(),
         acl = acl,
+        ledger = ledger,
     )
 
 
@@ -1472,12 +1542,33 @@ def test_a_launch_that_fails_to_prepare_never_removes_the_container_temp(monkeyp
         assert temp.is_dir() and not leftover.exists()
 
 
+_LEDGER_GUARDED = {"read_execute", "modify", "traverse", "revoke", "revoke-absent"}
+
+
+def _unguarded(events, opened, closed):
+    """The grants and revokes that ran while no ledger of ``opened`` kind was held."""
+    depth = 0
+    loose: list[tuple] = []
+    for event in events:
+        if event[0] == opened:
+            depth += 1
+        elif event[0] == closed:
+            depth -= 1
+            assert depth >= 0, events
+        elif event[0] in _LEDGER_GUARDED and depth == 0:
+            loose.append(event)
+    assert depth == 0, events
+    return loose
+
+
 def test_the_installation_ledger_is_held_across_every_grant_and_revoke(monkeypatch, tmp_path):
-    """The manifests are a check, not a lock; the named mutex is the lock.
+    """The manifests are a check, not a lock; the ledger is the lock.
 
     Process A can write its manifest in the window between B's scan and B's
     revoke. Every path that grants or revokes for this installation therefore
-    runs inside one named mutex keyed by the installation moniker.
+    runs inside one ledger keyed by the installation moniker: the lock file that
+    orders every session of the account, behind the session mutex that keeps
+    same-session contenders off it.
     """
     events: list[tuple] = []
     with _lpac_fakes(monkeypatch, tmp_path, events = events, ledger_mutex = True) as fakes:
@@ -1489,19 +1580,567 @@ def test_the_installation_ledger_is_held_across_every_grant_and_revoke(monkeypat
     assert ("mutex-create", "Local\\unsloth.studio.ledger." + fakes.moniker) in events
     # Only one handle is ever created, and every wait is matched by a release.
     assert len([event for event in events if event[0] == "mutex-create"]) == 1
-    depth = 0
-    unguarded: list[tuple] = []
-    for event in events:
-        if event[0] == "mutex-wait":
-            depth += 1
-        elif event[0] == "mutex-release":
-            depth -= 1
-            assert depth >= 0, events
-        elif event[0] in {"read_execute", "modify", "traverse", "revoke", "revoke-absent"}:
-            if depth == 0:
-                unguarded.append(event)
-    assert unguarded == [], unguarded
-    assert depth == 0
+    assert _unguarded(events, "mutex-wait", "mutex-release") == []
+    # And the same for the lock file, which is the one that spans sessions. The
+    # mutex holding is not enough on its own; see the fail-closed tests below.
+    assert _unguarded(events, "lock-open", "lock-close") == []
+
+
+def test_the_ledger_lock_is_a_file_beside_the_manifests_opened_with_no_sharing(
+    monkeypatch, tmp_path
+):
+    """The lock has to have the scope of the state, which is per account, not per session.
+
+    The manifests are under LOCALAPPDATA, the AppContainer profile is registered
+    for the account, and the moniker the ACEs derive from already covers the
+    account. A console login and an RDP login of one account share all of it, so
+    a session-namespace mutex cannot be the lock. A file opened with
+    ``dwShareMode`` 0 beside the manifests can: it excludes every session, needs
+    no privilege, and no other account can reach it to squat it.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        prepared = fakes.backend.prepare(fakes.spec)
+        prepared.cleanup()
+        expected = str(fakes.manifests / (fakes.moniker + windows_lpac._LEDGER_LOCK_SUFFIX))
+
+    assert set(fakes.ledger.attempts) == {expected}
+    assert fakes.ledger.shares == {0}  # exclusive, or it is not a lock at all
+    # Opened or created, never truncated: a lock that empties a file it did not
+    # create is a lock that can destroy whatever it collides with.
+    assert fakes.ledger.dispositions == {windows_lpac._OPEN_ALWAYS}
+    # And never picked up by the sweeps that walk the same directory.
+    name = os.path.basename(expected)
+    assert not fnmatch.fnmatch(name, windows_lpac._PROFILE_PREFIX + "*.json")
+    assert not fnmatch.fnmatch(name, windows_lpac._PROFILE_PREFIX + "*.tmp")
+    # Not left open past the section that took it.
+    assert not fakes.ledger.open_paths
+    assert not windows_lpac._LEDGER_DEPTH and not windows_lpac._LEDGER_FILE_LOCKS
+
+
+def test_a_planted_moniker_can_never_name_a_path_outside_the_manifest_directory(tmp_path):
+    """A moniker now names a file, so it is held to a profile name's own charset.
+
+    A launch manifest is the one kind whose file name does not repeat its
+    moniker, so before this the field could carry anything that merely started
+    with the installation prefix. The ledger turns it into a lock file beside the
+    manifests, and an exclusive no-sharing handle on an arbitrary path is not
+    something a record this process did not write may ask for.
+    """
+    _single_use, launch = _manifest_payloads(tmp_path)
+    launch_name = f"unsloth.studio.launch.{'b' * 32}.json"
+    escapes = "unsloth.studio.sandbox." + "../../evil"
+    for planted in (escapes, "unsloth.studio.sandbox.0123456789abcdeg", "unsloth.studio.sandbox."):
+        assert _planted(tmp_path, launch_name, {**launch, "moniker": planted}) is None, planted
+    # The lock path helper refuses the same names on its own, so a moniker that
+    # reaches it by any other route is refused rather than joined into a path.
+    for planted in (escapes, "unsloth.studio.sandbox.a/b", "unsloth.studio.sandbox.a\\b", "a" * 65):
+        with pytest.raises(os_sandbox.SandboxUnavailableError):
+            windows_lpac._ledger_lock_path(planted)
+    assert _planted(tmp_path, launch_name, launch)["moniker"] == _INSTALL_MONIKER
+
+
+def test_a_ledger_that_cannot_be_taken_defers_the_revoke_instead_of_racing_it(
+    monkeypatch, tmp_path
+):
+    """A lock that fails open is not a lock.
+
+    The revoke the ledger exists to order is exactly the one that used to run
+    anyway when the ledger could not be taken. It is now skipped with the whole
+    record left intact - the manifest, the in-process hold, the SID - and
+    retried under the next ledger of this installation this process does hold.
+    Granting is not destructive and still proceeds, so a busy ledger belonging
+    to another Studio never fails a tool call.
+    """
+    read_execute = windows_lpac._FILE_GENERIC_READ | windows_lpac._FILE_GENERIC_EXECUTE
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        # Another Studio process of this installation is inside the ledger.
+        fakes.ledger.busy.add(fakes.moniker + windows_lpac._LEDGER_LOCK_SUFFIX)
+
+        prepared = fakes.backend.prepare(fakes.spec)
+        identity = prepared.spawn_callback._lpac_identity
+        assert fakes.acl.get((fakes.workdir, read_execute))
+        leftover = Path(identity.private_temp) / "left-behind"
+        leftover.write_text("x", encoding = "utf-8")
+        events.clear()
+
+        prepared.cleanup()
+
+        # The tool call itself is unaffected; only the housekeeping is deferred.
+        assert prepared.cleanup_diagnostics == []
+        assert not [event for event in events if event[0] in {"revoke", "revoke-absent"}]
+        assert leftover.is_file()
+        assert Path(identity.manifest_path).is_file()
+        assert windows_lpac._SHARED_GRANTS.get(os.path.normcase(fakes.workdir)) == 1
+        assert windows_lpac._DEFERRED_CLEANUPS[fakes.moniker][0] is identity
+
+        # The other Studio finishes. The next launch takes the ledger, and the
+        # first thing it does inside it is the release that was refused.
+        fakes.ledger.busy.clear()
+        again = fakes.backend.prepare(fakes.spec)
+
+        assert not windows_lpac._DEFERRED_CLEANUPS
+        assert not Path(identity.manifest_path).exists()
+        assert not leftover.exists()
+        # And the launch that drained it still holds its own grant afterwards.
+        assert fakes.acl.get((fakes.workdir, read_execute))
+        again.cleanup()
+        assert ("revoke", fakes.workdir, False) in events
+
+
+def test_a_failed_prepare_does_not_empty_the_container_temp_without_the_ledger(
+    monkeypatch, tmp_path
+):
+    """Prepare may grant without the ledger; it may not clear a shared directory.
+
+    ``<profile>\\Temp`` is the TEMP Windows names for every concurrent launch of
+    this installation, including the launches of other Studio processes, so
+    emptying it is as destructive as a revoke and is held to the same bar.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        live = fakes.backend.prepare(fakes.spec)
+        temp = Path(live.spawn_callback._lpac_identity.private_temp)
+        live.cleanup()
+        # Nothing this process holds would stop the empty now; only the ledger.
+        assert not windows_lpac._SHARED_GRANTS
+        leftover = temp / "another-studio-is-using-this"
+        leftover.write_text("live", encoding = "utf-8")
+        fakes.ledger.busy.add(fakes.moniker + windows_lpac._LEDGER_LOCK_SUFFIX)
+
+        def refuse(_identity):
+            raise OSError(5, "the manifest could not be written")
+
+        monkeypatch.setattr(windows_lpac, "_write_manifest", refuse)
+        with pytest.raises(OSError, match = "manifest could not be written"):
+            fakes.backend.prepare(fakes.spec)
+
+        assert temp.is_dir() and leftover.is_file()
+        # And once the ledger is free again, the same failure does clear it.
+        fakes.ledger.busy.clear()
+        with pytest.raises(OSError, match = "manifest could not be written"):
+            fakes.backend.prepare(fakes.spec)
+        assert temp.is_dir() and not leftover.exists()
+
+
+def test_a_refused_ledger_is_waited_for_once_per_section_not_once_per_nesting(
+    monkeypatch, tmp_path
+):
+    """Prepare opens the ledger, and ``_ensure_persistent_grants`` opens it again.
+
+    A refusal records nothing, so the nested acquisition used to start a second
+    full budget, and the cleanup on the failure path a third, every one of them
+    holding the process-wide grants lock while it polled. One refusal per
+    section is enough: the enclosing block has already decided it does not have
+    the ledger.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        fakes.ledger.busy.add(fakes.moniker + windows_lpac._LEDGER_LOCK_SUFFIX)
+        budgets: list[str] = []
+        opener = windows_lpac._open_ledger_lock
+        monkeypatch.setattr(
+            windows_lpac,
+            "_open_ledger_lock",
+            lambda key, deadline: budgets.append(key) or opener(key, deadline),
+        )
+
+        prepared = fakes.backend.prepare(fakes.spec)
+
+        # One budget for the whole prepare, however deeply it nests the ledger.
+        assert budgets == [fakes.moniker]
+        budgets.clear()
+        prepared.cleanup()
+        # And cleanup is a section of its own, so it does get a budget of its own.
+        assert budgets == [fakes.moniker]
+        assert not windows_lpac._LEDGER_REFUSED  # nothing is left recorded after
+
+
+def test_a_deferred_cleanup_does_not_block_the_container_release_for_good(monkeypatch, tmp_path):
+    """A deferred cleanup keeps its hold, which looks exactly like a running call.
+
+    ``remove_persistent_grants`` refuses while a launch is live, and it reads
+    that from the same in-process count and the same manifest a deferred cleanup
+    deliberately leaves in place. Without draining first the refusal is both
+    wrong and permanent: no tool call is running and nothing else would ever
+    clear it.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        fakes.ledger.busy.add(fakes.moniker + windows_lpac._LEDGER_LOCK_SUFFIX)
+        prepared = fakes.backend.prepare(fakes.spec)
+        identity = prepared.spawn_callback._lpac_identity
+        prepared.cleanup()
+        assert windows_lpac._DEFERRED_CLEANUPS[fakes.moniker][0] is identity
+        assert windows_lpac._SHARED_GRANTS
+
+        # The other Studio finishes and the user asks for the container back.
+        fakes.ledger.busy.clear()
+        removed = fakes.backend.remove_persistent_grants()
+
+        assert removed == (fakes.moniker,)
+        assert not windows_lpac._DEFERRED_CLEANUPS
+        assert not windows_lpac._SHARED_GRANTS
+        assert not Path(identity.manifest_path).exists()
+
+
+def test_a_deferred_cleanup_whose_retry_fails_is_queued_again(monkeypatch, tmp_path):
+    """A drain pops the queue, so a retry that raises must be put back.
+
+    Dropping it would leave the ACE to a reconciliation that cannot run: the
+    manifest still names this process, which is alive, so every other Studio
+    skips it too.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        fakes.ledger.busy.add(fakes.moniker + windows_lpac._LEDGER_LOCK_SUFFIX)
+        prepared = fakes.backend.prepare(fakes.spec)
+        identity = prepared.spawn_callback._lpac_identity
+        prepared.cleanup()
+        fakes.ledger.busy.clear()
+        monkeypatch.setattr(
+            windows_lpac,
+            "_revoke_sid",
+            lambda path, value, *, exact = False: (_ for _ in ()).throw(OSError(5, "denied")),
+        )
+
+        first = fakes.backend.prepare(fakes.spec)
+
+        assert windows_lpac._DEFERRED_CLEANUPS[fakes.moniker][0] is identity
+        assert Path(identity.manifest_path).is_file()
+        first.cleanup()
+
+
+def test_a_ledger_lock_failure_that_is_not_contention_is_not_polled(monkeypatch, tmp_path):
+    """Only a sharing violation says "someone else holds it"; the rest end now.
+
+    Spinning the whole budget on a condition that will not clear turns every
+    destructive step on a misconfigured host into a thirty second stall before
+    the same refusal.
+    """
+    events: list[tuple] = []
+    ledger = _FakeLedger(events, busy = (_INSTALL_MONIKER,))
+    api = SimpleNamespace(kernel32 = ledger.install(SimpleNamespace()))
+    _reset_ledger_state(monkeypatch)
+    monkeypatch.setattr(windows_lpac, "_api", lambda: api)
+    monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        windows_lpac, "_ledger_lock_last_error", lambda: windows_lpac._ERROR_ACCESS_DENIED
+    )
+
+    assert windows_lpac._open_ledger_lock(_INSTALL_MONIKER, time.monotonic() + 30.0) is None
+
+    assert len(ledger.attempts) == 1
+
+
+def test_the_session_mutex_alone_is_never_accepted_as_the_ledger(monkeypatch, tmp_path):
+    """A host that answers CreateMutexW but not the lock file still fails closed.
+
+    The mutex is a same-session fast path. Treating it as the ledger left two
+    sessions of one account - a console login and an RDP login, a service and a
+    desktop app - sharing the manifests, the profile and the ACEs but not the
+    lock.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(
+        monkeypatch, tmp_path, events = events, ledger_mutex = True, ledger_lock = False
+    ) as fakes:
+        prepared = fakes.backend.prepare(fakes.spec)
+        identity = prepared.spawn_callback._lpac_identity
+        events.clear()
+
+        prepared.cleanup()
+
+        assert [event for event in events if event[0] == "mutex-wait"]
+        assert not [event for event in events if event[0] in {"revoke", "revoke-absent"}]
+        assert Path(identity.manifest_path).is_file()
+        assert windows_lpac._DEFERRED_CLEANUPS[fakes.moniker][0] is identity
+
+
+def test_the_installation_reset_refuses_a_ledger_it_could_not_take(monkeypatch, tmp_path):
+    """Removing a container is destructive, and this one is a deliberate user action.
+
+    Unlike a launch cleanup there is a caller to tell, so it is refused out loud
+    rather than deferred: the user sees "the Studio sandbox ledger ... could not
+    be taken" and can retry once the other Studio has finished.
+    """
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events) as fakes:
+        prepared = fakes.backend.prepare(fakes.spec)
+        prepared.cleanup()
+        manifest = fakes.manifests / (fakes.moniker + ".json")
+        fakes.ledger.busy.add(fakes.moniker + windows_lpac._LEDGER_LOCK_SUFFIX)
+        events.clear()
+
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "could not be taken"):
+            fakes.backend.remove_persistent_grants()
+
+        assert not [event for event in events if event[0] in {"revoke", "delete-profile"}]
+        assert manifest.is_file()
+        # Nothing was half-done, so a retry after the other Studio finishes works.
+        fakes.ledger.busy.clear()
+        assert fakes.backend.remove_persistent_grants() == (fakes.moniker,)
+
+
+def _foreign_persistent_manifest(fakes, tmp_path, moniker, *, interpreter_exists = True):
+    """A second installation of this account, with a container of its own.
+
+    An interpreter that is gone is what an uninstalled runtime looks like from
+    here, and it is the one thing reconciliation releases without going through
+    a launch identity, so it is the case that needs the right lock of its own.
+    """
+    interpreter = tmp_path / "other-python" / "python.exe"
+    os.makedirs(interpreter.parent, exist_ok = True)
+    if interpreter_exists:
+        interpreter.write_text("", encoding = "utf-8")
+    manifest = fakes.manifests / (moniker + ".json")
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "kind": "lpac-persistent",
+                "moniker": moniker,
+                "sid": fakes.sid_text,
+                "profile_folder": str(fakes.profile),
+                "interpreter": str(interpreter),
+                "granted_roots": [str(interpreter.parent)],
+                "traverse_roots": [],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    return manifest
+
+
+def test_an_all_installations_reset_locks_every_container_it_removes(monkeypatch, tmp_path):
+    """One installation's ledger orders nothing against another's processes.
+
+    ``all_installations`` locked this installation and then removed every one it
+    found, so the Studio processes that owned the others were not ordered
+    against at all. Each moniker is now locked, in sorted order so two resets
+    cannot take two of them in opposite orders, and the reset is all or nothing.
+    """
+    other = "unsloth.studio.sandbox.fedcba9876543210"
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events, ledger_busy = (other,)) as fakes:
+        prepared = fakes.backend.prepare(fakes.spec)
+        prepared.cleanup()
+        foreign = _foreign_persistent_manifest(fakes, tmp_path, other)
+        mine = fakes.manifests / (fakes.moniker + ".json")
+        events.clear()
+
+        with pytest.raises(os_sandbox.SandboxUnavailableError, match = "could not be taken"):
+            fakes.backend.remove_persistent_grants(all_installations = True)
+
+        # All or nothing: this installation's own container is untouched too.
+        assert foreign.is_file() and mine.is_file()
+        assert not [event for event in events if event[0] in {"revoke", "delete-profile"}]
+
+        fakes.ledger.busy.clear()
+        removed = fakes.backend.remove_persistent_grants(all_installations = True)
+
+    assert set(removed) == {fakes.moniker, other}
+    assert not foreign.exists() and not mine.exists()
+
+
+def test_reconciliation_locks_the_installation_each_record_belongs_to(monkeypatch, tmp_path):
+    """A pass reads every installation's manifests, so one ledger cannot cover it.
+
+    Reconciliation took this installation's ledger and then revoked ACEs and
+    emptied the container temp for records belonging to other installations,
+    unsynchronised against the very processes that own them. The moniker is in
+    every manifest, so each record is handled under its own installation's
+    ledger, and a busy one keeps its records for the next pass.
+    """
+    other = "unsloth.studio.sandbox." + "f" * 16
+    events: list[tuple] = []
+    with _lpac_fakes(monkeypatch, tmp_path, events = events, ledger_busy = (other,)) as fakes:
+        live = fakes.backend.prepare(fakes.spec)
+        identity = live.spawn_callback._lpac_identity
+        payload = json.loads(Path(identity.manifest_path).read_text(encoding = "utf-8"))
+        live.cleanup()
+        crashed = {**payload, "owner_pid": 99}
+        mine = fakes.manifests / f"unsloth.studio.launch.{'b' * 32}.json"
+        mine.write_text(json.dumps({**crashed, "launch_id": "b" * 32}), encoding = "utf-8")
+        theirs = fakes.manifests / f"unsloth.studio.launch.{'a' * 32}.json"
+        theirs.write_text(
+            json.dumps({**crashed, "launch_id": "a" * 32, "moniker": other}), encoding = "utf-8"
+        )
+        # And their installation-wide grant, whose recorded interpreter is gone.
+        # This one is released straight from the manifest rather than through a
+        # launch identity, so the pass's own lock is the only thing ordering it.
+        their_container = _foreign_persistent_manifest(
+            fakes, tmp_path, other, interpreter_exists = False
+        )
+        monkeypatch.setattr(
+            windows_lpac, "_process_identity", lambda pid = None: None if pid == 99 else (1, 2)
+        )
+        events.clear()
+
+        fakes.backend.reconcile_stale_manifests()
+
+        # This installation's record is released under this installation's lock.
+        assert not mine.exists()
+        # The other's are left whole: its owner holds its ledger, and this pass
+        # asked for that ledger rather than assuming its own covered the record.
+        assert theirs.is_file() and their_container.is_file()
+        assert not [
+            event
+            for event in events
+            if event[0] in {"revoke", "revoke-absent"}
+            and event[1] == str(tmp_path / "other-python")
+        ]
+        assert ("lock-busy", other + windows_lpac._LEDGER_LOCK_SUFFIX) in events
+        # Every grant and revoke of the pass still ran under a held lock.
+        assert _unguarded(events, "lock-open", "lock-close") == []
+        # And a pass covers every installation on the account, so it asks for
+        # each ledger without waiting: a Studio start must not stall by the wait
+        # budget once per busy installation for work the next pass does anyway.
+        busy_path = str(fakes.manifests / (other + windows_lpac._LEDGER_LOCK_SUFFIX))
+        assert fakes.ledger.attempts.count(busy_path) == 1
+
+
+def test_the_ledger_lock_waits_out_a_holder_and_then_gives_up(monkeypatch, tmp_path):
+    """There is no blocking exclusive open, so contention is polled and bounded.
+
+    Bounded matters more now than it did: the wait ends in a refusal rather than
+    in running the critical section anyway, so an unbounded one would hang a
+    tool call instead of merely racing it.
+    """
+    events: list[tuple] = []
+    ledger = _FakeLedger(events, busy = (_INSTALL_MONIKER,))
+    api = SimpleNamespace(kernel32 = ledger.install(SimpleNamespace()))
+    _reset_ledger_state(monkeypatch)
+    monkeypatch.setattr(windows_lpac, "_api", lambda: api)
+    monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path))
+
+    started = time.monotonic()
+    assert windows_lpac._open_ledger_lock(_INSTALL_MONIKER, started + 0.2) is None
+    elapsed = time.monotonic() - started
+
+    assert len(ledger.attempts) > 1  # polled, not asked once and abandoned
+    assert 0.2 <= elapsed < 10.0  # and it ends
+    # A holder that goes away inside the budget is waited out rather than refused.
+    ledger.busy.clear()
+    handle = windows_lpac._open_ledger_lock(_INSTALL_MONIKER, time.monotonic() + 5.0)
+    assert handle
+    api.kernel32.CloseHandle(handle)
+
+
+def test_the_ledger_budget_is_spent_on_other_processes_not_on_this_one(monkeypatch, tmp_path):
+    """Queueing behind this process's own lock must not consume the cross-process wait.
+
+    ``_SHARED_GRANTS_LOCK`` is held across the 14 s first-launch ACL
+    propagation. A budget started before that lock would already be gone by the
+    time the thread behind it reached the ledger, so its one attempt would find
+    a busy lock and a cleanup on that thread would fail closed over a contention
+    that was never cross-process at all.
+    """
+    events: list[tuple] = []
+    ledger = _FakeLedger(events)
+    api = SimpleNamespace(kernel32 = ledger.install(SimpleNamespace()))
+    _reset_ledger_state(monkeypatch)
+    monkeypatch.setattr(windows_lpac, "_LEDGER_WAIT_SECONDS", 0.3)
+    monkeypatch.setattr(windows_lpac, "_api", lambda: api)
+    monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path))
+    entered = threading.Event()
+    observed: list[bool] = []
+
+    def behind():
+        entered.wait(10)
+        with windows_lpac._installation_ledger(_INSTALL_MONIKER) as held:
+            observed.append(held)
+
+    worker = threading.Thread(target = behind)
+    worker.start()
+    try:
+        with windows_lpac._installation_ledger(_INSTALL_MONIKER) as held:
+            assert held
+            # The owning thread is in the key rather than implied by the grants
+            # lock, so narrowing that lock later cannot make _ledger_is_held
+            # report one thread's ledger as another thread's.
+            assert list(windows_lpac._LEDGER_DEPTH) == [
+                (threading.get_ident(), _INSTALL_MONIKER)
+            ]
+            entered.set()
+            # What a first launch of this installation costs, in miniature.
+            time.sleep(windows_lpac._LEDGER_WAIT_SECONDS * 3)
+            # And another Studio takes the lock the instant this one lets go.
+            ledger.busy.add(_INSTALL_MONIKER + windows_lpac._LEDGER_LOCK_SUFFIX)
+            queued = len(ledger.attempts)
+    finally:
+        entered.set()
+        worker.join(20)
+
+    assert observed == [False]  # the other Studio never let go, so it fails closed
+    # It spent a budget of its own doing so, rather than one already consumed by
+    # the wait for this process's lock: a single attempt is the regression.
+    assert len(ledger.attempts) - queued > 1
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "native Windows ledger lock regression")
+def test_the_ledger_lock_file_is_exclusive_on_this_host(monkeypatch, tmp_path):
+    """Only the real kernel can answer this: no-sharing excludes every opener.
+
+    The fake models the rule; this checks the host obeys it, including that the
+    exclusion survives inside one process, which is why the ledger counts its
+    own re-entrancy instead of opening the file twice.
+    """
+    monkeypatch.setattr(windows_lpac, "_manifest_root", lambda: str(tmp_path))
+    monkeypatch.setattr(windows_lpac, "_LEDGER_FILE_LOCKS", {})
+    monkeypatch.setattr(windows_lpac, "_LEDGER_DEPTH", {})
+
+    first = windows_lpac._open_ledger_lock(_INSTALL_MONIKER, time.monotonic() + 5.0)
+    assert first
+    try:
+        assert windows_lpac._open_ledger_lock(_INSTALL_MONIKER, time.monotonic() + 0.5) is None
+    finally:
+        windows_lpac._api().kernel32.CloseHandle(first)
+    again = windows_lpac._open_ledger_lock(_INSTALL_MONIKER, time.monotonic() + 5.0)
+    assert again
+    windows_lpac._api().kernel32.CloseHandle(again)
+
+
+def test_the_lpac_launcher_never_grants_a_window_station_or_desktop_right():
+    """The window-station scrutiny a reviewer asked for, applied here.
+
+    An AppContainer is launched with ``CreateProcessW`` and a security
+    capabilities attribute, never with ``CreateProcessAsUserW``, so the package
+    SID is never added to a window station or desktop DACL and there is no right
+    to narrow. The ``user32`` prototypes in this file exist only because it owns
+    ``_api()``; their caller is ``windows_restricted_token``.
+    """
+    source = Path(windows_lpac.__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    # This module also dispatches through a local bound by getattr, which an
+    # attribute walk cannot see, so the names it looks up are collected too.
+    looked_up = {
+        node.args[1].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) > 1
+        and isinstance(node.args[1], ast.Constant)
+    }
+    forbidden = {
+        "CreateProcessAsUserW",
+        "GetProcessWindowStation",
+        "GetThreadDesktop",
+        "GetUserObjectSecurity",
+        "SetUserObjectSecurity",
+    }
+    assert called.isdisjoint(forbidden)
+    assert looked_up.isdisjoint(forbidden)
+    # lpDesktop is a STARTUPINFOW field this module declares and never sets, so
+    # the container inherits the launching desktop rather than being given one.
+    assert source.count("lpDesktop") == 1
 
 
 def test_a_foreign_installations_launch_manifest_is_not_consulted(monkeypatch, tmp_path):
