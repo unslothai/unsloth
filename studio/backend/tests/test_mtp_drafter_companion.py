@@ -860,7 +860,12 @@ def test_download_mtp_keeps_a_lone_shared_head_offline(tmp_path, monkeypatch):
     assert got is not None and Path(got).name == "mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
 
 
-def _stub_hub(monkeypatch, published, *, listing_fails = False):
+def _stub_hub(
+    monkeypatch,
+    published,
+    *,
+    listing_fails = False,
+):
     """The live repo, without a network: listing plus the fetch, stubbed where
     _download_companion_gguf really calls them, so the helper's own snapshot
     lookup still runs against the files on disk."""
