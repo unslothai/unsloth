@@ -891,12 +891,19 @@ def test_llama_max_tokens_is_capped_by_the_ubatch_we_launched_with(tmp_path, mon
     assert "-ub" in backend._build_cmd("llama-server", "m.gguf", 1, use_gpu = False)
 
 
-def test_a_reported_batch_field_wins_over_the_launch_value(monkeypatch):
+def test_only_a_smaller_reported_ubatch_lowers_the_launch_value(monkeypatch):
+    """n_batch is the logical batch; llama.cpp takes min(n_batch, n_ubatch or n_batch), so
+    against the -ub this backend launches with it is never the physical limit."""
     from core.rag import embed_llama_server
 
     backend = embed_llama_server.LlamaServerBackend()
-    monkeypatch.setattr(backend, "_server_props", lambda: {"n_ubatch": 2048})
-    assert backend._server_batch() == 2048
+    ub = embed_llama_server._UBATCH_SIZE
+    monkeypatch.setattr(backend, "_server_props", lambda: {"n_ubatch": ub // 2})
+    assert backend._server_batch() == ub // 2
+    monkeypatch.setattr(backend, "_server_props", lambda: {"n_ubatch": ub * 4})
+    assert backend._server_batch() == ub
+    monkeypatch.setattr(backend, "_server_props", lambda: {"n_batch": ub * 4})
+    assert backend._server_batch() == ub
 
 
 def test_a_stale_tagged_identity_is_refused_not_answered(studio_embedder):

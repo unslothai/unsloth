@@ -1129,14 +1129,12 @@ class LlamaServerBackend:
         A non-causal (embedding) prompt longer than it is refused outright, so it bounds
         what may be advertised no matter how large the model's context is.
         """
-        props = self._server_props()
-        for key in ("n_ubatch", "n_batch"):
-            found = self._positive(props, key)
-            if found:
-                return found
-        # No build publishes either today, so the value we launched with is the only one there
-        # is. Read first anyway, so a build that starts reporting it wins over the assumption.
-        return _UBATCH_SIZE
+        # n_ubatch only: n_batch is the logical batch, and llama.cpp derives the physical one as
+        # min(n_batch, n_ubatch or n_batch), so against the -ub we launch with a reported n_batch
+        # is never the limit. No build publishes either today, leaving the launch value; read it
+        # first anyway, so a build that starts reporting it wins over the assumption.
+        found = self._positive(self._server_props(), "n_ubatch")
+        return min(found, _UBATCH_SIZE) if found else _UBATCH_SIZE
 
     def max_tokens(self, *, model_name = None) -> int | None:
         with self._operation(), self._serve_lock:
