@@ -3199,8 +3199,10 @@ _PEFT_CONVERSION_SYMBOLS = {
     ),
 }
 
-# Of those, the ones peft calls rather than merely imports. An inert body on a REAL
-# transformers would be called and answer wrongly, so those get a placeholder that says so.
+# Of those, the ones peft calls rather than merely imports. The stubs are deliberately inert: on
+# transformers <5 the whole module is ours and peft's converter never runs. An inert body on a REAL
+# transformers is a different matter, since peft would call it and get a wrong answer, so those get a
+# placeholder that says what is wrong instead.
 _PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset(
     (
         "transformers.core_model_loading.dot_natural_key",

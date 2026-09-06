@@ -353,7 +353,7 @@ def _inject_local_providers(
             # Disable thinking for local recipe inference: the <think> preamble roughly doubles tokens per row and
             # pushes answers past data_designer's json-fence regex.
             # Forwarded as chat_template_kwargs={enable_thinking: False} via extra_body so llama-server renders the
-            # template without it.
+            # template without it: llm-text columns get the latency cut, structured columns stop leaking think tags.
             params = mc.get("inference_parameters")
             if not isinstance(params, dict):
                 params = {}
