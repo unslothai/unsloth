@@ -40,8 +40,10 @@ function trainModelSourceWeight(source: LocalSource): number {
       return 3;
     case "ollama":
       return 4;
-    default:
+    case "hermes":
       return 5;
+    default:
+      return 6;
   }
 }
 

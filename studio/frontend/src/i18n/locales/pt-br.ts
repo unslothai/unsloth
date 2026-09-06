@@ -1919,6 +1919,7 @@ export const ptBR = {
       sourceHfCache: "Cache do HF",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Pasta personalizada",
       sourceLocalModel: "Modelo local",
       vramOomBadge: "OOM",

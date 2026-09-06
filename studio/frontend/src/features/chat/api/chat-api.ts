@@ -566,7 +566,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "hermes" | "custom";
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;

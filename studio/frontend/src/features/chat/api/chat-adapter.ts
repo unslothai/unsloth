@@ -2376,10 +2376,12 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
 ]);
 
 // ollama stays out by policy: local_model_resolver.py skips its scanner, so auto-loading one
-// promises an API identity that cannot be reached.
+// promises an API identity that cannot be reached. hermes is in: its scan is read-only, so the
+// resolver indexes it like LM Studio, and the name Hermes asks for resolves.
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
+  "hermes",
   "custom",
 ]);
 
