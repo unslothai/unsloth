@@ -1887,7 +1887,7 @@ def test_the_marker_oracle_follows_the_selected_pip_snapshot(tmp_path, monkeypat
 
     paired = tmp_path / "snap"
     paired.mkdir()
-    (paired / "colab_os_info.gpu.txt").write_text("Python 3.11.9\n", encoding="utf-8")
+    (paired / "colab_os_info.gpu.txt").write_text("Python 3.11.9\n", encoding = "utf-8")
     nv._set_colab_oracle_dir(paired)
     assert nv._colab_python_version() == "3.11.9"
 
