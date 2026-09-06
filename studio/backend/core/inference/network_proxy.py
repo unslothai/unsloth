@@ -84,9 +84,20 @@ MAX_TUNNELS = 64
 # Every proxy in this process shares this cap as well, so a session that opens
 # many launches at once cannot turn the backend into a few hundred threads.
 MAX_TOTAL_TUNNELS = 256
-# A ClientHello that does not fit in this many bytes is not inspected; the
-# tunnel proceeds and the audit counts it as one without a checked name.
+# A ClientHello that does not fit in this many bytes is refused: a tunnel whose
+# first message is TLS has to name the CONNECT host before it carries traffic,
+# and a handshake this large is not one a client legitimately sends (even with
+# post-quantum key shares a ClientHello stays a few kilobytes).
 MAX_CLIENT_HELLO_BYTES = 8 * 1024
+# The largest a single TLS record may be: 2^14 of plaintext plus the expansion
+# TLS 1.2 allows. Records are reassembled, so a hello spread over several of
+# them is still read; the cap above bounds the total either way.
+_MAX_TLS_RECORD_BYTES = 16 * 1024 + 2048
+# How many sockets may be waiting to be told "no" at once. A refusal writes one
+# short response, but a client that never reads holds its worker until the
+# header timeout, so without a bound every socket accepted past the tunnel cap
+# would get a thread of its own.
+MAX_REFUSAL_WORKERS = 8
 CONNECT_TIMEOUT_SECONDS = 20.0
 IDLE_TIMEOUT_SECONDS = 120.0
 HEADER_TIMEOUT_SECONDS = 15.0
@@ -359,10 +370,18 @@ def tls_trust_paths() -> tuple[str, ...]:
     interpreter's own ``etc/openssl``, which is not part of the runtime tree the
     backends bind. certifi's bundle is returned too so the environment fallback
     below has something readable to point at.
+
+    The cafile is returned as the file itself, never as its parent directory.
+    ``ssl.get_default_verify_paths`` honours the operator's ``SSL_CERT_FILE``,
+    so an operator pointing that at a bundle that happens to sit beside
+    unrelated secrets would otherwise have the whole directory exposed to the
+    sandbox. Both backends take a file here: the Linux one binds it with
+    ``--ro-bind-try`` and the macOS profile emits a ``literal`` filter, which is
+    what a single file needs.
     """
     cafile, capath = _openssl_default_paths()
     candidates = [
-        os.path.dirname(cafile) if cafile else None,
+        cafile,
         capath,
         _certifi_bundle(),
     ]
@@ -394,28 +413,81 @@ def tls_trust_environment(base: dict[str, str] | None = None) -> dict[str, str]:
 
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
 _NAT64_LOCAL_USE = ipaddress.IPv6Network("64:ff9b:1::/48")
+# Every 64:ff9b address, which is the well-known /96 plus the RFC 8215 local-use
+# space a network-specific prefix is carved out of.
+_NAT64_SPACE = ipaddress.IPv6Network("64:ff9b::/32")
 _SIX_TO_FOUR = ipaddress.IPv6Network("2002::/16")
+# Where RFC 6052 puts the four IPv4 bytes for each prefix length it allows. The
+# byte at offset 8 is reserved (it must be zero) and is skipped, so a /40 takes
+# bytes 5, 6, 7 and 9.
+_RFC6052_OFFSETS: tuple[tuple[int, ...], ...] = (
+    (4, 5, 6, 7),      # /32
+    (5, 6, 7, 9),      # /40
+    (6, 7, 9, 10),     # /48
+    (7, 9, 10, 11),    # /56
+    (9, 10, 11, 12),   # /64
+    (12, 13, 14, 15),  # /96
+)
 
 
-def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
-    """The IPv4 address an IPv6 form carries, for the forms ``ipv4_mapped`` misses.
+def _rfc6052_candidates(packed: bytes) -> tuple[ipaddress.IPv4Address, ...]:
+    """Every IPv4 address an RFC 6052 encoding could be carrying."""
+    return tuple(
+        ipaddress.IPv4Address(bytes(packed[index] for index in offsets))
+        for offsets in _RFC6052_OFFSETS
+    )
+
+
+def _embedded_ipv4_candidates(
+    ip: ipaddress.IPv6Address,
+) -> tuple[ipaddress.IPv4Address, ...]:
+    """Every IPv4 address an IPv6 form may carry, for the forms ``ipv4_mapped`` misses.
 
     ``ipv4_mapped`` only covers ``::ffff:0:0/96``. ``::7f00:1`` (deprecated
     IPv4-compatible) and ``64:ff9b::7f00:1`` (the RFC 6052 NAT64 form of
     127.0.0.1) are both reported global by ``ipaddress``, so on a host with a
     NAT64 gateway an allowlisted name could resolve back to loopback.
+
+    RFC 6052 also allows network-specific prefixes of /32, /40, /48, /56 and
+    /64, each of which embeds the IPv4 address at a different offset, so inside
+    the 64:ff9b space every offset is decoded and the caller refuses the address
+    when any of them is not a public unicast IPv4.
+
+    This is deliberately conservative in one direction and deliberately narrow
+    in the other. Narrow, because an operator's network-specific prefix can be
+    any global /32 to /64: decoding every IPv6 address at every offset would
+    refuse ordinary addresses whose bytes 4 to 7 happen to be zero (almost every
+    address written with a "::"), so only the 64:ff9b space, which exists for
+    NAT64 and nothing else, is decoded that way. Conservative, because inside
+    that space a single bad decode at any offset refuses the address even though
+    only one offset is the real one; a false refusal there costs a tunnel to a
+    NAT64 address, while a false accept is a path back to loopback or the LAN.
     """
+    mapped = ip.ipv4_mapped
+    if mapped is not None:
+        return (mapped,)
     packed = ip.packed
     if packed[:12] == b"\x00" * 12:
-        return ipaddress.IPv4Address(packed[12:16])
+        return (ipaddress.IPv4Address(packed[12:16]),)
     if ip in _NAT64_WELL_KNOWN:
-        return ipaddress.IPv4Address(packed[12:16])
-    if ip in _NAT64_LOCAL_USE:
-        # RFC 6052 skips the byte at offset 8 for prefixes shorter than /96.
-        return ipaddress.IPv4Address(bytes((packed[6], packed[7], packed[9], packed[10])))
+        # The well-known prefix is defined as a /96 only, so there is exactly
+        # one place its IPv4 address can be.
+        return (ipaddress.IPv4Address(packed[12:16]),)
+    if ip in _NAT64_SPACE or ip in _NAT64_LOCAL_USE:
+        return _rfc6052_candidates(packed)
     if ip in _SIX_TO_FOUR:
-        return ipaddress.IPv4Address(packed[2:6])
-    return None
+        return (ipaddress.IPv4Address(packed[2:6]),)
+    return ()
+
+
+def _embedded_ipv4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """The first IPv4 address ``_embedded_ipv4_candidates`` finds, or None."""
+    candidates = _embedded_ipv4_candidates(ip)
+    return candidates[0] if candidates else None
+
+
+def _public_unicast(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(ip.is_global) and not ip.is_multicast
 
 
 def public_address(address: str) -> bool:
@@ -425,50 +497,81 @@ def public_address(address: str) -> bool:
     except ValueError:
         return False
     if isinstance(ip, ipaddress.IPv6Address):
-        mapped = ip.ipv4_mapped
-        if mapped is None:
-            mapped = _embedded_ipv4(ip)
-        if mapped is not None:
-            ip = mapped
-    return bool(ip.is_global) and not ip.is_multicast
+        candidates = _embedded_ipv4_candidates(ip)
+        if candidates:
+            return all(_public_unicast(candidate) for candidate in candidates)
+    return _public_unicast(ip)
+
+
+def _reassemble_handshake(data: bytes) -> tuple[str, bytes]:
+    """Join the handshake bytes of consecutive TLS records into one message.
+
+    A ClientHello may be split over several records, and each record carries its
+    own five byte header, so the handshake message has to be reassembled before
+    it can be parsed. Returns ``(status, message)`` with status ``complete`` (a
+    whole handshake message, trimmed to its declared length), ``incomplete``
+    (the records so far do not finish it) or ``malformed`` (these bytes are TLS
+    records but they will never yield a ClientHello).
+    """
+    handshake = bytearray()
+    position = 0
+    while True:
+        if len(data) - position < 5:
+            return ("incomplete", bytes(handshake))
+        if data[position] != 0x16:
+            # Another content type before the ClientHello finished: this is a
+            # TLS stream, but not one whose first message names a host.
+            return ("malformed", bytes(handshake))
+        record_length = int.from_bytes(data[position + 3 : position + 5], "big")
+        if record_length == 0 or record_length > _MAX_TLS_RECORD_BYTES:
+            return ("malformed", bytes(handshake))
+        end = position + 5 + record_length
+        if end > len(data):
+            return ("incomplete", bytes(handshake))
+        handshake += data[position + 5 : end]
+        position = end
+        if len(handshake) < 4:
+            continue
+        if handshake[0] != 0x01:  # not a ClientHello
+            return ("malformed", b"")
+        handshake_length = int.from_bytes(handshake[1:4], "big")
+        if handshake_length > MAX_CLIENT_HELLO_BYTES:
+            return ("malformed", b"")
+        if len(handshake) >= 4 + handshake_length:
+            return ("complete", bytes(handshake[: 4 + handshake_length]))
 
 
 def _client_hello_sni(data: bytes) -> tuple[str, str]:
-    """Read the SNI out of a TLS ClientHello.
+    """Read the SNI out of a TLS ClientHello, however its records are cut up.
 
     Returns ``(status, name)`` where status is one of ``incomplete`` (more bytes
-    may decide it), ``not-tls`` (never will), ``absent`` (a ClientHello with no
-    server name) or ``found``. The parse is deliberately total: any surprise is
-    ``not-tls``, which lets the tunnel through rather than breaking a client
-    speaking something the sandbox is allowed to speak.
+    may decide it), ``not-tls`` (these bytes are not a TLS handshake at all),
+    ``malformed`` (TLS records that will never yield a readable ClientHello),
+    ``absent`` (a ClientHello with no server name) or ``found``.
+
+    The parse is deliberately total, but a surprise inside a TLS stream is
+    ``malformed`` and not ``not-tls``: reporting a split or corrupt handshake as
+    "not TLS" let a client reach an allowlisted address with any server name at
+    all simply by writing its ClientHello in two records.
     """
-    if len(data) < 5:
+    if not data:
         return ("incomplete", "")
     if data[0] != 0x16:  # not a TLS handshake record
         return ("not-tls", "")
-    record_length = int.from_bytes(data[3:5], "big")
-    if record_length == 0 or record_length > MAX_CLIENT_HELLO_BYTES:
-        return ("not-tls", "")
-    if len(data) < 5 + record_length:
-        return ("incomplete", "")
-    body = data[5 : 5 + record_length]
+    status, message = _reassemble_handshake(data)
+    if status != "complete":
+        return (status, "")
+    hello = message[4:]
     try:
-        if len(body) < 4 or body[0] != 0x01:  # not a ClientHello
-            return ("not-tls", "")
-        handshake_length = int.from_bytes(body[1:4], "big")
-        hello = body[4 : 4 + handshake_length]
-        if len(hello) < handshake_length:
-            # Fragmented across records; do not guess at a name.
-            return ("not-tls", "")
         pos = 2 + 32  # legacy_version and random
         if len(hello) < pos + 1:
-            return ("not-tls", "")
+            return ("malformed", "")
         pos += 1 + hello[pos]  # legacy_session_id
         if len(hello) < pos + 2:
-            return ("not-tls", "")
+            return ("malformed", "")
         pos += 2 + int.from_bytes(hello[pos : pos + 2], "big")  # cipher_suites
         if len(hello) < pos + 1:
-            return ("not-tls", "")
+            return ("malformed", "")
         pos += 1 + hello[pos]  # legacy_compression_methods
         if len(hello) < pos + 2:
             return ("absent", "")
@@ -495,7 +598,7 @@ def _client_hello_sni(data: bytes) -> tuple[str, str]:
             return ("absent", "")
         return ("absent", "")
     except (IndexError, ValueError):  # pragma: no cover - the slicing above is total
-        return ("not-tls", "")
+        return ("malformed", "")
 
 
 def _default_resolver(host: str, port: int) -> list[str]:
@@ -525,6 +628,7 @@ class NetworkAudit:
         self._denied: dict[tuple[str, str, str], int] = {}
         self._overflow = 0
         self._sni_absent = 0
+        self._non_tls = 0
 
     def record_allowed(self, host: str) -> None:
         with self._lock:
@@ -537,6 +641,15 @@ class NetworkAudit:
         """A tunnel whose first bytes carried no server name to check."""
         with self._lock:
             self._sni_absent += 1
+
+    def record_non_tls(self) -> None:
+        """A tunnel whose first bytes were not a TLS handshake at all.
+
+        Such a tunnel is let through, as it always was, but it is counted: it is
+        the one path where the server name check has nothing to check.
+        """
+        with self._lock:
+            self._non_tls += 1
 
     def record_denied(self, host: str, reason: str, kind: str = POLICY_REFUSAL) -> None:
         # Sanitize here, not at the point of display: this is the boundary where
@@ -558,6 +671,7 @@ class NetworkAudit:
             entries = list(self._denied.items())
             overflow = self._overflow
             sni_absent = self._sni_absent
+            non_tls = self._non_tls
         denied: dict[str, dict[str, object]] = {}
         for (host, reason, kind), count in entries:
             record = denied.get(host)
@@ -578,6 +692,7 @@ class NetworkAudit:
             "denied": denied,
             "unrecorded": overflow,
             "sni_absent": sni_absent,
+            "non_tls": non_tls,
         }
 
     def denied_entries(self) -> list[tuple[str, int, str, str]]:
@@ -629,6 +744,7 @@ class AllowlistProxy:
         idle_timeout: float = IDLE_TIMEOUT_SECONDS,
         header_timeout: float = HEADER_TIMEOUT_SECONDS,
         max_tunnels: int = MAX_TUNNELS,
+        max_refusal_workers: int = MAX_REFUSAL_WORKERS,
     ) -> None:
         self.allowlist = allowlist
         self.credential = credential or ProxyCredential.mint()
@@ -646,6 +762,10 @@ class AllowlistProxy:
         # hours and could starve the launch of every slot.
         self._header_timeout = header_timeout
         self._slots = threading.BoundedSemaphore(max_tunnels)
+        # Refusals get their own small pool. They are not tunnels, so they must
+        # not take a tunnel slot, and they are not free either: each one can sit
+        # in ``sendall`` until the header timeout.
+        self._refusal_slots = threading.BoundedSemaphore(max(1, max_refusal_workers))
         self._listener: socket.socket | None = None
         self._thread: threading.Thread | None = None
         self._closed = threading.Event()
@@ -769,21 +889,51 @@ class AllowlistProxy:
         ``accept`` hands back a blocking socket with no timeout, so a client
         advertising a zero receive window would otherwise wedge the single
         accept thread inside ``sendall`` and stop the proxy serving anyone.
+
+        The workers are capped. Past the cap the socket is closed with no reply,
+        which is the only answer left that neither blocks the accept loop nor
+        adds a thread: a flood arriving after the tunnel cap must cost the
+        backend a bounded number of threads, not one per connection.
         """
         try:
             client.settimeout(self._header_timeout)
         except OSError:
             pass
+        if not self._refusal_slots.acquire(blocking = False):
+            logger.debug("Tool network proxy closed a connection without a refusal reply")
+            try:
+                client.close()
+            except OSError:
+                pass
+            return
         try:
             threading.Thread(
-                target = self._refuse,
+                target = self._refusal_worker,
                 args = (client, status, reason),
                 name = "studio-tool-network-refuse",
                 daemon = True,
             ).start()
         except BaseException as exc:
+            # Never answer inline: that is the accept thread, and this client may
+            # never read.
             logger.warning("Tool network proxy could not start a refusal worker: %s", exc)
+            self._release_refusal_slot()
+            try:
+                client.close()
+            except OSError:
+                pass
+
+    def _refusal_worker(self, client: socket.socket, status: int, reason: str) -> None:
+        try:
             self._refuse(client, status, reason)
+        finally:
+            self._release_refusal_slot()
+
+    def _release_refusal_slot(self) -> None:
+        try:
+            self._refusal_slots.release()
+        except ValueError:  # pragma: no cover - a release without an acquire
+            logger.warning("Tool network proxy released a refusal slot twice")
 
     def _release_slots(self) -> None:
         for semaphore in (self._slots, self.global_slots):
@@ -848,6 +998,12 @@ class AllowlistProxy:
         lands on for a different site entirely (domain fronting). A client that
         sends no server name is let through, since that is legal, but the audit
         counts it so the gap is visible.
+
+        A stream that begins with a TLS handshake record must produce a complete
+        ClientHello within the byte cap and the header deadline, whatever record
+        boundaries it uses. Treating a handshake split across records as "not
+        TLS" was the whole bypass: the tunnel was then forwarded unchecked, so
+        any server name reached any allowlisted address.
         """
         buffer = pipelined
         deadline = time.monotonic() + self._header_timeout
@@ -869,8 +1025,24 @@ class AllowlistProxy:
             if name.strip().rstrip(".").lower() != host:
                 raise _TunnelAborted(host, "SNI does not match the CONNECT host")
             return buffer
-        self.audit.record_sni_absent()
-        return buffer
+        if status == "absent":
+            self.audit.record_sni_absent()
+            return buffer
+        if status == "not-tls":
+            # Never a TLS handshake, so there is no name to check; the tunnel is
+            # allowed as it always was, and counted.
+            self.audit.record_non_tls()
+            return buffer
+        if not buffer:
+            # The client opened the tunnel and said nothing. Nothing was checked
+            # and nothing was sent, so this is the same gap as a hello without a
+            # server name.
+            self.audit.record_sni_absent()
+            return buffer
+        # "incomplete" here means the cap, the deadline or an EOF ended the wait,
+        # and "malformed" that the records will never yield a hello. Either way a
+        # TLS stream did not name its host, which is a refusal and not an allow.
+        raise _TunnelAborted(host, "the TLS ClientHello did not name the CONNECT host")
 
     def _refuse(self, client: socket.socket, status: int, reason: str) -> None:
         reasons = {

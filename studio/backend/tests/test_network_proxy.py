@@ -11,6 +11,7 @@ where the tunnel has to complete. The rule itself gets its own test.
 
 from __future__ import annotations
 
+import os
 import sys
 import base64
 import socket
@@ -619,6 +620,74 @@ def test_the_tunnel_cap_answers_503_records_it_and_keeps_accepting(upstream):
         instance.close()
 
 
+def test_refusals_past_the_tunnel_cap_use_a_bounded_pool_and_keep_accepting(
+    monkeypatch, upstream
+):
+    """A burst past the cap must cost a bounded number of threads, not one each."""
+    gate = threading.Event()
+    entered = threading.Semaphore(0)
+
+    def blocking_refuse(self, client, status, reason):
+        entered.release()
+        gate.wait(10)
+        try:
+            client.close()
+        except OSError:
+            pass
+
+    instance = _instance(upstream, max_tunnels = 1, max_refusal_workers = 2)
+    instance.listen_loopback()
+    clients: list[socket.socket] = []
+    refused: list[socket.socket] = []
+    try:
+        held, response = _request(
+            instance, _connect_head(f"upstream.test:{upstream.port}", instance.credential)
+        )
+        clients.append(held)
+        assert response.startswith(b"HTTP/1.1 200")
+        # Every refusal from here on blocks, standing in for a client that never
+        # reads its 503 and holds its worker until the header timeout.
+        monkeypatch.setattr(AllowlistProxy, "_refuse", blocking_refuse)
+        for _ in range(12):
+            refused.append(socket.create_connection(("127.0.0.1", instance.port), timeout = 5))
+        clients.extend(refused)
+        assert entered.acquire(timeout = 5)
+        assert entered.acquire(timeout = 5)
+        time.sleep(0.5)
+        workers = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == "studio-tool-network-refuse" and thread.is_alive()
+        ]
+        assert len(workers) == 2, [thread.name for thread in workers]
+        # The rest were closed with no reply rather than each taking a thread.
+        closed = 0
+        for client in refused:
+            client.settimeout(2)
+            try:
+                if client.recv(4096) == b"":
+                    closed += 1
+            except OSError:
+                closed += 1
+        assert closed >= 10
+        # The listener is still accepting: the accept loop never blocked.
+        late = socket.create_connection(("127.0.0.1", instance.port), timeout = 5)
+        clients.append(late)
+        late.settimeout(2)
+        try:
+            late.recv(4096)
+        except OSError:
+            pass
+    finally:
+        gate.set()
+        for client in clients:
+            try:
+                client.close()
+            except OSError:
+                pass
+        instance.close()
+
+
 def test_two_proxies_share_the_process_wide_tunnel_cap(monkeypatch, upstream):
     monkeypatch.setattr(AllowlistProxy, "global_slots", threading.BoundedSemaphore(1))
     first = _instance(upstream)
@@ -822,6 +891,28 @@ def test_public_address_judges_every_embedded_ipv4_form(address, expected):
     assert public_address(address) is expected
 
 
+@pytest.mark.parametrize(
+    "address, expected",
+    [
+        # RFC 6052 network-specific prefixes put the IPv4 address at a different
+        # offset for every prefix length, and the byte at offset 8 is skipped.
+        # Each of these hides 127.0.0.1 at one offset while the /48 offset the
+        # proxy used to read alone holds a routable address.
+        ("64:ff9b:1:ffff::7f00:1", False),        # /96 offset
+        ("64:ff9b:1:5db8:d8:2200:7f00:1", False), # /96, /48 reads 93.184.216.34
+        ("64:ff9b:1:5db8:7f:0:100:0", False),     # /64, /48 reads 93.184.127.0
+        ("64:ff9b:1:a00:1::", False),             # 10.0.0.1 at the /48 offset
+        # Ordinary global IPv6 is untouched: nothing outside the 64:ff9b space
+        # is decoded as an embedded IPv4 address.
+        ("2001:4860:4860::8888", True),
+        ("2a00:1450:4001:80e::200e", True),
+        ("2606:4700::6810:84e5", True),
+    ],
+)
+def test_public_address_checks_every_rfc6052_prefix_length(address, expected):
+    assert public_address(address) is expected
+
+
 # --- server name checking ----------------------------------------------------
 
 
@@ -844,6 +935,17 @@ def _client_hello(server_name: str | None) -> bytes:
     )
     handshake = b"\x01" + len(body).to_bytes(3, "big") + body
     return b"\x16\x03\x01" + len(handshake).to_bytes(2, "big") + handshake
+
+
+def _split_hello(hello: bytes, at: int) -> bytes:
+    """The same handshake message, cut into two TLS records at ``at`` bytes."""
+    handshake = hello[5:]
+    first, second = handshake[:at], handshake[at:]
+    assert first and second
+    return (
+        b"\x16\x03\x01" + len(first).to_bytes(2, "big") + first
+        + b"\x16\x03\x01" + len(second).to_bytes(2, "big") + second
+    )
 
 
 def _tunnel(proxy: AllowlistProxy, upstream, host: str) -> socket.socket:
@@ -897,6 +999,83 @@ def test_a_client_hello_without_a_server_name_is_allowed_and_counted(proxy, upst
     assert proxy.audit.summary()["denied"] == {}
 
 
+def test_a_client_hello_split_across_records_cannot_hide_a_mismatched_name(proxy, upstream):
+    """The bypass: two records instead of one used to be read as "not TLS"."""
+    client = _tunnel(proxy, upstream, "upstream.test")
+    fragments = _split_hello(_client_hello("evil.example"), 20)
+    client.sendall(fragments[:25])
+    time.sleep(0.1)
+    client.sendall(fragments[25:])
+    client.settimeout(5)
+    try:
+        assert client.recv(4096) == b"", "a fragmented ClientHello must not reach the upstream"
+    except OSError:
+        pass
+    client.close()
+    denied = proxy.audit.summary()["denied"]
+    assert denied["upstream.test"]["reason"] == "SNI does not match the CONNECT host"
+
+
+def test_a_client_hello_split_across_records_naming_the_host_still_tunnels(proxy, upstream):
+    client = _tunnel(proxy, upstream, "upstream.test")
+    fragments = _split_hello(_client_hello("upstream.test"), 20)
+    client.sendall(fragments[:25])
+    time.sleep(0.1)
+    client.sendall(fragments[25:])
+    client.settimeout(5)
+    echoed = b""
+    while len(echoed) < len(fragments):
+        chunk = client.recv(4096)
+        assert chunk, "the fragmented ClientHello never reached the upstream"
+        echoed += chunk
+    assert echoed == fragments, "every byte already read must be forwarded, in order"
+    client.close()
+    assert proxy.audit.summary()["denied"] == {}
+    assert proxy.audit.summary()["sni_absent"] == 0
+
+
+def test_a_tls_stream_that_never_completes_its_hello_is_refused(upstream):
+    instance = _instance(upstream, header_timeout = 1.0)
+    instance.listen_loopback()
+    try:
+        client = _tunnel(instance, upstream, "upstream.test")
+        # A handshake record that promises 64 bytes and then stops.
+        client.sendall(b"\x16\x03\x01\x00\x40" + b"\x01\x00\x00\x3c" + b"\x00" * 4)
+        client.settimeout(5)
+        started = time.monotonic()
+        try:
+            assert client.recv(4096) == b""
+        except OSError:
+            pass
+        assert time.monotonic() - started < 5.0, "the header deadline must end the wait"
+        client.close()
+        denied = instance.audit.summary()["denied"]
+        assert denied["upstream.test"]["reason"] == (
+            "the TLS ClientHello did not name the CONNECT host"
+        )
+        assert upstream.connections == 1
+    finally:
+        instance.close()
+
+
+def test_a_stream_that_is_not_tls_is_tunnelled_and_counted(proxy, upstream):
+    client = _tunnel(proxy, upstream, "upstream.test")
+    payload = b"SSH-2.0-OpenSSH_9.6\r\n"
+    client.sendall(payload)
+    client.settimeout(5)
+    echoed = b""
+    while len(echoed) < len(payload):
+        chunk = client.recv(4096)
+        assert chunk
+        echoed += chunk
+    assert echoed == payload
+    client.close()
+    summary = proxy.audit.summary()
+    assert summary["non_tls"] == 1
+    assert summary["sni_absent"] == 0
+    assert summary["denied"] == {}
+
+
 def test_bytes_pipelined_with_the_connect_head_reach_the_upstream(proxy, upstream):
     hello = _client_hello("upstream.test")
     client = socket.create_connection(("127.0.0.1", proxy.port), timeout = 5)
@@ -941,16 +1120,41 @@ def test_tls_trust_environment_prefers_the_host_store_and_falls_back_to_certifi(
     assert network_proxy.tls_trust_paths() == (str(bundle),)
     # An operator's own setting wins.
     assert network_proxy.tls_trust_environment({"SSL_CERT_FILE": "/mine.pem"}) == {}
-    # The host store, when it exists, is named and exposed (its directory) together
-    # with certifi; the sandbox may not see the store otherwise (macOS framework builds).
+    # The host store, when it exists, is named and exposed (the file itself, never
+    # its directory) together with certifi; the sandbox may not see the store
+    # otherwise (macOS framework builds).
     monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: present)
     assert network_proxy.tls_trust_environment() == {
         "SSL_CERT_FILE": str(host_file),
         "REQUESTS_CA_BUNDLE": str(host_file),
     }
-    assert network_proxy.tls_trust_paths() == (str(host_file.parent), str(bundle))
+    assert network_proxy.tls_trust_paths() == (str(host_file), str(bundle))
     # No certifi and no store: nothing to point at.
     monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: missing)
     monkeypatch.setitem(sys.modules, "certifi", None)
     assert network_proxy.tls_trust_environment() == {}
     assert network_proxy.tls_trust_paths() == ()
+
+
+def test_an_operator_ssl_cert_file_exposes_the_bundle_and_nothing_beside_it(
+    monkeypatch, tmp_path
+):
+    """``SSL_CERT_FILE`` is an operator setting, so the file's neighbours are not ours."""
+    store = tmp_path / "operator"
+    store.mkdir()
+    cafile = store / "corporate-roots.pem"
+    cafile.write_text("ca")
+    secret = store / "id_rsa"
+    secret.write_text("private key")
+    monkeypatch.setenv("SSL_CERT_FILE", str(cafile))
+    monkeypatch.delenv("SSL_CERT_DIR", raising = False)
+
+    paths = network_proxy.tls_trust_paths()
+    assert str(cafile) in paths
+    assert str(store) not in paths
+    assert str(secret) not in paths
+    for path in paths:
+        assert not os.path.isdir(path) or not str(secret).startswith(
+            path.rstrip(os.sep) + os.sep
+        ), f"{path} would expose {secret}"
+    assert network_proxy.tls_trust_environment()["SSL_CERT_FILE"] == str(cafile)
