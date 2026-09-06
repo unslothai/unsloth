@@ -72,7 +72,11 @@ def _fake_llama_backend(
     return llama
 
 
-def _patch_backends(inf, llama, voice = None):
+def _patch_backends(
+    inf,
+    llama,
+    voice = None,
+):
     """Stub core.inference + routes.inference modules so the lazy imports inside
     training_vram resolve to fakes (avoids importing torch-heavy backends).
     ``voice`` is the voice-slot llama-server; empty unless a test loads one."""
