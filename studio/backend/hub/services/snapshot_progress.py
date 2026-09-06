@@ -45,7 +45,7 @@ SnapshotExpectedFilesResolver = Callable[
 # Supplied per repo kind, so this module keeps knowing nothing about quant labels.
 VariantFileMatcher = Callable[[str], bool]
 
-# One progress log per 10% step per job, so an active download reports progress
+# One progress log per 10% step per job, so an active download reports progress without emitting a line on every poll.
 _progress_step_lock = threading.Lock()
 _last_progress_step: dict[str, int] = {}
 
@@ -494,7 +494,8 @@ def compute_snapshot_progress(
 
     readings: list[tuple[int, int, Optional[str], bool, Optional[bool]]] = []
     # The enumeration suppresses OSError per root, so an unreadable cache root came back as "no dirs",
-    # indistinguishable from a wiped cache, which hydration retires the job on.
+    # indistinguishable from a wiped cache, which hydration retires the job on. Collected so the empty
+    # answer below can say unknown instead of absent.
     scan_errors: list = []
     cache_dirs = (
         preferred_repo_cache_dirs(
@@ -515,8 +516,9 @@ def compute_snapshot_progress(
         # downloading the WHOLE file, so summing them overshoots.
         partial_bytes: dict[str, int] = {}
         completed_hashes: set[str] = set()
-        # A partial attributable to no target is not evidence for this variant, nor against it while the
-        # hashes are unresolved, and the by-name scan cannot see it.
+        # A partial attributable to no target is not evidence for this variant, since it may be a
+        # sibling quant's, nor against it while the hashes are unresolved, and the by-name scan cannot
+        # see it because a partial is not linked into a snapshot yet.
         unattributable_partial = False
         cache_path = hf_cache_scan.resolve_hf_cache_realpath(entry)
         blobs_dir = entry / "blobs"

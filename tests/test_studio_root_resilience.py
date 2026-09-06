@@ -154,5 +154,4 @@ def test_search_roots_default_mode_uses_legacy_only(tmp_path):
     legacy = home / ".unsloth" / "studio"
     legacy.mkdir(parents = True)
     roots = _exec_search_roots_block(home = home, studio_root_value = legacy, resolve_raises = False)
-    # Default mode: only legacy_llama.
     assert roots == [home / ".unsloth" / "llama.cpp"]

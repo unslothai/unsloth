@@ -231,8 +231,8 @@ def _is_payload_file(name: str) -> bool:
 
 
 def _is_present_payload_file(path: Path) -> bool:
-    # existence is not enough: a zero-byte file, and a blobs/ link whose blob was pruned, both look like
-    # payload and are not.
+    # existence is not enough: _empty_payload covers both shapes that look like payload and are not,
+    # a zero-byte file and a blobs/ link whose blob was pruned.
     if not _is_payload_file(path.name):
         return False
     if local_options._empty_payload(path):

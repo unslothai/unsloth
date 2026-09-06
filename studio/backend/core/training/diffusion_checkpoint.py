@@ -937,8 +937,11 @@ def _write_text(path: Path, text: str) -> None:
     _fsync_file(path)
 
 
-# Windows' _commit needs write access, and network/container filesystems return EINVAL/ENOTSUP for
-# fsync; neither says the data did not make it.
+# errno values treated as "this platform or filesystem will not flush that handle": Windows' _commit
+# needs write access, and network/container filesystems return EINVAL/ENOTSUP for fsync. EBADF is the
+# exception and is NOT such a signal -- Windows collapses genuine FlushFileBuffers failures into it
+# too, so it is here as a deliberate tradeoff, not because the data is known to have made it. See
+# _fsync_file for what is left guarding that case.
 _FSYNC_UNSUPPORTED = frozenset(
     code
     for code in (
@@ -1054,7 +1057,8 @@ def _prune_staging(root: Path) -> None:
     except OSError:
         return
 
-    # Newest first, so a stacked slot gets its immediate predecessor back rather than whichever
+    # Newest first, so a stacked slot gets its immediate predecessor back rather than whichever entry the filesystem
+    # happened to list first.
     def _written_at(path: Path) -> float:
         try:
             return path.stat().st_mtime

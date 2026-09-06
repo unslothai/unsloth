@@ -932,7 +932,7 @@ class _Turn:
         # calls. A lone announcement the provider opened is kept (a zero-parameter tool looks like that). Its metadata
         # goes to the call it was mistaken for: Gemini stows a thought signature there and rejects a replay without one.
         for key, waiting in self.pending_extra.items():
-            # No object ever came, so the repeated name was that call's after all and so is the metadata that rode it
+            # No object ever came, so the repeated name was that call's after all and so is the metadata that rode it.
             held = self.by_index.get(key)
             if held is not None and waiting:
                 held["extra_content"] = {**held.get("extra_content", {}), **waiting}
@@ -1705,7 +1705,7 @@ async def stream_with_studio_tools(
                         asyncio.to_thread(_advance_tool_stream, tool_stream, outcome)
                     )
                     # wait, not await: cancelling this coroutine must leave the worker pending so the drain below can
-                    # still join it
+                    # still join it.
                     await asyncio.wait({step_task})
                     event = step_task.result()
                     step_task = None

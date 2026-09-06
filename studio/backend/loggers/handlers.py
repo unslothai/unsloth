@@ -38,7 +38,8 @@ def _env_int(name: str, default: int) -> int:
 # Collapse identical GET/2xx logs within the window, since the SPA fans one invalidation into many
 # list fetches; mutations and errors always log.
 _ACCESS_LOG_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", 300)
-# Liveness/UI polls whose line means only "still polling"; collapse to a longer
+# Liveness/UI polls whose line means only "still polling"; collapse to a longer heartbeat. First hit and errors still
+# log. 0 = off.
 _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000)
 # The desktop watchdog probe rounds are ~19s apart, so a 10s window that stamps only on emit would
 # collapse nothing; it gets its own, wider window.
@@ -288,7 +289,7 @@ class LoggingMiddleware:
         if window_ms <= 0:
             return False
         # The liveness group shares one bucket, so a burst logs once rather than once per path; only the
-        # query-less form joins it.
+        # query-less form joins it, so a parameterized call still gets its own status and latency line.
         key = _LIVENESS_DEDUP_KEY if is_liveness else (method, norm, query, status_code)
         last = self._last_log.get(key)
         if last is not None and (now - last) * 1000.0 < window_ms:

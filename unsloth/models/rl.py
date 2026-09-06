@@ -1519,7 +1519,8 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 finally:
                     container[key] = previous
             # evaluate() with no split falls back to the one stored on the trainer, which a caller can install
-            # after construction, where the constructor's cap can no longer see it.
+            # after construction, where the constructor's cap can no longer see it. Every eval during
+            # training comes through here too.
             stored = getattr(self, keyword, None) if keyword == "eval_dataset" else None
             if stored is None:
                 return original(self, *args, **kwargs)
@@ -1842,7 +1843,9 @@ def _install_grpo_hidden_states_forward_wrapper(model):
                     raise
                 return forward_without_hidden_states()
             # The signature advertised the parameter but the forward refuses the value: retry without the
-            # minimisation, through the same fallback, rather than lose hidden states over it.
+            # minimisation, through the same fallback, rather than lose hidden states over it: a forward that
+            # splats **kwargs into a sub-module can refuse the logits limiter and the hidden states one after
+            # the other.
             forward_kwargs.pop(logits_kwarg, None)
             logits_kwarg = None
             try:
@@ -2432,14 +2435,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _cols = getattr(_ds, 'column_names', None)\n"
                     "            if isinstance(_cols, dict):\n"
                     "                _cols = [_c for _v in _cols.values() for _c in (_v or [])]\n"
-                    # A packed split is out: TRL skips truncation when packing, and cutting input_ids under a
+                    # A packed split is out: TRL skips truncation when packing
+                    # (`if args.max_length is not None and not packing`), and cutting input_ids under a
                     # seq_lengths that still describes the old row is worse than not cutting.
                     "            if 'seq_lengths' in (_cols or ()): return False\n"
                     "            return bool(_cols) and 'input_ids' in _cols\n"
                     "        except Exception:\n"
                     "            return False\n"
                     # Read a row BACK: every predicate above is a guess about what the dataset will do, and this is the
-                    # one check that observes it.
+                    # one check that observes it. A split with no input_ids is raw, so prep tokenizes it with
+                    # the cap and it is fine.
                     "    _unsloth_cap = args.max_length\n"
                     # TRL slices [-max_length:] for keep_end, which callers use when the completion sits at the tail of
                     # a long prompt; always keeping the prefix trained on the wrong half of every row.
@@ -2450,8 +2455,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "    _unsloth_known_mode = _unsloth_truncation_mode in ('keep_start', 'keep_end')\n"
                     "    _unsloth_slice = slice(-_unsloth_cap, None) if _unsloth_keep_end else slice(None, _unsloth_cap)\n"
                     # Resolved outside the truncation block, since the fallback reads it even under
-                    # skip_prepare_dataset. eval_packing is separate from packing, so packing=False with
-                    # eval_packing=True lands here and TRL packs the eval split instead of truncating it.
+                    # skip_prepare_dataset. eval_packing is separate from packing:
+                    #     packing = args.packing if args.eval_packing is None else args.eval_packing
+                    # (sft_trainer.py), so packing=False with eval_packing=True reaches this branch, which is
+                    # gated on `not args.packing`. TRL then packs the eval split instead of truncating it, and
+                    # every strategy owns the overflow: `wrapped` concatenates the stream before chunking,
+                    # `bfd_split` splits an overlength example into more chunks. Cutting rows at the cap first
+                    # throws that away.
                     "    _unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')\n"
                     "    _unsloth_completion_only = getattr(args, 'completion_only_loss', None)\n"
                     # Column names first, a row only if free: on a one-shot stream this probe ate the first
@@ -2481,9 +2491,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # Parked on args so the late evaluate()/predict() cap reads the SAME value: it resolves from
                     # the train schema, and disagreeing with the collator leaves an all -100 row in.
                     "    args._unsloth_completion_only_loss = _unsloth_completion_only\n"
-                    # EVERY row, not the first: a short row 0 before a long row 5000 read as within the cap. A
-                    # map-style split is read in full; a stream cannot be rewound, so a bounded prefix is all
-                    # there is and the check says so.
+                    # EVERY row, not the first: a short row 0 before a long row 5000 read as within the cap, and
+                    # in the fallback branch nothing downstream truncates it. A map-style split is read in
+                    # full; a stream cannot be rewound, so a bounded prefix is all there is and the check says
+                    # so.
                     "    _UNSLOTH_SCAN_ROWS = 1024\n"
                     "    def _unsloth_within_cap(_ds):\n"
                     "        if _ds is None: return True\n"
@@ -2523,7 +2534,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "    if not _unsloth_skip_prepare:\n"
                     # Honour TRL's preparation map_kwargs so a large pre-tokenized dataset is not rewritten
                     # single-process, through the same helper as every map site: the config layer writes serial as
-                    # dataset_num_proc = 1, and datasets >= 4.1 builds a Pool(1) for it.
+                    # dataset_num_proc = 1, and datasets >= 4.1 builds a Pool(1) for it, forking a tokenizer
+                    # worker on the host that asked for none.
                     "        _unsloth_map_kw = {}\n"
                     "        try:\n"
                     "            try:\n"
@@ -2740,8 +2752,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 )
             extra_args += max_length_check
 
-    # Sync chat_template from processing_class to vLLM's tokenizer This fixes base models that have custom chat
-    # templates applied after loading
+    # Enable for training and move padding side of tokenizer to right
     if "model" in call_args:
         training_check = (
             "if model is not None and hasattr(model, 'for_training'):\n"
@@ -2890,8 +2901,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         "logging_steps": 1,
         "max_seq_length": None,
         "num_generations": 8,
-        # steps_per_generation would otherwise default to ga_steps, which is wrong, and
-        # generation_batch_size clashes with it.
+        # "steps_per_generation": 1,     # Otherwise defaults to ga_steps, which is wrong
+        # "generation_batch_size": None, # Useless. If steps_per_generation is set, generation_batch_size clashes
         "top_k": None,
         "vllm_mode": "colocate",
         "generation_kwargs": {},
