@@ -10,6 +10,7 @@ import ctypes
 import hashlib
 import json
 import os
+import posixpath
 import platform
 import shutil
 import signal
@@ -2095,13 +2096,20 @@ def _macos_seatbelt_profile(
     ]
     metadata_filters = _sbpl_ancestor_filters(readable_paths)
     # The optional literals may not exist, so their ancestors are added by name.
+    # posixpath, not os.path: these are sandbox profile paths, always POSIX, and
+    # on Windows ntpath.dirname("/") returns "/" while os.path.sep is a
+    # backslash, so the walk never reached its stop condition and this loop hung
+    # the whole test run.
     for literal in _MACOS_OPTIONAL_READ_LITERALS:
-        current = os.path.dirname(literal)
-        while current and current != os.path.sep:
+        current = posixpath.dirname(literal)
+        while current and current != "/":
             encoded = f"(literal {json.dumps(current)})"
             if encoded not in metadata_filters:
                 metadata_filters.append(encoded)
-            current = os.path.dirname(current)
+            parent = posixpath.dirname(current)
+            if parent == current:
+                break
+            current = parent
     write_filters = _sbpl_path_filters((workdir, private_tmp))
     temp_encoded, _ = _sbpl_path(private_tmp)
     device_filters = _sbpl_path_filters(_MACOS_DEVICES)

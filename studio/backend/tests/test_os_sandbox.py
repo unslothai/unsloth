@@ -8,7 +8,9 @@ from __future__ import annotations
 import errno
 import importlib.util
 import math
+import ntpath
 import os
+import posixpath
 from types import SimpleNamespace
 import shlex
 import shutil
@@ -2908,6 +2910,30 @@ def test_full_mode_records_unrestricted_network(monkeypatch, tmp_path, isolated_
     )
     assert prepared.execution_record.network_policy == "unrestricted"
     assert prepared.network_audit is None
+
+
+def test_the_optional_literal_ancestors_are_walked_with_posix_rules(tmp_path):
+    # The walk used os.path, so on Windows it stepped from "/" to "/" forever
+    # (ntpath.dirname("/") is "/" while os.path.sep is a backslash there) and
+    # hung the whole test run before reaching any macOS assertion. These are
+    # sandbox profile paths, always POSIX, whatever the host is.
+    source = Path(os_sandbox.__file__).read_text(encoding = "utf-8")
+    walk = source.split("The optional literals may not exist", 1)[1].split("write_filters", 1)[0]
+    code = "\n".join(
+        line for line in walk.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "posixpath.dirname" in code
+    assert "os.path" not in code
+    # And the walk terminates: ntpath would spin here, posixpath reaches "/".
+    current = ntpath.dirname("/usr/local/etc/gitconfig")
+    steps = 0
+    while current and current != "/" and steps < 100:
+        parent = posixpath.dirname(current)
+        if parent == current:
+            break
+        current = parent
+        steps += 1
+    assert current == "/" and steps < 100
 
 
 def test_macos_profile_admits_only_the_proxy_port_when_given(tmp_path):
