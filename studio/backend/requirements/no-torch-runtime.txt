@@ -59,7 +59,7 @@ hf_transfer==0.1.9
 regex==2026.7.19; python_version >= "3.10"
 regex==2026.1.15; python_version < "3.10"
 typing_extensions==4.16.0
-filelock==3.32.2; python_version >= "3.10"
+filelock==3.32.5; python_version >= "3.10"
 filelock==3.19.1; python_version < "3.10"
 httpx==0.28.1
 httpcore==1.0.9
@@ -77,7 +77,7 @@ h11==0.16.0
 
 # Transformers 5.5 supports tokenizers 0.22.x through 0.23.0.
 tokenizers<=0.23.0
-transformers==5.5.0; python_version >= "3.10"
+transformers==5.10.1; python_version >= "3.10"
 transformers==4.57.6; python_version < "3.10"
 trl>=0.18.2,!=0.19.0,<=0.24.0
 # Matches extras-no-deps.txt rather than the newest release: that file installs

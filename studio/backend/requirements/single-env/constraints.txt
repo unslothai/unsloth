@@ -1,6 +1,6 @@
 # Single-env pins for unsloth + studio + data-designer
 # MiniMax-H3's merged Diffusers workflow needs the current Hugging Face stack.
-transformers==5.5.0; python_version >= "3.10"
+transformers==5.10.1; python_version >= "3.10"
 transformers==4.57.6; python_version < "3.10"
 trl==0.23.1
 huggingface-hub>=1.23.0,<2.0; python_version >= "3.10"
