@@ -45,39 +45,61 @@ $ps1Text = Get-Content -LiteralPath $ps1Path -Raw
 Check "the stop scan is given the managed paths under the target" `
     ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$knownRoots\)\)')
 
-$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-reparse-" + [System.Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-try {
-    $target = Join-Path $tmp "physical"
-    New-Item -ItemType Directory -Path (Join-Path $target "stable-diffusion.cpp") -Force | Out-Null
-    $link = Join-Path $tmp "studio-home"
-    New-Item -ItemType SymbolicLink -Path $link -Target $target -ErrorAction Stop | Out-Null
+# Both reparse kinds, because the helper reads nothing but .Target and both supply one.
+# A directory SYMLINK needs elevation or Developer Mode; a JUNCTION never does. Creating only
+# symlinks made this file unrunnable unprivileged -- New-Item threw
+# NewItemSymbolicLinkElevationRequired before a single subtree check ran -- so the junction row
+# is the one that always executes, and CI, whose Windows runner is an administrator, still
+# covers both. A junction is the shape a Windows user is likelier to have anyway: mklink /J
+# needs no privilege, so it is what gets reached for when moving a studio home onto another
+# volume.
+$ran = 0
+foreach ($kind in @("Junction", "SymbolicLink")) {
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-reparse-" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    try {
+        $target = Join-Path $tmp "physical"
+        New-Item -ItemType Directory -Path (Join-Path $target "stable-diffusion.cpp") -Force | Out-Null
+        $link = Join-Path $tmp "studio-home"
+        try { New-Item -ItemType $kind -Path $link -Target $target -ErrorAction Stop | Out-Null }
+        catch {
+            # Not a failure: the other kind carries the assertions. Reported so a run that
+            # covered only one kind cannot be mistaken for a run that covered both.
+            Write-Host "  SKIP  $kind is not creatable here: $($_.Exception.Message)"
+            continue
+        }
+        $ran++
 
-    $phys = [System.IO.Path]::GetFullPath($target).TrimEnd('\', '/')
-    $got = @(_ManagedPathsUnderReparseTargets @($link))
-    Check "a linked root yields the sd.cpp tree under its physical target" `
-        ($got -contains (Join-Path $phys "stable-diffusion.cpp"))
-    Check "... and the venv under it" ($got -contains (Join-Path $phys "unsloth_studio"))
-    # Never the bare target: the delete leaves it standing, so anything else there is not ours.
-    Check "the bare physical target is NOT in scope" (-not ($got -contains $phys))
+        $phys = [System.IO.Path]::GetFullPath($target).TrimEnd('\', '/')
+        $got = @(_ManagedPathsUnderReparseTargets @($link))
+        Check "$kind : a linked root yields the sd.cpp tree under its physical target" `
+            ($got -contains (Join-Path $phys "stable-diffusion.cpp"))
+        Check "$kind : ... and the venv under it" ($got -contains (Join-Path $phys "unsloth_studio"))
+        # Never the bare target: the delete leaves it standing, so anything else there is not ours.
+        Check "$kind : the bare physical target is NOT in scope" (-not ($got -contains $phys))
 
-    # A plain directory contributes nothing, so the scan does not widen for ordinary installs.
-    $plain = Join-Path $tmp "plain"
-    New-Item -ItemType Directory -Path $plain -Force | Out-Null
-    Check "a plain root adds nothing" (@(_ManagedPathsUnderReparseTargets @($plain)).Count -eq 0)
+        # A plain directory contributes nothing, so the scan does not widen for ordinary installs.
+        $plain = Join-Path $tmp "plain"
+        New-Item -ItemType Directory -Path $plain -Force | Out-Null
+        Check "$kind : a plain root adds nothing" (@(_ManagedPathsUnderReparseTargets @($plain)).Count -eq 0)
 
-    # Neither does a path that is not there at all, or an empty entry.
-    Check "a missing root adds nothing" (@(_ManagedPathsUnderReparseTargets @((Join-Path $tmp "nope"), "", $null)).Count -eq 0)
+        # Neither does a path that is not there at all, or an empty entry.
+        Check "$kind : a missing root adds nothing" (@(_ManagedPathsUnderReparseTargets @((Join-Path $tmp "nope"), "", $null)).Count -eq 0)
 
-    # Deduplicated: two links onto one target must not stack.
-    $link2 = Join-Path $tmp "studio-home-2"
-    New-Item -ItemType SymbolicLink -Path $link2 -Target $target -ErrorAction Stop | Out-Null
-    $both = @(_ManagedPathsUnderReparseTargets @($link, $link2))
-    Check "two links onto one target do not duplicate its subtrees" ($both.Count -eq $got.Count)
+        # Deduplicated: two links onto one target must not stack.
+        $link2 = Join-Path $tmp "studio-home-2"
+        New-Item -ItemType $kind -Path $link2 -Target $target -ErrorAction Stop | Out-Null
+        $both = @(_ManagedPathsUnderReparseTargets @($link, $link2))
+        Check "$kind : two links onto one target do not duplicate its subtrees" ($both.Count -eq $got.Count)
+    }
+    finally {
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
-finally {
-    Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
-}
+
+# An environment that can make neither kind would otherwise report a clean pass having
+# asserted nothing about reparse points at all.
+Check "at least one reparse kind was exercised" ($ran -gt 0)
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) failed" -ForegroundColor Red; exit 1 }
