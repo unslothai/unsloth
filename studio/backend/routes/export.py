@@ -121,8 +121,7 @@ async def load_checkpoint(
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient),
-            # The sentinel cannot say whether a *supplied* token came from a UI session or
-            # an API key, and only the latter's worker gets scrubbed.
+            # A supplied token cannot say whether it came from a session or an API key.
             allow_ambient = allow_ambient,
             subject = current_subject,
         )

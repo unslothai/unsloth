@@ -484,9 +484,8 @@ class ExportBackend:
             Tuple of (success: bool, message: str)
         """
         token = normalize_token(hf_token)
-        # The sentinel is about credential *use*, so only the loaders get it. The detection
-        # probes take the plain token: their shared-cache guards refuse an anonymous cached
-        # read, which offline misreads a cached VLM as a text model.
+        # Loaders only: the probes' cache guards refuse an anonymous read, which offline
+        # misreads a cached VLM as a text model.
         probe_token = token or None
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
@@ -850,8 +849,8 @@ class ExportBackend:
                 logger.info(f"Saving merged model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
-                # No push, but the merge resolves the base repo and save.py substitutes
-                # get_token() for a None, so the credential still has to be spelled out.
+                # No push, but the merge resolves the base repo and save.py turns None into
+                # get_token(), so the credential still has to be spelled out.
                 merged_token_kw = (
                     {"token": hf_token}
                     if (hf_token or is_anonymous(hf_token))
@@ -1422,8 +1421,8 @@ class ExportBackend:
                         self.current_tokenizer,
                         save_method = "lora",
                         quantization_method = outtype,
-                        # A token lets convert_lora_to_gguf.py fetch a gated base's config;
-                        # False keeps a denied caller off get_token().
+                        # A token fetches a gated base's config; False keeps a denied caller
+                        # off get_token().
                         token = normalize_token(hf_token),
                     )
                     # iterdir, not glob.glob: glob hides dot-leading names.

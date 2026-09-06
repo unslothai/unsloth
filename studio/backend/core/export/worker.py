@@ -241,8 +241,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     from hub.utils.hf_tokens import hf_token_arg
 
     checkpoint_path = cmd["checkpoint_path"]
-    # The route carries the policy as a flag, but the preflight helpers read it off the
-    # token, so rebuild the canonical HfTokenArg once here for the whole load.
+    # The preflight helpers read the policy off the token, so rebuild it once here.
     hf_token = hf_token_arg(cmd.get("hf_token"), allow_ambient_token = cmd.get("allow_ambient", True))
     max_seq_length = cmd.get("max_seq_length", 2048)
     load_in_4bit = cmd.get("load_in_4bit", True)
@@ -251,8 +250,8 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     if load_in_4bit:
         from utils.transformers_version import latest_tier_active_for
 
-        # Same tier chain as the activation below, so the same plain token: the sentinel
-        # reads no cache offline, misses the sidecar and leaves 4-bit on.
+        # Plain token, like the activation below: the sentinel reads no cache offline,
+        # misses the sidecar and leaves 4-bit on.
         if latest_tier_active_for(checkpoint_path, hf_token or None):
             load_in_4bit = False
             logger.info(
@@ -564,9 +563,8 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
 
     checkpoint_path = config["checkpoint_path"]
 
-    # Before huggingface_hub is imported: it reads HF_HUB_DISABLE_IMPLICIT_TOKEN once, into a
-    # module constant, and this worker and its children inherit the environment. So an export
-    # runs under the identity that loaded the checkpoint; a fresh worker per load re-decides.
+    # Before the huggingface_hub import: it latches HF_HUB_DISABLE_IMPLICIT_TOKEN into a
+    # module constant. So an export runs under the identity that loaded the checkpoint.
     from hub.utils.hf_tokens import apply_token_to_child_env
 
     if not config.get("allow_ambient", True):
@@ -577,11 +575,9 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     # ── 1. Activate correct transformers version BEFORE any ML imports ──
     with _offline_window_if_unreachable(step = "activating transformers"):
         try:
-            # The plain token, like the load preflight's detection probes: _load_config_json
-            # refuses the hub cache for the sentinel, so offline a cached model whose tier is
-            # only in its config falls to the default sidecar. Anonymity here comes from the
-            # environment scrubbed above, not the argument: the reads are raw urllib and
-            # _probe_autoconfig's child inherits that environment.
+            # Plain token: _load_config_json refuses the hub cache for the sentinel, so
+            # offline a cached model falls to the default sidecar. Anonymity here is the
+            # scrubbed environment, not the argument.
             _activate_transformers_version(checkpoint_path, config.get("hf_token") or None)
         except Exception as exc:
             _send_response(
