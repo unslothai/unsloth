@@ -6962,7 +6962,7 @@ def install_python_stack() -> int:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
         else:
             base_total += 1  # torch flavor invariant (step 13w), Windows
-    if IS_MAC_ARM and not skip_base:
+    if IS_MAC_ARM:
         base_total += 1  # MLX stack, same gate as the step itself
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
@@ -7042,7 +7042,12 @@ def install_python_stack() -> int:
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
-    if IS_MAC_ARM and not skip_base:
+    #
+    # Not gated on skip_base: that only means install.sh already placed
+    # unsloth + unsloth-zoo, and it never installs MLX by name. Gating it left
+    # fresh installs resolving MLX transitively, so nothing held tokenizers in
+    # mlx-lm's <=0.23.0 window and Train/Export came up off until update ran.
+    if IS_MAC_ARM:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
             "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
