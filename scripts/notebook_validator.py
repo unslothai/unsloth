@@ -702,7 +702,7 @@ def _verb_scoped_requirements(install_cell: str) -> "list[tuple[bool, list[str]]
         for i, match in enumerate(verbs):
             stop = verbs[i + 1].start() if i + 1 < len(verbs) else len(invocation.raw)
             span = invocation.raw[match.end() : stop]
-            if i and "||" in invocation.raw[verbs[i - 1].end():match.start()]:
+            if i and "||" in invocation.raw[verbs[i - 1].end() : match.start()]:
                 # `A || B` runs B only when A FAILS, and the rules read a cell as the shell
                 # would run it on a working host, where A succeeds. Replaying the fallback
                 # too let `pip install codec==0.10 || pip install codec==0.12` finish on a

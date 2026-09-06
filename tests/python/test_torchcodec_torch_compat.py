@@ -1622,7 +1622,7 @@ def test_a_package_is_attributed_by_token_not_substring():
 
     overlapping = "!pip install torch && pip uninstall -y torchaudio"
     assert nv._effective_requested_version(overlapping, "torch", "2.11.0") == ("2.11.0", True)
-    assert nv._span_tokens(' -y torchaudio') == {"-y", "torchaudio"}
+    assert nv._span_tokens(" -y torchaudio") == {"-y", "torchaudio"}
 
     # The uninstall of the package itself still lands.
     removed = "!pip install torchaudio && pip uninstall -y torch"
@@ -1666,6 +1666,7 @@ def test_a_cuda_index_codec_also_installs_npp():
 
     # The major follows the index leaf, and a cpu or rocm index asks for nothing.
     import re
+
     for url, want in (
         ("https://download.pytorch.org/whl/cu128", "12"),
         ("https://download.pytorch.org/whl/cu130", "13"),
