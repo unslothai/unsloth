@@ -397,11 +397,7 @@ FIRST_BOOT_SUBMIT_ENDPOINTS = (
 )
 
 
-def report_first_boot_form(
-    page: Any,
-    *,
-    info: Callable[[str], None] | None = None,
-) -> bool:
+def report_first_boot_form(page: Any, *, info: Callable[[str], None] | None = None) -> bool:
     """Log what the first-boot form rendered; return whether Current password shows.
 
     What the backend puts in the page decides which fields render. A one-time
