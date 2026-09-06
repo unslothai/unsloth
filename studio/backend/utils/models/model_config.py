@@ -43,6 +43,7 @@ from utils.models.gguf_metadata import (
 import structlog
 from loggers import get_logger
 import contextlib as _contextlib
+from contextvars import ContextVar
 import os
 import re
 import subprocess
@@ -717,6 +718,47 @@ def _is_vlm(config) -> bool:
     )
 
 
+def _current_cached_snapshot(
+    model_name: str,
+    hf_token: HfTokenArg = None,
+    local_files_only: bool = False,
+):
+    """This repo's cached snapshot for its current commit, with the files the repo lists.
+
+    Returns ``(snapshot, filenames)``, or None when there is no such snapshot. The commit
+    and the file list both come from the repo document the request already reads, so a
+    snapshot accepted here is as current as a revalidating fetch would be, and callers can
+    tell a file the repo does not have from one that simply was not downloaded.
+
+    Learning the current commit is itself a network read, so a caller that asked for none
+    gets nothing here and falls back on paths that read the cache without one. Reading the
+    cache authorizes nothing, so an anonymous caller is refused it as elsewhere.
+    """
+    if local_files_only or is_anonymous(hf_token) or is_local_path(model_name):
+        return None
+    try:
+        repo_dir = get_cache_path(model_name)
+        # Cheap local check first: with nothing cached there is no snapshot to accept, and
+        # the repo document below would be a round trip spent to learn only that.
+        if repo_dir is None or not (Path(repo_dir) / "snapshots").is_dir():
+            return None
+        info = _hub_model_info(model_name, hf_token)
+        sha = getattr(info, "sha", None)
+        if not sha:
+            return None
+        snapshot = Path(repo_dir) / "snapshots" / str(sha)
+        if not snapshot.is_dir():
+            return None
+        listed = {
+            getattr(sibling, "rfilename", None)
+            for sibling in (getattr(info, "siblings", None) or ())
+        }
+        return snapshot, listed
+    except Exception as exc:
+        logger.debug("No current cached snapshot for '%s': %s", model_name, exc)
+        return None
+
+
 def _raw_config_has_vision_config(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -724,8 +766,18 @@ def _raw_config_has_vision_config(
     revision: Optional[str] = None,
 ) -> Optional[bool]:
     try:
+        current = (
+            None
+            if revision is not None
+            else _current_cached_snapshot(model_name, hf_token, local_files_only)
+        )
         if is_local_path(model_name):
             config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
+        elif current is not None and (current[0] / "config.json").is_file():
+            # This is the repo's current commit and the file is in it, so the fetch below
+            # would return what is already here. Saves both the absence probe and the
+            # download's own freshness check.
+            config_path = current[0] / "config.json"
         else:
             from huggingface_hub import hf_hub_download
             from utils.hf_probe import hf_file_definitely_absent
@@ -1003,6 +1055,63 @@ def _token_fingerprint(token: HfTokenArg) -> Optional[str]:
     if token is None:
         return None
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# Scoped to a request, not cached: a repo gated or deleted between requests is seen on the next.
+_HubModelInfoScope = Dict[Tuple[str, Optional[str]], Any]
+_hub_model_info_scope: ContextVar[Optional[_HubModelInfoScope]] = ContextVar(
+    "hub_model_info_scope", default = None
+)
+
+
+# Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
+_HUB_MODEL_INFO_TIMEOUT = 15.0
+
+
+@_contextlib.contextmanager
+def shared_hub_model_info():
+    """Share a ``model_info`` response between the Hub probes here, per repo and credential."""
+    token = _hub_model_info_scope.set({})
+    try:
+        yield
+    finally:
+        _hub_model_info_scope.reset(token)
+
+
+def _hub_model_info(
+    repo_id: str,
+    hf_token: HfTokenArg = None,
+    *,
+    files_metadata: bool = False,
+    timeout: Optional[float] = None,
+):
+    from huggingface_hub import model_info as hf_model_info
+
+    # The remote-LoRA probe in ``ModelConfig.from_identifier`` reads this call raising rather
+    # than guarding itself, and ``_offline_while_reading`` can force offline mid-request.
+    scope = None if _env_offline() else _hub_model_info_scope.get()
+    # The forced-anonymous sentinel is a credential of its own, so key on its fingerprint.
+    key = (repo_id, _token_fingerprint(hf_token))
+    if scope is not None:
+        if key in scope:
+            return scope[key]
+        # File sizes measure as free to ask for even on a repo of many quants, and asking
+        # unconditionally is what lets one response serve every probe: the variant listing
+        # needs them, and a response without them could not be shared with it.
+        files_metadata = True
+
+    kwargs: Dict[str, Any] = {
+        "token": hf_token,
+        "files_metadata": files_metadata,
+        # The response is shared, so whichever probe reads first decides the bound every
+        # later one inherits. Default it here rather than per call site.
+        "timeout": _HUB_MODEL_INFO_TIMEOUT if timeout is None else timeout,
+    }
+    info = hf_model_info(repo_id, **kwargs)
+
+    if scope is not None:
+        scope[key] = info
+    return info
 
 
 # Revision-less entries keep the historical 3-part key; pinned entries append revision.
@@ -1408,7 +1517,12 @@ def _detect_audio_from_tokenizer(
                     if snapshot is not None and snapshot.is_dir():
                         roots.append(snapshot)
 
+        current: list = []  # resolved lazily: only a negative answer needs it
+        # Whether a read here could stand in for the Hub copy, which is the only case that
+        # has to prove the file is whole rather than merely marker-free.
+        may_answer_for_hub = not local_files_only and not is_local_path(model_name)
         for root in roots:
+            root_read: set = set()
             for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
                 tok_file = root / tok_path
                 try:
@@ -1416,21 +1530,50 @@ def _detect_audio_from_tokenizer(
                         continue
                     raw = tok_file.read_text(encoding = "utf-8-sig")
                     if not _may_hold_audio_tokens(raw):
-                        # No marker anywhere, so no pattern can match. Counted as read
-                        # only when the file looks whole: a training run part-way through
-                        # writing its tokenizer would otherwise be a definitive "not
-                        # audio" and cached for the life of the process. A truncated file
-                        # stays unknown, exactly as it did when json.loads raised on it.
-                        if raw.rstrip().endswith("}"):
-                            read_any = True
+                        # No marker anywhere, so no pattern can match. Reading a local
+                        # checkpoint stops there: parsing these was the bulk of a cold
+                        # /loras scan, and the trailing "}" is enough to tell a whole file
+                        # from one a run is still writing. A read that will answer for the
+                        # Hub copy has to parse, since a half-written file ending in "}"
+                        # would otherwise be a definitive "not audio" cached for the life
+                        # of the process, with the markers in the part that never arrived.
+                        if may_answer_for_hub:
+                            try:
+                                json.loads(raw)
+                            except Exception:
+                                continue
+                        elif not raw.rstrip().endswith("}"):
+                            continue
+                        read_any = True
+                        root_read.add(tok_path)
                         continue
                     tok_config = json.loads(raw)
                     read_any = True
+                    root_read.add(tok_path)
                     result = _check_token_patterns(tok_config)
                     if result:
                         return result, True
                 except Exception as e:
                     logger.debug(f"Could not read {tok_file} for {model_name}: {e}")
+            # Every tokenizer path the repo actually has was read here, so re-fetching them
+            # only re-reads what was just read -- and a repo with no ``LLM/`` layout pays a
+            # round trip to be told so. Anything less may answer positively but never
+            # negatively: a path that was not read still has somewhere for the markers to
+            # hide, and the answer below is cached for the life of the process.
+            if root_read and not is_local_path(model_name):
+                if not current:
+                    current.append(_current_cached_snapshot(model_name, hf_token, local_files_only))
+                snapshot = current[0]
+                if (
+                    snapshot is not None
+                    and root == snapshot[0]
+                    and all(
+                        path in root_read
+                        for path in _AUDIO_TOKENIZER_CONFIG_PATHS
+                        if path in snapshot[1]
+                    )
+                ):
+                    return None, True
     except Exception as e:
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
@@ -2729,10 +2872,8 @@ def list_gguf_variants(
         cached = _list_gguf_variants_from_hf_cache(repo_id)
         return cached if cached is not None else ([], False)
 
-    from huggingface_hub import model_info as hf_model_info
-
     try:
-        info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
+        info = _hub_model_info(repo_id, hf_token, files_metadata = True)
     except Exception as e:
         # Permanent errors (deleted/gated/bad revision) must surface; stale cache would mask the
         # real cause. Matches the early return in ``detect_gguf_model_remote``.
@@ -3036,13 +3177,10 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
     if _env_offline():
         return _detect_gguf_from_hf_cache(repo_id)
 
-    import time
-    from huggingface_hub import model_info as hf_model_info
-
     last_err: Optional[Exception] = None
     for attempt in range(3):
         try:
-            info = hf_model_info(repo_id, token = hf_token)
+            info = _hub_model_info(repo_id, hf_token)
             repo_files = []
             for sibling in info.siblings:
                 fname = sibling.rfilename
@@ -3108,10 +3246,6 @@ def download_gguf_file(
 _embedding_detection_cache: Dict[tuple, bool] = {}
 
 
-# Bound the Hub lookup so a DNS-dead session fails fast to the cache instead of hanging on retries.
-_HUB_MODEL_INFO_TIMEOUT = 15.0
-
-
 def _embedding_marker_in_hf_cache(model_name: str) -> bool:
     """True when model_name's cached snapshot carries a modules.json (the ST marker).
     Cache-only, no network; used offline and as a fallback when the Hub lookup times out."""
@@ -3164,9 +3298,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
     try:
-        from huggingface_hub import model_info as hf_model_info
-
-        info = hf_model_info(model_name, token = hf_token, timeout = _HUB_MODEL_INFO_TIMEOUT)
+        info = _hub_model_info(model_name, hf_token)
         tags = set(info.tags or [])
         pipeline_tag = info.pipeline_tag or ""
 
@@ -4044,9 +4176,7 @@ class ModelConfig:
         # Remote HF models: when offline, huggingface_hub raises OfflineModeIsEnabled in ~0ms.
         if not is_lora and not is_local:
             try:
-                from huggingface_hub import model_info as hf_model_info
-
-                info = hf_model_info(identifier, token = hf_token)
+                info = _hub_model_info(identifier, hf_token)
                 repo_files = [s.rfilename for s in info.siblings]
                 if "adapter_config.json" in repo_files:
                     is_lora = True

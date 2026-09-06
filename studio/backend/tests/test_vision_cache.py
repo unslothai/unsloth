@@ -1071,3 +1071,207 @@ class TestEnvOfflineParsing:
         for val in ("", "0", "false", "no", "off", "2", "onn"):
             monkeypatch.setenv("HF_HUB_OFFLINE", val)
             assert mc._env_offline() is False, f"HF_HUB_OFFLINE={val!r} should not be offline"
+
+
+# --- The current cached snapshot answers the vision probe without fetching config.json ---
+
+
+def _hub_cached_repo(
+    tmp_path,
+    repo_id,
+    files,
+    sha = "abc123",
+):
+    """A repo laid out the way the HF hub cache lays one out."""
+    repo_dir = tmp_path / ("models--" + repo_id.replace("/", "--"))
+    snapshot = repo_dir / "snapshots" / sha
+    snapshot.mkdir(parents = True)
+    for name, text in files.items():
+        (snapshot / name).write_text(text, encoding = "utf-8")
+    return repo_dir, snapshot
+
+
+def _probe_against_cache(
+    monkeypatch,
+    repo_dir,
+    *,
+    sha = "abc123",
+    listed = ("config.json",),
+    remote_config = None,
+    **kwargs,
+):
+    """Drive the vision probe against a cached snapshot, recording any Hub read it makes.
+
+    ``listed`` is what the repo document says the repo holds; None stands for no document.
+    """
+    import huggingface_hub
+    import utils.hf_probe as hf_probe
+    import utils.models.model_config as mc
+
+    reads: list = []
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: repo_dir)
+
+    def _info(
+        model_name,
+        hf_token = None,
+        **kw,
+    ):
+        if listed is None:
+            raise ConnectionError("no repo document")
+        return _types.SimpleNamespace(
+            sha = sha,
+            siblings = [_types.SimpleNamespace(rfilename = name) for name in listed],
+        )
+
+    monkeypatch.setattr(mc, "_hub_model_info", _info)
+
+    def _absent(model_name, filename, **kw):
+        reads.append(("absent", filename))
+        return remote_config is None
+
+    def _download(**kw):
+        reads.append(("download", kw.get("filename")))
+        path = repo_dir / "remote-config.json"
+        path.write_text(_json.dumps(remote_config), encoding = "utf-8")
+        return str(path)
+
+    monkeypatch.setattr(hf_probe, "hf_file_definitely_absent", _absent)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+
+    return mc._raw_config_has_vision_config("acme/vlm", **kwargs), reads
+
+
+@pytest.mark.parametrize(
+    "cached, expected",
+    [({"vision_config": {"hidden_size": 8}}, True), ({"model_type": "llama"}, False)],
+)
+def test_the_current_snapshot_answers_without_fetching_the_file(
+    tmp_path, monkeypatch, cached, expected
+):
+    """The snapshot decides the answer -- it is read, not merely counted.
+
+    The repo document is still read, since it names the current commit. What the snapshot
+    saves is fetching config.json itself.
+    """
+    repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", {"config.json": _json.dumps(cached)})
+
+    answer, reads = _probe_against_cache(monkeypatch, repo_dir)
+
+    assert answer is expected
+    assert reads == []
+
+
+@pytest.mark.parametrize(
+    "case, files, kwargs",
+    [
+        # A repo re-downloaded at a new commit keeps the old snapshot beside the new one.
+        ("stale snapshot", {"config.json": '{"model_type": "llama"}'}, {"sha": "new"}),
+        # The repo has the file; this snapshot simply never downloaded it.
+        ("file not downloaded", {"modules.json": "[]"}, {}),
+        # Offline, or on any failed read, there is nothing to judge the snapshot against.
+        ("no repo document", {"config.json": '{"model_type": "llama"}'}, {"listed": None}),
+        # The cached snapshot is whichever was downloaded, not the revision asked for.
+        ("pinned revision", {"config.json": '{"model_type": "llama"}'}, {"revision": "commit-a"}),
+        # Reading the cache authorizes nothing, so a caller who forced anonymity keeps it.
+        ("anonymous", {"config.json": '{"model_type": "llama"}'}, {"hf_token": False}),
+    ],
+)
+def test_the_hub_still_answers_when_the_snapshot_may_not(
+    tmp_path, monkeypatch, case, files, kwargs
+):
+    repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", files)
+
+    answer, reads = _probe_against_cache(
+        monkeypatch, repo_dir, remote_config = {"vision_config": {"hidden_size": 8}}, **kwargs
+    )
+
+    assert answer is True, case
+    assert reads == [("absent", "config.json"), ("download", "config.json")], case
+
+
+def test_local_files_only_reads_no_repo_document(tmp_path, monkeypatch):
+    """The caller asked for no network; resolving the current commit would be one."""
+    import utils.models.model_config as mc
+
+    repo_dir, _ = _hub_cached_repo(
+        tmp_path, "acme/vlm", {"config.json": _json.dumps({"model_type": "llama"})}
+    )
+    reads: list = []
+
+    def _info(
+        model_name,
+        hf_token = None,
+        **kw,
+    ):
+        reads.append(model_name)
+        raise AssertionError("the repo document must not be read")
+
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: repo_dir)
+    monkeypatch.setattr(mc, "_hub_model_info", _info)
+
+    import huggingface_hub
+
+    downloads: list = []
+
+    def _download(**kw):
+        downloads.append(kw.get("local_files_only"))
+        return str(repo_dir / "snapshots" / "abc123" / "config.json")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+
+    assert mc._raw_config_has_vision_config("acme/vlm", local_files_only = True) is False
+    assert reads == []
+    # The download reads the same cache, without a network call of its own.
+    assert downloads == [True]
+
+
+def test_nothing_cached_costs_no_repo_document(tmp_path, monkeypatch):
+    """The document is only worth a round trip when there is a snapshot to judge with it."""
+    import utils.models.model_config as mc
+
+    empty = tmp_path / "models--acme--vlm"
+    empty.mkdir()
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: empty)
+
+    reads: list = []
+
+    def _info(
+        model_name,
+        hf_token = None,
+        **kw,
+    ):
+        reads.append(model_name)
+        raise AssertionError("the repo document must not be read")
+
+    monkeypatch.setattr(mc, "_hub_model_info", _info)
+
+    assert mc._current_cached_snapshot("acme/vlm") is None
+    assert reads == []
+
+
+def test_the_current_snapshot_is_the_one_the_repo_document_names(tmp_path, monkeypatch):
+    """The helper both probes rest on, exercised rather than stubbed."""
+    import utils.models.model_config as mc
+
+    repo_dir, snapshot = _hub_cached_repo(tmp_path, "acme/vlm", {"config.json": "{}"}, sha = "aaa")
+    (repo_dir / "snapshots" / "bbb").mkdir()
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: repo_dir)
+
+    def _info(
+        model_name,
+        hf_token = None,
+        **kw,
+    ):
+        return _types.SimpleNamespace(
+            sha = "aaa", siblings = [_types.SimpleNamespace(rfilename = "config.json")]
+        )
+
+    monkeypatch.setattr(mc, "_hub_model_info", _info)
+
+    assert mc._current_cached_snapshot("acme/vlm") == (snapshot, {"config.json"})
+    # Never authorizes, so a caller who forced anonymity is not served the cache.
+    assert mc._current_cached_snapshot("acme/vlm", False) is None
