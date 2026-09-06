@@ -7688,6 +7688,8 @@ _VULKAN_ICD_REGISTRY_KEYS = (
 # (amdvlk64.json). Matched against the basename, never the whole path: a bare "amd"
 # anywhere in a directory name would otherwise answer for the driver.
 _AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro")
+
+
 # The loader's own search order, most specific first. Built per call rather than at
 # import: Path.home() RAISES when no home directory can be resolved (a Windows service
 # account with no USERPROFILE, HOMEDRIVE or HOMEPATH), and at module level that would
