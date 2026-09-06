@@ -15,16 +15,13 @@
  * bridge's own header).
  */
 
-import { resetPromptQueues } from "@/components/assistant-ui/thread";
+import { resetPromptQueuesForThread } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { ORB_IDLE_GRADIENT, orbConfig } from "@/components/assistant-ui/voice-orb";
 import { subscribeDictationLevel } from "@/features/chat/adapters/dictation-level";
 import { StudioModelDictationAdapter } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { StudioWebSpeechDictationAdapter } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
-import {
-  TTS_AUDIO_TYPES,
-  useTtsPlayer,
-} from "@/features/chat/hooks/use-tts-player";
+import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
 import {
@@ -59,6 +56,11 @@ const VOICE_BARGE_IN_DEBOUNCE_MS = 300;
 // instead of stacking as separate turns. Tunable: lower = snappier single turns,
 // higher = groups slower/longer multi-part barge-ins.
 const VOICE_COALESCE_MS = 650;
+// thread.cancelRun() is asynchronous, so the old run can still read as running
+// when the coalesce window closes. Rather than give up and leave the appended
+// bubbles unanswered, re-check every VOICE_COALESCE_MS up to this many times
+// (~10s) before concluding the run will never settle.
+const VOICE_COALESCE_MAX_RETRIES = 15;
 // How long playback may pause between sentences before the orb admits a real
 // synth stall and turns lilac ("Generating voice"). The swap between two already
 // synthesized clips is well under this, so ordinary sentence boundaries hold the
@@ -89,27 +91,24 @@ const VOICE_LEVEL_SPEECH = 0.05;
 const VOICE_TRANSCRIBE_TIMEOUT_MS = 60_000;
 
 /**
- * Whether the plus menu may offer Voice at all. It needs BOTH halves. Speaking:
- * the browser's speechSynthesis, or a loaded TTS codec. Listening: whichever
- * engine is configured, provided it can run here -- Web Speech needs
+ * Whether the plus menu may offer Voice at all. Listening is the gate: whichever
+ * engine is configured has to be able to run here -- Web Speech needs
  * SpeechRecognition, the batch engines need a secure context and MediaRecorder.
+ * Without it, Voice could be switched on and never produce a word.
  *
- * Gating on TTS alone offered Voice in browsers with speechSynthesis but no
- * SpeechRecognition, where it could be switched on and never produce a word.
+ * Speaking is deliberately not gated. It is always satisfiable: the voice picker
+ * always offers a local GGUF voice for the slot (VOICE_MODEL_DEFAULTS in
+ * chat-page.tsx), and the browser voice ends the turn cleanly when
+ * speechSynthesis is missing rather than hanging the loop. Requiring
+ * speechSynthesis or a loaded TTS chat model here hid the menu in exactly the
+ * browser where that local voice is the only way to speak -- and since the voice
+ * inventory is fetched only after voice mode opens, nothing could satisfy it first.
  */
 export function useVoiceAvailable(): boolean {
-  const activeAudioType = useChatRuntimeStore((s) => {
-    const m = s.models.find((mm) => mm.id === s.params.checkpoint);
-    return m?.audioType ?? null;
-  });
   const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
-  return (
-    ((typeof window !== "undefined" && "speechSynthesis" in window) ||
-      TTS_AUDIO_TYPES.has(activeAudioType ?? "")) &&
-    (dictationEngine === "browser"
-      ? StudioWebSpeechDictationAdapter.isSupported()
-      : StudioModelDictationAdapter.isSupported())
-  );
+  return dictationEngine === "browser"
+    ? StudioWebSpeechDictationAdapter.isSupported()
+    : StudioModelDictationAdapter.isSupported();
 }
 
 export const VoiceEngine: FC = () => {
@@ -275,11 +274,13 @@ export const VoiceEngine: FC = () => {
     // Voice coalescing: several barge-ins in a row should read as ONE prompt --
     // a user bubble each, then a single reply -- NOT a stack of separate turns
     // like the text-chat prompt queue. Append this utterance WITHOUT running,
-    // clear that queue, keep the mic live, and (re)arm the coalesce debounce; the
-    // single run fires only once the user has actually paused. Another utterance
-    // arriving first appends another bubble and resets the debounce, folding into
-    // the same prompt.
-    resetPromptQueues();
+    // clear THIS thread's queue (prompts queued in other chats are not ours to
+    // drop), keep the mic live, and (re)arm the coalesce debounce; the single run
+    // fires only once the user has actually paused. Another utterance arriving
+    // first appends another bubble and resets the debounce, folding into the same
+    // prompt.
+    const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
+    if (activeThreadId) resetPromptQueuesForThread(activeThreadId);
     const DEFERRED_CLEAR_MS = 50;
     const deferredClear = (n: number) => {
       if (voiceModeRef.current !== "active") return;
@@ -326,20 +327,39 @@ export const VoiceEngine: FC = () => {
     setTimeout(() => deferredClear(1), DEFERRED_CLEAR_MS);
     // Keep listening so the user can chain more utterances into this same prompt.
     resumeListen();
-    if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
-    voiceCoalesceTimerRef.current = setTimeout(() => {
+    const fireCoalescedRun = (attempt: number) => {
       voiceCoalesceTimerRef.current = null;
       if (voiceModeRef.current !== "active") return;
       const t = auiRef.current.thread();
-      if (t.getState().isRunning) return;
+      if (t.getState().isRunning) {
+        // The barge-in's cancelRun() has not settled yet. Wait for the running
+        // transition instead of returning for good; the timer ref stays pointed at
+        // the retry so a fresh utterance still clears and restarts the window.
+        if (attempt < VOICE_COALESCE_MAX_RETRIES) {
+          voiceCoalesceTimerRef.current = setTimeout(
+            () => fireCoalescedRun(attempt + 1),
+            VOICE_COALESCE_MS,
+          );
+        }
+        return;
+      }
       const msgs = t.getState().messages;
-      const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
+      const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+      // Only a trailing user bubble is unanswered. If a reply has landed since
+      // (something else answered while we waited), starting another run here
+      // would regenerate on top of it.
+      if (!last || last.role !== "user") return;
       try {
-        t.startRun({ parentId: lastId });
+        t.startRun({ parentId: last.id });
       } catch {
         // startRun unsupported -- the bubbles are already shown; nothing to do.
       }
-    }, VOICE_COALESCE_MS);
+    };
+    if (voiceCoalesceTimerRef.current) clearTimeout(voiceCoalesceTimerRef.current);
+    voiceCoalesceTimerRef.current = setTimeout(
+      () => fireCoalescedRun(0),
+      VOICE_COALESCE_MS,
+    );
   }, [resumeListen, stop]);
 
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.

@@ -27,6 +27,7 @@ import { VoiceModelSelector } from "@/components/assistant-ui/voice-model-select
 import { VoiceNamePicker } from "@/components/assistant-ui/voice-name-picker";
 import { authFetch } from "@/features/auth";
 import { VOICE_SLOT_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
+import { chatModelOwnsItsVoice } from "./voice/speech-llm.ts";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -331,16 +332,6 @@ function messageHasImage(message: MessageRecord): boolean {
 const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
 const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
-
-// A speech-LLM chat model (Orpheus, CSM, Spark...) produces its own voice, so a
-// separate TTS voice slot doesn't apply and must not be auto-loaded. Module-level
-// so both the render-time greying and the voice-slot ensure-load effect can share
-// one definition.
-const SPEECH_LLM_CHECKPOINT_RE =
-  /(?:orpheus|csm|spark|bark|parler|musicgen|text-to-speech|[-_]tts)/i;
-function isSpeechLLMCheckpoint(checkpoint: string | null | undefined): boolean {
-  return SPEECH_LLM_CHECKPOINT_RE.test(checkpoint ?? "");
-}
 
 const SingleContent = memo(function SingleContent({
   threadId,
@@ -2631,7 +2622,7 @@ export function ChatPage({
     // Browser voice / nothing selected: there's no separate slot to load.
     if (!id) return false;
     // Speech-LLM chat models speak with their own voice; no separate slot.
-    if (isSpeechLLMCheckpoint(store.params.checkpoint)) return false;
+    if (chatModelOwnsItsVoice(store)) return false;
     if (voiceReloadInflightRef.current) return voiceReloadInflightRef.current;
     const run = (async () => {
       try {
@@ -2693,7 +2684,7 @@ export function ChatPage({
     // Speech-LLM chat models (Orpheus etc.) speak with their own voice, so the
     // separate TTS slot is greyed out and must not be auto-loaded -- doing so
     // wastes VRAM/time loading a voice that never gets used.
-    if (isSpeechLLMCheckpoint(useChatRuntimeStore.getState().params.checkpoint)) {
+    if (chatModelOwnsItsVoice(useChatRuntimeStore.getState())) {
       return;
     }
     const id = useChatRuntimeStore.getState().selectedVoiceModelId;
@@ -2784,10 +2775,10 @@ export function ChatPage({
   // route prefers the voice slot whenever one is loaded, so a previously picked voice
   // would keep speaking every reply while the UI said the model owned its voice. Drop
   // the selection and unload the slot so what you hear matches what the UI claims.
-  // Derived here rather than read from the chatModelIsSpeechLLM const the picker
-  // uses: that one is declared further down this component, so reading it here
-  // would be a temporal-dead-zone throw on first render.
-  const checkpointOwnsItsVoice = isSpeechLLMCheckpoint(inferenceParams.checkpoint);
+  // Read from the store (the inventory record's detected codec, with the name
+  // pattern as fallback) so a renamed fine-tune is caught too. The picker's
+  // chatModelIsSpeechLLM further down reuses this value rather than recomputing it.
+  const checkpointOwnsItsVoice = useChatRuntimeStore(chatModelOwnsItsVoice);
   useEffect(() => {
     if (!checkpointOwnsItsVoice) return;
     if (!useChatRuntimeStore.getState().selectedVoiceModelId) return;
@@ -4252,7 +4243,7 @@ export function ChatPage({
 
   // A speech-LLM chat model (Orpheus, CSM, Spark...) produces its own voice, so a
   // separate TTS voice doesn't apply.
-  const chatModelIsSpeechLLM = isSpeechLLMCheckpoint(inferenceParams.checkpoint);
+  const chatModelIsSpeechLLM = checkpointOwnsItsVoice;
 
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;

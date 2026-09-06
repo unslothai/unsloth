@@ -465,7 +465,7 @@ function deletePromptQueueRun(run: PromptQueueRun) {
   syncPromptQueueUI();
 }
 
-export function resetPromptQueues() {
+function resetPromptQueues() {
   for (const run of promptQueueRuns.values()) {
     run.generation += 1;
     clearPromptQueueRetryTimer(run);
@@ -478,6 +478,17 @@ export function resetPromptQueues() {
   clearPromptQueuePumpTimer();
   stopPromptQueueSubscription();
   syncPromptQueueUI();
+}
+
+// Drop the queued prompts of ONE thread and nothing else. The voice loop calls
+// this when a spoken utterance supersedes that thread's queue; a global reset
+// there would silently discard prompts queued in background chats too. Delete
+// only, no target cancel, matching resetPromptQueues -- the caller has already
+// cancelled the run it means to cancel.
+export function resetPromptQueuesForThread(threadId: string) {
+  for (const run of getPromptQueueRunsForThreadIds([threadId])) {
+    deletePromptQueueRun(run);
+  }
 }
 
 function requestPromptQueuePumpIfReady(delay = 0) {

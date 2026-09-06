@@ -4,15 +4,11 @@
 import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { TTS_AUDIO_TYPES, VOICE_SLOT_AUDIO_TYPES } from "../voice/tts-audio-types.ts";
 
-export const TTS_AUDIO_TYPES = new Set(["snac", "csm", "bicodec", "dac"]);
-
-// Codecs the backend voice slot accepts. Mirrors _VOICE_SLOT_AUDIO_TYPES in
-// routes/inference.py: the slot is a second llama-server, and llama.cpp decodes
-// snac, bicodec and dac. `csm` is in TTS_AUDIO_TYPES but not here -- a CSM GGUF
-// loads and then has no decoder, so offering one as a voice is offering a load
-// that always fails.
-export const VOICE_SLOT_AUDIO_TYPES = new Set(["snac", "bicodec", "dac"]);
+// Defined in ../voice/tts-audio-types (dependency-free, so the pure voice helpers
+// and their tests can read them); re-exported here for this hook's importers.
+export { TTS_AUDIO_TYPES, VOICE_SLOT_AUDIO_TYPES };
 
 // Split assistant text into sentence-sized chunks so the first one can start
 // speaking while the rest are still synthesizing, instead of waiting for the
@@ -503,7 +499,14 @@ export function useTtsPlayer(
             // aborted (stop / barge-in) or a network error
           } finally {
             streamEnded = true;
-            if (pending <= 0) finish(true);
+            // Nothing scheduled means nothing was spoken: the request failed at the
+            // network layer, or a 200 closed before its first PCM chunk. Report that
+            // as unplayed so the caller falls back to the blob path (and, failing
+            // that, the browser voice) instead of advancing the loop in silence. A
+            // superseded request (stop / barge-in) still reads as played: the caller
+            // drops it on the request-id check either way, and a reply the user just
+            // cut off must not trigger a fallback.
+            if (pending <= 0) finish(started || requestIdRef.current !== reqId);
           }
         })();
       });
@@ -574,12 +577,20 @@ export function useTtsPlayer(
       const utterances = sentences.map((sentence) => {
         const utterance = new SpeechSynthesisUtterance(sentence);
         utterance.onstart = () => setIsPlaying(true);
+        // Both handlers can fire for a cancelled utterance long after stop():
+        // speechSynthesis.cancel() reports the old utterance's end/error
+        // asynchronously, by which time the replacement reply may already be
+        // queued. Only the current request may touch playback state or the global
+        // queue, or that stale event kills the new reply too; finish() re-checks
+        // the same id for the same reason.
         utterance.onend = () => {
+          if (requestIdRef.current !== reqId) return;
           setIsPlaying(false);
           remaining -= 1;
           if (remaining <= 0) finish();
         };
         utterance.onerror = () => {
+          if (requestIdRef.current !== reqId) return;
           window.speechSynthesis.cancel();
           finish();
         };
@@ -599,7 +610,13 @@ export function useTtsPlayer(
     async (text: string) => {
       stop();
       text = stripForSpeech(text);
-      if (!text) return;
+      if (!text) {
+        // Emoji-only or pure markup: nothing to say, but the turn still has to end
+        // like any other, or the loop never resumes listening (beginStream has
+        // already stopped dictation by the time endStream reaches here).
+        onPlaybackEndRef.current?.();
+        return;
+      }
       // stop() above bumped the counter; this is now our request's id.
       const reqId = requestIdRef.current;
       const sentences = splitIntoSentences(text);
