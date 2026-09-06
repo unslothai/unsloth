@@ -67,6 +67,8 @@ def create_server(
     is_enabled: bool = True,
     use_oauth: bool = False,
 ) -> None:
+    from core.inference.mcp_client import validate_mcp_address
+    validate_mcp_address(url)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
@@ -97,6 +99,9 @@ def update_server(id: str, changes: dict) -> bool:
     """Apply column updates and bump ``updated_at``. Returns True on a hit."""
     if not changes:
         return False
+    if "url" in changes:
+        from core.inference.mcp_client import validate_mcp_address
+        validate_mcp_address(changes["url"])
     bool_cols = {"is_enabled", "use_oauth"}
     sets, params = [], []
     for col, value in changes.items():

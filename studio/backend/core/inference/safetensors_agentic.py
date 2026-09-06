@@ -64,7 +64,6 @@ from core.inference.chat_template_helpers import (
     trailing_assistant_text,
 )
 from core.inference.passthrough_healing import nudge_enabled
-from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -570,14 +569,13 @@ def run_safetensors_tool_loop(
     # keeps the sandbox but never prompts. An explicit confirm_tool_calls=True with
     # no mode is already resolved to "ask" at the request layer, so it never
     # arrives here as an ambiguous unset.
-    if permission_mode == "full":
-        bypass_permissions = True
-    elif bypass_permissions:
-        permission_mode = "full"
-    elif permission_mode is None:
-        permission_mode = "auto"
-    elif permission_mode not in ("ask", "auto", "off"):
-        permission_mode = "ask"
+    from core.inference.tool_stream_exec import stream_tool_execution
+    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+
+    permission_mode, bypass_permissions = normalize_tool_permissions(
+        permission_mode, bypass_permissions
+    )
+    stream_tool_execution = account_tool_stream(stream_tool_execution)
 
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to
     # web_search. Skip only when a retrieval call would actually prompt (ask

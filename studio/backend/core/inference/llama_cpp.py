@@ -28495,14 +28495,12 @@ class LlamaCppBackend:
         # "auto"; unknown falls back to the stricter "ask". An explicit
         # confirm_tool_calls=True with no mode is already resolved to "ask" at the
         # request layer, so it never arrives here as an ambiguous unset.
-        if permission_mode == "full":
-            bypass_permissions = True
-        elif bypass_permissions:
-            permission_mode = "full"
-        elif permission_mode is None:
-            permission_mode = "auto"
-        elif permission_mode not in ("ask", "auto", "off"):
-            permission_mode = "ask"
+        from state.tool_policy import account_tool_stream, normalize_tool_permissions
+
+        permission_mode, bypass_permissions = normalize_tool_permissions(
+            permission_mode, bypass_permissions
+        )
+        stream_tool_execution = account_tool_stream(stream_tool_execution)
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
