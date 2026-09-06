@@ -3,6 +3,10 @@
 
 """Opt-in idle auto-unload (TTL keep-warm) for the local llama.cpp model.
 
+The resident model is shared across accounts. Activity from any account keeps
+it warm; the last active account resets the same global idle clock. No account
+lookup or per-account timer is needed, including on a single-account install.
+
 Off by default (idle seconds = 0). When enabled, a background loop unloads the
 loaded GGUF once it has been idle for the configured TTL, freeing VRAM. A
 pure-ASGI middleware tracks in-flight inference requests so a long stream that

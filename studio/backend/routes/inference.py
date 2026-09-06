@@ -6893,9 +6893,17 @@ async def _wait_for_model_switch_idle(
     still be refused, so they must not shorten the protection they provide.
     """
     from core.inference.llama_keepwarm import other_inference_request_count
+    from auth.policy import installation_is_multi_user
+    from core.inference.gpu_arbiter import require_no_foreign_generations
+    from utils.account_context import current_account_id
 
+    account_id = current_account_id() if installation_is_multi_user() else None
     deadline = None if timeout_s is None else time.monotonic() + timeout_s
     while True:
+        if account_id is not None:
+            # Forced/post-cancel drains may time out on our own work, but must
+            # never proceed over another account's still-running generation.
+            require_no_foreign_generations(account_id)
         queued_switches = _switch_waiter_count()
         if current_request_counted and queued_switches > 0:
             queued_switches -= 1
@@ -6904,7 +6912,12 @@ async def _wait_for_model_switch_idle(
             include_pending = False,
         )
         if cancel_pending:
-            active_others -= min(active_others, active_generations.count())
+            cancellable = (
+                active_generations.count(account_id)
+                if account_id is not None
+                else active_generations.count()
+            )
+            active_others -= min(active_others, cancellable)
         if active_others <= queued_switches:
             return
         if deadline is not None and time.monotonic() >= deadline:
@@ -7972,7 +7985,6 @@ async def _maybe_auto_switch_model(
         note_admitted_inference,
         preview_swapped_since_entry,
     )
-
     generation_cancel_event = getattr(
         getattr(fastapi_request, "state", None),
         "generation_cancel_event",
@@ -8217,6 +8229,12 @@ async def _maybe_auto_switch_model(
                 _set_preview_resident(None)
             _record_serving_alias()
             return
+        # Below both resident fast paths: serving the shared model adds no
+        # account-policy lookup, registry scan, or retry-hint work.
+        from core.inference.gpu_arbiter import require_no_foreign_generations
+
+        switch_path = getattr(getattr(fastapi_request, "url", None), "path", None)
+        require_no_foreign_generations(path = switch_path)
         # Loading a non-GGUF model unloads the resident GGUF, and these endpoints read
         # llama.cpp alone, so the swap would strand them with nothing to serve.
         if gguf_only and not target_is_gguf and resolved is not None:
@@ -8278,6 +8296,7 @@ async def _maybe_auto_switch_model(
                                 _set_preview_resident(None)
                             _record_serving_alias()
                             return
+                        require_no_foreign_generations(path = switch_path)
                         # Apply the saved launch config so an API swap loads as the picker
                         # would. Order: variant-qualified keys before bare ids, and the
                         # load path before the advertised id, since the settings UI keys
@@ -8383,7 +8402,26 @@ async def _maybe_auto_switch_model(
             if waiter_noted:
                 _note_switch_waiter(key, -1)
 
-    await _resolve_and_switch()
+    try:
+        await _resolve_and_switch()
+    except HTTPException as exc:
+        # A foreign generation may register during load preparation, after the
+        # early guard. Preserve this endpoint's envelope for the arbiter's final
+        # refusal too, including a load retried without stale GPU placement.
+        path = getattr(getattr(fastapi_request, "url", None), "path", None)
+        if (
+            path and path.startswith("/v1/")
+            and isinstance(exc.detail, dict)
+            and exc.detail.get("error") == "gpu_busy"
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = error_body_for_path(
+                    path, exc.detail["message"], status = 409, code = "gpu_busy", param = "model"
+                ),
+                headers = exc.headers,
+            ) from exc
+        raise
     # The switch may have missed, so refuse rather than answer as whatever is resident.
     await _reject_unservable_model(requested_model, fastapi_request)
 
@@ -12766,9 +12804,30 @@ def _raise_or_cancel_active_generations(
     """
     if not active_generations.count():
         return 0
+    from auth.policy import installation_is_multi_user
+    from core.inference.gpu_arbiter import require_no_foreign_generations
+    from utils.account_context import current_account_id
+
+    account_id = current_account_id() if installation_is_multi_user() else None
+    if account_id is not None:
+        # A forced Stop belongs to the caller even if a foreign stream prevents
+        # the swap. Preflight (cancel=False) must still leave every event alone.
+        if force and cancel:
+            cancelled = active_generations.cancel_all(account_id)
+            require_no_foreign_generations(account_id)
+            return cancelled
+        require_no_foreign_generations(account_id)
     if not force:
-        thread_ids = active_generations.active_thread_ids()
-        running = active_generations.count()
+        thread_ids = (
+            active_generations.active_thread_ids(account_id)
+            if account_id is not None
+            else active_generations.active_thread_ids()
+        )
+        running = (
+            active_generations.count(account_id)
+            if account_id is not None
+            else active_generations.count()
+        )
         raise HTTPException(
             status_code = 409,
             detail = {
@@ -13425,7 +13484,7 @@ async def _load_model_impl(
         # Reclaim the GPU for chat (evicting a resident Images/Video pipeline) only once the load is known viable; the
         # already-loaded fast paths below re-assert CHAT themselves. Deferred past validation so a doomed load evicts nothing.
         from core.inference.gpu_arbiter import (
-            acquire_for,
+            acquire_for_request,
             current_owner,
             release,
             CHAT,
@@ -13485,7 +13544,7 @@ async def _load_model_impl(
                 # held) to correct a drifted owner. Unless the resident server is a confirmed
                 # zero-VRAM one, which coexists with an image/video pipeline.
                 if not llama_backend.holds_no_vram:
-                    await asyncio.to_thread(acquire_for, CHAT)
+                    await asyncio.to_thread(acquire_for_request, CHAT)
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
             if (
@@ -13520,7 +13579,7 @@ async def _load_model_impl(
                 # Requested chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted owner.
                 # Owns no GPU, so the arbiter would cancel a generation for nothing.
                 if not _resident_audio_holds_no_gpu(backend):
-                    await asyncio.to_thread(acquire_for, CHAT)
+                    await asyncio.to_thread(acquire_for_request, CHAT)
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label if native_grant_backed else backend.active_model_name,
@@ -13875,7 +13934,7 @@ async def _load_model_impl(
                 if not allow_gpu_owner_eviction:
                     handoff_kwargs["allow_evict"] = False
                 await asyncio.to_thread(
-                    acquire_for,
+                    acquire_for_request,
                     CHAT,
                     lambda: gguf_load_stack.enter_context(chat_load_in_flight()),
                     **handoff_kwargs,
@@ -33359,7 +33418,12 @@ async def load_diffusion_model_gated(
         predict_engine,
         select_and_activate_engine,
     )
-    from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
+    from core.inference.gpu_arbiter import (
+        acquire_for_request,
+        require_no_foreign_generations,
+        release,
+        DIFFUSION,
+    )
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
@@ -33463,6 +33527,10 @@ async def load_diffusion_model_gated(
             preflighted = engine_for(pending_name)
             await asyncio.to_thread(_preflight, preflighted)
 
+        # Engine activation can unload the previous image engine before the
+        # acquire below. Apply the arbiter's guard ahead of that teardown too.
+        if needs_gpu:
+            require_no_foreign_generations()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
             select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
@@ -33536,7 +33604,7 @@ async def load_diffusion_model_gated(
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():
                 with _diffusion_training_admission():
-                    return acquire_for(DIFFUSION, _begin_load)
+                    return acquire_for_request(DIFFUSION, _begin_load)
 
             status_dict = await asyncio.to_thread(_acquire_and_begin)
         else:
