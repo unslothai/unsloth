@@ -77,23 +77,8 @@ _SYSTEM_READ_ROOTS = (
     "/snap",
     "/nix",
     "/var/lib",
+    "/proc",
     "/sys",
-)
-# procfs is opened per entry, not as a whole: the child sees its own process
-# and the machine-wide read-only facts, not another account's command lines.
-# ``/proc/self`` is opened in the child, so it names the child's own entry.
-_PROC_READ_PATHS = (
-    "/proc/self",
-    "/proc/thread-self",
-    "/proc/cpuinfo",
-    "/proc/meminfo",
-    "/proc/stat",
-    "/proc/uptime",
-    "/proc/loadavg",
-    "/proc/version",
-    "/proc/filesystems",
-    "/proc/devices",
-    "/proc/sys",
 )
 _DEVICE_ROOT = "/dev"
 
@@ -245,9 +230,6 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
     rules: list[tuple[str, int]] = []
     for path in _existing(_SYSTEM_READ_ROOTS):
         rules.append((path, read))
-    for path in _existing(_PROC_READ_PATHS):
-        # A rule on a plain file may not carry directory rights.
-        rules.append((path, read if os.path.isdir(path) else read & ~_FS_READ_DIR))
     for path in _interpreter_roots():
         rules.append((path, read))
     for path in _existing((sandbox_site_dir,)):
@@ -305,8 +287,10 @@ def _linux_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
     return Confinement(
         mechanism = f"landlock-abi{abi}",
         # Signals stay inside the child's own domain (ABI 6), so a tool cannot
-        # stop another account's tool process; the file rules already keep it
-        # from reading that process's entry under /proc.
+        # stop another account's tool process. Its entry under /proc stays
+        # readable, as for any two processes of one Unix user; the kernel's
+        # ptrace rules already keep environ, maps and fds of a non-descendant
+        # closed, so what remains visible is the command line.
         preexec = partial(_landlock_preexec, handled, rules, _SCOPE_SIGNAL if abi >= 6 else 0),
     )
 

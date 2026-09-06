@@ -220,3 +220,32 @@ def test_download_watcher_is_pinned_to_the_requesting_account(monkeypatch):
     run_as(BOB, download_lifecycle.account_thread, target = lambda: None, name = "watch", daemon = True)
     assert captured["target"] is account_context.run_as
     assert captured["args"][0] == BOB
+
+
+def test_external_provider_cancel_keys_are_scoped_like_every_lookup():
+    """The cancel registration on the external-provider path uses the same key
+    shape as the lookups, so a managed account can still stop its own stream."""
+    import inspect
+
+    import routes.inference as inference
+
+    source = inspect.getsource(inference._proxy_to_external_provider)
+    registration = source.index("cancel_keys = tuple(")
+    assert "_account_cancel_key(key)" in source[registration:registration + 200]
+    assert "_PENDING_CANCELS.pop(_account_cancel_key(payload.cancel_id), None)" in source
+
+
+def test_export_size_cache_is_keyed_per_managed_account(monkeypatch):
+    import routes.models as models
+    from hub.services.models import account_access
+
+    monkeypatch.setattr(models, "_EXPORT_SIZE_CACHE", {})
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(models, "is_local_path", lambda model: False)
+    import utils.hardware.hardware as hardware
+
+    monkeypatch.setattr(hardware, "estimate_fp16_model_size_bytes", lambda model, hf_token = None: (1000, "ALICE-SOURCE"))
+    assert run_as(ALICE, models._export_size_cached, "my-finetune", None) == (1000, 500, "ALICE-SOURCE")
+    monkeypatch.setattr(hardware, "estimate_fp16_model_size_bytes", lambda model, hf_token = None: (2000, "BOB-SOURCE"))
+    assert run_as(BOB, models._export_size_cached, "my-finetune", None) == (2000, 1000, "BOB-SOURCE")
+    assert run_as(ALICE, models._export_size_cached, "my-finetune", None) == (1000, 500, "ALICE-SOURCE")

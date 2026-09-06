@@ -5645,7 +5645,7 @@ async def list_checkpoints(
 
 
 # Successful estimates only, keyed by model id. Failures aren't cached so they can recover.
-_EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
+_EXPORT_SIZE_CACHE: dict[object, tuple[int, int, str]] = {}
 
 
 def _is_sizable_local_path(model: str) -> bool:
@@ -5701,7 +5701,10 @@ def _export_size_cached(
     Memoizes successful results by model id; never raises (failures return
     (None, None, "unavailable") and are not cached). Blocking I/O; call off-thread.
     """
-    cached = _EXPORT_SIZE_CACHE.get(model)
+    # Keyed per managed account: a relative model name is private to a workspace, and
+    # a cache hit must not hand another account the size and source recorded for it.
+    cache_key = (account_access.current_account_id(), model) if account_access.managed_account() else model
+    cached = _EXPORT_SIZE_CACHE.get(cache_key)
     if cached is not None:
         return cached
     try:
@@ -5721,7 +5724,7 @@ def _export_size_cached(
         if not fp16_bytes or fp16_bytes <= 0:
             return None, None, source or "unavailable"
         result = (int(fp16_bytes), int(fp16_bytes) // 2, source)
-        _EXPORT_SIZE_CACHE[model] = result
+        _EXPORT_SIZE_CACHE[cache_key] = result
         return result
     except Exception as e:  # a size hint must never break export
         logger.warning("Could not estimate export size for '%s': %s", model, e)

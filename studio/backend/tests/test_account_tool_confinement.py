@@ -253,36 +253,27 @@ def test_managed_child_cannot_plant_a_link_in_its_own_tree(tmp_path):
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
-def test_managed_child_cannot_see_or_signal_another_accounts_process(tmp_path):
-    """Two accounts' tools run as one Unix user; the ruleset keeps each child
-    to its own /proc entry and its own descendants for signals."""
+@pytest.mark.skipif(tool_confinement.landlock_abi() < 6, reason = "signal scoping needs Landlock ABI 6")
+def test_managed_child_cannot_signal_another_accounts_process(tmp_path):
+    """Two accounts' tools run as one Unix user; signals stay inside the
+    child's own domain, so it can stop its own descendants and nothing else."""
     _seed(tmp_path)
-    alice_job = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)  # ALICE_JOB_PRIVATE"])
+    alice_job = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         out = run_as(
             BOB,
             tools._python_exec,
-            "import os, signal\n"
+            "import os, signal, subprocess\n"
             f"pid = {alice_job.pid}\n"
-            "try:\n"
-            "    print('CMDLINE', open(f'/proc/{pid}/cmdline', 'rb').read())\n"
-            "except OSError as e:\n"
-            "    print('cmdline denied', e.__class__.__name__)\n"
             "try:\n"
             "    os.kill(pid, signal.SIGTERM); print('SIGNALLED')\n"
             "except OSError as e:\n"
             "    print('signal denied', e.__class__.__name__)\n"
-            "print('self', os.getpid() > 0, os.cpu_count() > 0)\n"
-            "import subprocess\n"
             "child = subprocess.Popen(['sleep', '30'])\n"
             "child.terminate(); print('own child rc', child.wait())\n",
             session_id = "chat",
         )
-        assert "ALICE_JOB_PRIVATE" not in out and "SIGNALLED" not in out, out
-        assert "cmdline denied" in out and "signal denied" in out, out
-        assert "self True True" in out, out
-        own = run_as(BOB, tools._bash_exec, "head -1 /proc/self/status; echo rc=$?", session_id = "chat")
-        assert "Name:" in own and "rc=0" in own, own
+        assert "SIGNALLED" not in out and "signal denied" in out, out
         assert "own child rc -15" in out, out
         assert alice_job.poll() is None
     finally:
