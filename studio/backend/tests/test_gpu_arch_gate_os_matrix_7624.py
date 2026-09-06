@@ -2263,6 +2263,32 @@ class TestUnifiedMemoryOptOut:
         assert text_only, [c for c, _e in launches]
         assert all("GGML_CUDA_ENABLE_UNIFIED_MEMORY" not in e for e in text_only)
 
+    def test_an_inherited_projector_outlives_the_text_only_retry(
+        self, tmp_path, monkeypatch, probe_env
+    ):
+        """Stripping --mmproj does not clear LLAMA_ARG_MMPROJ, and arg.cpp applies
+        the variable before argv, so the retry still loads a projector onto the
+        device and must keep managed memory."""
+        inherited = tmp_path / "inherited-mmproj.gguf"
+        inherited.write_bytes(b"GGUF")
+        launches = self._load(
+            tmp_path,
+            monkeypatch,
+            env_extra = {"LLAMA_ARG_MMPROJ": str(inherited)},
+            model_bytes = 30 * GIB,
+            mmproj_bytes = 4 * GIB,
+            intent_extra = {"is_vision": True, "mmproj_path": str(tmp_path / "mmproj.gguf")},
+            returncode = 1,
+            output = self._PROJECTOR_OOM,
+        )
+        first_cmd, first_env = launches[0]
+        assert "--mmproj" in first_cmd, first_cmd
+        assert first_env.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1"
+        text_only = [e for c, e in launches if "--mmproj" not in c]
+        assert text_only, [c for c, _e in launches]
+        assert all(e.get("LLAMA_ARG_MMPROJ") == str(inherited) for e in text_only)
+        assert all(e.get("GGML_CUDA_ENABLE_UNIFIED_MEMORY") == "1" for e in text_only)
+
     def test_a_sidecar_drafter_displaces_the_embedded_head(self, tmp_path, monkeypatch, probe_env):
         """A draft requested with a sidecar loads the sidecar, not the file's
         trailing blocks (llama.cpp loads the draft model on has_dft()), so the

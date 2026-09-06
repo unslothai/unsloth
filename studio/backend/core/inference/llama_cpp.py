@@ -4794,15 +4794,23 @@ def _argv_keeps_projector_on_gpu(
     """Whether *args* still load a projector onto the device.
 
     The text-only retry strips ``--mmproj`` and the CPU-projector retry appends
-    ``--no-mmproj-offload``; either leaves the base alone on the carve-out."""
+    ``--no-mmproj-offload``; either leaves the base alone on the carve-out. An
+    inherited ``LLAMA_ARG_MMPROJ`` / ``LLAMA_ARG_MMPROJ_URL`` outlives the argv
+    strip, and arg.cpp applies it before argv, so that projector still loads."""
     tokens = [str(a) for a in args]
+    env_map = env or {}
 
     def _flag(token: str) -> str:
         return token.split("=", 1)[0].replace("_", "-").lower()
 
-    if not any(_flag(a) in ("--mmproj", "-mm") for a in tokens):
+    from_argv = any(_flag(a) in ("--mmproj", "-mm") for a in tokens)
+    from_env = any(
+        str(env_map.get(name) or "").strip()
+        for name in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
+    )
+    if not from_argv and not from_env:
         return False
-    return _resolved_mmproj_offload(tokens, env or {}) is not False
+    return _resolved_mmproj_offload(tokens, env_map) is not False
 
 
 def _paravirtual_mmproj_pinnable(server_caps: Mapping[str, object]) -> bool:
