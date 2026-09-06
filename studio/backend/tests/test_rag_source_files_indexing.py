@@ -170,6 +170,7 @@ def test_routes_accept_source_file_native_drop(rag_home, tmp_path):
 
 def test_start_ingestion_validates_extensions(rag_home, tmp_path):
     from core.rag import ingestion, store
+
     scope = store.project_scope("proj-1")
 
     # Unsupported file type raises ValueError

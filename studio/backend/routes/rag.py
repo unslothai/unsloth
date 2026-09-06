@@ -1083,7 +1083,10 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     ext = os.path.splitext(doc["filename"])[1].lower()
     return FileResponse(
         stored_path,
-        media_type = _CONTENT_TYPES.get(ext, "text/plain; charset=utf-8" if ext in config.TEXT_EXTS else "application/octet-stream"),
+        media_type = _CONTENT_TYPES.get(
+            ext,
+            "text/plain; charset=utf-8" if ext in config.TEXT_EXTS else "application/octet-stream",
+        ),
         # linked documents are named by a posix relative path, invalid in this header
         filename = doc["filename"].rsplit("/", 1)[-1],
     )

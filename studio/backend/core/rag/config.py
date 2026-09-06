@@ -46,26 +46,96 @@ RICH_DOC_EXTS = frozenset({".pdf", ".docx"})
 BASE_TEXT_EXTS = frozenset({".txt", ".text", ".log", ".md", ".markdown", ".mdx", ".html", ".htm"})
 
 # Programming languages, scripts, configs, and markup aligned with chat text attachments (#8843, #9495, #10300)
-SOURCE_TEXT_EXTS = frozenset({
-    # JavaScript & TypeScript
-    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts",
-    # Python
-    ".py", ".pyi", ".pyx", ".pxd",
-    # .NET & JVM
-    ".cs", ".vb", ".fs", ".java", ".kt", ".kts", ".scala", ".groovy",
-    # Systems languages
-    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hxx", ".hh", ".cu", ".cuh",
-    ".rs", ".go", ".zig", ".nim", ".d", ".v", ".sv", ".svh",
-    # Web & scripting
-    ".php", ".phtml", ".rb", ".rake", ".lua", ".pl", ".pm", ".t", ".r", ".dart", ".swift",
-    # Shell & scripts
-    ".sh", ".bash", ".zsh", ".fish", ".bat", ".cmd", ".ps1", ".psm1",
-    # Structured data & configs
-    ".json", ".jsonl", ".ndjson", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
-    ".xml", ".sql", ".graphql", ".gql", ".proto",
-    # Web markup & stylesheets
-    ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro",
-})
+SOURCE_TEXT_EXTS = frozenset(
+    {
+        # JavaScript & TypeScript
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".ts",
+        ".tsx",
+        ".mts",
+        ".cts",
+        # Python
+        ".py",
+        ".pyi",
+        ".pyx",
+        ".pxd",
+        # .NET & JVM
+        ".cs",
+        ".vb",
+        ".fs",
+        ".java",
+        ".kt",
+        ".kts",
+        ".scala",
+        ".groovy",
+        # Systems languages
+        ".c",
+        ".h",
+        ".cc",
+        ".cpp",
+        ".cxx",
+        ".hpp",
+        ".hxx",
+        ".hh",
+        ".cu",
+        ".cuh",
+        ".rs",
+        ".go",
+        ".zig",
+        ".nim",
+        ".d",
+        ".v",
+        ".sv",
+        ".svh",
+        # Web & scripting
+        ".php",
+        ".phtml",
+        ".rb",
+        ".rake",
+        ".lua",
+        ".pl",
+        ".pm",
+        ".t",
+        ".r",
+        ".dart",
+        ".swift",
+        # Shell & scripts
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".fish",
+        ".bat",
+        ".cmd",
+        ".ps1",
+        ".psm1",
+        # Structured data & configs
+        ".json",
+        ".jsonl",
+        ".ndjson",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".xml",
+        ".sql",
+        ".graphql",
+        ".gql",
+        ".proto",
+        # Web markup & stylesheets
+        ".css",
+        ".scss",
+        ".sass",
+        ".less",
+        ".vue",
+        ".svelte",
+        ".astro",
+    }
+)
 
 TEXT_EXTS = frozenset(BASE_TEXT_EXTS | SOURCE_TEXT_EXTS)
 ALL_UPLOAD_EXTS = frozenset(UPLOAD_EXTS | SOURCE_TEXT_EXTS)
