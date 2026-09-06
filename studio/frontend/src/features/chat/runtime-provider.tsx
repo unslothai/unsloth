@@ -114,7 +114,6 @@ import {
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
   isLiveGenerationRun,
-  generationRawContent,
   loadGenerationOverlaySnapshot,
   markServerActiveGenerationRunsUnknown,
   forgetServerActiveGenerationRun,
@@ -126,11 +125,8 @@ import {
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
+import { createRecoveryReplay } from "./utils/chat-generation-replay";
 import { mergeContextTruncation } from "./utils/context-truncation";
-import {
-  extractDeltaText,
-  parseAssistantContent,
-} from "./utils/parse-assistant-content";
 import {
   chatContentPartAttachmentIdFromSignature,
   chatContentPartAttachmentSignature,
@@ -866,7 +862,10 @@ function scheduleGenerationRecovery(
   const recovery = (async () => {
     let cursor = Number(metadata.generationSeq ?? 0);
     if (!Number.isSafeInteger(cursor) || cursor < 0) cursor = 0;
-    let { raw, reasoningOpen } = generationRawContent(storedMessage.content);
+    // The follower's own accumulator: the same PARTS the live stream built, extended one event at a
+    // time instead of re-parsed from character zero on every publish, and a tool call lands ON its
+    // card at the offset it ran at instead of being flattened out of the reply.
+    let replay = createRecoveryReplay(storedMessage.content);
     let completionTokens: number | undefined;
     let recoveryUsage:
       | {
@@ -906,9 +905,11 @@ function scheduleGenerationRecovery(
       running: boolean,
     ) => {
       currentMetadata = nextMetadata;
-      const content = parseAssistantContent(
-        reasoningOpen ? `${raw}</think>` : raw,
-      ) as MessageRecord["content"];
+      // Parts, not a flattened string: the accumulator already cut the reply at each call's
+      // offset, and an open reasoning block is read back as one (ParsedRun closes what it holds).
+      // The cast through `unknown`: a `Record<string, unknown> & { type }` part does not
+      // structurally overlap the record's ToolCallMessagePart union member.
+      const content = replay.content() as unknown as MessageRecord["content"];
       await saveStoredChatMessage({
         id: storedMessage.id,
         threadId,
@@ -1010,7 +1011,7 @@ function scheduleGenerationRecovery(
             ) {
               return;
             }
-            if (cursor === 0 && raw.length === 0) {
+            if (cursor === 0 && replay.rawText().length === 0) {
               const requestMessages = update.run.requestPayload.messages;
               const lastRequestMessage = Array.isArray(requestMessages)
                 ? requestMessages.at(-1)
@@ -1022,11 +1023,12 @@ function scheduleGenerationRecovery(
                 // Continue sends the old partial as an assistant prefill. The server-owned placeholder is
                 // empty until the first client save, so a reload before that save seeds replay from the
                 // request instead.
-                raw = lastRequestMessage.content;
+                replay = createRecoveryReplay(lastRequestMessage.content);
               }
             }
             identityValidated = true;
           }
+          let replayChanged = false;
           if (update.event && update.event.seq > cursor) {
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
@@ -1078,26 +1080,13 @@ function scheduleGenerationRecovery(
               if (typeof chunk.usage?.completion_tokens === "number") {
                 completionTokens = chunk.usage.completion_tokens;
               }
-              const deltaRecord = chunk.choices?.[0]?.delta;
-              const reasoning =
-                typeof deltaRecord?.reasoning_content === "string"
-                  ? deltaRecord.reasoning_content
-                  : "";
-              const delta = extractDeltaText(deltaRecord?.content).text;
-              if (reasoning) {
-                if (!reasoningOpen) raw += "<think>";
-                raw += reasoning;
-                reasoningOpen = true;
-              }
-              if (delta) {
-                if (reasoningOpen) raw += "</think>";
-                raw += delta;
-                reasoningOpen = false;
-              }
+              // Fold the frame exactly as the live stream built it: text and reasoning runs extend in
+              // place, and a tool frame lands on the card its id names instead of being dropped.
+              replayChanged = replay.applyChunk(update.event.payload) || replayChanged;
             }
           }
           const shouldPublish =
-            update.event?.type === "chunk" ||
+            replayChanged ||
             update.run.status !== lastPublishedStatus ||
             (["cancelled", "completed", "failed"].includes(update.run.status) &&
               cursor >= update.run.lastEventSeq);
