@@ -405,13 +405,32 @@ Environment:
     # The .cmd is the interpreter-based launcher install.ps1 writes beside the .exe for
     # machines whose Application Control policy denies the generated console script. An
     # install whose .exe was removed by that policy's quarantine still owns its root.
+    #
+    # Plus the venv shapes older installers left, because that list alone strands them.
+    # On Windows share\studio.conf is never written -- only install.sh writes it -- so the
+    # three that actually decide a Windows root all postdate the bin\ shim dir. An install
+    # from before it has no bin\ at all: the venv lived at <root>\.venv (install.ps1 still
+    # migrates exactly that, at "found legacy Unsloth environment"), and the venv's Scripts
+    # dir, not a shim dir, was what went on PATH. Older still, .unsloth-studio-owned did not
+    # exist, so neither venv layout carries it. Every one of those is a real install the
+    # ownership gate would refuse, leaving the user's tree and studio.db on disk with a
+    # message calling their own install a non-Unsloth path.
+    #
+    # So also accept the marker inside the legacy venv dir, and either venv dir carrying
+    # Scripts\unsloth.exe -- the console script pip generates for the unsloth distribution.
+    # Both are things Unsloth put there, which is the property the gate is actually testing;
+    # a bare .venv or a hand-made "studio" directory still has neither.
     function _IsStudioRoot {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         if (Test-Path -LiteralPath (Join-Path $Path "share\studio.conf") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) { return $true }
+        if (Test-Path -LiteralPath (Join-Path $Path ".venv\.unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "bin\unsloth.exe") -PathType Leaf) { return $true }
         if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
+        foreach ($venv in @("unsloth_studio", ".venv")) {
+            if (Test-Path -LiteralPath (Join-Path $Path "$venv\Scripts\unsloth.exe") -PathType Leaf) { return $true }
+        }
         return $false
     }
 

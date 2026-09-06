@@ -358,6 +358,16 @@ _is_studio_root() {
     [ -n "$_r" ] || return 1
     [ -f "$_r/share/studio.conf" ] && return 0
     [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
+    # The venv shapes older installers left. Before the unsloth_studio rename the venv was
+    # $_r/.venv, and before .unsloth-studio-owned neither name carried a marker, so an old
+    # install can reach here with none of the three above. Accept the legacy venv's own
+    # marker, and either venv dir carrying bin/unsloth -- the console script pip generates
+    # for the unsloth distribution. Both are things Unsloth put there, which is what the
+    # gate is testing; a bare .venv or a hand-made "studio" directory has neither.
+    [ -f "$_r/.venv/.unsloth-studio-owned" ] && return 0
+    for _v in unsloth_studio .venv; do
+        [ -f "$_r/$_v/bin/unsloth" ] && return 0
+    done
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
