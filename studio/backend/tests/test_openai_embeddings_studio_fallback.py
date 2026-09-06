@@ -297,13 +297,15 @@ def test_pending_gguf_download_is_classified_like_the_st_one(tmp_path, monkeypat
 
     backend = embed_llama_server.LlamaServerBackend()
     monkeypatch.setattr(
-        embed_llama_server.config, "effective_gguf_repo_for_embedding_model",
+        embed_llama_server.config,
+        "effective_gguf_repo_for_embedding_model",
         lambda model: "unsloth/bge-small-en-v1.5-GGUF",
     )
     monkeypatch.setattr(backend, "_resolve_local_gguf", lambda model: None)
     monkeypatch.setattr(backend, "_planned_family_path", lambda model, repo: None)
     monkeypatch.setattr(backend, "_resolve_cached_gguf", lambda *a, **k: None)
     import utils.embedding_model_settings as ems
+
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda model: True)
 
     with pytest.raises(rag_embeddings.EmbeddingModelDownloadRequiredError) as excinfo:
