@@ -7677,6 +7677,23 @@ def install_python_stack() -> int:
                 f"could not install {_codec_spec} -- audio decoding stays disabled, "
                 "the rest of the install is unaffected"
             )
+        elif _codec_index and re.search(r"/cu(\d+)/?$", _codec_index):
+            # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is NOT in
+            # torch's own dependency set, so a --no-deps install from a cuNNN index reports
+            # success and then fails to import, disabling audio for a reason nothing here
+            # would otherwise name. docker/Dockerfile installs nvidia-npp-cu12 beside the
+            # same wheel for exactly this. The major follows the index leaf, since cu13x
+            # wheels want nvidia-npp-cu13.
+            _npp_major = re.search(r"/cu(\d+)/?$", _codec_index).group(1)[:2]
+            if not pip_install_try(
+                "Installing torchcodec CUDA runtime (NPP)",
+                "--no-cache-dir",
+                f"nvidia-npp-cu{_npp_major}",
+            ):
+                _note(
+                    f"could not install nvidia-npp-cu{_npp_major} -- torchcodec may fail to "
+                    "import on a host without the CUDA toolkit, leaving audio disabled"
+                )
 
     # 14. Final check (silent; third-party conflicts are expected)
     subprocess.run(
