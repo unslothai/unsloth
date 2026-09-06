@@ -187,14 +187,39 @@ _TAURI_CORS_ORIGINS = (
     "http://127.0.0.1:5173",
 )
 
+_LOOPBACK_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?$"
+
 
 def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
     """Allowed CORS origins. Default is any-origin (["*"]); api-only locks down
     to the Tauri desktop app, except in secure mode where the API is published
-    over Cloudflare and must stay reachable from remote browser origins."""
+    over Cloudflare and must stay reachable from remote browser origins.
+    Extra origins can be appended via UNSLOTH_CORS_ORIGINS."""
+    custom = [
+        origin.strip()
+        for origin in os.environ.get("UNSLOTH_CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
     if api_only and not secure:
-        return list(_TAURI_CORS_ORIGINS)
+        return list(dict.fromkeys(list(_TAURI_CORS_ORIGINS) + custom))
+    if custom:
+        return custom
     return ["*"]
+
+
+def cors_origin_regex_for_mode(*, api_only: bool, secure: bool) -> str | None:
+    """Allowed CORS origin regex.
+
+    In desktop api-only mode, regex matching is disabled by default to prevent
+    unauthorized credentialed cross-origin requests from arbitrary local ports.
+    It can be explicitly opted into via UNSLOTH_CORS_ALLOW_LOOPBACK=1 or
+    UNSLOTH_CORS_ORIGIN_REGEX.
+    """
+    if custom_regex := os.environ.get("UNSLOTH_CORS_ORIGIN_REGEX"):
+        return custom_regex
+    if os.environ.get("UNSLOTH_CORS_ALLOW_LOOPBACK") == "1":
+        return _LOOPBACK_ORIGIN_REGEX
+    return None
 
 
 def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> None:

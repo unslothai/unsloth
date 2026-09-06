@@ -1411,7 +1411,10 @@ async def _recipes_redirect(rest: str = ""):
     return _RedirectResponse(url = target, status_code = 308)
 
 
-from utils.host_policy import cors_origins_for_mode  # noqa: E402
+from utils.host_policy import (
+    cors_origin_regex_for_mode,
+    cors_origins_for_mode,
+)  # noqa: E402
 
 
 class RemoteAccessCORSMiddleware(CORSMiddleware):
@@ -1431,11 +1434,16 @@ _cors_origins = cors_origins_for_mode(
     api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
     secure = os.environ.get("UNSLOTH_SECURE") == "1",
 )
+_cors_origin_regex = cors_origin_regex_for_mode(
+    api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
+    secure = os.environ.get("UNSLOTH_SECURE") == "1",
+)
 
 app.add_middleware(
     RemoteAccessCORSMiddleware,
     remote_access_state = app.state,
     allow_origins = _cors_origins,
+    allow_origin_regex = _cors_origin_regex,
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
