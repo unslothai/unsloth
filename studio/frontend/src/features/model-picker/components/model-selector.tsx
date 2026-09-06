@@ -160,6 +160,10 @@ interface ModelSelectorProps {
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  /** Disable the trigger button entirely (e.g. while a load is in flight). */
+  disabled?: boolean;
+  /** Hide the trailing chevron so the trigger reads as a plain toolbar action. */
+  hideChevron?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
   className?: string;
@@ -194,6 +198,8 @@ function ModelSelectorTrigger({
   triggerLabelClassName,
   dataTour,
   onEject,
+  disabled,
+  hideChevron = false,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
 }: {
@@ -207,12 +213,15 @@ function ModelSelectorTrigger({
   dataTour?: string;
   onEject?: () => void;
   placeholder?: string;
+  disabled?: boolean;
+  hideChevron?: boolean;
 }) {
   return (
     <PopoverTrigger asChild={true}>
       <button
         type="button"
         data-tour={dataTour}
+        disabled={disabled}
         className={cn(
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
           // Suppress the pill's hover background while the eject hit area is hovered.
@@ -294,13 +303,15 @@ function ModelSelectorTrigger({
             </span>
           )}
         </span>
-        <span className="-ml-1 flex size-4 shrink-0 items-center justify-center">
-          <HugeiconsIcon
-            icon={ChevronDownStandardIcon}
-            strokeWidth={1.75}
-            className="size-3.5 text-muted-foreground"
-          />
-        </span>
+        {!hideChevron && (
+          <span className="-ml-1 flex size-4 shrink-0 items-center justify-center">
+            <HugeiconsIcon
+              icon={ChevronDownStandardIcon}
+              strokeWidth={1.75}
+              className="size-3.5 text-muted-foreground"
+            />
+          </span>
+        )}
       </button>
     </PopoverTrigger>
   );
@@ -668,6 +679,8 @@ export function ModelSelector({
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
+  disabled,
+  hideChevron,
   variant = "outline",
   size = "default",
   className,
@@ -819,6 +832,8 @@ export function ModelSelector({
         dataTour={triggerDataTour}
         onEject={onEject ? handleEject : undefined}
         placeholder={placeholder}
+        disabled={disabled}
+        hideChevron={hideChevron}
       />
       <ModelSelectorContent
         open={open}
