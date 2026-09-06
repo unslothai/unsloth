@@ -2762,6 +2762,65 @@ class TestAnthropicMessagesToolRouting:
 
         assert response.status_code == 200
 
+    def _v1_client(self, monkeypatch, backend):
+        """Mount the real router with the production error handlers installed.
+
+        Every other test here reads ``HTTPException.detail`` directly, which is the
+        dict BEFORE install_api_error_handlers has had a chance to shape it. What an
+        SDK actually parses is the response body, and the two are only the same while
+        the handler keeps passing a fully-formed envelope through untouched. The
+        OpenAI sibling gate is asserted at this level already
+        (test_openai_tool_passthrough.py::test_client_tools_rejected_when_gguf_template_has_no_tool_support).
+        """
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import routes.inference as inf_mod
+        from auth.authentication import get_current_subject
+        from utils.api_errors import install_api_error_handlers
+
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
+
+        app = FastAPI()
+        app.include_router(inf_mod.router, prefix = "/v1")
+        install_api_error_handlers(app)
+        app.dependency_overrides[get_current_subject] = lambda: "t"
+        return TestClient(app)
+
+    @pytest.mark.parametrize("path", ["/v1/messages", "/v1/messages/count_tokens"])
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_the_rejection_reaches_the_client_as_an_anthropic_error(
+        self, monkeypatch, path, stream
+    ):
+        # A `detail` wrapper here would be an OpenAI-shaped body on an Anthropic route:
+        # the SDKs raise on the missing `error` key rather than surfacing the reason,
+        # which is the failure this whole change exists to remove. Streaming is covered
+        # too because the gate sits before the generator opens, so the caller must get
+        # JSON rather than a 200 SSE stream that carries the error inside a frame.
+        backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
+        client = self._v1_client(monkeypatch, backend)
+
+        resp = client.post(
+            path,
+            json = {
+                "model": "test-model",
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+                "stream": stream,
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.headers["content-type"].startswith("application/json")
+        body = resp.json()
+        assert "detail" not in body
+        assert body["type"] == "error"
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "does not advertise tools" in body["error"]["message"]
+        assert backend.calls == []
+
     def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
 
