@@ -875,8 +875,21 @@ Environment:
             _RemovePath $customSdCpp
         }
     }
-    # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
-    if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
+    # Default install dir (always at %USERPROFILE%\.unsloth\studio when present). Gated on the
+    # same ownership sentinels as a custom root above: this is a recursive delete of a path the
+    # user never named, and "studio" under ~/.unsloth is an ordinary thing for someone to create
+    # by hand (notes, a checkout, a scratch dir) on a machine where Unsloth was only ever
+    # installed in env mode. Without the gate a bare run -- the documented irm | iex, no
+    # UNSLOTH_STUDIO_HOME set -- takes that directory and then ~/.unsloth with it via the
+    # empty-dir prune below, having removed nothing of ours. Refusing leaves an interrupted
+    # install that lost all four sentinels on disk, which is the failure direction that does not
+    # destroy data, and it says so rather than doing it silently.
+    if ($defaultStudioHome -and (Test-Path -LiteralPath $defaultStudioHome) -and
+        -not (_IsStudioRoot $defaultStudioHome)) {
+        _Substep "refusing to remove non-Unsloth path: $defaultStudioHome" "Yellow"
+    } elseif ($defaultStudioHome) {
+        _RemoveRootRecordingDb $defaultStudioHome
+    }
     # Default data dir. The private temp sweep goes FIRST and hands back what it
     # kept: the primary temp directory lives under this data dir, so a wholesale
     # removal here would erase a live Unsloth's %TEMP% before the sweep ever looked

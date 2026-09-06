@@ -585,7 +585,19 @@ _unsloth_uninstall_main() {
             _remove_path "$_lex_sd_cpp"
         fi
     done
-    _remove_root_recording_db "$HOME/.unsloth/studio"
+    # Gated on the same ownership sentinels as a custom root above: this is a recursive delete of
+    # a path the user never named, and "studio" under ~/.unsloth is an ordinary thing for someone
+    # to create by hand (notes, a checkout, a scratch dir) on a machine where Unsloth was only
+    # ever installed in env mode. Without the gate a bare run -- the documented curl | sh, no
+    # UNSLOTH_STUDIO_HOME set -- takes that directory and then ~/.unsloth with it via the
+    # empty-dir prune below, having removed nothing of ours. Refusing leaves an interrupted
+    # install that lost every sentinel on disk, which is the failure direction that does not
+    # destroy data, and it says so rather than doing it silently.
+    if [ -e "$HOME/.unsloth/studio" ] && ! _is_studio_root "$HOME/.unsloth/studio"; then
+        echo "  refusing to remove non-Unsloth path: $HOME/.unsloth/studio" >&2
+    else
+        _remove_root_recording_db "$HOME/.unsloth/studio"
+    fi
     # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
     # by deleting it). No-op in env/custom mode (they nest under the custom root) and
     # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
