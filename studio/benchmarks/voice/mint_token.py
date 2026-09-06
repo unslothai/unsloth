@@ -43,15 +43,11 @@ def _load_backend():
 def _first_username(db_path: Path) -> str:
     conn = sqlite3.connect(db_path)
     try:
-        row = conn.execute(
-            "SELECT username FROM auth_user ORDER BY rowid LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT username FROM auth_user ORDER BY rowid LIMIT 1").fetchone()
     finally:
         conn.close()
     if not row:
-        raise SystemExit(
-            "No user in the auth DB yet. Open Studio once and sign in, then re-run."
-        )
+        raise SystemExit("No user in the auth DB yet. Open Studio once and sign in, then re-run.")
     return row[0]
 
 
@@ -67,9 +63,7 @@ def get_token(force: bool = False) -> str:
         raise SystemExit(f"Auth DB not found at {db_path}. Start Studio at least once.")
 
     username = _first_username(Path(db_path))
-    raw_key, _row = storage.create_api_key(
-        username = username, name = KEY_NAME, internal = True
-    )
+    raw_key, _row = storage.create_api_key(username = username, name = KEY_NAME, internal = True)
     TOKEN_FILE.write_text(raw_key + "\n", encoding = "utf-8")
     try:
         TOKEN_FILE.chmod(0o600)

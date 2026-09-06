@@ -86,9 +86,7 @@ def word_error_rate(reference: str, hypothesis: str) -> float:
     for i, r in enumerate(ref, 1):
         cur = [i]
         for j, h in enumerate(hyp, 1):
-            cur.append(
-                prev[j - 1] if r == h else 1 + min(prev[j], cur[j - 1], prev[j - 1])
-            )
+            cur.append(prev[j - 1] if r == h else 1 + min(prev[j], cur[j - 1], prev[j - 1]))
         prev = cur
     return prev[-1] / len(ref)
 
@@ -121,7 +119,11 @@ def first_chunk(text: str) -> str:
     return sent
 
 
-def _fmt(x: Optional[float], unit: str = "s", nd: int = 3) -> str:
+def _fmt(
+    x: Optional[float],
+    unit: str = "s",
+    nd: int = 3,
+) -> str:
     return "  n/a " if x is None else f"{x:.{nd}f}{unit}"
 
 
@@ -129,7 +131,12 @@ def _fmt(x: Optional[float], unit: str = "s", nd: int = 3) -> str:
 
 
 class StudioClient:
-    def __init__(self, base_url: str, token: str, timeout: float = 180.0):
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        timeout: float = 180.0,
+    ):
         self.base = base_url.rstrip("/")
         self.timeout = timeout
         self.s = requests.Session()
@@ -203,7 +210,7 @@ class StudioClient:
             "chat_template_kwargs": {"enable_thinking": enable_thinking},
         }
         t0 = time.perf_counter()
-        ttft: Optional[float] = None       # time to first spoken (content) token
+        ttft: Optional[float] = None  # time to first spoken (content) token
         think_first: Optional[float] = None
         think_last: Optional[float] = None
         chunks = 0
@@ -315,12 +322,7 @@ def ensure_fixture(client: StudioClient, turn: dict) -> tuple[bytes, float, bool
     return wav, wav_duration_seconds(wav), True
 
 
-def run_turn(
-    client: StudioClient,
-    turn: dict,
-    messages: list[dict],
-    args,
-) -> TurnResult:
+def run_turn(client: StudioClient, turn: dict, messages: list[dict], args) -> TurnResult:
     res = TurnResult(id = turn["id"], ground_truth = turn["text"])
 
     # 1) STT
@@ -427,8 +429,12 @@ def determinism_check(client: StudioClient, convo: dict, args) -> dict:
         {"role": "user", "content": turn1}
     ]
     try:
-        a = client.chat_stream(args.model, base, args.seed, args.temperature, args.max_tokens, args.think)
-        b = client.chat_stream(args.model, base, args.seed, args.temperature, args.max_tokens, args.think)
+        a = client.chat_stream(
+            args.model, base, args.seed, args.temperature, args.max_tokens, args.think
+        )
+        b = client.chat_stream(
+            args.model, base, args.seed, args.temperature, args.max_tokens, args.think
+        )
     except Exception as e:  # noqa: BLE001
         return {"ran": False, "identical": None, "error": str(e)}
     identical = a["text"] == b["text"]
@@ -454,8 +460,10 @@ def run_once(client: StudioClient, convo: dict, args) -> list[TurnResult]:
         if res.transcript:
             print(f"      heard : {res.transcript!r}  (WER {_fmt(res.wer, '', 3)})")
         if res.reason_chunks:
-            print(f"      THOUGHT {res.reason_chunks} chunks (~{_fmt(res.think_s)}) before "
-                  f"any spoken word -- pure first-audio latency")
+            print(
+                f"      THOUGHT {res.reason_chunks} chunks (~{_fmt(res.think_s)}) before "
+                f"any spoken word -- pure first-audio latency"
+            )
         if res.reply:
             flag = "ok" if res.topical_ok else "OFF-TOPIC?"
             print(f"      reply : {res.reply[:120]!r} [{flag}]")
@@ -532,8 +540,10 @@ def print_report(summary: dict, meta: dict) -> None:
     print(f"  chat model : {meta.get('model')}")
     print(f"  tts voice  : {meta.get('tts_voice')}")
     print(f"  stt model  : {meta.get('stt_model') or '(server default)'}")
-    print(f"  seed={meta.get('seed')} temp={meta.get('temperature')} passes={meta.get('repeats')} "
-          f"thinking={'ON' if meta.get('think') else 'off'}")
+    print(
+        f"  seed={meta.get('seed')} temp={meta.get('temperature')} passes={meta.get('repeats')} "
+        f"thinking={'ON' if meta.get('think') else 'off'}"
+    )
     print("-" * 78)
     hdr = (
         f"{'turn':>4}  {'stt':>7} {'sttRTF':>6}  {'ttft':>7} {'llm':>7} {'tok/s':>6}  "
@@ -553,16 +563,22 @@ def print_report(summary: dict, meta: dict) -> None:
     print(f"  TOTAL first-audio latency (drive this down) : {_fmt(tot['first_audio_latency_s'])}")
     print(f"  TOTAL full-pipeline wall                    : {_fmt(tot['pipeline_wall_s'])}")
     print(f"  mean first-audio latency / turn             : {_fmt(mean['first_audio_latency_s'])}")
-    print(f"  mean STT rtf {_fmt(mean['stt_rtf'],'x',2)}   mean TTS rtf {_fmt(mean['tts_rtf'],'x',2)}"
-          f"   mean LLM {_fmt(mean['llm_tok_s'],' t/s',1)}   mean WER {_fmt(mean['wer'],'',3)}")
+    print(
+        f"  mean STT rtf {_fmt(mean['stt_rtf'],'x',2)}   mean TTS rtf {_fmt(mean['tts_rtf'],'x',2)}"
+        f"   mean LLM {_fmt(mean['llm_tok_s'],' t/s',1)}   mean WER {_fmt(mean['wer'],'',3)}"
+    )
     det = meta.get("determinism", {})
     if det.get("ran"):
-        print(f"  determinism (turn1 x2, same seed)           : "
-              f"{'IDENTICAL [ok]' if det.get('identical') else 'DIFFERENT [FAIL]'}")
+        print(
+            f"  determinism (turn1 x2, same seed)           : "
+            f"{'IDENTICAL [ok]' if det.get('identical') else 'DIFFERENT [FAIL]'}"
+        )
     cold = meta.get("cold", {})
     if any(cold.values()):
-        print(f"  cold-start (first call)  STT {_fmt(cold.get('stt_s'))} "
-              f"LLM {_fmt(cold.get('llm_s'))} TTS {_fmt(cold.get('tts_s'))}")
+        print(
+            f"  cold-start (first call)  STT {_fmt(cold.get('stt_s'))} "
+            f"LLM {_fmt(cold.get('llm_s'))} TTS {_fmt(cold.get('tts_s'))}"
+        )
     print("=" * 78)
 
 
@@ -666,7 +682,11 @@ def main() -> int:
         print("No chat model loaded. Load one in the Studio UI, then re-run.")
         return 2
     vst = client.voice_status()
-    tts_voice = vst.get("model") or vst.get("active_model") or ("model-owned" if st.get("is_audio") else "(loaded voice)")
+    tts_voice = (
+        vst.get("model")
+        or vst.get("active_model")
+        or ("model-owned" if st.get("is_audio") else "(loaded voice)")
+    )
 
     print(f"Studio {args.base_url}  |  chat={args.model}  |  voice={tts_voice}")
 
