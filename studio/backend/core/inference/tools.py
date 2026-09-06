@@ -16108,14 +16108,14 @@ def _python_exec(
             "/proc environment reads; refusing bypass execution."
         )
 
+    tmp_path = None
+    _scratch_name = None
+    workdir = _get_workdir(session_id)
+    # After the workdir exists: the confinement names the roots it sits in.
     try:
         confinement = _account_confinement()
     except ToolConfinementUnavailable as exc:
         return _truncate(f"Execution error: {exc}")
-
-    tmp_path = None
-    _scratch_name = None
-    workdir = _get_workdir(session_id)
     # `_get_workdir(None)` is the shared `_default` sandbox, and a project's chats share
     # one session by design. Retaining a result in either, under a path the next chat can
     # list, would leave behind output that existed only in this call's own response. See
@@ -16291,12 +16291,12 @@ def _bash_exec(
     spill_scope = None
     call_token = None
     try:
-        confinement = _account_confinement()
-    except ToolConfinementUnavailable as exc:
-        return _truncate(f"Execution error: {exc}")
-
-    try:
         workdir = _get_workdir(session_id)
+        # After the workdir exists: the confinement names the roots it sits in.
+        try:
+            confinement = _account_confinement()
+        except ToolConfinementUnavailable as exc:
+            return _truncate(f"Execution error: {exc}")
         # Same scoping as _python_exec: nothing is retained in a sandbox that is shared.
         spill_scope = _spill_scope(session_id, thread_id)
         spill_dir = workdir if session_id else None

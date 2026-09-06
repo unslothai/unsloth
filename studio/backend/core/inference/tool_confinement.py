@@ -143,15 +143,17 @@ def _interpreter_roots() -> list[str]:
 
 
 def _writable_roots() -> list[str]:
+    """The account's own roots, created if this is its first tool call: a rule
+    can only name a path that exists, and the child's sandbox lives inside."""
     from utils.paths.storage_roots import tmp_root, workspace_root
 
-    roots = [str(workspace_root())]
-    try:
-        tmp = tmp_root()
-        tmp.mkdir(parents = True, exist_ok = True)
-        roots.append(str(tmp))
-    except OSError:
-        pass
+    roots = []
+    for root in (workspace_root(), tmp_root()):
+        try:
+            root.mkdir(parents = True, exist_ok = True)
+        except OSError:
+            continue
+        roots.append(str(root))
     return _existing(roots)
 
 
