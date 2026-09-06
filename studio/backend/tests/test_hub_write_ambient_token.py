@@ -195,9 +195,7 @@ def worker_in_process(monkeypatch):
     "allow_ambient,caller_token,env_token,disable_implicit,passed",
     [
         (False, None, None, "1", None),
-        # The caller's own token does NOT go into the environment: this process outlives
-        # the load and the next export command may be someone else's. It travels as an
-        # argument instead, which is what `passed` pins.
+        # The caller's token is passed, not planted: this worker serves later callers.
         (False, "hf_caller", None, "1", "hf_caller"),
         (True, None, "hf_operator_secret", None, None),
     ],
@@ -244,10 +242,8 @@ def test_the_worker_environment_matches_the_callers_policy(
 def test_a_non_ambient_worker_holds_no_credential_for_the_next_caller(
     monkeypatch, worker_in_process
 ):
-    """The worker is a singleton: load_checkpoint respawns it, every export command reuses
-    whichever one is alive, from whichever caller. So a credential in its environment is a
-    credential in the ambient position for whoever exports next. An API-key caller's own
-    token must not be left there any more than the operator's."""
+    """One worker serves many callers, so a credential in its environment is a credential
+    in the ambient position for whoever exports next, the caller's own included."""
     import os
 
     import huggingface_hub
@@ -604,8 +600,8 @@ def test_offline_tier_detection_is_not_degraded_by_the_sentinel(monkeypatch, tmp
 
 
 def test_every_export_entry_point_declares_the_anonymous_sentinel_type():
-    """A parameter that can receive ``False`` must say so. ``str | None`` on one of these
-    is an invitation to normalise it back to ``None``, which is the ambient state."""
+    """``str | None`` on a parameter that receives ``False`` invites normalising it back
+    to ``None``, which is the ambient state."""
     import inspect
 
     from core.export.export import ExportBackend
@@ -634,8 +630,7 @@ def test_every_export_entry_point_declares_the_anonymous_sentinel_type():
 
 
 def test_every_hub_write_route_names_the_ambient_policy():
-    """A new export or publish endpoint must not ship ungated by being forgotten. This is
-    the check that would have caught the two routes #10126 reported."""
+    """The check that would have caught the two routes #10126 reported."""
     import inspect
 
     from auth.authentication import allow_ambient_hf_token
@@ -664,8 +659,8 @@ def test_every_hub_write_route_names_the_ambient_policy():
 
 
 def test_every_mcp_tool_that_calls_a_gated_route_names_the_policy():
-    """A direct Python call never resolves a FastAPI ``Depends`` default, so each MCP tool
-    that calls a gated route has to pass the policy itself or it silently goes ambient."""
+    """A direct call never resolves a ``Depends`` default, so each tool passes it or goes
+    ambient in silence."""
     import inspect
     import re
 

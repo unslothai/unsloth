@@ -23,10 +23,8 @@ def hf_token_arg(hf_token: Optional[str], *, allow_ambient_token: bool) -> HfTok
 
 
 # Mirrors the list hub/services/download_lifecycle.py scrubs for download workers.
-# HF_OIDC_RESOURCE is not a token but names one: huggingface_hub >= 1.23 exchanges it for a
-# short-lived credential in get_token(), AHEAD of HF_TOKEN, so leaving it behind hands a
-# scrubbed child an operator-scoped token by another road. Harmless on older versions,
-# which have no OIDC source at all.
+# HF_OIDC_RESOURCE names a token rather than holding one: hub >= 1.23 exchanges it inside
+# get_token(), ahead of HF_TOKEN, so a scrubbed child would still resolve the operator's.
 _HF_TOKEN_ENV_KEYS = (
     "HF_TOKEN",
     "HF_HUB_TOKEN",
