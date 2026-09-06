@@ -187,9 +187,10 @@ def test_a_link_session_is_not_a_desktop_session():
 
 def test_an_ordinary_access_token_is_not_link_scoped():
     admin = _seed_admin()
-    assert authentication.is_link_access_token(
-        authentication.create_access_token(subject = admin)
-    ) is False
+    assert (
+        authentication.is_link_access_token(authentication.create_access_token(subject = admin))
+        is False
+    )
 
 
 def test_a_link_token_is_not_a_bearer_token_and_vice_versa():

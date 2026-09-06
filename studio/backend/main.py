@@ -2332,9 +2332,7 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
         # deadline (0) falls back to the default rather than minting a token that
         # never expires.
         setup_ttl = bootstrap_timeout_seconds() or DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
-        link_token = create_link_token(
-            storage.DEFAULT_ADMIN_USERNAME, expires_in = setup_ttl
-        )
+        link_token = create_link_token(storage.DEFAULT_ADMIN_USERNAME, expires_in = setup_ttl)
     except Exception:
         # No token means the page simply shows the ordinary login form; never
         # fall back to serving the seed.
@@ -2351,8 +2349,6 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     html = html_bytes.decode("utf-8")
     html = html.replace("</head>", f"{tag}</head>", 1)
     return html.encode("utf-8"), nonce
-
-
 
 
 _IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
