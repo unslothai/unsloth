@@ -424,9 +424,7 @@ def test_pinning_the_index_never_starves_a_reachable_torch():
             version = f"2.{minor}.0+{tag}"
             spec = ips._select_torchcodec_spec(version)
             specifier = SpecifierSet(spec.split("torchcodec", 1)[1])
-            served = [
-                f"0.{m}.0" for m in range(low, high + 1) if specifier.contains(f"0.{m}.0")
-            ]
+            served = [f"0.{m}.0" for m in range(low, high + 1) if specifier.contains(f"0.{m}.0")]
             index = ips._torchcodec_index_url(version, spec)
             if index is None:
                 # Only the PyPI-only rows may decline to pin.
@@ -447,7 +445,9 @@ def test_the_two_pypi_only_rows_stay_unpinned():
         version = f"2.{minor}.0+cu126"
         assert ips._torchcodec_index_url(version, ips._select_torchcodec_spec(version)) is None
     # 2.7 selects >=0.3.0,<0.6.0, which the indexes do carry, so it pins.
-    assert ips._torchcodec_index_url("2.7.0+cu118", ips._select_torchcodec_spec("2.7.0")) is not None
+    assert (
+        ips._torchcodec_index_url("2.7.0+cu118", ips._select_torchcodec_spec("2.7.0")) is not None
+    )
 
 
 def test_compat_matrix_matches_the_published_upstream_table():
@@ -596,9 +596,9 @@ def test_a_requested_codec_range_beats_the_preinstalled_oracle():
         '!pip install torch==2.10.0 "torchcodec>=0.12.0"',
     ]
     for cell in flagged:
-        assert [
-            f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)
-        ] == ["R-INST-004"], cell
+        assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)] == [
+            "R-INST-004"
+        ], cell
 
 
 def test_validator_and_runtime_guard_agree_on_the_whole_matrix(monkeypatch):
