@@ -160,7 +160,11 @@ def first_chunk_arrival(arrivals: list[tuple[int, float]], span: int) -> Optiona
     return arrivals[-1][1]
 
 
-def _fmt(x: Optional[float], unit: str = "s", nd: int = 3) -> str:
+def _fmt(
+    x: Optional[float],
+    unit: str = "s",
+    nd: int = 3,
+) -> str:
     return "  n/a " if x is None else f"{x:.{nd}f}{unit}"
 
 
@@ -690,8 +694,10 @@ def print_report(summary: dict, meta: dict) -> None:
     print(f"  chat model : {meta.get('model')}")
     print(f"  tts voice  : {meta.get('tts_voice')}")
     print(f"  stt model  : {meta.get('stt_model') or '(server default)'}")
-    print(f"  seed={meta.get('seed')} temp={meta.get('temperature')} passes={meta.get('repeats')} "
-          f"thinking={'ON' if meta.get('think') else 'off'}")
+    print(
+        f"  seed={meta.get('seed')} temp={meta.get('temperature')} passes={meta.get('repeats')} "
+        f"thinking={'ON' if meta.get('think') else 'off'}"
+    )
     print("-" * 84)
     hdr = (
         f"{'turn':>4}  {'stt':>7} {'sttRTF':>6}  {'ttft':>7} {'chunk':>7} {'llm':>7} {'tok/s':>6}  "
@@ -723,11 +729,15 @@ def print_report(summary: dict, meta: dict) -> None:
         )
     cold = meta.get("cold", {})
     if any(cold.values()):
-        print(f"  cold-start (first call)  STT {_fmt(cold.get('stt_s'))} "
-              f"LLM {_fmt(cold.get('llm_s'))} TTS {_fmt(cold.get('tts_s'))}")
+        print(
+            f"  cold-start (first call)  STT {_fmt(cold.get('stt_s'))} "
+            f"LLM {_fmt(cold.get('llm_s'))} TTS {_fmt(cold.get('tts_s'))}"
+        )
     if not summary.get("complete", True):
-        print("  RUN INCOMPLETE [FAIL]: the totals above skip the failed turns below and "
-              "are not comparable to a baseline")
+        print(
+            "  RUN INCOMPLETE [FAIL]: the totals above skip the failed turns below and "
+            "are not comparable to a baseline"
+        )
         for gap in summary.get("incomplete", []):
             detail = "; ".join(gap["errors"]) or f"missing {', '.join(gap['missing'])}"
             print(f"    pass {gap['pass']} turn {gap['turn']}: {detail}")
