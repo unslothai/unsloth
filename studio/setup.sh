@@ -3547,6 +3547,83 @@ PY
     fi
 fi
 
+# ── torchcodec: report whether it can actually load ──
+# pyproject declares torchcodec on linux and win32, but its wheel is Python-side
+# only: at import it dlopens FFmpeg's avcodec/avutil. Where those are absent it
+# still installs, reports a version, and satisfies the torch/torchcodec matrix
+# notebook_validator enforces, then fails at import. `datasets` 4.x decodes audio
+# only through it and reports that as "please install 'torchcodec'", naming a
+# package that is already installed. Say so here, while setup is still on screen.
+# Skipped in llama-only mode: it installs no Python deps, so there is nothing new
+# to report, and _SKIP_PYTHON_DEPS is not assigned on that path at all -- the block
+# that sets it is the base install, which ends well above here.
+if [ "$_LLAMA_ONLY" != "1" ] && [ "${_SKIP_PYTHON_DEPS:-false}" != true ]; then
+    # Importing torchcodec imports torch, so this is bounded like the XPU probe
+    # above: a wedged GPU runtime must not hang setup. The in-body alarm carries
+    # that bound where coreutils timeout is absent, stock macOS most of all; the
+    # default SIGALRM action ends the process, which reads as the silent case.
+    # alarm is POSIX-only, and on Windows Invoke-BoundedPythonProbe is the bound.
+    _TORCHCODEC_PROBE='
+import signal
+_alarm = getattr(signal, "alarm", None)
+if _alarm is not None:
+    _alarm(60)
+
+
+def _ffmpeg_on_loader_path():
+    import ctypes.util, glob, os
+    if any(ctypes.util.find_library(n) for n in ("avutil", "avcodec", "avformat")):
+        return True
+    # find_library does not glob, and Windows ships these as avutil-59.dll and
+    # friends, so PATH is walked for the versioned names it would otherwise miss.
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if d and glob.glob(os.path.join(d, "avutil-*.dll")):
+            return True
+    return False
+
+
+try:
+    import torchcodec  # noqa: F401
+except ModuleNotFoundError as e:
+    # Exactly torchcodec is absent. An absent package always names itself here, so
+    # anything else, a transitive module or one of its own submodules from a
+    # damaged wheel, is an install that is present and broken.
+    print("TORCHCODEC=" + ("absent" if getattr(e, "name", "") == "torchcodec" else "broken"))
+except Exception:
+    import traceback
+    # torchcodec folds every native load failure into one message naming
+    # libtorchcodec, which lists a missing FFmpeg, a torch mismatch and another
+    # runtime dependency together, so the text alone cannot pick between them.
+    # Ask the system instead: no FFmpeg on the loader path is the one cause that
+    # can be established here, and it is the only one worth naming a fix for.
+    if "libtorchcodec" not in traceback.format_exc():
+        print("TORCHCODEC=broken")
+    else:
+        print("TORCHCODEC=" + ("native" if _ffmpeg_on_loader_path() else "ffmpeg"))
+else:
+    print("TORCHCODEC=ok")
+'
+    # The answer is read as its own line, like the other bounded probes: a torch
+    # import banner on stdout would otherwise never match any state below.
+    if command -v timeout >/dev/null 2>&1; then
+        _TORCHCODEC_STATE="$(timeout 60 python -c "$_TORCHCODEC_PROBE" 2>/dev/null | sed -n "s/^TORCHCODEC=//p" | tail -n 1 || true)"
+    else
+        _TORCHCODEC_STATE="$(python -c "$_TORCHCODEC_PROBE" 2>/dev/null | sed -n "s/^TORCHCODEC=//p" | tail -n 1 || true)"
+    fi
+
+    if [ "$_TORCHCODEC_STATE" = "ffmpeg" ]; then
+        step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; install an FFmpeg full-shared build to decode those" "$C_WARN"
+    elif [ "$_TORCHCODEC_STATE" = "native" ]; then
+        step "torchcodec" "installed but cannot load its native libraries, and FFmpeg is already on the loader path; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; either the FFmpeg here is a major it does not support (it takes 4 to 7) or this build does not match your torch" "$C_WARN"
+    elif [ "$_TORCHCODEC_STATE" = "broken" ]; then
+        step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; reinstall torchcodec against this torch build" "$C_WARN"
+    elif [ "$_TORCHCODEC_STATE" = "ok" ]; then
+        step "torchcodec" "FFmpeg libraries loaded"
+    fi
+    # "absent", a timeout and a probe that could not run stay silent: none of them
+    # says anything about FFmpeg, and audio decoding still has the soundfile path.
+fi
+
 # ── Footer ──
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
