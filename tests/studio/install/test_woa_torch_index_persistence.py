@@ -4618,6 +4618,7 @@ class TestThePyPIProbeHonoursUvConfiguration:
                 f"$env:ProgramData = '{tmp_path / 'programdata'}'",
                 f"Set-Location -LiteralPath '{tmp_path / 'proj'}'",
                 setenv,
+                _ps_function(INSTALL_PS1, "Test-WoaUrlIsPublicPyPI"),
                 _ps_function(INSTALL_PS1, "Read-WoaUvTomlIndexKeys"),
                 _ps_function(INSTALL_PS1, "Get-WoaUvConfigIndexPolicy"),
                 _ps_function(INSTALL_PS1, "Test-WoaResolveReachesPyPI"),
@@ -4718,6 +4719,14 @@ class TestThePyPIProbeHonoursUvConfiguration:
                 "False",
                 "an inline table this parser does not model is not guessed at",
             ),
+            # The host, not a substring: a lookalike that merely contains the name is not PyPI.
+            ({}, {"UV_DEFAULT_INDEX": "https://pypi.org.corp.example/simple"}, "False", "a subdomain lookalike in the environment"),
+            ({}, {"UV_DEFAULT_INDEX": "https://packages.example/api/pypi/pypi.org/simple"}, "False", "the name in the path"),
+            ({}, {"UV_INDEX_URL": "HTTPS://PYPI.ORG/simple/"}, "True", "case does not matter for a host"),
+            ({}, {"PIP_INDEX_URL": "https://user:token@pypi.org/simple"}, "True", "credentials do not hide the host"),
+            ({}, {"UV_DEFAULT_INDEX": "https://test.pypi.org/simple"}, "False", "TestPyPI does not carry these packages"),
+            ({"proj/uv.toml": 'default-index = "https://pypi.org.corp.example/simple"\n'}, {}, "False", "a subdomain lookalike in a config file"),
+            ({"proj/uv.toml": 'default-index = "https://pypi.org/simple"\n'}, {}, "True", "public PyPI named explicitly in a config file"),
         ],
     )
     def test_where_the_resolve_will_look(self, tmp_path, files, env, expected, why):

@@ -1113,6 +1113,28 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
         self._write("proj/uv.toml", "this is = not [ toml\n")
         assert ips._public_pypi_is_reachable() is False
 
+    @pytest.mark.parametrize(
+        "url, is_pypi, why",
+        [
+            ("https://pypi.org/simple", True, "the default index"),
+            ("HTTPS://PYPI.ORG/simple/", True, "case does not matter for a host"),
+            ("https://user:token@pypi.org/simple", True, "credentials do not hide the host"),
+            ("https://pypi.org.corp.example/simple", False, "a subdomain lookalike"),
+            ("https://packages.example/api/pypi/pypi.org/simple", False, "the name in the path"),
+            ("https://test.pypi.org/simple", False, "TestPyPI does not carry these packages"),
+            ("pypi.org/simple", False, "no scheme, no host"),
+            ("", False, "empty"),
+        ],
+    )
+    def test_the_host_decides_not_a_substring(self, ips, monkeypatch, url, is_pypi, why):
+        assert ips._url_is_public_pypi(url) is is_pypi, why
+        if url:
+            monkeypatch.setenv("UV_DEFAULT_INDEX", url)
+            assert ips._public_pypi_is_reachable() is is_pypi, "the environment path: " + why
+            monkeypatch.delenv("UV_DEFAULT_INDEX")
+            self._write("proj/uv.toml", f'default-index = "{url}"\n')
+            assert ips._public_pypi_is_reachable() is is_pypi, "the config path: " + why
+
 
 class TestSqliteVecIsAnExplicitOptionalToo:
     """Marker-excluded on ARM64 in pyproject.toml and studio.txt alike, and the one

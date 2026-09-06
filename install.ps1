@@ -597,6 +597,16 @@ function Install-UnslothStudio {
         return $result
     }
 
+    # The host, not a substring: "https://pypi.org.corp.example/simple" and
+    # ".../api/pypi/pypi.org/simple" both contain the name and neither is public PyPI.
+    function Test-WoaUrlIsPublicPyPI {
+        param([string]$Url)
+        if (-not $Url) { return $false }
+        try { $u = [System.Uri]$Url.Trim() } catch { return $false }
+        if (-not $u.IsAbsoluteUri) { return $false }
+        return ($u.Host.ToLowerInvariant() -eq "pypi.org")
+    }
+
     function Test-WoaResolveReachesPyPI {
         foreach ($name in @("UV_OFFLINE", "PIP_NO_INDEX")) {
             $flag = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
@@ -605,12 +615,12 @@ function Install-UnslothStudio {
         # An index set in the environment outranks every file, so it decides on its own.
         foreach ($name in @("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL")) {
             $url = [string](Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
-            if ($url -and ($url.Trim())) { return ($url -like "*pypi.org*") }
+            if ($url -and ($url.Trim())) { return (Test-WoaUrlIsPublicPyPI $url) }
         }
         # Doubt resolves to "not PyPI": that answer keeps a wheel, the other loses the package.
         $cfg = Get-WoaUvConfigIndexPolicy
         if ($cfg.Unreadable -or $cfg.NoIndex) { return $false }
-        if ($cfg.DefaultIndex -and ($cfg.DefaultIndex -notlike "*pypi.org*")) { return $false }
+        if ($cfg.DefaultIndex -and -not (Test-WoaUrlIsPublicPyPI $cfg.DefaultIndex)) { return $false }
         return $true
     }
 

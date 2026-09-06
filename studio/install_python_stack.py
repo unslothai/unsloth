@@ -5838,6 +5838,17 @@ def _uv_config_index_policy() -> "dict[str, object]":
     return policy
 
 
+def _url_is_public_pypi(url: str) -> bool:
+    """The host, not a substring: "https://pypi.org.corp.example/simple" and
+    ".../api/pypi/pypi.org/simple" both contain the name and neither is public PyPI."""
+    try:
+        from urllib.parse import urlsplit
+        host = urlsplit(url.strip()).hostname
+    except ValueError:
+        return False
+    return host is not None and host.lower() == "pypi.org"
+
+
 def _public_pypi_is_reachable() -> bool:
     """Can this resolution actually reach public PyPI?
 
@@ -5857,12 +5868,12 @@ def _public_pypi_is_reachable() -> bool:
     for var in ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL"):
         value = os.environ.get(var, "").strip()
         if value:
-            return "pypi.org" in value
+            return _url_is_public_pypi(value)
     policy = _uv_config_index_policy()
     if policy["unreadable"] or policy["no_index"] is True:
         return False
     default = policy["default_index"]
-    if isinstance(default, str) and "pypi.org" not in default:
+    if isinstance(default, str) and not _url_is_public_pypi(default):
         return False
     return True
 
