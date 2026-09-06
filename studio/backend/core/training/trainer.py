@@ -6,6 +6,7 @@ Unsloth Training Backend
 Integrates Unsloth training with the FastAPI backend.
 """
 
+from utils.account_context import account_thread
 import gc
 import os
 import sys
@@ -3311,7 +3312,7 @@ class UnslothTrainer:
                 Seq2SeqTrainingArguments as _Seq2SeqTrainingArguments,
             )
 
-        self.training_thread = threading.Thread(
+        self.training_thread = account_thread(
             target = self._train_worker,
             args = (dataset,),
             kwargs = {

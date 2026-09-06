@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import weakref
+from core.training.account_jobs import account_is_retired, account_key, job_accounts
+from utils.account_context import arun_as, run_as
 import asyncio
 import json
 import os
@@ -870,6 +873,8 @@ def _update_assistant(
     reasoning: str = "",
     completion_worker_id: str | None = None,
 ) -> None:
+    if account_is_retired():
+        return
     message_id = db.discover_and_bind_assistant_message(run["id"])
     if not message_id:
         if status not in db.TERMINAL_STATUSES:
@@ -938,12 +943,17 @@ def _update_assistant(
     )
 
 
+_supervisors = weakref.WeakSet()
+
+
 class ResearchSupervisor:
     def __init__(
         self,
         app: Any,
         poll_seconds: float = 0.5,
     ) -> None:
+        _supervisors.add(self)
+        self.job_account = None
         self.app = app
         self.poll_seconds = poll_seconds
         self.worker_id = uuid.uuid4().hex
@@ -970,19 +980,22 @@ class ResearchSupervisor:
                     # Polling is intentionally sufficient for one local process; requests never own tasks.
                     pass
         finally:
-            await asyncio.to_thread(db.release_worker_leases, self.worker_id)
+            for account in job_accounts():
+                await asyncio.to_thread(run_as, account, db.release_worker_leases, self.worker_id)
 
     def wake(self) -> None:
         pass
 
     def cancel(self, run_id: str) -> None:
-        self._cancel_events.setdefault(run_id, threading.Event()).set()
+        self._cancel_events.setdefault(account_key(run_id), threading.Event()).set()
 
     def _cancel_event(self, run_id: str) -> threading.Event:
-        return self._cancel_events.setdefault(run_id, threading.Event())
+        return self._cancel_events.setdefault(account_key(run_id), threading.Event())
 
     async def _check_active(self, run_id: str) -> None:
-        if run_id in self._lost_leases:
+        if account_is_retired():
+            raise RunCancelled()
+        if account_key(run_id) in self._lost_leases:
             raise LeaseLost()
         cancelled, owns_lease = await asyncio.gather(
             asyncio.to_thread(db.is_cancel_requested, run_id),
@@ -1125,11 +1138,15 @@ class ResearchSupervisor:
                 if self._server_port() is None:
                     await asyncio.sleep(self.poll_seconds)
                     continue
-                run = await asyncio.to_thread(db.claim_next, self.worker_id)
+                account, run = await asyncio.to_thread(self._claim_account_run)
                 if run is None:
                     await asyncio.sleep(self.poll_seconds)
                     continue
-                await self._process(run)
+                self.job_account = account
+                try:
+                    await arun_as(account, self._process(run))
+                finally:
+                    self.job_account = None
             except asyncio.CancelledError:
                 raise
             except sqlite3.OperationalError as exc:
@@ -1143,6 +1160,13 @@ class ResearchSupervisor:
             except Exception:
                 logger.exception("research.supervisor_iteration_failed")
                 await asyncio.sleep(1)
+
+    def _claim_account_run(self):
+        for account in job_accounts():
+            run = run_as(account, db.claim_next, self.worker_id)
+            if run is not None:
+                return account, run
+        return None, None
 
     def _server_port(self) -> int | None:
         port = getattr(self.app.state, "server_port", None)
@@ -1837,8 +1861,8 @@ class ResearchSupervisor:
                 await heartbeat
             except asyncio.CancelledError:
                 pass
-            self._cancel_events.pop(run["id"], None)
-            self._lost_leases.discard(run["id"])
+            self._cancel_events.pop(account_key(run["id"]), None)
+            self._lost_leases.discard(account_key(run["id"]))
 
     async def _heartbeat(self, run_id: str) -> None:
         delay = 30.0
@@ -1854,14 +1878,14 @@ class ResearchSupervisor:
                 # 120-second lease expires.
                 consecutive_errors += 1
                 if consecutive_errors >= 10:
-                    self._lost_leases.add(run_id)
+                    self._lost_leases.add(account_key(run_id))
                     self.cancel(run_id)
                     return
                 delay = 1.0
                 continue
             consecutive_errors = 0
             if not renewed:
-                self._lost_leases.add(run_id)
+                self._lost_leases.add(account_key(run_id))
                 self.cancel(run_id)
                 return
 
@@ -2690,3 +2714,11 @@ class ResearchSupervisor:
         run = await asyncio.to_thread(db.get_run, run["id"])
         if actual_status == "cancelled" and not _run_moved_on(run, research_attempt):
             await asyncio.to_thread(_update_assistant, run, "Research cancelled.", "cancelled")
+
+
+def retire_account_research(account) -> None:
+    """Cancel this account's in-flight generation without stopping the supervisor."""
+    for supervisor in tuple(_supervisors):
+        for key, event in list(supervisor._cancel_events.items()):
+            if (isinstance(key, str) and account.is_owner) or (isinstance(key, tuple) and key[0] == account.account_id):
+                event.set()

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_event_stream
 import copy
 import time
 from datetime import datetime, timedelta, timezone
@@ -655,7 +656,7 @@ async def job_events(request: Request, job_id: str):
             mgr.unsubscribe(sub)
 
     return StreamingResponse(
-        gen(),
+        account_event_stream(mgr, gen()),
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path, managed_account
 import base64
 import binascii
 import json
@@ -208,6 +209,7 @@ def _decode_base64_payload(content_base64: str) -> bytes:
 
 
 def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
+    account_path(path)
     try:
         import pandas as pd
     except ImportError as exc:
@@ -260,6 +262,7 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
 def _read_preview_rows_from_unstructured_file(
     *, path: Path, preview_size: int, chunk_size: int | None, chunk_overlap: int | None
 ) -> list[dict[str, Any]]:
+    account_path(path)
     chunking = _chunking()
     if chunking is None:
         raise HTTPException(
@@ -346,7 +349,7 @@ def inspect_seed_dataset(
     # the ambient fallback from UI sessions too.
     token = hf_token_arg(
         _normalize_optional_text(payload.hf_token),
-        allow_ambient_token = allow_ambient_token,
+        allow_ambient_token = allow_ambient_token and not managed_account(),
     )
     preview_size = int(payload.preview_size)
     if is_anonymous(token) and hf_env_offline():
@@ -513,6 +516,7 @@ def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
     except NativePathLeaseError as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    account_path(grant.canonical_path)
     _require_unstructured_ext(grant.canonical_path.name)
     try:
         size_bytes = grant.canonical_path.stat().st_size
@@ -810,5 +814,7 @@ def get_github_env_token_status() -> dict:
     The value is never returned; the UI uses this to tell the user they
     can leave the token field blank.
     """
+    if managed_account():
+        return {"has_token": False}
     has_token = bool(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
     return {"has_token": has_token}

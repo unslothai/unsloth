@@ -5,6 +5,13 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import (
+    account_is_retired,
+    account_key,
+    account_path,
+    job_accounts,
+)
+from utils.account_context import account_thread, run_as
 import hashlib
 import json
 import logging
@@ -19,7 +26,7 @@ import weakref
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from storage import rag_db
+from core.rag import account_db as rag_db
 from utils.paths import ensure_dir, rag_uploads_root
 
 from . import config, ingestion, job_leases, store
@@ -60,12 +67,12 @@ class _FolderChanged(RuntimeError):
 
 def _folder_lock(folder_id: str) -> threading.RLock:
     with _named_locks_lock:
-        return _folder_locks.setdefault(folder_id, threading.RLock())
+        return _folder_locks.setdefault(account_key(folder_id), threading.RLock())
 
 
 def _scope_lock(scope: str) -> threading.RLock:
     with _named_locks_lock:
-        return _scope_locks.setdefault(scope, threading.RLock())
+        return _scope_locks.setdefault(account_key(scope), threading.RLock())
 
 
 def _now() -> str:
@@ -126,6 +133,7 @@ def _is_within(root: str, path: str) -> bool:
 
 def validate_folder_path(path: str) -> str:
     """Apply the existing model scan-folder policy without persisting there."""
+    account_path(path)
     if not path or not path.strip() or "\x00" in path:
         raise ValueError("Path cannot be empty")
     expanded = os.path.abspath(os.path.expanduser(path))
@@ -1072,6 +1080,8 @@ def _copy_exact(source, target, size: int) -> None:
 
 
 def _check_running() -> None:
+    if account_is_retired():
+        raise _SyncStopped
     stop_event = getattr(_worker_state, "stop_event", _stop)
     if stop_event.is_set():
         raise _SyncStopped
@@ -1707,17 +1717,15 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
             _worker_state.stop_event = stop_event
             while not stop_event.is_set():
                 try:
-                    _recover_startup_state()
-                    if project_exists is not None:
-                        reconcile_retired_scopes(project_exists)
-                    _enqueue_periodic()
+                    for account in job_accounts():
+                        run_as(account, _initialize_account_sync, project_exists, recover = True)
                     break
                 except Exception:
                     logger.warning("linked-folder worker initialization failed", exc_info = True)
                     stop_event.wait(1.0)
             while not stop_event.is_set():
                 try:
-                    job = _next_job()
+                    job = _next_account_job()
                 except Exception:
                     # Writer-lock contention must not retire the only worker; the initialization and periodic paths
                     # retry.
@@ -1725,20 +1733,19 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                     stop_event.wait(1.0)
                     continue
                 if job:
-                    job_id, folder_id = job
+                    account, job_id, folder_id = job
                     try:
-                        reconcile_folder(job_id)
+                        run_as(account, reconcile_folder, job_id)
                     except Exception as exc:
                         logger.exception("linked-folder job %s failed unexpectedly", job_id)
-                        _fail_job(job_id, exc)
+                        run_as(account, _fail_job, job_id, exc)
                     continue
                 _wake.wait(max(1.0, config.FOLDER_SYNC_INTERVAL_S))
                 _wake.clear()
                 if not stop_event.is_set():
                     try:
-                        if project_exists is not None:
-                            reconcile_retired_scopes(project_exists)
-                        _enqueue_periodic()
+                        for account in job_accounts():
+                            run_as(account, _initialize_account_sync, project_exists)
                     except Exception:
                         logger.warning("linked-folder periodic scheduling failed", exc_info = True)
     finally:
@@ -1828,7 +1835,7 @@ def start_auto_sync(
             stop_event = threading.Event()
             _stop.clear()
             _thread_stop = stop_event
-            _thread = threading.Thread(
+            _thread = account_thread(
                 target = _worker,
                 args = (stop_event, project_exists),
                 daemon = True,
@@ -1855,3 +1862,24 @@ def stop_auto_sync(timeout: float = 2.0) -> None:
         stop_event.set()
     if thread is not None:
         thread.join(timeout = timeout)
+
+
+def _initialize_account_sync(project_exists, *, recover: bool = False) -> None:
+    if recover:
+        _recover_startup_state()
+    if project_exists is not None:
+        reconcile_retired_scopes(project_exists)
+    _enqueue_periodic()
+
+
+def _next_account_job():
+    for account in job_accounts():
+        job = run_as(account, _next_job)
+        if job:
+            return (account, *job)
+    return None
+
+
+def retire_account_sync() -> None:
+    """Wake the supervisor; retirement checks stop only the retired account."""
+    _wake.set()

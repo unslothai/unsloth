@@ -16,6 +16,8 @@ fails); ``RAG_EMBED_DEVICE`` forces it. We call only llama_cpp's *static* helper
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path, managed_account
+from utils.account_context import account_thread
 import atexit
 import logging
 import os
@@ -411,6 +413,7 @@ class LlamaServerBackend:
 
         ``model_name`` is the model the caller pinned; the live setting would
         resolve B's weights for a job still tagging its vectors as A."""
+        account_path(model_name, reference = True)
         model = model_name or config.effective_embedding_model()
         # Captured once: the path must stay tagged with the repo it was resolved FOR, so a mid-download
         # setting change reads as stale and respawns.
@@ -556,7 +559,7 @@ class LlamaServerBackend:
         from core.inference.llama_cpp import _hf_offline_if_unreachable
         from utils.utils import call_with_deadline
 
-        token = os.environ.get("HF_TOKEN") or None
+        token = False if managed_account() else os.environ.get("HF_TOKEN") or None
         repo = desired
         filename: str | None = None
         family: list[str] = []
@@ -800,7 +803,7 @@ class LlamaServerBackend:
         # after a force quit.
         adopt_pid(proc.pid)
         self._port = port
-        self._stdout_thread = threading.Thread(
+        self._stdout_thread = account_thread(
             target = self._drain_stdout,
             args = (proc,),
             daemon = True,
