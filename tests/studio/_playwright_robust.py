@@ -439,6 +439,7 @@ def prepare_first_boot_form(
         def _on_response(response: Any) -> None:
             if "/api/auth/link-exchange" in response.url:
                 info(f"link-exchange -> {response.status}")
+
         try:
             page.on("response", _on_response)
         except Exception:
