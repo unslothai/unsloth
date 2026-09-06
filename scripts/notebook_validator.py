@@ -605,13 +605,18 @@ def rule_inst_003_peft_torchao(
     return findings
 
 
-def _requested_bounds(install_cell: str, package: str) -> tuple[str, str]:
-    """The floor and ceiling of the LAST invocation that constrains `package`.
+def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, bool]:
+    """Floor, ceiling and removed-flag from the LAST invocation naming `package`.
 
     Order matters and intersecting does not: pip runs the commands in sequence, so
     `torchcodec>=0.12.0` followed by `torchcodec<0.12.0` ends on a pre-0.12 codec, while
     taking the highest floor and lowest ceiling across both would invent a 0.12 that was
-    never installed. Only the last command decides.
+    never installed. Only the last command decides, and if that command is an uninstall the
+    package is gone rather than pinned.
+
+    Names are matched the way pip compares them, case-insensitively (PEP 503), which is what
+    parse_spec already does: `TorchCodec>=0.12.0` is the same requirement as the lowercase
+    spelling and must move the version too.
 
     A requirement carrying a PEP 508 marker is skipped. Evaluating one needs the image's
     interpreter, which this branch has no oracle for, and guessing against the runner would
@@ -619,16 +624,19 @@ def _requested_bounds(install_cell: str, package: str) -> tuple[str, str]:
     version, which is what it was judged on before this function existed.
     """
     floor = ceiling = ""
+    removed = False
     for invocation in iter_pip_invocations(install_cell):
+        uninstall = re.search(r"\bpip\s+uninstall\b", invocation.raw, re.IGNORECASE) is not None
         current_floor = current_ceiling = ""
         named = False
         for requirement in invocation.packages:
             if ";" in requirement:
                 continue
-            if not re.match(rf"\s*{re.escape(package)}\s*[><=!~]", requirement):
+            spec = parse_spec(requirement)
+            if spec is None or spec.name != package.lower():
                 continue
             named = True
-            for operator, version in re.findall(r"([><=!~]=?)\s*([0-9][0-9.]*)", requirement):
+            for operator, version in spec.pins:
                 if operator == ">=" and (
                     not current_floor or cmp_versions(version, current_floor) > 0
                 ):
@@ -638,8 +646,8 @@ def _requested_bounds(install_cell: str, package: str) -> tuple[str, str]:
                 ):
                     current_ceiling = version
         if named:
-            floor, ceiling = current_floor, current_ceiling
-    return floor, ceiling
+            floor, ceiling, removed = current_floor, current_ceiling, uninstall
+    return floor, ceiling, removed
 
 
 def _effective_requested_version(install_cell: str, package: str, oracle: str) -> str:
@@ -650,7 +658,11 @@ def _effective_requested_version(install_cell: str, package: str, oracle: str) -
     oracle satisfies the range it does survive; otherwise pip must move, and the floor is
     the version it moves to for the one-minor-wide ranges these rules care about.
     """
-    floor, ceiling = _requested_bounds(install_cell, package)
+    floor, ceiling, removed = _requested_bounds(install_cell, package)
+    if removed:
+        # Uninstalled and not put back, so there is nothing left to judge. Reporting the
+        # oracle here flagged a package the cell had just deleted.
+        return ""
     if not floor and not ceiling:
         return oracle
     if floor and cmp_versions(oracle, floor) < 0:

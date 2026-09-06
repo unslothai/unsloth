@@ -1008,3 +1008,31 @@ def test_the_runtime_hint_pins_the_index_it_tells_you_to_install_from(monkeypatc
     _stub_torch(monkeypatch, "2.5.0+cu118")
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.5.0")
     assert "--index-url" not in fixes._torchcodec_version_mismatch_hint()
+
+
+def test_the_codec_reader_matches_pip_on_names_and_uninstalls():
+    """Two ways the reader kept judging a codec the cell had already dealt with.
+
+    pip compares distribution names case-insensitively (PEP 503), and parse_spec already
+    lowercases for that reason, so `TorchCodec>=0.12.0` is the same requirement and has to
+    move the version. And an uninstall leaves nothing installed to judge, but the reader
+    still returned the oracle, so the branch this PR added reported a package the cell had
+    just deleted. Both were errors on a compatible notebook.
+    """
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+
+    cased = '!pip install torch==2.12.0 "TorchCodec>=0.12.0"'
+    assert nv.rule_inst_004_torchcodec_torch(cased, colab, "nb.ipynb", 0) == []
+
+    removed = "!pip uninstall -y torchcodec\n!pip install torch==2.12.0"
+    assert nv.rule_inst_004_torchcodec_torch(removed, colab, "nb.ipynb", 0) == []
+
+    # Putting it back incompatibly is still a finding: the uninstall is not a blanket mute.
+    restored = (
+        "!pip uninstall -y torchcodec\n" '!pip install torch==2.12.0 "torchcodec==0.11.1"'
+    )
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(restored, colab, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
