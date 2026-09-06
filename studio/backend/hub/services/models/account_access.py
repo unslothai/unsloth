@@ -150,23 +150,85 @@ _public_repos: dict[tuple[str, str], tuple[float, bool]] = {}
 _public_lock = threading.Lock()
 
 
+_UNKNOWN_TTL = 30.0
+_DEFINITIVE_HUB_STATUSES = (401, 403, 404)
+
+
+def _public_verdicts_path() -> Path:
+    """Shared record of repos an anonymous Hub answer has already proven public."""
+    from utils.paths.storage_roots import cache_root
+    return cache_root() / "public_repos.json"
+
+
+def _load_public_verdicts() -> dict[str, float]:
+    try:
+        data = json.loads(_public_verdicts_path().read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {name: float(stamp) for name, stamp in data.items() if isinstance(name, str) and isinstance(stamp, (int, float))}
+
+
+def _remember_public_verdict(name: str, public: bool) -> None:
+    verdicts = _load_public_verdicts()
+    if public:
+        verdicts[name] = time.time()
+    elif name in verdicts:
+        del verdicts[name]
+    else:
+        return
+    path = _public_verdicts_path()
+    try:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        staging = path.with_name(path.name + ".tmp")
+        staging.write_text(json.dumps(verdicts, sort_keys = True), encoding = "utf-8")
+        os.replace(staging, path)
+    except OSError:
+        pass
+
+
+def _hub_public_answer(repo_id: str, repo_type: str) -> bool | None:
+    """True when the Hub says public, False when it says private, gated or missing,
+    None when it could not be asked: unreachable, or switched off in this process by
+    another operation's forced offline window."""
+    try:
+        info = HfApi().repo_info(repo_id, repo_type = repo_type, token = False, timeout = 5.0)
+    except Exception as exc:  # noqa: BLE001 - classified below, never trusted as public
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in _DEFINITIVE_HUB_STATUSES:
+            return False
+        return None
+    return getattr(info, "private", None) is False and not getattr(info, "gated", False)
+
+
 def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
-    """Only an anonymous Hub answer proves that a shared-cache repo is public."""
+    """Only an anonymous Hub answer proves that a shared-cache repo is public.
+
+    A proof is kept on disk, so a repo the Hub once confirmed public stays visible to
+    managed accounts when the Hub cannot be asked: the installation is offline, or a
+    concurrent load has this process in a forced offline window. A definitive
+    private, gated or missing answer withdraws it. Nothing is ever assumed public.
+    """
     key = (repo_type, repo_id.lower())
+    name = f"{repo_type}:{repo_id.lower()}"
     now = time.monotonic()
     with _public_lock:
         cached = _public_repos.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
-    try:
-        info = HfApi().repo_info(repo_id, repo_type = repo_type, token = False, timeout = 5.0)
-        public = getattr(info, "private", None) is False and not getattr(info, "gated", False)
-    except Exception:  # noqa: BLE001 - an unreachable Hub never establishes public access
-        public = False
+    answer = _hub_public_answer(repo_id, repo_type)
     with _public_lock:
+        if answer is None:
+            public = name in _load_public_verdicts()
+            ttl = _UNKNOWN_TTL
+        else:
+            public = answer
+            _remember_public_verdict(name, public)
+            ttl = _PUBLIC_TTL if public else _PRIVATE_TTL
         if len(_public_repos) >= 4096:
             _public_repos.clear()
-        _public_repos[key] = (now + (_PUBLIC_TTL if public else _PRIVATE_TTL), public)
+        _public_repos[key] = (now + ttl, public)
     return public
 
 

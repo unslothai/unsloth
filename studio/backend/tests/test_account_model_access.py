@@ -55,6 +55,42 @@ def test_public_proof_is_anonymous_cached_and_fail_closed(monkeypatch, answer, v
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("failure", ["unreachable", "forced_offline"])
+def test_a_proven_public_repo_stays_visible_when_the_hub_cannot_be_asked(monkeypatch, tmp_path, failure):
+    answers = {"mode": "public"}
+
+    def info(repo, **kwargs):
+        if answers["mode"] == "public":
+            return SimpleNamespace(private = False, gated = False)
+        if answers["mode"] == "forced_offline":
+            from huggingface_hub.errors import OfflineModeIsEnabled
+            raise OfflineModeIsEnabled("HF_HUB_OFFLINE=1")
+        if answers["mode"] == "private":
+            raise type("RepositoryNotFoundError", (Exception,), {})("private", )
+        raise OSError("Hub unavailable")
+
+    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = info))
+    assert run_as(ALICE, access.repo_visible, "Org/Public")
+    assert json.loads(access._public_verdicts_path().read_text()) .keys() == {"model:org/public"}
+    assert access._public_verdicts_path().is_relative_to(tmp_path / "cache")
+
+    access._public_repos.clear()
+    answers["mode"] = failure
+    assert run_as(BOB, access.repo_visible, "org/public"), "the proof on disk carries the answer"
+    assert not run_as(BOB, access.repo_visible, "org/never-proven")
+
+    access._public_repos.clear()
+    answers["mode"] = "private"
+    error = Exception("gone")
+    error.response = SimpleNamespace(status_code = 404)
+
+    def definitive(repo, **kwargs):
+        raise error
+    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = definitive))
+    assert not run_as(ALICE, access.repo_visible, "org/public")
+    assert json.loads(access._public_verdicts_path().read_text()) == {}
+
+
 def test_grants_survive_restart_and_username_reuse_inherits_nothing():
     run_as(ALICE, access.record_model_grant, "Org/Secret")
     path = run_as(ALICE, studio_db_path)
