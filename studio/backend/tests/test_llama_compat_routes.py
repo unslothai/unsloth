@@ -834,3 +834,31 @@ def test_the_version_lookup_leaves_the_event_loop():
 
     src = inspect.getsource(_load().studio_version)
     assert "to_thread" in src, "the version handler must resolve off the event loop"
+
+
+def test_props_hides_a_resident_that_belongs_to_another_account(monkeypatch):
+    """The body names the resident model and carries its chat template. Another
+    account gets the same answer /api/inference/status gives it, nothing more."""
+    from hub.services.models import account_access
+
+    upstream = {"model_path": "/media/models/alice-private.gguf", "chat_template": "ALICE_TEMPLATE"}
+    mod = _load(backend = _Backend(props = upstream))
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(account_access, "resident_hidden", lambda modality, reference = None: True)
+    with _client(mod) as c:
+        for path in ("/props", "/props/", "/v1/props", "/v1/props/"):
+            raw = c.get(path)
+            assert raw.status_code == 200
+            assert raw.json() == {"loaded": True, "yours": False}
+            assert "ALICE_TEMPLATE" not in raw.text and "Qwen" not in raw.text
+
+    # The owner, and a managed account that loaded it, keep the full body.
+    monkeypatch.setattr(account_access, "resident_hidden", lambda modality, reference = None: False)
+    with _client(mod) as c:
+        assert c.get("/props").json()["chat_template"] == "ALICE_TEMPLATE"
+    monkeypatch.setattr(account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(
+        account_access, "resident_hidden", lambda *a, **k: (_ for _ in ()).throw(AssertionError("owner path consulted policy"))
+    )
+    with _client(mod) as c:
+        assert c.get("/props").json()["model_path"] == "unsloth/Qwen3.8-27B-GGUF"

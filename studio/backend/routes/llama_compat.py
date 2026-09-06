@@ -176,8 +176,30 @@ def _server_props() -> dict:
 @router.get("/v1/props", include_in_schema = False)
 @router.get("/v1/props/", include_in_schema = False)
 async def llama_props(current_subject: str = Depends(get_current_subject)):
-    """llama-server-compatible ``GET /props``."""
+    """llama-server-compatible ``GET /props``.
+
+    The body names the resident model and carries its chat template, which is
+    the identity and content of whoever loaded it; another account gets the
+    same answer ``/api/inference/status`` gives it.
+    """
+    if await asyncio.to_thread(_resident_hidden_from_caller):
+        from hub.services.models.account_access import hidden_resident_response
+        return hidden_resident_response()
     return await asyncio.to_thread(_server_props)
+
+
+def _resident_hidden_from_caller() -> bool:
+    from hub.services.models import account_access
+
+    if not account_access.managed_account():
+        return False
+    if account_access.resident_hidden("chat"):
+        return True
+    try:
+        slot = _inference()._loaded_slot_ident()
+    except Exception:  # noqa: BLE001 - a backend that cannot say has nothing to hide
+        return False
+    return bool(slot) and account_access.resident_hidden("chat", slot)
 
 
 @router.get("/version", include_in_schema = False)
