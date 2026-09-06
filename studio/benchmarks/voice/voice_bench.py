@@ -873,6 +873,19 @@ def load_conversation(path: Path) -> dict:
     return convo
 
 
+def prepare_report_path(out_arg: Optional[str], stamp: str) -> Path:
+    """Decide where the report goes and make sure it can be written, before any
+    model work: a --out under a directory that does not exist yet is created here
+    rather than raising FileNotFoundError after the last pass. ``latest.json``
+    always lands in REPORTS, so that is created too."""
+    REPORTS.mkdir(parents = True, exist_ok = True)
+    out = Path(out_arg) if out_arg else REPORTS / f"bench_{stamp}.json"
+    if out.is_dir():
+        raise ValueError(f"--out {out} is a directory; name the report file")
+    out.parent.mkdir(parents = True, exist_ok = True)
+    return out
+
+
 def get_token(args) -> str:
     if args.token:
         return args.token
@@ -930,6 +943,11 @@ def main() -> int:
         convo = load_conversation(Path(args.conversation))
     except (OSError, ValueError) as e:
         print(f"Cannot use conversation {args.conversation}: {e}")
+        return 2
+    try:
+        out = prepare_report_path(args.out, datetime.now().strftime("%Y%m%d_%H%M%S"))
+    except (OSError, ValueError) as e:
+        print(f"Cannot write the report: {e}")
         return 2
     token = get_token(args)
     client = StudioClient(args.base_url, token, args.seed)
@@ -992,9 +1010,6 @@ def main() -> int:
     if args.baseline:
         diff_baseline(summary, Path(args.baseline))
 
-    REPORTS.mkdir(parents = True, exist_ok = True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = Path(args.out) if args.out else REPORTS / f"bench_{stamp}.json"
     payload = {
         "meta": meta,
         "summary": summary,

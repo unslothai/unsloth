@@ -192,6 +192,34 @@ class ArgTests(unittest.TestCase):
                 self.assertEqual(cm.exception.code, 2)
 
 
+class ReportPathTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._saved = vb.REPORTS
+        vb.REPORTS = Path(self.tmp.name) / "reports"
+
+    def tearDown(self):
+        vb.REPORTS = self._saved
+        self.tmp.cleanup()
+
+    def test_default_lands_in_reports(self):
+        out = vb.prepare_report_path(None, "20260906_120000")
+        self.assertEqual(out, vb.REPORTS / "bench_20260906_120000.json")
+        self.assertTrue(vb.REPORTS.is_dir())
+
+    def test_custom_out_parent_is_created_up_front(self):
+        target = Path(self.tmp.name) / "deep" / "er" / "run.json"
+        out = vb.prepare_report_path(str(target), "s")
+        self.assertEqual(out, target)
+        self.assertTrue(target.parent.is_dir())
+        self.assertTrue(vb.REPORTS.is_dir())  # latest.json still goes here
+        out.write_text("{}", encoding = "utf-8")  # the write main() does later
+
+    def test_out_naming_a_directory_is_rejected(self):
+        with self.assertRaises(ValueError):
+            vb.prepare_report_path(self.tmp.name, "s")
+
+
 class ConversationTests(unittest.TestCase):
     def test_shipped_conversation_is_valid(self):
         convo = vb.load_conversation(Path(vb.HERE) / "conversation.json")

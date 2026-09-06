@@ -159,7 +159,8 @@ default, because for voice the chain-of-thought is pure first-audio latency you
 wait through before hearing a word), `--model <id>` (default = server's active
 model), `--stt-model`, `--max-tokens`, `--no-warmup`, `--no-determinism`,
 `--tts-provider-id` / `--tts-model` / `--tts-voice` (external TTS route, see
-above), `--out <path>`.
+above), `--out <path>` (its parent directory is created up front, so a typo
+fails before any model work rather than after the last pass).
 
 **Gallery side effect (known, not yet suppressible):** the local
 `/v1/audio/speech` route persists every generated clip into the Studio Audio
