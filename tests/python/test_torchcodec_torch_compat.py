@@ -103,19 +103,27 @@ def test_torch210_rejects_torchcodec_011(monkeypatch):
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.10.0+cu128")
     monkeypatch.setattr(
         importlib.metadata,
         "version",
         lambda _name: "0.11.0",
     )
 
+    # Untagged torch: no index pin is needed, so the extra stays on offer.
+    _stub_torch(monkeypatch, "2.10.0")
     hint = fixes._torchcodec_version_mismatch_hint()
     assert hint is not None
     assert "torchcodec 0.11.0" in hint
     assert "audio-torch210" in hint
     assert "<0.11.0" in hint
     assert "<11.0" not in hint
+
+    # Tagged torch: the extra cannot carry an index, so the pinned command is offered alone.
+    _stub_torch(monkeypatch, "2.10.0+cu128")
+    tagged = fixes._torchcodec_version_mismatch_hint()
+    assert "--index-url https://download.pytorch.org/whl/cu128" in tagged
+    assert "audio-torch210" not in tagged
+    assert "<0.11.0" in tagged
 
 
 def test_torch210_accepts_torchcodec_010(monkeypatch):
@@ -152,12 +160,13 @@ def test_torch211_rejects_torchcodec_010(monkeypatch):
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.11.0+cu128")
     monkeypatch.setattr(
         importlib.metadata,
         "version",
         lambda _name: "0.10.0+cu128",
     )
+    # Untagged, so the extra is offered; the tagged case is covered below.
+    _stub_torch(monkeypatch, "2.11.0")
 
     hint = fixes._torchcodec_version_mismatch_hint()
     assert hint is not None, "torch 2.11 + torchcodec 0.10 must not go unreported"
@@ -201,7 +210,7 @@ def test_torch210_still_rejects_abi_stable_torchcodec(monkeypatch):
     import importlib.metadata
 
     fixes = _load_import_fixes_module()
-    _stub_torch(monkeypatch, "2.10.0+cu128")
+    _stub_torch(monkeypatch, "2.10.0")
     monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.15.0")
 
     hint = fixes._torchcodec_version_mismatch_hint()
@@ -450,6 +459,43 @@ def test_the_two_pypi_only_rows_stay_unpinned():
     )
 
 
+def test_audio_extras_carry_the_python_ceiling_their_codec_line_has():
+    """torchcodec publishes no sdist, so an extra left open above its last cp tag makes pip
+    fail the whole install instead of skipping audio. requires-python is open-ended (>=3.9),
+    so a newer interpreter reaches these extras; the marker has to stop it.
+
+    The ceilings come from the same upstream table _TORCHCODEC_PYTHON_WINDOWS encodes: the
+    0.6/0.7 line stops at 3.13, everything from 0.9 up runs to 3.14.
+    """
+    markers = pytest.importorskip("packaging.markers")
+    text = PYPROJECT.read_text(encoding = "utf-8")
+
+    # extra -> the first interpreter that must NOT select it, and one that must.
+    expected = {
+        "audio-torch211": ("3.15", "3.14"),
+        "audio-torch210": ("3.15", "3.14"),
+        "audio-torch290": ("3.15", "3.14"),
+        "audio-torch280": ("3.14", "3.13"),
+    }
+    for extra, (too_new, supported) in expected.items():
+        match = re.search(rf"^{extra} = \[(.*?)^\]", text, re.MULTILINE | re.DOTALL)
+        assert match is not None, extra
+        marker_text = match.group(1).split(";", 1)[1].rsplit('"', 1)[0].strip()
+        marker = markers.Marker(marker_text)
+        env = {
+            "sys_platform": "linux",
+            "platform_machine": "x86_64",
+            "platform_system": "Linux",
+            "os_name": "posix",
+        }
+        assert not marker.evaluate(
+            {**env, "python_version": too_new}
+        ), f"{extra} still selects torchcodec on Python {too_new}, which has no wheel"
+        assert marker.evaluate(
+            {**env, "python_version": supported}
+        ), f"{extra} stopped selecting torchcodec on Python {supported}, which does"
+
+
 def test_compat_matrix_matches_the_published_upstream_table():
     """Pin the runtime guard to upstream, not merely to our own other copies of it."""
     fixes = _load_import_fixes_module()
@@ -599,6 +645,43 @@ def test_a_requested_codec_range_beats_the_preinstalled_oracle():
         assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)] == [
             "R-INST-004"
         ], cell
+
+
+def test_a_codec_range_is_read_in_order_and_only_when_unconditional():
+    """Two ways the range reader could invent a version the cell never installs.
+
+    Order: pip runs the commands in sequence, so `torchcodec>=0.12.0` then
+    `torchcodec<0.12.0` ends pre-0.12. Intersecting the bounds across both invocations
+    instead yields a 0.12 that was never installed, and the real mismatch goes unreported.
+
+    Markers: a requirement pip skips must not move anything. This branch has no oracle for
+    the image's interpreter, so a marked requirement is left alone and the cell is judged on
+    the preinstalled version, exactly as it was before the range reader existed.
+    """
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+
+    ordered = (
+        '!pip install "torchcodec>=0.12.0"\n'
+        '!pip install "torchcodec<0.12.0"\n'
+        "!pip install torch==2.12.0"
+    )
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(ordered, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ], "the later cap has to win over the earlier floor"
+
+    marked = "!pip install torch==2.12.0 \"torchcodec>=0.12.0; python_version < '3.10'\""
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(marked, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ], "a marked requirement must not raise the effective codec"
+
+    # The unconditional forms this reader exists for still resolve.
+    for cell in (
+        '!pip install torch==2.12.0 "torchcodec>=0.12.0,<0.13.0"',
+        '!pip install torch==2.10.0 "torchcodec>=0.10.0,<0.11.0"',
+    ):
+        assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == [], cell
 
 
 def test_validator_and_runtime_guard_agree_on_the_whole_matrix(monkeypatch):
@@ -883,3 +966,219 @@ def test_the_torchcodec_step_cannot_end_the_install():
     step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
     assert "pip_install_try(" in step, "the torchcodec step must use the non-fatal install"
     assert "\n        pip_install(" not in step, "pip_install() exits on failure"
+
+
+def test_a_ceiling_only_request_is_unknown_rather_than_the_excluded_oracle():
+    """`pip install "torchcodec<0.10.0"` on a 0.11 image downgrades to a version only the
+    index names. Returning the excluded oracle reported the exact pairing the cell just
+    ruled out, so a clean notebook failed on torch 2.9 + the image's 0.11."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    ceiling_only = '!pip install torch==2.9.0 "torchcodec<0.10.0"'
+    assert nv.rule_inst_004_torchcodec_torch(ceiling_only, colab, "nb.ipynb", 0) == []
+
+    # A floor names where it lands, so that case still resolves and still judges.
+    named = '!pip install torch==2.9.0 "torchcodec>=0.8.0,<0.10.0"'
+    assert nv.rule_inst_004_torchcodec_torch(named, colab, "nb.ipynb", 0) == []
+    wrong = '!pip install torch==2.9.0 "torchcodec>=0.11.0,<0.12.0"'
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(wrong, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
+
+
+def test_the_runtime_hint_pins_the_index_it_tells_you_to_install_from(monkeypatch):
+    """The installer pins the torch index for torchcodec, so a remedy that omits it hands
+    back the wrong accelerator build and audio stays broken."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+
+    _stub_torch(monkeypatch, "2.11.0+cu128")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.10.0")
+    hint = fixes._torchcodec_version_mismatch_hint()
+    assert "--index-url https://download.pytorch.org/whl/cu128 'torchcodec>=0.11" in hint
+
+    # cpu is an index too, and the ABI-stable branch takes the same treatment.
+    _stub_torch(monkeypatch, "2.12.0+cu130")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.11.1")
+    assert (
+        "--index-url https://download.pytorch.org/whl/cu130 'torchcodec>=0.12.0'"
+        in fixes._torchcodec_version_mismatch_hint()
+    )
+
+    # Untagged torch is PyPI's own build, and rocm publishes no torchcodec: no pin either way.
+    for version in ("2.11.0", "2.9.0+rocm6.4"):
+        _stub_torch(monkeypatch, version)
+        monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.7.0")
+        assert "--index-url" not in (fixes._torchcodec_version_mismatch_hint() or "")
+
+    # torchcodec 0.1 is PyPI-only, so the 2.5 row must not send anyone to a torch index.
+    _stub_torch(monkeypatch, "2.5.0+cu118")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.5.0")
+    assert "--index-url" not in fixes._torchcodec_version_mismatch_hint()
+
+
+def test_the_codec_reader_matches_pip_on_names_and_uninstalls():
+    """Two ways the reader kept judging a codec the cell had already dealt with.
+
+    pip compares distribution names case-insensitively (PEP 503), and parse_spec already
+    lowercases for that reason, so `TorchCodec>=0.12.0` is the same requirement and has to
+    move the version. And an uninstall leaves nothing installed to judge, but the reader
+    still returned the oracle, so the branch this PR added reported a package the cell had
+    just deleted. Both were errors on a compatible notebook.
+    """
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+
+    cased = '!pip install torch==2.12.0 "TorchCodec>=0.12.0"'
+    assert nv.rule_inst_004_torchcodec_torch(cased, colab, "nb.ipynb", 0) == []
+
+    removed = "!pip uninstall -y torchcodec\n!pip install torch==2.12.0"
+    assert nv.rule_inst_004_torchcodec_torch(removed, colab, "nb.ipynb", 0) == []
+
+    # Putting it back incompatibly is still a finding: the uninstall is not a blanket mute.
+    restored = "!pip uninstall -y torchcodec\n" '!pip install torch==2.12.0 "torchcodec==0.11.1"'
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(restored, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
+
+
+def test_compatible_release_and_inclusive_caps_are_read():
+    """`~=` is a two-sided bound (PEP 440: `~=0.12.0` is `>=0.12.0,<0.13.0`) and `<=V`
+    names its own landing version. Reading neither meant the oracle survived a request that
+    had already moved it, and R-INST-004 reported the version pip replaced."""
+    from scripts import notebook_validator as nv
+
+    assert nv._compatible_release_ceiling("0.12.0") == "0.13"
+    assert nv._compatible_release_ceiling("0.12") == "1"
+    assert not nv._compatible_release_ceiling("1")  # `~=1` is invalid, so it bounds nothing
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install torch==2.12.0 "torchcodec~=0.12.0"', colab, "nb.ipynb", 0
+        )
+        == []
+    )
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install torch==2.9.0 "torchcodec<=0.9"', colab, "nb.ipynb", 0
+        )
+        == []
+    )
+    # `~=` still lands somewhere, so a window on the wrong line is still reported.
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            '!pip install torch==2.10.0 "torchcodec~=0.12.0"', colab, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]
+
+
+def test_the_remedy_drops_the_extra_when_an_index_pin_is_needed(monkeypatch):
+    """An extra cannot carry an index: the marker picks the version, and putting
+    --index-url on the whole command would resolve unsloth itself from the torch index. On a
+    tagged venv the extra would hand back the same unloadable wheel the warning is about."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.10.0")
+
+    _stub_torch(monkeypatch, "2.11.0+cu128")
+    pinned = fixes._torchcodec_version_mismatch_hint()
+    assert "--index-url" in pinned
+    assert "unsloth[audio-torch211]" not in pinned
+
+    # Untagged torch needs no pin, so the convenient alternative stays on offer.
+    _stub_torch(monkeypatch, "2.11.0")
+    unpinned = fixes._torchcodec_version_mismatch_hint()
+    assert "--index-url" not in unpinned
+    assert "unsloth[audio-torch211]" in unpinned
+
+
+def test_a_bounded_window_lands_on_its_newest_candidate():
+    """pip resolves a window to the newest release it admits, not to the floor
+    (https://pip.pypa.io/en/stable/topics/dependency-resolution/).
+
+    `torchcodec>=0.8,<0.11` on torch 2.9 therefore installs the 0.10 line, which 2.9 does
+    not support. Modelling it as the floor read 0.8, called that compatible, and the finding
+    disappeared. The ceiling names the landing minor without needing an index.
+    """
+    from scripts import notebook_validator as nv
+
+    assert nv._highest_minor_below("0.11") == "0.10"
+    assert nv._highest_minor_below("0.13.0") == "0.12"
+    assert nv._highest_minor_below("1") == ""  # not a 0.N ceiling, so it names nothing
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    spanning = '!pip install torch==2.9.0 "torchcodec>=0.8,<0.11"'
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(spanning, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
+
+    # A window whose top IS supported stays silent, so this did not just become noisy.
+    within = '!pip install torch==2.9.0 "torchcodec>=0.8.0,<0.10.0"'
+    assert nv.rule_inst_004_torchcodec_torch(within, colab, "nb.ipynb", 0) == []
+
+
+def test_an_exclusive_ceiling_names_the_minor_pip_moves_to():
+    """A window wider than one minor still names the MINOR pip lands on, which is what the
+    callers compare. `<0.10.5` admits 0.10.0 through 0.10.4, so only a ceiling ON a minor
+    boundary excludes that whole minor; treating both alike hid a real torch 2.9 mismatch."""
+    from scripts import notebook_validator as nv
+
+    assert nv._highest_minor_below("0.10.5") == "0.10"
+    assert nv._highest_minor_below("0.10.0") == "0.9"  # on the boundary, so 0.10 is excluded
+    assert nv._highest_minor_below("0.11") == "0.10"
+    assert nv._highest_minor_below("1") == ""  # not a 0.N ceiling, so it names nothing
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    cell = '!pip install torch==2.9.0 "torchcodec<0.10.5"'
+    assert nv._effective_version(cell, "torchcodec", "0.11.0") == ("0.10", True)
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
+    assert nv._effective_version('!pip install "torchcodec>=0.8,<0.11"', "torchcodec", "0.11.0") == (
+        "0.10",
+        True,
+    )
+
+    # A window whose top IS supported stays silent, so this did not just become noisy.
+    within = '!pip install torch==2.9.0 "torchcodec>=0.8.0,<0.10.0"'
+    assert nv.rule_inst_004_torchcodec_torch(within, colab, "nb.ipynb", 0) == []
+
+
+def test_a_strict_lower_bound_excludes_the_installed_version():
+    """`>0.11.0` rules out the 0.11.0 the image ships, and which release pip picks instead is
+    only in the index, so nothing names the landing and the rule declines to judge."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    cell = '!pip install torch==2.12.0 "torchcodec>0.11.0"'
+    assert nv._effective_version(cell, "torchcodec", "0.11.0") == (None, True)
+    assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == []
+
+    # A strict bound the installed version already clears leaves it alone.
+    satisfied = '!pip install "torchcodec>0.10.0"'
+    assert nv._effective_version(satisfied, "torchcodec", "0.11.0") == ("0.11.0", True)
+
+
+def test_a_later_install_keeps_what_an_earlier_one_landed_on():
+    """pip does not reinstall a package that already satisfies the new requirement, so
+    `>=0.12.0` followed by the broader `>=0.10.0` ends on the 0.12, and a later command that
+    does NOT admit that landing still moves it back down."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    widened = '!pip install torch==2.12.0 "torchcodec>=0.12.0"\n!pip install "torchcodec>=0.10.0"'
+    assert nv._effective_version(widened, "torchcodec", "0.11.0")[0] == "0.12.0"
+    assert nv.rule_inst_004_torchcodec_torch(widened, colab, "nb.ipynb", 0) == []
+
+    narrowed = '!pip install "torchcodec>=0.12.0"\n!pip install "torchcodec<0.12.0"'
+    assert nv._effective_version(narrowed, "torchcodec", "0.11.0") == ("0.11", True)
+
+    # An exact pin after an uninstall restores a version rather than staying gone.
+    restored = '!pip uninstall -y torchcodec\n!pip install "torchcodec==0.11.1"'
+    assert nv._effective_version(restored, "torchcodec", "0.11.0") == ("0.11.1", True)

@@ -1410,6 +1410,25 @@ def _forces_resolution(flags: set[str]) -> bool:
     )
 
 
+def _highest_minor_below(ceiling: str) -> str:
+    """The newest minor an exclusive `<ceiling` can still land on: `<0.11` -> `0.10`.
+
+    pip resolves a bounded window to the newest candidate it admits
+    (https://pip.pypa.io/en/stable/topics/dependency-resolution/). Which patch inside that
+    minor is not derivable offline, and the rules only compare minors. Only a ceiling ON a
+    minor boundary excludes that whole minor: `<0.10.5` still admits 0.10.0 through 0.10.4,
+    so it lands on 0.10. Only 0.N ceilings are modelled, which is every window these tables
+    describe.
+    """
+    parts = [p for p in re.split(r"[.]", ceiling.strip()) if p.isdigit()]
+    if len(parts) < 2 or parts[0] != "0":
+        return ""
+    minor = int(parts[1])
+    if any(int(p) for p in parts[2:]):
+        return f"0.{minor}"
+    return f"0.{minor - 1}" if minor >= 1 else ""
+
+
 def _effective_version(
     install_cell: str,
     target: str,
@@ -1483,6 +1502,13 @@ def _effective_version(
         exact, floor, cap, ceiling, exclusions, exclusive_floor = _spec_window(pins)
         # Where an install lands when it has to move, or None when nothing names it.
         landing = floor if _window_names_one_minor(floor, ceiling, cap) else None
+        if landing is None and ceiling is not None:
+            # A wider window still names the MINOR pip moves to, which is the granularity the
+            # callers compare on. Without this a bare `<0.10.5`, or `>=0.8,<0.11`, came back
+            # unknown and R-INST-004 skipped a mismatch it can see.
+            below = _highest_minor_below(ceiling)
+            if below and (floor is None or cmp_versions(below, floor) >= 0):
+                landing = below
         if exact is not None:
             current, exact_known = exact, True
         elif current is None:

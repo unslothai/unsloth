@@ -183,16 +183,16 @@ huggingfacenotorch = [
 # manylinux_2_28_aarch64 at 0.11.0, so this extra carries it and the older ones below,
 # which top out at 0.10, still cannot. Mirrors _torchcodec_platform_floor.
 audio-torch211 = [
-    "torchcodec>=0.11.0,<0.12.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
+    "torchcodec>=0.11.0,<0.12.0 ; python_version >= '3.10' and python_version < '3.15' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'linux' and platform_machine == 'aarch64') or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 audio-torch210 = [
-    "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
+    "torchcodec>=0.10.0,<0.11.0 ; python_version >= '3.10' and python_version < '3.15' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 audio-torch290 = [
-    "torchcodec>=0.8.0,<0.10.0 ; python_version >= '3.10' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
+    "torchcodec>=0.8.0,<0.10.0 ; python_version >= '3.10' and python_version < '3.15' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 audio-torch280 = [
-    "torchcodec>=0.6.0,<0.8.0 ; python_version >= '3.9' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
+    "torchcodec>=0.6.0,<0.8.0 ; python_version >= '3.9' and python_version < '3.14' and (((sys_platform == 'linux' or sys_platform == 'win32') and (platform_machine == 'x86_64' or platform_machine == 'AMD64')) or (sys_platform == 'darwin' and platform_machine == 'arm64'))",
 ]
 huggingface = [
     "unsloth[huggingfacenotorch]",
