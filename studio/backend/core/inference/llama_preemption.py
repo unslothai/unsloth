@@ -748,6 +748,11 @@ class PreemptionSnapshot:
     # returns to. Nothing in this module ACTS on it; it is reported, not policy. See
     # core.inference.llama_exact.
     exact: str = EXACT_STATE_OFF
+    # Participants that hold cells right now, in any state, raw streams included. This
+    # is the question "is anybody else in the cache" answered by the ledger alone:
+    # ``committed`` folds in the last residency reading, which can still be counting a
+    # chat that has just unregistered.
+    holders: int = 0
 
 
 class PreemptionController:
@@ -1672,6 +1677,7 @@ class PreemptionController:
                 prefilling = self._pending_prefill_locked(),
                 mode = PREEMPT_MODE_SERVER if self._server_mode else PREEMPT_MODE_STUDIO,
                 exact = self._exact,
+                holders = sum(1 for p in self._participants.values() if p.holds_kv),
             )
 
 

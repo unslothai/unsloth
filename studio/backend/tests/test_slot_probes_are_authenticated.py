@@ -55,9 +55,7 @@ def _capture(monkeypatch, body: bytes):
 class TestTheReadCarriesTheKey:
     def test_the_authorization_header_is_sent(self, monkeypatch):
         seen = _capture(monkeypatch, json.dumps([]).encode())
-        fetch_llama_slots(
-            "http://127.0.0.1:8080", headers = {"Authorization": "Bearer secret-key"}
-        )
+        fetch_llama_slots("http://127.0.0.1:8080", headers = {"Authorization": "Bearer secret-key"})
         assert seen[0].get_header("Authorization") == "Bearer secret-key"
 
     def test_a_load_without_a_key_still_sends_nothing(self, monkeypatch):

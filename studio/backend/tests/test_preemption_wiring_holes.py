@@ -22,9 +22,7 @@ import pathlib
 
 
 ROUTES = pathlib.Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-LLAMA_CPP = (
-    pathlib.Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-)
+LLAMA_CPP = pathlib.Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
 
 
 def _routes_source() -> str:
@@ -43,10 +41,7 @@ def _calls(node: ast.AST, name: str) -> int:
         1
         for child in ast.walk(node)
         if isinstance(child, ast.Call)
-        and (
-            getattr(child.func, "id", None) == name
-            or getattr(child.func, "attr", None) == name
-        )
+        and (getattr(child.func, "id", None) == name or getattr(child.func, "attr", None) == name)
     )
 
 
@@ -62,9 +57,9 @@ class TestTheNonStreamingToolBranch:
 
     def test_it_re_arms_after_a_queued_admission(self):
         source = _routes_source()
-        assert source.count("if not _gguf_preempt_policy_hold.bound:") == 2, (
-            "both branches wait for a lease, so both have to arm once they have one"
-        )
+        assert (
+            source.count("if not _gguf_preempt_policy_hold.bound:") == 2
+        ), "both branches wait for a lease, so both have to arm once they have one"
 
     def test_it_disarms_on_every_exit(self):
         """Arming registers a charge; the exit that drops it is not optional.
@@ -122,12 +117,12 @@ class TestDisarmFollowsTheStreamTeardown:
 class TestTheAnthropicSurfaces:
     def test_the_non_streaming_branch_arms_and_disarms(self):
         source = _routes_source()
-        assert source.count("_arm_anthropic(reservation, raw = raw)") == 2, (
-            "streaming and non-streaming both take a lease, so both arm"
-        )
-        assert source.count("gen_id = message_id,") >= 3, (
-            "and both drop the charge again on the way out"
-        )
+        assert (
+            source.count("_arm_anthropic(reservation, raw = raw)") == 2
+        ), "streaming and non-streaming both take a lease, so both arm"
+        assert (
+            source.count("gen_id = message_id,") >= 3
+        ), "and both drop the charge again on the way out"
 
     def test_the_server_tool_generator_is_handed_the_policy(self):
         """`_arm_anthropic` registers this request as an ordinary preemptible DECODING
@@ -155,9 +150,9 @@ class TestTheAnthropicSurfaces:
         OpenAI passthrough already does.
         """
         source = _routes_source()
-        assert source.count("raw = True,") == 2, (
-            "both client-tool passthrough branches are raw holders"
-        )
+        assert (
+            source.count("raw = True,") == 2
+        ), "both client-tool passthrough branches are raw holders"
         arm = source[source.index("def _arm_anthropic(") :]
         arm = arm[: arm.index("async def _admitted_anthropic_stream")]
         assert "_openai_llama_count_raw_holder(" in arm
@@ -174,7 +169,11 @@ class TestTheRespawnRetryKeepsItsControls:
 
     def test_the_connect_error_retry_forwards_the_preemption_arguments(self):
         source = LLAMA_CPP.read_text(encoding = "utf-8")
-        retry = source[source.index("yield from self.generate_chat_completion(\n                    retry_messages,") :]
+        retry = source[
+            source.index(
+                "yield from self.generate_chat_completion(\n                    retry_messages,"
+            ) :
+        ]
         retry = retry[: retry.index("_allow_respawn_retry = False")]
         for kwarg in (
             "admission_output_allowance = admission_output_allowance,",
@@ -231,9 +230,9 @@ class TestTheParallelToolClosureBindsItsOwnCall:
             assert bound in body, f"{bound} is not bound at closure definition"
         # And nothing in the body still reads the loop variables it shadows.
         for leaked in ("decision.tool_name", "decision.tool_call_id", "[_call_index + 1 :]"):
-            assert f" {leaked}" not in body.replace(f"_{leaked}", ""), (
-                f"the closure still reads the outer {leaked}"
-            )
+            assert f" {leaked}" not in body.replace(
+                f"_{leaked}", ""
+            ), f"the closure still reads the outer {leaked}"
 
 
 class TestTheResumeClearsItsSignalBeforeItIsSelectable:

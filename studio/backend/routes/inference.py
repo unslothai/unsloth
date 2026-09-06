@@ -2398,7 +2398,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         base = str(getattr(llama_backend, "base_url", "") or "")
         if not base:
             return
-        occupancy = read_slot_occupancy(lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend)))
+        occupancy = read_slot_occupancy(
+            lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
+        )
         controller.note_resident(
             None if occupancy is None else occupancy.get("resident"),
             0 if occupancy is None else int(occupancy.get("idle_tokens") or 0),
@@ -2434,7 +2436,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         if needed > 0 and occupancy.get("idle"):
             freed = reclaim_idle_slots(
                 occupancy,
-                lambda slot_id: erase_llama_slot(base, slot_id, headers = _llama_slot_headers(llama_backend)),
+                lambda slot_id: erase_llama_slot(
+                    base, slot_id, headers = _llama_slot_headers(llama_backend)
+                ),
                 needed = needed,
             )
             if freed:
@@ -2515,7 +2519,9 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
                     _idle_tokens = int(occupancy.get("idle_tokens") or 0)
                     freed = reclaim_idle_slots(
                         occupancy,
-                        lambda slot_id: erase_llama_slot(base, slot_id, headers = _llama_slot_headers(llama_backend)),
+                        lambda slot_id: erase_llama_slot(
+                            base, slot_id, headers = _llama_slot_headers(llama_backend)
+                        ),
                         needed = sum(v.tokens for v in victims),
                     )
                     if freed:
@@ -2717,25 +2723,32 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
         if not base:
             return
         snapshot = get_preemption_controller(key).snapshot()
-        # "Somebody else is still in the cache" is the whole test, and ``committed`` is the
-        # broadest way to ask it: it sums every participant that holds KV, including the
-        # raw streams the counted-but-never-chosen surfaces register. With this generation
-        # already unregistered above, a committed of zero means this was the only chat, so
-        # the cells it leaves behind are a free prefix cache for its own next turn.
+        # "Somebody else is still in the cache" is the whole test, and ``holders`` is the
+        # way to ask it: every participant that holds KV, including the raw streams the
+        # counted-but-never-chosen surfaces register. With this generation already
+        # unregistered above, no holder means this was the only chat, so the cells it
+        # leaves behind are a free prefix cache for its own next turn. NOT ``committed``:
+        # that folds in the last residency reading, which was taken while this chat was
+        # still decoding and so still counts its cells, and a lone chat judged by it
+        # erased its own prompt cache on every turn.
         contended = (
-            int(getattr(snapshot, "committed", 0) or 0) > 0
+            int(getattr(snapshot, "holders", 0) or 0) > 0
             or int(getattr(snapshot, "paused", 0) or 0) > 0
             or int(getattr(snapshot, "decoding", 0) or 0) > 0
             or int(getattr(snapshot, "parked", 0) or 0) > 0
         )
         if not contended:
             return
-        occupancy = read_slot_occupancy(lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend)))
+        occupancy = read_slot_occupancy(
+            lambda: fetch_llama_slots(base, headers = _llama_slot_headers(llama_backend))
+        )
         if not occupancy or not occupancy.get("idle"):
             return
         freed = reclaim_idle_slots(
             occupancy,
-            lambda slot_id: erase_llama_slot(base, slot_id, headers = _llama_slot_headers(llama_backend)),
+            lambda slot_id: erase_llama_slot(
+                base, slot_id, headers = _llama_slot_headers(llama_backend)
+            ),
             needed = int(occupancy.get("resident") or 0),
         )
         if freed:
@@ -2818,6 +2831,16 @@ def _openai_llama_admission_enforced_max_tokens(
     # arithmetic was the only defence; it is the design now, and preemption is the
     # enforcement. If eviction stops being timely this becomes the crash again, which is
     # why the watermark sweep runs on token growth and not only between rounds.
+    # ONLY while something will reclaim the difference. Under the rollout switch, or with
+    # a private cache per slot, nothing can pause a chat that outgrows its charge, and
+    # the window as a ceiling is the overcommit with no enforcement: four chats admitted
+    # on small charges, each permitted the whole window, is the crash again. The share
+    # is the stopgap the switch exists to fall back to, so it is what the switch gets.
+    if not _openai_llama_preemption_will_apply(llama_backend, budget):
+        share = max(1, budget // max(1, capacity))
+        if share >= (window or budget):
+            return None
+        return max(1, share - prompt_tokens)
     ceiling = window or budget
     return max(1, ceiling - prompt_tokens)
 
@@ -30467,7 +30490,12 @@ async def anthropic_messages(
             cancel_event = cancel_event,
         )
 
-    async def _admitted_anthropic(coro, *, tool_loop: bool = False, raw: bool = False):
+    async def _admitted_anthropic(
+        coro,
+        *,
+        tool_loop: bool = False,
+        raw: bool = False,
+    ):
         try:
             reservation, admission_config = _openai_llama_admission_reserve(
                 request = request,

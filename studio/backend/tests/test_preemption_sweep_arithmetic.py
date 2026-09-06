@@ -89,9 +89,9 @@ class TestAReclaimedHolderIsNotAVictim:
 
         victims = controller.plan_preemptions(needed = 0)
 
-        assert [v.gen_id for v in victims] == ["live-b"], (
-            "newest-first among the holders that still have cells, with one left standing"
-        )
+        assert [v.gen_id for v in victims] == [
+            "live-b"
+        ], "newest-first among the holders that still have cells, with one left standing"
 
 
 class TestAPartialReclaimDoesNotFreeEverybody:
@@ -130,7 +130,10 @@ class TestAPartialReclaimDoesNotFreeEverybody:
         from pathlib import Path
 
         source = Path(inference.__file__).read_text(encoding = "utf-8")
-        assert 'if freed >= _idle_tokens:\n                            controller.note_cells_reclaimed()' in source, (
+        assert (
+            "if freed >= _idle_tokens:\n                            controller.note_cells_reclaimed()"
+            in source
+        ), (
             "note_cells_reclaimed is global, so it may only follow a reclaim that erased "
             "the whole idle residue"
         )

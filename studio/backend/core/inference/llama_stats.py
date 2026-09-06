@@ -22,7 +22,11 @@ _METRIC_RE = re.compile(r"^llamacpp:(\w+)(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.MUL
 _OFF = {"0", "false", "no", "off"}
 
 
-def fetch_llama_slots(base_url, timeout_s = 3.0, headers = None):
+def fetch_llama_slots(
+    base_url,
+    timeout_s = 3.0,
+    headers = None,
+):
     """One ``GET /slots`` read as a list, or None if it could not be read.
 
     ``headers`` carries the backend's ``Authorization`` when the load was launched with
@@ -71,9 +75,7 @@ def erase_llama_slot(
         # Authorized for the same reason the read above is: a 401 here returns 0 tokens
         # erased, so a paused slot's cells are never released and the waiter it was freed
         # for waits out its deadline.
-        request = urllib.request.Request(
-            url, method = "POST", data = b"", headers = dict(headers or {})
-        )
+        request = urllib.request.Request(url, method = "POST", data = b"", headers = dict(headers or {}))
         with urllib.request.urlopen(request, timeout = timeout_s) as r:
             if r.status != 200:
                 return 0
