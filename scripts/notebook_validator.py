@@ -619,6 +619,22 @@ def _compatible_release_ceiling(version: str) -> str:
     return ".".join(str(p) for p in head)
 
 
+def _highest_minor_below(ceiling: str) -> str:
+    """The newest minor an exclusive `<ceiling` can still land on: `<0.11` -> `0.10`.
+
+    pip resolves a bounded window to the newest candidate it admits, not to the floor
+    (https://pip.pypa.io/en/stable/topics/dependency-resolution/), so a window spanning
+    several minors lands at its top. The minor below the ceiling is derivable without an
+    index; which patch inside it is not, and the rules only compare minors. Only 0.N
+    ceilings are modelled, which is every window this table describes.
+    """
+    parts = [p for p in re.split(r"[.]", ceiling.strip()) if p.isdigit()]
+    if len(parts) < 2 or parts[0] != "0":
+        return ""
+    minor = int(parts[1])
+    return f"0.{minor - 1}" if minor >= 1 else ""
+
+
 def _requested_bounds(install_cell: str, package: str) -> tuple[str, str, str, bool]:
     """Floor, exclusive ceiling, inclusive cap and removed-flag from the LAST invocation
     naming `package`.
@@ -705,10 +721,13 @@ def _effective_requested_version(install_cell: str, package: str, oracle: str) -
     if floor and cmp_versions(oracle, floor) < 0:
         return floor
     if ceiling and cmp_versions(oracle, ceiling) >= 0:
-        # The request excludes what is installed, so pip moves. With a floor the window
-        # names where; without one (`torchcodec<0.10.0`) only the index does, and returning
-        # the excluded oracle would report a pairing the cell just ruled out. Unknown is the
-        # honest answer, and it makes the caller fall silent rather than invent a finding.
+        # The request excludes what is installed, so pip moves -- to the NEWEST release the
+        # window admits, which the ceiling names even offline. Returning the floor modelled
+        # `>=0.8,<0.11` as 0.8 and hid a 0.10 landing; returning the excluded oracle
+        # reported the very pairing the cell ruled out.
+        landing = _highest_minor_below(ceiling)
+        if landing and (not floor or cmp_versions(landing, floor) >= 0):
+            return landing
         return floor
     return oracle
 

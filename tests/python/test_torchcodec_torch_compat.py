@@ -1096,3 +1096,28 @@ def test_the_remedy_drops_the_extra_when_an_index_pin_is_needed(monkeypatch):
     unpinned = fixes._torchcodec_version_mismatch_hint()
     assert "--index-url" not in unpinned
     assert "unsloth[audio-torch211]" in unpinned
+
+
+def test_a_bounded_window_lands_on_its_newest_candidate():
+    """pip resolves a window to the newest release it admits, not to the floor
+    (https://pip.pypa.io/en/stable/topics/dependency-resolution/).
+
+    `torchcodec>=0.8,<0.11` on torch 2.9 therefore installs the 0.10 line, which 2.9 does
+    not support. Modelling it as the floor read 0.8, called that compatible, and the finding
+    disappeared. The ceiling names the landing minor without needing an index.
+    """
+    from scripts import notebook_validator as nv
+
+    assert nv._highest_minor_below("0.11") == "0.10"
+    assert nv._highest_minor_below("0.13.0") == "0.12"
+    assert nv._highest_minor_below("1") == ""  # not a 0.N ceiling, so it names nothing
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    spanning = '!pip install torch==2.9.0 "torchcodec>=0.8,<0.11"'
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(spanning, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
+
+    # A window whose top IS supported stays silent, so this did not just become noisy.
+    within = '!pip install torch==2.9.0 "torchcodec>=0.8.0,<0.10.0"'
+    assert nv.rule_inst_004_torchcodec_torch(within, colab, "nb.ipynb", 0) == []
