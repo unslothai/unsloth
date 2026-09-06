@@ -2696,9 +2696,7 @@ class TestAnthropicMessagesToolRouting:
 
         assert (
             _drive(
-                anthropic_messages(
-                    _basic_payload(), request = self._Request(), current_subject = "t"
-                )
+                anthropic_messages(_basic_payload(), request = self._Request(), current_subject = "t")
             ).status_code
             == 200
         )
