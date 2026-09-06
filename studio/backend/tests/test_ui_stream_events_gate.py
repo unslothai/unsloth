@@ -16,6 +16,7 @@ import ast
 import inspect
 import threading
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from core.inference.sse_control_frames import is_ui_control_sse_line
@@ -235,6 +236,44 @@ def test_a_request_that_can_run_no_tool_is_not_refused():
         )
         is True
     )
+
+
+_USAGE_EXAMPLES = (
+    Path(__file__).resolve().parents[2]
+    / "frontend/src/features/settings/components/usage-examples.tsx"
+)
+
+
+def test_the_bundled_api_examples_are_still_runnable():
+    # Copy-paste snippets from the API keys tab. They stream with python and terminal
+    # enabled and deliberately do not take the control frames, so without an explicit
+    # mode the confirm gate would refuse every one of them before generation.
+    src = _USAGE_EXAMPLES.read_text(encoding = "utf-8")
+    tool_branches = src.count("enable_tools")
+    assert tool_branches, "the tool variants disappeared from the examples"
+    assert src.count('permission_mode": "off"') + src.count("permission_mode = \"off\"") + src.count(
+        'permission_mode: "off"'
+    ) == tool_branches, "every example that enables tools must pick a permission mode"
+
+    # And the shape they now send is one the gate admits.
+    example = _gate_payload(
+        enabled_tools = ["web_search", "python", "terminal"],
+        permission_mode = "off",
+    )
+    assert _confirm_gate_has_no_channel(example, False) is False
+    # Without the mode it would not be, which is what the snippets guard against.
+    assert _confirm_gate_has_no_channel(
+        _gate_payload(enabled_tools = ["web_search", "python", "terminal"]), False
+    ) is True
+
+
+def test_a_structured_type_field_does_not_crash_the_relay():
+    # sanitize_provider_sse_line deliberately passes a non-string `type` through, and a
+    # frozenset membership test on an unhashable value raises, so a custom provider could
+    # end an otherwise relayable stream with a server error.
+    for value in ('{"a": 1}', "[1, 2]", "3", "null", "true"):
+        line = 'data: {"type": %s, "choices": []}' % value
+        assert is_ui_control_sse_line(line) is False, line
 
 
 def test_external_provider_relay_drops_control_frames_too():

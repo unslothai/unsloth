@@ -174,6 +174,10 @@ function bodyExtraLines(variant: Variant, indent: string): string[] {
   if (variant !== "plain") {
     lines.push(`${indent}"enable_tools": true,`);
     lines.push(`${indent}"enabled_tools": [${toolsJson}],`);
+    // A CLI client cannot render an approval prompt, and the gate only asks over the
+    // X-Unsloth-Events frames these snippets deliberately do not take. Say plainly that
+    // the tools run unprompted rather than hand out a request the server refuses.
+    lines.push(`${indent}"permission_mode": "off",`);
   }
   return lines;
 }
@@ -205,6 +209,7 @@ function winBody(model: string, variant: Variant): string {
   if (variant !== "plain") {
     body.enable_tools = true;
     body.enabled_tools = TOOLS;
+    body.permission_mode = "off";
   }
   body.stream = true;
   return JSON.stringify(body, null, 2);
@@ -259,6 +264,8 @@ function pythonSnippet(
   if (variant !== "plain") {
     extra.push(`        "enable_tools": True,`);
     extra.push(`        "enabled_tools": [${toolsJson}],`);
+    // biome-ignore lint/style/noUnusedTemplateLiteral: keep generated options visually uniform
+    extra.push(`        "permission_mode": "off",`);
   }
   const extraBody = extra.length
     ? `
@@ -314,6 +321,8 @@ function javascriptSnippet(
     // biome-ignore lint/style/noUnusedTemplateLiteral: keep generated options visually uniform
     options.push(`  enable_tools: true,`);
     options.push(`  enabled_tools: [${toolsJson}],`);
+    // biome-ignore lint/style/noUnusedTemplateLiteral: keep generated options visually uniform
+    options.push(`  permission_mode: "off",`);
   }
 
   const trailingOptions = options.length ? `\n${options.join("\n")}` : "";

@@ -3985,15 +3985,21 @@ def _confirm_gate_has_no_channel(payload, ui_events: bool) -> bool:
     return _confirm_gate_needs_stream(payload)
 
 
-def _reject_confirm_gate_without_channel(payload, ui_events: bool) -> None:
+def _reject_confirm_gate_without_channel(payload, ui_events: bool, monitor_id = None) -> None:
     """Refuse a request whose confirm gate would have nowhere to ask.
 
     Called with the SELECTED catalog in hand, never on intent: mcp_enabled with no MCP
     tools enabled, or a selection filtered down to nothing, leaves the loop skipped, and
     refusing there would 400 a request that proxies straight through.
+
+    ``monitor_id`` closes an entry the caller already opened. The stream generator that
+    would otherwise finish it is never reached from here, and a running entry is exempt
+    from trimming, so leaving it open strands /api/inference/monitor in `generating`.
     """
     if not _confirm_gate_has_no_channel(payload, ui_events):
         return
+    if monitor_id is not None:
+        api_monitor.fail(monitor_id, "confirm_tool_calls requires an event channel")
     raise HTTPException(
         status_code = 400,
         detail = openai_error_body(
@@ -19948,7 +19954,7 @@ async def _proxy_to_external_provider(
     if run_studio_tool_loop:
         # Only once the catalog is known: mcp_enabled with no MCP tools enabled leaves
         # this empty and skips the loop, so there is no prompt to find a channel for.
-        _reject_confirm_gate_without_channel(payload, _ui_events)
+        _reject_confirm_gate_without_channel(payload, _ui_events, monitor_id)
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,

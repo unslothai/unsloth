@@ -139,4 +139,9 @@ def is_ui_control_sse_line(line: str) -> bool:
         payload = json.loads(raw)
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
-    return isinstance(payload, dict) and payload.get("type") in _CONTROL_TYPES
+    if not isinstance(payload, dict):
+        return False
+    # isinstance first: the sanitizer passes a non-string `type` through, and an unhashable
+    # one (a provider putting structured metadata there) raises on the membership test.
+    frame_type = payload.get("type")
+    return isinstance(frame_type, str) and frame_type in _CONTROL_TYPES
