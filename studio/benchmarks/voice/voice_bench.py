@@ -480,8 +480,33 @@ def _median(vals: list[Optional[float]]) -> Optional[float]:
     return statistics.median(xs) if xs else None
 
 
+_REQUIRED_METRICS = ("stt_s", "llm_ttft_s", "llm_total_s", "tts_first_s", "tts_full_s")
+
+
+def incomplete_turns(passes: list[list[TurnResult]]) -> list[dict]:
+    """Every (pass, turn) that errored or is missing a stage timing.
+
+    Such a turn would otherwise drop out of the medians and totals silently, so a
+    run with a broken stage could read *faster* than its baseline."""
+    gaps = []
+    for p_idx, turns in enumerate(passes, 1):
+        for r in turns:
+            missing = [k for k in _REQUIRED_METRICS if getattr(r, k) is None]
+            if r.errors or missing:
+                gaps.append(
+                    {"pass": p_idx, "turn": r.id, "errors": list(r.errors), "missing": missing}
+                )
+    return gaps
+
+
 def summarize(passes: list[list[TurnResult]]) -> dict:
-    """Median-over-passes per turn, then sum/mean across the conversation."""
+    """Median-over-passes per turn, then sum/mean across the conversation.
+
+    ``complete`` is False when any (pass, turn) errored or lacks a stage timing. The
+    totals then cover only what ran and must not be compared to a baseline; main
+    exits 1 for such a run."""
+    if not passes:
+        raise ValueError("summarize() needs at least one measured pass")
     n_turns = len(passes[0])
     per_turn = []
     for i in range(n_turns):
@@ -512,7 +537,10 @@ def summarize(passes: list[list[TurnResult]]) -> dict:
         xs = [t[key] for t in per_turn if t[key] is not None]
         return statistics.mean(xs) if xs else None
 
+    gaps = incomplete_turns(passes)
     return {
+        "complete": not gaps,
+        "incomplete": gaps,
         "per_turn": per_turn,
         "totals": {
             # The headline: sum of true elapsed on the realtime critical path.
@@ -575,18 +603,28 @@ def print_report(summary: dict, meta: dict) -> None:
         )
     cold = meta.get("cold", {})
     if any(cold.values()):
-        print(
-            f"  cold-start (first call)  STT {_fmt(cold.get('stt_s'))} "
-            f"LLM {_fmt(cold.get('llm_s'))} TTS {_fmt(cold.get('tts_s'))}"
-        )
+        print(f"  cold-start (first call)  STT {_fmt(cold.get('stt_s'))} "
+              f"LLM {_fmt(cold.get('llm_s'))} TTS {_fmt(cold.get('tts_s'))}")
+    if not summary.get("complete", True):
+        print("  RUN INCOMPLETE [FAIL]: the totals above skip the failed turns below and "
+              "are not comparable to a baseline")
+        for gap in summary.get("incomplete", []):
+            detail = "; ".join(gap["errors"]) or f"missing {', '.join(gap['missing'])}"
+            print(f"    pass {gap['pass']} turn {gap['turn']}: {detail}")
     print("=" * 78)
 
 
 def diff_baseline(summary: dict, baseline_path: Path) -> None:
+    if not summary.get("complete", True):
+        print(f"\n(skipping diff vs {baseline_path.name}: this run is incomplete)")
+        return
     try:
         base = json.loads(baseline_path.read_text(encoding = "utf-8"))["summary"]
     except Exception as e:  # noqa: BLE001
         print(f"\n(could not read baseline {baseline_path}: {e})")
+        return
+    if not base.get("complete", True):
+        print(f"\n(skipping diff: baseline {baseline_path.name} was itself incomplete)")
         return
     print("\n" + "-" * 78)
     print(f"DIFF vs baseline {baseline_path.name}   (negative = faster)")
@@ -623,6 +661,14 @@ def diff_baseline(summary: dict, baseline_path: Path) -> None:
 # ─────────────────────────────────────────── main ─────────────────────────
 
 
+def positive_int(value: str) -> int:
+    """argparse type: a count that must be >= 1 (``--repeats 0`` would measure nothing)."""
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
+    return n
+
+
 def get_token(args) -> str:
     if args.token:
         return args.token
@@ -652,7 +698,9 @@ def main() -> int:
         "enable_thinking=true). OFF by default: realtime voice wants the spoken "
         "answer immediately, and reasoning is pure first-audio latency.",
     )
-    ap.add_argument("--repeats", type = int, default = 1, help = "measured passes; median reported")
+    ap.add_argument(
+        "--repeats", type = positive_int, default = 1, help = "measured passes (>= 1); median reported"
+    )
     ap.add_argument("--no-warmup", action = "store_true")
     ap.add_argument("--no-determinism", action = "store_true")
     ap.add_argument("--baseline", default = None, help = "prior report JSON to diff against")
@@ -728,7 +776,17 @@ def main() -> int:
     out.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
     (REPORTS / "latest.json").write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
     print(f"\nwrote {out}\n      {REPORTS / 'latest.json'}")
-    return 0
+    # The report is always written (it is the evidence), but a run whose measurements
+    # are not all present, or whose seeded LLM was not reproducible, must not pass.
+    rc = 0
+    if not summary["complete"]:
+        print("FAIL: run incomplete (see the turns listed above)")
+        rc = 1
+    if det and not (det.get("ran") and det.get("identical")):
+        why = det.get("error") or "the two seeded replies differ"
+        print(f"FAIL: determinism check did not pass: {why}")
+        rc = 1
+    return rc
 
 
 if __name__ == "__main__":

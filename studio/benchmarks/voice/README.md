@@ -57,11 +57,20 @@ Latency is worthless if the answers get worse, so each run also reports:
 - **WER** — word error rate of the transcript vs the ground-truth utterance
   (real STT accuracy; 0.000 = perfect).
 - **Determinism** — turn 1's LLM is run twice with the same seed; the replies
-  must be byte-identical (`IDENTICAL ✓`). Guards against a change quietly
-  turning on sampling.
+  must be byte-identical (`IDENTICAL [ok]`). Guards against a change quietly
+  turning on sampling. A `DIFFERENT [FAIL]` result fails the run (exit 1).
+- **Completeness** — every stage of every turn in every pass must have produced
+  a timing. A turn that hit an STT/LLM/TTS error is listed under
+  `RUN INCOMPLETE [FAIL]`, its report carries `"complete": false`, the baseline
+  diff is skipped (the totals would be missing that turn and could read *faster*),
+  and the run exits 1.
 - **Topical check** — a soft flag if a reply wandered completely off topic
   (keyword coverage; not a factual gate, the model has no live tools).
 - The actual transcripts and replies are printed so you can eyeball them.
+
+Exit status: `0` valid run, `1` run measured but invalid (incomplete or
+determinism failed; the report is still written), `2` could not run (Studio
+unreachable, no chat model, no usable TTS route).
 
 ## Determinism
 
