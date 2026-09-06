@@ -3051,36 +3051,59 @@ MTP_SMALL_MODEL_B = 8.0  # below this many B parameters the 4B table is the clos
 # --control-vector and with --sleep-idle-seconds, --parallel must stay a multiple of N, and
 # one group is byte-for-byte the build without the flag. Measured on the pair with that
 # build, Qwen3.8-27B-UD-Q4_K_XL split across the two Sparks (--device RPC0,CUDA0 -sm layer
-# --parallel 32 --cache-ram 0), real-text prompts, npp 128 / ntg 256, two repeats each:
+# --parallel 32 --cache-ram 0), real-text prompts, npp 128 / ntg 256, two repeats each,
+# forward then reversed arm order, WITH --kv-unified.
+#
+# --kv-unified is the whole reason this table was re-measured. Studio passes it on every
+# GGUF load and the first table here did not, so the constants described a launch the
+# product never makes. Measured directly at 32 rows on a two-group split, everything else
+# equal: 137.1 tok/s without it, 173.7 with, 1.27x; --no-context-shift, which Studio also
+# passes, is worth nothing outside noise. It costs the one-context arms nothing at all --
+# one shared KV buffer only pays once the rows are split over two groups.
+#
+# Both nodes were PINNED at 300,1700 MHz for the whole block, deliberately. The first
+# attempt was not, and its eight cells spanned three clock states (local capped six minutes
+# in, the peer nine minutes after that), so no two arms were comparable. The pin costs about
+# 5 to 7 percent against an uncapped node -- the two clean uncapped cells of that attempt
+# read 54.9 and 101.9 for one context against 51.4 and 97.2 here -- which is small because
+# the decode is memory bound, and it applies to every arm equally.
 #
 #   rows | 1 context  | 1 context + MTP | 2 groups   | 2 groups + MTP | one Spark + MTP
-#      8 | 53.6  55.3 |   95.5   93.6   | 54.0  51.5 |   77.1   92.0  |      85.6
-#     32 | 95.5  96.9 |  112.9  114.2   |115.7 108.7 |  133.8  128.3  |      83.8
+#      8 | 51.2  51.6 |   91.3   84.3   | 50.6  48.9 |   88.1   81.6  |  85.6 (unpinned)
+#     32 | 96.4  97.9 |  111.0  113.2   |145.7 133.3 |  154.9  150.2  |  83.8 (unpinned)
 #
-# MTP acceptance is 0.80 at 8 rows and 0.64 at 32 with one context, 0.72 and 0.68 with two
+# MTP acceptance is 0.75 at 8 rows and 0.70 at 32 with one context, 0.74 and 0.71 with two
 # groups, so a second group costs the draft head nothing.
 #
-# At 32 rows the combination wins outright: 133.8 tok/s at best (131.1 mean) is 1.17x the
-# best one-context MTP cell and 1.16x the best two-group cell. At 8 rows one context with MTP
-# wins, 94.6 against 84.6 on the means and 95.5 against 77.1 on the first repeat, because two
-# groups halve the rows per group and neither group then fills a stage; at 8 rows one Spark
-# with MTP (85.6) is faster than either split arm, so a model that fits should not be split
-# at all there. Nothing was measured between 8 and 32 rows, so GROUPS_X_MTP_CROSSOVER_ROWS is
-# the geometric midpoint of the two bracketing points and both sides of it are measured.
+# At 32 rows the combination wins outright, 152.5 tok/s on the means against 112.1 for one
+# context with MTP (1.36x) and 139.5 for two groups alone (1.09x). At 8 rows one context
+# with MTP still wins, 87.8 against 84.8, but by 3 percent rather than the 12 percent the
+# unshared-KV table showed, and in both passes in the same direction (0.96x and 0.97x). So
+# --kv-unified moved the numbers and not the crossing point: the winner still flips between
+# 8 and 32 rows, nothing between them has been measured, and GROUPS_X_MTP_CROSSOVER_ROWS
+# stays the geometric midpoint of the two bracketing points with both sides measured. What
+# did change is the size of the prize above it, 1.36x rather than 1.15x, and the size of the
+# penalty below it, now small enough that the choice barely matters under 16 rows. One Spark
+# with MTP (85.6) is still faster than either split arm at 8 rows, so a model that fits
+# should not be split at all there.
 GROUPS_X_MTP_MEASUREMENT = (
-    "Qwen3.8-27B-UD-Q4_K_XL, llama-server --pipeline-groups 2 --spec-type draft-mtp with "
-    "--device RPC0,CUDA0, unslothai/llama.cpp PR #187 a1dd7c5e8, two DGX Sparks, 2026-09-06, "
-    "npp 128 / ntg 256, --parallel 32, two repeats"
+    "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --pipeline-groups 2 --spec-type "
+    "draft-mtp with --device RPC0,CUDA0, unslothai/llama.cpp PR #187 a1dd7c5e8, two DGX "
+    "Sparks both pinned at 1700 MHz, 2026-09-06, npp 128 / ntg 256, --parallel 32, two "
+    "repeats in opposite arm order"
 )
 # concurrent rows -> (split 1 context, + MTP, split 2 groups, + MTP) decode tok/s, repeat mean
 GROUPS_X_MTP_DECODE_TOKS = {
-    8: (54.5, 94.6, 52.8, 84.6),
-    32: (96.2, 113.6, 112.2, 131.1),
+    8: (51.4, 87.8, 49.7, 84.8),
+    32: (97.2, 112.1, 139.5, 152.5),
 }
-GROUPS_X_MTP_ONE_SPARK_MTP_TOKS = {8: 85.6, 32: 83.8}  # one Spark with MTP, for reference
-GROUPS_X_MTP_ACCEPTANCE = {8: (0.80, 0.72), 32: (0.64, 0.68)}  # (one context, two groups)
-GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.89, 32: 1.15}  # both over one context with MTP
-GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.60, 32: 1.17}  # both over two groups alone
+# One Spark with MTP, for reference. NOT re-measured with --kv-unified or under the pin, so
+# it is the only row here not directly comparable with the rest; it is used only to say that
+# a model which fits should not be split at 8 rows, and the margin there is wide.
+GROUPS_X_MTP_ONE_SPARK_MTP_TOKS = {8: 85.6, 32: 83.8}
+GROUPS_X_MTP_ACCEPTANCE = {8: (0.75, 0.74), 32: (0.70, 0.71)}  # (one context, two groups)
+GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.97, 32: 1.36}  # both over one context with MTP
+GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alone
 # At or above this many concurrent rows a split asks for groups AND speculation, below it for
 # one context with speculation. The geometric mean of the measured 8 and 32.
 GROUPS_X_MTP_CROSSOVER_ROWS = 16
@@ -3163,8 +3186,10 @@ def mtp_note() -> str:
 def groups_x_mtp_wins(users: int) -> bool:
     """Whether a two-Spark layer split at this many concurrent rows should run pipeline
     groups AND speculative decoding, rather than one context with speculation. True at or
-    above ``GROUPS_X_MTP_CROSSOVER_ROWS``: the two together measured 1.15x of one context
-    with MTP at 32 rows but 0.89x of it at 8, because two groups halve the rows per group.
+    above ``GROUPS_X_MTP_CROSSOVER_ROWS``: the two together measured 1.36x of one context
+    with MTP at 32 rows but 0.97x of it at 8, because two groups halve the rows per group.
+    Below the crossover the two are within 3 percent of each other, so choosing wrong
+    there costs little; above it the prize is large.
     The serving side also needs a build that accepts the two flags together (PR #187); this
     function only carries the measured crossover."""
     return max(1, int(users or 1)) >= GROUPS_X_MTP_CROSSOVER_ROWS

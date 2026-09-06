@@ -1341,7 +1341,7 @@ def test_before_load_asks_for_the_spark_draft_depth_in_every_topology(
     assert status["pipeline_groups_reason"] == status["split_config_reason"]
     assert status["pipeline_groups_reason"] == (
         "--pipeline-groups not added: 4 rows is below the measured crossover of 16, where 2 "
-        "groups halve the rows per group and measured 0.89x of one context with speculation "
+        "groups halve the rows per group and measured 0.97x of one context with speculation "
         "at 8 rows"
     )
     run(ss.shutdown())
@@ -1393,7 +1393,7 @@ def test_layer_split_with_no_head_keeps_its_groups_and_launches_without_speculat
     assert status["split_config"] == ss.SPLIT_CONFIG_SPEC
     assert status["pipeline_groups_reason"] == (
         "--pipeline-groups not added: 3 rows is below the measured crossover of 16, where 2 "
-        "groups halve the rows per group and measured 0.89x of one context with speculation "
+        "groups halve the rows per group and measured 0.97x of one context with speculation "
         "at 8 rows, and the speculation is the caller's"
     )
     run(ss.shutdown())
@@ -1435,8 +1435,8 @@ def test_split_takes_groups_and_speculation_above_the_crossover(cluster, monkeyp
     assert status["pipeline_groups"] == 2 and status["mtp"] == "enabled"
     assert status["split_config"] == ss.SPLIT_CONFIG_BOTH == "groups + speculation"
     assert "at or above the measured crossover of 16" in status["split_config_reason"]
-    assert "1.15x of one context with speculation" in status["split_config_reason"]
-    assert "1.17x of 2 groups alone" in status["split_config_reason"]
+    assert "1.36x of one context with speculation" in status["split_config_reason"]
+    assert "1.09x of 2 groups alone" in status["split_config_reason"]
     assert "kept together with --pipeline-groups 2" in status["mtp_reason"]
     assert probe_runs(script) == 2, "one --help run plus one combined probe, both cached"
 
@@ -1631,7 +1631,24 @@ def test_the_crossover_constants_are_the_planners_measured_numbers(cluster):
     assert sc.groups_x_mtp_wins(16) and sc.groups_x_mtp_wins(32)
     assert not sc.groups_x_mtp_wins(8) and not sc.groups_x_mtp_wins(0)
     note = sc.groups_x_mtp_note()
-    assert "PR #187" in note and "131.1" in note and "16 rows up" in note
+    assert "PR #187" in note and "152.5" in note and "16 rows up" in note
+    # The cells have to describe the launch the PRODUCT makes, not a hand harness. Studio
+    # puts --kv-unified on every GGUF load; the first version of this table did not, and on
+    # a two-group split at 32 rows that flag alone is worth 1.27x, so the constants were
+    # about a launch that never happens. Anyone re-measuring has to say which argv they
+    # measured, and it has to be this one.
+    assert (
+        "--kv-unified" in sc.GROUPS_X_MTP_MEASUREMENT
+    ), "the cells must be measured with the flags Studio actually launches"
+    import inspect
+
+    source = inspect.getsource(ss)
+    mirror = source[
+        source.index("# Mirrors of spark_cluster.GROUPS_X_MTP_") : source.index(
+            "GROUPS_X_MTP_MIN_ROWS = 16"
+        )
+    ]
+    assert "--kv-unified" in mirror, "the mirrored cells must name the flag they were measured with"
 
 
 def test_before_load_leaves_the_callers_speculation_alone(cluster, monkeypatch, tmp_path):

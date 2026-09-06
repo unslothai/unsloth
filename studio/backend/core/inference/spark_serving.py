@@ -193,21 +193,27 @@ _GROUPS_REFUSED_FLAGS = frozenset(
 # Mirrors of spark_cluster.GROUPS_X_MTP_* (spark_cluster carries the full table and
 # groups_x_mtp_note; these are here so this module needs nothing loaded to decide).
 # Measured on the pair, Qwen3.8-27B UD-Q4_K_XL split across the two Sparks with the fork of
-# PR #187, --parallel 32 --cache-ram 0, npp 128 / ntg 256, two repeats, decode tok/s:
+# PR #187, --kv-unified --parallel 32 --cache-ram 0, npp 128 / ntg 256, two repeats in
+# opposite arm order, both nodes pinned at 1700 MHz, decode tok/s:
 #
 #   rows | 1 context  | 1 context + MTP | 2 groups   | 2 groups + MTP | one Spark + MTP
-#      8 | 53.6  55.3 |   95.5   93.6   | 54.0  51.5 |   77.1   92.0  |      85.6
-#     32 | 95.5  96.9 |  112.9  114.2   |115.7 108.7 |  133.8  128.3  |      83.8
+#      8 | 51.2  51.6 |   91.3   84.3   | 50.6  48.9 |   88.1   81.6  |  85.6 (unpinned)
+#     32 | 96.4  97.9 |  111.0  113.2   |145.7 133.3 |  154.9  150.2  |  83.8 (unpinned)
 #
-# At 32 rows the two together win: 131.1 tok/s on the repeat mean, 1.15x of one context with
-# MTP and 1.17x of the groups alone (1.17x and 1.16x on the best cells). At 8 rows one
-# context with MTP wins, 94.6 against 84.6, because two groups halve the rows per group.
-# Acceptance is unchanged by the second group (0.80 / 0.64 with one context, 0.72 / 0.68
+# --kv-unified is on every one of these, because Studio puts it on every GGUF load and the
+# first version of this table did not: on a two-group split at 32 rows it is worth 1.27x on
+# its own (137.1 -> 173.7 tok/s, everything else equal), and nothing at all on a one-context
+# split, since one shared KV buffer only pays once the rows are split over two groups.
+#
+# At 32 rows the two together win: 152.5 tok/s on the means, 1.36x of one context with MTP
+# and 1.09x of the groups alone. At 8 rows one context with MTP wins, 87.8 against 84.8, by
+# 3 percent, so under the crossover the choice barely matters; above it the prize is large.
+# Acceptance is unchanged by the second group (0.75 / 0.70 with one context, 0.74 / 0.71
 # with two). Nothing was measured in between, so the crossover is the geometric midpoint of
 # the two bracketing points and both sides of it are measured.
 GROUPS_X_MTP_MIN_ROWS = 16  # spark_cluster.GROUPS_X_MTP_CROSSOVER_ROWS
-GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.89, 32: 1.15}  # both over one context with MTP
-GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.60, 32: 1.17}  # both over two groups alone
+GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.97, 32: 1.36}  # both over one context with MTP
+GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alone
 # What a layer split was launched as, for the status surface beside ``mtp``.
 SPLIT_CONFIG_BOTH = "groups + speculation"
 SPLIT_CONFIG_SPEC = "one context + speculation"
@@ -1128,13 +1134,13 @@ def reconcile_split_speculation(
     the pair with Qwen3.8-27B (``spark_cluster.GROUPS_X_MTP_DECODE_TOKS``), decode tok/s:
 
         rows | 1 context + MTP | 2 groups | 2 groups + MTP
-           8 |      94.6       |   52.8   |      84.6
-          32 |     113.6       |  112.2   |     131.1
+           8 |      87.8       |   49.7   |      84.8
+          32 |     112.1       |  139.5   |     152.5
 
-    so from ``GROUPS_X_MTP_MIN_ROWS`` (16) rows up the two together win, 1.15x of one context
-    with MTP and 1.17x of the groups alone on the repeat means (1.17x and 1.16x on the best
-    cells), and below it one context with MTP wins, 1.12x of the two together, because two
-    groups halve the rows per group. The outcomes, recorded in ``split_config`` and
+    so from ``GROUPS_X_MTP_MIN_ROWS`` (16) rows up the two together win, 1.36x of one context
+    with MTP and 1.09x of the groups alone on the repeat means, and below it one context with
+    MTP wins by 3 percent, because two groups halve the rows per group. Both sides of the
+    crossover carry --kv-unified, which is what the load actually launches with. The outcomes, recorded in ``split_config`` and
     ``split_config_reason`` for the status surface:
 
     * at or above the crossover on a build that takes both: keep both;
