@@ -685,7 +685,7 @@ def _verb_scoped_requirements(install_cell: str) -> "list[tuple[bool, list[str]]
             continue
         for i, match in enumerate(verbs):
             stop = verbs[i + 1].start() if i + 1 < len(verbs) else len(invocation.raw)
-            span = invocation.raw[match.end():stop]
+            span = invocation.raw[match.end() : stop]
             out.append(
                 (
                     match.group(1).lower() == "uninstall",

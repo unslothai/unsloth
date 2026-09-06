@@ -1574,9 +1574,7 @@ def test_each_pip_command_owns_the_packages_it_names():
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
 
     # The uninstall names torchaudio, so the incompatible pair the install leaves stands.
-    other_package = (
-        "!pip install torch==2.10.0 torchcodec==0.12.0 && pip uninstall -y torchaudio"
-    )
+    other_package = "!pip install torch==2.10.0 torchcodec==0.12.0 && pip uninstall -y torchaudio"
     assert nv._effective_requested_version(other_package, "torchcodec", "0.11.0") == (
         "0.12.0",
         True,
