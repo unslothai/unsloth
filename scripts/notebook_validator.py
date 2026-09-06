@@ -121,6 +121,12 @@ def _marker_environment(colab: dict[str, str]) -> dict[str, str] | None:
         "platform_system": "Linux",
         "platform_machine": "x86_64",
         "os_name": "posix",
+        # A requirement handed straight to pip is not being evaluated for a selected extra,
+        # so `extra` has the known empty value and any `extra == "..."` marker is false.
+        # Omitting it made _requirement_applies replay requirements pip discards, e.g.
+        # `pip install "torch==2.12.0; extra == 'foo'"`, which pip reports as
+        # `Ignoring torch: markers 'extra == "foo"' don't match your environment`.
+        "extra": "",
     }
 
 
@@ -1977,6 +1983,13 @@ def cmd_lint(args: argparse.Namespace) -> int:
         # Whole-notebook rules: install steps may span multiple cells, so merge
         # before resolving compat against Colab.
         merged = "\n".join(c for _, c in cells)
+        # A cell can look like an install and contain none -- `!echo "pip install foo"` matches
+        # _PIP_CELL_RE but runs no pip. The compat rules then resolve nothing and compare the
+        # bare oracle against itself, so any finding describes the base image rather than the
+        # notebook (R-INST-003 fires on Colab's own peft/torchao pair). A notebook with no
+        # install cell at all is already skipped; this makes the lookalike behave the same.
+        if not any(True for _ in iter_pip_invocations(merged)):
+            merged = ""
         if env == "colab" and merged:
             first_cell = cells[0][0] if cells else None
             findings += rule_inst_003_peft_torchao(merged, oracle, rel, first_cell)

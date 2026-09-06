@@ -1809,3 +1809,56 @@ def test_the_os_oracle_is_documented_as_feeding_marker_evaluation():
     workflow = (REPO_ROOT / ".github" / "workflows" / "notebooks-ci.yml").read_text()
     assert "refresh-colab \\\n              --all --snapshot-dir" in workflow
     assert "--out unsloth/scripts/data/colab_pip_freeze.gpu.txt \\\n            ||" not in workflow
+
+
+def test_a_top_level_extra_marker_is_false_not_unknown():
+    """`extra` is only bound while resolving a selected extra's dependency metadata. For a
+    requirement handed straight to pip it has the known empty value, so `extra == "foo"` is
+    definitively false and pip drops the requirement:
+
+        $ pip install --dry-run --no-deps "certifi; extra == 'foo'"
+        Ignoring certifi: markers 'extra == "foo"' don't match your environment
+
+    Leaving it out of the environment made _requirement_applies replay the pin anyway and
+    R-INST-004 (error severity) fired on a notebook pip would have left alone.
+    """
+    nv = _load_notebook_validator_module()
+
+    ignored = "!pip install \"torch==2.12.0; extra == 'foo'\""
+    assert nv.rule_inst_004_torchcodec_torch(ignored, COLAB_TORCH211, "nb.ipynb", 0) == []
+
+    # The same pin without the marker is still judged, so the gate did not go silent.
+    applied = '!pip install "torch==2.12.0"'
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(applied, COLAB_TORCH211, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+
+
+def test_a_cell_that_only_mentions_pip_is_not_an_install_cell():
+    """`!echo "pip install foo"` matches the install-cell regex but runs no pip. The compat
+    rules then resolved nothing and compared the Colab oracle against itself, so R-INST-003
+    reported the base image's own peft/torchao pair as an error in the notebook.
+
+    A notebook with no install cell at all was always skipped; the lookalike now matches it.
+    """
+    nv = _load_notebook_validator_module()
+
+    mention = '!echo "pip install foo"'
+    nb = {
+        "cells": [
+            {
+                "cell_type": "code",
+                "source": [mention],
+                "outputs": [],
+                "metadata": {},
+                "execution_count": None,
+            }
+        ],
+        "metadata": {},
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+    # Still discovered as a candidate -- the forbid-pattern rules must keep seeing it.
+    assert nv.install_cells(nb) == [(0, mention)]
+    # But it parses to no invocation, which is what the compat rules key off now.
+    assert list(nv.iter_pip_invocations(mention)) == []
