@@ -719,14 +719,19 @@ def _requested_bounds(
                         current_floor = lower
                     if upper and (not current_ceiling or cmp_versions(upper, current_ceiling) < 0):
                         current_ceiling = upper
-                elif operator in (">=", ">") and (
-                    not current_floor or cmp_versions(version, current_floor) > 0
-                ):
+                elif operator in (">=", ">"):
                     # `>V` names a floor pip will NOT land on. Which release it does land on
                     # is only in the index, so the flag rides along and the caller declines
                     # to name a version rather than keeping the one the cell excluded.
-                    current_floor = version
-                    floor_excludes_itself = operator == ">"
+                    relation = 1 if not current_floor else cmp_versions(version, current_floor)
+                    if relation > 0:
+                        current_floor = version
+                        floor_excludes_itself = operator == ">"
+                    elif relation == 0 and operator == ">":
+                        # `>=V` and `>V` intersect to `>V`: the stricter bound wins even
+                        # though it moves the floor nowhere. Keeping the inclusive one let
+                        # `>=0.10,>0.10` read as "0.10 is fine" and pip moves off it.
+                        floor_excludes_itself = True
                 elif operator == "<" and (
                     not current_ceiling or cmp_versions(version, current_ceiling) < 0
                 ):
@@ -793,6 +798,10 @@ def _apply_requested_bounds(
         # offline. Returning the floor modelled `>=0.8,<0.11` as 0.8 and hid a 0.10 landing.
         landing = _highest_minor_below(ceiling)
         if landing and (not floor or cmp_versions(landing, floor) >= 0):
+            # The top of the window can itself be excluded, and then pip drops to some
+            # lower release the index names: `>=0.8,<0.11,!=0.10.*` cannot land on 0.10.
+            if any(_version_is_excluded(landing, ver) for ver in exclusions):
+                return "", True
             return landing, True
     if cap and (not floor or cmp_versions(cap, floor) >= 0):
         return cap, True  # `<=V` allows V, so V is what pip picks
