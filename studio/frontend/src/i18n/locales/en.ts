@@ -2185,7 +2185,7 @@ export const en = {
       chooseModelAndDataset: "Choose model and dataset",
       validation: {
         s3MultimodalUnsupported:
-          "S3 datasets are not supported for vision or audio training yet.",
+          "S3 datasets are not supported for vision training yet.",
         s3BucketRequired: "Enter an S3 bucket name first.",
         s3CredentialsRequired: "Provide S3 access keys or enable IAM role.",
         modelRequired: "Select a base model first.",
