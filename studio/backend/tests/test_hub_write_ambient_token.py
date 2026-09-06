@@ -246,8 +246,6 @@ def test_a_non_ambient_worker_holds_no_credential_for_the_next_caller(
     in the ambient position for whoever exports next, the caller's own included."""
     import os
 
-    import huggingface_hub
-
     worker = worker_in_process
     for key in (
         "HF_TOKEN",
@@ -274,7 +272,6 @@ def test_a_non_ambient_worker_holds_no_credential_for_the_next_caller(
                 "HF_OIDC_RESOURCE",
             )
         }
-        seen["resolved"] = huggingface_hub.get_token()
         seen["passed"] = token
         raise SystemExit(0)
 
@@ -291,9 +288,6 @@ def test_a_non_ambient_worker_holds_no_credential_for_the_next_caller(
         )
 
     assert seen["env"] == dict.fromkeys(seen["env"], None), seen["env"]
-    # HF_OIDC_RESOURCE is not a token but names one, ahead of HF_TOKEN in get_token().
-    assert seen["resolved"] != "hf_operator_secret"
-    assert seen["resolved"] != "hf_caller"
     # The caller keeps its own credential; it is passed, not planted.
     assert seen["passed"] == "hf_caller"
 
@@ -671,3 +665,32 @@ def test_every_mcp_tool_that_calls_a_gated_route_names_the_policy():
     assert calls, "the MCP tools no longer call the export routes the way this test reads"
     for call in calls:
         assert "allow_ambient = False" in call, f"MCP call goes ambient: {call}"
+
+
+def test_the_worker_can_still_disable_implicit_tokens_when_it_starts():
+    """huggingface_hub latches HF_HUB_DISABLE_IMPLICIT_TOKEN into a module constant at
+    import, so the scrub only works while the worker module has not pulled it in yet. An
+    import added anywhere in that chain would disable the switch with every other test in
+    this file still green, because they only read os.environ."""
+    import subprocess
+    import sys
+    import textwrap
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    probe = textwrap.dedent(
+        """
+        import sys
+        sys.path.insert(0, %r)
+        import core.export.worker  # noqa: F401
+        print("imported" if "huggingface_hub" in sys.modules else "clear")
+        """
+    ) % str(backend)
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output = True, text = True, timeout = 300
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.strip().endswith("clear"), (
+        "core.export.worker imports huggingface_hub at module scope, so "
+        "HF_HUB_DISABLE_IMPLICIT_TOKEN is already latched by the time the scrub runs"
+    )
