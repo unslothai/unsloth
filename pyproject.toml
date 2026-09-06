@@ -75,6 +75,7 @@ studio = [
     "backend/assets/docs_ui/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
+    "systemd/**/*",
 ]
 
 [tool.setuptools.packages.find]
