@@ -2493,6 +2493,7 @@ def test_linux_deny_policy_argv_carries_no_bridge(monkeypatch, tmp_path):
     prepared = backend.prepare(_spec(workdir, sys.executable, "-c", "pass"))
     try:
         assert os_sandbox._NETWORK_BRIDGE_ENV not in prepared.argv
+        assert "SSL_CERT_FILE" not in prepared.env
         # Without a network the CA bundles stay outside the sandbox.
         assert not any(path in prepared.argv for path in os_sandbox._LINUX_CA_TRUST_PATHS)
         assert len(prepared.pass_fds) == 1
@@ -2508,6 +2509,11 @@ def test_linux_deny_policy_argv_carries_no_bridge(monkeypatch, tmp_path):
 @pytest.mark.skipif(sys.platform != "linux", reason = "Bubblewrap argv is Linux-only")
 def test_linux_allowlist_policy_argv_adds_control_fd_bridge_and_proxy(monkeypatch, tmp_path):
     backend, workdir = _bridge_argv_test_setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        os_sandbox,
+        "tls_trust_environment",
+        lambda base = None: {"SSL_CERT_FILE": "/fake/certifi/cacert.pem"},
+    )
     plan = os_sandbox.replace(
         _spec(workdir, sys.executable, "-c", "pass"), network_policy = "allowlist"
     )
@@ -2528,6 +2534,8 @@ def test_linux_allowlist_policy_argv_adds_control_fd_bridge_and_proxy(monkeypatc
         # No proxy variables leak in through the host environment: the wrapper
         # sets them inside the namespace once the handshake completed.
         assert "HTTPS_PROXY" not in prepared.env
+        # The trust bundle (when the interpreter needs one) rides in the host-side env.
+        assert prepared.env.get("SSL_CERT_FILE") == "/fake/certifi/cacert.pem"
         assert "--unshare-all" in argv
         # The CA bundles ride along, or TLS through the proxy fails verification.
         for path in os_sandbox._LINUX_CA_TRUST_PATHS:

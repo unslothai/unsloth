@@ -11,6 +11,7 @@ where the tunnel has to complete. The rule itself gets its own test.
 
 from __future__ import annotations
 
+import sys
 import base64
 import socket
 import threading
@@ -916,3 +917,30 @@ def test_bytes_pipelined_with_the_connect_head_reach_the_upstream(proxy, upstrea
         rest += chunk
     assert rest == hello
     client.close()
+
+
+def test_tls_trust_environment_only_fills_a_missing_default_store(monkeypatch, tmp_path):
+    import ssl
+    import types
+
+    bundle = tmp_path / "cacert.pem"
+    bundle.write_text("x")
+    fake_certifi = types.SimpleNamespace(where = lambda: str(bundle))
+    monkeypatch.setitem(sys.modules, "certifi", fake_certifi)
+    missing = types.SimpleNamespace(cafile = None, capath = None)
+    present = types.SimpleNamespace(cafile = "/etc/ssl/cert.pem", capath = None)
+
+    monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: missing)
+    assert network_proxy.tls_trust_environment() == {
+        "SSL_CERT_FILE": str(bundle),
+        "REQUESTS_CA_BUNDLE": str(bundle),
+    }
+    # An operator's own setting wins.
+    assert network_proxy.tls_trust_environment({"SSL_CERT_FILE": "/mine.pem"}) == {}
+    # A working default store needs no override.
+    monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: present)
+    assert network_proxy.tls_trust_environment() == {}
+    # No certifi: nothing to point at.
+    monkeypatch.setattr(ssl, "get_default_verify_paths", lambda: missing)
+    monkeypatch.setitem(sys.modules, "certifi", None)
+    assert network_proxy.tls_trust_environment() == {}

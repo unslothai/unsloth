@@ -328,6 +328,34 @@ def proxy_environment(port: int, credential: ProxyCredential) -> dict[str, str]:
     return env
 
 
+def tls_trust_environment(base: dict[str, str] | None = None) -> dict[str, str]:
+    """``SSL_CERT_FILE`` for interpreters whose OpenSSL has no trust store of its own.
+
+    python.org and hosted-toolcache builds on macOS ship OpenSSL with default
+    cert paths that do not exist, so ``urllib`` fails every HTTPS request with
+    CERTIFICATE_VERIFY_FAILED while pip (which vendors certifi) works. When the
+    defaults are missing and ``certifi`` is importable, its bundle is named
+    through the standard variable, which OpenSSL and Python's ssl module honour.
+    A caller that already set the variable keeps its value.
+    """
+    if base and any(key in base for key in ("SSL_CERT_FILE", "SSL_CERT_DIR")):
+        return {}
+    try:
+        import ssl
+
+        paths = ssl.get_default_verify_paths()
+        if paths.cafile or paths.capath:
+            return {}
+        import certifi  # type: ignore[import-not-found]
+
+        bundle = certifi.where()
+    except Exception:  # noqa: BLE001 - a missing module or a broken ssl build means no override
+        return {}
+    if not (isinstance(bundle, str) and os.path.isfile(bundle)):
+        return {}
+    return {"SSL_CERT_FILE": bundle, "REQUESTS_CA_BUNDLE": bundle}
+
+
 _NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
 _NAT64_LOCAL_USE = ipaddress.IPv6Network("64:ff9b:1::/48")
 _SIX_TO_FOUR = ipaddress.IPv6Network("2002::/16")

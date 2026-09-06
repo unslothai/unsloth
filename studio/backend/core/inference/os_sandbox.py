@@ -36,6 +36,7 @@ from .network_proxy import (
     NetworkAllowlist,
     NetworkAudit,
     proxy_environment,
+    tls_trust_environment,
 )
 
 logger = get_logger(__name__)
@@ -1401,6 +1402,11 @@ class LinuxBubblewrapBackend:
             raise
         environment = _linux_environment()
         env = _sanitize_linux_environment(spec.env, environment)
+        if spec.network_policy == "allowlist":
+            # Not secret and not the proxy URL (that one is set inside the
+            # namespace by the wrapper): the trust bundle for interpreters whose
+            # OpenSSL has no default store, so TLS through the proxy verifies.
+            env.update(tls_trust_environment(env))
         env["HOME"] = workdir
         env["TMPDIR"] = "/tmp"
 
@@ -1684,6 +1690,7 @@ class MacOSSeatbeltBackend:
             env = _sanitize_macos_environment(spec.env, workdir, private_tmp)
             if proxy is not None:
                 env.update(proxy_environment(proxy.port, proxy.credential))
+                env.update(tls_trust_environment(env))
             return PreparedSandboxLaunch(
                 argv = (self._sandbox_exec, "-p", profile, "--", *spec.argv),
                 workdir = workdir,
@@ -1726,6 +1733,12 @@ _MACOS_READ_ROOTS = (
     "/private/etc/services",
     "/System/Library/CoreServices/.SystemVersionPlatform.plist",
     "/System/Library/CoreServices/SystemVersion.plist",
+    # /usr/bin/git and friends are xcode-select shims that resolve the developer
+    # directory through this link and exec the real tool from it; without these
+    # every git call inside the sandbox ends with "See man xcode-select".
+    "/private/var/db/xcode_select_link",
+    "/Library/Developer/CommandLineTools",
+    "/Applications/Xcode.app/Contents/Developer",
 )
 # Readable only when the network allowlist is on: the trust store OpenSSL reads
 # (/private/etc/ssl) and what Security.framework needs to evaluate a server
