@@ -725,12 +725,7 @@ def _requested_bounds(
 
 
 def _apply_requested_bounds(
-    installed: str,
-    exact: str,
-    floor: str,
-    ceiling: str,
-    cap: str,
-    floor_excludes_itself: bool,
+    installed: str, exact: str, floor: str, ceiling: str, cap: str, floor_excludes_itself: bool
 ) -> str:
     """What one pip command leaves installed, given what was there before it ran.
 
