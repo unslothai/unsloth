@@ -2043,15 +2043,19 @@ def test_exception_coverage_skips_cells_that_run_no_pip(tmp_path):
 
     def write(source: str) -> None:
         notebook = {
-            "cells": [{
-                "cell_type": "code",
-                "metadata": {},
-                "source": [source],
-                "outputs": [],
-                "execution_count": None,
-            }],
-            "metadata": {"kernelspec": {"name": "python3", "display_name": "Python 3"},
-                         "language_info": {"name": "python"}},
+            "cells": [
+                {
+                    "cell_type": "code",
+                    "metadata": {},
+                    "source": [source],
+                    "outputs": [],
+                    "execution_count": None,
+                }
+            ],
+            "metadata": {
+                "kernelspec": {"name": "python3", "display_name": "Python 3"},
+                "language_info": {"name": "python"},
+            },
             "nbformat": 4,
             "nbformat_minor": 0,
         }

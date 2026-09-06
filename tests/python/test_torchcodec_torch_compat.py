@@ -1209,9 +1209,9 @@ def test_an_exclusion_rules_out_the_installed_version():
     # mismatch is still reported.
     untouched = '!pip install "torch==2.9.0" "torchcodec!=0.12.0"'
     assert nv._effective_version(untouched, "torchcodec", "0.11.0") == ("0.11.0", True)
-    assert [
-        f.rule for f in nv.rule_inst_004_torchcodec_torch(untouched, colab, "nb.ipynb", 0)
-    ] == ["R-INST-004"]
+    assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(untouched, colab, "nb.ipynb", 0)] == [
+        "R-INST-004"
+    ]
 
 
 def test_versions_are_compared_with_pep440_zero_padding():
