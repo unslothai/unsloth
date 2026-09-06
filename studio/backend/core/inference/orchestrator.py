@@ -905,7 +905,7 @@ class InferenceOrchestrator:
                         else:
                             self._mark_worker_started(owner)
                     other.put(resp)
-                    return None
+                return None
             return resp
 
         def drain(timeout: float = 5.0) -> bool:

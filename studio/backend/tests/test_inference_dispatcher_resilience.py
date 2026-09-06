@@ -17,6 +17,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -184,3 +186,37 @@ def _direct_reader_calls(o, request_id):
     """_direct_reader wired to a scripted _read_resp (o._scripted, popped in order)."""
     o._read_resp = lambda timeout = 1.0: o._scripted.pop(0) if o._scripted else None
     return o._direct_reader(request_id)
+
+
+@pytest.mark.parametrize("response_type", ["token", "gen_done", "gen_error", "audio_done"])
+def test_direct_reader_discards_responses_from_released_requests(response_type):
+    o = _direct_reader_host()
+    current = {"request_id": "current", "type": "token", "text": "current answer"}
+    o._scripted = [
+        {"request_id": "cancelled", "type": response_type, "text": "old answer"},
+        current,
+    ]
+    read_one, _drain, release = _direct_reader_calls(o, "current")
+    try:
+        # Cancellation may release the old mailbox before the worker finishes.
+        # Its late tokens/errors/terminal frame must not satisfy a new request.
+        assert read_one(timeout = 0.1) is None
+        assert read_one(timeout = 0.1) == current
+    finally:
+        release()
+
+
+def test_direct_reader_drain_waits_for_its_own_terminal_response():
+    o = _direct_reader_host()
+    o._scripted = [
+        {"request_id": "cancelled", "type": "gen_done"},
+        {"request_id": "current", "type": "token", "text": "still running"},
+        {"request_id": "current", "type": "gen_done"},
+    ]
+    o._ensure_subprocess_alive = lambda: True
+    _read_one, drain, release = _direct_reader_calls(o, "current")
+    try:
+        assert drain(timeout = 1.0)
+        assert not o._scripted, "an orphan gen_done must not end the current drain early"
+    finally:
+        release()
