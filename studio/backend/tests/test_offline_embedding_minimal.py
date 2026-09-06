@@ -1022,7 +1022,9 @@ def test_get_offline_uncached_uses_local_files_only(tmp_path, monkeypatch):
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
     # No cache -> repo-id load forced cache-only (fails fast offline, not a hang).
-    monkeypatch.setattr(embeddings, "_guard_model_security", lambda name, local_only = False: None)
+    monkeypatch.setattr(
+        embeddings, "_guard_model_security", lambda name, local_only = False, display = None: None
+    )
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)
     embeddings._get("org/uncached-xyz")
@@ -1040,7 +1042,9 @@ def test_get_online_omits_local_files_only(monkeypatch):
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
     # Isolate the loader wiring from the online guard's network calls.
-    monkeypatch.setattr(embeddings, "_guard_model_security", lambda name, local_only = False: None)
+    monkeypatch.setattr(
+        embeddings, "_guard_model_security", lambda name, local_only = False, display = None: None
+    )
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)
     embeddings._get("org/online")
@@ -1092,7 +1096,9 @@ def test_get_online_loads_the_snapshot_settings_called_cached(hf_cache, monkeypa
     monkeypatch.setattr(embeddings, "_name", None, raising = False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
-    monkeypatch.setattr(embeddings, "_guard_model_security", lambda name, local_only = False: None)
+    monkeypatch.setattr(
+        embeddings, "_guard_model_security", lambda name, local_only = False, display = None: None
+    )
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)
 
@@ -1112,7 +1118,9 @@ def test_an_uncached_model_online_still_loads_by_repo_id(monkeypatch):
     monkeypatch.setattr(embeddings, "_name", None, raising = False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
-    monkeypatch.setattr(embeddings, "_guard_model_security", lambda name, local_only = False: None)
+    monkeypatch.setattr(
+        embeddings, "_guard_model_security", lambda name, local_only = False, display = None: None
+    )
     captured = {}
     _install_fake_sentence_transformers(monkeypatch, captured)
 
@@ -1338,7 +1346,9 @@ def test_a_pending_transfer_does_not_make_the_security_scan_offline(monkeypatch,
     monkeypatch.setattr(
         embeddings,
         "_guard_model_security",
-        lambda target, local_only = False: seen.update(target = target, local_only = local_only),
+        lambda target, local_only = False, display = None: seen.update(
+            target = target, local_only = local_only
+        ),
     )
     # Pending, but the Hub is reachable.
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)

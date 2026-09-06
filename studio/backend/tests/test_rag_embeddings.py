@@ -947,7 +947,9 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
     (snapshot / "model.safetensors").write_bytes(b"ST")
     scanned = []
     monkeypatch.setattr(
-        embeddings, "_guard_model_security", lambda target, local_only = False: scanned.append(target)
+        embeddings,
+        "_guard_model_security",
+        lambda target, local_only = False, display = None: scanned.append(target),
     )
 
     class _ST:

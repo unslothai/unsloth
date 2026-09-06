@@ -25730,6 +25730,415 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 # =====================================================================
 
 
+_STUDIO_EMBED_CONCURRENCY = 4
+_STUDIO_EMBED_MAX_INPUTS = 2048
+_studio_embed_semaphores: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_studio_embed_semaphores_guard = threading.Lock()
+
+
+def _studio_embed_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _studio_embed_semaphores_guard:
+        semaphore = _studio_embed_semaphores.get(loop)
+        if semaphore is None:
+            semaphore = _studio_embed_semaphores[loop] = asyncio.Semaphore(
+                _STUDIO_EMBED_CONCURRENCY
+            )
+        return semaphore
+
+
+def _resident_serves_embeddings(llama_backend) -> bool:
+    return bool(llama_backend.is_loaded and getattr(llama_backend, "is_embedding_gguf", True))
+
+
+def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
+    value = body.get("input")
+    if isinstance(value, str):
+        items = [value]
+    # `type(...) is int`, not isinstance: bool subclasses int, so `[true]` would be read
+    # as a token array and could swap the resident GGUF for a body llama-server rejects.
+    elif (
+        tokens_ok
+        and isinstance(value, list)
+        and value
+        and all(type(token) is int for token in value)
+    ):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        items = []
+    if not items:
+        raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+    if not tokens_ok and len(items) > _STUDIO_EMBED_MAX_INPUTS:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"'input' may hold at most {_STUDIO_EMBED_MAX_INPUTS} items.",
+        )
+
+    def _ok(item) -> bool:
+        if isinstance(item, str):
+            return bool(item)
+        return (
+            tokens_ok
+            and isinstance(item, list)
+            and bool(item)
+            and all(type(token) is int for token in item)
+        )
+
+    if not all(_ok(item) for item in items):
+        raise HTTPException(
+            status_code = 400,
+            detail = "'input' must be a non-empty string or an array of non-empty strings.",
+        )
+    encoding_format = body.get("encoding_format")
+    if encoding_format is not None and encoding_format not in ("float", "base64"):
+        raise HTTPException(
+            status_code = 400, detail = "'encoding_format' must be 'float' or 'base64'."
+        )
+    return items
+
+
+def _embeddings_texts(body: dict) -> list[str]:
+    return _embeddings_items(body, tokens_ok = False)
+
+
+def _public_embedding_name(model_name: str) -> str:
+    """A name for a local checkpoint that leaks no path but still identifies it.
+
+    The basename alone is not enough: /checkpoints/run-a/model and
+    /checkpoints/run-b/model are different embedding spaces, and reporting both as
+    "model" lets a client file vectors from either under one identity -- the exact
+    confusion this route reports the identity to prevent.
+    """
+    from utils.paths import is_local_path
+
+    if not is_local_path(model_name):
+        return model_name
+    import hashlib
+
+    normalized = model_name.replace("\\", "/").rstrip("/")
+    base = normalized.rsplit("/", 1)[-1] or "model"
+    return f"{base}-{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:8]}"
+
+
+def _public_embedding_identity(identity: str, model_name: str, label: str) -> str:
+    """Redact the model and repo segments of ``backend:model[:gguf_repo]``, nothing else.
+
+    Segment-wise, not a substring replace: a model can be a relative directory named
+    `transformers`, and replacing that everywhere also rewrites the `sentence-transformers`
+    tag, leaving an identity no backend answers to and that _names_studio_embedder cannot
+    match on the next request.
+    """
+    from core.rag.config import (
+        EMBEDDING_IDENTITY_TAGS,
+        _escape_identity_segment,
+        _unescape_identity_segment,
+        effective_gguf_repo_for_embedding_model,
+    )
+    from utils.paths import is_local_path
+
+    tag = next((t for t in EMBEDDING_IDENTITY_TAGS if identity.startswith(f"{t}:")), None)
+    if tag is None:
+        return identity
+    repo = effective_gguf_repo_for_embedding_model(model_name)
+    # Both segments are checked: a hub model id can carry a GGUF companion that is a local path
+    # (RAG_EMBED_GGUF_REPO, or a stored repo), and that path is a segment of the identity too.
+    if not is_local_path(model_name) and not is_local_path(repo):
+        return identity
+    public = {model_name: label, repo: _public_embedding_name(repo)}
+    segments = [_unescape_identity_segment(s) for s in identity[len(tag) + 1 :].split(":")]
+    redacted = [_escape_identity_segment(public.get(s, s)) for s in segments]
+    return ":".join([tag, *redacted])
+
+
+def _embedding_payload(vector, encoding_format: str):
+    if encoding_format == "base64":
+        import base64
+        import numpy as np
+        return base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode("ascii")
+    return [float(x) for x in vector]
+
+
+def _names_studio_embedder(requested: str) -> Optional[str]:
+    from core.rag import config as rag_config
+    from core.rag import embeddings as rag_embeddings
+    from utils.paths import is_local_path
+
+    model = rag_config.effective_embedding_model()
+    repo = rag_config.effective_gguf_repo_for_embedding_model(model)
+    label = _public_embedding_name(model)
+    wanted = requested.strip()
+    if rag_config.embedding_identity_model(wanted) is not None:
+        current = rag_embeddings.embedding_identity(model)
+        if wanted in (current, _public_embedding_identity(current, model, label)):
+            return model
+        return None
+    for name in (model, repo, label, _public_embedding_name(repo)):
+        if not name:
+            continue
+        if is_local_path(name) or is_local_path(wanted):
+            if wanted == name:
+                return model
+        elif wanted.casefold() == name.casefold():
+            return model
+    return None
+
+
+def _resident_absent(llama_backend) -> bool:
+    return not getattr(llama_backend, "is_loaded", False)
+
+
+def _stashed_gguf_embeds() -> bool:
+    from core.inference.llama_keepwarm import get_last_unloaded_model
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    last = get_last_unloaded_model()
+    if not last:
+        return False
+    target_id, variant = last[0], last[1]
+    try:
+        resolved = resolve_local_gguf(
+            f"{target_id}:{variant}" if variant else target_id, allow_scan = False
+        )
+        path = resolved[0] if resolved else None
+        if not path:
+            return False
+        probe = _probe_backend()
+        probe._read_gguf_metadata(path)
+        return bool(probe.is_embedding_gguf)
+    except Exception:  # noqa: BLE001 - an unreadable stash is not an embedding model
+        return False
+
+
+async def _default_embeddings_request_body(request: Request) -> Optional[dict]:
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    requested = body.get("model")
+    return body if requested is None or requested == "" else None
+
+
+async def _embeddings_client_gone(request: Request) -> bool:
+    is_disconnected = getattr(request, "is_disconnected", None)
+    if is_disconnected is None:
+        return False
+    try:
+        return bool(await is_disconnected())
+    except Exception:  # noqa: BLE001 - a broken transport reads as still connected
+        return False
+
+
+async def _resident_answers_embeddings(llama_backend, requested: str) -> bool:
+    if not _resident_serves_embeddings(llama_backend):
+        return False
+    return await asyncio.to_thread(_loaded_satisfies, requested)
+
+
+def _reference_is_decisive(requested: str) -> bool:
+    """Whether *requested* is evidence the caller meant a model held HERE.
+
+    The same positive-evidence rule `_reject_unservable_model` applies: an explicit
+    GGUF quant label, which no foreign id carries, or a repo actually on disk. A bare
+    vendor id like `text-embedding-3-small` is neither, and must keep falling through
+    rather than 404 -- that is what kept LiteLLM and OpenRouter style names working.
+    """
+    from core.inference.openai_auto_download import (
+        looks_like_gguf_hub_repo_id,
+        looks_like_quant,
+        split_model_ref,
+    )
+
+    from core.rag.config import embedding_identity_model
+
+    base, variant = split_model_ref(requested)
+    # Shape alone, no index needed: an explicit quant label and a GGUF hub repo id are
+    # references no vendor alias carries.
+    if looks_like_quant(variant) or looks_like_gguf_hub_repo_id(base):
+        return True
+    # A tag names one exact vector space, and this runs only once _names_studio_embedder has
+    # declined it -- so it is a space this server no longer holds. Answering from the current
+    # one files two spaces under the identity the client asked us to distinguish.
+    if embedding_identity_model(requested) is not None:
+        return True
+    try:
+        from core.inference.local_model_resolver import (
+            index_is_built,
+            resolve_local_gguf,
+            warm_index_soon,
+        )
+        from utils.paths import is_local_path
+
+        if resolve_local_gguf(requested, allow_scan = False) is not None:
+            return True
+        if not index_is_built():
+            # A cold index is missing evidence, not absence: warm it, and meanwhile do not
+            # wave a name shaped like a local model through to a different embedding space.
+            warm_index_soon()
+            return is_local_path(requested) or "/" in requested
+        return False
+    except Exception:  # noqa: BLE001 - a broken index cannot clear the name either
+        return True
+
+
+async def _studio_embedder_request_body(request: Request) -> Optional[tuple[dict, str]]:
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    requested = body.get("model")
+    if not isinstance(requested, str) or not requested.strip():
+        return None
+    model = await asyncio.to_thread(_names_studio_embedder, requested)
+    return (body, model) if model else None
+
+
+async def _studio_embeddings(
+    request: Request,
+    body: dict,
+    current_subject: str,
+    model_name: Optional[str] = None,
+) -> Response:
+    from core.inference.llama_keepwarm import (
+        untrack_admitted_inference,
+        untrack_current_request,
+    )
+    from core.rag import config as rag_config
+    from core.rag import embeddings as rag_embeddings
+
+    # /embeddings is an _INFERENCE_SUFFIXES path that is not slot-excluded, so untrack before the
+    # encode: a 2xx would otherwise claim the llama slot, block a preview swap for the whole
+    # encode, and stamp the idle-unload TTL for a model that did no work.
+    _scope = getattr(request, "scope", None)
+    untrack_current_request(_scope)
+    # The auto-switch hook admitted this request before the route knew it lands here, and the
+    # preview busy guard reads the admitted tally, not _inflight.
+    untrack_admitted_inference(_scope)
+
+    texts = _embeddings_texts(body)
+    encoding_format = body.get("encoding_format")
+    if encoding_format is None:
+        encoding_format = "float"
+    dimensions = body.get("dimensions")
+    model_name = model_name or rag_config.effective_embedding_model()
+    label = _public_embedding_name(model_name)
+
+    def _embed():
+        # Every helper takes the model captured above: left to default they re-read the live
+        # setting, mixing one model's limit and dimension with another's vectors.
+        limit = rag_embeddings.max_tokens(model_name)
+        count = rag_embeddings.token_counter(model_name)
+        token_counts = [count(text) for text in texts]
+        if limit and max(token_counts) > limit:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"'input' exceeds the {limit}-token limit of {label}.",
+            )
+        if dimensions is not None and dimensions != rag_embeddings.dim(model_name):
+            raise HTTPException(
+                status_code = 400, detail = f"'dimensions' is not supported by {label}."
+            )
+        # encode_with_identity: an ST failure swaps the process to llama-server mid-encode, and
+        # reporting the configured name anyway files two spaces under one label.
+        vectors, identity = rag_embeddings.encode_with_identity(
+            texts, model_name = model_name, normalize = True
+        )
+        return vectors, identity, sum(token_counts), limit
+
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            via_api_key = _request_used_api_key(request),
+            method = request.method,
+            model = label,
+            prompt = _flatten_monitor_prompt(body.get("input", "")),
+            subject = current_subject,
+        )
+    # The worker's lifetime, not the awaiting task's: cancelling does not stop the thread behind
+    # to_thread, so releasing there admits the next request mid-encode and the cap stops meaning
+    # anything. Same as _drain_pending_worker on the blocking-generation path.
+    semaphore = _studio_embed_semaphore()
+    acquire = asyncio.ensure_future(semaphore.acquire())
+    try:
+        while not acquire.done():
+            await asyncio.wait({acquire}, timeout = 0.25)
+            if not acquire.done() and await _embeddings_client_gone(request):
+                raise asyncio.CancelledError()
+    except asyncio.CancelledError:
+        if not acquire.done():
+            acquire.cancel()
+        elif not acquire.cancelled() and acquire.exception() is None:
+            semaphore.release()
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    try:
+        gone = await _embeddings_client_gone(request)
+    except asyncio.CancelledError:
+        semaphore.release()
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    if gone:
+        semaphore.release()
+        api_monitor.finish(monitor_id, "cancelled")
+        raise asyncio.CancelledError()
+    worker = asyncio.ensure_future(asyncio.to_thread(_embed))
+
+    def _release_embed_permit(finished) -> None:
+        if not finished.cancelled():
+            finished.exception()  # retrieved so a cancelled request logs no "never retrieved"
+        semaphore.release()
+
+    worker.add_done_callback(_release_embed_permit)
+    try:
+        vectors, identity, prompt_tokens, limit = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except HTTPException as exc:
+        api_monitor.fail(monitor_id, str(exc.detail))
+        raise
+    # The two conditions the caller can act on. _friendly_error, written for llama-server
+    # transport faults, flattens both to "An internal error occurred", which behind an agent's
+    # memory search is the whole diagnosis the user gets. 409: not wrong, not ready yet.
+    except (
+        rag_embeddings.EmbeddingModelDownloadRequiredError,
+        rag_embeddings.UnsafeEmbeddingModelError,
+    ) as exc:
+        # The configured model may be a local path, which every other field here hashes.
+        detail = str(exc).replace(repr(model_name), repr(label))
+        api_monitor.fail(monitor_id, detail)
+        raise HTTPException(status_code = 409, detail = detail) from exc
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise HTTPException(
+            status_code = 502, detail = f"Embedding model failed: {_friendly_error(exc)}"
+        ) from exc
+    payload = {
+        "object": "list",
+        "data": [
+            {
+                "object": "embedding",
+                "index": index,
+                "embedding": _embedding_payload(vector, encoding_format),
+            }
+            for index, vector in enumerate(vectors)
+        ],
+        "model": _public_embedding_identity(identity, model_name, label),
+        "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
+    }
+    # limit is per text, prompt_tokens is the batch sum, so the monitor's gauge only means
+    # anything for a single input; a batch would sit pinned at 100%.
+    _monitor_openai_chunk(monitor_id, payload, limit if len(texts) == 1 else None)
+    api_monitor.finish(monitor_id)
+    return Response(content = json.dumps(payload), media_type = "application/json")
+
+
 def _embeddings_input_present(body: dict) -> bool:
     """Whether an embeddings body carries a usable ``input`` (non-empty)."""
     inp = body.get("input")
@@ -25742,14 +26151,8 @@ def _embeddings_input_present(body: dict) -> bool:
 
 @router.post("/embeddings")
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
-    """
-    OpenAI-compatible embeddings endpoint.
-
-    Proxies to the running llama-server's ``/v1/embeddings``. Only available
-    when a GGUF model is loaded.
-    Note: the loaded model must support pooling, else llama-server returns an
-    error (expected).
-    """
+    """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
+    else Studio's configured embedding model."""
     llama_backend = get_llama_cpp_backend()
     # Reject a request with no input before any automatic load so an invalid request never
     # swaps or reloads the resident model (as chat/responses/messages already validate before
@@ -25770,6 +26173,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
             if not _embeddings_input_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+            _embeddings_items(_pre, tokens_ok = True)
         elif _pre is not _UNPARSEABLE_BODY:
             # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
             # "Request body must be a JSON object"; reject it here, before the switch, so the
@@ -25781,21 +26185,48 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
     # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
     # a non-embedding target switches, then llama-server returns a no-pooling error.
+    studio_request = await _studio_embedder_request_body(request)
+    if studio_request is not None and not await _resident_answers_embeddings(
+        llama_backend, studio_request[0]["model"]
+    ):
+        return await _studio_embeddings(
+            request, studio_request[0], current_subject, model_name = studio_request[1]
+        )
+    if studio_request is None and _resident_absent(llama_backend):
+        default_body = await _default_embeddings_request_body(request)
+        if default_body is not None and not await asyncio.to_thread(_stashed_gguf_embeds):
+            return await _studio_embeddings(request, default_body, current_subject)
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
     if not llama_backend.is_loaded:
-        _status, _detail = await _no_model_loaded_error(
-            "No GGUF model loaded. Load a GGUF model first.",
-            _raw_body_model(body),
-            request,
-            status = 503,
-        )
-        raise HTTPException(status_code = _status, detail = _detail)
+        # With the slot empty _reject_unservable_model defers to _no_model_loaded_error, so
+        # without this the fallback would answer a decisive repo:QUANT this server does not
+        # hold from the Settings embedder: another space under the caller's name (#7454).
+        # `{"model": 123}` gets this far: both pre-switch readers decline a non-string selector,
+        # and the alias lookup below strips whatever it is handed.
+        _named = _raw_body_model(body)
+        if not isinstance(_named, str):
+            _named = None
+        if _named and not await asyncio.to_thread(_names_studio_embedder, _named):
+            _decisive = await asyncio.to_thread(_reference_is_decisive, _named)
+        else:
+            _decisive = False
+        if _decisive or not isinstance(body, dict):
+            _status, _detail = await _no_model_loaded_error(
+                "No GGUF model loaded. Load a GGUF model first.",
+                _named,
+                request,
+                status = 503,
+            )
+            raise HTTPException(status_code = _status, detail = _detail)
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    if not _resident_serves_embeddings(llama_backend):
+        return await _studio_embeddings(request, body, current_subject)
 
     # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
     # 2xx, so no claim here: llama-server can still return a non-2xx for a valid body (e.g. a
