@@ -99,8 +99,21 @@ fi
 # (install_nvidia_toolkit.sh, NVIDIA's own recipe) rather than let --gpus fail at
 # the daemon with exit 125. UNSLOTH_INSTALL_TOOLKIT=1 says yes without a prompt,
 # =0 never asks; with neither and no terminal, print the one-liner and continue.
-if [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
-        && ! docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'; then
+DOCKER_INFO=""
+DOCKER_ERR=""
+if [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia; then
+    if ! DOCKER_INFO="$(docker info 2>"${TMPDIR:-/tmp}/unsloth-docker-info.$$")"; then
+        DOCKER_ERR="$(cat "${TMPDIR:-/tmp}/unsloth-docker-info.$$" 2>/dev/null)"
+    fi
+    rm -f "${TMPDIR:-/tmp}/unsloth-docker-info.$$"
+fi
+if [[ -n "$DOCKER_ERR" ]]; then
+    # no daemon, or no permission on its socket: an install offer would be the wrong
+    # answer, and the docker run below fails with the same message
+    printf "\033[1;33mWARN:\033[0m 'docker info' failed, so the GPU runtime could not be checked:\n      %s\n" "${DOCKER_ERR##*$'\n'}" >&2
+    printf "      Start the Docker daemon, or add yourself to the docker group (newgrp docker).\n\n" >&2
+elif [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
+        && ! grep -qi 'Runtimes:.*nvidia' <<<"$DOCKER_INFO"; then
     INSTALLER="$(dirname "${BASH_SOURCE[0]}")/install_nvidia_toolkit.sh"
     printf "\033[1;33mWARN:\033[0m 'docker info' does not list 'nvidia' as a runtime: the NVIDIA\n" >&2
     printf "      Container Toolkit is not set up, so --gpus %s would fail at the daemon.\n" "$GPUS" >&2
@@ -118,7 +131,7 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
             ;;
         *)
             printf "      Install it with one command (Linux, needs sudo):\n" >&2
-            printf "      curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh | sudo bash\n\n" >&2
+            printf "      curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh | sudo -E bash\n\n" >&2
             ;;
     esac
 fi

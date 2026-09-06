@@ -31,6 +31,25 @@ OS_RELEASE = {
 }
 
 
+# The scripts under test are given ONLY these real tools, next to the stubs. A branch
+# that reaches for an absent command (dnf gone, systemctl gone) must find nothing,
+# never the runner's own package manager or init.
+_REAL_TOOLS = (
+    "bash", "grep", "sed", "head", "tr", "sort", "mkdir", "cat", "basename", "dirname",
+    "touch", "cut", "rm", "true",
+)
+
+
+def _isolated_path(tmp_path: Path, bindir: Path) -> str:
+    sysbin = tmp_path / "sysbin"
+    sysbin.mkdir(exist_ok = True)
+    for name in _REAL_TOOLS:
+        real = shutil.which(name)
+        assert real, f"{name} not found on this host"
+        (sysbin / name).symlink_to(real)
+    return f"{bindir}{os.pathsep}{sysbin}"
+
+
 def _stub(path: Path, body: str) -> None:
     path.write_text("#!/usr/bin/env bash\n" + body, encoding = "utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
@@ -72,11 +91,12 @@ def _setup(
     )
     # the installer picks the verification platform from uname -m; pin it so the
     # suite means the same thing on an arm64 runner
-    _stub(bindir / "uname", "echo x86_64\n")
+    _stub(bindir / "uname", 'if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi\n')
     _stub(bindir / "nvidia-ctk", rec + f"touch {marker}\n")
     _stub(
         bindir / "docker",
         rec
+        + 'if [ "$1" = context ]; then echo "unix:///var/run/docker.sock"; exit 0; fi\n'
         + 'if [ "$1" = info ]; then\n'
         + ('  echo " Operating System: Docker Desktop"\n' if desktop else "")
         + (
@@ -84,11 +104,7 @@ def _setup(
             '    case "${DOCKER_HOST:-}" in *docker.sock) echo "name=rootless,name=seccomp" ;; *) echo "name=seccomp" ;; esac; exit 0\n'
             "  fi\n"
             if rootless == "via_sudo_uid"
-            else (
-                '  if [ "$2" = "--format" ]; then echo "name=rootless,name=seccomp"; exit 0; fi\n'
-                if rootless
-                else ""
-            )
+            else ('  if [ "$2" = "--format" ]; then echo "name=rootless,name=seccomp"; exit 0; fi\n' if rootless else "")
         )
         + f'  if [ -e {marker} ]; then echo " Runtimes: io.containerd.runc.v2 nvidia runc"; else echo " Runtimes: io.containerd.runc.v2 runc"; fi\n'
         + "  exit 0\nfi\n"
@@ -127,13 +143,14 @@ def _setup(
         encoding = "utf-8",
     )
     env = dict(os.environ)
-    env["PATH"] = f"{bindir}{os.pathsep}" + env["PATH"]
+    env["PATH"] = _isolated_path(tmp_path, bindir)
     env["UNSLOTH_DESTDIR"] = str(root)
     env["UNSLOTH_OS_RELEASE"] = str(osr)
     env["UNSLOTH_PROC_VERSION"] = str(procv)
     env["UNSLOTH_RUN_USER_DIR"] = str(tmp_path / "run-user")
     env.pop("UNSLOTH_TOOLKIT_VERIFY", None)
     env.pop("SUDO_UID", None)
+    env.pop("DOCKER_HOST", None)
     return root, log, env
 
 
@@ -282,15 +299,37 @@ def test_rootless_docker_is_still_caught_when_piped_into_sudo_bash(tmp_path: Pat
 
 def test_without_docker_the_script_says_so(tmp_path: Path):
     _, log, env = _setup(tmp_path)
-    (tmp_path / "bin" / "docker").unlink()
-    sysbin = tmp_path / "sysbin"  # bash only, so the host's real docker is out of reach
-    sysbin.mkdir()
-    (sysbin / "bash").symlink_to(shutil.which("bash"))
-    env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{sysbin}"
+    (tmp_path / "bin" / "docker").unlink()  # the PATH holds no real docker either
     res = _run(env)
     assert res.returncode == 2
     assert "docker is not installed" in res.stderr
     assert _calls(log) == []
+
+
+def test_a_remote_docker_endpoint_is_refused(tmp_path: Path):
+    _, log, env = _setup(tmp_path, uid = 1000)
+    env["DOCKER_HOST"] = "tcp://gpu-box:2376"
+    res = _run(env)
+    assert res.returncode == 2
+    assert "remote daemon (tcp://gpu-box:2376)" in res.stderr
+    assert not any(c.startswith(("sudo", "apt-get", "nvidia-ctk")) for c in _calls(log))
+
+
+def test_docker_desktop_on_macos_says_cpu_only(tmp_path: Path):
+    _, log, env = _setup(tmp_path, desktop = True, driver = False, uid = 1000)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "no NVIDIA GPU" in res.stdout and "UNSLOTH_ALLOW_CPU=1" in res.stdout
+    assert "GPU support comes with it" not in res.stdout
+
+
+def test_the_old_driver_message_names_the_host_platform_even_without_verification(tmp_path: Path):
+    _, _, env = _setup(tmp_path, driver_version = "550.54.15")
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Linux; else echo aarch64; fi\n')
+    res = _run(env, extra_env = {"UNSLOTH_TOOLKIT_VERIFY": "0"})
+    assert res.returncode == 3
+    assert "--platform linux/arm64" in res.stderr
 
 
 def test_a_configured_host_only_verifies(tmp_path: Path):
@@ -308,7 +347,7 @@ def test_docker_desktop_needs_nothing(tmp_path: Path):
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
     assert "Docker Desktop detected" in res.stdout
-    assert [c for c in _calls(log) if not c.startswith("docker info")] == []
+    assert [c for c in _calls(log) if not c.startswith("docker ")] == []
 
 
 @pytest.mark.parametrize("systemctl", ["missing", "fails"])
@@ -341,9 +380,7 @@ def test_a_non_root_run_of_the_file_re_executes_itself_under_sudo(tmp_path: Path
     _, log, env = _setup(tmp_path, uid = 1000)
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
-    assert [c for c in _calls(log) if not c.startswith("docker info")] == [
-        f"sudo -E bash {INSTALLER}"
-    ]
+    assert [c for c in _calls(log) if not c.startswith("docker ")] == [f"sudo -E bash {INSTALLER}"]
 
 
 def test_a_non_root_pipe_cannot_re_execute_and_says_so(tmp_path: Path):
@@ -357,11 +394,13 @@ def test_a_non_root_pipe_cannot_re_execute_and_says_so(tmp_path: Path):
         timeout = 60,
     )
     assert res.returncode == 2
-    assert "sudo bash" in res.stderr
-    assert [c for c in _calls(log) if not c.startswith("docker info")] == []
+    assert "sudo -E bash" in res.stderr
+    assert [c for c in _calls(log) if not c.startswith("docker ")] == []
 
 
-def _run_sh_env(tmp_path: Path, *, nvidia_runtime: bool) -> tuple[Path, Path, dict]:
+def _run_sh_env(
+    tmp_path: Path, *, nvidia_runtime: bool, docker_down: bool = False
+) -> tuple[Path, Path, dict]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "calls.log"
@@ -370,9 +409,14 @@ def _run_sh_env(tmp_path: Path, *, nvidia_runtime: bool) -> tuple[Path, Path, di
     runtimes = (
         "io.containerd.runc.v2 nvidia runc" if nvidia_runtime else "io.containerd.runc.v2 runc"
     )
+    info = (
+        'echo "permission denied while trying to connect to the Docker daemon socket" >&2; exit 1'
+        if docker_down
+        else f'echo " Runtimes: {runtimes}"; exit 0'
+    )
     _stub(
         bindir / "docker",
-        rec + f'if [ "$1" = info ]; then echo " Runtimes: {runtimes}"; exit 0; fi\n'
+        rec + f'if [ "$1" = info ]; then {info}; fi\n'
         f'printf "%s\\n" "$@" > {argv}\nexit 0\n',
     )
     _stub(bindir / "nvidia-smi", 'echo "GPU 0: NVIDIA H100 (UUID: GPU-abc)"\n')
@@ -384,7 +428,7 @@ def _run_sh_env(tmp_path: Path, *, nvidia_runtime: bool) -> tuple[Path, Path, di
     (dev_root / "dev").mkdir(parents = True)
     (dev_root / "dev" / "nvidiactl").write_text("", encoding = "utf-8")
     env = dict(os.environ)
-    env["PATH"] = f"{bindir}{os.pathsep}" + env["PATH"]
+    env["PATH"] = _isolated_path(tmp_path, bindir)
     env["UNSLOTH_DEV_ROOT"] = str(dev_root)
     env["HF_HOME"] = str(tmp_path / "hf")
     env["TRITON_CACHE_DIR"] = str(tmp_path / "triton")
@@ -428,7 +472,18 @@ def test_run_sh_without_a_terminal_prints_the_one_liner_and_still_runs(tmp_path:
     log, argv, env = _run_sh_env(tmp_path, nvidia_runtime = False)
     res = _run_run_sh(env)
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "install_nvidia_toolkit.sh | sudo bash" in res.stderr
+    assert "install_nvidia_toolkit.sh | sudo -E bash" in res.stderr
+    assert not any(c.startswith("sudo") for c in _calls(log))
+    assert argv.exists()
+
+
+def test_run_sh_does_not_offer_an_install_when_docker_itself_is_unreachable(tmp_path: Path):
+    log, argv, env = _run_sh_env(tmp_path, nvidia_runtime = False, docker_down = True)
+    env["UNSLOTH_INSTALL_TOOLKIT"] = "1"
+    res = _run_run_sh(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "permission denied" in res.stderr and "docker group" in res.stderr
+    assert "Container Toolkit is not set up" not in res.stderr
     assert not any(c.startswith("sudo") for c in _calls(log))
     assert argv.exists()
 
@@ -443,5 +498,5 @@ def test_run_sh_is_quiet_when_the_runtime_is_present(tmp_path: Path):
 def test_the_docs_point_at_the_installer():
     for doc in (REPO_ROOT / "docker" / "DOCKERHUB.md", REPO_ROOT / "README.md"):
         text = doc.read_text(encoding = "utf-8")
-        assert "docker/install_nvidia_toolkit.sh | sudo bash" in text, doc
+        assert "docker/install_nvidia_toolkit.sh | sudo -E bash" in text, doc
     assert "Docker Desktop" in (REPO_ROOT / "docker" / "DOCKERHUB.md").read_text(encoding = "utf-8")
