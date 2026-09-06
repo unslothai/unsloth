@@ -17041,9 +17041,23 @@ def _python_exec(
         return result
 
     except Exception as e:
+        # Cleanup first, like the success, timeout and cancellation paths: the
+        # finally below would run it after this return, so a failed ACL revoke
+        # or a leftover container temp would never reach the caller. A launch
+        # that failed on the way up is exactly when cleanup is most likely to
+        # have something to say.
+        if prepared_launch is not None:
+            prepared_launch.cleanup()
         # An exception message carries whatever the failure put in it, so it is capped
-        # like the result would have been.
-        return _truncate(_tool_failure_message(e))
+        # like the result would have been, with the trailers as its hint so an
+        # overrun cannot drop them.
+        return _truncate(
+            _tool_failure_message(e),
+            hint = _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "python_exec")
+            ),
+        )
     finally:
         _call_finished(call_token)
         if _scratch_name:
@@ -17309,9 +17323,23 @@ def _bash_exec(
         return result
 
     except Exception as e:
+        # Cleanup first, like the success, timeout and cancellation paths: the
+        # finally below would run it after this return, so a failed ACL revoke
+        # or a leftover container temp would never reach the caller. A launch
+        # that failed on the way up is exactly when cleanup is most likely to
+        # have something to say.
+        if prepared_launch is not None:
+            prepared_launch.cleanup()
         # An exception message carries whatever the failure put in it, so it is capped
-        # like the result would have been.
-        return _truncate(_tool_failure_message(e))
+        # like the result would have been, with the trailers as its hint so an
+        # overrun cannot drop them.
+        return _truncate(
+            _tool_failure_message(e),
+            hint = _defuse_sentinels(
+                _network_denied_trailer(prepared_launch)
+                + _isolation_cleanup_trailer(prepared_launch, "bash_exec")
+            ),
+        )
     finally:
         _call_finished(call_token)
         if _scratch_name:

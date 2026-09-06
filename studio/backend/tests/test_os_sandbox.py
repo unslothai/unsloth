@@ -1218,7 +1218,52 @@ def test_popen_failure_emits_no_execution_record(kind, monkeypatch, tmp_path):
     assert "launcher failed before payload" in result
     assert records == []
     assert not sentinel.exists()
-    prepared.cleanup.assert_called_once()
+    # Cleanup runs on the exception path before the result is built, so its
+    # diagnostics reach the caller, and again in the finally, which is
+    # idempotent. The same one-or-two shape as every other exit path.
+    assert prepared.cleanup.call_count in (1, 2)
+
+
+@pytest.mark.parametrize("kind", ["python", "terminal"])
+def test_a_failed_launch_still_reports_what_cleanup_could_not_undo(kind, monkeypatch, tmp_path):
+    # The exception path used to return before the finally cleaned up, so a
+    # launch that failed AND left ACEs or a temp behind told the caller only
+    # about the first failure. That is the case where the second one matters
+    # most, since nothing else will mention it.
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    _patch_tool_harness(monkeypatch, workdir)
+    prepared = os_sandbox.PreparedSandboxLaunch(
+        argv = ("qualified-native-sandbox", "opaque-inner-command"),
+        workdir = str(workdir),
+        env = {"MODE": "prepared"},
+        preexec_fn = None,
+        backend = "test-native",
+        execution_record = os_sandbox.ToolExecutionRecord(
+            requested_mode = "os_isolation_required",
+            effective_mode = "os_isolation_required",
+            environment = "native_linux",
+            backend = "test-native",
+            profile_id = "test-v1",
+            probe_generation = "generation",
+            os_isolation = True,
+            retained_safeguards = ("os_isolation",),
+        ),
+    )
+    prepared.cleanup = Mock(side_effect = lambda: prepared.cleanup_diagnostics.append(
+        "the workdir grant could not be revoked"
+    ))
+    monkeypatch.setattr(inference_tools, "prepare_tool_launch", lambda _spec: prepared)
+    monkeypatch.setattr(
+        inference_tools.subprocess,
+        "Popen",
+        Mock(side_effect = OSError("launcher failed before payload")),
+    )
+
+    result = _invoke_tool(kind)
+
+    assert "launcher failed before payload" in result
+    assert "the workdir grant could not be revoked" in result
 
 
 @pytest.mark.parametrize("kind", ["python", "terminal"])
