@@ -1849,6 +1849,43 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
 
 
+def test_cached_models_scan_lists_a_speculative_drafter_like_any_other_model(monkeypatch, tmp_path):
+    """The listing describes what is on disk. A drafter downloaded for MLX speculation carries its
+    target's own ``model_type``, and it is cached, so it is a row."""
+    active_hub = tmp_path / "hub"
+    repo_path = active_hub / "models--Org--Drafter"
+    snapshot = repo_path / "snapshots" / ("b" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text(
+        json.dumps({"model_type": "qwen3", "dflash_config": {"num_layers": 6}}), encoding = "utf-8"
+    )
+    (snapshot / "model.safetensors").write_bytes(b"\0" * 4096)
+    repo = SimpleNamespace(
+        repo_id = "Org/Drafter",
+        repo_type = "model",
+        repo_path = repo_path,
+        revisions = [
+            SimpleNamespace(
+                files = [_file("config.json", 12), _file("model.safetensors", 80_000_000)],
+                snapshot_path = snapshot,
+                commit_hash = "b" * 40,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = active_hub),
+    )
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "is_snapshot_partial", lambda *_a, **_kw: False
+    )
+
+    assert [row["repo_id"] for row in cache_inventory._scan_cached_models()] == ["Org/Drafter"]
+
+
 def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch, tmp_path):
     curated_path = tmp_path / "hub" / "models--unsloth--whisper-tiny"
     curated_path.mkdir(parents = True)

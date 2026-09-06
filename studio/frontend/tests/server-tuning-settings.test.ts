@@ -123,9 +123,13 @@ test("a record only claims the new schema version when it carries one", () => {
     ),
     "utf8",
   );
-  assert.match(source, /const STORAGE_SCHEMA_VERSION = 5;/);
+  assert.match(source, /const STORAGE_SCHEMA_VERSION = 6;/);
+  assert.match(source, /const PRE_MLX_SPECULATIVE_SCHEMA_VERSION = 5;/);
   assert.match(source, /const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;/);
-  assert.match(source, /hasServerTuning\s*\n?\s*\?\s*STORAGE_SCHEMA_VERSION/);
+  assert.match(
+    source,
+    /hasServerTuning\s*\n?\s*\?\s*PRE_MLX_SPECULATIVE_SCHEMA_VERSION/,
+  );
 });
 
 test("blank knobs are omitted from the load payload", () => {

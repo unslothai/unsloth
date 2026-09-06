@@ -17,6 +17,11 @@
  *
  * The structural test at the bottom is the one that lasts: it fails when a field is added
  * to `PerModelConfig` without being classified here.
+ * `residentRuntimeMatchesConfig` across every accelerator, crossed with every setting a
+ * remembered config can pin. Both directions per field rather than sampling: a wrong FALSE
+ * costs one reload (#8893), a wrong TRUE strands the user on a differently invoked server
+ * with the panel rolled back. Accelerators differ in which GPU fields they report at all,
+ * and "the status does not carry this field" must never read as agreement.
  */
 
 import assert from "node:assert/strict";
@@ -154,6 +159,35 @@ const FIELDS: FieldCase[] = [
     statusKey: "mlx_kv_bits_requested",
     same: 8,
     different: 4,
+  },
+  // Only ever compared against an MLX resident: for anything else both sides collapse
+  // to Off, so a GGUF pick is not reloaded over a setting it cannot carry.
+  {
+    key: "mlxSpeculativeMode",
+    statusKey: "mlx_speculative_mode_requested",
+    same: "mtp",
+    different: "dflash",
+    live: { config: {}, status: { is_mlx: true } },
+  },
+  {
+    key: "mlxDraftModel",
+    statusKey: "mlx_draft_model_requested",
+    same: "org/drafter",
+    different: "org/other",
+    live: {
+      config: { mlxSpeculativeMode: "mtp" },
+      status: { is_mlx: true, mlx_speculative_mode_requested: "mtp" },
+    },
+  },
+  {
+    key: "mlxDraftBlockSize",
+    statusKey: "mlx_draft_block_size_requested",
+    same: 4,
+    different: 8,
+    live: {
+      config: { mlxSpeculativeMode: "mtp" },
+      status: { is_mlx: true, mlx_speculative_mode_requested: "mtp" },
+    },
   },
   {
     key: "speculativeType",
@@ -432,6 +466,63 @@ test("an empty pinned pool is Automatic, not a demand for no GPUs", () => {
     // writes null for Automatic.
     false,
   );
+});
+
+test("an MLX resident running what was asked for is adopted, not reloaded", () => {
+  // The shape /status emits, which the explicit-mode sweep above never produces: answering
+  // "changed" for an echoed Auto sends every re-pick of every MLX model back through the
+  // load path, which prompts to stop running chats and drops queued prompts before /load
+  // answers that nothing changed. The cost is that a drafter downloaded while this model is
+  // resident does not attach until something else about the request changes.
+  for (const base of Object.values(ACCELERATORS)) {
+    const resident = {
+      ...base,
+      is_mlx: true,
+      mlx_speculative_mode_requested: "auto" as const,
+    };
+    assert.equal(residentRuntimeMatchesConfig(resident, BLANK), true);
+    // And a backend too old to echo the request reads the same way, rather than as an Off
+    // no pick could match.
+    const silent = { ...base, is_mlx: true };
+    assert.equal(residentRuntimeMatchesConfig(silent, BLANK), true);
+    // An explicit pin is its own effective answer, so it is still compared here: unchanged
+    // adopts, changed reloads.
+    const pinned = {
+      ...base,
+      is_mlx: true,
+      mlx_speculative_mode_requested: "mtp" as const,
+      mlx_draft_model_requested: "org/d",
+    };
+    const asPinned = {
+      ...BLANK,
+      mlxSpeculativeMode: "mtp" as const,
+      mlxDraftModel: "org/d",
+    };
+    assert.equal(residentRuntimeMatchesConfig(pinned, asPinned), true);
+    assert.equal(
+      residentRuntimeMatchesConfig(pinned, {
+        ...asPinned,
+        mlxDraftModel: "org/other",
+      }),
+      false,
+    );
+  }
+});
+
+test("a resident that is not MLX is not reloaded over speculation it cannot carry", () => {
+  // The other side of the same check: a remembered drafter picked against a GGUF runtime
+  // collapses both sides to Off, instead of a reload on every pick of every GGUF model.
+  for (const base of Object.values(ACCELERATORS)) {
+    assert.equal(
+      residentRuntimeMatchesConfig(base, {
+        ...BLANK,
+        mlxSpeculativeMode: "mtp",
+        mlxDraftModel: "org/drafter",
+        mlxDraftBlockSize: 6,
+      }),
+      true,
+    );
+  }
 });
 
 test("every PerModelConfig field is either compared or deliberately excluded", () => {

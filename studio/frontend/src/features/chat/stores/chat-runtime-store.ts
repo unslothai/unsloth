@@ -14,7 +14,10 @@ import {
   type GpuIndexKind,
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
-import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
+import {
+  DRAFT_N_MAX_SPEC_TYPES,
+  type MlxSpeculativeMode,
+} from "@/lib/speculative-modes";
 import { create } from "zustand";
 import { getChatSettings } from "../api/chat-settings-api";
 import {
@@ -2331,6 +2334,16 @@ type ChatRuntimeStore = {
   toolCallTimeout: number;
   kvCacheDtype: string | null;
   mlxKvBits: number | null;
+  mlxSpeculativeMode: MlxSpeculativeMode;
+  mlxDraftModel: string | null;
+  mlxDraftBlockSize: number | null;
+  /** The tuple the resident runtime was actually launched with, or null off MLX. */
+  loadedMlxSpeculativeMode: MlxSpeculativeMode | null;
+  loadedMlxDraftModel: string | null;
+  loadedMlxDraftBlockSize: number | null;
+  /** Why speculation is not running, as prose; the effective mode and drafter are separate
+   * fields above. Null while it runs, or before any load has answered. */
+  mlxSpeculativeReason: string | null;
   /** Width the backend was last asked for; the verdict belongs beside it. */
   loadedMlxKvBitsRequested: number | null;
   mlxKvQuantReason: string | null;
@@ -4019,6 +4032,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolCallTimeout: 5,
   kvCacheDtype: null,
   mlxKvBits: null,
+  mlxSpeculativeMode: "auto",
+  mlxDraftModel: null,
+  mlxDraftBlockSize: null,
+  loadedMlxSpeculativeMode: null,
+  loadedMlxDraftModel: null,
+  loadedMlxDraftBlockSize: null,
+  mlxSpeculativeReason: null,
   loadedMlxKvBitsRequested: null,
   mlxKvQuantReason: null,
   chatTemplateOverrideReason: null,
@@ -4929,6 +4949,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
       mlxKvBits: null,
+      mlxSpeculativeMode: "auto",
+      mlxDraftModel: null,
+      mlxDraftBlockSize: null,
+      loadedMlxSpeculativeMode: null,
+      loadedMlxDraftModel: null,
+      loadedMlxDraftBlockSize: null,
+      mlxSpeculativeReason: null,
       loadedMlxKvBitsRequested: null,
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
