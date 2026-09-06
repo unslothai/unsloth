@@ -97,7 +97,7 @@ def test_gguf_lora_passes_valid_outtype(monkeypatch, tmp_path):
     monkeypatch.setattr(
         save_mod,
         "_unsloth_save_lora_gguf",
-        lambda model, tok, sd, outtype = None: seen.update(outtype = outtype),
+        lambda *_a, **kw: seen.update(kw),
     )
     save_mod.unsloth_save_pretrained_gguf(
         _FakeModel(),
@@ -114,7 +114,7 @@ def test_gguf_lora_invalid_outtype_falls_back_to_f16(monkeypatch, tmp_path):
     monkeypatch.setattr(
         save_mod,
         "_unsloth_save_lora_gguf",
-        lambda model, tok, sd, outtype = None: seen.update(outtype = outtype),
+        lambda *_a, **kw: seen.update(kw),
     )
     save_mod.unsloth_save_pretrained_gguf(
         _FakeModel(),
@@ -126,6 +126,26 @@ def test_gguf_lora_invalid_outtype_falls_back_to_f16(monkeypatch, tmp_path):
     assert (
         seen.get("outtype") == "f16"
     ), "a GGUF model quant (q4_k_m) is not a valid LoRA outtype -> f16"
+
+
+@pytest.mark.parametrize("token", [False, "caller-token", None])
+def test_gguf_lora_forwards_the_caller_token(monkeypatch, tmp_path, token):
+    """Dropping it here sends _unsloth_save_lora_gguf to get_token(), i.e. the host credential."""
+    seen = {}
+    monkeypatch.setattr(
+        save_mod,
+        "_unsloth_save_lora_gguf",
+        lambda *_a, **kw: seen.update(kw),
+    )
+    save_mod.unsloth_save_pretrained_gguf(
+        _FakeModel(),
+        str(tmp_path),
+        tokenizer = object(),
+        save_method = "lora",
+        quantization_method = "q8_0",
+        token = token,
+    )
+    assert seen["token"] is token
 
 
 def test_gguf_lora_push_to_hub_is_rejected(tmp_path):
@@ -316,3 +336,68 @@ def test_torchao_requires_config_or_qat(tmp_path):
             tokenizer = object(),
             torchao_config = None,
         )
+
+
+# -- the converter subprocess inherits our env, so it needs the token denied explicitly ------
+
+
+def _run_lora_gguf(monkeypatch, tmp_path, token):
+    """Drive _unsloth_save_lora_gguf to the converter call and return the env it would use."""
+    captured = {}
+
+    class _FakePeft:
+        config = _FakeModel.config
+
+    class _FakePopen:
+        def __init__(self, _cmd, **kwargs):
+            captured["env"] = kwargs["env"]
+            self.stdout = []
+            self.returncode = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def wait(self):
+            return 0
+
+    llama_dir = tmp_path / "llama.cpp"
+    llama_dir.mkdir()
+    (llama_dir / "convert_lora_to_gguf.py").write_text("", encoding = "utf-8")
+
+    monkeypatch.setattr(save_mod, "PeftModelForCausalLM", _FakePeft)
+    monkeypatch.setattr(save_mod, "LLAMA_CPP_DEFAULT_DIR", str(llama_dir))
+    monkeypatch.setattr(save_mod, "save_lora_to_custom_dir", lambda *_a: None)
+    monkeypatch.setattr(save_mod, "install_llama_cpp", lambda **_kw: None)
+    monkeypatch.setattr(save_mod, "_lora_base_model_id", lambda _m: "org/private-base")
+    monkeypatch.setattr(save_mod, "_loaded_via_remote_code", lambda _m: False)
+    monkeypatch.setattr(save_mod, "get_token", lambda: "host-ambient-token")
+    monkeypatch.setattr(save_mod.subprocess, "Popen", _FakePopen)
+    monkeypatch.setenv("HF_TOKEN", "host-ambient-token")
+    monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "host-ambient-token")
+
+    save_mod._unsloth_save_lora_gguf(
+        _FakePeft(), _FakeTokenizer(), str(tmp_path / "out"), outtype = "f16", token = token
+    )
+    return captured["env"]
+
+
+def test_lora_gguf_converter_is_denied_the_host_token(monkeypatch, tmp_path):
+    env = _run_lora_gguf(monkeypatch, tmp_path, token = False)
+    for key in save_mod._HF_TOKEN_ENV_KEYS:
+        assert key not in env, f"{key} survived into a forced-anonymous converter"
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1", "the cached token is still implicit"
+
+
+def test_lora_gguf_converter_gets_an_explicit_token(monkeypatch, tmp_path):
+    env = _run_lora_gguf(monkeypatch, tmp_path, token = "caller-token")
+    assert env["HF_TOKEN"] == "caller-token"
+    assert env["HUGGING_FACE_HUB_TOKEN"] == "caller-token"
+
+
+def test_lora_gguf_converter_keeps_the_ambient_token_when_none(monkeypatch, tmp_path):
+    # None means "ambient allowed"; that fallback is what a UI session relies on.
+    env = _run_lora_gguf(monkeypatch, tmp_path, token = None)
+    assert env["HF_TOKEN"] == "host-ambient-token"
