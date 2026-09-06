@@ -231,6 +231,8 @@ def job_read(neutral):
             if lock is None or not policy.installation_is_multi_user():
                 return fn(self, *args, **kwargs)
             with lock:
+                if self.job_account is not None:
+                    refresh_job_owner(self)
                 if job_is_foreign(self):
                     return neutral(self, *args, **kwargs)
                 return fn(self, *args, **kwargs)
@@ -306,31 +308,43 @@ def retire_account_jobs(account: AccountContext) -> None:
     with _services_lock:
         _retired.add(account.account_id)
         services = list(_services)
+    errors = []
     for service in services:
-        with service._account_job_lock:
-            if service._result_account.account_id == account.account_id:
-                try:
-                    run_as(account, service._account_cancel)
-                finally:
-                    proc = getattr(service, "_proc", None)
-                    if proc is not None and proc.is_alive():
-                        proc.terminate()
-                        proc.join(timeout = 5)
-                        if proc.is_alive():
-                            proc.kill()
-                            proc.join(timeout = 3)
-                        if proc.is_alive():
-                            raise RuntimeError("Retired account worker has not stopped")
+        try:
+            with service._account_job_lock:
+                if service._result_account.account_id == account.account_id:
+                    try:
+                        run_as(account, service._account_cancel)
+                    finally:
+                        proc = getattr(service, "_proc", None)
+                        if proc is not None and proc.is_alive():
+                            proc.terminate()
+                            proc.join(timeout = 5)
+                            if proc.is_alive():
+                                proc.kill()
+                                proc.join(timeout = 3)
+                            if proc.is_alive():
+                                raise RuntimeError("Retired account worker has not stopped")
+        except Exception as exc:
+            errors.append(exc)
     from hub.services.datasets.downloads import retire_account_downloads
-
-    run_as(account, retire_account_downloads)
     from core.rag import folder_sync, ingestion
-
-    run_as(account, ingestion.retire_account_ingestions)
-    run_as(account, folder_sync.retire_account_sync)
     from core.research_runs import retire_account_research
 
-    retire_account_research(account)
+    for cancel in (
+        retire_account_downloads,
+        ingestion.retire_account_ingestions,
+        folder_sync.retire_account_sync,
+        lambda: retire_account_research(account),
+    ):
+        try:
+            run_as(account, cancel)
+        except Exception as exc:
+            errors.append(exc)
+    if errors:
+        raise RuntimeError(
+            "Could not retire every account job; keep its directories in place"
+        ) from errors[0]
 
 
 def account_is_retired() -> bool:
@@ -361,11 +375,15 @@ def validate_recipe_access(recipe) -> None:
         for value in recipe:
             validate_recipe_access(value)
     elif isinstance(recipe, dict):
+        seed_type = recipe.get("seed_type")
+        if seed_type in {"hf", "github_repo"} and not str(recipe.get("token") or "").strip():
+            raise HTTPException(status_code = 403, detail = "Supply your own seed-source token")
         for key, value in recipe.items():
             if key in {"api_key_env", "token_env", "hf_token_env"} and value:
                 raise HTTPException(status_code = 403, detail = "Supply your own provider credential")
             if key in {
                 "path",
+                "paths",
                 "file_path",
                 "file_paths",
                 "data_files",
@@ -375,7 +393,20 @@ def validate_recipe_access(recipe) -> None:
             }:
                 for path in value if isinstance(value, list) else [value]:
                     if isinstance(path, str):
-                        account_path(path)
+                        if seed_type == "hf" and key == "path":
+                            remote = path.removeprefix("hf://")
+                            parts = remote.split("/")
+                            if (
+                                not remote.startswith("datasets/")
+                                or len(parts) < 3
+                                or any(part in {"", ".", ".."} for part in parts)
+                                or "\\" in remote
+                            ):
+                                raise HTTPException(
+                                    status_code = 403, detail = "Invalid Hugging Face seed path"
+                                )
+                        else:
+                            account_path(path)
             if isinstance(value, (dict, list)):
                 validate_recipe_access(value)
 

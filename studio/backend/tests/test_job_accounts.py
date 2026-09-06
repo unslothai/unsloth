@@ -237,6 +237,8 @@ def test_export_owner_single_mode_preserves_operation_and_status_bytes(export, m
         "last_op_error": None,
     }
     assert result.model_dump_json() == json.dumps(expected, separators = (",", ":"))
+    exported = backend.export_lora_adapter("/arbitrary/export")
+    assert json.dumps(exported, separators = (",", ":")) == '[true,"done",null]'
     assert backend.cancel_export() is True
 
 
@@ -731,3 +733,107 @@ def test_retirement_keeps_checkpoint_files_for_directory_renaming(monkeypatch):
     monkeypatch.setattr(jobs, "_retired", {ALICE.account_id})
     run_as(ALICE, _cleanup_cancelled_checkpoints, root.parent)
     assert checkpoint.read_text() == "preserve"
+
+
+def test_retirement_attempts_every_service_when_one_cancel_fails(monkeypatch):
+    from core.rag import folder_sync, ingestion
+    from core import research_runs
+    from hub.services.datasets import downloads
+    from core.export.orchestrator import ExportOrchestrator
+
+    broken = ExportOrchestrator()
+    healthy = ExportOrchestrator()
+    broken._result_account = healthy._result_account = ALICE
+    cancelled = []
+
+    def fail():
+        raise RuntimeError("cancel failed")
+
+    monkeypatch.setattr(broken, "_account_cancel", fail)
+    monkeypatch.setattr(healthy, "_account_cancel", lambda: cancelled.append("healthy"))
+    monkeypatch.setattr(jobs, "_services", [broken, healthy])
+    monkeypatch.setattr(folder_sync, "retire_account_sync", lambda: cancelled.append("folders"))
+    monkeypatch.setattr(
+        ingestion, "retire_account_ingestions", lambda: cancelled.append("ingestion")
+    )
+    monkeypatch.setattr(
+        research_runs, "retire_account_research", lambda account: cancelled.append("research")
+    )
+    monkeypatch.setattr(
+        downloads, "retire_account_downloads", lambda: cancelled.append("downloads")
+    )
+    with pytest.raises(RuntimeError, match = "keep its directories"):
+        jobs.retire_account_jobs(ALICE)
+    assert cancelled == ["healthy", "downloads", "ingestion", "folders", "research"]
+
+
+def test_unstructured_recipe_path_lists_are_contained():
+    with pytest.raises(HTTPException):
+        run_as(
+            ALICE,
+            jobs.validate_recipe_access,
+            {
+                "seed_config": {
+                    "source": {
+                        "seed_type": "unstructured",
+                        "paths": [str(run_as(BOB, workspace_root) / "notes.txt")],
+                    }
+                }
+            },
+        )
+
+
+def test_hugging_face_recipe_seeds_use_explicit_account_credentials():
+    source = {
+        "seed_type": "hf",
+        "path": "datasets/org/dataset/**/*.parquet",
+        "token": "alice-token",
+    }
+    run_as(ALICE, jobs.validate_recipe_access, {"source": source})
+    with pytest.raises(HTTPException):
+        run_as(ALICE, jobs.validate_recipe_access, {"source": {**source, "path": "/owner/private"}})
+    with pytest.raises(HTTPException):
+        run_as(ALICE, jobs.validate_recipe_access, {"source": {**source, "token": ""}})
+
+
+@pytest.mark.parametrize("account", [OWNER, ALICE])
+def test_recipe_workflow_key_belongs_to_the_starting_account(account, monkeypatch):
+    from routes.data_recipe import jobs as route
+    from auth import storage
+
+    captured = []
+    monkeypatch.setattr(
+        route, "_resolve_local_v1_endpoint", lambda request: "http://127.0.0.1:8888/v1"
+    )
+    monkeypatch.setattr(
+        route, "_ensure_selected_local_model_loaded", lambda recipe, local_names: None
+    )
+    monkeypatch.setattr(
+        storage,
+        "create_api_key",
+        lambda **kwargs: captured.append(kwargs) or ("sk-private", {"id": 42}),
+    )
+    recipe = {
+        "model_providers": [{"name": "local", "is_local": True}],
+        "model_configs": [{"provider": "local", "alias": "model"}],
+        "columns": [{"column_type": "llm-text", "model_alias": "model"}],
+    }
+    assert (
+        run_as(account, route._inject_local_providers, recipe, SimpleNamespace(), "generation")
+        == 42
+    )
+    assert captured[0]["username"] == account.username
+    assert captured[0]["expect_gen"] == "generation"
+    assert recipe["model_providers"][0]["api_key"] == "sk-private"
+
+
+def test_diffusion_status_releases_ownership_after_child_teardown():
+    from core.training.diffusion_training_service import DiffusionTrainingService
+
+    service = DiffusionTrainingService()
+    service._result_account = service.job_account = ALICE
+    service._proc = FakeProcess()
+    service._state.update(status = "completed", base_model = "alice-private")
+    state = run_as(BOB, service.status)
+    assert service.job_account is None
+    assert state["status"] == "idle" and state["base_model"] is None
