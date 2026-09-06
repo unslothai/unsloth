@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
-import { transitionBrowserAccount } from "@/lib/account-transition";
+import { normalizeAccountUsername, transitionBrowserAccount } from "@/lib/account-transition";
 import { sessionAccount, useLoginMode } from "../account-session";
 import { fetchAuthStatus, loginFromForm, loginWithPassword, type TokenResponse } from "../login-client";
 import { Button } from "@/components/ui/button";
@@ -67,6 +67,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [deadlineAt, setDeadlineAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const reloadReadySent = useRef(false);
+  // A one-use setup code may already be consumed when browser cleanup is blocked.
+  // Keep its issued session in memory so retrying cleanup does not consume the code twice.
+  const pendingLogin = useRef<{
+    username: string;
+    password: string;
+    token: TokenResponse;
+  } | null>(null);
 
   useEffect(() => {
     if (deadlineAt === null) {
@@ -245,11 +252,16 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       let token: TokenResponse;
 
       if (isLoginMode) {
-        const result = await loginFromForm(loginMode, username, password);
+        const normalizedUsername = normalizeAccountUsername(username);
+        const pending = pendingLogin.current;
+        const result = pending?.username === normalizedUsername && pending.password === password
+          ? pending.token
+          : await loginFromForm(loginMode, username, password);
         if (!result) {
           setPassword("");
           return;
         }
+        pendingLogin.current = { username: normalizedUsername, password, token: result };
         token = result;
       } else {
         let accessToken = getAuthToken();
@@ -305,7 +317,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       // Password changes keep the authenticated subject, including managed setup sessions.
       const signedInUsername = sessionAccount(token.access_token)?.username ?? username;
       const route = isLoginMode && token.must_change_password ? "/change-password" : "/chat";
-      if (await transitionBrowserAccount(signedInUsername, route, finishSession)) return;
+      const replaced = await transitionBrowserAccount(signedInUsername, route, finishSession);
+      pendingLogin.current = null;
+      if (replaced) return;
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
       // The backend returns the correct PATH-based command ("unsloth studio

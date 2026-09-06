@@ -19,13 +19,18 @@ export const ACCOUNT_CHROME_KEYS = new Set([
   "unsloth-rag-preview-width",
 ]);
 // Version-specific notice dismissals contain no account data.
-export const ACCOUNT_CHROME_PREFIXES = ["unsloth_web_update_dismissed:"] as const;
+export const ACCOUNT_CHROME_PREFIXES = [
+  "unsloth_web_update_dismissed:",
+] as const;
 export const ACCOUNT_DATABASES = [
   "unsloth-data-recipes",
   "unsloth-data-recipe-executions",
 ] as const;
 
-export type AccountTransitionBrowser = Pick<Window, "localStorage" | "indexedDB" | "location">;
+export type AccountTransitionBrowser = Pick<
+  Window,
+  "localStorage" | "indexedDB" | "location"
+>;
 
 /** Account names accepted by the account API are ASCII; case folding is locale independent. */
 export function normalizeAccountUsername(username: string): string {
@@ -38,14 +43,21 @@ export function resetFullAccessForMultiUser(storage: Storage): void {
   }
 }
 
-function deleteAccountDatabase(indexedDB: IDBFactory, name: string): Promise<void> {
+function deleteAccountDatabase(
+  indexedDB: IDBFactory,
+  name: string,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.deleteDatabase(name);
     request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error ?? new Error("Could not clear account data."));
-    request.onblocked = () => reject(new Error(
-      "Close other Unsloth tabs and retry signing in to clear the previous account's data.",
-    ));
+    request.onerror = () =>
+      reject(request.error ?? new Error("Could not clear account data."));
+    request.onblocked = () =>
+      reject(
+        new Error(
+          "Close other Unsloth tabs and retry signing in to clear the previous account's data.",
+        ),
+      );
   });
 }
 
@@ -63,31 +75,53 @@ export async function transitionBrowserAccount(
   const next = normalizeAccountUsername(username);
   if (!next) throw new Error("Missing account username.");
   const storage = browser.localStorage;
-  const previous = normalizeAccountUsername(storage.getItem(BROWSER_ACCOUNT_KEY) ?? "unsloth");
+  const previous = normalizeAccountUsername(
+    storage.getItem(BROWSER_ACCOUNT_KEY) ?? "unsloth",
+  );
   const changed = previous !== next;
   if (changed) {
-    const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index));
+    const keys = Array.from({ length: storage.length }, (_, index) =>
+      storage.key(index),
+    );
     for (const key of keys) {
-      if (!key || key === BROWSER_ACCOUNT_KEY || ACCOUNT_CHROME_KEYS.has(key) ||
-          ACCOUNT_CHROME_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
-      if (key.startsWith("unsloth") || key.startsWith("chat-draft")) storage.removeItem(key);
+      if (
+        !key ||
+        key === BROWSER_ACCOUNT_KEY ||
+        ACCOUNT_CHROME_KEYS.has(key) ||
+        ACCOUNT_CHROME_PREFIXES.some((prefix) => key.startsWith(prefix))
+      )
+        continue;
+      if (key.startsWith("unsloth") || key.startsWith("chat-draft"))
+        storage.removeItem(key);
     }
-    await Promise.all(ACCOUNT_DATABASES.map((name) => deleteAccountDatabase(browser.indexedDB, name)));
+    await Promise.all(
+      ACCOUNT_DATABASES.map((name) =>
+        deleteAccountDatabase(browser.indexedDB, name),
+      ),
+    );
   }
   commitSession();
-  if (storage.getItem(BROWSER_ACCOUNT_KEY) !== next) storage.setItem(BROWSER_ACCOUNT_KEY, next);
+  if (storage.getItem(BROWSER_ACCOUNT_KEY) !== next)
+    storage.setItem(BROWSER_ACCOUNT_KEY, next);
   if (changed) browser.location.replace(postAuthRoute);
   return changed;
 }
 
 /** One listener and at most one reload per document, including duplicate storage events. */
 const watchedBrowsers = new WeakSet<Window>();
-export function installAccountTransitionListener(browser: Window = window): void {
+export function installAccountTransitionListener(
+  browser: Window = window,
+): void {
   if (watchedBrowsers.has(browser)) return;
   watchedBrowsers.add(browser);
   let reloading = false;
   browser.addEventListener("storage", (event) => {
-    if (reloading || event.key !== BROWSER_ACCOUNT_KEY || event.newValue === null) return;
+    if (
+      reloading ||
+      event.key !== BROWSER_ACCOUNT_KEY ||
+      event.newValue === null
+    )
+      return;
     if (event.storageArea && event.storageArea !== browser.localStorage) return;
     const previous = normalizeAccountUsername(event.oldValue ?? "unsloth");
     if (previous === normalizeAccountUsername(event.newValue)) return;

@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
-import { normalizeAccountUsername, resetFullAccessForMultiUser } from "@/lib/account-transition";
+import {
+  normalizeAccountUsername,
+  resetFullAccessForMultiUser,
+} from "@/lib/account-transition";
 
 export type LoginMode = "single" | "multi";
 export type AuthStatusResponse = {
@@ -24,7 +27,9 @@ const listeners = new Set<() => void>();
 export const getLoginMode = (): LoginMode => loginMode;
 export const subscribeLoginMode = (listener: () => void): (() => void) => {
   listeners.add(listener);
-  return () => { listeners.delete(listener); };
+  return () => {
+    listeners.delete(listener);
+  };
 };
 export function setLoginMode(mode: LoginMode): void {
   statusKnown = true;
@@ -40,11 +45,15 @@ export async function fetchAuthStatus(): Promise<AuthStatusResponse> {
   inflight = (async () => {
     const response = await fetch(apiUrl("/api/auth/status"));
     if (!response.ok) throw new Error("Failed to load auth status.");
-    const result = await response.json() as AuthStatusResponse;
+    const result = (await response.json()) as AuthStatusResponse;
     setLoginMode(result.login_mode ?? "single");
     return result;
   })();
-  try { return await inflight; } finally { inflight = null; }
+  try {
+    return await inflight;
+  } finally {
+    inflight = null;
+  }
 }
 export function ensureLoginMode(): void {
   if (!statusKnown) void fetchAuthStatus().catch(() => undefined);
@@ -58,14 +67,22 @@ export class LoginError extends Error {
   }
 }
 
-export async function loginWithPassword(username: string, password: string): Promise<TokenResponse> {
+export async function loginWithPassword(
+  username: string,
+  password: string,
+): Promise<TokenResponse> {
   const response = await fetch(apiUrl("/api/auth/login"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: normalizeAccountUsername(username), password }),
+    body: JSON.stringify({
+      username: normalizeAccountUsername(username),
+      password,
+    }),
   });
   if (!response.ok) {
-    const payload = await response.json().catch(() => null) as { detail?: string } | null;
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
     throw new LoginError(payload?.detail ?? "Login failed.", response.status);
   }
   return response.json();
@@ -73,12 +90,21 @@ export async function loginWithPassword(username: string, password: string): Pro
 
 /** Only a rejected single-mode submit probes for an account created since page load. */
 export async function loginFromForm(
-  mode: LoginMode, username: string, password: string,
+  mode: LoginMode,
+  username: string,
+  password: string,
 ): Promise<TokenResponse | null> {
   try {
-    return await loginWithPassword(mode === "single" ? "unsloth" : username, password);
+    return await loginWithPassword(
+      mode === "single" ? "unsloth" : username,
+      password,
+    );
   } catch (error) {
-    if (mode === "single" && error instanceof LoginError && error.status === 401) {
+    if (
+      mode === "single" &&
+      error instanceof LoginError &&
+      error.status === 401
+    ) {
       const status = await fetchAuthStatus().catch(() => null);
       if (status?.login_mode === "multi") return null;
     }
