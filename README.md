@@ -319,6 +319,21 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh
 $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex
 ```
 
+Keep the install-time package cache under the Studio directory instead of reusing an existing uv cache. Downloads are slower the first time, and an explicit `UV_CACHE_DIR` still wins over this:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_ISOLATE_UV_CACHE=1 sh
+```
+```powershell
+$env:UNSLOTH_ISOLATE_UV_CACHE=1; irm https://unsloth.ai/install.ps1 | iex
+```
+For a local run the flag is `--isolated-uv-cache`:
+```bash
+./install.sh --local --isolated-uv-cache
+```
+```powershell
+.\install.ps1 --local --isolated-uv-cache
+```
+
 Pinning the Python version:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh
