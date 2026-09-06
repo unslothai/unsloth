@@ -2287,6 +2287,12 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
         return html_bytes, None
 
+    from auth.policy import installation_is_multi_user
+
+    # A local browser may belong to any account on a shared installation.
+    if installation_is_multi_user():
+        return html_bytes, None
+
     bootstrap_pw = getattr(app.state, "bootstrap_password", None)
     if not bootstrap_pw:
         return html_bytes, None
