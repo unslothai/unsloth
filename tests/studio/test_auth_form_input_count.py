@@ -60,9 +60,7 @@ def test_hasbootstrappassword_constant_is_derived_from_bootstrap_window_value():
     fill, or render the field on a page that has no credential for it.
     """
     src = AUTH_FORM.read_text(encoding = "utf-8")
-    match = re.search(
-        r"const hasBootstrapPassword = Boolean\((.*?)\);", src, re.DOTALL
-    )
+    match = re.search(r"const hasBootstrapPassword = Boolean\((.*?)\);", src, re.DOTALL)
     assert match, (
         "hasBootstrapPassword constant missing; this is the gate that hides the "
         "Current password input on first boot"
@@ -71,10 +69,7 @@ def test_hasbootstrappassword_constant_is_derived_from_bootstrap_window_value():
     assert "window.__UNSLOTH_BOOTSTRAP__?.link_token" in derivation or (
         "setupToken" in derivation
         and "const setupToken = window.__UNSLOTH_BOOTSTRAP__?.link_token;" in src
-    ), (
-        "hasBootstrapPassword must be derived from the injected link_token; "
-        f"found {derivation!r}"
-    )
+    ), "hasBootstrapPassword must be derived from the injected link_token; " f"found {derivation!r}"
     assert "window.__UNSLOTH_BOOTSTRAP__?.password" in derivation, (
         "keep honouring an injected password so an older backend serving the "
         "seed still hides the Current password field"
