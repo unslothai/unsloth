@@ -46,6 +46,23 @@ STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 STACK_LLAMA = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 
 
+# PowerShell's Join-Path uses the HOST separator, so a POSIX literal home builds an owned
+# prefix of "C:\...\unsloth\woa" on Windows and the forward-slash entry it is compared against
+# can never match it. The purge is right either way -- both sides come from the same
+# Join-Path in a real run -- but a test that hardcodes "/" only ever exercises POSIX, and
+# fails on Windows for a reason that has nothing to do with the purge. These tests skip
+# silently where pwsh is absent, which is why that went unnoticed. Build both sides the way
+# the host does, so the same cases now cover the separator the machine actually uses.
+FAKE_HOME = (
+    "C:\\Users\\u\\AppData\\Local\\unsloth" if os.name == "nt" else "/home/u/AppData/Local/unsloth"
+)
+
+
+def _native_path_value(template: str) -> str:
+    """Fill in the fake home and speak the host's separator, entries and expectations alike."""
+    return template.format(home = FAKE_HOME).replace("/", os.sep)
+
+
 def _load_manifest_module():
     spec = importlib.util.spec_from_file_location("studio_install_manifest_woa", MANIFEST_PY)
     assert spec is not None and spec.loader is not None
@@ -1582,12 +1599,11 @@ class TestThePurgeKeepsWhatIsNotOurs:
         ],
     )
     def test_only_the_owned_entries_are_removed(self, var, value, expected, why):
-        home = "/home/u/AppData/Local/unsloth"
         script = "\n".join(
             [
-                f"$StudioHome = '{home}'",
+                f"$StudioHome = '{FAKE_HOME}'",
                 "function Get-UvSafePath { param([string]$p) return $p }",
-                f"$env:{var} = '{value.format(home = home)}'",
+                f"$env:{var} = '{_native_path_value(value)}'",
                 self._purge_block(),
                 f"Write-Output ('[' + $env:{var} + ']')",
             ]
@@ -1599,7 +1615,8 @@ class TestThePurgeKeepsWhatIsNotOurs:
             timeout = 120,
         )
         assert done.returncode == 0, done.stderr
-        assert done.stdout.strip().splitlines()[-1] == f"[{expected}]", why
+        want = f"[{_native_path_value(expected)}]"
+        assert done.stdout.strip().splitlines()[-1] == want, why
 
 
 class TestAMalformedHandoffUrlDoesNotCostTheManifest:
@@ -1761,15 +1778,14 @@ class TestThePurgeNeedsAPathBoundary:
         ],
     )
     def test_only_the_prefix_or_its_descendants_are_owned(self, value, expected, why):
-        home = "/home/u/AppData/Local/unsloth"
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         start = text.index('$_woaOwnedPrefix = Join-Path $StudioHome "woa"')
         end = text.index("if ($script:WoaNativeCudaTorch) {", start)
         script = "\n".join(
             [
-                f"$StudioHome = '{home}'",
+                f"$StudioHome = '{FAKE_HOME}'",
                 "function Get-UvSafePath { param([string]$p) return $p }",
-                f"$env:UV_FIND_LINKS = '{value.format(home = home)}'",
+                f"$env:UV_FIND_LINKS = '{_native_path_value(value)}'",
                 text[start:end],
                 "Write-Output ('[' + $env:UV_FIND_LINKS + ']')",
             ]
@@ -1781,7 +1797,7 @@ class TestThePurgeNeedsAPathBoundary:
             timeout = 120,
         )
         assert done.returncode == 0, done.stderr
-        want = f"[{expected.format(home = home)}]"
+        want = f"[{_native_path_value(expected)}]"
         assert done.stdout.strip().splitlines()[-1] == want, why
 
 
@@ -3205,12 +3221,22 @@ class TestTheTorchMergeRebasesWhatItFolds:
     @staticmethod
     def _merge(tmp_path, override_files):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        fake_py = tmp_path / "fakepython"
-        fake_py.write_text(
-            "#!/usr/bin/env bash\nprintf 'torch==2.11.0+cu130\\ntorchvision==0.26.0+cu130\\n'\n",
-            encoding = "ascii",
-        )
-        fake_py.chmod(0o755)
+        # A shebang script is not executable on Windows, so CreateProcess refuses it, the merge
+        # gets no pins back and returns nothing -- a failure about an empty path, not about
+        # rebasing. `&` runs a .cmd happily, and the stub ignores the -c argument either way.
+        if os.name == "nt":
+            fake_py = tmp_path / "fakepython.cmd"
+            fake_py.write_text(
+                "@echo off\r\necho torch==2.11.0+cu130\r\necho torchvision==0.26.0+cu130\r\n",
+                encoding = "ascii",
+            )
+        else:
+            fake_py = tmp_path / "fakepython"
+            fake_py.write_text(
+                "#!/usr/bin/env bash\nprintf 'torch==2.11.0+cu130\\ntorchvision==0.26.0+cu130\\n'\n",
+                encoding = "ascii",
+            )
+            fake_py.chmod(0o755)
         script = "\n".join(
             [
                 "$SkipTorch = $false",
