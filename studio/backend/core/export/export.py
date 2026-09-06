@@ -1265,6 +1265,13 @@ class ExportBackend:
                                 f"GGUF conversion produced a symlink, refusing to relocate it: {src}"
                             )
                         dest = os.path.join(abs_save_dir, src.name)
+                        if os.path.isdir(dest):
+                            # move would put the file INSIDE it and we would record the
+                            # directory, so the allow-list would match neither.
+                            raise RuntimeError(
+                                f"Cannot relocate {src.name}: a directory of that name is "
+                                f"already in {abs_save_dir}"
+                            )
                         shutil.move(str(src), dest)
                         relocated_ggufs.append(dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")

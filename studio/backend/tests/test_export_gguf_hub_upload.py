@@ -1080,3 +1080,33 @@ def test_gguf_hub_export_trusts_the_exporter_over_studios_guess(tmp_path, monkey
 
     assert success is True, message
     assert "- vision-language-model" not in seen["card"]
+
+
+def test_gguf_hub_export_rejects_a_directory_where_a_gguf_should_land(tmp_path, monkeypatch):
+    """shutil.move would put the file inside it and the allow-list would match nothing."""
+    save_dir = tmp_path / "export"
+    save_dir.mkdir(parents = True)
+    # A reused folder holding a directory named like the file this run produces, plus a
+    # stale .gguf so the directory-wide success gate would still pass.
+    (save_dir / "model.Q4_K_M.gguf").mkdir()
+    (save_dir / "an-earlier-export.Q8_0.gguf").write_bytes(b"GGUF")
+
+    _module, backend, calls, seen = _visibility_backend(
+        tmp_path, monkeypatch, "test_export_gguf_hub_upload_dir_collision_backend"
+    )
+
+    success, message, _path = backend.export_gguf(
+        str(save_dir),
+        "Q4_K_M",
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "token",
+        private = False,
+    )
+
+    assert success is False
+    assert "a directory of that name" in message
+    assert "upload_folder" not in calls
+    # The new file is not buried inside the directory, and the stale one is untouched.
+    assert list((save_dir / "model.Q4_K_M.gguf").iterdir()) == []
+    assert (save_dir / "an-earlier-export.Q8_0.gguf").is_file()

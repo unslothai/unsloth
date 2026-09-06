@@ -91,6 +91,16 @@ def _hub_doubles(export_mod, monkeypatch, calls: dict):
         ):
             return None
 
+        def upload_file(
+            self,
+            path_or_fileobj,
+            path_in_repo,
+            repo_id,
+            repo_type = None,
+            commit_message = None,
+        ):
+            calls[path_in_repo] = path_or_fileobj
+
         def upload_folder(
             self,
             folder_path,
