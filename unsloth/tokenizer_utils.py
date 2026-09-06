@@ -70,7 +70,7 @@ os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAME
 
 # Gemma 4 base (non-it) Hub mirrors ship without add_bos_token: true even though
 # google/gemma-4-* includes it. Detect from the loaded tokenizer / model config,
-# not the repo name: local folders and extra quant suffixes (bnb-4bit, GGUF, …)
+# not the repo name: local folders and extra quant suffixes (bnb-4bit, GGUF, ...)
 # do not match a Hub-id regex. -it is fine: chat_template.jinja emits bos_token.
 # See unslothai/unsloth#7903.
 _GEMMA4_INSTRUCT_EOS = "<turn|>"
