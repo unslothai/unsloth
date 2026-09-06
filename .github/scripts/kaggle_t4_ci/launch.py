@@ -1030,6 +1030,11 @@ def fetch_evidence(
             continue
         url = entry.get("url") or entry.get("urlNullable")
         if not url:
+            # Listed but not downloadable is missing evidence, the same as a
+            # transfer that failed: judged without it, a lost failing payload
+            # reads as whatever the surviving notebooks say.
+            _log(f"{name} was listed without a download URL; evidence incomplete")
+            truncated = True
             continue
         call_timeout = _time_left(deadline, timeout)
         if call_timeout is None:

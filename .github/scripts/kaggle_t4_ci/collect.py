@@ -462,15 +462,21 @@ def statuses_from(records: list[dict], target_url: str = "") -> list[dict]:
         # of the same sha) must not race to post last: a failure wins whichever
         # kernel found it, and both are named as owners so the delete step
         # releases both.
-        key = (sha, context)
+        # Keyed on the eight characters every slug form shares: a kernel pushed
+        # with the old eight-character slug and one with the twelve-character
+        # slug can name the same commit in one pass, and keyed on the full
+        # prefix they would post as two commits, last one landing wins.
+        key = (sha[:8], context)
         prior = out.get(key)
         if prior is None:
             out[key] = status
             continue
         prior["slugs"].append(record["slug"])
+        longest = max(prior["sha"], sha, key = len)
         if state == "failure" and prior["state"] != "failure":
             status["slugs"] = prior["slugs"]
             out[key] = status
+        out[key]["sha"] = longest
     return list(out.values())
 
 

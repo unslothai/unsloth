@@ -1272,3 +1272,61 @@ def test_the_scheduled_collector_unpacks_and_uploads_what_it_collected():
     assert "studio_evidence/**" in upload["with"]["path"]
     assert upload.get("continue-on-error") is True, "an artifact outage is not a collection failure"
     assert names.index("Upload evidence") > names.index("Post the commit statuses")
+
+
+def test_a_listed_notebook_without_a_download_url_marks_the_evidence_incomplete(
+    tmp_path, monkeypatch
+):
+    """Skipping it silently left `truncated` false, so the short set was judged,
+    posted and its kernel deleted: a failing payload lost for good."""
+    listing = {
+        "files": [{"fileName": f"a{launch.OUTPUT_SUFFIX}"}],
+        "log": "",
+        "truncated": False,
+    }
+    monkeypatch.setattr(launch, "list_outputs", lambda slug, timeout = None, deadline = None: listing)
+    evidence = launch.fetch_evidence("me/k", tmp_path / "k", deadline = time.time() + 60)
+    assert evidence["notebooks"] == []
+    assert evidence["truncated"] is True
+
+
+def test_old_and_new_slug_forms_for_one_commit_post_one_status():
+    """A kernel pushed with the eight-character slug and one with the twelve
+    can name the same commit in one pass. Keyed apart they post as two commits
+    and whichever lands last decides the required context."""
+    records = [
+        {
+            "slug": "me/unsloth-t4-ci-nabcdef012345-2222",
+            "sha": "abcdef012345",
+            "kind": "notebook",
+            "verdict": "fail",
+            "reason": "leg red",
+        },
+        {
+            "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+            "sha": "abcdef01",
+            "kind": "notebook",
+            "verdict": "pass",
+            "reason": "ok",
+        },
+    ]
+    statuses = collect.statuses_from(records)
+    assert len(statuses) == 1, statuses
+    assert statuses[0]["state"] == "failure"
+    assert statuses[0]["sha"] == "abcdef012345", "post against the least ambiguous prefix"
+    assert sorted(statuses[0]["slugs"]) == sorted(r["slug"] for r in records)
+    # Reversed order reaches the same answer: nothing about it is order-dependent.
+    assert collect.statuses_from(records[::-1])[0]["state"] == "failure"
+
+
+def test_no_kaggle_workflow_checkout_persists_the_job_token():
+    """The collector holds the Kaggle token and only the posting step gets
+    GH_TOKEN. actions/checkout writes the job token into .git by default
+    (persist-credentials defaults to true), which hands it to every later
+    step."""
+    for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
+        for _job, _name, step in _steps(_wf(path)):
+            if str(step.get("uses", "")).startswith("actions/checkout@"):
+                assert (step.get("with") or {}).get("persist-credentials") is False, (
+                    f"{path.name}: a checkout persists the job token"
+                )
