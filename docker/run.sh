@@ -111,8 +111,10 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
     fi
     case "$answer" in
         1|[Yy]*)
-            # -E: keep UNSLOTH_TOOLKIT_VERIFY and proxy settings through sudo's env_reset
-            if [[ "$(id -u)" = 0 ]]; then bash "$INSTALLER"; else sudo -E bash "$INSTALLER"; fi
+            # -E keeps UNSLOTH_TOOLKIT_VERIFY and proxy settings through sudo's env_reset.
+            # An offer, not a precondition: a failed, cancelled or driver-too-old install
+            # (exit 3, toolkit working) must not take run.sh down before docker run.
+            if [[ "$(id -u)" = 0 ]]; then bash "$INSTALLER" || true; else sudo -E bash "$INSTALLER" || true; fi
             ;;
         *)
             printf "      Install it with one command (Linux, needs sudo):\n" >&2

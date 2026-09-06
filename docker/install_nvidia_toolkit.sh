@@ -16,20 +16,42 @@
 #   UNSLOTH_DESTDIR            prefix for /etc and /usr/share paths (tests only)
 #   UNSLOTH_OS_RELEASE         alternative os-release file (tests only)
 #   UNSLOTH_PROC_VERSION       alternative /proc/version file (tests only)
+#   UNSLOTH_RUN_USER_DIR       alternative /run/user (tests only)
 set -euo pipefail
 
 DESTDIR="${UNSLOTH_DESTDIR:-}"
 OS_RELEASE="${UNSLOTH_OS_RELEASE:-/etc/os-release}"
 PROC_VERSION="${UNSLOTH_PROC_VERSION:-/proc/version}"
+RUN_USER_DIR="${UNSLOTH_RUN_USER_DIR:-/run/user}"
 BASE="https://nvidia.github.io/libnvidia-container"
 
 say()  { printf '%s\n' "$*"; }
-fail() { printf 'ERROR: %s\n' "$*" >&2; exit "${2:-1}"; }
+fail() { printf 'ERROR: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+command -v docker >/dev/null 2>&1 \
+    || fail "docker is not installed. Install Docker Engine first (https://docs.docker.com/engine/install/), then run this again." 2
+
+# Docker Desktop (macOS, or Windows with the WSL 2 backend) ships its own GPU
+# integration: nothing to install on that side, and apt inside the WSL distro would
+# configure a daemon Docker Desktop does not use. Checked before asking for sudo.
+if docker info 2>/dev/null | grep -qi 'Operating System: Docker Desktop'; then
+    say "Docker Desktop detected: GPU support comes with it, nothing to install."
+    say "On Windows keep the WSL 2 backend on and the NVIDIA Windows driver current (wsl --update)."
+    exit 0
+fi
 
 # Rootless Docker keeps its daemon and config under the user; the system-wide steps
 # below would configure a daemon that user never talks to. NVIDIA documents the
-# rootless procedure separately. Checked before elevating: root sees another daemon.
-if docker info --format '{{join .SecurityOptions ","}}' 2>/dev/null | grep -q rootless; then
+# rootless procedure separately. Checked before elevating, because root sees another
+# daemon; `curl | sudo bash` arrives already root with DOCKER_HOST stripped, so the
+# invoking user's socket is looked up through SUDO_UID as well.
+rootless_daemon() {
+    docker info --format '{{join .SecurityOptions ","}}' 2>/dev/null | grep -q rootless && return 0
+    [[ -n "${SUDO_UID:-}" && -S "${RUN_USER_DIR}/${SUDO_UID}/docker.sock" ]] \
+        && DOCKER_HOST="unix://${RUN_USER_DIR}/${SUDO_UID}/docker.sock" \
+           docker info --format '{{join .SecurityOptions ","}}' 2>/dev/null | grep -q rootless
+}
+if rootless_daemon; then
     fail "rootless Docker detected. Follow NVIDIA's rootless procedure instead:
        https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html#rootless-mode" 2
 fi
@@ -41,15 +63,6 @@ if [[ "$(id -u)" != 0 ]]; then
         exec sudo -E bash "$0" "$@"
     fi
     fail "run this as root: pipe it into 'sudo bash', or 'sudo bash docker/install_nvidia_toolkit.sh'." 2
-fi
-
-# Docker Desktop (macOS, or Windows with the WSL 2 backend) ships its own GPU
-# integration: nothing to install on that side, and apt inside the WSL distro would
-# configure a daemon Docker Desktop does not use.
-if docker info 2>/dev/null | grep -qi 'Operating System: Docker Desktop'; then
-    say "Docker Desktop detected: GPU support comes with it, nothing to install."
-    say "On Windows keep the WSL 2 backend on and the NVIDIA Windows driver current (wsl --update)."
-    exit 0
 fi
 
 if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
@@ -89,6 +102,7 @@ else
             apt-get install -y -qq nvidia-container-toolkit
             ;;
         *" rhel "*|*" fedora "*|*" centos "*|*" amzn "*|*" rocky "*|*" almalinux "*)
+            command -v curl >/dev/null 2>&1 || { command -v dnf >/dev/null 2>&1 && dnf install -y curl || yum install -y curl; }
             mkdir -p "${DESTDIR}/etc/yum.repos.d"
             curl -fsSL "${BASE}/stable/rpm/nvidia-container-toolkit.repo" \
                 > "${DESTDIR}/etc/yum.repos.d/nvidia-container-toolkit.repo"

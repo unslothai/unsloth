@@ -8,6 +8,7 @@ path runs here against stubs, and docker/run.sh's offer to run it is checked too
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -47,7 +48,7 @@ def _setup(
     uid: int = 0,
     wsl: bool = False,
     driver_version: str = "580.65.06",
-    rootless: bool = False,
+    rootless: bool | str = False,
 ) -> tuple[Path, Path, dict]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -79,9 +80,11 @@ def _setup(
         + 'if [ "$1" = info ]; then\n'
         + ('  echo " Operating System: Docker Desktop"\n' if desktop else "")
         + (
-            '  if [ "$2" = "--format" ]; then echo "name=rootless,name=seccomp"; exit 0; fi\n'
-            if rootless
-            else ""
+            '  if [ "$2" = "--format" ]; then\n'
+            '    case "${DOCKER_HOST:-}" in *docker.sock) echo "name=rootless,name=seccomp" ;; *) echo "name=seccomp" ;; esac; exit 0\n'
+            "  fi\n"
+            if rootless == "via_sudo_uid"
+            else ('  if [ "$2" = "--format" ]; then echo "name=rootless,name=seccomp"; exit 0; fi\n' if rootless else "")
         )
         + f'  if [ -e {marker} ]; then echo " Runtimes: io.containerd.runc.v2 nvidia runc"; else echo " Runtimes: io.containerd.runc.v2 runc"; fi\n'
         + "  exit 0\nfi\n"
@@ -124,7 +127,9 @@ def _setup(
     env["UNSLOTH_DESTDIR"] = str(root)
     env["UNSLOTH_OS_RELEASE"] = str(osr)
     env["UNSLOTH_PROC_VERSION"] = str(procv)
+    env["UNSLOTH_RUN_USER_DIR"] = str(tmp_path / "run-user")
     env.pop("UNSLOTH_TOOLKIT_VERIFY", None)
+    env.pop("SUDO_UID", None)
     return root, log, env
 
 
@@ -247,6 +252,43 @@ def test_rootless_docker_is_refused_before_anything_runs(tmp_path: Path):
     assert not any(c.startswith(("sudo", "apt-get", "nvidia-ctk")) for c in _calls(log))
 
 
+def test_rootless_docker_is_still_caught_when_piped_into_sudo_bash(tmp_path: Path):
+    """`curl | sudo bash` arrives as root with the user's DOCKER_HOST stripped by
+    env_reset; SUDO_UID survives, so the user's socket is probed through it."""
+    import socket
+
+    _, log, env = _setup(tmp_path, rootless = "via_sudo_uid", uid = 0)
+    sock_dir = tmp_path / "run-user" / "1000"
+    sock_dir.mkdir(parents = True)
+    s = socket.socket(socket.AF_UNIX)
+    cwd = os.getcwd()
+    os.chdir(sock_dir)  # AF_UNIX paths are capped at 108 bytes; bind relative
+    try:
+        s.bind("docker.sock")
+    finally:
+        os.chdir(cwd)
+    env["SUDO_UID"] = "1000"
+    res = _run(env)
+    s.close()
+    assert res.returncode == 2
+    assert "rootless" in res.stderr
+    assert not res.stderr.rstrip().endswith(" 2"), "the exit code leaked into the message"
+    assert not any(c.startswith(("apt-get", "nvidia-ctk")) for c in _calls(log))
+
+
+def test_without_docker_the_script_says_so(tmp_path: Path):
+    _, log, env = _setup(tmp_path)
+    (tmp_path / "bin" / "docker").unlink()
+    sysbin = tmp_path / "sysbin"  # bash only, so the host's real docker is out of reach
+    sysbin.mkdir()
+    (sysbin / "bash").symlink_to(shutil.which("bash"))
+    env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{sysbin}"
+    res = _run(env)
+    assert res.returncode == 2
+    assert "docker is not installed" in res.stderr
+    assert _calls(log) == []
+
+
 def test_a_configured_host_only_verifies(tmp_path: Path):
     _, log, env = _setup(tmp_path, configured = True)
     res = _run(env)
@@ -258,7 +300,7 @@ def test_a_configured_host_only_verifies(tmp_path: Path):
 
 
 def test_docker_desktop_needs_nothing(tmp_path: Path):
-    _, log, env = _setup(tmp_path, desktop = True, driver = False)
+    _, log, env = _setup(tmp_path, desktop = True, driver = False, uid = 1000)
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
     assert "Docker Desktop detected" in res.stdout
@@ -295,9 +337,7 @@ def test_a_non_root_run_of_the_file_re_executes_itself_under_sudo(tmp_path: Path
     _, log, env = _setup(tmp_path, uid = 1000)
     res = _run(env)
     assert res.returncode == 0, res.stdout + res.stderr
-    assert [c for c in _calls(log) if not c.startswith("docker info")] == [
-        f"sudo -E bash {INSTALLER}"
-    ]
+    assert [c for c in _calls(log) if not c.startswith("docker info")] == [f"sudo -E bash {INSTALLER}"]
 
 
 def test_a_non_root_pipe_cannot_re_execute_and_says_so(tmp_path: Path):
@@ -364,6 +404,18 @@ def test_run_sh_installs_the_toolkit_when_told_to_then_runs(tmp_path: Path):
     assert res.returncode == 0, res.stdout + res.stderr
     assert f"sudo -E bash {INSTALLER}" in _calls(log)
     assert "--gpus\nall\n" in argv.read_text(encoding = "utf-8")
+
+
+def test_run_sh_still_runs_the_container_when_the_installer_fails(tmp_path: Path):
+    """Exit 3 means the toolkit works and only the driver is old; a cancelled sudo is
+    exit 1. Neither may stop the docker run the user asked for."""
+    log, argv, env = _run_sh_env(tmp_path, nvidia_runtime = False)
+    _stub(tmp_path / "bin" / "sudo", f'echo "$(basename "$0") $*" >> {log}\nexit 3\n')
+    env["UNSLOTH_INSTALL_TOOLKIT"] = "1"
+    res = _run_run_sh(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert f"sudo -E bash {INSTALLER}" in _calls(log)
+    assert argv.exists(), "docker run never happened"
 
 
 def test_run_sh_without_a_terminal_prints_the_one_liner_and_still_runs(tmp_path: Path):
