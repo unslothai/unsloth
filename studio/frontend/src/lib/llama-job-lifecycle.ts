@@ -67,3 +67,38 @@ export function llamaUpdatePresentation(
     running: true,
   };
 }
+
+/** How many consecutive poll fetches may return nothing before the run is
+ * treated as stalled (500 ms apart, so 30 ≈ 15 s of dead fetches). */
+export const LLAMA_JOB_POLL_MISS_LIMIT = 30;
+
+export type LlamaJobPollTick =
+  | { kind: "polling" }
+  | { kind: "finished"; state: "success" | "error" | "idle" }
+  | { kind: "stalled" };
+
+/** One job-poll tick's decision, from the fetched status and the streak of
+ * fetches that returned nothing.
+ *
+ * The streak keeps the "applying" flag honest: the poll owns that flag for the
+ * whole run, so when every fetch starts failing — an auth token that expired,
+ * a network drop, a backend restart window — a tick that only skips leaves the
+ * update toast pinned on "Updating..." forever, with its close affordance
+ * hidden (#9196). Past the limit the tick reports `stalled`, and the caller
+ * drops applying and re-checks once instead of waiting on a backend that is
+ * not answering. A fetch that succeeds resets the streak, so a healthy run
+ * with occasional timeouts never stalls. */
+export function llamaJobPollTick(
+  status: { update_available: boolean; job: LlamaJob } | null,
+  consecutiveMisses: number,
+): LlamaJobPollTick {
+  if (status === null) {
+    return consecutiveMisses >= LLAMA_JOB_POLL_MISS_LIMIT
+      ? { kind: "stalled" }
+      : { kind: "polling" };
+  }
+  if (status.job.state === "running") {
+    return { kind: "polling" };
+  }
+  return { kind: "finished", state: status.job.state };
+}
