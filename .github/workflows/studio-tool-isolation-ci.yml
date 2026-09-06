@@ -12,6 +12,11 @@ on:
       - 'studio/backend/tests/test_os_sandbox.py'
       - 'studio/backend/tests/test_macos_seatbelt.py'
       - 'studio/backend/tests/test_windows_lpac.py'
+      - 'studio/backend/tests/test_windows_restricted_token.py'
+      - 'studio/backend/tests/test_windows_bash_shell.py'
+      - 'studio/backend/tests/test_network_proxy.py'
+      - 'studio/backend/tests/test_network_allowlist_tools.py'
+      - 'studio/backend/tests/test_sandbox_startup_notice.py'
       - 'studio/backend/tests/test_tool_isolation_api.py'
       - 'studio/backend/tests/test_tool_output_streaming.py'
       - 'studio/backend/tests/test_studio_tool_loop.py'
@@ -121,6 +126,9 @@ jobs:
         run: |
           python -m pytest -q -s --tb=short \
             tests/test_os_sandbox.py \
+            tests/test_network_proxy.py \
+            tests/test_network_allowlist_tools.py \
+            tests/test_sandbox_startup_notice.py \
             tests/test_tool_isolation_api.py \
             tests/test_full_access_tool_prompt.py \
             tests/test_tool_output_streaming.py \
@@ -164,7 +172,10 @@ jobs:
         run: >-
           python -m pytest -q -s --tb=short
           tests/test_windows_lpac.py
+          tests/test_windows_restricted_token.py
+          tests/test_windows_bash_shell.py
           tests/test_os_sandbox.py
+          tests/test_network_proxy.py
           tests/test_tool_isolation_api.py
           tests/test_full_access_tool_prompt.py
           tests/test_tool_output_streaming.py
@@ -221,6 +232,9 @@ jobs:
           python -m pytest -q -s --tb=short \
             tests/test_macos_seatbelt.py \
             tests/test_os_sandbox.py \
+            tests/test_network_proxy.py \
+            tests/test_network_allowlist_tools.py \
+            tests/test_sandbox_startup_notice.py \
             tests/test_tool_isolation_api.py \
             tests/test_full_access_tool_prompt.py \
             tests/test_tool_output_streaming.py \
