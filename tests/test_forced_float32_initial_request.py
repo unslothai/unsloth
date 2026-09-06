@@ -39,7 +39,9 @@ def _forced_float32_decision():
     for cls in ast.walk(TREE):
         if not (isinstance(cls, ast.ClassDef) and cls.name == "FastModel"):
             continue
-        fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
+        fn = next(
+            n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
+        )
         body = fn.body
         for index, statement in enumerate(body):
             if (
@@ -64,7 +66,13 @@ def _forced_float32_decision():
     pytest.fail("the forced-float32 decision loop is gone from FastModel.from_pretrained")
 
 
-def _decide(*, dtype, supports_bf16, requested, arch = "gemma4"):
+def _decide(
+    *,
+    dtype,
+    supports_bf16,
+    requested,
+    arch = "gemma4",
+):
     module = ast.Module(body = _forced_float32_decision(), type_ignores = [])
     ast.fix_missing_locations(module)
     env = {}
@@ -95,7 +103,8 @@ def _decide(*, dtype, supports_bf16, requested, arch = "gemma4"):
 def test_the_request_is_captured_once_at_module_level():
     """Inside from_pretrained the reset above it would read "0" every time."""
     assigns = [
-        n for n in TREE.body
+        n
+        for n in TREE.body
         if isinstance(n, ast.Assign)
         and any(getattr(t, "id", None) == "_UNSLOTH_REQUESTED_FORCE_FLOAT32" for t in n.targets)
     ]
