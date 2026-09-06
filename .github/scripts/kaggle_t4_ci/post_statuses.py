@@ -3,29 +3,24 @@
 
 """Post the commit statuses collect.py decided on, and say which ones landed.
 
-This is the ONLY step in the Kaggle CI that holds a GitHub credential, and it
-holds no Kaggle one: collect.py judges, this posts, and neither can leak the
-other's token. It is a script rather than a shell loop in three workflows
-because the same block copied three times is how one copy drifts, and because
-a loop reading tab-separated fields from a file makes every field a parser
-concern; here the record is JSON end to end and each value is handed to `gh`
-as a separate argument, never through a shell.
+The only step in the Kaggle CI holding a GitHub credential, and it holds no
+Kaggle one: collect.py judges, this posts, neither can leak the other's token.
+A script rather than a shell loop in three workflows so the record stays JSON
+end to end and each value reaches `gh` as an argument, never through a shell.
 
 THE SHA HAS TO BE EXPANDED FIRST. The slug carries only 8 hex characters (a
-full 40-character sha plus the prefix does not fit inside Kaggle's slug limit)
-and the statuses API REFUSES an abbreviation:
+full sha plus the prefix does not fit Kaggle's slug limit) and the statuses
+API refuses an abbreviation, measured against a real repository:
 
     POST /statuses/2ecb19df
     422 "Sha must be a valid hex object ID"
 
-Measured against a real repository, not inferred. A sha that cannot be
-resolved (the commit was force-pushed away) is reported and recorded as
-`unresolved`, so the kernel is released rather than retried forever.
+A sha that cannot be resolved (force-pushed away) is recorded as `unresolved`
+so the kernel is released rather than retried forever.
 
-The outcome is written as ``posted.json`` for collect.py --delete-collected:
-a kernel whose status did not post is KEPT on Kaggle so the next pass can try
-again. That ordering (post, then delete) is the whole reason this is a
-separate step rather than a line inside the collector.
+The outcome is written as ``posted.json`` for collect.py --delete-collected: a
+kernel whose status did not post is KEPT on Kaggle for the next pass. That
+ordering (post, then delete) is why this is a separate step.
 """
 
 from __future__ import annotations
@@ -56,12 +51,10 @@ def _gh(args: list[str]) -> tuple[int, str, str]:
 #     gh api repos/unslothai/unsloth/commits/deadbeef00
 #     {"message":"No commit found for SHA: deadbeef00", ..., "status":"422"}
 #
-# That message is the only answer that releases the kernel. The status code
-# on its own is not enough: a 404 is also what a repository the token cannot
-# see answers, and a 422 what an ambiguous abbreviation answers, and neither
-# says the commit is gone. Everything else a lookup can fail with (a 5xx, rate
-# limiting, the network) says nothing about the commit either, and reading
-# any of it as "gone" would delete the only copy of the result.
+# Only that message releases the kernel. Status codes do not say it: 404 is
+# also an unreadable repository and 422 an ambiguous abbreviation, and 5xx /
+# rate limiting / network say nothing at all. Reading any of them as "gone"
+# would delete the only copy of the result.
 MISSING_MARKERS = ("no commit found",)
 
 
@@ -100,10 +93,8 @@ def post_one(repo: str, full_sha: str, status: dict) -> bool:
 def valid(status: dict) -> str | None:
     """Why this record must not be posted, or None if it is well formed.
 
-    The values come from collect.py, but they are checked here because this
-    is the process holding the token: a state outside the API's four, or a
-    context that is not one of ours, is a record this script did not
-    generate and must not sign.
+    Checked here because this is the process holding the token: a state outside
+    the API's four, or a context that is not ours, is a record we must not sign.
     """
     if status.get("state") not in STATES:
         return f"state {status.get('state')!r} is not one of {STATES}"
@@ -166,9 +157,8 @@ def main() -> int:
     Path(args.out).write_text(json.dumps(outcome, indent = 2), encoding = "utf-8")
     if not statuses:
         print("no statuses to post this pass")
-    # Red when a verdict could not be delivered. The kernel behind it is kept
-    # for the next pass, so nothing is lost, but a delivery failure must not
-    # look like a quiet account.
+    # Red when a verdict could not be delivered. The kernel is kept for the next
+    # pass, but a delivery failure must not look like a quiet account.
     return 1 if outcome["failed"] else 0
 
 

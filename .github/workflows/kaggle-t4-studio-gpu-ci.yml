@@ -339,10 +339,10 @@ jobs:
   studio-gpu:
     name: Unsloth GPU smoke
     needs: gate
-    # New, and load-bearing: this job dispatches rather than waits, so it can no
-    # longer BE the check that says the Studio smoke passed. It posts that
-    # verdict as a commit status instead -- for whichever commit the collected
-    # kernel belongs to, which is not necessarily this run's.
+    # Load-bearing: this job dispatches rather than waits, so it cannot BE the
+    # check that says the Studio smoke passed. It posts that verdict as a commit
+    # status for whichever commit the collected kernel belongs to, which is not
+    # necessarily this run's.
     permissions:
       contents: read
       statuses: write
@@ -401,10 +401,9 @@ jobs:
       # head SHA, so the kernel exercises the proposed code and not the merge
       # base. Pinned to a SHA rather than a branch so a push landing mid-run
       # cannot change what was tested.
-      # To a COMMIT, never a ref. The commit goes into the kernel's slug, which
-      # is the only record a later collector has of what the result is about;
-      # a branch or tag there cannot be encoded, launch.py refuses it, and
-      # before it did the kernel ran, billed, and reported to nobody.
+      # To a COMMIT, never a ref: the commit goes into the kernel's slug, the
+      # only record a later collector has of what the result is about. A branch
+      # or tag cannot be encoded and launch.py refuses it.
       - name: Resolve the ref under test
         id: ref
         env:
@@ -464,17 +463,14 @@ jobs:
             --payload-args "$ARGS" \
             --per-run-timeout 3900
 
-      # Finish what an earlier run started, before starting anything new, and
-      # BEFORE the recheck: this can spend up to fifteen minutes downloading,
-      # and the notebook workflow can take the account's last session in that
-      # window. The recheck is the last thing before the push, or it is not a
-      # recheck.
+      # Finish what an earlier run started, BEFORE the recheck: this can spend
+      # fifteen minutes downloading and the notebook workflow can take the
+      # account's last session in that window; the recheck is the last thing
+      # before the push, or it is not a recheck.
       #
-      # Same two reasons as the notebook leg: this job already holds the right
-      # account's token, so collecting a finished kernel costs seconds and
-      # frees the session slot this job is about to want; and it answers
-      # whether a kernel for THIS commit is already in flight, which is what
-      # stops a re-run paying for a second session.
+      # Same reasons as the notebook leg: the token is already in hand, so
+      # collecting costs seconds and frees the session slot this job wants, and
+      # it answers whether a kernel for THIS commit is already in flight.
       - name: Collect finished Kaggle runs
         id: collect
         env:
@@ -488,14 +484,12 @@ jobs:
             --no-delete \
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-      # Post FIRST, delete SECOND. The collector above ran with --no-delete, so
-      # a verdict that fails to reach GitHub (an API outage, a token problem)
-      # leaves its kernel on Kaggle for the next pass to collect and post
-      # again. Deleting before posting would make that failure permanent: the
-      # commit stays pending and nothing anywhere remembers the verdict. The
-      # poster is a script shared by all three workflows; it expands the
-      # slug's 8-character sha (the statuses API 422s an abbreviation) and
-      # hands every field to `gh` as its own argument, never through a shell.
+      # Post FIRST, delete SECOND. The collector ran with --no-delete, so a
+      # verdict that fails to reach GitHub leaves its kernel up for the next
+      # pass; deleting first would make that failure permanent. The poster is a
+      # script shared by all three workflows: it expands the slug's 8-character
+      # sha (the statuses API 422s an abbreviation) and hands every field to
+      # `gh` as its own argument, never through a shell.
       - name: Post the collected verdicts as commit statuses
         id: post
         if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
@@ -564,12 +558,10 @@ jobs:
       # this payload prints the same T4_SMOKE_REPORT line, so the transport
       # needed no modification.
       #
-      # PUSH AND EXIT. Measured on run 33486360729, waiting here cost 18.7
-      # minutes of a GitHub runner to watch Kaggle work.
-      #
-      # This job can no longer say whether the Studio smoke passed -- it
-      # succeeds by dispatching. The verdict arrives as the `kaggle-studio-gpu`
-      # commit status, and that is the context branch protection must require.
+      # PUSH AND EXIT. Waiting here cost 18.7 minutes of runner (run
+      # 33486360729). This job now succeeds by dispatching and cannot say
+      # whether the Studio smoke passed; the verdict arrives as the
+      # `kaggle-studio-gpu` commit status, which branch protection must require.
       - name: Dispatch to Kaggle
         id: launch
         # GATED ON THE RECHECK, or the recheck is decorative: a step that
@@ -591,19 +583,16 @@ jobs:
             --kind studio \
             --commit-sha '${{ steps.ref.outputs.ref }}'
 
-      # Gated on the launcher's own verdict, not on its exit code: launch.py
-      # exits 0 for every infrastructure stand-down (auth failure, account
-      # mismatch, too little deadline left), and a pending status posted for a
-      # kernel that does not exist is one no collector can ever replace. The
-      # commit would sit blocked until somebody noticed.
+      # Gated on the launcher's verdict, not its exit code: launch.py exits 0
+      # for every infrastructure stand-down, and a pending status for a kernel
+      # that does not exist is one no collector can ever replace.
       - name: Mark the dispatch pending on this commit
         if: steps.launch.outputs.verdict == 'dispatched'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # A pending status the moment the kernel is queued, so a required
-          # context that has not reported yet reads as waiting rather than as
-          # nothing at all.
+          # A pending status as soon as the kernel is queued, so a required
+          # context that has not reported yet reads as waiting, not as nothing.
           gh api "repos/$GITHUB_REPOSITORY/statuses/${{ steps.ref.outputs.ref }}" \
             -f state=pending -f context=kaggle-studio-gpu \
             -f description="dispatched to Kaggle; the result is collected when the kernel finishes" \
@@ -616,10 +605,9 @@ jobs:
       - name: Unpack the Playwright evidence
         if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb', 'kaggle_collected/**/*_output.ipynb') != ''
         run: |
-          # One kernel per call. The bundle is reassembled from numbered
-          # chunks, and one walk over two kernels would splice them together.
-          # Both trees: a kernel this run waited on lands in kaggle_evidence,
-          # one an earlier run dispatched and this run collected lands in
+          # One kernel per call: the bundle is reassembled from numbered chunks
+          # and one walk over two would splice them together. Both trees: a
+          # waited-on kernel lands in kaggle_evidence, a collected one in
           # kaggle_collected, and the screenshots matter most for the second.
           for dir in kaggle_evidence/*/ kaggle_collected/*/; do
             [ -d "$dir" ] || continue

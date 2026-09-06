@@ -593,12 +593,10 @@ def build_driver(
 ) -> dict:
     """Kernel notebook that runs the payloads across the session's GPUs.
 
-    ``expected_reports`` is how many T4_SMOKE_REPORT lines this kernel should
-    produce, written into the kernel log as a sentinel so a collector that
-    reads the evidence days later (collect.py, with no workflow output to
-    consult) judges the kernel against its own plan rather than a guess.
-    Defaults to one per payload, less the Studio install half, which emits
-    no report of its own.
+    ``expected_reports`` is how many T4_SMOKE_REPORT lines to expect, echoed
+    into the kernel log so collect.py can judge the kernel against its own plan
+    days later. Defaults to one per payload, less the report-less Studio
+    install half.
 
     ``isolation`` maps a payload to whether its virtualenv may see the Kaggle
     image's site-packages. Per payload, not per kernel, because legs sharing a

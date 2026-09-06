@@ -88,16 +88,10 @@ _STATUS_RE = re.compile(r"KernelWorkerStatus\.(?P<status>[A-Z_]+)")
 
 # The slug is the ONLY record that survives the runner.
 #
-# When this launcher waits for its own kernel, the job holds every fact it
-# needs in memory: which commit it is testing, which workflow asked, where to
-# report. Dispatch mode throws all of that away by design -- the job exits
-# minutes after the push, and whatever collects the result later is a
-# DIFFERENT job on a different runner, possibly days later, with no artifact
-# and no database between them.
-#
-# Kaggle's own kernel listing is that database, and a kernel carries exactly
-# one field we control: its name. So the name has to say what the result is
-# about, which is why the slug stops being a bare random id.
+# A waiting launcher holds every fact in memory. Dispatch mode exits minutes
+# after the push and a DIFFERENT job collects, possibly days later, with no
+# artifact or database between them. Kaggle's kernel listing is that database,
+# and a kernel carries exactly one field we control: its name.
 #
 #   unsloth-t4-ci-n1a2b3c4d-9f8e
 #                 ^^^^^^^^^^^^^^
@@ -107,21 +101,20 @@ _STATUS_RE = re.compile(r"KernelWorkerStatus\.(?P<status>[A-Z_]+)")
 #                  sha8      which commit the result belongs to
 #
 # `OWN_KERNEL_PREFIX` in gate.py is the first 14 characters and MUST keep
-# matching: that prefix is how the gate's session survey tells our kernels
-# from a human's, and a dispatched kernel that the gate cannot recognise is
-# one it will not count against Kaggle's 2-session cap.
+# matching: it is how the gate's session survey tells our kernels from a
+# human's, and one it cannot recognise is not counted against Kaggle's
+# 2-session cap.
 SLUG_PREFIX = "unsloth-t4-ci-"
 
-# One character each, because the whole slug must survive `_slugify` and stay
-# under Kaggle's length limit. Not an enum: this is a wire format written into
-# a kernel name that a collector days later has to read back.
+# One character each, so the slug survives `_slugify` and stays under Kaggle's
+# length limit. A wire format, not an enum: a collector reads it back days later.
 KIND_CODES = {"notebook": "n", "studio": "s"}
 CODE_KINDS = {v: k for k, v in KIND_CODES.items()}
 
 # Legacy slugs (`unsloth-t4-ci-<8 hex>`) are still OURS and must still be
-# reaped -- kernels pushed before this change can outlive it -- but they carry
-# no commit, so nothing can be reported against them. The alternation keeps
-# both readable rather than making the collector guess from length.
+# reaped, since kernels pushed before this change can outlive it, but they
+# carry no commit to report against. The alternation reads both rather than
+# making the collector guess from length.
 CI_SLUG_RE = re.compile(
     r"^(?:(?P<owner>[^/]+)/)?"
     + re.escape(SLUG_PREFIX)
@@ -133,10 +126,9 @@ CI_SLUG_RE = re.compile(
 def parse_slug(slug: str) -> dict | None:
     """What a kernel name says about itself, or None if it is not ours.
 
-    Returning None for anything unrecognised is the whole safety property of
-    the collector: it enumerates an ACCOUNT, which also holds a human's
-    kernels and every probe anyone has ever pushed, and it deletes what it
-    collects. A collector that guessed would eventually delete someone's work.
+    None for anything unrecognised is the collector's whole safety property: it
+    enumerates a shared ACCOUNT and deletes what it collects, so a collector
+    that guessed would eventually delete someone's work.
     """
     match = CI_SLUG_RE.match(slug or "")
     if match is None:
@@ -152,9 +144,8 @@ def parse_slug(slug: str) -> dict | None:
 def slug_name(kind: str = "", commit_sha: str = "") -> str:
     """The name for a kernel about to be pushed.
 
-    Falls back to the legacy random form when the caller names no commit,
-    which is what a local probe or an older workflow does. A dispatched run
-    always names one, and the workflow guard asserts it.
+    Falls back to the legacy random form when no commit is named, as a local
+    probe or an older workflow does. A dispatched run always names one.
     """
     code = KIND_CODES.get(kind, "")
     sha = (commit_sha or "").strip().lower()[:8]
@@ -291,14 +282,10 @@ def worst_case_seconds(
         + (PUSH_ATTEMPTS - 1) * one_delete
     )
     if dispatch:
-        # Dispatch mode stops after the pushes: it does not poll, does not
-        # download evidence, and does not delete. So the phases below are not
-        # merely skipped, they are unreachable, and including them would make
-        # the pre-push guard demand roughly two hours of job deadline for a job
-        # that exits in five minutes -- standing runs down for a window they do
-        # not need, which is the opposite of what dispatch mode is for.
-        #
-        # The retry _discard()s stay in: those DO run, inside push().
+        # Dispatch stops after the pushes: no polling, no evidence, no delete,
+        # so the phases below are unreachable. Counting them would make the
+        # pre-push guard demand ~2h of deadline for a job that exits in five
+        # minutes. The retry _discard()s stay in; those DO run, inside push().
         return kernels * per_push
     return (
         max(kernels * per_push, max_wait)
@@ -641,10 +628,8 @@ def push(
             # The slug derives from the TITLE, not the metadata id: a mismatch
             # files the kernel at an unexpected address and every later
             # status/output call 403s, so assert the round trip.
-            #
-            # This matters more now than it did: the name carries the commit,
-            # so a slug that does not round-trip does not merely 403, it files
-            # the result under a name no collector can attribute.
+            # More so now the name carries the commit: a slug that does not
+            # round-trip files the result where no collector can attribute it.
             title = name.replace("-", " ")
             assert _slugify(title) == name, f"title {title!r} slugifies to {_slugify(title)!r}"
             attempted.append(f"{user}/{name}")
@@ -1115,10 +1100,9 @@ def extract_reports(outdir: Path) -> list[dict]:
                 parsed = json.loads(blob)
             except json.JSONDecodeError:
                 continue
-            # A report is an object. Anything else that parses (`[]`, a bare
-            # string) is a malformed line, and reading `.get` off it would
-            # raise out of the collector before it wrote a result, wedging
-            # every later pass on the same evidence.
+            # A report is an object. `.get` on anything else that parses (`[]`,
+            # a bare string) raises out of the collector before it writes a
+            # result, wedging every later pass on the same evidence.
             if not isinstance(parsed, dict):
                 continue
             key = f"{parsed.get('label')}|{parsed.get('model')}"
@@ -1282,31 +1266,25 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    # A dispatched kernel is DELIBERATELY left running, which is exactly what
-    # --keep-kernel already means, down to the registry bookkeeping: mark the
-    # slug kept so the next launcher's orphan sweep does not read this exited
-    # process as a killed one and delete the kernel it was told to leave.
-    #
-    # Setting the existing flag rather than teaching release() a second way to
-    # not delete: two independent conditions guarding one deletion is how one
-    # of them ends up wrong, and this one bills GPU quota when it is.
+    # A dispatched kernel is deliberately left running, which is what
+    # --keep-kernel already means down to the registry bookkeeping: the slug is
+    # marked kept so the next launcher's orphan sweep does not read this exited
+    # process as a killed one. Reusing the flag rather than giving release() a
+    # second way not to delete; two conditions guarding one deletion is how one
+    # ends up wrong, and this one bills GPU quota when it is.
     if args.dispatch:
         args.keep_kernel = True
-        # Refused rather than defaulted. A dispatch whose slug carries no
-        # commit produces a kernel that runs, costs quota and reports to
-        # nobody, because the collector has nothing to post a status against.
-        # That is the silent-green failure this whole change is built around,
-        # so it is a usage error at the only moment it is still cheap.
+        # Refused rather than defaulted: a slug with no commit runs, costs quota
+        # and reports to nobody. A usage error at the only moment it is cheap.
         if not args.commit_sha or not args.kind:
             ap.error(
                 "--dispatch requires --commit-sha and --kind: without both, the "
                 "kernel runs and no collector can attribute its result"
             )
-        # A commit, not a ref. `slug_name` can only carry hex, and it falls
-        # back to the legacy unattributable form for anything else, so a
-        # branch or tag here would push a kernel that runs, bills, and reports
-        # to nobody. The workflows resolve refs before this point; this is the
-        # check that they did.
+        # A commit, not a ref. `slug_name` carries only hex and falls back to
+        # the legacy unattributable form otherwise, so a branch or tag here
+        # bills and reports to nobody. The workflows resolve refs first; this
+        # checks that they did.
         if not re.fullmatch(r"[0-9a-fA-F]{8,40}", args.commit_sha.strip()):
             ap.error(
                 f"--commit-sha must be a hex commit id (8 to 40 characters), got "
@@ -1571,17 +1549,11 @@ def main() -> int:
         # single-kernel shape.
         result["slug"] = live[0]["slug"]
 
-        # DISPATCH MODE ENDS HERE, and the verdict it reports is the honest one.
-        #
-        # `dispatched` is deliberately NOT `pass`. The kernel is queued; nothing
-        # has run, nothing has been asserted, and the only thing this job proved
-        # is that Kaggle accepted a push. Reporting `pass` here is precisely the
-        # green-that-means-nothing this file's docstring is about, and it would
-        # be worse than the old silent skip because it would look like a result.
-        #
-        # The real verdict arrives later, from collect.py, as a COMMIT STATUS on
-        # the sha inside the slug. That status, not this job, is what branch
-        # protection must require.
+        # DISPATCH MODE ENDS HERE. `dispatched` is deliberately NOT `pass`:
+        # nothing has run or been asserted, and all this job proved is that
+        # Kaggle accepted a push. The real verdict arrives later from collect.py
+        # as a COMMIT STATUS on the sha in the slug, and that status, not this
+        # job, is what branch protection must require.
         if args.dispatch:
             result["verdict"] = "dispatched"
             result["dispatched"] = [{"slug": k["slug"], "notebook": k["notebook"]} for k in live]

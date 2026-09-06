@@ -493,12 +493,11 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    # `statuses: write` is new, and it is what makes the dispatch honest. This
-    # job no longer waits for the kernel, so it can no longer BE the check that
-    # says the GPU tests passed; it posts that verdict as a commit status
-    # against the sha the result belongs to, which is not necessarily this run's
-    # sha -- the collection step below finishes kernels an earlier commit
-    # dispatched.
+    # `statuses: write` is what makes the dispatch honest. This job no longer
+    # waits for the kernel, so it cannot BE the check that says the GPU tests
+    # passed; it posts that verdict as a commit status against the sha the
+    # result belongs to, which need not be this run's: the collection step below
+    # finishes kernels an earlier commit dispatched.
     permissions:
       contents: read
       statuses: write
@@ -1016,29 +1015,22 @@ jobs:
 
       # BEFORE THE RECHECK, finish what an earlier run started.
       #
-      # Before it and not after, because this can take up to fifteen minutes
-      # of downloads, and a recheck taken on the other side of that gap is
-      # the stale answer it exists to replace: the Studio workflow, which
-      # holds its own concurrency group, can take the account's last session
-      # in the meantime. Collecting first also frees whatever slot a finished
-      # kernel was holding, so the survey below counts it as free.
+      # Before and not after, because this can take fifteen minutes of
+      # downloads and a recheck on the other side of that gap is the stale
+      # answer it exists to replace: the Studio workflow, on its own concurrency
+      # group, can take the account's last session meanwhile. Collecting first
+      # also frees whatever slot a finished kernel held.
       #
-      # This is the cheap half of collection, and it is the half that makes
-      # fire-and-forget pay: this job is already on a runner, already holding
-      # this account's token, and the kernel a previous commit dispatched is
-      # sitting on the account finished and unread. Collecting it here costs
-      # seconds, publishes its verdict as a commit status against ITS OWN sha,
-      # and frees the Kaggle session slot this job is about to want.
+      # The cheap half of collection, and the half that makes fire-and-forget
+      # pay: this job already has a runner and this account's token, so reading
+      # a previous commit's finished kernel costs seconds and publishes its
+      # verdict against ITS OWN sha. `kaggle-collect.yml` does the same on a
+      # schedule; this one is immediate but needs a push, that one always runs
+      # but only every ten minutes.
       #
-      # `kaggle-collect.yml` does the same thing on a schedule and is what
-      # covers a quiet repository. Neither is redundant: this one is immediate
-      # but only runs when someone pushes, that one always runs but only every
-      # ten minutes.
-      #
-      # It also answers the question that stops us paying twice: is a kernel
-      # for THIS commit already in flight? A re-run, or a second push landing
-      # while the first is still queued on Kaggle, would otherwise dispatch a
-      # second session for a result that is already coming.
+      # It also answers whether a kernel for THIS commit is already in flight,
+      # so a re-run or a second push does not buy a second session for a result
+      # already coming.
       - name: Collect finished Kaggle runs
         id: collect
         if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
@@ -1053,14 +1045,12 @@ jobs:
             --no-delete \
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-      # Post FIRST, delete SECOND. The collector above ran with --no-delete, so
-      # a verdict that fails to reach GitHub (an API outage, a token problem)
-      # leaves its kernel on Kaggle for the next pass to collect and post
-      # again. Deleting before posting would make that failure permanent: the
-      # commit stays pending and nothing anywhere remembers the verdict. The
-      # poster is a script shared by all three workflows; it expands the
-      # slug's 8-character sha (the statuses API 422s an abbreviation) and
-      # hands every field to `gh` as its own argument, never through a shell.
+      # Post FIRST, delete SECOND. The collector ran with --no-delete, so a
+      # verdict that fails to reach GitHub leaves its kernel up for the next
+      # pass; deleting first would make that failure permanent. The poster is a
+      # script shared by all three workflows: it expands the slug's 8-character
+      # sha (the statuses API 422s an abbreviation) and hands every field to
+      # `gh` as its own argument, never through a shell.
       - name: Post the collected verdicts as commit statuses
         id: post
         if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
@@ -1163,21 +1153,15 @@ jobs:
       # one without the other is a red test rather than a silent gap.
       #
       # PUSH AND EXIT. The kernel is left running and this job is done with it.
+      # Waiting here cost 41.5 minutes of runner per commit (measured, run
+      # 33479481067) against a queue 400-670 deep.
       #
-      # The old shape waited here, and it cost 41.5 minutes of a GitHub runner
-      # per commit (measured, run 33479481067) to watch a third-party service
-      # work. Against a repository queue measured at 400-670 deep that is the
-      # single most expensive thing this workflow did.
-      #
-      # What this job can no longer say is whether the GPU tests passed. It
-      # succeeds by DISPATCHING. The verdict arrives later as the
-      # `kaggle-t4-notebook` commit status, posted by whichever collector gets
-      # there first, and THAT is the context branch protection must require.
-      # Requiring this job instead would be requiring proof that Kaggle
-      # accepted a push.
-      #
-      # --commit-sha is what makes that possible: the sha goes into the kernel's
-      # slug, which is the only record that outlives this runner.
+      # This job now succeeds by DISPATCHING and can no longer say whether the
+      # GPU tests passed. The verdict arrives later as the `kaggle-t4-notebook`
+      # commit status, and THAT is the context branch protection must require;
+      # requiring this job would require proof that Kaggle accepted a push.
+      # --commit-sha puts the sha into the slug, the only record outliving this
+      # runner.
       - name: Dispatch to Kaggle
         id: launch
         if: steps.recheck.outputs.should_run == 'true' && steps.collect.outputs.in_flight != 'true'
@@ -1198,20 +1182,17 @@ jobs:
             --commit-sha '${{ steps.ref.outputs.ref }}' \
             --deadline-epoch "$(( JOB_START_EPOCH + JOB_TIMEOUT_MINUTES * 60 ))"
 
-      # Gated on the launcher's own verdict, not on its exit code: launch.py
-      # exits 0 for every infrastructure stand-down (auth failure, account
-      # mismatch, too little deadline left), and a pending status posted for a
-      # kernel that does not exist is one no collector can ever replace. The
-      # commit would sit blocked until somebody noticed.
+      # Gated on the launcher's verdict, not its exit code: launch.py exits 0
+      # for every infrastructure stand-down, and a pending status for a kernel
+      # that does not exist is one no collector can ever replace.
       - name: Mark the dispatch pending on this commit
         if: steps.launch.outputs.verdict == 'dispatched'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # A PENDING status the moment the kernel is queued, so the commit
-          # shows the check exists and is waiting rather than showing nothing.
-          # Without it a required context that has never been posted blocks a
-          # pull request forever with no explanation on the page.
+          # A PENDING status as soon as the kernel is queued: a required context
+          # that has never been posted blocks a pull request forever with no
+          # explanation on the page.
           gh api "repos/$GITHUB_REPOSITORY/statuses/${{ steps.ref.outputs.ref }}" \
             -f state=pending -f context=kaggle-t4-notebook \
             -f description="dispatched to Kaggle; the result is collected when the kernel finishes" \
@@ -1229,10 +1210,9 @@ jobs:
         if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb', 'kaggle_collected/**/*_output.ipynb') != ''
         continue-on-error: true
         run: |
-          # One kernel per call. The bundle is reassembled from numbered
-          # chunks, and one walk over two kernels would splice them together.
-          # Both trees: a kernel this run waited on lands in kaggle_evidence,
-          # one an earlier run dispatched and this run collected lands in
+          # One kernel per call: the bundle is reassembled from numbered chunks
+          # and one walk over two would splice them together. Both trees: a
+          # waited-on kernel lands in kaggle_evidence, a collected one in
           # kaggle_collected, and the screenshots matter most for the second.
           for dir in kaggle_evidence/*/ kaggle_collected/*/; do
             [ -d "$dir" ] || continue

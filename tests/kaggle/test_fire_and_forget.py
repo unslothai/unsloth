@@ -3,21 +3,17 @@
 
 """Dispatch and collect: the ways this trades forty minutes for nothing.
 
-The GPU jobs no longer wait for their Kaggle kernel. That buys back 41.5 and
-18.7 minutes of GitHub runner per commit (measured on runs 33479481067 and
-33486360729), and it introduces exactly one new class of bug, which every test
-here is aimed at: **the result stops arriving and nothing says so.**
+The GPU jobs no longer wait for their Kaggle kernel, buying back 41.5 and 18.7
+minutes of runner per commit (runs 33479481067 and 33486360729). Every test
+here aims at the one new class of bug: **the result stops arriving and nothing
+says so.** Four green shapes of that:
 
-Four shapes of that, all green:
-
-1. the dispatching job reports success, branch protection still requires IT,
-   and the check now means "Kaggle accepted a push";
-2. the kernel is never collected, so it bills quota to its own ceiling and the
+1. the dispatching job reports success and branch protection still requires IT,
+   so the check now means "Kaggle accepted a push";
+2. the kernel is never collected, so it bills quota to its ceiling and the
    commit keeps a status that never resolves;
-3. the collector deletes a kernel before reading it, or deletes one that was
-   never ours;
-4. the slug loses the commit, so a finished result cannot be attributed to
-   anything and is silently dropped.
+3. the collector deletes a kernel before reading it, or one never ours;
+4. the slug loses the commit, so a finished result cannot be attributed.
 
 Everything runs on CPU against stubs; no Kaggle session is spent.
 """
@@ -65,9 +61,8 @@ def _steps(workflow: dict) -> list[tuple[str, str, dict]]:
 def test_the_slug_carries_the_commit_and_the_workflow():
     """Without this the collector has a finished kernel and nowhere to report it.
 
-    The slug is the ONLY thing that survives the dispatching runner: no
-    artifact, no branch, no database. So it has to say which commit the result
-    is about and which workflow asked, and it has to be readable back.
+    The slug is the ONLY thing surviving the dispatching runner, so it must say
+    which commit and which workflow, and be readable back.
     """
     name = launch.slug_name("notebook", "1a2b3c4d5e6f7890")
     parsed = launch.parse_slug(name)
@@ -79,11 +74,9 @@ def test_the_slug_carries_the_commit_and_the_workflow():
 def test_two_dispatches_of_one_commit_do_not_collide():
     """A re-run, or notebook slot 1 and 2, must not push to the same slug.
 
-    Pushing to an id that already exists does not replace it, it files a new
-    version and starts a SECOND session while the first keeps running -- and
-    status/output then answer for the newest only, so one session burns a slot
-    and its quota entirely unseen. That is in push()'s own docstring; the
-    commit-derived slug must not reintroduce it.
+    Pushing to an existing id files a new version and starts a SECOND session
+    while the first runs on, and status/output answer for the newest only, so
+    one session burns a slot unseen. See push()'s own docstring.
     """
     names = {launch.slug_name("notebook", "deadbeefcafe") for _ in range(200)}
     assert len(names) > 190, f"only {len(names)} distinct slugs in 200 draws"
@@ -92,10 +85,8 @@ def test_two_dispatches_of_one_commit_do_not_collide():
 def test_the_slug_still_round_trips_through_slugify():
     """Kaggle files the kernel under the slugified TITLE, not the metadata id.
 
-    A name that does not survive that round trip files the kernel at an
-    unexpected address, where every later status and output call 403s -- and
-    now, worse, where the commit in the name is no longer the commit of the
-    kernel anyone can find.
+    A name that does not round-trip files the kernel at an unexpected address
+    where every later status and output call 403s.
     """
     for kind in ("notebook", "studio"):
         name = launch.slug_name(kind, "0123456789ab")
@@ -105,15 +96,11 @@ def test_the_slug_still_round_trips_through_slugify():
 def test_the_gate_still_recognises_a_dispatched_kernel_as_ours():
     """THE ONE THAT KEEPS THE CONCURRENCY CONTROL WORKING.
 
-    With fire-and-forget the GitHub concurrency group stops bounding Kaggle
-    sessions -- the dispatching job exits immediately, so its group is released
-    while the kernel runs on. What still bounds them is the gate's own survey,
-    which counts in-flight kernels whose slug carries OWN_KERNEL_PREFIX.
-
-    Change the slug format without keeping that prefix and the gate stops
-    counting our own sessions: three pushes in ten minutes would each believe
-    the account idle, and Kaggle would refuse the third at its 2-session cap
-    after the quota for the first two was already committed.
+    The GitHub concurrency group no longer bounds Kaggle sessions: the
+    dispatching job exits and releases it while the kernel runs on. What bounds
+    them is the gate's survey of kernels whose slug carries OWN_KERNEL_PREFIX.
+    Drop that prefix and three pushes in ten minutes each believe the account
+    idle, and Kaggle refuses the third at its 2-session cap.
     """
     import gate
     for kind in ("notebook", "studio"):
@@ -137,10 +124,9 @@ def test_the_gate_still_recognises_a_dispatched_kernel_as_ours():
 def test_a_kernel_that_is_not_ours_is_invisible(foreign):
     """The collector enumerates a whole ACCOUNT and DELETES what it collects.
 
-    That account is shared with a human and holds every probe anyone has ever
-    pushed. There is deliberately no heuristic here -- no prefix-ish match, no
-    "looks like CI" -- because the cost of a false positive is deleting
-    somebody's work, and it would look exactly like a kernel that finished.
+    The account is shared with a human, so there is deliberately no heuristic
+    here: a false positive deletes somebody's work and looks exactly like a
+    kernel that finished.
     """
     assert launch.parse_slug(foreign) is None, f"{foreign!r} was accepted as one of ours"
 
@@ -148,9 +134,8 @@ def test_a_kernel_that_is_not_ours_is_invisible(foreign):
 def test_a_legacy_slug_is_still_reapable_but_reports_nothing():
     """Kernels pushed before this change can outlive it.
 
-    They are ours and must still be reaped, or they bill forever. They carry no
-    commit, so there is nothing to attribute a verdict to, and inventing one is
-    worse than silence.
+    Still ours and still reapable, or they bill forever, but they carry no
+    commit to attribute a verdict to and inventing one is worse than silence.
     """
     parsed = launch.parse_slug("danielhanchen/unsloth-t4-ci-d7faf2b8")
     assert parsed is not None and parsed["legacy"] is True
@@ -178,9 +163,9 @@ def test_dispatch_without_a_commit_is_a_usage_error(monkeypatch, capsys):
 def test_dispatch_does_not_delete_the_kernel_it_pushed():
     """The whole point: the kernel is LEFT RUNNING.
 
-    Expressed through the existing --keep-kernel flag rather than a second
-    condition in release(), because two independent guards on one deletion is
-    how one of them ends up wrong -- and this one bills GPU quota when it is.
+    Through the existing --keep-kernel flag rather than a second condition in
+    release(); two guards on one deletion is how one ends up wrong, and this one
+    bills GPU quota when it does.
     """
     src = (CI_DIR / "launch.py").read_text(encoding = "utf-8")
     assert re.search(r"if args\.dispatch:\s*\n\s*args\.keep_kernel = True", src), (
@@ -192,9 +177,8 @@ def test_dispatch_does_not_delete_the_kernel_it_pushed():
 def test_dispatch_does_not_report_pass():
     """`dispatched` is not `pass`, and the difference is the whole change.
 
-    Nothing has run when the dispatch returns. Reporting `pass` would be worse
-    than the silent skip this repo has already been caught by twice, because it
-    would look like a result rather than like an absence.
+    Nothing has run when the dispatch returns, so `pass` would be worse than the
+    silent skip this repo has been caught by twice: it looks like a result.
     """
     src = (CI_DIR / "launch.py").read_text(encoding = "utf-8")
     block = src[src.index("if args.dispatch:", src.index('result["slug"] = live[0]')) :]
@@ -274,13 +258,10 @@ def test_a_running_kernel_within_its_ceiling_is_left_completely_alone(tmp_path):
 def test_a_kernel_past_its_ceiling_is_reaped_and_reported(tmp_path, monkeypatch):
     """THE REASON THE SCHEDULED COLLECTOR EXISTS.
 
-    The old design deleted every kernel it pushed on every path out. Dispatch
-    mode removes that, so a wedged kernel bills to its own ceiling with nobody
-    watching -- this directory has already measured one ignoring Kaggle's own
-    `-t` timeout for over two hours.
-
-    It is reported as a failure rather than dropped: the run it belonged to will
-    never produce a result, and saying nothing leaves the commit pending forever.
+    The old design deleted every kernel it pushed on every path out. Without
+    that a wedged kernel bills to its ceiling unwatched; one here was measured
+    ignoring Kaggle's own `-t` timeout for over two hours. Reported as a failure
+    rather than dropped, or the commit stays pending forever.
     """
     deleted: list[str] = []
     monkeypatch.setattr(launch, "delete_kernel", lambda slug: deleted.append(slug) or True)
@@ -361,9 +342,8 @@ def test_a_kernel_whose_evidence_will_not_download_is_NOT_deleted(tmp_path, monk
         "age_hours": 0.4,
     }
     record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0)
-    # `pending`, not `infra`: an infra verdict posts a green status and its
-    # kernel is released by --delete-collected, so the "next pass retries"
-    # promise would be broken by the very step that publishes it.
+    # `pending`, not `infra`: an infra verdict posts green and is released by
+    # --delete-collected, breaking the "next pass retries" promise.
     assert record["verdict"] == "pending"
     assert record["verdict"] not in collect.DELETABLE
     assert collect.statuses_from([record]) == []
@@ -408,8 +388,8 @@ def test_find_ours_skips_everything_it_does_not_recognise():
 
 def test_infra_and_partial_do_not_go_red():
     """A red the author cannot act on is how a required check gets REMOVED from
-    branch protection. `infra` and `partial` mean nothing was learned about the
-    code, so they stay green and say so in the description."""
+    branch protection. `infra` and `partial` learned nothing about the code, so
+    they stay green and say so in the description."""
     assert collect.VERDICT_STATE["infra"] == "success"
     assert collect.VERDICT_STATE["partial"] == "success"
     assert collect.VERDICT_STATE["fail"] == "failure"
@@ -435,8 +415,8 @@ def test_a_failed_payload_reaches_github_as_a_failure():
 
 
 def test_the_collector_never_sees_a_github_token():
-    """A script holding a Kaggle credential and a GitHub credential is one bug
-    away from sending one to the other. It emits statuses as DATA; the workflow
+    """A script holding both a Kaggle and a GitHub credential is one bug away
+    from sending one to the other. It emits statuses as DATA; the workflow
     posts them."""
     src = (CI_DIR / "collect.py").read_text(encoding = "utf-8")
     for forbidden in ("GH_TOKEN", "GITHUB_TOKEN", "api.github.com"):
@@ -483,9 +463,9 @@ def test_the_dispatching_job_can_post_the_status_that_replaces_it(path, context)
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
 def test_the_gpu_job_collects_before_it_dispatches(path):
-    """Order matters twice over: it frees the Kaggle session slot this job is
-    about to want, and it is what answers whether this commit is already
-    running so a re-run does not pay for a second session."""
+    """Order matters twice: it frees the session slot this job is about to want,
+    and it answers whether this commit is already running, so a re-run does not
+    pay for a second session."""
     body = path.read_text(encoding = "utf-8")
     assert "kaggle_t4_ci/collect.py" in body, f"{path.name} never collects"
     assert body.index("kaggle_t4_ci/collect.py") < body.index(
@@ -509,9 +489,9 @@ def test_a_commit_already_in_flight_is_not_dispatched_again(path):
 
 
 def test_a_scheduled_collector_exists_and_reaps():
-    """Route 1 (the next run collects) only fires when somebody pushes. A quiet
-    weekend with a wedged kernel is a weekend of billing nobody is watching, and
-    the old design could not have that bug because the pushing job also deleted."""
+    """The other route only fires when somebody pushes, so a quiet weekend with
+    a wedged kernel is a weekend of unwatched billing. The old design could not
+    have that bug because the pushing job also deleted."""
     wf = _wf(COLLECT_WF)
     on = wf.get(True) or wf.get("on")
     assert "schedule" in on, "the collector does not run on a schedule, so a quiet repo never reaps"
@@ -542,9 +522,8 @@ def test_the_collector_holds_one_token_per_job():
 
 
 def test_the_collector_serialises_per_account():
-    """Two collectors on one account race: both enumerate the same kernels, and
-    the loser tries to delete what the winner already deleted and reports the
-    404 as a failure."""
+    """Two collectors on one account race: the loser deletes what the winner
+    already deleted and reports the 404 as a failure."""
     wf = _wf(COLLECT_WF)
     conc = wf.get("concurrency")
     assert conc, "the collector has no concurrency group"
@@ -555,9 +534,9 @@ def test_the_collector_serialises_per_account():
 
 
 def test_the_status_contexts_are_stable_strings():
-    """Branch protection is configured against these names. Renaming one
-    silently stops requiring the check it names -- the rule keeps passing
-    because a context that never reports is not a failing context."""
+    """Branch protection is configured against these names, and renaming one
+    silently stops requiring it: a context that never reports is not a failing
+    context."""
     assert collect.STATUS_CONTEXTS == {
         "notebook": "kaggle-t4-notebook",
         "studio": "kaggle-studio-gpu",
@@ -571,8 +550,7 @@ def test_the_status_contexts_are_stable_strings():
 
 def test_a_dispatch_posts_a_pending_status():
     """Without it a required context that has never reported blocks the pull
-    request with no explanation on the page -- indistinguishable from a check
-    that was never configured."""
+    request with no explanation, indistinguishable from an unconfigured check."""
     for path, context in ((NOTEBOOK_WF, "kaggle-t4-notebook"), (STUDIO_WF, "kaggle-studio-gpu")):
         body = path.read_text(encoding = "utf-8")
         assert re.search(
@@ -582,16 +560,13 @@ def test_a_dispatch_posts_a_pending_status():
 
 def test_the_reporters_wait_for_an_EXECUTED_NOTEBOOK_not_just_a_directory():
     """Measured on run 33628507954, which reported `Kaggle T4 smoke: PARTIAL`
-    for a dispatch where nothing had run at all.
+    for a dispatch where nothing had run.
 
-    The first version of this guard accepted `hashFiles('kaggle_evidence/**')`,
-    and that is true on a dispatching run: launch.py writes launch_result.json
-    into that directory before it exits. The reporters then read a directory
-    with no executed notebooks and print "half a comparison" for a kernel that
-    is still queued.
-
-    So the condition has to name the thing a report is MADE of. A dispatching
-    run cannot have an executed notebook, and a collected one always does.
+    `hashFiles('kaggle_evidence/**')` is true on a dispatching run, since
+    launch.py writes launch_result.json there before exiting, so the reporters
+    print "half a comparison" for a queued kernel. The condition has to name
+    what a report is MADE of: an executed notebook, which only a collected run
+    has.
     """
     for path in (NOTEBOOK_WF, STUDIO_WF):
         for _job, name, step in _steps(_wf(path)):
@@ -613,9 +588,8 @@ def _fake_gh(
     lookup_error = "",
 ):
     """Stand in for `gh`, recording every call. `resolve_to` is what
-    `repos/../commits/<sha>` answers; None means the commit is gone, in the
-    words GitHub actually uses (a 422 "No commit found"); `lookup_error` is
-    what a lookup that could not be made says instead."""
+    `repos/../commits/<sha>` answers; None means gone, in GitHub's own words (a
+    422 "No commit found"); `lookup_error` is what a failed lookup says."""
     calls: list[list[str]] = []
 
     def _gh(args):
@@ -649,11 +623,9 @@ def test_an_abbreviated_sha_is_EXPANDED_before_a_status_is_posted(monkeypatch):
         POST /repos/{o}/{r}/statuses/2ecb19df
         422 "Sha must be a valid hex object ID"
 
-    The slug can only carry 8 hex characters, so the poster has to resolve
-    them first. Without that every collected verdict 422s and the commit keeps
-    a PENDING check forever while the collection quietly succeeds. Driven
-    through the real poster against a recording `gh`: the value posted must
-    be the resolved one, never the slug's.
+    The slug carries only 8 hex characters, so the poster must resolve them
+    first; without that every verdict 422s while the collection quietly
+    succeeds. Driven through the real poster against a recording `gh`.
     """
     full = "2ecb19df" + "a" * 32
     calls = _fake_gh(monkeypatch, resolve_to = full)
@@ -691,9 +663,9 @@ def test_every_workflow_posts_through_the_shared_poster_and_none_keeps_a_shell_l
     "path", (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF), ids = ("notebook", "studio", "collect")
 )
 def test_collection_never_deletes_and_the_release_step_comes_after_posting(path):
-    """A verdict that does not reach GitHub must leave its kernel on Kaggle
-    for the next pass. So the collect step runs --no-delete, the poster runs,
-    and only then does --delete-collected release what was delivered."""
+    """A verdict that does not reach GitHub must leave its kernel up for the
+    next pass: collect --no-delete, post, then --delete-collected releases only
+    what was delivered."""
     body = path.read_text(encoding = "utf-8")
     steps = [(name, step) for _job, name, step in _steps(_wf(path))]
     collect_steps = [
@@ -861,10 +833,9 @@ def _terminal_entry():
 
 
 def test_an_incomplete_download_judges_nothing_and_keeps_the_kernel(tmp_path, monkeypatch):
-    """fetch_evidence reports a spent budget or a lost notebook by FLAG, not
-    by raising. Judging the short set would read a run that lost half its
-    notebooks as whatever the surviving half says, and deleting would make
-    that permanent."""
+    """fetch_evidence flags a spent budget or a lost notebook instead of
+    raising. Judging the short set reads a run that lost half its notebooks as
+    whatever the surviving half says, and deleting makes that permanent."""
     deleted: list[str] = []
     monkeypatch.setattr(
         launch,
@@ -904,9 +875,8 @@ def test_a_kernel_another_collector_finished_first_posts_nothing(tmp_path, monke
 
 
 def test_an_unreadable_report_is_infra_not_a_crash(tmp_path, monkeypatch):
-    """A collector that raises here writes no result and wedges every later
-    pass on the same kernel. Nothing was learned, so it is `infra`, and the
-    kernel is released rather than retried into the same exception."""
+    """Raising here writes no result and wedges every later pass on the same
+    kernel. Nothing was learned, so `infra`, and the kernel is released."""
 
     def _boom(dest):
         raise AttributeError("'list' object has no attribute 'get'")
@@ -934,8 +904,8 @@ def test_a_malformed_report_line_is_skipped_by_the_extractor(tmp_path):
 
 def test_the_expected_report_count_travels_inside_the_kernel(tmp_path, monkeypatch):
     """The scheduled collector has no workflow output to read a payload count
-    from. Judging a five-payload kernel against `--expect 1` turns a run that
-    lost four of them into a pass; the driver's own sentinel is the record."""
+    from, and judging a five-payload kernel against `--expect 1` turns a run
+    that lost four into a pass. The driver's own sentinel is the record."""
 
     def _fetch(
         slug,
@@ -990,9 +960,9 @@ def test_the_scheduled_collector_no_longer_guesses_the_payload_count():
 
 
 def test_a_kernel_far_past_the_ceiling_is_still_seen(monkeypatch):
-    """A scheduled pass delayed six hours by an outage or a deep queue arrives
-    to find the wedge it exists for. Ageing it out of the listing would leave
-    it billing to Kaggle's own 12-hour kill and its commit pending forever."""
+    """A pass delayed six hours by an outage still finds the wedge it exists
+    for. Ageing it out of the listing leaves it billing to Kaggle's 12-hour kill
+    with its commit pending forever."""
     from datetime import datetime, timedelta
 
     now = datetime(2026, 9, 6, 12, 0, 0)
@@ -1009,9 +979,9 @@ def test_a_kernel_far_past_the_ceiling_is_still_seen(monkeypatch):
 def test_the_scheduled_collector_fails_loudly_when_it_cannot_authenticate(
     tmp_path, monkeypatch, capsys
 ):
-    """Its token is the repository's own. A green pass that collected nothing
-    would hide an expired credential while every dispatched kernel bills to
-    its ceiling and every commit stays pending."""
+    """Its token is the repository's own, so a green pass that collected
+    nothing would hide an expired credential while kernels bill to their
+    ceiling and commits stay pending."""
 
     def _no(*a, **k):
         raise OSError("Could not find kaggle.json")
@@ -1030,9 +1000,8 @@ def test_the_scheduled_workflow_asks_for_that():
 
 
 def test_the_collector_installs_the_client_the_gpu_workflows_install():
-    """1.7.4.5 cannot read KAGGLE_API_TOKEN at all (#9535), so a scheduled
-    pass on it authenticated nothing and, before --require-auth, said so to
-    nobody."""
+    """1.7.4.5 cannot read KAGGLE_API_TOKEN at all (#9535), so a scheduled pass
+    on it authenticated nothing and, before --require-auth, said so to nobody."""
     pins = {}
     for path in (NOTEBOOK_WF, STUDIO_WF, COLLECT_WF):
         found = re.findall(
@@ -1050,8 +1019,8 @@ def test_the_collector_installs_the_client_the_gpu_workflows_install():
 
 def test_dispatch_refuses_a_ref_that_is_not_a_commit(monkeypatch, capsys):
     """`slug_name` falls back to the legacy unattributable form for anything
-    that is not hex, so a branch here would push a kernel that runs, bills,
-    and reports to nobody."""
+    not hex, so a branch here pushes a kernel that runs, bills, reports to
+    nobody."""
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1098,8 +1067,8 @@ def test_pending_is_posted_only_for_a_kernel_that_was_actually_dispatched(path):
 
 def test_a_lookup_that_could_not_be_made_keeps_the_kernel(monkeypatch, capsys):
     """Only GitHub saying the commit is not there releases a kernel. A 5xx, a
-    rate limit or a dropped connection says nothing about the commit, and
-    reading it as "gone" would delete the only copy of the result."""
+    rate limit or a dropped connection says nothing, and reading it as "gone"
+    deletes the only copy of the result."""
     calls = _fake_gh(monkeypatch, lookup_error = "gh: HTTP 503 Service Unavailable")
     outcome = post_statuses.post_all([dict(_STATUS)], "unslothai/unsloth")
     assert outcome["failed"] == [_STATUS["slug"]]
@@ -1121,8 +1090,8 @@ def test_resolve_sha_separates_missing_from_unknown(monkeypatch):
     answers["repos/o/r/commits/bb"] = (1, "", "gh: No commit found for SHA: bb (HTTP 422)")
     answers["repos/o/r/commits/cc"] = (1, "", "gh: HTTP 502 Bad Gateway")
     answers["repos/o/r/commits/dd"] = (1, "", "")
-    # The status code alone is not the answer: a 404 is what a repository the
-    # token cannot see says, a 422 what an ambiguous abbreviation says.
+    # The status code alone is not the answer: 404 is also an unreadable
+    # repository, 422 also an ambiguous abbreviation.
     answers["repos/o/r/commits/ee"] = (1, "", "gh: Not Found (HTTP 404)")
     answers["repos/o/r/commits/ff"] = (1, "", "gh: Validation Failed (HTTP 422)")
     assert post_statuses.resolve_sha("o/r", "aa") == ("ok", "a" * 40)
@@ -1145,9 +1114,8 @@ _ENTRY = {
 
 def test_an_unrecognised_kernel_state_is_kept_and_not_judged(tmp_path, monkeypatch):
     """Kaggle's enum has states this collector never sees (NEW_SCRIPT) and can
-    grow more. Anything that is not a known terminal state has no evidence to
-    judge, and judging it posts a green `infra` for a run still to come and
-    then deletes the kernel."""
+    grow more. A non-terminal state has no evidence, and judging it posts a
+    green `infra` for a run still to come and then deletes the kernel."""
     touched: list[str] = []
     monkeypatch.setattr(
         launch, "fetch_evidence", lambda slug, dest, deadline = None: touched.append(slug) or {}
@@ -1164,9 +1132,9 @@ def test_an_unrecognised_kernel_state_is_kept_and_not_judged(tmp_path, monkeypat
 def test_a_downloaded_file_that_is_not_a_notebook_does_not_wedge_the_collector(
     tmp_path, monkeypatch
 ):
-    """`[]` is valid JSON and not a notebook. The report reader raising is
-    caught; the expected-count reader raising was not, and a collector that
-    raises writes no result and stalls on the same kernel every pass."""
+    """`[]` is valid JSON and not a notebook. The report reader's raise is
+    caught; the expected-count reader's was not, and a collector that raises
+    writes no result and stalls on the same kernel every pass."""
     slug = _ENTRY["slug"]
     dest = tmp_path / slug.rsplit("/", 1)[-1]
     dest.mkdir()
@@ -1185,7 +1153,7 @@ def test_a_downloaded_file_that_is_not_a_notebook_does_not_wedge_the_collector(
 
 
 def test_the_evidence_download_is_clamped_to_the_pass_deadline(tmp_path, monkeypatch):
-    """A kernel started just inside the pass budget must not be handed a fresh
+    """A kernel started just inside the pass budget must not get a fresh
     five-minute download budget, or a fifteen-minute collector runs for twenty
     inside a twenty-five minute job with the release step still to come."""
     seen: list[float] = []
@@ -1207,8 +1175,7 @@ def test_the_evidence_download_is_clamped_to_the_pass_deadline(tmp_path, monkeyp
         api, dict(_ENTRY), tmp_path, expect = 1, max_age_hours = 3.0, deadline = pass_deadline
     )
     assert seen and seen[0] <= pass_deadline
-    # And the collector's own loop hands its deadline down: the parameter exists
-    # in the one call site that matters.
+    # And the collector's loop hands its deadline down at the one call site.
     source = (CI_DIR / "collect.py").read_text(encoding = "utf-8")
     body = source[source.index("deadline = time.time() + BUDGET_SEC") :]
     assert "deadline = deadline," in body[: body.index("statuses_from")]
@@ -1219,10 +1186,9 @@ def test_the_evidence_download_is_clamped_to_the_pass_deadline(tmp_path, monkeyp
 
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
 def test_collection_runs_before_the_recheck_so_the_recheck_is_last_before_the_push(path):
-    """Collection can spend up to BUDGET_SEC downloading. Sitting between the
-    recheck and the push, that gap is exactly the stale window the recheck
-    exists to close: the other GPU workflow, on its own concurrency group, can
-    take the account's last session in it."""
+    """Collection can spend up to BUDGET_SEC downloading. Between the recheck
+    and the push that gap is the stale window the recheck exists to close: the
+    other GPU workflow, on its own group, can take the last session in it."""
     steps = [(n, s) for _j, n, s in _steps(_wf(path))]
     names = [n for n, _s in steps]
     collect_i = names.index("Collect finished Kaggle runs")
@@ -1242,15 +1208,15 @@ def test_collection_runs_before_the_recheck_so_the_recheck_is_last_before_the_pu
 @pytest.mark.parametrize("path", (NOTEBOOK_WF, STUDIO_WF), ids = ("notebook", "studio"))
 def test_the_unpack_step_reads_the_tree_a_collected_kernel_lands_in(path):
     """Dispatch mode never writes kaggle_evidence; a kernel collected later
-    lands in kaggle_collected/<slug>. An unpack step reading only the first
-    tree could never fire on the run that actually retrieved the screenshots."""
+    lands in kaggle_collected/<slug>, so an unpack step reading only the first
+    tree never fires on the run that retrieved the screenshots."""
     step = next(s for _j, n, s in _steps(_wf(path)) if n == "Unpack the Playwright evidence")
     assert "kaggle_collected/**/*_output.ipynb" in step["if"]
     assert "kaggle_evidence/**/*_output.ipynb" in step["if"]
     run = step["run"]
     assert "kaggle_collected/*/" in run and "kaggle_evidence/*/" in run
-    # One kernel per call: chunks are numbered per bundle, and a walk over two
-    # kernels would splice their bundles together.
+    # One kernel per call: chunks are numbered per bundle, so a walk over two
+    # would splice them together.
     assert '--evidence "$dir"' in run and 'studio_evidence/$(basename "$dir")' in run
 
 

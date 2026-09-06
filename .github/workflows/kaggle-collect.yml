@@ -3,56 +3,43 @@
 #
 # Collect the Kaggle kernels the GPU workflows dispatched and left running.
 #
-# WHY THIS EXISTS AT ALL
+# WHY THIS EXISTS
 #
 # `kaggle-t4-notebook-ci.yml` and `kaggle-t4-studio-gpu-ci.yml` used to hold a
-# GitHub runner for the whole Kaggle session: 41.5 minutes and 18.7 minutes
-# respectively, measured on runs 33479481067 and 33486360729, almost all of it
-# a poll loop doing nothing while Kaggle worked. Against a repository queue
-# measured at 400-670 deep that is two runners taken out of circulation per
-# commit to wait for a third-party service.
+# runner for the whole Kaggle session: 41.5 and 18.7 minutes, measured on runs
+# 33479481067 and 33486360729, almost all of it polling. Against a queue
+# measured at 400-670 deep that is two runners per commit spent waiting on a
+# third-party service.
 #
-# So those jobs now PUSH AND EXIT (`launch.py --dispatch`), and the result is
-# collected afterwards. That is only sound if collection actually happens, and
-# there are two independent routes to it. This workflow is the one that does
-# not depend on anybody pushing code:
-#
-#   1. the next GPU run on the same account collects before it dispatches --
-#      cheap, immediate, and exactly what the queue is already paying for;
-#   2. THIS workflow, on a schedule, which is what covers a quiet repository.
-#
-# Route 2 is not a belt-and-braces nicety. A dispatched kernel bills accelerator
-# quota until it hits its own ceiling, and this directory has already measured a
-# kernel ignoring Kaggle's own `-t` timeout for over two hours. Without a
-# scheduled reaper, a weekend with no commits is a weekend of billing nobody
-# is watching. The old design could not have this bug, because the job that
-# pushed the kernel also deleted it on every path out; dispatch mode removes
-# that safety and this workflow is what replaces it.
+# So those jobs now PUSH AND EXIT (`launch.py --dispatch`), and two independent
+# routes collect the result: the next GPU run on the same account collects
+# before it dispatches, and THIS workflow covers a quiet repository on a
+# schedule. The scheduled route is not a nicety: a dispatched kernel bills
+# accelerator quota to its ceiling, and this directory has measured a kernel
+# ignoring Kaggle's own `-t` timeout for over two hours, so a weekend with no
+# commits would be a weekend of unwatched billing.
 #
 # WHAT IT PUBLISHES
 #
 # A commit status per collected kernel, `kaggle-t4-notebook` or
-# `kaggle-studio-gpu`, against the sha carried in the kernel's own slug. THAT
-# is the check that means "the GPU tests passed" -- the dispatching job cannot
-# mean it any more, since it succeeds by dispatching. Branch protection must
-# require these contexts and not the dispatching jobs, or the whole change
+# `kaggle-studio-gpu`, against the sha in the kernel's slug. THAT is the check
+# meaning "the GPU tests passed"; the dispatching job succeeds by dispatching,
+# so branch protection must require these contexts instead, or the change
 # trades forty minutes of runner for a check that proves nothing.
 #
 # ACCOUNTS
 #
-# A static two-element matrix, one job per account, deliberately unlike the
-# gate's quota-weighted draw. The gate chooses where to SPEND a session; this
-# workflow spends none, and it has to look at both accounts every pass because
-# a kernel dispatched on either could be waiting. One token per job, never both
-# in one step, for the same reason the GPU workflows index the secrets context.
+# A static two-element matrix, one job per account, unlike the gate's
+# quota-weighted draw: the gate chooses where to SPEND a session, this workflow
+# spends none and must look at both accounts every pass. One token per job,
+# never both in one step, as in the GPU workflows.
 name: Kaggle collect
 
 on:
   schedule:
     # Every 10 minutes, offset off the hour. A dispatched kernel takes 20-40
-    # minutes, so this is a few passes per kernel: frequent enough that a
-    # result reaches its commit status while the pull request is still open,
-    # infrequent enough that the reaper is not itself a queue item.
+    # minutes, so a few passes per kernel: fast enough that a result lands while
+    # the pull request is open, rare enough not to be a queue item itself.
     - cron: '3,13,23,33,43,53 * * * *'
   workflow_dispatch:
     inputs:
@@ -69,15 +56,13 @@ permissions:
   contents: read
 
 # Never two scheduled passes at once. This does NOT serialise against the
-# notebook and Studio jobs, which collect on their own account before they
-# dispatch and run under their own groups, so two collectors CAN see one
-# terminal kernel. That is safe by construction in collect.py rather than by
-# a lock: a kernel that vanishes under a collector (the other one deleted it)
-# is recorded as `gone` and posts nothing, an incomplete download posts
-# nothing and keeps the kernel, and a status is posted only from a complete
-# set of evidence, so the worst case is the same verdict posted twice. Not
-# cancel-in-progress -- a pass midway through downloading evidence must
-# finish, or the next pass starts from nothing.
+# notebook and Studio jobs, which collect under their own groups, so two
+# collectors CAN see one terminal kernel. Safe by construction in collect.py
+# rather than by a lock: a kernel that vanishes is recorded `gone` and posts
+# nothing, an incomplete download posts nothing and keeps the kernel, and a
+# status is posted only from complete evidence, so the worst case is the same
+# verdict twice. Not cancel-in-progress: a pass midway through a download must
+# finish, or the next starts from nothing.
 concurrency:
   group: kaggle-collect
   cancel-in-progress: false
@@ -86,18 +71,16 @@ jobs:
   collect:
     name: Collect
     runs-on: ubuntu-latest
-    # Bounded well above collect.py's own BUDGET_SEC (900s) plus setup, so the
-    # script's internal budget is what stops a long pass rather than the job
-    # being killed mid-download.
+    # Well above collect.py's BUDGET_SEC (900s) plus setup, so its own budget
+    # stops a long pass rather than the job being killed mid-download.
     timeout-minutes: 25
     permissions:
       contents: read
-      # The point of the whole workflow. Without this the collection runs and
-      # the verdict reaches nobody.
+      # The point of the workflow: without it the verdict reaches nobody.
       statuses: write
     strategy:
-      # Independent accounts. One account being unreachable must not stop the
-      # other being collected, and a failure on either is still a failure.
+      # Independent accounts: one being unreachable must not stop the other,
+      # and a failure on either is still a failure.
       fail-fast: false
       matrix:
         include:
@@ -118,27 +101,24 @@ jobs:
           python-version: '3.12'
 
       - name: Install the Kaggle client
-        # The same client the GPU workflows install, for the same reason they
-        # moved to it: 1.7.4.5's authenticate() cannot read KAGGLE_API_TOKEN,
-        # the only credential this job has, so every pass on it failed to
-        # authenticate and collected nothing.
+        # As in the GPU workflows: 1.7.4.5's authenticate() cannot read
+        # KAGGLE_API_TOKEN, the only credential this job has, so every pass on
+        # it failed to authenticate and collected nothing.
         run: python -m pip install --quiet 'kaggle==2.2.4'
 
       - name: Collect this account's kernels
         id: collect
         env:
-          # Exactly one account, indexed by name. Same rule as the GPU
-          # workflows: a ternary here would hand over the other account's token
-          # whenever this secret is empty, and the collector would then delete
-          # kernels belonging to an account it is not reporting for.
+          # Exactly one account, indexed by name. A ternary would hand over the
+          # other account's token whenever this secret is empty, and the
+          # collector would delete kernels it is not reporting for.
           KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
-        # --require-auth: this job runs with the repository's own secrets, so a
-        # failure to authenticate is a broken token and must be red, not the
-        # quiet green a fork pull request gets. --no-delete always: the
-        # kernels are released by the last step, once their statuses posted.
-        # The expected report count is read from each kernel's own evidence
-        # (the driver records it), so a five-payload kernel that lost four is
-        # judged against five, not against a flat guess.
+        # --require-auth: this job holds the repository's own secrets, so an
+        # auth failure is a broken token and must be red, not the quiet green a
+        # fork pull request gets. --no-delete always; the kernels are released
+        # by the last step once their statuses posted. The expected report count
+        # comes from each kernel's own evidence, so a five-payload kernel that
+        # lost four is judged against five rather than a flat guess.
         run: |
           python .github/scripts/kaggle_t4_ci/collect.py \
             --outdir kaggle_collected \
@@ -148,12 +128,10 @@ jobs:
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       # Post FIRST, delete SECOND. A verdict that does not reach GitHub leaves
-      # its kernel on Kaggle for the next pass to collect and post again;
-      # deleting before posting would make one API failure the permanent
-      # loss of a verdict, with the commit pending forever and nothing left
-      # anywhere to retry from. The poster is a script rather than a shell
-      # loop: each field reaches `gh` as its own argument, never through a
-      # shell, and the same code serves all three workflows.
+      # its kernel up for the next pass; deleting first would make one API
+      # failure the permanent loss of a verdict. A script rather than a shell
+      # loop: each field reaches `gh` as its own argument, and the same code
+      # serves all three workflows.
       - name: Post the commit statuses
         id: post
         if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
@@ -174,11 +152,10 @@ jobs:
             --delete-collected kaggle_collected/collect_result.json \
             --posted kaggle_collected/posted.json
 
-      # The Studio payload smuggles its Playwright screenshots and logs home
-      # inside its own cell output, and this is the pass that collects most
-      # Studio kernels, so this is the pass that has to put them back. One
-      # kernel per call: the bundle is reassembled from numbered chunks, and
-      # one walk over two kernels would splice them together.
+      # The Studio payload smuggles its Playwright screenshots and logs home in
+      # its own cell output, and this pass collects most Studio kernels, so it
+      # has to put them back. One kernel per call: the bundle is reassembled
+      # from numbered chunks and one walk over two would splice them together.
       - name: Unpack the Playwright evidence
         if: always() && hashFiles('kaggle_collected/**/*_output.ipynb') != ''
         continue-on-error: true
@@ -190,11 +167,10 @@ jobs:
               --outdir "studio_evidence/$(basename "$dir")"
           done
 
-      # The evidence is most valuable exactly when something went wrong, and
-      # the verdict this pass posted is a one-line status; the executed
-      # notebooks and the unpacked screenshots are what a red one is read from.
-      # continue-on-error: an artifact-service outage is not a collection
-      # failure, and the statuses above have already been delivered.
+      # The posted verdict is one line; the executed notebooks and unpacked
+      # screenshots are what a red one is read from. continue-on-error: an
+      # artifact outage is not a collection failure, and the statuses are
+      # already delivered.
       - name: Upload evidence
         if: always() && hashFiles('kaggle_collected/**/*_output.ipynb') != ''
         continue-on-error: true
