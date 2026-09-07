@@ -99,7 +99,23 @@ function Get-LlamaDir {
     return (Join-Path $env:USERPROFILE '.unsloth\llama.cpp')
 }
 $LLAMA_DIR = Get-LlamaDir
+# The managed venv. Studio loads far more native code from here than from the
+# llama.cpp runtime: 673 PE files against 27 on a measured install, 657 of them
+# unsigned, spread across torch, scipy, sklearn, numpy, av and the rest. The
+# only enforced 3077 observed so far was in this tree
+# (sentencepiece\_sentencepiece.cp313-win_amd64.pyd), not in llama.cpp, so an
+# inventory that stops at the runtime dir omits the evidence.
+$VENV_DIR = Join-Path (Get-StudioHome) 'unsloth_studio'
 $PE_EXT = @('.exe', '.dll', '.pyd', '.sys', '.ocx', '.cpl', '.scr')
+
+# unsloth_cli reads UNSLOTH_STUDIO_PASSWORD itself and treats it as
+# set-the-initial-password, so launching with it set hard-errors on any Studio
+# that already has one: "an Unsloth admin password is already set; --password
+# only sets the initial password." The scenario genuinely needs the value to log
+# in. One variable, two incompatible consumers, so take it out of the
+# environment here and hand it to the scenario as an argument instead.
+$STUDIO_PASSWORD = $env:UNSLOTH_STUDIO_PASSWORD
+Remove-Item Env:\UNSLOTH_STUDIO_PASSWORD -ErrorAction SilentlyContinue
 # 3076 audit, 3077 enforced block, 3089 signature detail, 3033/3099 policy and
 # validation failures, 3090/3091/3092 allow-and-origin context.
 $CI_EVENT_IDS = @(3033, 3076, 3077, 3089, 3090, 3091, 3092, 3099)
@@ -530,7 +546,7 @@ function Invoke-Prepare {
 
 function Get-SignatureInventory([string] $root) {
     if (-not (Test-Path -LiteralPath $root)) {
-        Write-Warning "no llama.cpp install at $root"
+        Write-Warning "nothing to inventory at $root"
         return @()
     }
     Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
@@ -587,32 +603,69 @@ function Invoke-Run {
             Select-Object Name, Status | Format-Table -AutoSize | Out-String | Write-Host
     }
 
+    # The venv, separately. See $VENV_DIR: this is where the native code
+    # actually lives, and where the only enforced block seen so far landed.
+    Write-Section 'Venv signature inventory'
+    Write-Host "venv: $VENV_DIR"
+    $venvInventory = @(Get-SignatureInventory $VENV_DIR)
+    ConvertTo-Json -InputObject @($venvInventory) -Depth 4 |
+        Set-Content -LiteralPath (Join-Path $dir 'venv-signature-inventory.json') -Encoding UTF8
+    $venvInventory | Export-Csv -LiteralPath (Join-Path $dir 'venv-signature-inventory.csv') -NoTypeInformation -Encoding UTF8
+    $venvTotal = $venvInventory.Count
+    $venvValid = @($venvInventory | Where-Object { $_.Status -eq 'Valid' }).Count
+    Write-Host "$venvValid of $venvTotal PE files in the venv report a valid Authenticode signature"
+    if ($venvTotal -gt 0) {
+        # By package, because "657 unsigned" is not actionable and "scipy 106,
+        # torch 9 at 274 MB" is.
+        $venvInventory | Where-Object { $_.Status -ne 'Valid' } |
+            Group-Object { ($_.FullName -split '\\site-packages\\')[-1].Split('\')[0] } |
+            Sort-Object Count -Descending | Select-Object -First 10 |
+            Format-Table @{n = 'package'; e = { $_.Name } }, Count -AutoSize | Out-String | Write-Host
+    }
+
+    $scenarioStatus = [pscustomobject]@{ Ran = $false; ExitCode = $null; Reason = 'skipped' }
     if ($SkipStudio) {
         Write-Host 'skipping the Studio scenario (-SkipStudio)'
     } else {
         Write-Section 'Studio scenario'
         $scenario = Join-Path $PSScriptRoot 'studio_scenario.py'
         $log = Join-Path $dir 'studio-scenario.log'
-        if (-not $env:UNSLOTH_STUDIO_PASSWORD) {
+        if (-not $STUDIO_PASSWORD) {
             Write-Warning 'UNSLOTH_STUDIO_PASSWORD is not set; the scenario needs it (see README) and will stop at login'
         }
-        Write-Host "python $scenario --model $Model --out $dir"
-        # $ErrorActionPreference is Stop for the script, but a scenario that
-        # fails is a result rather than an accident: that is what we came to
-        # measure. Capture it and carry on to collect.
+        $scenarioArgs = @($scenario, '--model', $Model, '--out', $dir, '--port', "$Port")
+        # As an argument, not an inherited variable: see $STUDIO_PASSWORD.
+        if ($STUDIO_PASSWORD) { $scenarioArgs += @('--password', $STUDIO_PASSWORD) }
+        Write-Host "python $scenario --model $Model --out $dir --port $Port"
         $prev = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            & python $scenario --model $Model --out $dir --port $Port 2>&1 | Tee-Object -FilePath $log
-            Write-Host "scenario exit code: $LASTEXITCODE"
+            & python @scenarioArgs 2>&1 | Tee-Object -FilePath $log
+            $code = $LASTEXITCODE
+            $scenarioStatus = [pscustomobject]@{
+                Ran      = $true
+                ExitCode = $code
+                Reason   = if ($code -eq 0) { 'ok' } else { 'scenario exited non-zero' }
+            }
+            Write-Host "scenario exit code: $code"
         } catch {
+            $scenarioStatus = [pscustomobject]@{ Ran = $true; ExitCode = $null; Reason = "$_" }
             Write-Warning "scenario failed: $_"
         } finally {
             $ErrorActionPreference = $prev
         }
     }
+    $scenarioStatus | ConvertTo-Json -Depth 3 |
+        Set-Content -LiteralPath (Join-Path $dir 'scenario-status.json') -Encoding UTF8
 
     Write-Host ''
+    if (-not $SkipStudio -and $scenarioStatus.ExitCode -ne 0) {
+        # A scenario that never authenticated or never loaded a model produces
+        # a window with nothing in it, and an empty window reads exactly like a
+        # clean allow. Say so here rather than letting collect imply a result.
+        Write-Warning 'the scenario did NOT complete, so this cell has not exercised model loading.'
+        Write-Warning "See $log. Fix the cause and re-run this stage before collecting."
+    }
     Write-Host "run complete. Next: .\sac-probe.ps1 -Stage collect -Label $Label"
 }
 
@@ -716,10 +769,67 @@ function Invoke-Collect {
         }
     }
 
+    # Stage a copy before compressing. Start-Studio holds the redirected stdout
+    # handle for as long as Studio runs, so Compress-Archive fails with "the
+    # process cannot access the file ... because it is being used by another
+    # process" on a run where Studio is still up. That inverted the outcome: a
+    # run where Studio had died zipped fine, and a successful one could not be
+    # collected at all.
+    $stage = Join-Path $WorkDir ".stage-$Label"
+    Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    foreach ($item in Get-ChildItem -LiteralPath $dir -Recurse -File) {
+        $rel = $item.FullName.Substring($dir.Length).TrimStart('\')
+        $target = Join-Path $stage $rel
+        New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
+        try {
+            # FileShare::ReadWrite so a writer holding the file does not block
+            # the read, which Copy-Item cannot express.
+            $src = [System.IO.File]::Open($item.FullName, [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try {
+                $dst = [System.IO.File]::Create($target)
+                try { $src.CopyTo($dst) } finally { $dst.Dispose() }
+            } finally { $src.Dispose() }
+        } catch {
+            Write-Warning "could not stage $($item.FullName): $_"
+        }
+    }
+
     $zip = Join-Path $WorkDir ("unsloth-sac-{0}-{1}-{2}.zip" -f $env:COMPUTERNAME, $Label, (Get-Date -Format 'yyyyMMdd-HHmmss'))
-    Compress-Archive -Path (Join-Path $dir '*') -DestinationPath $zip -Force
+    try {
+        Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force -ErrorAction Stop
+    } catch {
+        # Never announce a path Compress-Archive did not produce.
+        Write-Host "::error::could not write $zip : $_"
+        throw
+    } finally {
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-Path -LiteralPath $zip)) {
+        throw "Compress-Archive reported success but $zip does not exist"
+    }
+
     Write-Host ''
     Write-Host "evidence: $zip" -ForegroundColor Green
+
+    # An empty window is only a result if the scenario actually ran. Say which
+    # of the two this is, next to the number, rather than leaving "0 events" to
+    # be read as "nothing was blocked".
+    $statusPath = Join-Path $dir 'scenario-status.json'
+    if (Test-Path -LiteralPath $statusPath) {
+        $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+        if ($status.Reason -eq 'skipped') {
+            Write-Warning 'The Studio scenario was skipped (-SkipStudio), so this zip is a signature inventory only. It does not show whether anything was blocked at load time.'
+        } elseif ($status.ExitCode -ne 0) {
+            Write-Warning "The Studio scenario did NOT complete (exit $($status.ExitCode): $($status.Reason))."
+            Write-Warning 'No model was loaded, so an empty event list here is a NULL result, not a negative one. Do not report this cell as "not blocked".'
+        }
+    } else {
+        Write-Warning 'No scenario-status.json: the run stage did not complete for this label, so the event window may cover nothing.'
+    }
+
+    Write-Host ''
     Write-Host 'Attach that zip to the pull request. It contains your user name in file paths;'
     Write-Host 'redact it if you like, but keep the file names and the rest of each path.'
     Write-Host ''

@@ -32,6 +32,32 @@ Smart App Control decides per file, on signature first and reputation second.
 
 So far this rests on one screenshot. This probe is how it becomes a measurement.
 
+**The llama.cpp runtime is not the whole surface, and may not even be the
+likeliest one.** The first enforced block this probe caught on a real
+enforcing machine was not in llama.cpp at all. It was
+`sentencepiece\_sentencepiece.cp313-win_amd64.pyd`, loaded by a validly signed
+`python.exe`, refused with event 3077, and it failed **silently**: no
+`ImportError`, no "DLL load failed", inference carried on afterwards. On that
+same machine the entirely unsigned llama.cpp bundle launched three times and was
+never blocked.
+
+Measured on that install:
+
+| scope | PE files | unsigned |
+| --- | ---: | ---: |
+| `~/.unsloth/llama.cpp` | 27 | 27 |
+| the `unsloth_studio` venv | 673 | **657** |
+
+657 unsigned native modules across about 70 packages, roughly 1.1 GB, mostly
+`.pyd`: `scipy`, `sklearn`, `numpy`, `av`, `pandas`, `pyarrow`, and `torch` and
+`triton` by size. Only 16 files in the venv are validly signed and none of them
+are ours. `sentencepiece` is a small contributor; it was drawn from 657
+candidates because it happened to sit on a startup import path.
+
+So the probe inventories **both** trees. An inventory that stopped at the
+runtime directory would have missed the only enforcement evidence on that
+machine.
+
 ## What this does not do
 
 It never turns Smart App Control on or off. Switching it through Settings is a
@@ -58,15 +84,21 @@ git clone --branch windows-sac-probe --depth 1 https://github.com/unslothai/unsl
 cd C:\unsloth-probe\scripts\windows_sac_probe
 ```
 
-These scripts are not Authenticode signed, so if you download them individually
-rather than cloning, Windows marks them with Mark-of-the-Web and PowerShell
-refuses to run them under the default `RemoteSigned` policy. Either unblock them
-or relax the policy for this session only:
+These scripts are not Authenticode signed. On Windows 11 Home the effective
+execution policy is often `Restricted`, which refuses **any** script, cloned or
+not, so a clean `git clone` still needs this. Set it for the current process
+only, which touches no machine-wide state and is gone when the window closes:
+
+```powershell
+Get-ExecutionPolicy -List        # see what this machine actually has
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+```
+
+If you downloaded the files individually rather than cloning, they also carry
+Mark-of-the-Web:
 
 ```powershell
 Get-ChildItem . -Recurse | Unblock-File
-# or, for this process only, reverted when the window closes:
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 ```
 
 Do not change the machine-wide execution policy. It is part of what we are
@@ -98,6 +130,19 @@ with. On one that has never been opened, the bootstrap credential is still on
 disk and the scenario rotates it to the value you give here; the rotation is
 permanent and `revert` does not undo it, which is why there is no default. The
 password is never written to the evidence.
+
+The probe reads that variable and then **removes it from its own environment**
+before launching anything, handing it to the scenario as `--password` instead.
+`unsloth_cli` reads the same variable and treats it as *set the initial
+password*, so a Studio that already has one refuses to start with
+
+```
+Error: an Unsloth admin password is already set; --password only sets the
+initial password.
+```
+
+which is exactly the case the variable is needed for. One name, two
+incompatible consumers.
 
 If Studio runs from a custom home (`UNSLOTH_STUDIO_HOME`) or a custom runtime
 (`UNSLOTH_LLAMA_CPP_PATH`), set the same variables in the shell that runs the
@@ -203,6 +248,8 @@ what says which build a cell actually exercised, not the label.
 `collect` writes a zip to `%USERPROFILE%\unsloth-sac-probe\`. Inside:
 
 - `signature-inventory.csv` and `.json`: every PE under the runtime Studio loads (`UNSLOTH_LLAMA_CPP_PATH`, else `<Studio home>\llama.cpp`, else `~\.unsloth\llama.cpp`) with its Authenticode `Status`, `StatusMessage`, signer subject, thumbprint and SHA-256. Record `Status`, not merely whether a certificate is present: an unsigned file and one whose chain did not build both report `UnknownError`, and `StatusMessage` is what separates them
+- `venv-signature-inventory.csv` and `.json`: the same for every PE in the `unsloth_studio` venv, which is around 25 times as many files and is where the only enforced block so far actually landed. `run` also prints the ten worst packages by unsigned count
+- `scenario-status.json`: whether the Studio scenario ran and its exit code. Read this **before** reading the event count. A scenario that never authenticated or never loaded a model produces an empty window, and an empty window looks identical to a clean allow. `collect` warns loudly when this happened, and refuses to imply a result
 - `code-integrity-events.json` and `.txt`: events 3033, 3076, 3077, 3089 and 3090 to 3099 in the run window
 - `CodeIntegrity-Operational.evtx`: the raw log
 - `scenario-results.json`: every HTTP call with its duration, plus the status-poll summary
