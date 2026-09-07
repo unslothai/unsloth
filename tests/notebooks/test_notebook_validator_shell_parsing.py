@@ -4157,11 +4157,13 @@ def test_a_known_branch_outcome_decides_which_body_is_replayed():
         ("!pip install a", True),
         ("!pip install b", True),
     ]
+    # The first arm certainly failed, so the `elif` TEST is reached; its own outcome is
+    # unknown, so only the branch behind it is conditional.
     assert nv._split_chained(
         "!if false; then pip install a; elif maybe; then pip install b; fi"
     ) == [
         ("!false", False),
-        ("!maybe", True),
+        ("!maybe", False),
         ("!pip install b", True),
     ]
 
@@ -4206,3 +4208,72 @@ def test_a_shell_function_body_is_not_hidden_behind_its_name():
         assert ("!pip install a", True) in nv._split_chained(spelling), spelling
     # Empty parens are required, so a grouped command and a substitution are untouched.
     assert nv._split_chained("!X=$(pip install a)") == [("!pip install a", False)]
+
+
+def test_a_constant_elif_survives_the_arms_before_it():
+    """`if false; then :; elif true; then pip install ...; fi` always installs.
+
+    Verified against bash. Resetting the model at `elif` marked both its test and its body
+    conditional, so the install was dropped from the unconditional replay and R-INST-004
+    missed an incompatible pairing.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!if false; then :; elif true; then pip install torchcodec==0.10.0; fi"
+        )
+    ] == [("install", ["torchcodec==0.10.0"])]
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            "!if false; then :; elif true; then pip install torchcodec==0.10.0; fi",
+            COLAB_TORCH211,
+            "nb.ipynb",
+            0,
+        )
+    ] == ["R-INST-004"]
+    # An earlier arm that MIGHT have run leaves the whole statement conditional.
+    assert nv._split_chained("!if maybe; then :; elif true; then pip install a; fi") == [
+        ("!maybe", False),
+        ("!:", True),
+        ("!true", True),
+        ("!pip install a", True),
+    ]
+    # `else` runs when every arm failed, whatever their number.
+    assert nv._split_chained("!if false; then :; elif false; then :; else pip install a; fi") == [
+        ("!false", False),
+        ("!false", False),
+        ("!pip install a", False),
+    ]
+
+
+def test_a_prerelease_codec_floor_admits_the_stable_release_above_it():
+    """`torchcodec>=0.12.0rc1` may land on 0.12 itself, which pairs with torch 2.11.
+
+    PEP 440 puts 0.12.0rc1 below 0.12, correctly, but comparing an open FLOOR that way made
+    the ABI short-circuit miss and R-INST-004 fired on a valid upgrade range.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torchcodec>=0.12.0rc1"', COLAB_TORCH211, "nb.ipynb", 0
+        )
+        == []
+    )
+    # An EXACT prerelease names the release pip installs, and that one is below the ABI floor.
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            "!pip install torchcodec==0.12.0rc1", COLAB_TORCH211, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]
+    # A floor below the ABI line is still judged against the row.
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            "!pip install torchcodec==0.10.0", COLAB_TORCH211, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]

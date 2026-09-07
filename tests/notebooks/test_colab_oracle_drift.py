@@ -364,3 +364,60 @@ def test_a_refresh_never_acknowledges_a_payload_the_rules_cannot_read(
     rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
     assert rc == 2
     assert not out_dir.exists()
+
+
+def test_a_failed_write_restores_the_whole_snapshot_set(oracle, tmp_path, monkeypatch, capsys):
+    """A refresh lands as a set or not at all.
+
+    Each write is atomic on its own, but failing part way through left a fresh package list
+    beside a stale Python version, and the workflow's `|| echo` fallback then linted against
+    that mix while reporting it had fallen back to the committed snapshot.
+    """
+    upstream, snapshot_dir = oracle
+    committed = {
+        name: (snapshot_dir / name).read_bytes() for name in nv.COLAB_ORACLE_FILES.values()
+    }
+    for key in upstream:
+        upstream[key] = upstream[key].replace("2.10.0", "2.11.0").replace("3.13.15", "3.14.1")
+
+    real_write = nv._atomic_write_bytes
+    calls: list[str] = []
+
+    def flaky(path, data):
+        calls.append(path.name)
+        if len(calls) > 1 and path.name != calls[0]:
+            raise OSError("no space left on device")
+        return real_write(path, data)
+
+    monkeypatch.setattr(nv, "_atomic_write_bytes", flaky)
+    rc = nv.cmd_refresh_colab(
+        argparse.Namespace(all = True, snapshot_dir = str(snapshot_dir), out = None)
+    )
+    assert rc == 2
+    monkeypatch.setattr(nv, "_atomic_write_bytes", real_write)
+    for name, data in committed.items():
+        assert (snapshot_dir / name).read_bytes() == data, name
+    assert "restored" in capsys.readouterr().err
+
+
+def test_a_write_failure_removes_a_file_that_was_not_there_before(oracle, tmp_path, monkeypatch):
+    """Nothing to restore means nothing left behind: a fresh directory stays empty of the
+    half-written generation rather than keeping the one file that landed."""
+    upstream, _ = oracle
+    out_dir = tmp_path / "fresh"
+
+    real_write = nv._atomic_write_bytes
+    calls: list[str] = []
+
+    def flaky(path, data):
+        calls.append(path.name)
+        if len(calls) > 1:
+            raise OSError("no space left on device")
+        return real_write(path, data)
+
+    monkeypatch.setattr(nv, "_atomic_write_bytes", flaky)
+    rc = nv.cmd_refresh_colab(
+        argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
+    )
+    assert rc == 2
+    assert list(out_dir.iterdir()) == []

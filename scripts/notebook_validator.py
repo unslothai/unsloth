@@ -1538,6 +1538,12 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # Per open compound: what its test is modelled as returning, or None when unknown. A body
     # whose test can never succeed is unreachable rather than conditional.
     test_models: list[bool | None] = []
+    # Per open compound, over the arms seen so far: did every one of them certainly fail, and
+    # was every one of them KNOWN? Together they decide an `elif` test and an `else` branch --
+    # `if false; then :; elif true; then ...` always runs, which neither the arm in hand nor
+    # a plain inversion can tell.
+    arms_failed: list[bool] = []
+    arms_known: list[bool] = []
     for (piece, flag), (text, command_flag), separator in zip(out, commands, seps):
         if handed_over:
             break
@@ -1552,25 +1558,37 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 # from the word itself.
                 body_levels.append(True)
                 test_models.append(None)
+                arms_failed.append(False)
+                arms_known.append(False)
             elif keyword in _SHELL_TEST_KEYWORDS:
                 body_levels.append(False)  # the test itself runs whenever the line does
                 test_models.append(None)
+                arms_failed.append(True)  # no arm has run yet
+                arms_known.append(True)
             elif keyword in _SHELL_BODY_KEYWORDS:
                 if body_levels:
                     body_levels[-1] = True
-                    if keyword == "else" and test_models[-1] is not None:
-                        # The `else` of a known test is the branch that DOES run.
-                        test_models[-1] = not test_models[-1]
+                    if keyword == "else":
+                        # `else` runs exactly when every arm failed. Inverting the arm in hand
+                        # answered that only for a bare `if`/`else`.
+                        test_models[-1] = (
+                            True if arms_failed[-1] else (False if arms_known[-1] else None)
+                        )
                     elif keyword == "elif":
-                        # Its own test, reached only when every earlier one failed. Neither
-                        # outcome is known, so the branch is a path the notebook may take.
-                        test_models[-1] = None
+                        # Its test is reached only when every earlier arm failed. When they
+                        # certainly did, the test itself runs and its own outcome (recorded
+                        # below, off the test text) decides the branch.
+                        test_models[-1] = True if arms_failed[-1] else None
                 else:
                     body_levels.append(True)
                     test_models.append(None)
+                    arms_failed.append(False)
+                    arms_known.append(False)
             elif body_levels:
                 body_levels.pop()  # fi / done / esac
                 test_models.pop()
+                arms_failed.pop()
+                arms_known.pop()
         # `flag` alone is the separator-level state: a substitution inside a compound body or
         # a case arm is expanded only when that body runs, so it inherits those too.
         # A level speaks only once its BODY has started, and what it says is the outcome of
@@ -1613,11 +1631,16 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # `if false` / `while false` / `until true` can never reach their body, so what
             # follows is not merely conditional but unreachable, and reporting an install
             # from it is a finding about a command bash cannot run.
-            if keywords and keywords[0] in ("if", "while", "until") and test_models:
+            if keywords and keywords[0] in ("if", "while", "until", "elif") and test_models:
                 model = _piece_success_model(text)
                 if keywords[0] == "until":
                     model = None if model is None else not model
+                if keywords[0] == "elif" and not arms_failed[-1]:
+                    model = None  # an earlier arm may already have taken the statement
                 test_models[-1] = model
+                if keywords[0] in ("if", "elif"):
+                    arms_known[-1] = arms_known[-1] and model is not None
+                    arms_failed[-1] = arms_failed[-1] and model is False
             ordered.append((text, piece_conditional))
             # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`
             # along with every other transparent prefix. An `exec` bash may never reach hands
@@ -2446,9 +2469,15 @@ def rule_inst_004_torchcodec_torch(
     # through 0.15, all of which upstream supports, and R-INST-004 is an error.
     # An inexact version is a floor, which is enough for a check that only asks whether both
     # sides clear a floor of their own.
-    if at_least(torch_v, TORCHCODEC_ABI_STABLE_TORCH) and at_least(
-        codec_v, TORCHCODEC_ABI_STABLE_CODEC
-    ):
+    # An inexact codec is a FLOOR, and a prerelease floor still admits the stable release
+    # above it: `torchcodec>=0.12.0rc1` may land on 0.12 itself. Comparing it as written kept
+    # 0.12.0rc1 below the ABI floor (PEP 440, correctly) and fired R-INST-004 on an upgrade
+    # range whose every stable member is fine.
+    codec_clears_abi = at_least(codec_v, TORCHCODEC_ABI_STABLE_CODEC) or (
+        not codec_exact
+        and cmp_versions(version_minor(codec_v), TORCHCODEC_ABI_STABLE_CODEC) >= 0
+    )
+    if at_least(torch_v, TORCHCODEC_ABI_STABLE_TORCH) and codec_clears_abi:
         return findings  # ABI-stable pairing, not locked to one torch minor
     t_minor = version_minor(torch_v)
     c_minor = version_minor(codec_v)
@@ -3035,9 +3064,35 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
             print(f"::notice::skipping {upstream_name}: {reason}")
             skipped.append(upstream_name)
         snapshot_dir.mkdir(parents = True, exist_ok = True)
-        for snapshot_name, data in payloads.items():
-            _atomic_write_bytes(snapshot_dir / snapshot_name, data)
-            print(f"wrote {len(data)} bytes to {snapshot_dir / snapshot_name}")
+        # The set lands together or not at all. Each write is atomic on its own, but a failure
+        # part way through the loop left a mixed-generation directory -- a fresh package list
+        # beside a stale Python version -- and the workflow's `|| echo` fallback then linted
+        # against it while reporting that it had fallen back to the committed snapshot.
+        previous = {
+            name: (snapshot_dir / name).read_bytes()
+            for name in payloads
+            if (snapshot_dir / name).is_file()
+        }
+        written: list[str] = []
+        try:
+            for snapshot_name, data in payloads.items():
+                _atomic_write_bytes(snapshot_dir / snapshot_name, data)
+                written.append(snapshot_name)
+        except OSError as e:
+            for snapshot_name in written:
+                if snapshot_name in previous:
+                    _atomic_write_bytes(snapshot_dir / snapshot_name, previous[snapshot_name])
+                else:
+                    (snapshot_dir / snapshot_name).unlink(missing_ok = True)
+            print(
+                f"FAIL: refresh-colab --all could not write the snapshot set ({e}); "
+                "the committed one was restored",
+                file = sys.stderr,
+            )
+            return 2
+        for snapshot_name in written:
+            size = len(payloads[snapshot_name])
+            print(f"wrote {size} bytes to {snapshot_dir / snapshot_name}")
         if skipped:
             print(f"left as committed: {', '.join(skipped)}")
         return 0

@@ -152,8 +152,9 @@ jobs:
         # colab_os_info.gpu.txt, so refreshing the package set on its own would judge the
         # live packages against the previous image's Python after a Colab version rotation,
         # skipping requirements that apply or replaying ones that do not. --all writes
-        # nothing unless it fetched every oracle, so the fallback is the committed pair,
-        # which is at least self-consistent.
+        # nothing unless it fetched every rule-bearing oracle AND could write the whole set,
+        # restoring the committed files if it could not, so the fallback is always a
+        # self-consistent generation.
         run: |
           python unsloth/scripts/notebook_validator.py refresh-colab \
               --all --snapshot-dir unsloth/scripts/data \
