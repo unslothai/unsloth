@@ -146,6 +146,14 @@ reserves against its own budget rather than this one.
 from `launch.py` and `--kernels`; do not edit the number here or in the
 workflow without changing what it is derived from.
 
+The Studio leg's `--budget-hours` covers the reaper window, not its 70-minute
+kernel ceiling: nothing waits on the kernel now, and Kaggle has been caught
+leaving one RUNNING two hours past its own timeout. The collector reaps at
+`DEFAULT_MAX_AGE_HOURS` (3h) plus its 10-minute schedule and 30-minute job
+timeout, so 3.67h is the worst case one dispatch can bill and the budget is 4,
+not 2. `test_every_gate_budget_covers_the_reaper_window` recomputes it from
+the collector workflow for both legs.
+
 ## What would change these numbers
 
 * A second Kaggle account doubles supply and the percentage could roughly

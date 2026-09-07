@@ -8,9 +8,10 @@ import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-// One Advanced control's resolved value + provenance, same shape as the diffusion status. `value` is the engaged value
-// (string, null when off, or boolean), `requested` is what the caller asked for (null = left to the backend), `source` is
-// "auto" or "explicit", `status` says whether the ask survived, and `reason` is the tooltip.
+// One Advanced control's resolved value plus provenance, same shape as the diffusion status.
+// `value` is engaged, `requested` is what the caller asked for (null = left to the backend),
+// `source` is "auto" or "explicit", `status` says whether the ask survived, `reason` is the
+// tooltip.
 export interface VideoResolvedControl {
   value: string | boolean | null;
   // Absent on backends predating the requested/actual split.
@@ -80,14 +81,16 @@ export interface VideoStatus {
   h3_task?: string | null;
   // Per-family generation defaults + shape constraints; null when unloaded.
   defaults?: VideoGenerationDefaults | null;
-  // Per-control provenance keyed by control name (memory_mode, speed_mode, attention_backend, transformer_cache), read by
-  // the "Auto: X" badges. Null when nothing is loaded or the backend does not record it.
+  // Per-control provenance keyed by control name, read by the "Auto: X" badges. Null when
+  // nothing is loaded or the backend does not record it.
+  // The names are memory_mode, speed_mode, attention_backend and transformer_cache.
   resolved?: Record<string, VideoResolvedControl> | null;
 }
 
 export interface VideoGenerateProgress {
   active: boolean;
-  // "queued" | "denoise" | "decode" | "export" | "completed" | "failed" | null; the terminal phases carry the background job's outcome.
+  // "queued" | "denoise" | "decode" | "export" | "completed" | "failed" | null; the terminal
+  // phases carry the background job's outcome.
   phase?: string | null;
   step: number;
   total: number;
@@ -108,10 +111,12 @@ export interface VideoLoadProgress {
 
 export interface VideoLoadRequest {
   model_path: string;
-  // Required for the gguf / single_file kinds, omitted for a full pipeline (a diffusers repo loaded via from_pretrained).
+  // Required for the gguf / single_file kinds, omitted for a full pipeline loaded via
+  // from_pretrained.
   gguf_filename?: string;
-  // How to load the model (omit to auto-detect from gguf_filename): "gguf", "single_file" (safetensors transformer) or
-  // "pipeline" (a full diffusers repo). Non-GGUF kinds are restricted to unsloth/* or family bases.
+  // How to load the model (omit to auto-detect from gguf_filename): "gguf", "single_file"
+  // (safetensors transformer) or "pipeline". Non-GGUF kinds are restricted to unsloth/* or
+  // family bases.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
@@ -133,11 +138,13 @@ export interface VideoLoadRequest {
     | "aiter";
   transformer_cache?: "off" | "fbcache";
   transformer_cache_threshold?: number;
-  // Dense DiT precision on full-pipeline loads (omit for the hardware ladder; "none" pins bf16). GGUF / single-file checkpoints carry their own.
+  // Dense DiT precision on full-pipeline loads (omit for the hardware ladder; "none" pins bf16).
+  // GGUF / single-file checkpoints carry their own.
   transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
   // Pipeline denoiser partition. GGUF filenames already identify theirs.
   h3_task?: "fl2va" | "ref2va";
-  // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a checkpoint, so several cards resolve to the one with the most free VRAM.
+  // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a
+  // checkpoint, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
   // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host cannot run it.
   text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
@@ -157,9 +164,10 @@ export interface VideoReferenceVideo {
 export interface VideoGenerateRequest {
   prompt: string;
   negative_prompt?: string;
-  // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they must match that family's
-  // rules -- width/height one of status.defaults.resolution_presets, num_frames on the k*frame_step+1 lattice -- or the
-  // backend answers 422 with the supported shapes (the same rules the video page's selects are built from).
+  // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they
+  // must match that family's rules -- a resolution preset, and num_frames on the
+  // k*frame_step+1 lattice -- or the backend answers 422 with the supported shapes.
+  // Width/height must be one of status.defaults.resolution_presets.
   width?: number;
   height?: number;
   num_frames?: number;
@@ -202,8 +210,8 @@ export interface GalleryVideo {
   flow_shift?: number | null;
   audio_flow_shift?: number | null;
   model?: string | null;
-  // The load-time BUILD, all ENGAGED values, so a clip's recipe still names the precision it ran at
-  // once the model is unloaded. Absent on sidecars written before this existed.
+  // The load-time BUILD, all ENGAGED values, so a clip's recipe still names the precision it ran
+  // at once the model is unloaded. Absent on sidecars written before this existed.
   model_kind?: string | null;
   gguf_filename?: string | null;
   transformer_quant?: string | null;
@@ -250,8 +258,8 @@ export async function getVideoGenerateProgress(): Promise<VideoGenerateProgress>
 }
 
 export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatus> {
-  // Announced so the indicator shows the load while the toast does, and settled
-  // from load-progress because this POST only starts it. See images.
+  // Announced so the indicator shows the load while the toast does, and settled from
+  // load-progress because this POST only starts it. See images.
   return withBackgroundLoadNotice(
     "video",
     body.model_path,
@@ -280,7 +288,8 @@ export async function getVideoDownloadPlan(
   );
 }
 
-/** Start a generation job. Returns as soon as the backend accepts it (a clip takes minutes and secure mode's tunnel caps responses near 100s); poll getVideoGenerateProgress for completion. */
+/** Start a generation job. Returns as soon as the backend accepts it (a clip takes minutes and
+ *  secure mode's tunnel caps responses near 100s); poll getVideoGenerateProgress. */
 export async function generateVideo(
   body: VideoGenerateRequest,
 ): Promise<VideoGenerateResponse> {
@@ -293,7 +302,8 @@ export async function generateVideo(
   );
 }
 
-/** Request a cancel. Best-effort: the backend stops at the next step boundary and raises the cancelled sentinel, which the caller maps to a 409. */
+/** Request a cancel. Best-effort: the backend stops at the next step boundary and raises the
+ *  cancelled sentinel, which the caller maps to a 409. */
 export async function cancelVideoGeneration(): Promise<{ cancelled: boolean }> {
   return parseJson(
     await authFetch("/api/inference/video/generate/cancel", { method: "POST" }),
@@ -346,7 +356,10 @@ export async function clearVideoGallery(): Promise<void> {
   if (!res.ok) throw new Error(await readFastApiError(res));
 }
 
-/** A directly playable, range-capable URL for one gallery clip. Not the images-gallery blob treatment: an MP4 is tens to hundreds of MB, so res.blob() would download the whole clip before playback, defeat seeking and pin those bytes. The backend's file route streams ranges but is bearer-gated, so mint a short-lived signed link. */
+/** A directly playable, range-capable URL for one gallery clip. Not the images-gallery blob
+ *  treatment: an MP4 is tens to hundreds of MB, so res.blob() would download the whole clip
+ *  before playback, defeat seeking and pin those bytes. The backend's file route streams
+ *  ranges but is bearer-gated, so mint a short-lived signed link. */
 export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   const res = await authFetch(
     `/api/inference/video/gallery/${encodeURIComponent(id)}/signed-url`,
@@ -354,12 +367,13 @@ export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   if (!res.ok) throw new Error(await readFastApiError(res));
   const body = (await res.json()) as { url?: string };
   if (!body.url) throw new Error("The server returned no video link.");
-  // Absolute because consumers bypass authFetch, and a relative path under Tauri
-  // resolves against the webview origin. No-op in the browser (empty apiBase).
+  // Absolute because consumers bypass authFetch, and a relative path under Tauri resolves
+  // against the webview origin. No-op in the browser (empty apiBase).
   return apiUrl(body.url);
 }
 
-/** Server-side transcode for the Download menu (WebM / GIF). The backend 501s with a readable message when the codec is unavailable. */
+/** Server-side transcode for the Download menu (WebM / GIF). The backend 501s with a readable
+ *  message when the codec is unavailable. */
 export async function fetchGalleryVideoExport(
   id: string,
   format: "webm" | "gif",

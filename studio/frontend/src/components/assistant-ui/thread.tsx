@@ -150,6 +150,7 @@ import {
 } from "@/features/chat/utils/continuation";
 import { holdAutoContinueRun } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
+import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
   COMPOSER_INPUT_SELECTOR,
   isSurfaceInForeground,
@@ -250,6 +251,7 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
+import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -5288,9 +5290,14 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
 
   if (useDropdown) {
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild={true}>
+      <NonModalDropdownMenu
+        side={side}
+        align="end"
+        avoidCollisions={true}
+        className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[176px]"
+        trigger={(triggerRef) => (
           <button
+            ref={triggerRef}
             type="button"
             disabled={disabled}
             className="unsloth-thinking-pill"
@@ -5310,126 +5317,120 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             ) : null}
             <ChevronDownIcon strokeWidth={1.5} className="unsloth-thinking-caret size-[15px]" />
           </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          side={side}
-          align="end"
-          avoidCollisions={true}
-          className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[176px]"
-        >
-          {isEffort ? (
-            <>
-              {effectiveSupportsReasoningOff && (
-                <DropdownMenuItem
-                  onSelect={() => {
-                    setReasoningEnabled(false);
-                    applyQwenThinkingParams(false);
-                    // Preserve thinking needs thinking on, so turn it off too.
-                    setPreserveThinking(false);
-                  }}
-                >
-                  <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                    className={cn(
-                      "unsloth-tick size-4",
-                      effectiveReasoningVisualEnabled && "opacity-0",
-                    )}
-                  />
-                  None
-                </DropdownMenuItem>
-              )}
-              {effectiveReasoningEffortLevels
-                // 'none' is a real template level for models like Inkling
-                // (effort 0 = thinking off); show it as a pick unless the
-                // dedicated off item above already covers it.
-                .filter(
-                  (level) =>
-                    level !== "none" || !effectiveSupportsReasoningOff,
-                )
-                .map((level) => (
-                  <DropdownMenuItem
-                    key={level}
-                    onSelect={() => {
-                      setReasoningEffort(level);
-                      setReasoningEnabled(true);
-                      applyQwenThinkingParams(true);
-                      // Kimi's $web_search builtin forbids thinking, so
-                      // enabling thinking flips the Search pill off.
-                      if (isKimiExternal && toolsEnabled) {
-                        setToolsEnabled(false, { persist: false });
-                      }
-                    }}
-                  >
-                    <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
-                      className={cn(
-                        "unsloth-tick size-4",
-                        !(
-                          effectiveReasoningVisualEnabled &&
-                          reasoningEffort === level
-                        ) && "opacity-0",
-                      )}
-                    />
-                    {formatEffortLabel(level)}
-                  </DropdownMenuItem>
-                ))}
-            </>
-          ) : (
-            effectiveSupportsReasoningOff &&
-            !reasoningLockedOn && (
+        )}
+      >
+        {isEffort ? (
+          <>
+            {effectiveSupportsReasoningOff && (
               <DropdownMenuItem
                 onSelect={() => {
-                  const next = !reasoningEnabled;
-                  setReasoningEnabled(next);
-                  applyQwenThinkingParams(next);
-                  // Preserve thinking cannot run without thinking.
-                  if (!next) setPreserveThinking(false);
-                  if (isKimiExternal && next && toolsEnabled) {
-                    setToolsEnabled(false, { persist: false });
-                  }
+                  setReasoningEnabled(false);
+                  applyQwenThinkingParams(false);
+                  // Preserve thinking needs thinking on, so turn it off too.
+                  setPreserveThinking(false);
                 }}
               >
                 <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                  icon={Tick02Icon}
+                  strokeWidth={2}
                   className={cn(
                     "unsloth-tick size-4",
-                    !effectiveReasoningEnabled && "opacity-0",
+                    effectiveReasoningVisualEnabled && "opacity-0",
                   )}
                 />
-                Thinking
+                None
               </DropdownMenuItem>
-            )
-          )}
-          {supportsPreserveThinking && (
+            )}
+            {effectiveReasoningEffortLevels
+              // 'none' is a real template level for models like Inkling
+              // (effort 0 = thinking off); show it as a pick unless the
+              // dedicated off item above already covers it.
+              .filter(
+                (level) =>
+                  level !== "none" || !effectiveSupportsReasoningOff,
+              )
+              .map((level) => (
+                <DropdownMenuItem
+                  key={level}
+                  onSelect={() => {
+                    setReasoningEffort(level);
+                    setReasoningEnabled(true);
+                    applyQwenThinkingParams(true);
+                    // Kimi's $web_search builtin forbids thinking, so
+                    // enabling thinking flips the Search pill off.
+                    if (isKimiExternal && toolsEnabled) {
+                      setToolsEnabled(false, { persist: false });
+                    }
+                  }}
+                >
+                  <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                    className={cn(
+                      "unsloth-tick size-4",
+                      !(
+                        effectiveReasoningVisualEnabled &&
+                        reasoningEffort === level
+                      ) && "opacity-0",
+                    )}
+                  />
+                  {formatEffortLabel(level)}
+                </DropdownMenuItem>
+              ))}
+          </>
+        ) : (
+          effectiveSupportsReasoningOff &&
+          !reasoningLockedOn && (
             <DropdownMenuItem
-              disabled={disabled}
-              onSelect={(e) => {
-                e.preventDefault();
-                const next = !preserveThinking;
-                setPreserveThinking(next);
-                // Preserve thinking requires thinking on.
-                if (next) {
-                  setReasoningEnabled(true);
-                  applyQwenThinkingParams(true);
+              onSelect={() => {
+                const next = !reasoningEnabled;
+                setReasoningEnabled(next);
+                applyQwenThinkingParams(next);
+                // Preserve thinking cannot run without thinking.
+                if (!next) setPreserveThinking(false);
+                if (isKimiExternal && next && toolsEnabled) {
+                  setToolsEnabled(false, { persist: false });
                 }
               }}
             >
               <HugeiconsIcon
-                    icon={Tick02Icon}
-                    strokeWidth={2}
+                  icon={Tick02Icon}
+                  strokeWidth={2}
                 className={cn(
                   "unsloth-tick size-4",
-                  !preserveThinking && "opacity-0",
+                  !effectiveReasoningEnabled && "opacity-0",
                 )}
               />
-              Preserve thinking
+              Thinking
             </DropdownMenuItem>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
+          )
+        )}
+        {supportsPreserveThinking && (
+          <DropdownMenuItem
+            disabled={disabled}
+            onSelect={(e) => {
+              e.preventDefault();
+              const next = !preserveThinking;
+              setPreserveThinking(next);
+              // Preserve thinking requires thinking on.
+              if (next) {
+                setReasoningEnabled(true);
+                applyQwenThinkingParams(true);
+              }
+            }}
+          >
+            <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+              className={cn(
+                "unsloth-tick size-4",
+                !preserveThinking && "opacity-0",
+              )}
+            />
+            Preserve thinking
+          </DropdownMenuItem>
+        )}
+      </NonModalDropdownMenu>
     );
   }
 
@@ -5741,18 +5742,18 @@ const ToolStatusDisplay: FC = () => {
 // Plus menu: attachment and workflow actions. Opens downward in the welcome
 // composer; the docked composer passes side="top" to open upward.
 const AUDIO_ACCEPT_TOKEN_RE =
-  /^(audio\/|\.(?:wav|mp3|m4a|ogg|oga|flac)$)/i;
+  /^(audio\/|\.(?:wav|mp3|mp2|m4a|ogg|oga|opus|flac|aac|aiff|aif|aifc|caf|wma|amr)$)/i;
 
 function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): string {
-  if (audioEnabled || accept === "*") {
-    return accept;
-  }
-  const filtered = accept
-    .split(",")
-    .map((token) => token.trim())
-    .filter((token) => token && !AUDIO_ACCEPT_TOKEN_RE.test(token))
-    .join(",");
-  return filtered || accept;
+  const enabledAccept =
+    audioEnabled || accept === "*"
+      ? accept
+      : accept
+          .split(",")
+          .map((token) => token.trim())
+          .filter((token) => token && !AUDIO_ACCEPT_TOKEN_RE.test(token))
+          .join(",") || accept;
+  return pickerAcceptForTextBasenames(enabledAccept);
 }
 
 const ComposerToolsMenu: FC<{
@@ -6671,7 +6672,7 @@ const ComposerRightControls: FC<{
               aria-label="Stop queued message"
               onClick={stop}
             >
-              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+              <SquareIcon className="size-3 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton
@@ -6703,7 +6704,7 @@ const ComposerRightControls: FC<{
           {researchStopping ? (
             <Spinner className="size-3.5" />
           ) : (
-            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+            <SquareIcon className="size-3 fill-current" />
           )}
         </Button>
       ) : (
@@ -6719,7 +6720,7 @@ const ComposerRightControls: FC<{
                 aria-label="Stop generating"
                 onClick={stop}
               >
-                <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+                <SquareIcon className="size-3 fill-current" />
               </Button>
             </ComposerPrimitive.Cancel>
             ) : (

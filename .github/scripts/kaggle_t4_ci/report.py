@@ -152,8 +152,7 @@ def render(report: dict) -> list[str]:
 
     config = report.get("config", {})
     if config:
-        # max_steps is up front: it decides whether the committed reference
-        # applies to this run at all.
+        # max_steps is up front: it decides whether the committed reference applies to this run at all.
         lines.append(
             f"Config: max_steps `{config.get('max_steps')}` - lr "
             f"`{config.get('learning_rate')}` - batch "
@@ -218,10 +217,7 @@ def render(report: dict) -> list[str]:
             lines.append(f"Reference band: **{status}** - {ref['note']}")
         else:
             lines.append(f"Reference band: **{status}** - {ref.get('deviations')}")
-        # What the band did NOT compare, up front rather than buried in the
-        # evidence. A key the reference predates is skipped, not refused ("it
-        # does not say" is not "it differs"), but an invisible skip reads as a
-        # check that ran, and a pin can sit unchecked for months that way.
+        # What the band did NOT compare, up front rather than buried in the evidence.
         unchecked = ref.get("config_unchecked")
         if unchecked:
             lines.append(
@@ -296,8 +292,8 @@ def render(report: dict) -> list[str]:
 
     history = report.get("log_history")
     if history:
-        # GRPO: loss is ~0 by construction at num_iterations=1 and beta=0, so
-        # reward and reward_std are what is worth showing.
+        # GRPO: loss is ~0 by construction at num_iterations=1 and beta=0, so reward and reward_std are what is worth
+        # showing.
         lines += ["| step | reward | reward_std |", "| --- | --- | --- |"]
         for entry in history:
             if entry.get("reward") is None:
@@ -344,8 +340,8 @@ def kernel_log_text(evidence: Path) -> str:
     directly shows a wall of JSON with one word of message per line.
     """
     chunks = []
-    # rglob: a run is several kernels, each collecting into its own directory,
-    # so there is no single kernel.log any more.
+    # rglob: a run is several kernels, each collecting into its own directory, so there is no single kernel.log any
+    # more.
     for path in sorted(evidence.rglob("kernel.log")):
         raw = path.read_text(encoding = "utf-8", errors = "replace")
         try:

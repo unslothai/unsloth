@@ -1793,6 +1793,49 @@
       "severity": "HIGH",
       "evidence": "Obfusc: L4342:             _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L155:     mx.eval(model.parameters()) | L189:     mx.eval([v for k, v in tree_flatten(casted) if is_mlx_norm_parameter_path(k)]) | L977:                 mx.eval(model.parameters()) | L978:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L1044:             mx.eval(model.parameters()) | L1047:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L2384:         mx.eval(altup.correct(predictions, activated)) | L3990:         model.eval() | L4729:         mx.eval(model.parameters()) | L4844:         mx.eval(module.weight) | L7689:                     lambda: mx.eval(model.parameters()), | L7749:                     lambda: mx.eval(model.parameters()), | L7902:                 mx.eval(model.parameters())",
       "evidence_hash": "70a40c97be03c8b24e15abcd4911b42cd1b30bcb67cf345464c600d19aeb1f77"
+    },
+    {
+      "package": "torch",
+      "file": "torch/testing/_internal/common_utils.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L32: import socket sha256:17070ea71083fbe3d33db15aa6a95c2ae36c0a0994a0f896c079238c564a2a43",
+      "evidence_hash": "a1f915a9c7673c762032033bbc7652e9da2805b653896e9bc6a262f063bbbdd7"
+    },
+    {
+      "package": "torch",
+      "file": "torch/_precompile.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L1570:     exec(compile(python_code, \"<precompile>\", \"exec\"), module_ns)\nExec: L967: #     exec(open(\"this_file.py\").read(), ns) | L1174: #     exec(open(\"this_file.py\").read(), ns) | L1570:     exec(compile(python_code, \"<precompile>\", \"exec\"), module_ns)",
+      "evidence_hash": "ed7c7bfe07302200f8323e8f091a8f6ab06c9607410e31c4f036699fe7dee161",
+      "file_sha256": "a8ab839be1e8b555c181a08a8c431185aaf67e8ac00e517590fc8092d0554e46"
+    },
+    {
+      "package": "torch",
+      "file": "torch/_inductor/standalone_compile.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L687:     exec(compile(python_code, \"<compile_to_python>\", \"exec\"), namespace)\nExec: L687:     exec(compile(python_code, \"<compile_to_python>\", \"exec\"), namespace)",
+      "evidence_hash": "b694818dd0f2e2fc2eb25389a21ce2426037aa1f7cc0284a8f4bf21dd86cded0",
+      "file_sha256": "fe16758342f83ce0040a038648a371315bee8f3876f0da75a786562828cbb836"
+    },
+    {
+      "package": "torch",
+      "file": "torch/_inductor/compile_worker/subproc_pool.py",
+      "check": "Anti-analysis/sandbox evasion + suspicious behavior",
+      "severity": "HIGH",
+      "evidence": "Anti: L860:         time.sleep(3600)\nSubprocess: L212:         self.process = subprocess.Popen( sha256:62f622e5b17b6c6b1656b44c8ba27274f02c68c4f9d35502fb593f1d6a3af55d",
+      "evidence_hash": "f760ab1ce9c086051291c29ac4e486575db6f2dac2eddba2ac31ef5c434609d8",
+      "file_sha256": "695b5c1df7d0ae710451aa8904c5ef101e0c93de26a591f3e995bb9151d4c0e3"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/utils/_http.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L461:     while True: sha256:a8f95a987a45a8eb67ee78dd9d98674c7b88c97e7722f63dd446f77e3dcfe0e7",
+      "evidence_hash": "20a717b5faac68b3a57b11859f90d21959c29302e413bf3cd36e1263ccfbb00b"
     }
   ]
 }

@@ -613,7 +613,11 @@ jobs:
 
           echo "::warning::bulk resolve failed (exit $rc), falling back to per-pin best effort"
           grep -E "^ERROR: (Could not find|No matching|Ignored)" /tmp/install_seed.log | head -20 || true
-          total=$(grep -c . /tmp/seed_pins.txt || echo 0)
+          # `|| true`: grep -c prints 0 and exits 1 on no match, so `|| echo 0`
+          # appended a second line and the annotations below became multi-line,
+          # which GitHub truncates after the first.
+          total=$(grep -c . /tmp/seed_pins.txt || true)
+          total=${total:-0}
           done_n=0; failed_n=0
           # Bounded, because an unbounded fallback is how this job spent 112 days
           # being scored `cancelled`. Running out of budget is a failure with a

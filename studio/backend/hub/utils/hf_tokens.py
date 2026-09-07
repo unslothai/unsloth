@@ -23,12 +23,15 @@ def hf_token_arg(hf_token: Optional[str], *, allow_ambient_token: bool) -> HfTok
 
 
 # Mirrors the list hub/services/download_lifecycle.py scrubs for download workers.
+# HF_OIDC_RESOURCE names a token rather than holding one: hub >= 1.23 exchanges it inside
+# get_token(), ahead of HF_TOKEN, so a scrubbed child would still resolve the operator's.
 _HF_TOKEN_ENV_KEYS = (
     "HF_TOKEN",
     "HF_HUB_TOKEN",
     "HUGGING_FACE_HUB_TOKEN",
     "HUGGINGFACE_HUB_TOKEN",
     "HUGGINGFACEHUB_API_TOKEN",
+    "HF_OIDC_RESOURCE",
 )
 
 

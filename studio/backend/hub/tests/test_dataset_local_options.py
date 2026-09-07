@@ -233,7 +233,6 @@ def test_snapshot_options_infer_one_train_split_from_unlabelled_files(tmp_path):
     snapshot = _snapshot(tmp_path)
     _rows(snapshot, "records.jsonl")
 
-    # A card with no bytes declares nothing, so it blocks nothing.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 
@@ -256,11 +255,6 @@ def test_snapshot_options_reject_a_shard_name_the_loader_refuses(tmp_path):
     _rows(snapshot, "data/train-clean-00000-of-00001.parquet")
 
     # datasets raises on the name rather than falling through to the keyword stages.
-    # datasets calls .get on each entry, so a list of scalars raises.
-    # DatasetCard.load reads the card as utf-8 and raises before any data file.
-    # The inner .jsonl still votes, so datasets picks json and dies on the .zst.
-    # DatasetCardData updates a dict from it and raises on a scalar.
-    # imagefolder wins the vote and drops the jsonl, so there is nothing to train on.
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -296,9 +290,6 @@ def test_snapshot_options_ignore_a_metadata_file_when_it_steers_a_split(tmp_path
     (snapshot / "test").mkdir()
     (snapshot / "test" / "dataset_info.json").write_text("{}", encoding = "utf-8")
 
-    # The header alone yields no row, and datasets still builds train around it.
-    # resolve_pattern keeps a link only when its target is a file, so the loader never sees this one and the
-    # surviving split still loads.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 
@@ -307,7 +298,6 @@ def test_snapshot_options_match_extensions_case_sensitively(tmp_path):
     _rows(snapshot, "TRAIN.JSONL")
 
     # A POSIX glob never matches .JSONL, so datasets finds no data files here.
-    # datasets treats the empty declaration as authoritative and exposes no config.
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -676,6 +666,7 @@ def test_snapshot_options_reject_a_split_whose_module_needs_a_missing_codec(tmp_
     (snapshot / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
     (snapshot / "train2.jsonl.zst").write_bytes(b"\x28\xb5\x2f\xfd\x00\x00")
 
+    # The inner .jsonl still votes, so datasets picks json and dies on the .zst.
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -692,6 +683,7 @@ def test_snapshot_options_stand_down_beside_a_card_that_cannot_be_decoded(tmp_pa
     (snapshot / "README.md").write_bytes(b"\xff\xfe---\nconfigs: x\n---\n")
     _rows(snapshot, "train.jsonl")
 
+    # DatasetCard.load reads the card as utf-8 and raises before any data file.
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -700,6 +692,7 @@ def test_snapshot_options_stand_down_beside_a_malformed_dataset_info_list(tmp_pa
     _card(snapshot, "dataset_info: [foo]\n")
     _rows(snapshot, "train.jsonl")
 
+    # datasets calls .get on each entry, so a list of scalars raises.
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -708,6 +701,8 @@ def test_snapshot_options_ignore_a_dangling_link_beside_a_good_file(tmp_path):
     _rows(snapshot, "train.jsonl")
     (snapshot / "train-missing.jsonl").symlink_to("../../blobs/gone")
 
+    # resolve_pattern keeps a link only when its target is a file, so the loader never sees this one and the
+    # surviving split still loads.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 
@@ -716,6 +711,7 @@ def test_snapshot_options_drop_a_header_only_csv_split(tmp_path):
     (snapshot / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
     (snapshot / "test.csv").write_text("text\n", encoding = "utf-8")
 
+    # The header alone yields no row, and datasets still builds train around it.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 
@@ -731,6 +727,7 @@ def test_snapshot_options_stand_down_beside_an_empty_split_declaration(tmp_path)
     _card(snapshot, "dataset_info:\n  splits: {}\n")
     _rows(snapshot, "train.jsonl")
 
+    # datasets treats the empty declaration as authoritative and exposes no config.
     assert local_options._snapshot_options(snapshot) == set()
 
 
@@ -754,7 +751,6 @@ def test_snapshot_options_keep_a_compressed_csv_split(tmp_path):
     snapshot = _snapshot(tmp_path)
     (snapshot / "train.csv.gz").write_bytes(gzip.compress(b"text\nrow\n"))
 
-    # `[]` parses fine and yields no row, so datasets builds train around it.
     # Compressed bytes say nothing about the rows inside, so the split still stands.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
@@ -764,6 +760,7 @@ def test_snapshot_options_drop_a_split_holding_an_empty_json_container(tmp_path)
     _rows(snapshot, "train.jsonl")
     (snapshot / "test.json").write_text("[]", encoding = "utf-8")
 
+    # `[]` parses fine and yields no row, so datasets builds train around it.
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
 
 

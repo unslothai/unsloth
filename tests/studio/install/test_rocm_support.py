@@ -5548,11 +5548,34 @@ class TestRocmTorchPkgSpecs:
         assert "2.11" in torch_spec
 
     def test_default_caps_below_211(self):
-        """Default spec (rocm7.1 and earlier) should cap below 2.11."""
+        """Default spec (rocm7.0 and earlier) should cap below 2.11."""
         specs = stack_mod._ROCM_TORCH_PKG_SPECS.get("_default")
         assert specs is not None
         torch_spec = specs[0]
         assert "<2.11" in torch_spec
+
+    def test_rocm71_repair_matches_install_sh_default_range(self):
+        """rocm7.1 serves a paired 2.11 trio, so the repair path must not cap at <2.11.
+
+        install.sh leaves a rocm7.1 leaf on its default trio (torch>=2.4,<2.12.0 /
+        torchvision>=0.19,<0.27.0 / torchaudio>=2.4,<2.12.0), which resolves
+        torch 2.11.0+rocm7.1 on that index. Falling back to _default here would
+        force-reinstall 2.10.0+rocm7.1 over it on the next `studio update`.
+        """
+        specs = stack_mod._ROCM_TORCH_PKG_SPECS.get("rocm7.1")
+        assert specs is not None, "rocm7.1 must have its own repair spec"
+        assert specs == (
+            "torch>=2.4,<2.12.0",
+            "torchvision>=0.19,<0.27.0",
+            "torchaudio>=2.4,<2.12.0",
+        )
+        # Not the rocm7.2 spec: no 2.11 floor applies to rocm7.1.
+        assert specs != stack_mod._ROCM_TORCH_PKG_SPECS["rocm7.2"]
+
+    def test_rocm71_is_not_a_known_211_floor_version(self):
+        """The widened rocm7.1 range must NOT promote it to a floored 2.11 line."""
+        assert (7, 1) not in stack_mod._ROCM_KNOWN_TORCH211_VERSIONS
+        assert (7, 2) in stack_mod._ROCM_KNOWN_TORCH211_VERSIONS
 
     def test_specs_have_torch_vision_audio(self):
         """Each entry should be a 3-tuple: torch, torchvision, torchaudio."""
