@@ -77,6 +77,22 @@ function legacy(): Record<string, unknown> | null {
   return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
 }
 
+test("the physical cache target survives backend and offline shadow round trips", async () => {
+  reset();
+  const record = {
+    id: "u/m",
+    kind: "gguf" as const,
+    ggufVariant: "Q8_0",
+    loadId: "/custom/snapshot",
+  };
+  recordLastLocalModelLoad(record);
+  assert.equal(legacy()?.loadId, record.loadId);
+  assert.equal(puts[0].load_id, record.loadId);
+  assert.deepEqual(await readLastLocalModelLoad(), record);
+  backend.status = 404;
+  assert.deepEqual(await readLastLocalModelLoad(), record);
+});
+
 test("a new frontend against an old backend falls back to the shadow", async () => {
   reset();
   backend.status = 404;
@@ -107,9 +123,19 @@ test("a newer backend record wins over an older shadow", async () => {
   const now = Date.now();
   store.set(
     LEGACY_KEY,
-    JSON.stringify({ id: "old", kind: "model", ggufVariant: null, loadedAt: now - 60_000 }),
+    JSON.stringify({
+      id: "old",
+      kind: "model",
+      ggufVariant: null,
+      loadedAt: now - 60_000,
+    }),
   );
-  backend.record = { id: "new", kind: "model", gguf_variant: null, loaded_at: now };
+  backend.record = {
+    id: "new",
+    kind: "model",
+    gguf_variant: null,
+    loaded_at: now,
+  };
   const got = await readLastLocalModelLoad();
   assert.equal(got?.id, "new");
 });
@@ -119,9 +145,19 @@ test("a newer shadow wins over an older backend record and is re-synced", async 
   const now = Date.now();
   store.set(
     LEGACY_KEY,
-    JSON.stringify({ id: "fresh", kind: "model", ggufVariant: null, loadedAt: now }),
+    JSON.stringify({
+      id: "fresh",
+      kind: "model",
+      ggufVariant: null,
+      loadedAt: now,
+    }),
   );
-  backend.record = { id: "stale", kind: "model", gguf_variant: null, loaded_at: now - 60_000 };
+  backend.record = {
+    id: "stale",
+    kind: "model",
+    gguf_variant: null,
+    loaded_at: now - 60_000,
+  };
   const got = await readLastLocalModelLoad();
   assert.equal(got?.id, "fresh");
   // Re-issued so the server stops handing the stale one to other surfaces.
@@ -140,7 +176,12 @@ test("a stale shadow loses to an unstamped backend record", async () => {
     }),
   );
   // Written by a pre-loaded_at client, so there is no stamp to compare.
-  backend.record = { id: "backend", kind: "model", gguf_variant: null, loaded_at: null };
+  backend.record = {
+    id: "backend",
+    kind: "model",
+    gguf_variant: null,
+    loaded_at: null,
+  };
   const got = await readLastLocalModelLoad();
   assert.equal(got?.id, "backend");
 });
@@ -157,7 +198,12 @@ test("a pending shadow beats an unstamped backend record", async () => {
       pendingSync: true,
     }),
   );
-  backend.record = { id: "backend", kind: "model", gguf_variant: null, loaded_at: null };
+  backend.record = {
+    id: "backend",
+    kind: "model",
+    gguf_variant: null,
+    loaded_at: null,
+  };
   assert.equal((await readLastLocalModelLoad())?.id, "pending");
 });
 
@@ -168,7 +214,12 @@ for (const skew of [-86_400_000, 86_400_000]) {
     const now = Date.now();
     store.set(
       LEGACY_KEY,
-      JSON.stringify({ id: "fresh", kind: "model", ggufVariant: null, loadedAt: now }),
+      JSON.stringify({
+        id: "fresh",
+        kind: "model",
+        ggufVariant: null,
+        loadedAt: now,
+      }),
     );
     // The same instant, expressed in the server's frame.
     backend.record = {
@@ -189,7 +240,12 @@ test("a corrupt shadow is ignored rather than thrown", async () => {
 
 test("a gguf record with no variant and a repo id is rejected", async () => {
   reset();
-  backend.record = { id: "u/m", kind: "gguf", gguf_variant: null, loaded_at: Date.now() };
+  backend.record = {
+    id: "u/m",
+    kind: "gguf",
+    gguf_variant: null,
+    loaded_at: Date.now(),
+  };
   // Names no file to load, so it cannot be acted on.
   assert.equal(await readLastLocalModelLoad(), null);
 });

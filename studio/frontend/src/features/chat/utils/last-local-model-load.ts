@@ -16,6 +16,7 @@ export type LastLocalModelLoad = {
   id: string;
   kind: LastLocalModelKind;
   ggufVariant: string | null;
+  loadId?: string;
 };
 
 const API_PATH = "/api/settings/last-local-model";
@@ -30,6 +31,7 @@ function toRecord(input: {
   id?: unknown;
   kind?: unknown;
   ggufVariant?: unknown;
+  loadId?: unknown;
 }): LastLocalModelLoad | null {
   if (typeof input.id !== "string" || !isLastLocalModelKind(input.kind)) {
     return null;
@@ -46,11 +48,17 @@ function toRecord(input: {
   if (input.kind === "gguf" && !ggufVariant && !isPathLikeId(id)) {
     return null;
   }
-  return { id, kind: input.kind, ggufVariant };
+  const loadId = typeof input.loadId === "string" ? input.loadId.trim() : "";
+  return { id, kind: input.kind, ggufVariant, ...(loadId ? { loadId } : {}) };
 }
 
 function sameRecord(a: LastLocalModelLoad, b: LastLocalModelLoad): boolean {
-  return a.id === b.id && a.kind === b.kind && a.ggufVariant === b.ggufVariant;
+  return (
+    a.id === b.id &&
+    a.kind === b.kind &&
+    a.ggufVariant === b.ggufVariant &&
+    a.loadId === b.loadId
+  );
 }
 
 function writeLegacyRecord(
@@ -65,6 +73,7 @@ function writeLegacyRecord(
         id: record.id,
         kind: record.kind,
         ggufVariant: record.ggufVariant,
+        loadId: record.loadId,
         // Old bundles reject entries without a numeric loadedAt.
         loadedAt,
         // True until this record's PUT confirms; a pending shadow may be newer.
@@ -115,6 +124,8 @@ export async function readLastLocalModelLoad(
         // biome-ignore lint/style/useNamingConvention: API schema
         gguf_variant?: unknown;
         // biome-ignore lint/style/useNamingConvention: API schema
+        load_id?: unknown;
+        // biome-ignore lint/style/useNamingConvention: API schema
         loaded_at?: unknown;
         // biome-ignore lint/style/useNamingConvention: API schema
         server_now?: unknown;
@@ -123,6 +134,7 @@ export async function readLastLocalModelLoad(
         id: data.id,
         kind: data.kind,
         ggufVariant: data.gguf_variant,
+        loadId: data.load_id,
       });
       if (record) {
         const legacy = readLegacyEntry();
@@ -170,6 +182,7 @@ export function recordLastLocalModelLoad(input: {
   id: string;
   kind: LastLocalModelKind;
   ggufVariant?: string | null;
+  loadId?: string | null;
   // Reconcile re-issues keep the original load time; fresh loads stamp now.
   loadedAt?: number;
 }): void {
@@ -190,6 +203,8 @@ export function recordLastLocalModelLoad(input: {
       kind: record.kind,
       // biome-ignore lint/style/useNamingConvention: API schema
       gguf_variant: record.ggufVariant,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      load_id: record.loadId,
       // biome-ignore lint/style/useNamingConvention: API schema
       loaded_at: loadedAt,
       // The server shifts loaded_at by (server_now - client_now).
@@ -212,6 +227,8 @@ export function recordLastLocalModelLoad(input: {
           // biome-ignore lint/style/useNamingConvention: API schema
           gguf_variant?: unknown;
           // biome-ignore lint/style/useNamingConvention: API schema
+          load_id?: unknown;
+          // biome-ignore lint/style/useNamingConvention: API schema
           loaded_at?: unknown;
           // biome-ignore lint/style/useNamingConvention: API schema
           server_now?: unknown;
@@ -220,6 +237,7 @@ export function recordLastLocalModelLoad(input: {
           id: body.id,
           kind: body.kind,
           ggufVariant: body.gguf_variant,
+          loadId: body.load_id,
         });
         serverLoadedAt =
           typeof body.loaded_at === "number" ? body.loaded_at : null;

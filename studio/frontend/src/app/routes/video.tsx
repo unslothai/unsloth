@@ -14,7 +14,13 @@ export const Route = createRoute({
   // which the page loads and then clears.
   validateSearch: (
     search: Record<string, unknown>,
-  ): { model?: string; quant?: string; ggufQuant?: string } => ({
+  ): {
+    model?: string;
+    quant?: string;
+    ggufQuant?: string;
+    loadId?: string;
+  } => ({
+    ...(typeof search.loadId === "string" ? { loadId: search.loadId } : {}),
     ...(typeof search.model === "string" ? { model: search.model } : {}),
     ...(typeof search.quant === "string" ? { quant: search.quant } : {}),
     ...(typeof search.ggufQuant === "string"

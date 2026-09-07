@@ -48,7 +48,26 @@ def test_get_with_nothing_stored(client):
     assert r.status_code == 200
     body = r.json()
     assert isinstance(body.pop("server_now"), int)
-    assert body == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
+    assert body == {
+        "id": None,
+        "kind": None,
+        "gguf_variant": None,
+        "load_id": None,
+        "loaded_at": None,
+    }
+
+
+def test_physical_cache_target_round_trips(client):
+    c, store = client
+    payload = {
+        "id": "unsloth/Model-GGUF",
+        "kind": "gguf",
+        "gguf_variant": "Q8_0",
+        "load_id": "/custom/snapshots/revision",
+    }
+    assert c.put("/last-local-model", json = payload).status_code == 200
+    assert store[settings._last_local_model_key("admin")]["load_id"] == payload["load_id"]
+    assert c.get("/last-local-model").json()["load_id"] == payload["load_id"]
 
 
 def test_put_then_get_round_trips(client):
@@ -58,14 +77,18 @@ def test_put_then_get_round_trips(client):
     assert r.status_code == 200
     body = r.json()
     body.pop("server_now")
-    assert body == {**payload, "loaded_at": None}
-    assert store[settings._last_local_model_key("admin")] == {**payload, "loaded_at": None}
+    assert body == {**payload, "load_id": None, "loaded_at": None}
+    assert store[settings._last_local_model_key("admin")] == {
+        **payload,
+        "load_id": None,
+        "loaded_at": None,
+    }
 
     r = c.get("/last-local-model")
     assert r.status_code == 200
     body = r.json()
     body.pop("server_now")
-    assert body == {**payload, "loaded_at": None}
+    assert body == {**payload, "load_id": None, "loaded_at": None}
 
 
 def test_put_accepts_path_qualified_variant(client):
@@ -96,6 +119,7 @@ def test_put_without_variant(client):
         "id": "unsloth/Qwen3-4B",
         "kind": "model",
         "gguf_variant": None,
+        "load_id": None,
         "loaded_at": None,
     }
 
@@ -182,14 +206,26 @@ def test_get_tolerates_corrupt_stored_value(client):
     assert r.status_code == 200
     body = r.json()
     body.pop("server_now")
-    assert body == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
+    assert body == {
+        "id": None,
+        "kind": None,
+        "gguf_variant": None,
+        "load_id": None,
+        "loaded_at": None,
+    }
 
     store[settings.LAST_LOCAL_MODEL_SETTING_KEY] = "not-a-dict"
     r = c.get("/last-local-model")
     assert r.status_code == 200
     body = r.json()
     body.pop("server_now")
-    assert body == {"id": None, "kind": None, "gguf_variant": None, "loaded_at": None}
+    assert body == {
+        "id": None,
+        "kind": None,
+        "gguf_variant": None,
+        "load_id": None,
+        "loaded_at": None,
+    }
 
 
 # ── per-subject scoping ─────────────────────────────────────────────

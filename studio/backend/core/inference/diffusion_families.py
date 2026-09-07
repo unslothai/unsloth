@@ -1689,7 +1689,17 @@ def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:
     repo_real = repo_root.resolve()
     child = repo_root.joinpath(*rel.parts).resolve()
     if child != repo_real and repo_real not in child.parents:
-        raise ValueError("gguf_filename must resolve to a file inside the repo.")
+        # HF snapshots link their files into the owning repository's blob store.
+        owner = repo_real.parent.parent
+        blobs = owner / "blobs"
+        in_own_blobs = (
+            repo_real.parent.name == "snapshots"
+            and owner.name.startswith("models--")
+            and blobs.resolve() == blobs
+            and blobs in child.parents
+        )
+        if not in_own_blobs:
+            raise ValueError("gguf_filename must resolve to a file inside the repo.")
     if not child.is_file():
         raise FileNotFoundError(f"'{gguf_filename}' is not a file under {repo_root}.")
     return child

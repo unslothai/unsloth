@@ -1377,12 +1377,7 @@ export function ModelsPage() {
       const mediaPage = studioPageForTask(
         taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ?? undefined,
       );
-      // The target pages read a routed `model` as a Hub id, so a runId that is a PATH would
-      // arrive as a repo that does not exist -- prefer the Hub id, which loads the same copy
-      // since the loader reuses whichever cache root holds it. That covers a filesystem row
-      // (left on today's route, and the backend preflight now refuses it by name) and a
-      // cached repo the inventory pinned to its snapshot directory, whose symlinked entries
-      // the pages' containment check rejects anyway.
+      // Keep the catalog identity and the selected cache target through media routing.
       const routeId = runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
       if (
         mediaPage &&
@@ -1393,6 +1388,7 @@ export function ModelsPage() {
           to: `/${mediaPage}`,
           // `quant` is consumed verbatim as a gguf filename, so a label rides `ggufQuant`.
           search: diffusionRouteSearch(routeId, {
+            loadId: runId,
             ggufVariant: opts.ggufVariant ?? null,
           }),
         });

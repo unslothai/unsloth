@@ -1132,6 +1132,11 @@ function reportLoadFailure(message: string | null | undefined, fallback: string)
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
+type ImageLoadOptions = {
+  kind: "gguf" | "single_file" | "pipeline";
+  filename?: string;
+  localPath?: string | null;
+};
 
 // What a pick optimistically replaced, so a load that never takes can put it all back. The
 // quant label and the recipe move together at pick time, so they roll back together.
@@ -1292,7 +1297,7 @@ export function ImagesPage({
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
-  const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
+  const lastLoad = useRef<({ repoId: string } & ImageLoadOptions) | null>(
     null,
   );
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
@@ -2400,10 +2405,7 @@ export function ImagesPage({
     // Resolves true when the background load STARTED (callers may revert optimistic picker state on false).
     async (
       repoId: string,
-      opts: {
-        kind: "gguf" | "single_file" | "pipeline";
-        filename?: string;
-      },
+      opts: ImageLoadOptions,
       // The Advanced values this load must use when pinned earlier: a staged download plans its file
       // set at pick time and loads minutes later, so live state could outrun the staged files.
       pinned?: LoadAdvanced,
@@ -2440,7 +2442,7 @@ export function ImagesPage({
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
-      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
+      lastLoad.current = { repoId, ...opts };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
@@ -2448,7 +2450,7 @@ export function ImagesPage({
         // Returns immediately; the load runs in the background and we poll. The backend infers the
         // family and base repo from the id, and the saved HF token covers gated bases.
         const startRequest = loadDiffusionModel({
-          model_path: repoId,
+          model_path: opts.localPath || repoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
@@ -2510,7 +2512,7 @@ export function ImagesPage({
   // warm cache. In a ref, so the callback is not a render dep.
   const pendingStagedLoad = useRef<{
     repoId: string;
-    opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
+    opts: ImageLoadOptions;
     // The Advanced values the plan was built from: staging does not set `busy`, so the user can
     // change precision or LoRAs while the download runs.
     advanced: LoadAdvanced;
@@ -2578,11 +2580,11 @@ export function ImagesPage({
   const requestDownloadPlan = useCallback(
     (
       repoId: string,
-      opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
+      opts: ImageLoadOptions,
       advanced: LoadAdvanced,
     ) =>
       getDiffusionDownloadPlan({
-        model_path: repoId,
+        model_path: opts.localPath || repoId,
         gguf_filename: opts.filename,
         model_kind: opts.kind,
         // The same token and Advanced values handleLoad sends, so the plan describes the load that
@@ -2607,7 +2609,7 @@ export function ImagesPage({
   const loadOrStage = useCallback(
     async (
       repoId: string,
-      opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
+      opts: ImageLoadOptions,
       source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
     ): Promise<boolean> => {
@@ -2685,7 +2687,7 @@ export function ImagesPage({
       if (!meta.ggufFilename) return null;
       const plan = await requestDownloadPlan(
         repoId,
-        { kind: "gguf", filename: meta.ggufFilename },
+        { kind: "gguf", filename: meta.ggufFilename, localPath: meta.loadId },
         currentLoadAdvanced(repoId),
       );
       const requiredBytes = plan.required_bytes ?? 0;
@@ -2736,7 +2738,7 @@ export function ImagesPage({
           }
         },
         load: (filename) =>
-          loadOrStage(repoId, { kind: "gguf", filename }, source, token),
+          loadOrStage(repoId, { kind: "gguf", filename, localPath }, source, token),
       });
     },
     [applyImageModelDefaults, loadOrStage, pickGuard, quant, revertPick],
@@ -2769,7 +2771,10 @@ export function ImagesPage({
     const routed = { quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
     const routedFilename = routedGgufFilename(routed);
     const routedLabel = routedGgufLabel(routed);
-    const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
+    const localPath = routeSearch?.loadId;
+    const key = JSON.stringify([
+      wanted, routeSearch?.quant, routeSearch?.ggufQuant, localPath,
+    ]);
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
@@ -2780,7 +2785,7 @@ export function ImagesPage({
     if (routedLabel) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
-        loadGgufRepoPick(wanted, routedLabel, "hub"),
+        loadGgufRepoPick(wanted, routedLabel, "hub", localPath),
       );
       return;
     }
@@ -2789,10 +2794,13 @@ export function ImagesPage({
       wanted,
       routedFilename ?? undefined,
       loadSpecFor(wanted, IMAGE_CATALOG),
+      localPath,
     );
     // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
     if (pick.opts.kind === "gguf" && !pick.opts.filename) {
-      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
+      void Promise.resolve().then(() =>
+        loadGgufRepoPick(pick.repoId, null, "hub", localPath),
+      );
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
@@ -2814,6 +2822,7 @@ export function ImagesPage({
     routeSearch?.model,
     routeSearch?.quant,
     routeSearch?.ggufQuant,
+    routeSearch?.loadId,
     loadOrStage,
     loadGgufRepoPick,
     navigateSelf,
@@ -2825,7 +2834,9 @@ export function ImagesPage({
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
-    if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
+    if (l) void handleLoad(l.repoId, {
+      kind: l.kind, filename: l.filename, localPath: l.localPath,
+    });
   }, [handleLoad]);
 
   // Every pick supersedes the one before it, whichever route it takes: a staged download
@@ -2887,7 +2898,7 @@ export function ImagesPage({
         applyImageModelDefaults(id);
         void loadOrStage(
           id,
-          { kind: "gguf", filename: meta.ggufFilename },
+          { kind: "gguf", filename: meta.ggufFilename, localPath: meta.loadId },
           meta.source,
           token,
         ).then((started) => {
@@ -2912,7 +2923,7 @@ export function ImagesPage({
             id,
             meta.ggufVariant ?? null,
             meta.source,
-            meta.source === "local" ? id : null,
+            meta.loadId ?? (meta.source === "local" ? id : null),
           );
           return;
         }
@@ -2957,7 +2968,7 @@ export function ImagesPage({
           id,
           spec?.filename ?? meta.ggufVariant ?? null,
           meta.source,
-          meta.source === "local" ? id : null,
+          meta.loadId ?? (meta.source === "local" ? id : null),
         );
         return;
       }

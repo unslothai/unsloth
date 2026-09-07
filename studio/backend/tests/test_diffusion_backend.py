@@ -580,6 +580,62 @@ def test_te_prequant_equivalence_group_accepts_a_mirrored_base():
     assert te_base_equivalent(ckpt, "unsloth/FLUX.2-dev") is False
 
 
+def test_resolve_local_gguf_child_hf_snapshot(tmp_path):
+    repo = tmp_path / "models--unsloth--Z-Image-Turbo-GGUF"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    blobs = repo / "blobs"
+    blobs.mkdir()
+    blob = blobs / "hash"
+    blob.write_bytes(b"GGUF")
+    (snapshot / "model.gguf").symlink_to(blob)
+    assert resolve_local_gguf_child(snapshot, "model.gguf") == blob
+    outside = tmp_path / "outside.gguf"
+    outside.write_bytes(b"GGUF")
+    (snapshot / "escape.gguf").symlink_to(outside)
+    with pytest.raises(ValueError, match = "inside the repo"):
+        resolve_local_gguf_child(snapshot, "escape.gguf")
+
+
+def test_snapshot_base_model_metadata_keeps_logical_repo(tmp_path, monkeypatch):
+    from core.inference import diffusion
+    from types import SimpleNamespace
+    import huggingface_hub
+
+    snapshot = tmp_path / "models--unsloth--Z-Image-GGUF" / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    calls = []
+
+    def model_info(self, repo_id, **kwargs):
+        calls.append(repo_id)
+        return SimpleNamespace(cardData = {"base_model": "Tongyi-MAI/Z-Image"})
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", model_info)
+    assert diffusion._hf_base_model(str(snapshot), None) == "Tongyi-MAI/Z-Image"
+    assert calls == ["unsloth/Z-Image-GGUF"]
+
+
+@pytest.mark.parametrize("escape", ["foreign_blob", "sibling_snapshot", "symlinked_blobs"])
+def test_hf_snapshot_rejects_files_outside_own_blob_store(tmp_path, escape):
+    repo = tmp_path / "models--unsloth--Model-GGUF"
+    snapshot = repo / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    if escape == "foreign_blob":
+        target = tmp_path / "models--other--Repo" / "blobs" / "hash"
+    elif escape == "sibling_snapshot":
+        target = repo / "snapshots" / "other-revision" / "model.gguf"
+    else:
+        target = tmp_path / "outside" / "hash"
+    target.parent.mkdir(parents = True)
+    target.write_bytes(b"GGUF")
+    if escape == "symlinked_blobs":
+        (repo / "blobs").symlink_to(target.parent, target_is_directory = True)
+        target = repo / "blobs" / "hash"
+    (snapshot / "model.gguf").symlink_to(target)
+    with pytest.raises(ValueError, match = "inside the repo"):
+        resolve_local_gguf_child(snapshot, "model.gguf")
+
+
 def test_resolve_local_gguf_child(tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"x")
     assert resolve_local_gguf_child(tmp_path, "model.gguf") == (tmp_path / "model.gguf").resolve()

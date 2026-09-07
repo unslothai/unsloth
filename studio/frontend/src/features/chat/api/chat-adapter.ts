@@ -2560,6 +2560,7 @@ async function prioritizeRememberedQuantSources(
     id: string;
     kind: LastLocalModelKind;
     ggufVariant?: string | null;
+    loadId?: string | null;
   } | null,
 ): Promise<AutoLoadSource[]> {
   const wanted = remembered?.ggufVariant?.trim().toLowerCase();
@@ -2591,7 +2592,12 @@ async function prioritizeRememberedQuantSources(
     }),
   );
   return [...sources].sort(
-    (a, b) => Number(exact.has(b)) - Number(exact.has(a)),
+    (a, b) =>
+      Number(exact.has(b)) - Number(exact.has(a)) ||
+      (exact.has(a) && exact.has(b) && remembered.loadId
+        ? Number(normalizeTarget(b.loadId) === normalizeTarget(remembered.loadId)) -
+          Number(normalizeTarget(a.loadId) === normalizeTarget(remembered.loadId))
+        : 0),
   );
 }
 
@@ -3501,6 +3507,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       if (!(loadResp.is_lora ?? false)) {
         recordLastLocalModelLoad({
           id: candidate.id,
+          loadId: candidate.loadId,
           kind: candidate.kind,
           ggufVariant: candidate.ggufVariant,
         });

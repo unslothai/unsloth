@@ -13,6 +13,19 @@ import {
 
 const REPO = "unsloth/Z-Image-Turbo-GGUF";
 
+test("pinned and exact GGUF routes retain the selected cache target", () => {
+  const loadId =
+    "/custom/models--unsloth--Z-Image-Turbo-GGUF/snapshots/revision";
+  for (const meta of [
+    { ggufVariant: "Q8_0" },
+    { ggufFilename: "model-Q8_0.gguf" },
+  ]) {
+    const search = diffusionRouteSearch(REPO, { ...meta, loadId });
+    assert.equal(search.loadId, loadId);
+    assert.equal(search.model, REPO);
+  }
+});
+
 test("an expander pick routes its exact filename as the quant", () => {
   assert.deepEqual(
     diffusionRouteSearch(REPO, {

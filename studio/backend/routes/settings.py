@@ -1284,6 +1284,7 @@ class LastLocalModelPayload(BaseModel):
     id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
     kind: Literal["gguf", "model"]
     gguf_variant: Optional[str] = Field(default = None, max_length = MAX_GGUF_VARIANT_KEY_LEN)
+    load_id: Optional[str] = Field(default = None, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
     # Epoch ms of the load; orders writes from surfaces that keep their own local shadow.
     loaded_at: Optional[int] = Field(default = None, ge = 0)
     # The client clock when the request was sent: the skew translates loaded_at into the server
@@ -1296,6 +1297,7 @@ class LastLocalModelResponse(BaseModel):
     id: Optional[str] = None
     kind: Optional[Literal["gguf", "model"]] = None
     gguf_variant: Optional[str] = None
+    load_id: Optional[str] = None
     loaded_at: Optional[int] = None
     # Lets the client translate loaded_at back into its own clock frame.
     server_now: Optional[int] = None

@@ -6487,6 +6487,9 @@ def _remember_companion_base(repo_id: str, base: str) -> None:
     """
     try:
         from hub.utils.companion_assets import record_companion_link
+        from core.inference.model_ids import hf_cache_repo_id
+
+        repo_id = hf_cache_repo_id(repo_id) or repo_id
         record_companion_link(repo_id, base)
     except Exception as exc:  # noqa: BLE001 -- bookkeeping only
         logger.debug("diffusion.companion_link_record_failed: %s", exc)
@@ -6496,10 +6499,16 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
     """The diffusers base repo from a GGUF repo's ``base_model`` tag, or None.
 
     Lets one family entry cover every variant (Turbo/full, schnell/dev, the
-    2512 Qwen revision). Skipped for local paths; None on any lookup failure.
+    2512 Qwen revision). HF snapshot paths retain their repository identity;
+    other local paths are skipped. None on any lookup failure.
     """
     if Path(repo_id).expanduser().exists():
-        return None
+        from core.inference.model_ids import hf_cache_repo_id
+
+        cached_repo = hf_cache_repo_id(repo_id)
+        if not cached_repo:
+            return None
+        repo_id = cached_repo
     try:
         from huggingface_hub import HfApi
         meta = HfApi().model_info(repo_id, token = hf_token).cardData or {}

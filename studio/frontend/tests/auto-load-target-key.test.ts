@@ -16,12 +16,17 @@ const adapterPath = fileURLToPath(
 );
 const source = readFileSync(adapterPath, "utf8");
 const start = source.indexOf("function normalizeTarget(");
-assert.ok(start >= 0, "normalizeTarget is no longer defined in chat-adapter.ts");
+assert.ok(
+  start >= 0,
+  "normalizeTarget is no longer defined in chat-adapter.ts",
+);
 const declaration = source.slice(start, source.indexOf("\n}", start) + 2);
 const normalizeTarget = new Function(
-  `${ts.transpileModule(declaration, {
-    compilerOptions: { target: ts.ScriptTarget.ES2020 },
-  }).outputText}; return normalizeTarget;`,
+  `${
+    ts.transpileModule(declaration, {
+      compilerOptions: { target: ts.ScriptTarget.ES2020 },
+    }).outputText
+  }; return normalizeTarget;`,
 )() as (value: string) => string;
 
 const sameKey = (a: string, b: string) =>
@@ -51,8 +56,32 @@ const prioritize = new Function(
   `${ts.transpileModule(declarations, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText}; return prioritizeRememberedQuantSources;`,
 )(normalizeTarget, () => true) as (
   sources: TestSource[],
-  remembered: { id: string; kind: string; ggufVariant: string },
+  remembered: {
+    id: string;
+    kind: string;
+    ggufVariant: string;
+    loadId?: string;
+  },
 ) => Promise<TestSource[]>;
+
+test("same-quant copies prefer the remembered physical load target", async () => {
+  const sources: TestSource[] = ["Org/Model", "/custom/rev"].map(
+    (loadId, index) => ({
+      id: "Org/Model",
+      loadId,
+      kind: "gguf",
+      sizeBytes: index ? 9000 : 8000,
+      listVariants: async () => [{ quant: "Q8_0", downloaded: true }],
+    }),
+  );
+  const ordered = await prioritize(sources, {
+    id: "Org/Model",
+    kind: "gguf",
+    ggufVariant: "Q8_0",
+    loadId: "/custom/rev",
+  });
+  assert.equal(ordered[0].loadId, "/custom/rev");
+});
 
 test("remembered Q8 in a previous cache precedes smaller Q6 in the active cache", async () => {
   const reads = [0, 0];
@@ -97,7 +126,9 @@ test("missing or incomplete remembered quant preserves fallback ordering", async
 test("one Windows file spelled with either separator is one candidate", () => {
   // Two keys meant one spelling burned an attempt on the same file, and a
   // remembered record written as C:\ never matched C:/.
-  assert.ok(sameKey("C:\\Users\\a\\models\\M.gguf", "C:/Users/a/models/M.gguf"));
+  assert.ok(
+    sameKey("C:\\Users\\a\\models\\M.gguf", "C:/Users/a/models/M.gguf"),
+  );
 });
 
 test("Windows and UNC paths still fold case", () => {
@@ -108,7 +139,10 @@ test("Windows and UNC paths still fold case", () => {
 test("WSL UNC paths keep their case, because they address ext4", () => {
   // Folding merged two real files onto one key, so the second never loaded.
   assert.ok(
-    !sameKey("\\\\wsl$\\Ubuntu\\home\\a\\M.gguf", "\\\\wsl$\\Ubuntu\\home\\a\\m.gguf"),
+    !sameKey(
+      "\\\\wsl$\\Ubuntu\\home\\a\\M.gguf",
+      "\\\\wsl$\\Ubuntu\\home\\a\\m.gguf",
+    ),
   );
   assert.ok(
     sameKey("\\\\wsl$\\Ubuntu\\home\\a\\M.gguf", "//wsl$/Ubuntu/home/a/M.gguf"),

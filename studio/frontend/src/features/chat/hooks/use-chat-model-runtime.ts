@@ -2084,6 +2084,7 @@ export function useChatModelRuntime() {
             ) {
               recordLastLocalModelLoad({
                 id: modelId,
+                loadId: loadPath,
                 kind:
                   loadResponse.is_gguf || isGguf || ggufVariant
                     ? "gguf"
