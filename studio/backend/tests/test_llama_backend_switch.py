@@ -168,9 +168,8 @@ def _drifted(monkeypatch, resolved_backend = "vulkan"):
 
 
 def test_a_drifted_automatic_install_is_offered_as_an_update(monkeypatch, tmp_path):
-    # The install still works, so nothing else surfaces it: the release is current and
-    # the Settings page is the only place that knows. Surfacing it on the banner is the
-    # point of the field.
+    # The install still works and the release is current, so without this field only the
+    # Settings page knows.
     _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
     _drifted(monkeypatch)
     status = upd.get_update_status()
@@ -180,8 +179,8 @@ def test_a_drifted_automatic_install_is_offered_as_an_update(monkeypatch, tmp_pa
 
 
 def test_a_deliberate_backend_choice_is_never_offered_a_migration(monkeypatch, tmp_path):
-    # The installer records a concrete choice only on an install that honoured it, so
-    # this is the user's decision and re-applying detection would undo it.
+    # A concrete choice is recorded only on an install that honoured it, so re-applying
+    # detection would undo the user's decision.
     _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "rocm")
     _drifted(monkeypatch)
     status = upd.get_update_status()
@@ -190,15 +189,13 @@ def test_a_deliberate_backend_choice_is_never_offered_a_migration(monkeypatch, t
 
 
 def test_an_undrifted_automatic_install_is_offered_nothing(monkeypatch, tmp_path):
-    # Negative control. Without it, a field that is always true reads the same as one
-    # that works.
+    # Negative control: a field that is always true reads the same as one that works.
     _install(monkeypatch, tmp_path, backend = "cuda", backend_request = "auto")
     status = upd.get_update_status()
     assert status["backend_migration_available"] is False
 
 
 def test_an_environment_override_suppresses_the_migration_offer(monkeypatch, tmp_path):
-    # The environment owns the backend, so the offer could not be applied.
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "rocm")
     _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
     _drifted(monkeypatch)
@@ -206,10 +203,9 @@ def test_an_environment_override_suppresses_the_migration_offer(monkeypatch, tmp
 
 
 def test_applying_a_migration_re_applies_auto_and_stays_an_update(monkeypatch, tmp_path):
-    # "auto", not "vulkan": naming the backend would store a deliberate choice the user
-    # never made, which would drop rocm_gfx from the marker and stop later updates
-    # re-detecting. And the operation stays "update", because an update is what the
-    # banner offered -- a "switch" is hidden by the banner on purpose.
+    # "auto", not "vulkan": naming the backend stores a deliberate choice the user never
+    # made, dropping rocm_gfx and stopping later updates re-detecting. The operation stays
+    # "update" because that is what the banner offered; a "switch" the banner hides.
     install_dir = _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
     _drifted(monkeypatch)
     seen: dict = {}
@@ -234,15 +230,13 @@ def test_applying_a_migration_re_applies_auto_and_stays_an_update(monkeypatch, t
     assert job["operation"] == "update"
     assert job["requested_backend"] == "auto"
     assert seen["cmd"][seen["cmd"].index("--llama-backend") + 1] == "auto"
-    # The release is current, so the migration re-installs it rather than moving it.
     assert seen["cmd"][seen["cmd"].index("--published-release-tag") + 1] == "b9596-mix-abc"
 
 
 def test_a_migration_that_lands_back_on_the_old_backend_says_so(monkeypatch, tmp_path):
-    # The installer answers "auto" with whatever it can install, and the ROCm fallback
-    # behind the Vulkan preference can legitimately reinstall the backend already here.
-    # Reporting "now running on rocm" would read as the migration having been applied,
-    # while the next status check offers the very same one again.
+    # "auto" is answered with whatever can be installed, and the ROCm fallback behind the
+    # Vulkan preference legitimately reinstalls the backend already here. "Now running on
+    # rocm" would read as applied while the next check offers the same migration.
     install_dir = _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
     _drifted(monkeypatch)
 
@@ -261,8 +255,7 @@ def test_a_migration_that_lands_back_on_the_old_backend_says_so(monkeypatch, tmp
 
 
 def test_a_migration_that_lands_on_its_target_reports_the_new_backend(monkeypatch, tmp_path):
-    # The control: without it a message that always reported a kept install would pass
-    # above, and every applied migration would read as a failure.
+    # The control: a message that always reported a kept install would pass above.
     install_dir = _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
     _drifted(monkeypatch)
     _patch_installer(
@@ -284,8 +277,7 @@ def test_a_migration_that_lands_on_its_target_reports_the_new_backend(monkeypatc
 
 
 def test_an_up_to_date_install_with_no_drift_still_refuses(monkeypatch, tmp_path):
-    # The other half of the control: the migration must not turn every up-to-date
-    # Update press into an install.
+    # The other half: a migration must not turn every up-to-date Update press into one.
     _install(monkeypatch, tmp_path, backend = "cuda", backend_request = "auto")
     result = upd.start_update()
     assert result["started"] is False
@@ -941,8 +933,7 @@ def test_the_migration_resolver_replays_the_arch_the_marker_recorded(monkeypatch
     def _resolver(**kwargs):
         seen.append(kwargs.get("extra_env"))
         gfx = (kwargs.get("extra_env") or {}).get("UNSLOTH_ROCM_GFX_REMEMBERED")
-        # What the installer does with the replay: the arch fills the probe's gap, so
-        # "auto" resolves back onto ROCm instead of falling to CPU.
+        # The arch fills the probe's gap, so "auto" resolves onto ROCm rather than CPU.
         resolved = "rocm" if gfx else "cpu"
         return {"backends": [{"backend": "auto", "available": True, "resolved_backend": resolved}]}
 
@@ -956,8 +947,8 @@ def test_the_migration_resolver_replays_the_arch_the_marker_recorded(monkeypatch
 
 
 def test_a_marker_with_no_recorded_arch_passes_no_replay(monkeypatch, tmp_path):
-    # Negative control: the replay is evidence a previous install recorded, not a
-    # default, so a host that never had one must resolve exactly as it does today.
+    # Negative control: the replay is evidence a previous install recorded, not a default,
+    # so a host that never had one resolves exactly as it does today.
     _install(monkeypatch, tmp_path)
     marker = upd.read_install_marker(upd._find_binary())
     seen: list = []
@@ -992,7 +983,7 @@ def test_applying_a_migration_replays_the_arch_the_offer_was_made_with(monkeypat
     def _resolver(**kwargs):
         gfx = (kwargs.get("extra_env") or {}).get("UNSLOTH_ROCM_GFX_REMEMBERED")
         # The arch is what routes this host to Vulkan; without it the installer sees no
-        # known AMD iGPU and keeps ROCm, which is the backend already installed.
+        # known AMD iGPU and keeps the ROCm build already installed.
         auto = "vulkan" if gfx else "rocm"
         return {
             "backends": [
@@ -1034,9 +1025,8 @@ def test_applying_a_migration_replays_the_arch_the_offer_was_made_with(monkeypat
 
 
 def test_an_apply_that_no_longer_drifts_still_refuses(monkeypatch, tmp_path):
-    # Negative control for the test above: the apply-time resolve is a real check, not
-    # a formality, so a host that stopped drifting between the offer and the press must
-    # still be refused rather than reinstalling what it already has.
+    # Negative control: the apply-time resolve is a real check, so a host that stopped
+    # drifting between the offer and the press is refused rather than reinstalled.
     _install(
         monkeypatch,
         tmp_path,
@@ -1088,11 +1078,9 @@ def test_running_job_status_does_not_resolve_options_again(monkeypatch, tmp_path
 
 
 def test_an_explicit_auto_in_the_environment_still_gets_the_migration(monkeypatch, tmp_path):
-    # environment_backend_override treats "auto" as a recognized value, so a bare
-    # suppression on "an override exists" withheld the offer from a host that can
-    # take it: "auto" asks for exactly the detection the migration re-applies, and
-    # the job runs the installer with --llama-backend auto. Only a concrete
-    # selection owns the backend.
+    # "auto" is a recognized override value asking for exactly the detection the migration
+    # re-applies, so suppressing on "an override exists" withheld the offer from a host
+    # that can take it. Only a concrete selection owns the backend.
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
     _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
     _drifted(monkeypatch)
@@ -1100,10 +1088,8 @@ def test_an_explicit_auto_in_the_environment_still_gets_the_migration(monkeypatc
 
 
 def test_an_explicit_recheck_re_resolves_the_backend(monkeypatch, tmp_path):
-    # The resolver is memoized for 24h, so a status built with force_refresh=True has
-    # to forward it: a driver or GPU change between polls otherwise keeps answering
-    # from the pre-change resolve for the rest of the TTL, and the explicit "check
-    # again" the user asked for reports no drift.
+    # The resolver is memoized for 24h, so force_refresh has to reach it: otherwise the
+    # explicit "check again" answers from the pre-change resolve for the rest of the TTL.
     _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
     _drifted(monkeypatch)
     seen: list = []
@@ -1124,12 +1110,9 @@ def test_an_explicit_recheck_re_resolves_the_backend(monkeypatch, tmp_path):
 
 
 def test_a_migration_keeps_a_pending_whisper_update(monkeypatch):
-    # A migration carries a backend request so the marker is asserted after the install,
-    # but it is update-BEHAVED: it reinstalls llama.cpp at the same release on another
-    # backend. The switch branch calls repair_pairing_plan(), which returns no phase for
-    # a self-contained whisper install, so a whisper release update the banner was
-    # showing would be dropped on the round the migration is taken. The chained plan
-    # both catches whisper up and re-pairs it against the new ggml.
+    # A migration carries a backend request but is update-behaved. The switch branch calls
+    # repair_pairing_plan(), which returns no phase for a self-contained whisper install,
+    # so the update the banner was showing would be dropped; the chained plan does both.
     chained = {"phase": {"kind": "whisper", "tag": "w2"}, "update_available": True}
     monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: chained)
     repair_calls = []
@@ -1144,9 +1127,7 @@ def test_a_migration_keeps_a_pending_whisper_update(monkeypatch):
 
 
 def test_a_deliberate_switch_still_takes_the_repair_branch(monkeypatch):
-    # Negative control for the test above: without it, a migration flag that was always
-    # on would read the same as one that works. A real backend switch installs the same
-    # release on a new backend, so whisper only needs re-pairing.
+    # Negative control, and a real switch keeps the release, so whisper only re-pairs.
     monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: {"phase": {"kind": "whisper"}})
     marker = {"repaired": True}
     monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: marker)

@@ -20,9 +20,8 @@ import { type ReactElement, useEffect, useRef, useState } from "react";
 // Creep toward this cap between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
 
-// The banner is not translated, so these mirror the settings picker's labels
-// in features/settings/lib/llama-backend-labels.ts. An unknown backend prints
-// its own identifier rather than nothing.
+// The banner is not translated, so these mirror features/settings/lib/llama-backend-
+// labels.ts. An unknown backend prints its own identifier rather than nothing.
 const BACKEND_LABELS: Record<string, string> = {
   auto: "Automatic",
   cpu: "CPU",
@@ -152,9 +151,8 @@ export function LlamaUpdateBanner({
   const component = status?.component ?? "llama.cpp";
   const latestTag = status?.latest_tag ?? null;
   const installedTag = status?.installed_tag ?? null;
-  // A backend migration re-applies the install's own automatic choice, so it can
-  // be offered at a release the machine already has. When it is, the version line
-  // has nothing to say and the backend pair replaces it.
+  // A migration re-applies the install's own automatic choice, so it can be offered at a
+  // release the machine already has, where the backend pair replaces the version line.
   const backendChange =
     status?.backend_migration_available && status.to_backend
       ? `${backendLabel(status.from_backend)} \u2192 ${backendLabel(status.to_backend)}`

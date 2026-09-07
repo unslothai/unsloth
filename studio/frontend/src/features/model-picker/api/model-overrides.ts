@@ -66,8 +66,7 @@ export interface ApiModelOverride {
   n_cpu_moe?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_ids?: number[];
-  // Which index space gpu_ids is in. Absent means "physical", which is the only thing a
-  // row written before this field could have meant.
+  // Which index space gpu_ids is in. Absent means "physical", all an older row could mean.
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_index_kind?: GpuIndexKind;
 }
@@ -321,9 +320,7 @@ export function fromApiOverride(
     gpuLayers: override.gpu_layers ?? local.gpuLayers,
     nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,
     selectedGpuIds: serverGpuIds ?? local.selectedGpuIds ?? null,
-    // Read the row's own namespace rather than assuming one: absent is "physical", the
-    // legacy meaning, and reconcileGpuSelection then drops the pin if this host numbers
-    // its devices the other way.
+    // reconcileGpuSelection drops the pin if this host numbers its devices the other way.
     selectedGpuIndexKind: serverGpuIds
       ? (override.gpu_index_kind ?? "physical")
       : (local.selectedGpuIndexKind ?? null),
@@ -414,15 +411,14 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (typeof config.nCpuMoe === "number" && config.nCpuMoe > 0) {
     payload.n_cpu_moe = config.nCpuMoe;
   }
-  // The pin travels WITH its namespace. The same integers are a Vulkan ordinal under a
-  // Vulkan build and a CUDA/ROCm index elsewhere, so after a backend change -- an AMD
-  // integrated GPU is routed to the Vulkan prebuilt by preference -- the server would
-  // otherwise pin a different device. It drops the pin on a mismatch instead.
+  // The pin travels with its namespace: the same integers are a Vulkan ordinal under a
+  // Vulkan build and a physical index elsewhere, so after a backend change the server
+  // would otherwise pin a different device. It drops the pin on a mismatch instead.
   const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
   if (config.selectedGpuIds && config.selectedGpuIds.length > 0) {
     payload.gpu_ids = config.selectedGpuIds;
-    // Sent only when it is not the legacy default, matching what the server stores, so a
-    // physical pin's payload is byte-identical to what it was before this field.
+    // Sent only when it is not the legacy default, so a physical pin's payload is
+    // byte-identical to what it was before this field.
     if (gpuIndexKind !== "physical") {
       payload.gpu_index_kind = gpuIndexKind;
     }

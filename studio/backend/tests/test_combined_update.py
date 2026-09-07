@@ -98,8 +98,8 @@ def _patch_llama_installer(
     # the worker can Popen unrelated host probes (ldconfig etc).
     def _popen(cmd, **kw):
         parts = [str(part) for part in cmd]
-        # The read-only resolvers run the same script; faking them would answer the
-        # status poll's backend-drift probe with an install's canned output.
+        # The read-only resolvers run the same script, so faking them would answer the
+        # backend-drift probe with an install's canned output.
         is_installer = any("install_llama_prebuilt" in part for part in parts) and not any(
             part.startswith("--resolve-") for part in parts
         )

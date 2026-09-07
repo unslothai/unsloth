@@ -108,14 +108,12 @@ test("an apply adopts an already-running update but never a switch", () => {
 });
 
 test("a backend migration at the installed release reports no version change", () => {
-  // What the server actually sends for a fork install whose release is current:
-  // the display tag is normalized to its base and the latest tag is the full
-  // release identity, so the two differ while naming the same release.
+  // What a fork install at the current release sends: the display tag is normalized to
+  // its base and the latest tag is the full identity, so they differ naming one release.
   assert.equal(
     llamaReleaseChanged(false, "b9596", "b9596-mix-4b653db"),
     false,
   );
-  // And the same shape once the release really has moved.
   assert.equal(
     llamaReleaseChanged(true, "b9596", "b10715-mix-86bd2d3"),
     true,
@@ -129,8 +127,8 @@ test("a release change still needs both tags to name it", () => {
 });
 
 test("the banner asks the helper rather than comparing the two tags itself", () => {
-  // Read from the source: the node suite has no DOM to render the banner in, and
-  // the predicate is only worth fixing in one place if the banner uses that place.
+  // Read from the source: the node suite has no DOM, and the predicate is only worth
+  // fixing in one place if the banner uses it.
   const banner = readFileSync(
     new URL("../src/components/llama-update-banner.tsx", import.meta.url),
     "utf8",
@@ -140,9 +138,8 @@ test("the banner asks the helper rather than comparing the two tags itself", () 
 });
 
 test("a backend migration is reported by what the job did, not by the version fields", () => {
-  // The migration runs at the release already installed, so composing the toast from
-  // the tags announces an update that did not happen -- and when a whisper update is
-  // pending it is that component's name beside the llama tag.
+  // The migration runs at the release already installed, so composing the toast from the
+  // tags announces an update that did not happen, under whichever component named it.
   assert.equal(
     llamaUpdateToastMessage({
       component: "whisper.cpp",
@@ -154,8 +151,6 @@ test("a backend migration is reported by what the job did, not by the version fi
     "llama.cpp is now running on vulkan.",
   );
 
-  // The fallback case: the install ended on the backend it started from, and the job
-  // says so rather than naming it as the new one.
   assert.equal(
     llamaUpdateToastMessage({
       component: "llama.cpp",
@@ -168,7 +163,6 @@ test("a backend migration is reported by what the job did, not by the version fi
     "llama.cpp could not be moved to vulkan right now, so the existing rocm build was kept. Try again later.",
   );
 
-  // The reload hint is still appended when the job did not carry one of its own.
   assert.equal(
     llamaUpdateToastMessage({
       component: "llama.cpp",
@@ -182,8 +176,8 @@ test("a backend migration is reported by what the job did, not by the version fi
 });
 
 test("an ordinary update still reports the release it moved to", () => {
-  // The control: without it a message that always deferred to the job would drop the
-  // tag from every real update, and a migration with nothing to say would print blank.
+  // The control: a message that always deferred to the job would drop the tag from every
+  // real update, and a migration with nothing to say would print blank.
   assert.equal(
     llamaUpdateToastMessage({
       component: "llama.cpp",

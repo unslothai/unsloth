@@ -106,19 +106,11 @@ WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
 # Family labels forwarded by update markers / --rocm-gfx (gfx110X.zip assets).
 WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
 
-# Integrated RDNA3.5 (Strix Point / Strix Halo). HIP builds these, so they sit ABOVE the
-# floor above and would keep ROCm; they are here because Vulkan is measurably the better
-# backend on them, not because HIP is missing. On gfx1151 Vulkan leads ROCm on both axes
-# (prefill +22.9%, decode +8.3%, each gap wider than the within-arm spread), and every ROCm
-# defect reported against these parts is a managed-memory fault -- up to a hard k_set_rows
-# HSA fault on Linux -- that Vulkan cannot reach, because it never reads
-# GGML_CUDA_ENABLE_UNIFIED_MEMORY.
-#
-# Deliberately only the integrated parts. Discrete RDNA2/3/4 trades prefill for decode in
-# public numbers and we have measured none of it. CDNA (gfx908/gfx90a) is the reason this
-# is an allowlist rather than "all AMD": ROCm ships no Vulkan ICD, so a headless MI100 box
-# routed here would enumerate zero Vulkan devices and fall to CPU -- a dead backend, not a
-# slower one. Widen only on a measurement.
+# Integrated RDNA3.5. HIP builds these, so they clear the floor above and would keep ROCm;
+# they are here because Vulkan measurably beats it (gfx1151: prefill +22.9%, decode +8.3%,
+# both wider than the within-arm spread) and cannot reach the managed-memory faults every
+# ROCm report against these parts hits. An allowlist, not "all AMD": CDNA ships no Vulkan
+# ICD, so a headless MI100 routed here would fall to CPU. Widen only on a measurement.
 VULKAN_PREFERRED_GFX_TARGETS = frozenset({"gfx1150", "gfx1151"})
 
 # APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
@@ -7693,34 +7685,22 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     return not any(_gfx_is_windows_hip_supported(target, published_repo) for target in targets)
 
 
-# The 64-bit view only: the bundle this route installs is windows-x64-vulkan, and a
-# 64-bit Vulkan process cannot load a 32-bit ICD. WOW6432Node is where the 32-bit
-# registrations live, so counting it would let a surviving SysWOW64 entry answer for a
-# 64-bit driver that is gone -- routing the host onto a bundle that enumerates no
-# device and falls back to CPU.
+# 64-bit view only. WOW6432Node holds the 32-bit registrations, which windows-x64-vulkan
+# cannot load, so a surviving SysWOW64 entry must not answer for a removed 64-bit driver.
 _VULKAN_ICD_REGISTRY_KEYS = (r"SOFTWARE\Khronos\Vulkan\Drivers",)
-# Manifest FILE NAMES the AMD drivers register: mesa RADV (radeon_icd.x86_64.json),
-# AMDVLK (amd_icd64.json, amd_pro_icd64.json), and on Windows both the AMDVLK build
-# (amdvlk64.json) and the Radeon/Adrenalin ICD, which is amd-vulkan64.json in
-# System32 with amd-vulkan32.json in SysWOW64. The basename is matched with "-"
-# folded to "_" so the hyphenated Windows spelling needs no second needle; without
-# it the normal Adrenalin host answered False and the Windows half of this route
-# could never fire. Matched against the basename, never the whole path: a bare "amd"
-# anywhere in a directory name would otherwise answer for the driver.
+# Manifest file names the AMD drivers register: RADV radeon_icd.x86_64.json, AMDVLK
+# amd_icd64/amd_pro_icd64/amdvlk64, Adrenalin amd-vulkan64.json. Matched on the basename
+# with "-" folded to "_": on the whole path a directory named "amd" would answer for the
+# driver, and without the folding the normal Adrenalin host answered False.
 _AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "amd_vulkan")
-# The 32-bit halves of the same drivers, which a 64-bit llama-server cannot load: mesa
-# ships radeon_icd.i686.json beside the x86_64 one in a multilib install, and AMDVLK and
-# the Windows Adrenalin ICD name theirs with a trailing 32 (amd_icd32, amdvlk32,
-# amd-vulkan32). A host left with only those registered has no device for the Vulkan
-# bundle, so it must keep the ROCm build rather than be routed onto CPU.
+# The 32-bit halves a 64-bit llama-server cannot load: radeon_icd.i686.json in a multilib
+# install, and a trailing 32 elsewhere (amd_icd32, amdvlk32, amd-vulkan32). A host left
+# with only those must keep ROCm rather than be routed onto a bundle with no device.
 _AMD_VULKAN_ICD_32_BIT_NEEDLES = ("i686", "i386")
 
 
-# The loader's own search order, most specific first. Built per call rather than at
-# import: Path.home() RAISES when no home directory can be resolved (a Windows service
-# account with no USERPROFILE, HOMEDRIVE or HOMEPATH), and at module level that would
-# fail the import of the whole installer, on every host, over a directory only the
-# Vulkan probe ever reads.
+# Built per call, not at import: Path.home() raises when no home resolves (a service
+# account with no USERPROFILE), which at module level would fail the whole installer.
 def _vulkan_icd_search_dirs() -> list[Path]:
     """The icd.d directories the loader would search, in its own order.
 
@@ -7789,18 +7769,13 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
                             name, value, kind = winreg.EnumValue(key, index)
                         except OSError:
                             continue
-                        # The value name is the manifest path and the DWORD data is the
-                        # enable flag: "If the value is 0, then the loader will attempt to
-                        # load the file", and the loader skips the rest (Vulkan-Loader
-                        # LoaderDriverInterface.md). A disabled or stale AMD registration
-                        # must therefore not answer for the driver, or this routes a host
-                        # onto a bundle that enumerates no device and falls back to CPU.
+                        # Value name is the manifest path, DWORD data the enable flag, and
+                        # only 0 means the loader loads it (LoaderDriverInterface.md). A
+                        # disabled registration must not answer for the driver.
                         if kind != winreg.REG_DWORD or value != 0:
                             continue
-                        # And the manifest has to still be there, for the same reason an
-                        # override naming a removed file does not count: a driver
-                        # uninstall that leaves its enabled registration behind would
-                        # otherwise answer for a loader that can open nothing.
+                        # And still present: an uninstall that leaves its registration
+                        # behind would answer for a loader that can open nothing.
                         try:
                             if not os.path.isfile(name):
                                 continue
@@ -7810,12 +7785,10 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
             except OSError:
                 continue
         return paths
-    # These are FORCE lists, not hints: the loader uses the named files and does not
-    # search the directories at all, and VK_DRIVER_FILES supersedes the deprecated
-    # VK_ICD_FILENAMES rather than being tried alongside it. So whichever one is set
-    # answers on its own, including when nothing it names is loadable -- falling through
-    # would judge the host on drivers the loader will never read. Only manifests that
-    # are actually there count, for the reason the registry branch skips a disabled key.
+    # Force lists, not hints: the loader reads only these and skips the directories, and
+    # VK_DRIVER_FILES supersedes VK_ICD_FILENAMES rather than joining it. So whichever is
+    # set answers alone, even naming nothing loadable; falling through would judge the
+    # host on drivers the loader never reads. Present files only, as in the registry.
     for _env in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         _value = os.environ.get(_env)
         if not (_value or "").strip():
@@ -8018,11 +7991,9 @@ def _route_to_vulkan_prebuilt(
             "llama.cpp prebuilt, which is faster on these parts than ROCm"
         )
         host = _vulkan_only_host(host)
-        # Automatic, so the marker keeps rocm_gfx and the updater keeps forwarding it:
-        # this is a default, and re-selecting ROCm must land on the right bundle rather
-        # than on a host the updater now reads as ROCm-less. It also keeps the Vulkan CPU
-        # crash recovery armed, which matters more here than on the #7357 hosts, since
-        # these boxes do have a working HIP bundle to fall back to.
+        # Automatic, so the marker keeps rocm_gfx: this is a default, and re-selecting
+        # ROCm must land on the right bundle. It also keeps the Vulkan CPU crash recovery
+        # armed, which matters here because these hosts do have a HIP bundle to fall to.
         persist_backend = "auto"
     elif forced:
         log(
@@ -8235,9 +8206,8 @@ class BackendRoute:
     published_release_tag: str
     persist_llama_backend: str | None
     persist_rocm_gfx: str | None
-    # The pre-route host when Vulkan was a PREFERENCE over a HIP bundle that works,
-    # so the plan can keep that bundle as the fallback instead of CPU. None for the
-    # #7357 route, where no HIP prebuilt covers the arch in the first place.
+    # The pre-route host when Vulkan was preferred over a working HIP bundle, so the plan
+    # can fall back to it rather than to CPU. None on #7357, where no HIP build fits.
     rocm_fallback_host: HostInfo | None = None
 
 
@@ -8294,9 +8264,8 @@ def route_backend_request(
         published_release_tag = release_tag,
         persist_llama_backend = persist_llama_backend,
         persist_rocm_gfx = persist_rocm_gfx,
-        # Only the integrated-GPU preference: it is the one route that turns away from
-        # a HIP bundle this host can actually run. Read off the route's own effect
-        # rather than re-deriving which trigger fired.
+        # Only the integrated-GPU preference turns away from a HIP bundle this host can
+        # run. Read off the route's effect rather than re-deriving which trigger fired.
         rocm_fallback_host = (
             resolved_host
             if (

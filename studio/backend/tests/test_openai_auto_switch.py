@@ -6228,14 +6228,12 @@ def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
 
 
 def test_gpu_index_kind_is_stored_only_when_it_is_not_the_legacy_default():
-    # Absent means physical, so writing it back would churn every existing row for no
-    # information. Only a Vulkan pin needs a marker.
+    # Absent means physical, so writing it back would churn every row for no information.
     physical = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "physical"})
     assert physical == {"gpu_ids": [0]}
     assert settings.normalize_model_override({"gpu_ids": [0]}) == {"gpu_ids": [0]}
     vulkan = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "vulkan"})
     assert vulkan == {"gpu_ids": [0], "gpu_index_kind": "vulkan"}
-    # A kind with no ids is nothing to qualify.
     assert settings.normalize_model_override({"gpu_index_kind": "vulkan"}) == {}
 
 
@@ -6785,9 +6783,9 @@ def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
 
 
 def test_a_fill_never_labels_the_server_s_gpu_pin_with_this_browser_s_index_space(override_store):
-    # Two browsers against one server: the stored pin is physical ids from a ROCm-era
-    # save, and this one's one-time backfill offers Vulkan ordinals. The ids belong to
-    # the space they were written in, so the qualifier cannot arrive without them.
+    # Two browsers against one server: the stored pin is physical ids from a ROCm-era save
+    # and this backfill offers Vulkan ordinals. The ids belong to the space they were
+    # written in, so the qualifier cannot arrive without them.
     settings.set_model_override("unsloth/B-GGUF:Q4_K_M", gpu_ids = [0, 1])
 
     resp = _put(
@@ -6801,7 +6799,6 @@ def test_a_fill_never_labels_the_server_s_gpu_pin_with_this_browser_s_index_spac
     assert entry["gpu_ids"] == [0, 1]
     assert "gpu_index_kind" not in entry
     assert settings.stored_gpu_index_kind(entry) == "physical"
-    # Everything outside the group still fills.
     assert entry["max_seq_length"] == 32768
 
 
@@ -6939,9 +6936,8 @@ def _pin_resolves_on_a_host_with_device_0(monkeypatch):
 
 
 def test_a_pin_written_in_the_other_index_space_is_unusable(monkeypatch):
-    # The failure the availability checks cannot see: ordinal 0 exists on a Vulkan build and
-    # physical device 0 exists on a ROCm one, so a pin carried across a backend change passes
-    # every presence test while addressing a different card.
+    # What the availability checks cannot see: ordinal 0 and physical device 0 both exist,
+    # so a pin carried across a backend change passes every presence test.
     from core.inference.llama_cpp import LlamaCppBackend
 
     _pin_resolves_on_a_host_with_device_0(monkeypatch)
@@ -6964,8 +6960,7 @@ def test_a_pin_written_in_the_other_index_space_is_unusable(monkeypatch):
 
 
 def test_a_rocm_pin_survives_while_the_backend_is_still_rocm(monkeypatch):
-    # Negative control for the test above: the mismatch check must not reject a pin that
-    # never moved, or the flip would drop every stored pin on every host.
+    # Negative control: rejecting a pin that never moved drops every pin on every host.
     from core.inference.llama_cpp import LlamaCppBackend
 
     _pin_resolves_on_a_host_with_device_0(monkeypatch)
@@ -7911,7 +7906,6 @@ def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
         fill_absent_fields = True,
         coupled_fields = coupled,
     ) == {"m": {"gpu_ids": [0, 1], "max_seq_length": 4096}}
-    # An entry holding no part of the group still takes the whole of it.
     db.upsert_app_setting_map_entry(key, "n", {"max_seq_length": 2048})
     assert db.upsert_app_setting_map_entry(
         key,

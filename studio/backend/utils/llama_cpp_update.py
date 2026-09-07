@@ -509,15 +509,10 @@ def _llama_only_status(
         except Exception as exc:  # pragma: no cover - network defensive
             logger.debug("llama update: size lookup failed", error = str(exc))
 
-    # An automatic install whose detection now resolves elsewhere. Read here rather
-    # than only on the Settings page because the user has no reason to look there: the
-    # install still works, it is just no longer the backend this host would be given
-    # today. Skipped while the job runs, like get_backend_status, since the tree is
-    # being replaced underneath the answer, and skipped when a release update is
-    # already offered, which is both what _plan_llama_phase does and why: that update
-    # runs the installer with no --llama-backend, so it re-detects and lands the same
-    # bundle a migration would. The drift only needs its own offer when nothing else
-    # would move the install.
+    # An automatic install whose detection now resolves elsewhere. Surfaced here because
+    # the install still works, so nothing sends the user to Settings. Skipped while a job
+    # runs, and when a release update is already offered: that update re-detects with no
+    # --llama-backend and lands the same bundle.
     to_backend = (
         None
         if job_running or update_available
@@ -675,11 +670,8 @@ def _pending_backend_migration(
         return None
     _override = _env_backend_override()
     if _override is not None and _override != "auto":
-        # The environment owns the backend; an offer here could not be applied.
-        # "auto" is the exception: environment_backend_override treats it as a
-        # recognized value, but it asks for the same detection the migration
-        # re-applies, and the job invokes the installer with --llama-backend auto,
-        # so suppressing on it would withhold the offer from a host that can take it.
+        # The environment owns the backend, so an offer could not be applied. "auto" is the
+        # exception: it asks for the same detection the migration re-applies.
         return None
     if marker_backend_request(marker) != "auto":
         return None
@@ -879,11 +871,9 @@ def _run_llama_phase(
                 )
 
         kept_existing = backend_request is None and new_tag is not None and new_tag == prior_tag
-        # A migration asks for "auto", which the assertions above accept whatever it
-        # resolves to, and the install can legitimately end on the backend it started
-        # from -- the ROCm fallback behind the Vulkan preference is exactly that. Saying
-        # "now running on rocm" would read as the migration having been applied, and the
-        # next status check offers the same one again.
+        # A migration asks for "auto", so it can legitimately land back on the backend it
+        # started from (the ROCm fallback behind the Vulkan preference). "Now running on
+        # rocm" would read as applied while the next check offers the same migration.
         migration_kept = bool(migration_target) and new_backend != migration_target
         logger.info(
             "llama update: success",
@@ -1063,16 +1053,10 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             )
         )
         if backend_request is None and not status.get("update_available"):
-            # Nothing newer to install, but an install can still be out of date in the
-            # other axis: "auto" recorded what detection chose then, and detection can
-            # resolve elsewhere now. Re-apply it rather than refusing, which is what the
-            # banner offered. Asking for "auto" rather than for the new backend by name
-            # keeps the install automatic, so the marker keeps its rocm_gfx, later
-            # updates keep re-detecting, and the Vulkan CPU crash recovery stays armed.
-            #
-            # Only needed when the release is current: an update at a NEWER release
-            # already runs the installer with no --llama-backend, so it re-detects and
-            # lands the same bundle this branch asks for.
+            # Nothing newer to install, but "auto" recorded what detection chose then and
+            # can resolve elsewhere now. Asking for "auto" rather than for the new backend
+            # by name keeps the install automatic, so the marker keeps rocm_gfx and the CPU
+            # crash recovery stays armed. A newer release re-detects on its own.
             migration_target = _pending_backend_migration(binary, marker)
             if migration_target is None:
                 return {
@@ -1183,13 +1167,11 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             "llama_backend": llama_backend,
             "rocm_gfx": rocm_gfx,
             "backend_request": backend_request,
-            # An update that re-applies "auto" because detection drifted. Named so the
-            # caller can keep presenting it as the update it is, rather than as the
-            # backend switch its backend_request would otherwise make it look like.
+            # Named so the caller keeps presenting this as the update it is, rather than
+            # as the backend switch its backend_request would otherwise make it look like.
             "migration": migration,
-            # The backend the offer named, so the phase can say whether it landed: an
-            # "auto" install accepts whatever detection produces, and a fallback that
-            # reinstalls the backend already there would otherwise report success while
+            # The backend the offer named, so the phase can say whether it landed: a
+            # fallback onto the backend already there would otherwise report success while
             # leaving the same migration on offer.
             "migration_target": migration_target,
         }
@@ -1262,12 +1244,9 @@ def _whisper_phase_plan(
     away and back. So allow a repair-only job for that one refusal, and only while the
     pairing is genuinely stale, which keeps an ordinary already-selected request a
     refusal rather than a no-op job reporting success."""
-    # A migration is switch-SHAPED (it carries a backend request so the marker is
-    # asserted after the install) but update-BEHAVED: it reinstalls llama.cpp at the
-    # same release on a different backend. So whisper needs the ordinary chained plan,
-    # which both catches up on its own releases and re-pairs against the new ggml.
-    # Taking the repair-only branch here would silently drop a whisper release update
-    # that the banner was showing, since a self-contained install returns no phase.
+    # A migration is switch-shaped (a backend request, so the marker is asserted) but
+    # update-behaved, so whisper needs the ordinary chained plan: the repair-only branch
+    # returns no phase for a self-contained install and would drop a pending update.
     if backend_request is None or migration:
         chained = (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
@@ -1363,10 +1342,8 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
         llama_plan = _plan_llama_phase(backend_request)
         llama_spec = llama_plan.get("spec")
         if llama_spec is not None and llama_spec.get("migration"):
-            # The planner turned an up-to-date update into a re-application of "auto".
-            # Adopt its request here so the verification, the whisper re-pair and the
-            # installer all see it; the claimed operation stays "update", which is what
-            # the banner offered and what the job's watchers are waiting for.
+            # The planner turned an up-to-date update into a re-application of "auto", so
+            # adopt its request; the claimed operation stays the "update" that was offered.
             migration = True
             backend_request = llama_spec["backend_request"]
             with _job_lock:

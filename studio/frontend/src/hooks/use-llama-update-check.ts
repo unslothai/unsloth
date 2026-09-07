@@ -48,10 +48,9 @@ export interface LlamaUpdateStatus {
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
   update_size_bytes: number | null;
-  // The install recorded an AUTOMATIC backend choice and detection now resolves
-  // elsewhere, so Update would move it. Independent of update_available: the release
-  // can be current while the backend has drifted, which is the only case the server
-  // reports this in.
+  // The install recorded an automatic backend choice and detection now resolves
+  // elsewhere, so Update would move it. Independent of update_available: the server
+  // reports this only when the release is current and the backend has drifted.
   backend_migration_available: boolean;
   from_backend: string | null;
   to_backend: string | null;
@@ -186,9 +185,8 @@ export interface LlamaApplyResult {
   tag?: string | null;
   reloadRequired?: boolean | null;
   error?: string | null;
-  // What the job itself says it did. A migration can finish at the release it
-  // started from, and can end on the backend it started from, so a caller that
-  // composes "updated to <tag>" from the version fields describes neither.
+  // What the job itself says it did. A migration can finish at the release and on the
+  // backend it started from, so "updated to <tag>" from the version fields fits neither.
   message?: string;
 }
 

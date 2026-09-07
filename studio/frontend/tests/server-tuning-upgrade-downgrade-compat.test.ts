@@ -555,8 +555,8 @@ test("an empty server GPU list does not clear a local pin", () => {
   const hydrated = fromApiOverride({ gpu_ids: [] }, local);
   assert.deepEqual(hydrated.selectedGpuIds, [1]);
   assert.equal(hydrated.selectedGpuIndexKind, "vulkan");
-  // The pin now travels WITH its namespace rather than being dropped, so a Vulkan
-  // ordinal is never silently reread as a physical index on the other side.
+  // The pin travels with its namespace, so a Vulkan ordinal is never silently reread as
+  // a physical index on the other side.
   const sent = toApiOverride(local);
   assert.deepEqual(sent.gpu_ids, [1]);
   assert.equal(sent.gpu_index_kind, "vulkan");

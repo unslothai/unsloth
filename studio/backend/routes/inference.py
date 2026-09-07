@@ -8304,8 +8304,8 @@ async def _maybe_auto_switch_model(
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
                             saved_gpu_ids, stored_gpu_index_kind(override)
                         ):
-                            # Stale pin (GPU removed, another host, or a backend change that
-                            # moved these ids into a different index space): drop the one
+                            # Stale pin (GPU removed, another host, or a backend change
+                            # that moved these ids into another index space): drop the
                             # dead field rather than 400 the whole load.
                             load_kwargs.pop("gpu_ids", None)
                             logger.warning(

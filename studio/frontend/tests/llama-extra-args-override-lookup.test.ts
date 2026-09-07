@@ -273,8 +273,7 @@ test("a server row states which index space its pin is in", () => {
   const vulkan = fromApiOverride({ gpu_ids: [1], gpu_index_kind: "vulkan" });
   assert.deepEqual(vulkan.selectedGpuIds, [1]);
   assert.equal(vulkan.selectedGpuIndexKind, "vulkan");
-  // Absent is the legacy meaning and must stay physical, or every row written before
-  // the field would come back unusable.
+  // Absent stays physical, or every row written before the field reads back unusable.
   const legacy = fromApiOverride({ gpu_ids: [1] });
   assert.equal(legacy.selectedGpuIndexKind, "physical");
 });
