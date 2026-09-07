@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 _OMITTED_TOOL_EXCHANGE = "[Earlier tool exchange omitted from the rolling context window.]"
 _UNPRICED_MEDIA_TYPES = frozenset(
-    ("image_url", "input_audio", "audio", "input_image", "input_video")
+    ("image_url", "input_audio", "audio", "input_image", "input_video", "video_url")
 )
 
 # How far BELOW the prompt budget a compaction trims, as a fraction of that budget. Trimming to exactly the budget puts
