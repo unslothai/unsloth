@@ -104,9 +104,16 @@ def test_an_idle_gap_is_not_charged_to_the_generation_after_it(monkeypatch):
     assert max(s["gen_tok_s"] for s in stats) == 5.0
 
 
-def test_two_generations_back_to_back_each_get_their_own_window(monkeypatch):
-    """The window resets when the counter moves, so the second generation is not
-    credited with the first one's seconds."""
+def test_a_window_the_engine_never_left_reports_what_it_produced(monkeypatch):
+    """The window closes when the engine goes idle, not when a counter moves.
+
+    /metrics carries no per-slot token counter, so a release says how many tokens
+    the ENGINE has produced and not which generation produced them. Under
+    continuous load the honest statement is therefore the engine's throughput over
+    the busy window it never left: 200 tokens in 30 busy seconds. Closing the
+    window on each release instead is what lets a second, still-running generation
+    be divided by the gap between two releases -- see the overlapping test below.
+    """
     snaps = [
         _busy(decode = 0.0),
         _busy(predicted = 100.0, decode = 1.0),
@@ -116,8 +123,63 @@ def test_two_generations_back_to_back_each_get_their_own_window(monkeypatch):
     stats = _drive(snaps, monkeypatch)
 
     rates = [s["gen_tok_s"] for s in stats]
-    # 100 tokens over one busy tick, then 100 over two.
-    assert rates == [0.0, 10.0, 0.0, 5.0], rates
+    # 100 tokens over one busy tick, then 200 over the three the engine stayed up.
+    assert rates == [0.0, 10.0, 0.0, 6.7], rates
+
+
+def test_an_idle_tick_between_two_generations_closes_the_window(monkeypatch):
+    """The control for the test above: the window does still close, and the second
+    generation is then measured on its own seconds alone."""
+    snaps = [
+        _busy(decode = 0.0),
+        _busy(predicted = 100.0, decode = 1.0),
+        _busy(predicted = 100.0, decode = 1.0, running = 0.0),
+        _busy(predicted = 100.0, decode = 2.0),
+        _busy(predicted = 200.0, decode = 3.0),
+    ]
+    stats = _drive(snaps, monkeypatch)
+
+    assert [s["gen_tok_s"] for s in stats][-1] == 5.0
+
+
+def test_the_second_of_two_concurrent_generations_is_not_divided_by_the_gap(
+    monkeypatch,
+):
+    """The 183.7 tok/s record again, reached the other way.
+
+    Two 1837-token generations run together for 80 seconds and release one poll
+    apart. Discarding the busy window on the first release leaves the second with
+    the 10 seconds between them, which reports the second generation at exactly the
+    impossible rate this whole change exists to remove. The window is the engine's,
+    so the second release is priced against the 90 seconds the engine was up and the
+    3674 tokens it produced in them.
+    """
+    snaps = (
+        [_busy(predicted = 0.0, decode = float(i), running = 2.0) for i in range(8)]
+        + [_busy(predicted = 1837.0, decode = 8.0, running = 1.0)]
+        + [_busy(predicted = 3674.0, decode = 9.0, running = 0.0)]
+    )
+    stats = _drive(snaps, monkeypatch)
+
+    rates = [s["gen_tok_s"] for s in stats]
+    assert [r for r in rates if r] == [23.0, 40.8], rates
+    # What discarding the window on the first release would have said.
+    assert 1837.0 / _TICK_S == 183.7
+
+
+def test_the_interval_a_single_slot_finished_in_is_still_counted(monkeypatch):
+    """A generation that completes between scrapes is reported by a scrape that
+    shows no slot at all: llama-server has already released it. That interval is
+    still the engine working -- the tokens arrived in it -- so leaving it out
+    shortens the denominator and puts the rate back above the hardware ceiling.
+    1837 tokens over 80 seconds is 23.0 tok/s; over 70 it is 26.2."""
+    snaps = [_busy(decode = float(i)) for i in range(8)] + [
+        _busy(predicted = 1837.0, decode = 8.0, running = 0.0)
+    ]
+    stats = _drive(snaps, monkeypatch)
+
+    assert max(s["gen_tok_s"] for s in stats) == 23.0
+    assert round(1837.0 / 70.0, 1) == 26.2
 
 
 def test_the_decode_counter_reports_while_the_token_counters_are_still(monkeypatch):
