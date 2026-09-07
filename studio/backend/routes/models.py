@@ -2401,11 +2401,18 @@ async def get_model_config(
         allow_ambient_token = allow_ambient_token,
     )
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+    from utils.models.model_config import shared_hub_model_info
+    from utils.utils import pinned_hf_reachability
 
     def _resolve(model_name: str) -> ModelDetails:
         # Each probe below can reach the hub, so the guard wraps the whole handler: offline they
         # must all resolve from the HF cache. Local paths stay on disk and skip the probe.
-        with _hf_offline_if_unreachable_for(model_name):
+        # One repo document between the probes, one verdict for a request that outlives the memo.
+        with (
+            pinned_hf_reachability(),
+            _hf_offline_if_unreachable_for(model_name),
+            shared_hub_model_info(),
+        ):
             # Inside the context, not before: the guard forces offline itself when the hub
             # is unreachable, and every probe below then resolves from disk.
             if anonymous_and_offline(hf_token) and not is_local_path(model_name):

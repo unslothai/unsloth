@@ -1638,8 +1638,12 @@ def image_upload(ctx: ActionContext) -> ActionResult:
         plus = None
     if plus is None:
         # WHY, not just THAT: a bare "not visible" conflates a button that is absent, one that is covered
-        # and a locator that disagrees with the page, and has already cost three wrong hypotheses.
-        # Carrying the probe state into the row means the next run answers it.
+        # and a locator that disagrees with the page, and has already cost three wrong hypotheses. A
+        # direct probe once found the control at 36x36, fully opaque and hit-testable, on a fresh chat,
+        # after a settings round trip and under a 20,000-character composer fill, so those states alone
+        # did not explain it then; a fixture that loads no model has no attachments button at all, and
+        # nothing here rules out a change in the current build. Read the diagnostic below rather than
+        # this note. Carrying the probe state into the row means the next run answers it.
         return not_run(
             "no visible attachments button on the composer: "
             + json.dumps(_ev(ctx, IMAGE_BUTTON_DIAGNOSTIC) or {})

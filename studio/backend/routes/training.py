@@ -1172,7 +1172,8 @@ async def start_training(
         job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}"
         if request.start_request_id:
             # A retry of an already-resolved id replays its stored outcome even when a NEW start would be refused;
-            # peeking also refreshes a cancellation tombstone so a retry cannot outlive it.
+            # peeking also refreshes a cancellation tombstone so a retry cannot outlive it and go on to
+            # spawn the run the user cancelled.
             existing_record = backend.peek_start_request(request.start_request_id)
             if existing_record is not None:
                 return _start_request_response(existing_record)

@@ -4,7 +4,8 @@
 import { type ReactElement, useMemo } from "react";
 
 import type { TrainingSeriesPoint } from "@/features/training";
-// The loss + grad-norm cards are pure presentational (props only), so reuse them directly, not ChartsSection/ChartsContent (those also render LR and Eval Loss).
+// The loss and grad-norm cards are pure presentational (props only), so reuse them directly, not
+// ChartsSection/ChartsContent, which also render LR and Eval Loss.
 // eslint-disable-next-line no-restricted-imports
 import { GradNormChartCard } from "@/features/studio/sections/charts/grad-norm-chart-card";
 // eslint-disable-next-line no-restricted-imports
@@ -18,8 +19,9 @@ import {
   ema,
 } from "@/features/studio/sections/charts/utils";
 
-// Fixed presentation defaults (the LLM tab exposes these via a settings sheet): EMA smoothing on, linear scale, raw +
-// smoothed + average lines, no outlier trimming (diffusion loss is naturally noisy, not spiky-with-outliers).
+// Fixed presentation defaults (the LLM tab exposes these via a settings sheet): EMA smoothing on,
+// linear scale, raw plus smoothed plus average lines, no outlier trimming, since diffusion loss
+// is naturally noisy rather than spiky-with-outliers.
 const SMOOTHING = 0.8;
 
 function toLossItems(series: TrainingSeriesPoint[]): { step: number; loss: number }[] {
@@ -38,8 +40,9 @@ function fullStepDomain(steps: number[]): [number, number] {
   return [min, max];
 }
 
-// A diffusion-only metrics view: Training Loss and Grad Norm side by side, with a note under the loss card explaining why
-// per-step loss looks noisy. Always renders both cards so the parent decides when to mount them.
+// A diffusion-only metrics view: Training Loss and Grad Norm side by side, with a note under the
+// loss card explaining why per-step loss looks noisy. Always renders both cards so the parent
+// decides when to mount them.
 export function DiffusionCharts({
   lossHistory,
   gradNormHistory,

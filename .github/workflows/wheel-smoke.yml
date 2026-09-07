@@ -9,7 +9,8 @@
 # Verified locally end-to-end against this branch:
 #   - python -m build produces unsloth-<version>-py3-none-any.whl in 13s
 #   - wheel content sanity passes:
-#       lockfile shipped, frontend dist shipped,
+#       frontend dist shipped, and none of the pre-build tree with it:
+#       no package-lock, no frontend public, no frontend src,
 #       no node_modules in wheel, no bun.lock in wheel,
 #       main bundle has unstable_Provider hits=1 (assistant-ui internals only).
 #   - Unsloth backend imports cleanly from the installed wheel with the
@@ -98,7 +99,12 @@ jobs:
           with zipfile.ZipFile(w) as z:
               n = z.namelist()
               checks = {
-                "lockfile shipped":      any(s.endswith("studio/frontend/package-lock.json") for s in n),
+                # The lockfile used to be asserted PRESENT. It is a build input for
+                # `npm ci` above, not something an installed Unsloth reads, so it now
+                # has to be absent along with the rest of the pre-build tree.
+                "no package-lock":       not any(s.endswith("studio/frontend/package-lock.json") for s in n),
+                "no frontend public":    not any("studio/frontend/public/" in s for s in n),
+                "no frontend src":       not any("studio/frontend/src/"    in s for s in n),
                 "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
                 "no node_modules":       not any("studio/frontend/node_modules/" in s for s in n),
                 "no bun.lock":           not any(s.endswith("studio/frontend/bun.lock")       for s in n),

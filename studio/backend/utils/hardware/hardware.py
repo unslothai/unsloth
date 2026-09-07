@@ -2396,6 +2396,50 @@ def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
     return min(total_bytes, max(0, total_bytes - round(used_gb * (1024**3))))
 
 
+def _mlx_device_info(mx: Any) -> Dict[str, Any]:
+    """Metal device properties across the MLX rename.
+
+    ``mx.device_info()`` is the current spelling; mlx below 0.30 has only
+    ``mx.metal.device_info()``, and the stack gate accepts mlx >= 0.22.0
+    (utils.mlx_repair._MLX_MIN_VERSIONS), so reading just the new name leaves the
+    working set cap silently unapplied on a stack Studio considers usable.
+    """
+    for probe in (
+        getattr(mx, "device_info", None),
+        getattr(getattr(mx, "metal", None), "device_info", None),
+    ):
+        if callable(probe):
+            try:
+                return probe() or {}
+            except Exception:
+                continue
+    return {}
+
+
+def _apple_unified_free_bytes(available_bytes: int, device_info: Any) -> int:
+    """What is available right now, bounded by the Metal working set.
+
+    Total RAM minus GPU-only usage counts host RAM as free, which the
+    training-method policy then reads as room it does not have.
+
+    The cap is not reduced by the AGX "In use system memory" counter: that is
+    whole-device and only the active subset (a real M4 Pro reports 4.70 GiB
+    allocated against 0.61 GiB in use), while the working set is a per-process
+    budget, which is how torch.mps applies it.
+
+    A floor rather than a capacity: macOS reclaims compressed and file-backed
+    pages, so MLX can still allocate past what psutil calls available. Reading
+    low costs a QLoRA suggestion where LoRA would have fit; reading high costs
+    an OOM partway through a run.
+    """
+    free = max(0, int(available_bytes or 0))
+    try:
+        recommended = int(device_info.get("max_recommended_working_set_size") or 0)
+    except Exception:
+        recommended = 0
+    return min(free, recommended) if recommended > 0 else free
+
+
 def _context_free_cuda_memory_info(
     idx: int,
     total_bytes: int,
@@ -2646,16 +2690,15 @@ def get_gpu_memory_info() -> Dict[str, Any]:
             import psutil
 
             # Unified memory: total = system RAM, GPU used from IORegistry AGX.
-            total = psutil.virtual_memory().total
+            memory = psutil.virtual_memory()
+            total = memory.total
             agx = _read_apple_gpu_stats()
             allocated = agx.get("vram_used_bytes", 0) if agx else 0
 
-            try:
-                info = mx.device_info()
-                # prefer machine(); processor() can return "i386" on native arm64.
-                gpu_name = info.get("device_name") or platform.machine() or "arm64"
-            except Exception:
-                gpu_name = platform.machine() or "arm64"
+            info = _mlx_device_info(mx)
+            # prefer machine(); processor() can return "i386" on native arm64.
+            gpu_name = info.get("device_name") or platform.machine() or "arm64"
+            free = _apple_unified_free_bytes(getattr(memory, "available", 0), info)
 
             return {
                 "available": True,
@@ -2665,7 +2708,7 @@ def get_gpu_memory_info() -> Dict[str, Any]:
                 "total_gb": total / (1024**3),
                 "allocated_gb": allocated / (1024**3),
                 "reserved_gb": allocated / (1024**3),
-                "free_gb": (total - allocated) / (1024**3),
+                "free_gb": free / (1024**3),
                 "utilization_pct": (allocated / total) * 100 if total else 0,
             }
         except Exception as e:
@@ -5313,6 +5356,9 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "temperature_c": None,
                     "vram_used_gb": round(mem.get("allocated_gb", 0), 2),
                     "vram_total_gb": round(mem.get("total_gb", 0), 2),
+                    # Unified memory: free is not total - used, so publish it
+                    # rather than let the caller subtract.
+                    "vram_free_gb": round(mem.get("free_gb", 0), 2),
                     "vram_utilization_pct": round(mem.get("utilization_pct", 0), 1),
                     "power_draw_w": None,
                     "power_limit_w": None,
