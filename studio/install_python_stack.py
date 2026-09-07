@@ -6962,7 +6962,7 @@ def install_python_stack() -> int:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
         else:
             base_total += 1  # torch flavor invariant (step 13w), Windows
-    if IS_MAC_ARM and not skip_base:
+    if IS_MAC_ARM and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
@@ -7040,18 +7040,19 @@ def install_python_stack() -> int:
     if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo = local_repo):
         return 1
 
-    # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
-    # mlx-vlm / mlx-lm transformers pin -- set at module load).
-    if IS_MAC_ARM and not skip_base:
+    # Fresh installs skip core packages but still need MLX.
+    # Keep these pins aligned with utils/mlx_repair.py and unsloth-zoo.
+    # UV_OVERRIDE relaxes the MLX packages' Transformers pins.
+    if IS_MAC_ARM and not NO_TORCH:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
             "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
             "--no-cache-dir",
             "--upgrade",
-            "mlx",
-            "mlx-metal",
-            "mlx-lm",
-            "mlx-vlm",
+            "mlx==0.32.1",
+            "mlx-metal==0.32.1",
+            "mlx-lm==0.31.3",
+            "mlx-vlm>=0.4.4,<0.7.0",
         )
 
     # gfx906: the base install below resolves unsloth's unconditional bitsandbytes

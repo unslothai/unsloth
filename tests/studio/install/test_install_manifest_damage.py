@@ -55,7 +55,8 @@ def _record(dist_info: Path, rows) -> None:
     writer = csv.writer(buf, lineterminator = "\n")
     for row in rows:
         writer.writerow(row)
-    (dist_info / "RECORD").write_text(buf.getvalue(), encoding = "utf-8", newline = "")
+    with (dist_info / "RECORD").open("w", encoding = "utf-8", newline = "") as handle:
+        handle.write(buf.getvalue())
 
 
 def _write(path: Path, text: str) -> int:

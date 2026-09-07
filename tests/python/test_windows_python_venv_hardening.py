@@ -76,23 +76,46 @@ def _uv_cache_functions(source: str) -> str:
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_path_python_wrapper_resolves_to_real_executable(tmp_path: Path, shell: str):
+@pytest.mark.parametrize(
+    "reported_version,accepted",
+    [
+        ("3.9.0", False),
+        ("3.10.0", False),
+        ("3.11.0", True),
+        ("3.12.0", True),
+        ("3.13.0", True),
+        ("3.13.8", False),
+        ("3.14.0", False),
+    ],
+)
+def test_path_python_wrapper_resolves_to_real_executable(
+    tmp_path: Path, shell: str, reported_version: str, accepted: bool
+):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     finder = _extract(r"    function Find-CompatiblePython \{.*?\n    \}\n", source)
     (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding = "utf-8")
     if os.name == "nt":
         wrapper = tmp_path / "python.bat"
-        wrapper.write_text(f'@"{sys.executable}" %*\n', encoding = "utf-8")
+        wrapper.write_text(
+            f'@echo off\nif "%~1"=="--version" (\n'
+            f"echo Python {reported_version}\nexit /b 0\n)\n"
+            f'@"{sys.executable}" %*\n',
+            encoding = "utf-8",
+        )
     else:
         wrapper = tmp_path / "python-wrapper"
         wrapper.write_text(
-            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n', encoding = "utf-8"
+            '#!/bin/sh\nif [ "$1" = "--version" ]; then\n'
+            f"printf 'Python {reported_version}\\n'\nexit 0\nfi\n"
+            f'exec {shlex.quote(sys.executable)} "$@"\n',
+            encoding = "utf-8",
         )
         wrapper.chmod(0o755)
 
     script = f"""
 $ErrorActionPreference = "Stop"
 $PythonVersion = "3.13"
+$PythonSkip = @("3.13.8")
 $script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda)'
 function Get-HostMachineArch {{ return "x86_64" }}
 function Test-IsCondaPython {{ param([string]$Exe) return $false }}
@@ -112,7 +135,12 @@ Write-Output $found.Path
     env = os.environ.copy()
     env["TEST_PYTHON_WRAPPER"] = str(wrapper)
     env["PYTHONPATH"] = str(tmp_path)
-    assert Path(_run_powershell(shell, script, env)).resolve() == Path(sys.executable).resolve()
+    found = _run_powershell(shell, script, env)
+    if accepted:
+        assert found
+        assert Path(found).resolve() == Path(sys.executable).resolve()
+    else:
+        assert not found
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
