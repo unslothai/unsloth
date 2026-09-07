@@ -63,11 +63,24 @@ class _ScriptedBackend:
         self.calls: list = []
         self.reset_count = 0
 
-    def generate_chat_response(self, *, messages, tools = None, stats_holder = None, **kwargs):
+    def generate_chat_response(
+        self,
+        *,
+        messages,
+        tools = None,
+        stats_holder = None,
+        **kwargs,
+    ):
         self.calls.append({"messages": messages, "tools": tools, **kwargs})
         yield "the weather is sunny"
 
-    def generate_chat_completion_with_tools(self, *, messages, tools = None, **kwargs):
+    def generate_chat_completion_with_tools(
+        self,
+        *,
+        messages,
+        tools = None,
+        **kwargs,
+    ):
         self.calls.append({"loop": True, "messages": messages, "tools": tools, **kwargs})
         yield {"type": "content", "text": "the weather is sunny"}
 

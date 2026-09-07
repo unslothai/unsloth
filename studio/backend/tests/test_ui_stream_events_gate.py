@@ -627,7 +627,9 @@ def test_a_stream_that_kept_its_own_terminal_is_owed_nothing():
     # not a call was withheld earlier in the stream.
     plain = ServerToolCallStripper()
     plain.strip('data: {"id": "c", "choices": [{"index": 0, "delta": {"content": "hi"}}]}')
-    plain.strip('data: {"id": "c", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}')
+    plain.strip(
+        'data: {"id": "c", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}'
+    )
     assert plain.owed_terminal_chunk() is None
 
     after_call = ServerToolCallStripper()
