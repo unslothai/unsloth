@@ -75,6 +75,7 @@ from core.inference.llama_server_args import (
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
     _MOE_OFFLOAD_FLAGS,
+    _PARALLEL_FLAGS,
     _SPLIT_MODE_FLAGS,
     _TENSOR_SPLIT_FLAGS,
     _effective_tensor_parallel,
@@ -17516,7 +17517,10 @@ class LlamaCppBackend:
     # llama.cpp refusing a unified KV cache because this architecture needs one
     # sequence per stream. Matched on llama.cpp's own wording rather than on an
     # architecture name, so a second model with the same constraint is covered
-    # without a list to keep current.
+    # without a list to keep current. What glm5next actually emits is the
+    # GGML_ASSERT in ggml-org/llama.cpp#27754, whose stringified expression
+    # carries the second marker; the first is the same refusal worded as a
+    # context-init error, which is how the field report quoted it.
     _KV_UNIFIED_REFUSED_MARKERS = (
         "a unified kv cache is only supported with a single sequence",
         "needs one sequence per stream",
@@ -17539,9 +17543,11 @@ class LlamaCppBackend:
         drop --kv-unified and pin --parallel to 1, which is the configuration
         that would never have added the flag in the first place.
 
-        Every occurrence is rewritten, not just the emitted one. Extras are
-        appended after Unsloth's flags and llama.cpp is last-wins, so a --parallel
-        surviving in the tail would put the rejected geometry straight back.
+        Every occurrence and every alias is rewritten, not just the emitted one.
+        Extras are appended after Unsloth's flags and llama.cpp is last-wins, so
+        one slot count surviving in the tail would put the rejected geometry
+        straight back. _PARALLEL_FLAGS is the set the denylist uses, so the two
+        cannot drift apart.
         """
         out: list[str] = []
         saw_kv_unified = False
@@ -17559,19 +17565,23 @@ class LlamaCppBackend:
                 if (
                     "=" not in tok
                     and cmd[i + 1 : i + 2]
-                    and cmd[i + 1] in (_LLAMA_ARG_TRUE_FALSE_AUTO_VALUES)
+                    # Case-sensitive, like llama.cpp's own bool parse and the
+                    # flash-attn helpers: "ON" is not a value it would accept.
+                    and cmd[i + 1] in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES
                 ):
                     skip_value = True
                 continue
-            if name in ("--parallel", "-np"):
+            if name in _PARALLEL_FLAGS:
                 if "=" in tok:
                     value = tok.partition("=")[2]
                 elif tok != name:
                     # The attached short, -np8, which _flag_name peels to -np.
                     value = tok[len(name) :]
                 else:
+                    # Only a real value is consumed: a valueless --parallel is
+                    # malformed, and swallowing the next token would delete a flag.
                     value = cmd[i + 1] if i + 1 < len(cmd) else ""
-                    skip_value = True
+                    skip_value = _flag_name(value) is None
                 try:
                     multi_slot = multi_slot or int(value.strip()) > 1
                 except (AttributeError, TypeError, ValueError):
@@ -17581,7 +17591,7 @@ class LlamaCppBackend:
             out.append(tok)
         if not saw_kv_unified and not multi_slot:
             return None
-        if not any(_flag_name(tok) in ("--parallel", "-np") for tok in out):
+        if not any(_flag_name(tok) in _PARALLEL_FLAGS for tok in out):
             out.extend(["--parallel", "1"])
         return out
 
@@ -17590,8 +17600,9 @@ class LlamaCppBackend:
         """Drop inherited unified-cache and slot-count env before that retry.
 
         llama.cpp applies the environment before parsing argv, so the argv wins
-        on --parallel. LLAMA_ARG_KV_UNIFIED has no negated twin to emit, so
-        dropping it is the only way the retry can be sure the flag is off.
+        on --parallel. Dropped rather than negated with --no-kv-unified: the drop
+        needs nothing of the binary, while emitting a flag needs every build that
+        reaches here to know it, and one that does not never starts at all.
         """
         dropped = env.pop("LLAMA_ARG_KV_UNIFIED", None) is not None
         return env.pop("LLAMA_ARG_N_PARALLEL", None) is not None or dropped
@@ -23539,6 +23550,14 @@ class LlamaCppBackend:
                             _startup_output
                         ) or self._is_tensor_quant_kv_unsupported(_startup_output)
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
+                        # The unified-cache refusal is the same shape: an architecture
+                        # constraint no fit retry can reach, and the caller's
+                        # single-sequence rung reads the argv and the output of the
+                        # launch that refused, which a fit retry would have replaced.
+                        # Whole buffer, not the tail: this one arrives with a backtrace.
+                        _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
+                            "\n".join(self._stdout_lines)
+                        )
                         if (
                             not _did_rocm_retry
                             and _startup_crashed
@@ -23569,7 +23588,7 @@ class LlamaCppBackend:
                         if (
                             not _did_fit_retry
                             and _startup_crashed
-                            and not _tensor_capability_crash
+                            and not _capability_crash
                             and not _hip_rocr_mismatch
                         ):
                             # A spill-planned launch that crashed on startup. The
@@ -23601,7 +23620,7 @@ class LlamaCppBackend:
                             not _did_fit_retry
                             and fully_gpu_offloaded
                             and _startup_crashed
-                            and not _tensor_capability_crash
+                            and not _capability_crash
                             and not _hip_rocr_mismatch
                         ):
                             # We forced --fit off because Unsloth's (conservative) VRAM
@@ -23669,7 +23688,7 @@ class LlamaCppBackend:
                             not _did_fit_retry
                             and _fit_retry_allowed
                             and _startup_crashed
-                            and not _tensor_capability_crash
+                            and not _capability_crash
                             and not _hip_rocr_mismatch
                         ):
                             logger.warning(
@@ -24332,8 +24351,11 @@ class LlamaCppBackend:
                 # own whenever it asks for more than one slot. The model is then
                 # unloadable no matter what the user changes, so reverse Studio's
                 # choice rather than theirs: one slot, no unified cache, the
-                # requested context intact. A clean refusal, not a crash, so this
-                # sits ahead of the flash-attn rung, which only fires on a signal.
+                # requested context intact. glm5next spells the refusal as a
+                # GGML_ASSERT, so the child aborts: this MUST stay ahead of the
+                # flash-attn rung, which takes any signal crash and would spend
+                # the retry disabling a flag that was never the cause. Matched on
+                # the message, not the exit, so the Windows abort lands here too.
                 if not healthy and not _load_cancelled():
                     _kvu_cmd = (
                         self._with_single_sequence(_last_spawn_cmd)
