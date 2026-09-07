@@ -1,0 +1,200 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: "Windows: llama.cpp signature audit"
+
+# Reports how much of the llama.cpp runtime we ask users to download is
+# Authenticode signed. Studio fetches these bundles after its own signed
+# installer has already run, so they are outside that installer's signature
+# scope and nothing else checks them.
+#
+# This deliberately does NOT try to exercise Smart App Control. GitHub hosted
+# Windows runners have it off, and it cannot be turned on: enabling it is a
+# one-way operation that needs a clean OEM install. Enforcement can only be
+# measured on real hardware, which is what scripts/windows_sac_probe is for.
+# What a hosted runner can prove is the signature half, and that is the half
+# the fix in unslothai/llama.cpp changes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'llama.cpp release tag to audit, or "latest"'
+        required: false
+        default: 'latest'
+      enforce:
+        description: 'Fail the job when an unsigned PE is found'
+        required: false
+        default: 'false'
+  schedule:
+    # Weekly. The prebuilt release rotates every few days and each rotation
+    # replaces every file hash, so this is a trend rather than a one-off.
+    - cron: '17 6 * * 1'
+  pull_request:
+    paths:
+      - '.github/workflows/windows-llama-signature-audit.yml'
+      - 'scripts/windows_sac_probe/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit signatures
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Report Smart App Control state on this runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Recorded so nobody later reads a green tick here as evidence that
+          # Smart App Control allows our binaries. It is not enabled here.
+          $state = $null
+          try {
+            $state = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy' `
+              -Name 'VerifiedAndReputablePolicyState' -ErrorAction Stop).VerifiedAndReputablePolicyState
+          } catch { }
+          $mode = switch ($state) { 0 {'off'} 1 {'enforcement'} 2 {'evaluation'} default {'absent'} }
+          Write-Host "Smart App Control on this runner: $mode"
+          & CiTool.exe -lp 2>&1 | Select-String -Pattern 'Friendly Name|Is Enforced' | Write-Host
+
+      - name: Download the Windows bundles
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.release_tag || 'latest' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path bundles | Out-Null
+          if ($env:RELEASE_TAG -eq 'latest') {
+            $tag = (gh release view --repo unslothai/llama.cpp --json tagName -q .tagName)
+          } else {
+            $tag = $env:RELEASE_TAG
+          }
+          Write-Host "auditing release $tag"
+          Add-Content -Path $env:GITHUB_ENV -Value "AUDIT_TAG=$tag"
+          # One per backend family rather than all seventeen: the CUDA and
+          # ROCm profiles are hundreds of MB each and the signing state is per
+          # build, not per profile. Every family is here, though. ROCm and the
+          # arm64 CPU bundle are built and packaged separately from the x64
+          # ones, so each can fail to be signed on its own; a set that skipped
+          # them would pass under `enforce` while those users still got
+          # unsigned PEs.
+          foreach ($pattern in @(
+            '*windows-x64-cpu.zip',
+            '*windows-arm64-cpu.zip',
+            '*windows-x64-vulkan.zip',
+            '*windows-x64-cuda12-legacy.zip',
+            '*windows-x64-rocm-gfx110X.zip'
+          )) {
+            gh release download $tag --repo unslothai/llama.cpp --pattern $pattern --dir bundles --clobber
+            # A native exit code is not terminating under 'Stop', and a later
+            # successful download replaces $LASTEXITCODE, so a family whose
+            # asset is missing would be audited as absent and pass. Check each
+            # one, and that a file actually landed.
+            if ($LASTEXITCODE -ne 0) { throw "gh release download exited $LASTEXITCODE for $pattern" }
+            if (-not (Get-ChildItem bundles -Filter $pattern)) { throw "no asset of $tag matched $pattern" }
+          }
+          Get-ChildItem bundles | Format-Table Name, Length -AutoSize | Out-String | Write-Host
+
+      - name: Inventory Authenticode signatures
+        id: inventory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $ext = @('.exe', '.dll', '.pyd', '.sys', '.ocx', '.cpl', '.scr')
+          $rows = @()
+          foreach ($zip in Get-ChildItem bundles -Filter *.zip) {
+            $dest = Join-Path $env:RUNNER_TEMP ("x-" + $zip.BaseName)
+            Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+            Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dest -Force
+            $files = @(Get-ChildItem $dest -Recurse -File | Where-Object { $ext -contains $_.Extension.ToLowerInvariant() })
+            # An empty result means the archive was not what we think it is, not
+            # that it is clean.
+            if ($files.Count -eq 0) {
+              Write-Host "::error::no PE payload inside $($zip.Name)"
+              exit 1
+            }
+            foreach ($f in $files) {
+              $s = Get-AuthenticodeSignature -LiteralPath $f.FullName
+              $rows += [pscustomobject]@{
+                Bundle  = $zip.Name
+                Name    = $f.Name
+                Status  = [string]$s.Status
+                Subject = if ($s.SignerCertificate) { $s.SignerCertificate.Subject } else { '' }
+              }
+            }
+            Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          $rows | Export-Csv -LiteralPath signature-inventory.csv -NoTypeInformation -Encoding UTF8
+
+          $summary = @()
+          $summary += "# llama.cpp Windows signature audit"
+          $summary += ""
+          $summary += "Release: ``$env:AUDIT_TAG``"
+          $summary += ""
+          $summary += "| bundle | PE files | signed | unsigned |"
+          $summary += "| --- | ---: | ---: | ---: |"
+          $totalUnsigned = 0
+          foreach ($bundle in ($rows | Group-Object Bundle)) {
+            $signed = @($bundle.Group | Where-Object { $_.Status -eq 'Valid' }).Count
+            $unsigned = $bundle.Count - $signed
+            $totalUnsigned += $unsigned
+            $summary += "| $($bundle.Name) | $($bundle.Count) | $signed | $unsigned |"
+          }
+          $summary += ""
+          if ($totalUnsigned -gt 0) {
+            $summary += "$totalUnsigned unsigned PE file(s). Smart App Control evaluates each of these as it loads."
+            $summary += ""
+            $summary += "Signed files, for contrast:"
+            $summary += ""
+            $signedRows = @($rows | Where-Object { $_.Status -eq 'Valid' } | Select-Object -Unique Name, Subject)
+            if ($signedRows.Count -eq 0) {
+              $summary += "- none"
+            } else {
+              foreach ($r in $signedRows) { $summary += "- ``$($r.Name)`` $($r.Subject)" }
+            }
+          } else {
+            $summary += "Every PE in every audited bundle is validly signed."
+          }
+          $summary -join "`n" | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "unsigned=$totalUnsigned"
+          Write-Host "$totalUnsigned unsigned PE file(s)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: signature-inventory
+          path: signature-inventory.csv
+          if-no-files-found: warn
+
+      - name: Verdict
+        shell: pwsh
+        env:
+          ENFORCE: ${{ github.event.inputs.enforce || 'false' }}
+          UNSIGNED: ${{ steps.inventory.outputs.unsigned }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $unsigned = [int]$env:UNSIGNED
+          if ($unsigned -eq 0) {
+            Write-Host 'Every audited binary is signed.'
+            exit 0
+          }
+          # Not a hard failure by default: every published bundle is unsigned
+          # today, so enforcing now would just paint main red until the signing
+          # change in unslothai/llama.cpp lands. Flip the default to true then.
+          if ($env:ENFORCE -eq 'true') {
+            Write-Host "::error::$unsigned unsigned PE file(s) in the published Windows bundles"
+            exit 1
+          }
+          Write-Host "::warning::$unsigned unsigned PE file(s) in the published Windows bundles. See the job summary."
