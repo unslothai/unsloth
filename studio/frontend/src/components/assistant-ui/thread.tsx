@@ -6672,7 +6672,7 @@ const ComposerRightControls: FC<{
               aria-label="Stop queued message"
               onClick={stop}
             >
-              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+              <SquareIcon className="size-3 fill-current" />
             </Button>
           ) : (
             <TooltipIconButton
@@ -6704,7 +6704,7 @@ const ComposerRightControls: FC<{
           {researchStopping ? (
             <Spinner className="size-3.5" />
           ) : (
-            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+            <SquareIcon className="size-3 fill-current" />
           )}
         </Button>
       ) : (
@@ -6720,7 +6720,7 @@ const ComposerRightControls: FC<{
                 aria-label="Stop generating"
                 onClick={stop}
               >
-                <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+                <SquareIcon className="size-3 fill-current" />
               </Button>
             </ComposerPrimitive.Cancel>
             ) : (
