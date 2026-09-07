@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { normalizeModelIdForPicker } from "@/features/model-picker/components/model-selector/row-identity";
 import {
   findCompleteHfCacheLocalRow,
   provenUnknownPartialFamily,
@@ -297,11 +298,9 @@ function resolveFormatTransition(
       row.source === "hf_cache" &&
       inventoryRepoKey(row) === identity.repoKey &&
       (!identity.cacheRoot ||
-        row.path
-          .replaceAll("\\", "/")
-          .startsWith(
-            `${identity.cacheRoot.replaceAll("\\", "/").replace(/\/+$/, "")}/models--`,
-          )),
+        normalizeModelIdForPicker(row.path).startsWith(
+          `${normalizeModelIdForPicker(identity.cacheRoot)}/models--`,
+        )),
   );
   if (identity.source === "download") {
     return resolveCurrentSelection(

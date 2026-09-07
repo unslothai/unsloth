@@ -2666,6 +2666,12 @@ export function HubModelPicker({
     ? selectedCheckpoint
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
+  const activeLoadId = useChatRuntimeStore((s) => s.activeLoadId);
+  const matchesLoadedCacheCopy = (repoId: string, loadId?: string | null) =>
+    loadedModelIdOverride !== undefined ||
+    !modelIdsMatchForPicker(loadedModelId, repoId) ||
+    modelIdsMatchForPicker(loadId || repoId, activeLoadId || loadedModelId);
+
   // Loaded GGUF quant of the active model; marks the matching pinned row.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
@@ -5066,11 +5072,13 @@ export function HubModelPicker({
       pinKey(entry.repoId, entry.quant),
     );
     const isSelected =
-      value === entry.repoId && activeGgufVariant === entry.quant;
+      value === entry.repoId && activeGgufVariant === entry.quant &&
+      matchesLoadedCacheCopy(entry.repoId, entry.loadId);
     const isLoaded =
       modelIdsMatchForPicker(loadedModelId, entry.repoId) &&
       !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
-      ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
+      ggufVariantsMatchForPicker(activeGgufVariant, entry.quant) &&
+      matchesLoadedCacheCopy(entry.repoId, entry.loadId);
     return (
       <div
         key={optionKey}
@@ -5204,6 +5212,8 @@ export function HubModelPicker({
       quant: variant.quant,
       loadedModelId,
       activeGgufVariant,
+      loadId: loadedModelIdOverride === undefined ? c.load_id : undefined,
+      activeLoadId,
     });
     const isSelected = rowState.selected;
     const expectedBytes = ggufVariantExpectedBytes(variant);
@@ -5335,7 +5345,8 @@ export function HubModelPicker({
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
     const rowKey = cachedGgufRowKey(c);
     const optionKey = makeModelOptionKey("downloaded-gguf", rowKey);
-    const isSelected = value === c.repo_id;
+    const copyMatches = matchesLoadedCacheCopy(c.repo_id, c.load_id);
+    const isSelected = value === c.repo_id && copyMatches;
     const soleQuant = soleQuants.quants.get(rowKey);
     if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
     // Auto-expansion waits for the probe: expanding every row first would mount an expander, and
@@ -5360,7 +5371,7 @@ export function HubModelPicker({
               partial={isPartialRepo}
               partialResumable={c.partial_resumable}
               selected={isSelected}
-              loaded={isRuntimeLoadedModel(
+              loaded={copyMatches && isRuntimeLoadedModel(
                 loadedModelId,
                 activeGgufVariant,
                 c.repo_id,

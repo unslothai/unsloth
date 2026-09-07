@@ -52,16 +52,22 @@ export function soleQuantRowState({
   quant,
   loadedModelId,
   activeGgufVariant,
+  loadId,
+  activeLoadId,
 }: {
   pickerValue: string | null | undefined;
   repoId: string;
   quant: string;
   loadedModelId: string | null | undefined;
   activeGgufVariant: string | null | undefined;
+  loadId?: string | null;
+  activeLoadId?: string | null;
 }): { selected: boolean; loaded: boolean } {
   const repoIsLoaded = modelIdsMatchForPicker(loadedModelId, repoId);
   const quantIsLoaded =
-    repoIsLoaded && ggufVariantsMatchForPicker(activeGgufVariant, quant);
+    repoIsLoaded &&
+    ggufVariantsMatchForPicker(activeGgufVariant, quant) &&
+    (!loadId || modelIdsMatchForPicker(loadId, activeLoadId || loadedModelId));
   return {
     selected: pickerValue === repoId && (!repoIsLoaded || quantIsLoaded),
     loaded: quantIsLoaded,

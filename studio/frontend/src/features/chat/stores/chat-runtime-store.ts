@@ -395,6 +395,7 @@ export type PendingImageEditReference = {
 };
 export type LoadingModelPick = {
   id: string;
+  loadId?: string;
   ggufVariant: string | null;
   nativePathToken: string | null;
 };
@@ -4307,6 +4308,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       if (
         !current ||
         current.id !== expected.id ||
+        (current.loadId || current.id) !== (expected.loadId || expected.id) ||
         current.ggufVariant !== expected.ggufVariant ||
         current.nativePathToken !== expected.nativePathToken
       ) {

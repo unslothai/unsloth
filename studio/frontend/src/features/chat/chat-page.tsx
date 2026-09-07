@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { modelIdsMatchForPicker } from "@/features/model-picker/components/model-selector/row-identity";
 import {
   applyModelLoadConfigToRuntime,
   currentRuntimePerModelConfig,
@@ -2821,6 +2822,7 @@ export function ChatPage({
           !!loadingModel &&
           normalizeModelRef(loadingModel.id) ===
             normalizeModelRef(selection.id) &&
+          modelIdsMatchForPicker(loadingModel.loadId || loadingModel.id, selection.loadId || selection.id) &&
           (loadingModel.ggufVariant ?? null) === (selection.ggufVariant ?? null);
         if (isLoadingThisPick) {
           toast.info("This model is already loading", {
@@ -3102,7 +3104,8 @@ export function ChatPage({
       setPendingHubAutoLoad(null);
       const isSameLoadedModel =
         value === currentCheckpoint &&
-        (meta?.ggufVariant ?? null) === (currentVariant ?? null);
+        (meta?.ggufVariant ?? null) === (currentVariant ?? null) &&
+        (!meta?.loadId || modelIdsMatchForPicker(meta.loadId, store.activeLoadId || currentCheckpoint));
       if (isSameLoadedModel && !meta?.forceReload) {
         return;
       }

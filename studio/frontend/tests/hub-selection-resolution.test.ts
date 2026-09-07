@@ -23,6 +23,38 @@ const { resolveDownloadedSelection, resolveSelectionUrlSync } = await import(
 
 const REPO_ID = "Org/Model";
 
+test("Windows cache identities match mixed-case local paths without folding POSIX paths", () => {
+  for (const [root, path, matches] of [
+    [
+      "c:\\users\\alice\\.cache",
+      "C:\\Users\\Alice\\.cache\\models--Org--Model",
+      true,
+    ],
+    ["\\\\server\\cache", "\\\\Server\\Cache\\models--Org--Model", true],
+    ["/cache/alice", "/cache/Alice/models--Org--Model", false],
+  ] as const) {
+    const id = `cache:gguf:org%2Fmodel:${encodeURIComponent(root)}`;
+    const local = buildLocalInventoryRows([
+      {
+        id: path,
+        inventory_id: `local:gguf:${encodeURIComponent(path)}`,
+        display_name: "Model",
+        path,
+        source: "hf_cache",
+        model_id: REPO_ID,
+        model_format: "gguf",
+        partial: true,
+      },
+    ])[0];
+    assert.ok(local);
+    assert.equal(
+      resolveInventorySelection({ cachedRows: [], localRows: [local] }, id)
+        .selectedId,
+      matches ? local.id : null,
+    );
+  }
+});
+
 test("a cache-qualified GGUF selection survives live coalescing without selecting another copy", () => {
   const id = `cache:gguf:org%2Fmodel:${encodeURIComponent("/default")}`;
   const observed = buildCachedInventoryRow(
@@ -134,7 +166,10 @@ for (const modelFormat of ["gguf", "safetensors"] as const) {
 
       assert.equal(cachedRows.length, 1);
       assert.equal(cachedRows[0]?.id, expectedId);
-      assert.equal(cachedRows[0]?.liveDownload, input.includes(live) || undefined);
+      assert.equal(
+        cachedRows[0]?.liveDownload,
+        input.includes(live) || undefined,
+      );
       assert.deepEqual(
         resolveDownloadedSelection({
           selectedId: selectionId,
