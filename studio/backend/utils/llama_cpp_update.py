@@ -1354,6 +1354,11 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 llama_spec["install_dir"],
                 force_refresh = True,
                 published_repo = llama_spec["repo"],
+                # Same replay the status path and the install itself use. Without it
+                # this re-probe resolves "auto" to CPU on a host whose arch only the
+                # marker remembers, so a migration the banner offered refuses here as
+                # already_selected.
+                rocm_gfx = llama_spec.get("rocm_gfx"),
             )
             if not resolved:
                 return _finish_planning_refusal(

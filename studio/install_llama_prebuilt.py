@@ -7679,10 +7679,12 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     return not any(_gfx_is_windows_hip_supported(target, published_repo) for target in targets)
 
 
-_VULKAN_ICD_REGISTRY_KEYS = (
-    r"SOFTWARE\Khronos\Vulkan\Drivers",
-    r"SOFTWARE\WOW6432Node\Khronos\Vulkan\Drivers",
-)
+# The 64-bit view only: the bundle this route installs is windows-x64-vulkan, and a
+# 64-bit Vulkan process cannot load a 32-bit ICD. WOW6432Node is where the 32-bit
+# registrations live, so counting it would let a surviving SysWOW64 entry answer for a
+# 64-bit driver that is gone -- routing the host onto a bundle that enumerates no
+# device and falls back to CPU.
+_VULKAN_ICD_REGISTRY_KEYS = (r"SOFTWARE\Khronos\Vulkan\Drivers",)
 # Manifest FILE NAMES the AMD drivers register: mesa RADV (radeon_icd.x86_64.json),
 # AMDVLK (amd_icd64.json, amd_pro_icd64.json), and on Windows both the AMDVLK build
 # (amdvlk64.json) and the Radeon/Adrenalin ICD, which is amd-vulkan64.json in
@@ -7700,19 +7702,50 @@ _AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "am
 # fail the import of the whole installer, on every host, over a directory only the
 # Vulkan probe ever reads.
 def _vulkan_icd_search_dirs() -> list[Path]:
+    """The icd.d directories the loader would search, in its own order.
+
+    Built from the XDG variables rather than from the defaults alone: the loader takes
+    ~/.config, /etc/xdg, ~/.local/share and /usr/local/share:/usr/share only when the
+    corresponding variable is unset, so a host with a custom layout keeps its drivers
+    somewhere these defaults do not name. Scanning the defaults regardless can both miss
+    the only usable AMD manifest and count a stale one the loader would never read.
+    """
+
+    def _paths(var: str, default: str) -> list[Path]:
+        value = os.environ.get(var)
+        raw = value if (value or "").strip() else default
+        return [Path(entry) for entry in raw.split(os.pathsep) if entry.strip()]
+
+    def _home(var: str, default: str) -> list[Path]:
+        value = os.environ.get(var)
+        if (value or "").strip():
+            return [Path(value)]
+        try:
+            return [Path.home() / default]
+        except Exception:
+            return []
+
     dirs: list[Path] = []
-    try:
-        dirs.append(Path.home() / ".local/share/vulkan/icd.d")
-    except Exception:
-        pass
-    dirs.extend(
-        (
-            Path("/etc/vulkan/icd.d"),
-            Path("/usr/local/share/vulkan/icd.d"),
-            Path("/usr/share/vulkan/icd.d"),
-        )
-    )
-    return dirs
+    # Loader order: XDG_CONFIG_HOME, XDG_CONFIG_DIRS, then XDG_DATA_HOME, XDG_DATA_DIRS.
+    for base in (
+        *_home("XDG_CONFIG_HOME", ".config"),
+        *_paths("XDG_CONFIG_DIRS", "/etc/xdg"),
+    ):
+        dirs.append(base / "vulkan/icd.d")
+    dirs.append(Path("/etc/vulkan/icd.d"))
+    for base in (
+        *_home("XDG_DATA_HOME", ".local/share"),
+        *_paths("XDG_DATA_DIRS", "/usr/local/share" + os.pathsep + "/usr/share"),
+    ):
+        dirs.append(base / "vulkan/icd.d")
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for directory in dirs:
+        key = str(directory)
+        if key not in seen:
+            seen.add(key)
+            unique.append(directory)
+    return unique
 
 
 def _amd_vulkan_icd_manifest_paths() -> list[str]:
@@ -7744,31 +7777,39 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
                         # onto a bundle that enumerates no device and falls back to CPU.
                         if kind != winreg.REG_DWORD or value != 0:
                             continue
+                        # And the manifest has to still be there, for the same reason an
+                        # override naming a removed file does not count: a driver
+                        # uninstall that leaves its enabled registration behind would
+                        # otherwise answer for a loader that can open nothing.
+                        try:
+                            if not os.path.isfile(name):
+                                continue
+                        except OSError:
+                            continue
                         paths.append(name)
             except OSError:
                 continue
         return paths
-    # The loader honours these overrides ahead of the search directories, so a host that
-    # points at one ICD must be judged on that ICD and not on what is installed elsewhere.
-    # Only manifests that are actually there count, for the reason the registry branch
-    # skips a disabled key: an override naming a removed driver cannot be loaded, so
-    # taking its AMD-looking basename as proof would route the host onto a bundle that
-    # enumerates no device. An override set entirely to stale paths falls through to the
-    # search directories, which is what the loader itself would then find nothing in.
+    # These are FORCE lists, not hints: the loader uses the named files and does not
+    # search the directories at all, and VK_DRIVER_FILES supersedes the deprecated
+    # VK_ICD_FILENAMES rather than being tried alongside it. So whichever one is set
+    # answers on its own, including when nothing it names is loadable -- falling through
+    # would judge the host on drivers the loader will never read. Only manifests that
+    # are actually there count, for the reason the registry branch skips a disabled key.
     for _env in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         _value = os.environ.get(_env)
-        if _value:
-            _entries = []
-            for entry in _value.split(os.pathsep):
-                if not entry:
-                    continue
-                try:
-                    if os.path.isfile(entry):
-                        _entries.append(entry)
-                except OSError:
-                    continue
-            if _entries:
-                return _entries
+        if not (_value or "").strip():
+            continue
+        _entries = []
+        for entry in _value.split(os.pathsep):
+            if not entry:
+                continue
+            try:
+                if os.path.isfile(entry):
+                    _entries.append(entry)
+            except OSError:
+                continue
+        return _entries
     paths = []
     for directory in _vulkan_icd_search_dirs():
         try:
@@ -8169,6 +8210,10 @@ class BackendRoute:
     published_release_tag: str
     persist_llama_backend: str | None
     persist_rocm_gfx: str | None
+    # The pre-route host when Vulkan was a PREFERENCE over a HIP bundle that works,
+    # so the plan can keep that bundle as the fallback instead of CPU. None for the
+    # #7357 route, where no HIP prebuilt covers the arch in the first place.
+    rocm_fallback_host: HostInfo | None = None
 
 
 def route_backend_request(
@@ -8224,7 +8269,70 @@ def route_backend_request(
         published_release_tag = release_tag,
         persist_llama_backend = persist_llama_backend,
         persist_rocm_gfx = persist_rocm_gfx,
+        # Only the integrated-GPU preference: it is the one route that turns away from
+        # a HIP bundle this host can actually run. Read off the route's own effect
+        # rather than re-deriving which trigger fired.
+        rocm_fallback_host = (
+            resolved_host
+            if (
+                resolved_host.has_rocm
+                and not routed_host.has_rocm
+                and _should_prefer_vulkan_for_amd_igpu(resolved_host)
+            )
+            else None
+        ),
     )
+
+
+def _with_rocm_behind_vulkan(
+    plans: list[InstallReleasePlan],
+    llama_tag: str,
+    rocm_host: HostInfo,
+    published_repo: str,
+    published_release_tag: str,
+) -> list[InstallReleasePlan]:
+    """Put this host's ROCm bundle behind Vulkan and ahead of the generic CPU fallback.
+
+    The integrated-GPU route is a preference, not a rescue: these hosts have a working
+    HIP bundle and it is only slower. But _vulkan_only_host clears has_rocm, so the
+    selectors read the box as Intel/CPU and end the plan in a CPU attempt -- and a
+    Vulkan asset that is missing, fails its checksum, or fails staged validation would
+    then replace a working ROCm install with CPU inference. The ROCm branch itself
+    deliberately has no CPU fallback, for exactly that reason.
+
+    A named backend request is filtered afterwards, so this cannot smuggle ROCm into
+    an explicit --llama-backend vulkan.
+    """
+    try:
+        _tag, rocm_plans = resolve_simple_install_release_plans(
+            llama_tag, rocm_host, published_repo, published_release_tag
+        )
+    except Exception:
+        # A ROCm plan that will not resolve is not a reason to fail the Vulkan install.
+        return plans
+    rocm_attempts = {plan.release_tag: plan.attempts for plan in rocm_plans}
+    cpu_kinds = install_kinds_for_backend("cpu")
+    out: list[InstallReleasePlan] = []
+    for plan in plans:
+        present = {attempt.install_kind for attempt in plan.attempts}
+        extra = [
+            attempt
+            for attempt in rocm_attempts.get(plan.release_tag, [])
+            if attempt.install_kind not in present and attempt.install_kind not in cpu_kinds
+        ]
+        if not extra:
+            out.append(plan)
+            continue
+        at = next(
+            (i for i, a in enumerate(plan.attempts) if a.install_kind in cpu_kinds),
+            len(plan.attempts),
+        )
+        out.append(
+            dataclasses_replace(
+                plan, attempts = [*plan.attempts[:at], *extra, *plan.attempts[at:]]
+            )
+        )
+    return out
 
 
 def select_backend_install(
@@ -8253,6 +8361,14 @@ def select_backend_install(
     requested_tag, release_plans = resolve_simple_install_release_plans(
         llama_tag, route.host, route.published_repo, route.published_release_tag
     )
+    if route.rocm_fallback_host is not None:
+        release_plans = _with_rocm_behind_vulkan(
+            release_plans,
+            llama_tag,
+            route.rocm_fallback_host,
+            route.published_repo,
+            route.published_release_tag,
+        )
     # macOS publishes one universal Metal bundle, so there is nothing to hold a
     # request to; setup.sh says as much for cpu and vulkan there rather than failing.
     if route.backend in CONCRETE_BACKENDS and not route.host.is_macos:

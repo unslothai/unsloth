@@ -929,6 +929,101 @@ def test_a_marker_with_no_recorded_arch_passes_no_replay(monkeypatch, tmp_path):
     assert seen == [None]
 
 
+def test_applying_a_migration_replays_the_arch_the_offer_was_made_with(monkeypatch, tmp_path):
+    """The apply re-resolves before it installs, and that second resolve must see what
+    the first one saw. Without the replay it resolves "auto" back onto the installed
+    backend, reads as already applied, and refuses the migration the banner offered --
+    silently, since a refusal at that point is indistinguishable from nothing to do."""
+    install_dir = _install(
+        monkeypatch,
+        tmp_path,
+        backend = "rocm",
+        backend_request = "auto",
+        install_kind = "linux-rocm",
+        asset = "app-b9596-mix-abc-linux-x64-rocm-gfx1151.tar.gz",
+        rocm_gfx = "gfx1151",
+    )
+
+    def _resolver(**kwargs):
+        gfx = (kwargs.get("extra_env") or {}).get("UNSLOTH_ROCM_GFX_REMEMBERED")
+        # The arch is what routes this host to Vulkan; without it the installer sees no
+        # known AMD iGPU and keeps ROCm, which is the backend already installed.
+        auto = "vulkan" if gfx else "rocm"
+        return {
+            "backends": [
+                {
+                    "backend": backend,
+                    "available": True,
+                    "resolved_backend": (auto if backend == "auto" else backend),
+                    "asset": f"app-b9596-mix-abc-linux-x64-{backend}.tar.gz",
+                }
+                for backend in ("auto", "cpu", "rocm", "vulkan")
+            ]
+        }
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve_backends_for_host)
+    monkeypatch.setattr(upd._flow, "resolve_prebuilt_for_host", _resolver)
+    upd._backends_memo.clear()
+
+    assert upd.get_update_status()["backend_migration_available"] is True
+
+    seen: dict = {}
+
+    def _on_start(cmd, kwargs):
+        seen["cmd"] = cmd
+        _write_install(
+            install_dir,
+            asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
+            install_kind = "linux-vulkan",
+            backend = "vulkan",
+            backend_request = "auto",
+        )
+
+    _patch_installer(monkeypatch, on_start = _on_start)
+
+    result = upd.start_update()
+    assert result["started"] is True, result
+    job = _await_job()
+    assert job["state"] == "success", job
+    assert seen["cmd"][seen["cmd"].index("--llama-backend") + 1] == "auto"
+
+
+def test_an_apply_that_no_longer_drifts_still_refuses(monkeypatch, tmp_path):
+    # Negative control for the test above: the apply-time resolve is a real check, not
+    # a formality, so a host that stopped drifting between the offer and the press must
+    # still be refused rather than reinstalling what it already has.
+    _install(
+        monkeypatch,
+        tmp_path,
+        backend = "vulkan",
+        backend_request = "auto",
+        install_kind = "linux-vulkan",
+        asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
+        rocm_gfx = "gfx1151",
+    )
+
+    def _resolver(**kwargs):
+        return {
+            "backends": [
+                {
+                    "backend": backend,
+                    "available": True,
+                    "resolved_backend": ("vulkan" if backend == "auto" else backend),
+                    "asset": f"app-b9596-mix-abc-linux-x64-{backend}.tar.gz",
+                }
+                for backend in ("auto", "cpu", "rocm", "vulkan")
+            ]
+        }
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve_backends_for_host)
+    monkeypatch.setattr(upd._flow, "resolve_prebuilt_for_host", _resolver)
+    upd._backends_memo.clear()
+
+    result = upd.start_update()
+    assert result["started"] is False
+    assert result["reason"] == "up_to_date"
+
+
 def test_running_job_status_does_not_resolve_options_again(monkeypatch, tmp_path):
     _install(monkeypatch, tmp_path)
 
