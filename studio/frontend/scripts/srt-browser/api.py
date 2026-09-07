@@ -20,11 +20,11 @@ from core.inference import tools
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5197"],
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
+    allow_origins = ["http://127.0.0.1:5197"],
+    allow_methods = ["GET", "POST"],
+    allow_headers = ["*"],
 )
-app.include_router(inference.studio_router, prefix="/api/inference")
+app.include_router(inference.studio_router, prefix = "/api/inference")
 app.dependency_overrides[get_current_subject] = lambda: "srt-browser-fixture"
 app.dependency_overrides[authenticated_via_api_key] = lambda: False
 
@@ -49,19 +49,18 @@ def execute(body: dict):
     result = tools.execute_tool(
         kind,
         payload,
-        session_id="srt-browser-fixture",
-        timeout=30,
-        tool_execution_mode=mode,
-        current_subject="srt-browser-fixture",
-        tool_ui_session_id=body.get("session"),
-        limited_grant=body.get("grant"),
-        disable_sandbox=mode == "full",
-        launch_record_callback=records.append,
+        session_id = "srt-browser-fixture",
+        timeout = 30,
+        tool_execution_mode = mode,
+        current_subject = "srt-browser-fixture",
+        tool_ui_session_id = body.get("session"),
+        limited_grant = body.get("grant"),
+        disable_sandbox = mode == "full",
+        launch_record_callback = records.append,
     )
     return {"result": result, "records": [asdict(r) for r in records], "python": sys.executable}
 
 
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run(app, host="127.0.0.1", port=5198)
+    uvicorn.run(app, host = "127.0.0.1", port = 5198)
