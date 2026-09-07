@@ -19,7 +19,7 @@ import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.offload_layout import LM_HEAD_PATTERN, BlockLayout, ModelLayout
-from core.inference.offload_planner import Plan, plan_placement, smart_offload_enabled
+from core.inference.offload_planner import ContextPolicy, Plan, plan_placement, smart_offload_enabled
 
 # The planner's decision table is covered in test_offload_planner.py. HERE is the
 # seam: whether the launch path declines when it should, emits the tokens
@@ -1790,3 +1790,200 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
             del sys.modules["psutil"]
         else:
             sys.modules["psutil"] = saved
+
+
+# ------------------------------------------------- the planner's own rungs 0-2
+
+
+def _captured_opts(monkeypatch, stub, **kw):
+    """Run the seam and hand back the PlanOptions it built, plus the kw it passed."""
+    from core.inference import offload_planner
+
+    seen = {}
+
+    def capture(layout, vram, host_ram, n_ctx, **kwargs):
+        seen["kwargs"] = kwargs
+        seen["n_ctx"] = n_ctx
+        return Plan(reason = "captured")
+
+    monkeypatch.setattr(offload_planner, "plan_placement", capture)
+    extra_args = kw.pop("extra_args", None)
+    inputs = _inputs(**{k: v for k, v in kw.items() if k in _inputs.__code__.co_varnames})
+    inputs.update({k: v for k, v in kw.items() if k not in _inputs.__code__.co_varnames})
+    stub._planned_tensor_spill(
+        inputs, extra_args = extra_args, env = {"UNSLOTH_SMART_OFFLOAD": "1"}
+    )
+    assert "kwargs" in seen, "the seam declined before reaching the planner"
+    return seen["kwargs"]["opts"], seen
+
+
+@pytest.mark.parametrize(
+    "env, extra_args",
+    [
+        ({}, None),
+        ({"UNSLOTH_SMART_OFFLOAD": "1"}, ["-ot", "ffn=CPU"]),
+        ({"UNSLOTH_SMART_OFFLOAD": "1"}, ["--fit", "on"]),
+        ({"UNSLOTH_SMART_OFFLOAD": "1"}, ["-ngl", "20"]),
+        ({"UNSLOTH_SMART_OFFLOAD": "1", "LLAMA_ARG_N_GPU_LAYERS": "3"}, None),
+        ({"UNSLOTH_SMART_OFFLOAD": "1"}, ["--rpc", "host:1"]),
+        ({"UNSLOTH_SMART_OFFLOAD": "1"}, ["--fit-target", "2048"]),
+    ],
+)
+def test_the_may_run_predicate_agrees_with_the_seam_on_every_decline(env, extra_args):
+    """load_model asks the pure predicate BEFORE the priced inputs exist, so it
+    can hand the planner the decisions it would otherwise make ahead of it. The
+    two must answer alike: a launch the seam declines is one the predicate must
+    refuse too, or load_model prices the pre-cap context and moves the projector
+    for a planner that then never runs.
+    """
+    assert LlamaCppBackend._planner_may_run(extra_args, env) is False
+    assert _Stub()._planned_tensor_spill(_inputs(), extra_args = extra_args, env = env) is None
+    assert LlamaCppBackend._planner_may_run(None, {"UNSLOTH_SMART_OFFLOAD": "1"}) is True
+
+
+def test_the_floor_map_and_the_knob_inputs_reach_the_planner(monkeypatch):
+    """Everything rungs 0 to 2 need, priced by the seam and handed over intact."""
+    floors = {1: 512 * MIB, 2: 1 * GIB, 3: 3 * GIB // 2, 4: 2 * GIB}
+    opts, seen = _captured_opts(
+        monkeypatch,
+        _Stub(),
+        free_mib = 14 * 1024,
+        n_parallel = 4,
+        min_parallel = 1,
+        kv_bytes_floor_by_parallel = floors,
+        workload_prompt_tokens = 4096,
+        context_policy_fit_only = True,
+        min_ctx = 8192,
+        cache_ram_default_mib = 3000,
+    )
+    assert dict(opts.kv_bytes_floor_by_parallel) == floors
+    assert opts.n_parallel == 4 and opts.min_parallel == 1
+    assert opts.workload_prompt_tokens == 4096
+    assert opts.context_policy is ContextPolicy.FIT_ONLY and opts.min_ctx == 8192
+    assert opts.cache_ram_default_mib == 3000
+    # The scalar floor is the map's entry at the launched count.
+    assert seen["kwargs"]["kv_bytes_floor"] == _inputs()["kv_cache_bytes"]
+
+
+def test_a_caller_that_prices_no_knob_gets_the_old_options(monkeypatch):
+    """Every new input defaults to "not supplied", so a snapshot from before
+    these rungs existed plans exactly as it did."""
+    opts, _ = _captured_opts(monkeypatch, _Stub(), free_mib = 14 * 1024, n_parallel = 2)
+    assert opts.n_parallel == 2 and opts.min_parallel == 1
+    assert opts.kv_bytes_floor_by_parallel == {}
+    assert opts.mmproj_bytes == 0 and opts.mmproj_movable is False
+    assert opts.draft_bytes == 0 and opts.draft_droppable is False
+    assert opts.context_policy is ContextPolicy.NEVER_REDUCE
+    assert opts.workload_prompt_tokens == 2048
+
+
+def test_min_parallel_never_exceeds_the_priced_count(monkeypatch):
+    opts, _ = _captured_opts(monkeypatch, _Stub(), n_parallel = 2, min_parallel = 6)
+    assert opts.min_parallel == 2
+
+
+def test_a_movable_projector_is_taken_out_of_the_fused_terms(monkeypatch):
+    """The projector's file bytes ride in extra_gpu_bytes and its runtime
+    surcharge in soft_overhead. When the planner may move it, both leave those
+    terms and arrive as ONE number it can give back whole; otherwise nothing
+    moves and the projector stays charged exactly as before."""
+    common = dict(
+        free_mib = 14 * 1024,
+        extra_gpu = 3 * GIB,
+        soft_overhead = 700 * MIB,
+        mmproj_file_bytes = 1 * GIB,
+        mmproj_surcharge_bytes = 400 * MIB,
+    )
+    movable, _ = _captured_opts(monkeypatch, _Stub(), mmproj_movable = True, **common)
+    assert movable.mmproj_movable is True
+    assert movable.mmproj_bytes == 1 * GIB + 400 * MIB
+    assert movable.extra_resident_bytes == 2 * GIB
+    assert movable.overhead_bytes_per_device == 300 * MIB
+
+    pinned, _ = _captured_opts(monkeypatch, _Stub(), mmproj_movable = False, **common)
+    assert pinned.mmproj_movable is False and pinned.mmproj_bytes == 0
+    assert pinned.extra_resident_bytes == 3 * GIB
+    assert pinned.overhead_bytes_per_device == 700 * MIB
+
+
+def test_a_droppable_draft_is_a_separate_term_with_the_excluded_blocks(monkeypatch):
+    """extra_gpu_bytes folds in the reserve at the LAUNCHED context; the planner
+    gets the one priced at ITS context, plus the nextn blocks an engaging draft
+    turns resident, as a term it may drop. When it may not, the same bytes are
+    charged resident, so the deficit is what it always was."""
+    stub = _Stub()
+    stub._excluded_bytes = 200 * MIB
+    common = dict(
+        free_mib = 14 * 1024,
+        extra_gpu = 3 * GIB,
+        mtp = True,
+        mtp_reserve_bytes = 1 * GIB,
+        draft_bytes = 3 * GIB // 2,
+    )
+    droppable, _ = _captured_opts(monkeypatch, stub, draft_droppable = True, **common)
+    assert droppable.draft_droppable is True
+    assert droppable.draft_bytes == 3 * GIB // 2 + 200 * MIB
+    assert droppable.extra_resident_bytes == 2 * GIB
+
+    kept, _ = _captured_opts(monkeypatch, stub, draft_droppable = False, **common)
+    assert kept.draft_droppable is False and kept.draft_bytes == 0
+    assert kept.extra_resident_bytes == 2 * GIB + 3 * GIB // 2 + 200 * MIB
+
+
+def test_a_draft_that_cannot_be_dropped_because_it_has_no_bytes_is_not_droppable(monkeypatch):
+    opts, _ = _captured_opts(
+        monkeypatch, _Stub(), free_mib = 14 * 1024, mtp = True, draft_droppable = True
+    )
+    assert opts.draft_droppable is False and opts.draft_bytes == 0
+
+
+def test_a_knob_only_plan_earns_the_pin_and_never_a_load_mode():
+    """A plan that spilled nothing but reshaped the launch is still Unsloth's
+    placement: every layer stays on a GPU, so it takes the same pin the proved
+    arm does. The load mode is NOT among its tokens: that pair must only ever
+    reach the argv through _fit_load_mode_flags, or a retry's strip misses it."""
+    flags = LlamaCppBackend._spill_plan_flags_for
+    assert flags(Plan(changed = True, n_parallel = 2)) == ["-ngl", "-1", "--fit", "off"]
+    assert flags(Plan(changed = True, mmproj_to_host = True)) == ["-ngl", "-1", "--fit", "off"]
+    assert flags(Plan(changed = True, draft_dropped = True)) == ["-ngl", "-1", "--fit", "off"]
+    spilled = flags(Plan(changed = True, ot_patterns = ("x",), spilled_blocks = (1,), load_mode_none = True))
+    assert spilled == ["-ngl", "-1", "--fit", "off", "-ot", "x=CPU"]
+    assert "--load-mode" not in spilled
+    # A load mode alone is not a reshaping, and neither is a plan that changed nothing.
+    assert flags(Plan(changed = True, load_mode_none = True)) == []
+    assert flags(Plan(changed = False, n_parallel = 2)) == []
+    assert flags(Plan(changed = True, n_parallel = 2, insufficient = True)) == []
+
+
+def test_the_revocation_restores_the_values_the_plan_rewrote():
+    """--parallel the plan lowered and -c it raised describe the plan's
+    placement, not the fitter's, so a retry that revokes the plan puts the
+    fitter's own values back. A double without the record still works."""
+    stub = _Stub()
+    stub._spill_plan_flags = ["-ngl", "-1", "--fit", "off", "-ot", "x=CPU"]
+    stub._spill_plan_restore = {"--parallel": "4", "-c": "8192", "--cache-ram": "8192"}
+    cmd = ["llama-server", "--parallel", "1", "-c", "131072", "--cache-ram", "1024"] + list(
+        stub._spill_plan_flags
+    )
+    got = stub._drop_tensor_spill(cmd, "startup failure")
+    assert got == [
+        "llama-server", "--parallel", "4", "-c", "8192", "--cache-ram", "8192", "--fit", "on",
+    ]
+    bare = _Stub()
+    bare._spill_plan_flags = ["-ngl", "-1", "--fit", "off"]
+    assert bare._drop_tensor_spill(["x", "-ngl", "-1", "--fit", "off"], "retry") == ["x", "--fit", "on"]
+
+
+@pytest.mark.parametrize(
+    "avail, footprint, expected",
+    [
+        (None, 0, None),
+        (64 * 1024, 4 * 1024, 8192),
+        (12 * 1024, 4 * 1024, 12 * 1024 - 4 * 1024 - 2048),
+        (5 * 1024, 4 * 1024, 0),
+    ],
+)
+def test_the_cache_ram_clamp(avail, footprint, expected):
+    """Kept at the default whenever it fits, shrunk to what is left otherwise,
+    down to disabled; unreadable RAM keeps llama.cpp's own default."""
+    assert LlamaCppBackend._clamped_cache_ram_mib(avail, footprint) == expected
