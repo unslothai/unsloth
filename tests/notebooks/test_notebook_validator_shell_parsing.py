@@ -1680,9 +1680,7 @@ def test_notebook_validator_reads_a_range_as_one_window():
     # in the index, so no stale baseline is kept either.
     assert nv._highest_minor_below("2.0") == ""
     assert (
-        nv.rule_inst_004_torchcodec_torch(
-            '!pip install "torch<2.0"', COLAB_TORCH211, "nb.ipynb", 0
-        )
+        nv.rule_inst_004_torchcodec_torch('!pip install "torch<2.0"', COLAB_TORCH211, "nb.ipynb", 0)
         == []
     )
 

@@ -1823,9 +1823,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 cond_assumed[-1] = cond_assumed[-1] or _piece_assumes_pip(text)
             # A bare `setup` invokes it. Only the FIRST word: `setup --dry-run` still calls
             # it, while `echo setup` does not.
-            invoked = _split_first_word(
-                _strip_exec_prefixes(text.lstrip("!").strip())[0].strip()
-            )[0]
+            invoked = _split_first_word(_strip_exec_prefixes(text.lstrip("!").strip())[0].strip())[
+                0
+            ]
             # What this command's flag would be with the definition entered -- every other
             # reason it is conditional still stands.
             # `command_flag` on the HEADER piece is the definition itself, which is exactly
