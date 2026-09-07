@@ -29,6 +29,7 @@ from core.inference.offload_cost_model import HostProfile
 from core.inference.offload_planner import (  # noqa: F401
     _device_reserve,
     _device_slots,
+    _kv_floor_at,
     _per_device_shortfall,
     ContextPolicy,
     Plan,
@@ -303,7 +304,12 @@ def test_plan_to_args_shape():
 
 def test_largest_first_minimises_overshoot():
     """Best-fit-decreasing: cover a small residual with a small block, not by
-    dragging a 400 MiB block across the bus on every token."""
+    dragging a 400 MiB block across the bus on every token.
+
+    Pinned to LARGEST_FIRST explicitly. On this fixture the 50 MiB block is ALSO
+    the last one, so under the BACK_FIRST default the assertion held by
+    coincidence and the test had silently stopped testing the order.
+    """
     layout = uneven_layout()
     # Need ~50 MiB freed: the 50 MiB block alone should do it.
     floor = resident_floor_bytes(layout, 4096)
@@ -315,10 +321,45 @@ def test_largest_first_minimises_overshoot():
         4096,
         opts = PlanOptions(
             overhead_bytes_per_device = GIB,
+            spill_order = SpillOrder.LARGEST_FIRST,
         ),
     )
     spilled = sum(b.spillable_bytes for b in layout.blocks if b.index in plan.spilled_blocks)
     assert spilled == 50 * MIB, "should take the 50 MiB block, not a bigger one"
+
+
+def test_the_default_order_is_back_first():
+    """On a fixture where the two orders DISAGREE: the smallest block is at the
+    front, the last block is twice its size. The default takes the last block;
+    LARGEST_FIRST, asked for by name, takes the small one.
+
+    98 cells, five hosts: contiguous-from-the-back is never more than 3% worse
+    than largest-first and better by more than 3% in 10, median 1.0073.
+    """
+    sizes = [50 * MIB, 200 * MIB, 400 * MIB, 100 * MIB]
+    layout = ModelLayout(
+        **{
+            **uneven_layout().__dict__,
+            "blocks": tuple(
+                BlockLayout(index = i, spillable_bytes = s, resident_bytes = 10 * MIB)
+                for i, s in enumerate(sizes)
+            ),
+        }
+    )
+    floor = resident_floor_bytes(layout, 4096)
+    budget = floor + layout.spillable_bytes - 40 * MIB + 1 * GIB
+    default = plan_placement(
+        layout, [budget], 64 * GIB, 4096, opts = PlanOptions(overhead_bytes_per_device = GIB)
+    )
+    assert default.spilled_blocks == (3,), default.reason
+    minimal = plan_placement(
+        layout,
+        [budget],
+        64 * GIB,
+        4096,
+        opts = PlanOptions(overhead_bytes_per_device = GIB, spill_order = SpillOrder.LARGEST_FIRST),
+    )
+    assert minimal.spilled_blocks == (0,), minimal.reason
 
 
 def test_front_and_back_orders_pick_opposite_ends():
@@ -1413,3 +1454,255 @@ def test_a_wrong_length_vector_is_ignored_rather_than_trusted():
         kv_layer_weights = [1, 2, 3],
     )
     assert got is not None and "sliding-window" in got
+
+
+# ----------------------------------------------------- rungs above the first weight spill
+#
+# The owner's priority order for what a launch KEEPS: generation speed, context,
+# the prompt cache, the MTP / speculative draft, --parallel, the projector
+# resident. The ladder gives those up in reverse, and the three below are all
+# free per token, so they fire before any weight leaves the device.
+
+_R_CTX = 4096
+_R_OPTS = dict(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0)
+
+
+def _card_short_by(layout: ModelLayout, short: int, *, floor: int = 0, n_seq: int = 1) -> int:
+    """A single card whose usable budget is ``short`` bytes below the resident load."""
+    needed = all_resident_bytes(layout, _R_CTX, kv_bytes_floor = floor, n_seq = n_seq)
+    return needed + GIB - short
+
+
+def test_rung0_pins_the_projector_before_touching_a_block():
+    layout = q4_layout()
+    mmproj = 600 * MIB
+    # The card holds the projector too, and is short by less than the projector.
+    card = _card_short_by(layout, 100 * MIB) + mmproj
+    kept = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        opts = PlanOptions(**_R_OPTS, mmproj_bytes = mmproj, mmproj_movable = False),
+    )
+    assert kept.spills_anything and not kept.mmproj_to_host
+    moved = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        opts = PlanOptions(**_R_OPTS, mmproj_bytes = mmproj, mmproj_movable = True),
+    )
+    assert moved.mmproj_to_host
+    assert not moved.spills_anything, moved.reason
+    assert moved.changed and moved.reshapes_launch
+    assert "--no-mmproj-offload" in plan_to_args(moved)
+    assert "projector" in moved.reason
+
+
+def test_rung1_steps_the_slot_count_down_one_slot_at_a_time():
+    """Short by a quarter of the cache plus a hair: three slots suffice, so three
+    it is, not one. The map says what each slot count costs."""
+    layout = q4_layout()
+    floor = GIB
+    table = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
+    card = _card_short_by(layout, floor // 4 + MIB, floor = floor, n_seq = 4)
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        kv_bytes_floor = floor,
+        opts = PlanOptions(**_R_OPTS, n_parallel = 4, kv_bytes_floor_by_parallel = table),
+    )
+    assert plan.n_parallel == 3, plan.reason
+    assert not plan.spills_anything
+    assert plan_to_args(plan)[-2:] == ["--parallel", "3"]
+
+
+def test_rung1_respects_min_parallel():
+    layout = q4_layout()
+    floor = GIB
+    table = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
+    card = _card_short_by(layout, floor // 2 + MIB, floor = floor, n_seq = 4)
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        kv_bytes_floor = floor,
+        opts = PlanOptions(
+            **_R_OPTS, n_parallel = 4, min_parallel = 3, kv_bytes_floor_by_parallel = table
+        ),
+    )
+    # Two slots would have covered it; the floor of three means blocks go instead.
+    assert plan.n_parallel == 3
+    assert plan.spills_anything, plan.reason
+
+
+def test_rung1_is_skipped_on_a_sliding_window_cache_without_the_map():
+    """The layout's product has no window term, so nothing in the planner can
+    price an SWA cache at a different slot count. Without the caller's map the
+    rung is skipped and the ladder moves blocks instead of guessing."""
+    layout = replace(q4_layout(), has_swa = True)
+    floor = GIB
+    card = _card_short_by(layout, floor // 4 + MIB, floor = floor, n_seq = 4)
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        kv_bytes_floor = floor,
+        opts = PlanOptions(**_R_OPTS, n_parallel = 4),
+    )
+    assert plan.n_parallel == 0
+    assert plan.spills_anything, plan.reason
+    with_map = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        kv_bytes_floor = floor,
+        opts = PlanOptions(
+            **_R_OPTS,
+            n_parallel = 4,
+            kv_bytes_floor_by_parallel = {3: 3 * floor // 4, 2: floor // 2, 1: floor // 4},
+        ),
+    )
+    assert with_map.n_parallel == 3 and not with_map.spills_anything
+
+
+def test_the_linear_slot_fallback_never_undercuts_the_layout_product():
+    """Without a map a non-SWA floor scales linearly in slots; cache_bytes still
+    takes the max against the layout's own product, so the guess can only
+    over-reserve."""
+    from core.inference.offload_planner import cache_bytes
+
+    layout = q4_layout()
+    opts = PlanOptions(n_parallel = 4)
+    for slots in (1, 2, 3):
+        scaled = _kv_floor_at(layout, opts, 64 * MIB, _R_CTX, _R_CTX, slots)
+        assert scaled is not None
+        assert cache_bytes(layout, _R_CTX, kv_bytes_floor = scaled) >= layout.kv_bytes(_R_CTX)
+    assert _kv_floor_at(replace(layout, has_swa = True), opts, 64 * MIB, _R_CTX, _R_CTX, 2) is None
+    # The caller's own slot count is always priceable, SWA or not.
+    assert _kv_floor_at(replace(layout, has_swa = True), opts, 64 * MIB, _R_CTX, _R_CTX, 4) == 64 * MIB
+
+
+def test_the_recurrent_state_is_charged_per_slot():
+    layout = q4_layout()
+    one = all_resident_bytes(layout, _R_CTX, n_seq = 1)
+    four = all_resident_bytes(layout, _R_CTX, n_seq = 4)
+    assert four - one == 3 * layout.recurrent_bytes
+
+
+def test_rung2_drops_the_draft_only_after_the_slots_are_exhausted():
+    layout = q4_layout()
+    floor = GIB
+    draft = 700 * MIB
+    table = {2: floor, 1: floor // 2}
+    # Short by a hair more than the draft: one slot fewer (frees floor/2 plus the
+    # recurrent state) is enough, and the draft stays.
+    card = _card_short_by(layout, floor // 2 - MIB, floor = floor, n_seq = 2) + draft
+    common = dict(
+        **_R_OPTS,
+        n_parallel = 2,
+        kv_bytes_floor_by_parallel = table,
+        draft_bytes = draft,
+        draft_droppable = True,
+    )
+    slot_first = plan_placement(
+        layout, [card], 64 * GIB, _R_CTX, kv_bytes_floor = floor, opts = PlanOptions(**common)
+    )
+    assert slot_first.n_parallel == 1 and not slot_first.draft_dropped, slot_first.reason
+    assert not slot_first.spills_anything
+    pinned = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        kv_bytes_floor = floor,
+        opts = PlanOptions(**{**common, "min_parallel": 2}),
+    )
+    assert pinned.n_parallel == 0 and pinned.draft_dropped, pinned.reason
+    assert not pinned.spills_anything
+    assert "--parallel" not in plan_to_args(pinned)
+
+
+def test_rungs_0_to_2_alone_run_no_cost_gate():
+    layout = q4_layout()
+    mmproj = 600 * MIB
+    card = _card_short_by(layout, 100 * MIB) + mmproj
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        opts = PlanOptions(
+            **_R_OPTS, mmproj_bytes = mmproj, mmproj_movable = True, require_cost_win = True
+        ),
+    )
+    assert plan.mmproj_to_host and plan.changed
+    assert plan.predicted_request_ms == 0.0 and plan.predicted_fit_request_ms == 0.0
+    assert not plan.declined_by_gate
+
+
+def test_the_prompt_cache_bound_is_reported_only_when_it_binds():
+    layout = q4_layout()
+    card = _card_short_by(layout, -GIB)  # roomy: nothing spilled
+    roomy = plan_placement(layout, [card], 64 * GIB, _R_CTX, opts = PlanOptions(**_R_OPTS))
+    assert roomy.load_mode_none and roomy.cache_ram_mib == -1
+    assert "--cache-ram" not in plan_to_args(roomy)
+    opts = PlanOptions(**_R_OPTS)
+    tight_host = opts.host_ram_headroom_bytes + roomy.host_bytes + GIB
+    tight = plan_placement(layout, [card], tight_host, _R_CTX, opts = opts)
+    assert tight.load_mode_none
+    assert tight.cache_ram_mib == 1024, tight.cache_ram_mib
+    assert plan_to_args(tight)[-2:] == ["--cache-ram", "1024"]
+    cramped = plan_placement(layout, [card], opts.host_ram_headroom_bytes, _R_CTX, opts = opts)
+    assert not cramped.load_mode_none and cramped.cache_ram_mib == -1
+
+
+# ----------------------------------------------------------------- context last
+
+
+def test_max_context_for_honours_the_measured_floor():
+    layout = q4_layout()
+    bare = max_context_for(layout, [16 * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS)
+    product_at = layout.kv_bytes(32768)
+    doubled = max_context_for(
+        layout,
+        [16 * GIB],
+        spill_all_ffn = True,
+        opts = FIXED_OVERHEAD_OPTS,
+        kv_bytes_floor = 2 * product_at,
+        floor_ctx = 32768,
+    )
+    assert 0 < doubled < bare
+    # Twice the cache per token leaves about half the context; within a step of it.
+    assert abs(doubled - bare // 2) <= 1024, (bare, doubled)
+    swa = replace(layout, has_swa = True)
+    flat_a = max_context_for(
+        swa, [16 * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS,
+        kv_bytes_floor = GIB, floor_ctx = 32768,
+    )
+    flat_b = max_context_for(
+        swa, [16 * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS,
+        kv_bytes_floor = GIB, floor_ctx = 4096,
+    )
+    # A windowed cache is flat in context, so the context it was measured at is irrelevant
+    # and the answer is bounded only by the training length and the reserve.
+    assert flat_a == flat_b
+    assert flat_a >= doubled
+
+
+def test_the_shrink_prices_the_budget_at_the_shrunk_context():
+    """At 131072 the reserve's context term alone eats the card; at a shorter
+    context the same card holds the load with every FFN spilled. FIT_ONLY must
+    plan, which it cannot do if it prices the shrunk context against the reserve
+    of the requested one."""
+    layout = q4_layout()
+    opts = PlanOptions(context_policy = ContextPolicy.FIT_ONLY)
+    plan = plan_placement(layout, [10 * GIB], 64 * GIB, 131072, opts = opts)
+    assert plan.changed and not plan.insufficient, plan.reason
+    assert 4096 <= plan.n_ctx < 131072, plan.n_ctx

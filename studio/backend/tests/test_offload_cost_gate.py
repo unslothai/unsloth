@@ -19,10 +19,12 @@ from __future__ import annotations
 from core.inference.offload_cost_model import HostProfile
 from core.inference.offload_layout import BlockLayout, ModelLayout
 from core.inference.offload_planner import (
+    ContextPolicy,
     PlanOptions,
     _fit_fallback_placement,
     plan_placement,
 )
+from dataclasses import replace
 
 GIB = 1024**3
 
@@ -293,3 +295,97 @@ def test_the_ram_refusal_counts_the_bytes_the_load_really_puts_on_the_host():
         assert "host RAM" in plan.reason
         needed = float(plan.reason.split("needs ")[1].split(" GiB")[0])
         assert needed >= layout.token_embd_bytes / GIB
+
+
+# ------------------------------------------------- the MoE long-prompt gate
+
+
+def _moe_cell(**opts):
+    return plan_placement(
+        moe_layout(), [12 * GIB], 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6), **opts)
+    )
+
+
+def test_a_moe_at_a_long_prompt_per_slot_is_left_to_the_fitter_before_it_is_ranked():
+    """-ot measured 0.94 to 0.97x of llama.cpp's layerwise fit at a 32K prompt on
+    5 cells, 2 models, 3 hosts. The ranking cannot see it (both arms spill through
+    -ot), so the gate declines on the measurement and never ranks."""
+    got = _moe_cell()
+    assert not got.spills_anything and got.declined_by_gate
+    assert "tokens per slot" in got.reason, got.reason
+    assert got.predicted_request_ms == 0.0 and got.predicted_fit_request_ms == 0.0
+    ungated = _moe_cell(moe_long_prompt_ctx = 0)
+    # With the gate off the ranking runs and reports its numbers, whatever it decides.
+    assert ungated.predicted_fit_request_ms > 0.0, ungated.reason
+
+
+def test_the_moe_gate_is_per_slot_not_total():
+    layout = replace(moe_layout(), n_ctx_train = 131072)
+    # min_parallel pins the slots: rung 1 would otherwise trade them for cache
+    # before any weight moved, and one slot at 65536 IS the long-prompt point.
+    opts = gated(host = HostProfile(threads = 6), n_parallel = 4, min_parallel = 4)
+    got = plan_placement(layout, [12 * GIB], 94 * GIB, 65536, opts = opts)
+    # 65536 over four slots is 16384 per slot: not the long-prompt point.
+    assert "tokens per slot" not in got.reason, got.reason
+    one_slot = plan_placement(layout, [12 * GIB], 94 * GIB, 65536, opts = gated(host = HostProfile(threads = 6)))
+    assert "tokens per slot" in one_slot.reason, one_slot.reason
+
+
+def test_the_moe_gate_boundary_is_inclusive():
+    exactly = _moe_cell(moe_long_prompt_ctx = 32768)
+    assert "tokens per slot" in exactly.reason
+    above = _moe_cell(moe_long_prompt_ctx = 32769)
+    assert "tokens per slot" not in above.reason
+
+
+def test_a_declined_moe_keeps_its_first_refusal_when_no_context_is_accepted():
+    """FIT_ONLY treats a gate decline as the last lever and walks down from the
+    requested context. Below the long-prompt point this MoE is an exact tie with
+    the fitter at every context, so nothing is ever accepted, and what comes back
+    is the ORIGINAL refusal at the requested context, not the last one tried."""
+    got = _moe_cell(context_policy = ContextPolicy.FIT_ONLY)
+    assert got.declined_by_gate and got.n_ctx == 32768
+    assert "tokens per slot" in got.reason, got.reason
+
+
+def test_the_draft_drop_penalty_can_turn_a_win_into_a_decline():
+    """Rung 2 drops the draft to make room; a fitter keeps it. With the penalty at
+    0 the spill is scored as if the draft were free to lose; at 2.0 the same
+    cell is refused."""
+    layout = dense_layout()
+    draft = GIB
+    card = [15191 * 1024 * 1024 + draft]
+    base = dict(
+        host = HostProfile(threads = 6),
+        min_penalty_reduction = 0.0,
+        draft_bytes = draft,
+        draft_droppable = True,
+    )
+    free = plan_placement(layout, card, 94 * GIB, 32768, opts = gated(**base))
+    assert free.draft_dropped and free.spills_anything, free.reason
+    priced = plan_placement(
+        layout, card, 94 * GIB, 32768, opts = gated(**base, draft_drop_penalty_frac = 2.0)
+    )
+    assert priced.declined_by_gate and not priced.spills_anything, priced.reason
+
+
+def test_fit_only_shrinks_to_the_largest_context_the_gate_accepts():
+    """The near-tie cell is refused at 32768. FIT_ONLY walks down and accepts a
+    smaller context; the step above it is still refused, so it is the largest."""
+    layout = dense_layout()
+    card = [15191 * 1024 * 1024]
+    strict = plan_placement(layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6)))
+    assert strict.declined_by_gate and not strict.spills_anything
+    shrunk = plan_placement(
+        layout,
+        card,
+        94 * GIB,
+        32768,
+        opts = gated(host = HostProfile(threads = 6), context_policy = ContextPolicy.FIT_ONLY),
+    )
+    assert shrunk.changed and shrunk.spills_anything, shrunk.reason
+    assert 4096 <= shrunk.n_ctx < 32768, shrunk.n_ctx
+    above = plan_placement(
+        layout, card, 94 * GIB, shrunk.n_ctx + 1024, opts = gated(host = HostProfile(threads = 6))
+    )
+    assert above.declined_by_gate, above.reason

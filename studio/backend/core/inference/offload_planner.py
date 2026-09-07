@@ -2087,6 +2087,7 @@ def _finish(
             kv_quantised = quantised,
             kv_bytes_floor = kv_bytes_floor,
             kv_on_host = kv_on_host,
+            n_seq = knobs.n_parallel if knobs is not None else 1,
         )
         - spilled_bytes
     )

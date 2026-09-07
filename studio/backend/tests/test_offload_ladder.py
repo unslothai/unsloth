@@ -899,3 +899,46 @@ def test_the_quant_rule_abstains_rather_than_guessing():
     assert _effective_granularity(
         dense, shipped(granularity_from_quant = True)
     ) is FfnGranularity.BOUNDARY
+
+
+def test_the_rung_order_is_projector_then_slots_then_draft_then_weights():
+    """One cell where all three free rungs are available and the deficit needs
+    every one of them plus the first weight rung. Each alone must not fit."""
+    layout = graded_moe()
+    ctx = 4096
+    floor = GIB
+    mmproj = 512 * 1024 * 1024
+    draft = 512 * 1024 * 1024
+    table = {2: floor, 1: floor // 2}
+    from core.inference.offload_planner import all_resident_bytes
+
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 2)
+    saved_by_knobs = mmproj + (floor // 2 + layout.recurrent_bytes) + draft
+    # Short by everything the knobs can give plus half of one ffn_down rung.
+    short = saved_by_knobs + layout.blocks[0].ffn_down_bytes // 2
+    card = needed + GIB - short + mmproj + draft
+    o = opts(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 2,
+        kv_bytes_floor_by_parallel = table,
+        mmproj_bytes = mmproj,
+        mmproj_movable = True,
+        draft_bytes = draft,
+        draft_droppable = True,
+    )
+    plan = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = o)
+    assert plan.mmproj_to_host and plan.n_parallel == 1 and plan.draft_dropped, plan.reason
+    assert len(plan.ot_patterns) == 1 and "ffn_down" in plan.ot_patterns[0], plan.ot_patterns
+    args = plan_to_args(plan)
+    assert "--no-mmproj-offload" in args and args[args.index("--parallel") + 1] == "1"
+    for single in (
+        dict(mmproj_movable = False, draft_droppable = False),
+        dict(n_parallel = 2, min_parallel = 2, draft_droppable = False),
+        dict(mmproj_movable = False, n_parallel = 2, min_parallel = 2),
+    ):
+        alone = plan_placement(
+            layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor,
+            opts = PlanOptions(**{**o.__dict__, **single}),
+        )
+        assert len(alone.spilled_blocks) > len(plan.spilled_blocks), single
