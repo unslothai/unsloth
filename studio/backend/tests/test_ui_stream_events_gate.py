@@ -666,6 +666,27 @@ def test_a_legacy_finish_after_a_structured_call_is_withheld_too():
     assert ended is not None and '"function_call"' in ended
 
 
+def test_bypass_still_exempts_a_non_streaming_request():
+    # Every guard this helper replaced paired the stream requirement with
+    # `not payload.bypass_permissions`: bypass suppresses the gate in the loop, so it never
+    # prompts and needs no channel to prompt on. Losing that would 400 full-access
+    # non-streaming tool runs that work today, which is why the streaming half reads the
+    # same flag first in _confirm_gate_would_prompt.
+    # Both shapes the validator can produce: it folds permission_mode "full" and
+    # bypass_permissions into each other, so a full-access request always arrives with the
+    # flag set, and an explicit confirm_tool_calls survives that fold.
+    for extra in ({}, {"permission_mode": "full"}):
+        payload = _gate_payload(
+            stream = False, bypass_permissions = True, confirm_tool_calls = True, **extra
+        )
+        assert _confirm_gate_has_no_channel(payload, False) is False, extra
+
+    # Without bypass the non-streaming refusal stands: the gate would prompt and cannot.
+    for extra in ({"confirm_tool_calls": True}, {"permission_mode": "ask"}):
+        payload = _gate_payload(stream = False, **extra)
+        assert _confirm_gate_has_no_channel(payload, False) is True, extra
+
+
 def test_a_stream_that_kept_its_own_terminal_is_owed_nothing():
     # No spurious extra chunk when the caller already has a real finish_reason, whether or not
     # a call was withheld earlier in the stream.

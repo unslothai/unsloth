@@ -4028,6 +4028,12 @@ def _confirm_gate_has_no_channel(
     enabled_tools: []) passes. Non-streaming keeps the reading it has always had.
     """
     if not getattr(payload, "stream", False):
+        # Bypass suppresses the gate in the loop, so it never prompts and needs no channel to
+        # prompt on. Read here as well as in _confirm_gate_would_prompt because the guards this
+        # replaced each paired the stream requirement with `not payload.bypass_permissions`, and
+        # dropping it would 400 full-access non-streaming tool runs that work today.
+        if getattr(payload, "bypass_permissions", False):
+            return False
         return _confirm_gate_needs_stream(payload)
     if ui_events:
         return False
