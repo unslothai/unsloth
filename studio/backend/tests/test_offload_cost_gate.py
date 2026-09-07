@@ -575,3 +575,12 @@ def test_a_spill_the_real_fitter_beats_is_declined_at_the_margin():
     )
     assert not plan.spills_anything
     assert "not worth it" in plan.reason
+
+
+def test_the_draft_drop_penalty_default_is_the_measured_generation_cost():
+    """Rung 2 (dropping the MTP / draft) was priced free until it was measured.
+    Four fully-resident A100 cells on Qwen3.6-35B-A3B Q4 put the draft at +2.3 to
+    +7.6 percent generation (one 3-repeat outlier at +14.3 that its 5-repeat
+    re-run did not reproduce), so the default charges 5 percent. Pinned so a
+    change is deliberate and re-measured, not drifted."""
+    assert PlanOptions().draft_drop_penalty_frac == 0.05

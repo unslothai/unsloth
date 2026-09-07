@@ -454,11 +454,17 @@ class PlanOptions:
     # The MTP nextn block plus its cache, or a separate draft model plus its cache,
     # on the device. Charged unless rung 2 drops it. ``draft_drop_penalty_frac`` is
     # the generation cost of losing the draft, as a fraction of the plan's request
-    # time; 0 until it is measured, which makes rung 2 free, the owner's stated
-    # ordering.
+    # time. MEASURED on Qwen3.6-35B-A3B Q4 with its MTP head, fully resident on an
+    # A100, --spec-type draft-mtp against none, 4 cells (2 budgets x 3 and 5
+    # repeats): +2.7 / +14.3 / +7.6 / +2.3 percent generation, prefill -9 percent
+    # every time. The +14.3 is a single 3-repeat reading the 5-repeat re-run of the
+    # same cell did not reproduce (+2.3); the other three centre on ~5 percent.
+    # Charged at 0.05, so the gate sees dropping the draft as roughly the cost of
+    # spilling half a GiB (7 to 12 percent per GiB measured), and rung 2 stays
+    # ahead of the weight rungs as the owner's ordering says, but no longer free.
     draft_bytes: int = 0
     draft_droppable: bool = False
-    draft_drop_penalty_frac: float = 0.0
+    draft_drop_penalty_frac: float = 0.05
     # llama-server's default prompt-cache bound (--cache-ram, MiB). Host RAM, so it
     # competes with the plan only through the --load-mode none footprint; the plan
     # clamps it to what the host has left and reports the clamp only when it binds.
