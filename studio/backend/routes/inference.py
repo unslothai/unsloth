@@ -3246,8 +3246,10 @@ import io
 import base64
 
 from utils.current_date_prompt_settings import (
+    attach_date_line_to_first_user_message,
     contains_current_date_prompt_line,
     current_date_prompt_line,
+    date_prompt_preserves_server_system,
     replace_current_date_prompt_lines,
 )
 
@@ -5089,11 +5091,14 @@ def _prepend_current_date_to_messages(
     request: Any = None,
     *,
     include_api_key: bool = False,
+    preserve_server_system: bool = False,
 ) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
     The local path prefixes ``system_prompt`` before the messages exist; an external payload is
-    assembled first, so the date goes onto its leading system turn instead.
+    assembled first, so the date goes onto its leading system turn instead. Ollama treats a
+    request system turn as a replacement for the model SYSTEM, so ``preserve_server_system``
+    puts the date on the first user turn when Studio did not send one.
     """
     if request is not None and not _wants_current_date(request):
         if not include_api_key or _request_is_internal_workflow(request):
@@ -5133,6 +5138,8 @@ def _prepend_current_date_to_messages(
                 return copied
             msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
             return copied
+    if preserve_server_system:
+        return attach_date_line_to_first_user_message(copied, date_line)
     return [{"role": "system", "content": date_line}, *copied]
 
 
@@ -20306,6 +20313,7 @@ async def _proxy_to_external_provider(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
+        preserve_server_system = date_prompt_preserves_server_system(provider_type),
     )
     if run_studio_tool_loop and payload.bypass_permissions:
         # Full access disables the sandbox at execution time, so the schemas must

@@ -106,3 +106,41 @@ def current_date_prompt_line(today: date | None = None, request: Any = None) -> 
         return ""
     resolved_date = today or _request_local_date(request)
     return f"{CURRENT_DATE_PROMPT_PREFIX}{resolved_date.isoformat()}."
+
+
+def date_prompt_preserves_server_system(provider_type: str | None) -> bool:
+    """Ollama replaces a model's SYSTEM with any request-level system turn (#10436)."""
+    return provider_type == "ollama"
+
+
+def attach_date_line_to_first_user_message(
+    messages: list[dict],
+    date_line: str,
+) -> list[dict]:
+    """Put ``date_line`` on the first user turn instead of inventing a system turn."""
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            msg["content"] = (
+                date_line + "\n\n" + content.lstrip() if content.strip() else date_line
+            )
+            return messages
+        if isinstance(content, list):
+            copied_parts = [
+                dict(part) if isinstance(part, dict) else part for part in content
+            ]
+            for part in copied_parts:
+                if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+                    continue
+                part["text"] = (
+                    date_line + "\n\n" + part["text"].lstrip()
+                    if part["text"].strip()
+                    else date_line
+                )
+                msg["content"] = copied_parts
+                return messages
+            msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
+            return messages
+    return messages
