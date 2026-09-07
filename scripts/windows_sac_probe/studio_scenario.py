@@ -467,9 +467,7 @@ def main() -> int:
     # this child alone and removes it afterwards. --password is still accepted
     # for a hand-run, but the probe does not use it: an argv secret is readable
     # from the process table and is captured by process-creation auditing.
-    parser.add_argument(
-        "--password", default = os.environ.get("SAC_PROBE_STUDIO_PASSWORD")
-    )
+    parser.add_argument("--password", default = os.environ.get("SAC_PROBE_STUDIO_PASSWORD"))
     parser.add_argument(
         "--home",
         default = (
