@@ -26,3 +26,56 @@ export function turnRequiresLegacyStream(requestPayload: unknown): boolean {
   const enabled = (requestPayload as { enabled_tools?: unknown } | undefined)?.enabled_tools;
   return Array.isArray(enabled) && enabled.some((name) => BROWSER_EXECUTED_TOOLS.has(String(name)));
 }
+
+/**
+ * Everything the durability gate reads, as plain values.
+ *
+ * Each field is exactly what the adapter already had in hand at the gate: a resolved model flag, a resolved thread
+ * id, THIS turn's attachment scan. Nothing here resolves anything itself - that is what lets the whole gate be a
+ * truth table instead of a grep over the adapter's source.
+ */
+export type DurableRunCandidate = {
+  /** A passthrough/external-provider turn: its own client owns the stream, so there is nothing to make durable. */
+  externalProvider?: boolean;
+  /** The resolved model is an audio model - it runs on its own legacy path regardless of the gate. */
+  modelIsAudio?: boolean;
+  /** A diffusion model is loaded: that path has no durable run to join. */
+  loadedIsDiffusion?: boolean;
+  /** THIS turn carries an attachment (image/audio/video), scanned out of the current turn's message alone.
+   * A media turn stays on the subscriber-owned stream; a text follow-up to an earlier screenshot does not. */
+  turnCarriesMedia?: boolean;
+  /** Continue: the seeded partial is autosaved before the request starts, and admission 409s a placeholder that
+   * already has content - which is not one of the errors that falls back, so the turn would just fail. The adapter
+   * holds a request object here, not a flag; what the gate reads is only whether one is present. */
+  continuation?: unknown;
+  /** The thread the run belongs to. No thread id means nowhere to reattach to, so nothing to make durable. */
+  threadId?: string | null;
+  /** That thread is incognito: its runs are not persisted, so a run has no stored history to resume from. */
+  incognito?: boolean;
+  /** The assistant message the run writes into. Without one there is no row for a follower to reattach to. */
+  assistantMessageId?: string | null;
+  /** The turn's user message exists - the run has something to answer. */
+  hasUserMessage?: boolean;
+};
+
+/**
+ * Whether THIS turn is a candidate for a durable (server-owned, reconnectable) generation run.
+ *
+ * Extracted from the adapter unchanged: every term below is one `&&` of the conjunction it was written as. It lives
+ * here so the gate can be tested as what it is - a truth table over plain values - instead of by regexing the
+ * adapter's source and hoping a token keeps its spelling.
+ */
+export function isDurableRunCandidate(input: DurableRunCandidate): boolean {
+  return Boolean(
+    !input.externalProvider &&
+      input.modelIsAudio !== true &&
+      input.loadedIsDiffusion !== true &&
+      // Turn-scoped, not thread-scoped: a stale blob from an earlier turn must not refuse this one.
+      input.turnCarriesMedia !== true &&
+      !input.continuation &&
+      input.threadId &&
+      !input.incognito &&
+      input.assistantMessageId &&
+      input.hasUserMessage,
+  );
+}
