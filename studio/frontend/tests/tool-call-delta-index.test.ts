@@ -150,11 +150,15 @@ test("replayed arguments keep parsable text and fall back otherwise", () => {
     toolCallReplayArguments('{"query":"first"}', { query: "first" }),
     '{"query":"first"}',
   );
+  // Two calls glued into one slot. The stream adapter no longer produces this
+  // (see tests/parallel-tool-call-arguments.test.ts), but threads stored before
+  // it split them still hold it, and `_raw` is the adapter's own marker rather
+  // than a parameter any tool declares, so it must not go back on the wire.
   assert.equal(
     toolCallReplayArguments('{"query":"first"}{"query":"second"}', {
       _raw: '{"query":"first"}{"query":"second"}',
     }),
-    '{"_raw":"{\\"query\\":\\"first\\"}{\\"query\\":\\"second\\"}"}',
+    "{}",
   );
   assert.equal(
     toolCallReplayArguments("", { query: "first" }),

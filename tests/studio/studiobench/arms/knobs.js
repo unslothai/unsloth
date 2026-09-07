@@ -4,181 +4,80 @@
 /*
  * knobs.js -- runtime ablation knobs for the SHIPPED Unsloth Studio build.
  *
- * Injected with Playwright's context.add_init_script BEFORE the app boots, so it can patch
- * browser APIs the app is about to use. It needs no compiler, no source edit and no rebuild: the
- * point is that an external tester can run every ablation against the same production bundle the
- * user gets, and that the ablated run and the control run are the same bytes of application code.
+ * Injected with Playwright's context.add_init_script BEFORE the app boots, so an external tester
+ * can run every ablation against the same production bundle the user gets, with the ablated and
+ * control runs sharing the same bytes of application code.
  *
- * WHAT AN ARM IS FOR
+ * Each arm removes ONE candidate mechanism and nothing else, so a cheaper thread names the fix:
  *
- * Each arm removes one candidate mechanism and nothing else. If removing it makes the thread
- * cheaper, that mechanism was the cost, and the arm names the fix. The arms:
- *
- *   A  visibility:hidden on completed messages.
- *      Removes paint and raster for the prefix. Keeps layout, keeps the DOM, keeps React.
- *      IF A IS THE WIN: the cost is paint/raster of off-screen content. The fix is to stop
- *      painting the prefix, not to stop building it.
- *
- *   B  content-visibility:auto plus contain-intrinsic-size on completed messages, and the undo
- *      of the index.css override that force-disables content-visibility on code blocks.
- *      Removes style, layout AND paint for anything off screen.
- *      IF B IS THE WIN: the cost is off-screen style plus layout plus paint, and the rule at
- *      studio/frontend/src/index.css:2537 is wrong -- it was kept for a flicker, and the comment
- *      above it asserts containment on message roots "was measured as no help", which is exactly
- *      the claim this arm re-tests. B beating A says the expensive part is not the pixels.
- *
- *   C  display:none on completed messages.
- *      Removes layout geometry and the sibling count as well as everything B removes.
- *      IF C IS THE WIN AND B IS NOT: the cost is layout geometry and the cost of having N
- *      siblings in one flow, not per-element style. That points at the thread container's layout
- *      mode (flex column over N children) rather than at the messages.
- *
- *   D  detach the autoscroll subtree MutationObserver.
- *      use-intent-aware-autoscroll.tsx:502 observes the viewport with subtree+characterData, and
- *      its callback reads el.scrollHeight, which forces synchronous style+layout of the WHOLE
- *      thread on every delivery. During streaming those deliveries arrive per streamed character.
- *      IF D IS THE WIN: the cost is forced synchronous layout inside the autoscroll observer.
- *      The fix is to stop reading scrollHeight per mutation (rAF-coalesce it, or switch to
- *      IntersectionObserver / overflow-anchor), not to touch the messages at all.
- *
- *   E  neutralise the --aui-scroll-stabilizer custom property write.
- *      That same callback writes a custom property on the viewport element. A custom property is
- *      inherited, so writing it on the scroll container invalidates inherited style for the whole
- *      subtree beneath it, which is every message.
- *      IF E IS THE WIN: the cost is inherited custom-property subtree style invalidation. The fix
- *      is to register the property with syntax and inherits:false via CSS.registerProperty, or to
- *      move the write off the ancestor of the thread.
- *
- *   F  freeze React's scheduler while leaving the DOM exactly as it is.
- *      React's browser scheduler drives work through a MessageChannel: port1.onmessage is
- *      performWorkUntilDeadline, and port2.postMessage schedules the next slice. Suppressing the
- *      delivery stops reconciliation, effects and store subscriptions without touching a node.
- *      IF F IS THE WIN: the cost is React subscriptions and reconciliation over the prefix, and
- *      the fix is memoisation / virtualisation / narrower context subscriptions, not CSS.
- *
- *   G  CONTROL. Identical DOM, no knob, thread scrolled so prior turns are actually IN the
- *      viewport. Every other arm removes work that only exists when the prefix is off screen and
- *      cheap; G is the run where the prefix is on screen and expensive. It is the calibration for
- *      "how much does this page cost when nothing is being skipped", and a G that is not slower
- *      than the untouched baseline means the baseline was never skipping anything, which would
+ *   A  visibility:hidden on completed messages -- removes paint/raster only. If A wins, stop
+ *      painting the prefix rather than building it.
+ *   B  content-visibility:auto + contain-intrinsic-size, undoing the index.css:2537 override --
+ *      removes off-screen style, layout AND paint. B beating A says the pixels are not the cost,
+ *      and re-tests that override's claim that containment on message roots "was no help".
+ *   C  display:none -- also removes layout geometry and the sibling count. C winning where B does
+ *      not points at the thread container's layout mode, not at per-element style.
+ *   D  detach the autoscroll subtree MutationObserver (use-intent-aware-autoscroll.tsx:502), whose
+ *      callback reads el.scrollHeight and so forces synchronous layout of the whole thread per
+ *      streamed character. If D wins, rAF-coalesce that read rather than touching the messages.
+ * Observed with subtree+characterData, so it fires per streamed character.
+ *   E  neutralise the --aui-scroll-stabilizer write: a custom property is inherited, so writing it
+ *      on the scroll container invalidates inherited style for every message. If E wins, register
+ *      it with inherits:false or move the write off the thread's ancestor.
+ * If E wins, `CSS.registerProperty` with inherits:false is the fix.
+ *   F  freeze React's scheduler (MessageChannel port1.onmessage = performWorkUntilDeadline),
+ *      leaving the DOM untouched. If F wins the fix is memoisation / virtualisation, not CSS.
+ *   G  CONTROL: identical DOM, no knob, prior turns actually IN the viewport. A G that is not
+ *      slower than the baseline means the baseline was never skipping anything, which would
  *      invalidate the whole comparison.
  *
- * THE TWO FAILURE MODES THIS FILE EXISTS TO PREVENT
+ * THE TWO FAILURE MODES THIS FILE EXISTS TO PREVENT (see arms/manifest.py); both are silent.
  *
- * See arms/manifest.py. An ablation lies in exactly two ways and both are silent.
+ *   1. THE ARM CHANGED THE OUTPUT. An earlier stub fixture rendered 552 highlighted spans where
+ *      the real page renders 2,561 and read as a clean 4x win. digest() and counts() catch that:
+ *      the canonical form carries code-block and span counts per message, so a highlighting
+ *      difference is caught even when every character of text matches. Two declared gaps: the
+ *      digest does not serialise descendants' attributes (so arm B's inline style on a code block
+ *      is invisible, which is why B is EQUIVALENT and not EXACT) and it knows nothing about
+ *      geometry. Arms A and C therefore mutate NOTHING, targeting the prefix with
+ *      `:nth-child(-n+K)` so EXACT is a claim they can make; when that is impossible they fall
+ *      back to a marker attribute and say in the returned reason that they dropped to EQUIVALENT.
+ *   2. THE ARM DID NOT FIRE, and "no effect" got written down as evidence. So every arm has a
+ *      potency counter the arm CAUSES ("N elements compute to visibility:hidden", not "the
+ *      stylesheet was appended"), and a patch that could not be installed lands in unavailable[]
+ *      so UNAVAILABLE can never be misread as "had no effect".
  *
- *   1. THE ARM CHANGED THE OUTPUT. The knob also removed some of the work, so the two sides did
- *      not render the same page. The dangerous case is the small invisible difference: an earlier
- *      stub fixture in this codebase produced 552 syntax-highlighted spans where the real page
- *      produces 2,561, and it read as a clean 4x win. It was not fast, it was rendering a fifth
- *      of the content. digest() and counts() exist for that: the canonical serialisation carries
- *      the code-block count and the span count per message, so a highlighting difference is
- *      caught even when every character of text is identical.
+ * CASCADE FACTS, verified against CSS Cascading and Inheritance Level 5. The index.css override
+ * sits inside `@layer utilities`, and for IMPORTANT declarations layer order is REVERSED, so an
+ * unlayered `!important` rule LOSES at any specificity -- the obvious approach silently does
+ * nothing, which is failure mode 2. Inline declarations sort BEFORE layers, so an inline
+ * `!important` beats every author declaration. Each CSS arm therefore emits its sheet twice (once
+ * unlayered, once inside `@layer utilities`), verifies with getComputedStyle, and only escalates
+ * to inline !important when the verification says the rule did not take, counting the escalation.
  *
- *      TWO THINGS THE DIGEST CANNOT SEE, stated here because they cannot be stated in it. It
- *      walks `[data-message-id]` roots and serialises their attributes and text plus the count of
- *      code blocks and of spans inside them. It does NOT serialise the attributes of descendants,
- *      so an inline style written on a code block is invisible to it (arm B does exactly that,
- *      which is one reason B is EQUIVALENT and not EXACT). And it does not know about geometry,
- *      so a change that only moves pixels is invisible too. Neither gap is patched by making the
- *      digest bigger; they are declared, because a normaliser nobody wrote down is just a bug.
+ * ARMS ARE APPLIED ONCE, over the prefix that exists at that moment. Messages created during the
+ * window are NOT ablated, deliberately: the hypothesis is about the completed off-screen prefix,
+ * and a live MutationObserver re-applying the knob would add per-mutation work to the hot path --
+ * an ablation that installs an observer to remove an observer measures itself. For the same reason
+ * arm B marks only code blocks inside COMPLETED messages.
  *
- *      Arms A and C therefore go out of their way to mutate NOTHING: they target the completed
- *      prefix with `:nth-child(-n+K)` against the viewport's direct children rather than by
- *      tagging elements, so the raw digest is byte-identical across the arm and EXACT is a claim
- *      they can actually make. When that is impossible they fall back to a marker attribute and
- *      say in the returned reason that they have dropped to EQUIVALENT.
+ * PREBOOT VERSUS RUNTIME. D, E and F patch APIs the app captures during boot and are read from
+ * window.__sbArmConfig.preboot. An arm not listed is NOT INSTALLED AT ALL, because an inactive
+ * wrapper still costs a call frame on every observe or setProperty and a control run carrying that
+ * overhead is not a control. D and E are active from injection (apply("D") reports the arm already
+ * active); F captures the port at preboot and toggles the freeze in apply("F").
  *
- *   2. THE ARM DID NOT FIRE. Selector matched nothing, patch failed to install, run completed,
- *      difference was zero, and "no effect" got written down as evidence against the mechanism.
- *      It is evidence of nothing. So every arm has a potency counter that the arm CAUSES: not
- *      "the stylesheet was appended" but "N elements actually compute to visibility:hidden".
- *      A patch that could not be installed lands in unavailable[] and never in available[], so
- *      UNAVAILABLE can never be misread as "had no effect".
+ * COUNTERS. potency() returns integers in two kinds. EVENT COUNTERS are monotonic for the life of
+ * the page (suppressedViewportObserves, observeCallsTotal, suppressedStabilizerSets,
+ * suppressedSchedulerCallbacks, capturedSchedulerPorts, the bookkeeping counters, ...). GAUGES are
+ * point-in-time reads of the live DOM, re-measured on every call unless {live:false}
+ * (visibilityHiddenConfirmed, cvAutoMessages, displayNoneConfirmed, controlVisibleMessages, ...).
+ * A stored 0 and a measured 0 are different facts: measuring live keeps the "before" read a real
+ * observation, and checks arm G at the END of the window after the app's autoscroll has had every
+ * chance to undo the scroll position. Re-measuring calls getComputedStyle over every message root,
+ * forcing style recalc, so potency() must be called OUTSIDE the timed window.
  *
- * CASCADE FACTS THIS FILE DEPENDS ON, VERIFIED AGAINST THE SPEC
- *
- * The index.css override lives inside `@layer utilities { ... }` (Tailwind v4 emits native
- * cascade layers). Per CSS Cascading and Inheritance Level 5 and MDN:
- *
- *   - For IMPORTANT declarations the layer order is REVERSED, and important declarations in ANY
- *     layer beat important declarations outside every layer. So appending an unlayered
- *     `!important` rule, at any specificity, LOSES to the layered `!important` rule it is trying
- *     to undo. The obvious approach silently does nothing, which is failure mode 2.
- *   - Element-attached (inline) declarations are sorted BEFORE layers in the cascade, so an
- *     inline `!important` declaration beats every other author declaration whatever its layer.
- *
- * Therefore each CSS arm applies its stylesheet in two copies, one unlayered and one inside
- * `@layer utilities` so it competes in the same layer as the rule it must beat (same layer, same
- * importance, higher specificity, later order -> wins), THEN verifies with getComputedStyle, and
- * only if the verification says the rule did not take effect does it escalate to inline
- * !important, counting the escalation. The verification is the whole point: the stylesheet is a
- * hypothesis about the cascade, the computed style is the observation.
- *
- * ARMS ARE APPLIED ONCE, OVER THE PREFIX THAT EXISTS AT THAT MOMENT
- *
- * apply() runs at the start of a measured window and never again. Messages created during the
- * window are NOT ablated. That is deliberate and not a limitation:
- *
- *   - the hypothesis is about the PREFIX (the N completed turns that are off screen), not about
- *     the turn being streamed, so ablating the in-flight message would change the thing under
- *     measurement rather than the thing under test;
- *   - a live MutationObserver re-applying the knob to each new message would add per-mutation
- *     work to the hot path, which is the exact category of cost the experiment is trying to
- *     remove. An ablation that installs its own observer to remove an observer measures itself.
- *
- * For the same reason arm B marks only code blocks inside COMPLETED messages: touching the code
- * block that is still streaming would change how streamdown and shiki finalise it.
- *
- * PREBOOT VERSUS RUNTIME
- *
- * D, E and F patch APIs the app captures during boot, so they must be installed before the app
- * runs and they are read from window.__sbArmConfig.preboot, set by an earlier init script. An arm
- * that is not listed is NOT INSTALLED AT ALL. Installing a patch and leaving it inactive is not
- * free: the wrapper costs a call frame on every MutationObserver.observe or setProperty in the
- * process, and a control run carrying that overhead is not a control. So the preboot list decides
- * per page load, and a run whose config did not arm D reports D as unavailable with a reason,
- * never as an arm that ran and did nothing.
- *
- * D and E are ACTIVE FROM INJECTION when armed; there is no meaningful apply() for them, because
- * the autoscroll observer is installed once during mount and the suppression has to be in place
- * before that. apply("D") therefore reports the arm as already active and returns the suppression
- * count so far. F is different: the port capture is preboot, the freeze is toggled by apply("F").
- *
- * ARM F IS DOM_CHANGING. Freezing React stops the stream from rendering, so the frozen run is not
- * rendering the same page as the control -- it is rendering less of it. Its cost is therefore an
- * upper bound on what React reconciliation costs and can never be quoted as a point estimate.
- * manifest.py prints it as `<= x`. This is stated here as well because the arm is the one most
- * likely to produce a spectacular number that somebody wants to quote.
- *
- * COUNTERS: EVENT COUNTERS VERSUS GAUGES
- *
- * potency() returns integers only, in two kinds, and the distinction is load-bearing:
- *
- *   EVENT COUNTERS are monotonic and never decrease for the life of the page:
- *     suppressedViewportObserves, observeCallsTotal, observeCallsPassedThrough,
- *     suppressedStabilizerSets, customPropSets, setPropertyCallsTotal,
- *     suppressedSchedulerCallbacks, schedulerCallbacksDelivered, capturedSchedulerPorts, and the
- *     bookkeeping counters (armsApplied, inlineFallbacks, ...).
- *
- *   GAUGES are point-in-time measurements of the live DOM, re-measured on every potency() call
- *   unless {live:false} is passed: visibilityHiddenConfirmed, cvAutoMessages, cvAutoCodeBlocks,
- *   contentVisibilityAutoConfirmed, displayNoneConfirmed, controlVisibleMessages,
- *   controlVisiblePriorMessages.
- *
- * Gauges are deliberately not monotonic. A stored 0 and a measured 0 are different facts, and
- * this file exists to keep them different: measuring live means the "before" read is a real
- * observation of the untouched page rather than a variable that has not been written yet, and it
- * means arm G is checked against what the page looks like at the END of the window, after the
- * app's own autoscroll has had every chance to undo the scroll position G set. Re-measuring calls
- * getComputedStyle over every message root, which forces style recalc, so potency() must be
- * called OUTSIDE the timed window; pass {live:false} to read the last stored values with no DOM
- * access at all.
- *
- * HASHING
- *
- * FNV-1a, 32 bit, hex. NOT CRYPTOGRAPHIC and not a security boundary. It is a change detector
- * against an adversary that does not exist, and 32 bits is small enough that a collision on a
+ * HASHING: FNV-1a, 32 bit, hex. Not cryptographic, and small enough that a collision on a
  * multi-megabyte canonical form is not impossible, so digest() also returns canonicalLength and
  * rawLength. Compare the pair, not the hash alone.
  */
@@ -192,9 +91,8 @@
 
 	var W = window;
 
-	// Idempotence. add_init_script runs for every document including iframes, and a driver that
-	// reloads the page must not stack patches: a doubly wrapped observe() would double every
-	// count, and a doubly wrapped MessageChannel would make the freeze flag ambiguous.
+	// Idempotence: add_init_script runs for every document including iframes, and double
+	// wrapping would double every count and make the freeze flag ambiguous.
 	if (W.__sbArmsInstalled) {
 		return;
 	}
@@ -221,12 +119,8 @@
 	var DEFAULT_CONTROL_VISIBLE_TARGET = 3;
 	var MAX_STYLESHEET_DEPTH = 8;
 
-	// ------------------------------------------------------------------------------------
-	// Config
-	//
-	// Read defensively. A missing or malformed __sbArmConfig means no preboot arms, which is the
-	// correct default: no config is not permission to install patches into a control run.
-	// ------------------------------------------------------------------------------------
+	// A missing or malformed __sbArmConfig means no preboot arms: absent config is not
+	// permission to patch a control run.
 
 	var cfg = {};
 	try {
@@ -302,21 +196,15 @@
 		doc = null;
 	}
 
-	// ------------------------------------------------------------------------------------
-	// State
-	// ------------------------------------------------------------------------------------
 
 	function freshEventCounters() {
 		return {
-			// D
 			observeCallsTotal: 0,
 			observeCallsPassedThrough: 0,
 			suppressedViewportObserves: 0,
-			// E
 			setPropertyCallsTotal: 0,
 			customPropSets: 0,
 			suppressedStabilizerSets: 0,
-			// F
 			capturedSchedulerPorts: 0,
 			schedulerCallbacksDelivered: 0,
 			suppressedSchedulerCallbacks: 0,
@@ -326,7 +214,6 @@
 			droppedSchedulerEvents: 0,
 			schedulerListenerAdds: 0,
 			schedulerCallbacksWithoutHandler: 0,
-			// bookkeeping
 			armsApplied: 0,
 			armsReverted: 0,
 			styleSheetsInstalled: 0,
@@ -353,13 +240,13 @@
 	var gauges = freshGauges();
 
 	var state = {
-		applied: {},          // armId -> {at, affected, reason}
+		applied: {},
 		frozen: false,
-		markers: [],          // {el, prev} for MARKER_ATTR restoration
-		inline: [],           // {el, prop, prevValue, prevPriority, hadStyleAttr}
-		sheets: {},           // armId -> <style> element
-		channels: [],         // captured MessageChannel records
-		scrollRestore: null,  // arm G restoration record
+		markers: [],
+		inline: [],
+		sheets: {},
+		channels: [],
+		scrollRestore: null,
 		originals: {
 			observe: null,
 			observeDescriptor: null,
@@ -402,13 +289,8 @@
 		return { reverted: !!reverted, reason: String(reason || "") };
 	}
 
-	// ------------------------------------------------------------------------------------
-	// DOM helpers
-	//
-	// All of them tolerate a missing document, a detached node and a selector that matches
-	// nothing, and none of them throw. A query that fails returns an empty array, and the caller
-	// turns that into a reason string rather than into a zero.
-	// ------------------------------------------------------------------------------------
+	// None of these throw on a missing document, detached node or empty match; a failed
+	// query returns [] and the caller turns that into a reason, not a zero.
 
 	function toArray(nodeList) {
 		var out = [];
@@ -454,9 +336,8 @@
 	}
 
 	function isRunning(el) {
-		// The ONLY DOM signal of an in-flight message is a descendant (or the root itself)
-		// carrying [data-status="running"]; status.type from assistant-ui is one of
-		// running|complete|incomplete|requires-action.
+		// The only DOM signal of an in-flight message is [data-status="running"] on the root or a
+		// descendant (assistant-ui status: running|complete|incomplete|requires-action).
 		try {
 			if (!el) {
 				return false;
@@ -466,18 +347,16 @@
 			}
 			return queryOne(RUNNING_SELECTOR, el) !== null;
 		} catch (e) {
-			// Unknown status is treated as running, i.e. as NOT ablatable. Erring the other way
-			// would ablate the message being streamed and contaminate the measurement.
+			// Unknown status counts as running, i.e. not ablatable: the other way would ablate the
+			// streaming message and contaminate the measurement.
 			return true;
 		}
 	}
 
-	// The completed-message filter is done in JS, one querySelector per root, and NOT with a CSS
-	// `:has()` selector. `:has()` is unsupported on older engines and an unsupported compound
-	// selector makes the WHOLE selector list invalid, so the rule would be dropped at parse time,
-	// match nothing, and the arm would report a clean zero difference. That is precisely the
-	// did-not-fire failure this file is built to make impossible, and it is invisible in a
-	// screenshot, in a trace and in the console.
+	// Filtering in JS rather than CSS `:has()`: an unsupported compound selector invalidates the
+	// whole selector list, so the rule would be dropped at parse time and the arm would report a
+	// clean zero difference.
+	// One querySelector per root.
 	function completedMessageRoots() {
 		var roots = messageRoots();
 		var out = [];
@@ -567,22 +446,14 @@
 		} catch (e) {
 			/* fall through */
 		}
-		// No CSS.supports means we cannot prove support. Treat as supported and let the computed
-		// check decide: a false "unavailable" would hide an arm that works.
+		// No CSS.supports means support cannot be proven; assume supported and let the computed
+		// check decide, since a false UNAVAILABLE hides an arm that works.
 		return true;
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Markers and inline styles
-	//
-	// Arms A, B and C need a CSS hook on specific elements, and the only way to have a stylesheet
-	// address "these elements and no others" is an attribute the stylesheet can select. One
-	// attribute name is used for all arms, space separated, so [data-sb-arm~="A"] matches. That
-	// attribute IS a change to the DOM, so it shows up in digest().raw. It is meant to: an arm
-	// that mutates attributes is EQUIVALENT, not EXACT, and the Python side declares
-	// `attr:data-sb-arm` (plus `attr:style` when the inline escalation fires) as its allowed diff.
-	// Pretending otherwise by hiding the marker from the raw digest would defeat the check.
-	// ------------------------------------------------------------------------------------
+	// One space-separated attribute serves arms A, B and C ([data-sb-arm~="A"]). It IS a DOM
+	// change and appears in digest().raw deliberately: such an arm is EQUIVALENT, not EXACT,
+	// and Python declares `attr:data-sb-arm` (plus `attr:style`) as its allowed diff.
 
 	function markElement(el, armId) {
 		try {
@@ -693,8 +564,7 @@
 						left = "x";
 					}
 					if (left === "") {
-						// Leaving style="" behind would be a permanent, invisible difference in
-						// every future digest of this page.
+						// Leaving style="" behind would be a permanent, invisible difference in every future digest of this page.
 						rec.el.removeAttribute("style");
 					}
 				}
@@ -705,23 +575,10 @@
 		state.inline = [];
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Stylesheets
-	//
-	// Every arm sheet is emitted TWICE: once unlayered, once inside `@layer utilities`.
-	//
-	// The rule that has to be beaten (index.css:2536-2538) is inside `@layer utilities`, and for
-	// important declarations layered beats unlayered no matter the specificity. The layered copy
-	// therefore competes in the same layer as its target, where the ordinary rules apply again:
-	// same layer, same importance, higher specificity, later in document order, so it wins. The
-	// unlayered copy covers the case where the build has no layers at all (then there is nothing
-	// layered to lose to, and the unlayered copy is the one that applies). Emitting both is safe
-	// because the two copies carry identical declarations, so whichever wins produces the same
-	// computed value.
-	//
-	// Appending to <head> puts the sheet last among same-layer rules, which settles order of
-	// appearance. None of this is trusted: applyX() checks getComputedStyle afterwards.
-	// ------------------------------------------------------------------------------------
+	// Every arm sheet is emitted twice, unlayered and inside `@layer utilities`. The rule to beat
+	// (index.css:2536-2538) is layered, and for important declarations layered beats unlayered at
+	// any specificity; the unlayered copy covers a build with no layers. Nothing is trusted:
+	// applyX() rechecks getComputedStyle afterwards.
 
 	function ensureStyleSheet(armId, cssBody) {
 		try {
@@ -763,32 +620,13 @@
 		}
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Two ways to address "the completed messages" from a stylesheet, and why the first one is
-	// worth the extra code.
-	//
-	// PREFIX PATH (preferred). Messages are DIRECT CHILDREN of the viewport; there is no
-	// message-list wrapper element. The message being streamed is the last one. So the completed
-	// messages are a leading run of the viewport's children and
-	//
-	//     .aui-thread-viewport.aui-stream-viewport > [data-message-id]:nth-child(-n+K)
-	//
-	// selects exactly them, with K computed in JS as the child index of the first running message
-	// root. This mutates NOTHING. No attribute is added, no inline style is written, and the raw
-	// digest of the thread is byte-identical before and after, so arms A and C can honestly claim
-	// EXACT invariance. The `[data-message-id]` part is not redundant: nth-child alone would also
-	// match spacers, sentinels and buttons that share the viewport, and hiding one of those is a
-	// change to the rendered page that the digest cannot see because the digest only walks
-	// message roots.
-	//
-	// MARKER PATH (fallback). If the completed set is not a leading prefix (a message somewhere
-	// in the middle is still running, which assistant-ui allows in principle), or the viewport
-	// cannot be found, the arm falls back to a `data-sb-arm` attribute on each completed root.
-	// That is a real DOM mutation, so the arm drops from EXACT to EQUIVALENT and the returned
-	// reason string says so in as many words. It is reported rather than hidden because a
-	// silently-EQUIVALENT arm quoted as EXACT is a false number, while a loudly-EQUIVALENT one is
-	// just a number with a declared diff.
-	// ------------------------------------------------------------------------------------
+	// PREFIX PATH (preferred): messages are direct children of the viewport and the streamed one
+	// is last, so a `> [data-message-id]:nth-child(-n+K)` selector picks exactly the completed
+	// run. It mutates nothing, so the raw digest is byte-identical and arms A and C can claim
+	// EXACT. `[data-message-id]` is needed: nth-child alone also matches spacers and buttons.
+	// MARKER PATH (fallback): when the completed set is not a leading prefix, or no viewport is
+	// found, each completed root is marked with `data-sb-arm`; the arm drops to EQUIVALENT and
+	// says so in its reason.
 
 	function cssPrefixA(k) {
 		return (
@@ -833,9 +671,8 @@
 		"\tdisplay: none !important;\n" +
 		"}\n";
 
-	// Returns the leading run of viewport children that contains no running message, or null when
-	// the prefix path is not usable. `k` is a 1-based nth-child bound; `roots` are the message
-	// roots inside it, all of them completed by construction.
+	// Returns the leading run of viewport children with no running message, else null. `k` is a
+	// 1-based nth-child bound; `roots` are the completed roots inside it.
 	function prefixInfo() {
 		try {
 			var vp = viewportEl();
@@ -895,9 +732,6 @@
 		}
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Hashing and canonical serialisation
-	// ------------------------------------------------------------------------------------
 
 	var imul =
 		typeof Math.imul === "function"
@@ -910,8 +744,8 @@
 					return ((al * bl + (((ah * bl + al * bh) << 16) >>> 0)) | 0);
 			  };
 
-	// FNV-1a, 32 bit, over UTF-16 code units taken low byte first. Non-cryptographic: this is a
-	// change detector, not a security boundary. Compare it together with canonicalLength.
+	// FNV-1a 32-bit over UTF-16 code units, low byte first. Non-cryptographic: compare it
+	// together with canonicalLength.
 	function fnv1a32(str) {
 		var h = 0x811c9dc5;
 		for (var i = 0; i < str.length; i++) {
@@ -924,9 +758,8 @@
 		return ("0000000" + (h >>> 0).toString(16)).slice(-8);
 	}
 
-	// Field encoding. JSON escapes quotes, backslashes, newlines and control characters; the pipe
-	// is escaped on top of that so no encoded field can ever contain the field separator, which
-	// makes the canonical form parseable by a plain split() in diffKeys().
+	// JSON escapes quotes, backslashes, newlines and controls; the pipe is escaped on top, so no
+	// field can contain the separator and diffKeys() can split() the canonical form.
 	function enc(s) {
 		try {
 			return JSON.stringify(String(s === null || s === undefined ? "" : s))
@@ -949,8 +782,8 @@
 		if (!skipStyleProps || !skipStyleProps.length) {
 			return value;
 		}
-		// Parse with the browser's own CSS parser on a detached element rather than by splitting
-		// on ";" and ":", which breaks on url(data:...) and on any value containing a semicolon.
+		// Parsed by the browser's CSS parser on a detached element: splitting on ";" and ":" breaks
+		// on url(data:...) and any value containing a semicolon.
 		try {
 			if (doc && typeof doc.createElement === "function") {
 				var scratch = doc.createElement("div");
@@ -986,9 +819,8 @@
 		return kept.join("; ");
 	}
 
-	// One DOM walk, reused for both serialisations. Walking twice would be slower and, worse,
-	// would let the page change between the raw pass and the normalised pass, producing a "raw
-	// differs, normalised does not" that is an artefact of the instrument.
+	// One DOM walk feeds both serialisations: walking twice lets the page change between the raw
+	// and normalised passes, faking a raw-only difference.
 	function collectRecords() {
 		var roots = messageRoots();
 		var records = [];
@@ -1153,9 +985,8 @@
 			out.codeSpans = collected.codeSpans;
 
 			var rawKeys = {};
-			// `raw` skips nothing at all: it is the answer to "did anything about the rendered
-			// output change", including the arm's own marker attribute. An EXACT arm that touches
-			// an attribute is not an EXACT arm, and this is where that gets caught.
+			// `raw` skips nothing, including the arm's own marker attribute: an EXACT arm that touches an
+			// attribute is not EXACT, and this is where that is caught.
 			var rawCanonical = serialise(collected, [], [], rawKeys);
 
 			var normKeys = {};
@@ -1177,9 +1008,8 @@
 
 			if (keepCanonical) {
 				if (rawCanonical.length > maxCanonicalChars || normCanonical.length > maxCanonicalChars) {
-					// A prefix is retained because it is useful when debugging, but `truncated`
-					// is set and diffKeys() refuses to answer from a truncated pair. A quiet cut
-					// would turn "we did not look at the rest" into "the rest was identical".
+					// A prefix is kept for debugging but `truncated` is set and diffKeys() refuses a truncated
+					// pair: a quiet cut would turn "not looked at" into "identical".
 					out.truncated = true;
 				}
 				out.canonicalRaw = rawCanonical.slice(0, maxCanonicalChars);
@@ -1192,27 +1022,16 @@
 		return out;
 	}
 
-	// ------------------------------------------------------------------------------------
-	// diffKeys
-	//
-	// Compares the RAW canonical forms, not the normalised ones. The normalised hashes already
-	// answer "are these equivalent"; what manifest.py needs from here is the other question,
-	// "what actually differs", so it can check the observed diff against the diff the arm
-	// DECLARED it would produce. An arm that declares one difference and produces two is voided,
-	// and comparing normalised forms would hide the second one, since the normaliser is exactly
-	// the thing that removes the declared difference.
-	//
-	// Keys are collapsed to a stable vocabulary (`attr:<name>`, `text`, `tag`,
-	// `structure:<what>`) rather than per-message paths, because a declared diff has to be
-	// writable in advance and `#msg-8fc2.attr.style` is not knowable in advance.
-	//
-	// Fails closed: if the canonical form was not retained, or was truncated, or cannot be
-	// parsed, the returned array contains a key beginning with `__unavailable:` which can never
-	// appear in a declared diff, so the arm is voided instead of silently passing.
-	// ------------------------------------------------------------------------------------
+	// Compares the RAW canonical forms: the normalised hashes already answer "equivalent?", while
+	// manifest.py needs what actually differs to check it against the DECLARED diff. Normalised
+	// forms would hide a second difference, since the normaliser removes the declared one.
+	// Keys collapse to a stable vocabulary (`attr:<name>`, `text`, `tag`, `structure:<what>`): a
+	// declared diff must be writable in advance, and `#msg-8fc2.attr.style` is not.
+	// Fails closed: an unretained, truncated or unparseable canonical form yields a
+	// `__unavailable:` key, which can never appear in a declared diff, so the arm voids.
 
 	function parseCanonical(text) {
-		var entries = {};   // entryId -> {key: value}
+		var entries = {};
 		var indexToId = {};
 		var lines = String(text).split("\n");
 		for (var i = 0; i < lines.length; i++) {
@@ -1337,7 +1156,7 @@
 	}
 
 	// Beyond the required API: the same comparison with examples, for a human reading a VOIDED
-	// verdict who needs to know WHICH message drifted and by how much.
+	// verdict who needs to know which message drifted and by how much.
 	function diffDetail(a, b, limit) {
 		var cap = typeof limit === "number" && limit > 0 ? Math.floor(limit) : 20;
 		var out = [];
@@ -1397,9 +1216,6 @@
 		return out;
 	}
 
-	// ------------------------------------------------------------------------------------
-	// counts()
-	// ------------------------------------------------------------------------------------
 
 	function counts() {
 		var out = {
@@ -1414,10 +1230,8 @@
 			chars: 0,
 			domNodes: 0,
 			visibleMessages: 0,
-			// Beyond the required keys, and required by the zero discipline: visibleMessages == 0
-			// because the thread viewport was not found is a different fact from
-			// visibleMessages == 0 because nothing is on screen, and the two must not print the
-			// same.
+			// Zero discipline: visibleMessages == 0 from a missing thread viewport is a different fact
+			// from nothing being on screen, and must not print the same.
 			viewportFound: false
 		};
 		try {
@@ -1462,10 +1276,8 @@
 				var spans = queryAll("span", blocks[b]);
 				out.codeSpans += spans.length;
 				for (var s = 0; s < spans.length; s++) {
-					// A shiki token is a leaf span with text. Both numbers are reported: a
-					// fixture that renders a fifth of the highlighting moves both, and a change
-					// in span NESTING moves only codeSpans, so keeping them separate says which
-					// of the two happened.
+					// A shiki token is a leaf span with text. Both numbers are reported: partial highlighting
+					// moves both, a change in span NESTING moves only codeSpans.
 					var sp = spans[s];
 					var hasElementChild = false;
 					try {
@@ -1500,9 +1312,6 @@
 		return out;
 	}
 
-	// ------------------------------------------------------------------------------------
-	// potency()
-	// ------------------------------------------------------------------------------------
 
 	function measureGauges() {
 		try {
@@ -1565,9 +1374,6 @@
 		return out;
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Arm A -- visibility:hidden on completed messages
-	// ------------------------------------------------------------------------------------
 
 	function applyA() {
 		var info = prefixInfo();
@@ -1602,8 +1408,8 @@
 		}
 		var confirmed = countComputed(roots, "visibility", "hidden");
 		if (confirmed === 0) {
-			// The stylesheet lost the cascade. Inline important is sorted before layers and beats
-			// every author rule, so this is the escalation that cannot lose.
+			// The stylesheet lost the cascade. Inline important sorts before layers and beats every
+			// author rule, so this escalation cannot lose.
 			counters.inlineFallbacks += 1;
 			for (var i = 0; i < roots.length; i++) {
 				setInline(roots[i], "visibility", "hidden", "important");
@@ -1630,22 +1436,14 @@
 		);
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Arm B -- content-visibility:auto plus contain-intrinsic-size
-	//
-	// Part (i) restores content-visibility on code blocks, undoing index.css:2536-2538.
-	// Part (ii) puts content-visibility:auto and contain-intrinsic-size:auto <measured>px inline
-	// on each completed message root.
-	//
-	// THE ORDERING BUG THIS FUNCTION IS SHAPED TO AVOID: content-visibility:auto makes an
-	// off-screen element skip its contents, so the moment it is set, offsetHeight collapses to the
-	// contain-intrinsic-size placeholder. Reading offsetHeight after setting the property captures
-	// the placeholder, which is then fed back as the intrinsic size, and every element ends up
-	// claiming to be 200px (or 0) tall. The thread's scroll height collapses, the scrollbar jumps,
-	// the autoscroll observer fires on the reflow, and the run measures a page that is not the
-	// page. So the heights are all read in one pass FIRST and only then written in a second pass.
-	// Two passes also avoid read/write layout thrash, but that is a bonus, not the reason.
-	// ------------------------------------------------------------------------------------
+	// (i) restores content-visibility on code blocks, undoing index.css:2536-2538; (ii) puts
+	// content-visibility:auto and contain-intrinsic-size inline on each completed message root.
+	// THE ORDERING BUG THIS FUNCTION AVOIDS: content-visibility:auto makes an off-screen element
+	// skip its contents, so an offsetHeight read AFTER setting it returns the
+	// contain-intrinsic-size placeholder, which then feeds back as the intrinsic size: scroll
+	// height collapses, the scrollbar jumps, the autoscroll observer fires and the run measures a
+	// page that is not the page. So heights are read in one pass and written in a second.
+	// The placeholder claims 200px, or 0.
 
 	function readHeights(els) {
 		var heights = [];
@@ -1672,9 +1470,8 @@
 			);
 		}
 
-		// Only code blocks inside COMPLETED messages. The block that is still streaming must not
-		// be touched: changing containment on it would change how streamdown and shiki finalise
-		// it, which is a change to the output, not an ablation of cost.
+		// Only code blocks in COMPLETED messages: changing containment on the streaming block would
+		// change how streamdown and shiki finalise it, altering the output rather than its cost.
 		var blocks = [];
 		for (var r = 0; r < roots.length; r++) {
 			var bs = codeBlocksIn(roots[r]);
@@ -1684,13 +1481,15 @@
 		}
 
 		// READ PASS. Every height is captured before any property is written.
+		// THE ORDERING BUG THIS AVOIDS: content-visibility:auto makes an off-screen element skip its
+		// contents, so offsetHeight collapses to the contain-intrinsic-size placeholder the moment it
+		// is set. Read afterwards, that placeholder feeds back as the intrinsic size.
 		var blockHeights = readHeights(blocks);
 		var rootHeights = readHeights(roots);
 
-		// WRITE PASS. B writes inline styles on the roots either way, so it is EQUIVALENT
-		// whatever happens here; the prefix selector is still preferred because it keeps the
-		// code blocks free of a marker attribute that the digest cannot see (the canonical form
-		// serialises message-root attributes and DESCENDANT COUNTS, not descendant attributes).
+		// B writes inline styles either way, so it is EQUIVALENT regardless; the prefix selector is
+		// still preferred because it keeps a marker attribute off the code blocks, which the canonical
+		// form cannot see (it serialises root attributes and descendant COUNTS).
 		if (info) {
 			ensureStyleSheet("B", cssPrefixB(info.k));
 		} else {
@@ -1699,8 +1498,7 @@
 		}
 		var i;
 		for (i = 0; i < blocks.length; i++) {
-			// contain-intrinsic-size has to be inline anyway because it is per element, and the
-			// stylesheet only carries content-visibility.
+			// contain-intrinsic-size has to be inline because it is per element; the stylesheet only carries content-visibility.
 			setInline(
 				blocks[i],
 				"contain-intrinsic-size",
@@ -1711,10 +1509,9 @@
 
 		var cvBlocks = countComputed(blocks, "content-visibility", "auto");
 		if (blocks.length > 0 && cvBlocks === 0) {
-			// Expected on this build: index.css:2537 sets content-visibility:visible !important
-			// from inside @layer utilities, and for important declarations a layered rule beats
-			// an unlayered one at any specificity. The layered copy of CSS_B should win; if it
-			// did not, inline important is the escalation that the cascade guarantees.
+			// Expected here: index.css:2537 sets content-visibility:visible !important inside @layer
+			// utilities, and a layered important rule beats an unlayered one at any specificity, so the
+			// layered copy of CSS_B should win; if not, inline important is the guaranteed escalation.
 			counters.inlineFallbacks += 1;
 			for (i = 0; i < blocks.length; i++) {
 				setInline(blocks[i], "content-visibility", "auto", "important");
@@ -1754,9 +1551,6 @@
 		);
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Arm C -- display:none on completed messages
-	// ------------------------------------------------------------------------------------
 
 	function applyC() {
 		var info = prefixInfo();
@@ -1815,26 +1609,15 @@
 		);
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Arm D -- detach the autoscroll subtree observer (PREBOOT)
-	//
-	// Two discriminators identify the autoscroll observer, and both come from
-	// use-intent-aware-autoscroll.tsx:502: the target carries the aui-stream-viewport class, and
-	// the options carry "aria-expanded" in attributeFilter. Nothing else in the app observes with
-	// aria-expanded, and .aui-stream-viewport marks only real streaming-thread viewports.
-	//
-	// EVERY OTHER observe() CALL MUST PASS THROUGH UNCHANGED. reasoning.tsx,
-	// research-activity-panel.tsx, animated-theme-toggler.tsx, tooltip-modal-layer.ts (twice),
-	// settings-dialog.tsx, monitor-frame-store.ts and use-composer-pill-fit.ts all install
-	// observers, and breaking any of them would change what the app renders, which converts an
-	// ablation into a different page.
-	//
-	// The wrapper forwards `arguments` verbatim to the original, so calls with missing or invalid
-	// arguments throw the same TypeError from the same function they always did. The matching
-	// logic cannot throw: if reading options.attributeFilter fails for any reason, the call is
-	// treated as not-matching and passes through, because passing an observe() through is always
-	// safe and suppressing one that should not have been suppressed is not.
-	// ------------------------------------------------------------------------------------
+	// Two discriminators identify the autoscroll observer, both from
+	// use-intent-aware-autoscroll.tsx:502: target has .aui-stream-viewport and options carry
+	// "aria-expanded" in attributeFilter. Nothing else in the app observes with aria-expanded.
+	// EVERY OTHER observe() CALL MUST PASS THROUGH UNCHANGED (reasoning, research panel, theme
+	// toggler, tooltip layer, settings dialog, monitor store, composer pill fit): breaking one
+	// turns an ablation into a different page.
+	// The wrapper forwards `arguments` verbatim, so invalid calls throw the same TypeError from
+	// the same function. The matcher cannot throw: an unreadable options.attributeFilter counts as
+	// not-matching and passes through, since passing an observe() through is always safe.
 
 	function targetIsStreamViewport(target) {
 		try {
@@ -1945,15 +1728,9 @@
 		return true;
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Arm E -- neutralise the --aui-scroll-stabilizer write (PREBOOT)
-	//
-	// One custom property, by exact name. Every other setProperty call, custom property or not,
-	// passes through with its arguments forwarded verbatim so that coercion and throwing are
-	// unchanged. customPropSets counts every custom property write including the suppressed ones,
-	// which is the context that tells a reader whether the stabilizer was one write in ten or one
-	// in ten thousand.
-	// ------------------------------------------------------------------------------------
+	// One custom property, by exact name; every other setProperty call forwards its arguments
+	// verbatim so coercion and throwing are unchanged. customPropSets counts every
+	// custom-property write including suppressed ones, so a reader can see the rate.
 
 	function installE() {
 		var proto = null;
@@ -1989,8 +1766,8 @@
 			counters.setPropertyCallsTotal += 1;
 			var name = null;
 			try {
-				// A Symbol argument makes String() throw. In that case name stays null, the call
-				// passes through, and the original throws exactly the TypeError it would have.
+				// A Symbol argument makes String() throw; name stays null, the call passes through, and the
+				// original throws exactly the TypeError it would have.
 				name = typeof property === "string" ? property : String(property);
 			} catch (e) {
 				name = null;
@@ -2033,35 +1810,19 @@
 		return true;
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Arm F -- freeze the React scheduler, keep the DOM (PREBOOT capture, apply() freezes)
-	//
-	// THIS ARM IS DOM_CHANGING. While frozen, React renders nothing, so the stream stops
-	// appearing on screen and the frozen side is not rendering the same page as the control. Its
-	// cost is an UPPER BOUND on what React reconciliation costs and can never be quoted as a point
-	// estimate; manifest.py prints it as `<= x`. It is here because a bound on React is still
-	// worth having when the alternative is guessing, not because the number is clean.
-	//
-	// React's browser scheduler is the only runtime handle available. The ReactDOMRoot object is
-	// not exposed on window, so root.unmount() is not reachable, and #root is just an element.
-	// The scheduler does: const channel = new MessageChannel(); channel.port1.onmessage =
-	// performWorkUntilDeadline; ... port2.postMessage(null). Intercepting the assignment to
-	// port1.onmessage puts a dispatcher in front of performWorkUntilDeadline, and the freeze flag
-	// decides whether the dispatcher forwards.
-	//
-	// capturedSchedulerPorts is what separates "React never used MessageChannel on this build"
-	// (0 ports: NOT RUN, the treatment never happened) from "we froze it and nothing changed"
-	// (ports captured, callbacks suppressed).
-	//
-	// SUPPRESSING SCHEDULER MESSAGES CAN WEDGE REACT PERMANENTLY. The message loop only posts the
-	// next message from inside the handler it just ran, so a swallowed delivery ends the loop and
-	// unfreezing alone does not restart it. revert() therefore posts one fresh message per
-	// channel that had suppressions (schedulerResumeKicks) unless config.redeliverOnUnfreeze is
-	// false, and says so in the returned reason. The suppressed events themselves are NOT
-	// replayed: React's performWorkUntilDeadline ignores the event object and reads its own
-	// queue, so one kick resumes exactly the work the swallowed messages would have done, and
-	// replaying N events would run N slices that no longer correspond to anything.
-	// ------------------------------------------------------------------------------------
+	// THIS ARM IS DOM_CHANGING: while frozen React renders nothing, so it is not rendering the
+	// control's page. Its cost is an UPPER BOUND on reconciliation, never a point estimate;
+	// manifest.py prints it as `<= x`.
+	// React's browser scheduler is the only runtime handle: ReactDOMRoot is not on window, and the
+	// scheduler assigns performWorkUntilDeadline to channel.port1.onmessage, so intercepting that
+	// assignment puts a dispatcher in front of it.
+	// capturedSchedulerPorts separates "React never used MessageChannel on this build" (0 ports,
+	// NOT RUN) from "we froze it and nothing changed".
+	// SUPPRESSING SCHEDULER MESSAGES CAN WEDGE REACT PERMANENTLY: the loop posts the next message
+	// only from inside the handler it just ran, so revert() posts one fresh kick per channel that
+	// had suppressions unless config.redeliverOnUnfreeze is false. Suppressed events are not
+	// replayed: performWorkUntilDeadline reads its own queue, so one kick resumes the work.
+	// Counted as `schedulerResumeKicks`.
 
 	function instrumentSchedulerPort(channel) {
 		var port = channel.port1;
@@ -2085,15 +1846,13 @@
 				return undefined;
 			}
 			counters.schedulerCallbacksDelivered += 1;
-			// Called without a try/catch on purpose: an exception thrown by React must propagate
-			// exactly as it would have. Swallowing it here would make the frozen run behave
-			// differently from the control in a way that has nothing to do with the ablation.
+			// Deliberately not wrapped in try/catch: an exception thrown by React must propagate exactly
+			// as it would have, or the frozen run differs for reasons unrelated to the ablation.
 			return fn.call(port, event);
 		}
 
-		// Assigning through the prototype accessor first, so the real port ends up calling the
-		// dispatcher. This implicitly starts port1, which the scheduler does a moment later
-		// anyway when it assigns its own handler.
+		// Assigned through the prototype accessor first so the real port calls the dispatcher; this
+		// implicitly starts port1, which the scheduler does a moment later anyway.
 		port.onmessage = dispatch;
 
 		Object.defineProperty(port, "onmessage", {
@@ -2107,9 +1866,9 @@
 			}
 		});
 
-		// Some builds attach with addEventListener instead of onmessage. Without this, such a
-		// build would report captured ports and zero suppressions, which reads as "we froze it
-		// and React did not care" when the truth is that the freeze never reached the handler.
+		// Some builds attach with addEventListener instead of onmessage; without this, such a build
+		// reports captured ports and zero suppressions, reading as "React did not care" when the
+		// freeze never reached the handler.
 		try {
 			var origAdd = port.addEventListener;
 			var origRemove = port.removeEventListener;
@@ -2183,9 +1942,8 @@
 			return false;
 		}
 
-		// Probe before committing: if the port instance refuses a redefined onmessage there is no
-		// way to intercept, and the arm must read UNAVAILABLE rather than run and suppress
-		// nothing.
+		// Probe before committing: a port that refuses a redefined onmessage cannot be intercepted,
+		// and the arm must read UNAVAILABLE rather than run and suppress nothing.
 		try {
 			var probe = new Original();
 			Object.defineProperty(probe.port1, "onmessage", {
@@ -2212,8 +1970,8 @@
 			try {
 				instrumentSchedulerPort(channel);
 			} catch (e) {
-				// A channel we failed to instrument is still a working channel. The app must not
-				// notice, and capturedSchedulerPorts simply does not count it.
+				// A channel we failed to instrument is still a working channel: the app must not notice, and
+				// capturedSchedulerPorts simply does not count it.
 				debug("could not instrument a MessageChannel", e);
 			}
 			return channel;
@@ -2250,8 +2008,8 @@
 		}
 		state.frozen = true;
 		if (counters.capturedSchedulerPorts === 0) {
-			// Not an error yet: React may create its channel later. It is recorded in the reason
-			// so that a run which ends with zero captured ports is read as NOT RUN.
+			// Not an error yet (React may create its channel later); recorded in the reason so a run
+			// ending with zero captured ports reads as NOT RUN.
 			return result(
 				true,
 				"freeze flag set, but no MessageChannel has been created yet; if " +
@@ -2313,19 +2071,12 @@
 		);
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Arm G -- control: identical DOM, prior turns in the viewport
-	//
-	// The viewport carries the `scroll-smooth` class (thread.tsx:1728), so a scrollTop assignment
-	// would animate. An animated scroll would still be running when the measured window starts,
-	// which would put scroll animation cost inside the control and make the control the most
-	// expensive arm. scrollBehavior is forced to auto for the assignment and restored afterwards.
-	//
-	// The app's own autoscroll may pull the thread back to the bottom at any time, which is why
-	// controlVisibleMessages is a gauge that is re-measured on every potency() call rather than a
-	// number recorded once at apply time: the honest question is whether the prior turns were
-	// visible for the WINDOW, not whether they were visible for an instant.
-	// ------------------------------------------------------------------------------------
+	// The viewport carries `scroll-smooth` (thread.tsx:1728), so assigning scrollTop would animate
+	// and put scroll-animation cost inside the control; scrollBehavior is forced to auto for the
+	// assignment and restored afterwards.
+	// The app's own autoscroll may pull the thread back at any time, so controlVisibleMessages is
+	// a gauge re-measured on every potency() call: the honest question is whether prior turns were
+	// visible for the WINDOW, not for an instant.
 
 	function applyG() {
 		var vp = viewportEl();
@@ -2401,9 +2152,9 @@
 		}
 		seen = visibleCounts();
 
-		// Walk upwards until enough prior turns are on screen or the top is reached. Bounded
-		// iterations: a loop that cannot terminate would hang the measured window, and reporting
-		// "could not reach the target" is a usable result while a hang is not.
+		// Walk up until enough prior turns are on screen or the top is reached. Bounded iterations: a
+		// non-terminating loop would hang the measured window, and "could not reach the target" is a
+		// usable result while a hang is not.
 		while (seen.prior < target && attempts < 16) {
 			attempts += 1;
 			var before = 0;
@@ -2488,9 +2239,6 @@
 		}
 	}
 
-	// ------------------------------------------------------------------------------------
-	// apply / revert
-	// ------------------------------------------------------------------------------------
 
 	function apply(armId) {
 		var id;
@@ -2506,9 +2254,8 @@
 			return result(false, unavailable[id], 0);
 		}
 		if (Object.prototype.hasOwnProperty.call(state.applied, id) && id !== "F") {
-			// `applied` means "this call applied it". Arms are applied once per measured window
-			// by design, so a second call is a no-op and says so rather than re-marking elements
-			// and inflating the counters.
+			// `applied` means "this call applied it": arms apply once per measured window, so a second
+			// call is a no-op instead of re-marking elements and inflating the counters.
 			return result(
 				false,
 				"arm " + id + " was already applied at " + state.applied[id].at +
@@ -2547,8 +2294,8 @@
 				out = applyG();
 			}
 		} catch (e) {
-			// An arm that throws has to be reported, not propagated: the app is mid-stream and an
-			// exception here would end the run with no data at all.
+			// An arm that throws is reported, not propagated: the app is mid-stream and an exception here
+			// would end the run with no data at all.
 			return result(false, "arm " + id + " threw while applying: " + e, 0);
 		}
 
@@ -2575,9 +2322,8 @@
 		try {
 			if (id === "A" || id === "B" || id === "C") {
 				removeStyleSheet(id);
-				// The inline and marker ledgers are global rather than per arm: a run applies one
-				// arm, and unwinding everything is the behaviour least likely to leave a stray
-				// !important behind on a page that is about to be measured again.
+				// The inline and marker ledgers are global, not per arm: a run applies one arm, and unwinding
+				// everything is least likely to leave a stray !important on a page about to be re-measured.
 				restoreInline();
 				unmarkAll();
 				out = revertResult(true, "stylesheet removed, inline properties and markers restored");
@@ -2646,9 +2392,6 @@
 		return out;
 	}
 
-	// ------------------------------------------------------------------------------------
-	// Install the preboot arms, then publish
-	// ------------------------------------------------------------------------------------
 
 	if (armedPreboot.indexOf("D") !== -1) {
 		installD();
@@ -2685,8 +2428,8 @@
 		);
 	}
 
-	// Feature checks for the runtime arms. These are capability questions about the browser, not
-	// about the page, so a false here is UNAVAILABLE and never a zero difference.
+	// Feature checks for the runtime arms: capability questions about the browser, not the page,
+	// so a false here is UNAVAILABLE and never a zero difference.
 	if (!doc) {
 		markUnavailable("A", "no document");
 		markUnavailable("B", "no document");

@@ -340,8 +340,8 @@ mod appimage_environment_tests {
 #[cfg(windows)]
 const STUDIO_MANAGED_RUNTIME_MUTEX_PREFIX: &str = "Global\\UnslothStudioManagedEnvironment-";
 
-#[cfg(windows)]
 pub(crate) const STUDIO_RUNTIME_GATE_HANDOFF_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF";
+const STUDIO_RUNTIME_GATE_ACQUIRE_ENV: &str = "_UNSLOTH_STUDIO_RUNTIME_GATE_ACQUIRE";
 
 #[cfg(windows)]
 #[derive(Debug)]
@@ -355,6 +355,23 @@ impl Drop for StudioManagedRuntimeLaunchGuard {
         unsafe {
             let _ = windows_sys::Win32::System::Threading::ReleaseMutex(self.handle);
             let _ = windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct StudioManagedRuntimeLaunchGuard {
+    file: std::fs::File,
+}
+
+#[cfg(unix)]
+impl Drop for StudioManagedRuntimeLaunchGuard {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
         }
     }
 }
@@ -496,11 +513,41 @@ fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGua
     acquire_named_studio_runtime_launch_guard(&name)
 }
 
-/// Serialize creation of managed-environment children with install/repair.
-///
-/// The guard ends when the sync operation returns. The installer takes the same
-/// mutex then scans for managed processes, so holding it through child creation
-/// closes the race without carrying a thread-owned Win32 mutex across an await.
+#[cfg(unix)]
+fn acquire_file_studio_runtime_launch_guard(
+    home: &std::path::Path,
+) -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    use std::os::fd::AsRawFd;
+
+    std::fs::create_dir_all(home)
+        .map_err(|error| format!("Could not create the Studio runtime lock directory: {error}"))?;
+    let path = home.join(".studio-runtime.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .map_err(|error| format!("Could not open the Studio runtime lock: {error}"))?;
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        return Ok(StudioManagedRuntimeLaunchGuard { file });
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        return Err(
+            "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
+                .to_string(),
+        );
+    }
+    Err(format!("Could not acquire the Studio runtime lock: {error}"))
+}
+
+#[cfg(unix)]
+fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
+    acquire_file_studio_runtime_launch_guard(&crate::diagnostics::studio_dir())
+}
+
+/// serialize managed-environment child creation with install and repair.
 #[cfg(windows)]
 fn with_named_studio_runtime_launch_guard<T>(
     name: &str,
@@ -518,8 +565,38 @@ pub(crate) fn with_studio_runtime_launch_guard<T>(
         let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
         return with_named_studio_runtime_launch_guard(&name, operation);
     }
-    #[cfg(not(windows))]
-    operation()
+    #[cfg(unix)]
+    {
+        let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
+        return operation();
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        operation()
+    }
+}
+
+#[cfg(all(test, unix))]
+mod posix_studio_runtime_launch_guard_tests {
+    use super::*;
+
+    #[test]
+    fn blocks_a_second_launcher_until_the_first_releases_the_file_lock() {
+        let home = tempfile::tempdir().unwrap();
+        let first = acquire_file_studio_runtime_launch_guard(home.path()).unwrap();
+        let path = home.path().to_path_buf();
+        let error = std::thread::spawn(move || {
+            acquire_file_studio_runtime_launch_guard(&path)
+                .err()
+                .expect("second launcher unexpectedly acquired the gate")
+        })
+        .join()
+        .unwrap();
+        assert!(error.contains("installation is modifying"));
+
+        drop(first);
+        acquire_file_studio_runtime_launch_guard(home.path()).unwrap();
+    }
 }
 
 #[cfg(windows)]
@@ -1343,7 +1420,9 @@ fn windows_site_packages_carries_the_cli(site_packages: &std::path::Path) -> boo
 /// Returns the path to the unsloth binary inside the managed venv, if it exists.
 /// Checks the new layout (~/.unsloth/studio/unsloth_studio/) first,
 /// then falls back to the old layout (~/.unsloth/studio/.venv/) for compat.
-fn find_unsloth_binary_in_studio_dir(studio: &std::path::Path) -> Option<std::path::PathBuf> {
+pub(crate) fn find_unsloth_binary_in_studio_dir(
+    studio: &std::path::Path,
+) -> Option<std::path::PathBuf> {
     // New layout (upstream scripts >= March 2026)
     let new_base = studio.join("unsloth_studio");
     // Old layout (bundled scripts, older upstream)
@@ -3120,7 +3199,6 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
-    #[cfg(windows)]
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
     // A backend started while the job is disarmed is the orphan this guards
@@ -3234,8 +3312,8 @@ pub fn start_backend(
         return Err(msg);
     }
 
-    #[cfg(windows)]
-    cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
+    cmd.env_remove(STUDIO_RUNTIME_GATE_HANDOFF_ENV);
+    cmd.env(STUDIO_RUNTIME_GATE_ACQUIRE_ENV, "1");
 
     if let Some(native_state) = app.try_state::<crate::native_intents::NativeIntakeState>() {
         cmd.env(
@@ -3383,6 +3461,7 @@ pub fn start_backend(
     if let Some(stdout) = stdout {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
+        let shutdown_clone = Arc::clone(shutdown);
         let diagnostics_clone = diagnostics_state.clone();
         let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
@@ -3390,6 +3469,7 @@ pub fn start_backend(
                 stdout,
                 &app_handle,
                 &state_clone,
+                &shutdown_clone,
                 &diagnostics_clone,
                 &backend_log_clone,
                 false,
@@ -3402,6 +3482,7 @@ pub fn start_backend(
     if let Some(stderr) = stderr {
         let app_handle = app.clone();
         let state_clone = Arc::clone(state);
+        let shutdown_clone = Arc::clone(shutdown);
         let diagnostics_clone = diagnostics_state.clone();
         let backend_log_clone = backend_log.clone();
         std::thread::spawn(move || {
@@ -3409,6 +3490,7 @@ pub fn start_backend(
                 stderr,
                 &app_handle,
                 &state_clone,
+                &shutdown_clone,
                 &diagnostics_clone,
                 &backend_log_clone,
                 true,
@@ -3419,6 +3501,40 @@ pub fn start_backend(
     }
 
     Ok(generation)
+}
+
+pub(crate) fn request_staged_rollback_restart(app: &AppHandle, state: &BackendState) -> bool {
+    let home = diagnostics::studio_dir();
+    let recovered = match with_studio_runtime_launch_guard(|| {
+        if state
+            .lock()
+            .map(|process| process.has_owned_backend())
+            .unwrap_or(true)
+        {
+            return Ok(false);
+        }
+        crate::staged_update::recover_failed_activation(&home, || {})
+    }) {
+        Ok(recovered) => recovered,
+        Err(error) => {
+            error!("Staged backend rollback failed: {error}");
+            false
+        }
+    };
+    if !recovered {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    match crate::schedule_staged_rollback_relaunch(app) {
+        Ok(()) => app.exit(0),
+        Err(error) => {
+            error!("Could not schedule staged rollback relaunch: {error}");
+            app.request_restart();
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    app.request_restart();
+    true
 }
 
 async fn generic_backend_health_ok(port: u16) -> bool {
@@ -3512,9 +3628,57 @@ async fn generic_backend_health_ok(port: u16) -> bool {
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
+fn pending_backend_validation(
+    required: Option<&str>,
+    readiness: &crate::desktop_backend_owner::OwnedBackendReadiness,
+    observed: Option<&str>,
+    torch_warm_in_progress: bool,
+) -> (bool, bool) {
+    let Some(required) = required else {
+        return (true, false);
+    };
+    let accepted = !torch_warm_in_progress
+        && matches!(
+            readiness,
+            crate::desktop_backend_owner::OwnedBackendReadiness::Ready
+        )
+        && observed.is_some_and(|observed| {
+            crate::desktop_update_policy::compare_versions(observed, required) >= 0
+        });
+    (accepted, !accepted && !torch_warm_in_progress)
+}
+
+fn staged_probe_requires_immediate_rejection(reason: &str) -> bool {
+    matches!(
+        reason,
+        "desktop_protocol_incompatible"
+            | "desktop_auth_unsupported"
+            | "desktop_manageability_unsupported"
+            | "desktop_backend_ownership_unsupported"
+            | "desktop_auth_secret_missing"
+            | "desktop_auth_secret_rejected"
+            | "desktop_auth_token_rejected"
+            | "desktop_auth_token_response_invalid"
+            | "desktop_backend_version_invalid"
+    )
+}
+
+fn roll_back_rejected_staged_backend(
+    app: &AppHandle,
+    state: &BackendState,
+    shutdown: &ShutdownFlag,
+    diagnostics_state: &DiagnosticsState,
+) {
+    let stopped = stop_backend(state, shutdown, Some(diagnostics_state));
+    if stopped.is_err() || !request_staged_rollback_restart(app, state) {
+        let _ = app.emit("server-crashed", ());
+    }
+}
+
 async fn validate_candidate_port(
     app: AppHandle,
     state: BackendState,
+    shutdown: ShutdownFlag,
     diagnostics_state: DiagnosticsState,
     session_id: String,
     generation: u64,
@@ -3522,6 +3686,10 @@ async fn validate_candidate_port(
     deadline: std::time::Instant,
 ) {
     let started = std::time::Instant::now();
+    let pending = crate::staged_update::pending_versions(&diagnostics::studio_dir());
+    let pending_backend_version = pending
+        .as_ref()
+        .map(|versions| versions.backend_version.as_str());
     let owner = {
         let proc = match state.lock() {
             Ok(proc) => proc,
@@ -3549,6 +3717,7 @@ async fn validate_candidate_port(
     let mut delay = PORT_VALIDATION_RETRY_MIN;
     let mut attempts = 0u32;
     let mut verified_late = false;
+    let mut validated_backend_version = None;
     let valid = loop {
         // Before the probe, not just after a failed one: the announcement
         // itself can arrive past the deadline on a very slow start, and the
@@ -3557,17 +3726,62 @@ async fn validate_candidate_port(
             break false;
         }
         attempts += 1;
-        let ok = if let Some(owner) = owner.clone() {
-            matches!(
-                crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false)
+        let (ok, reject_staged) = if let Some(owner) = owner.clone() {
+            let (probe, torch_warm_in_progress) = if pending_backend_version.is_some() {
+                crate::desktop_backend_owner::probe_owned_backend_state_for_staged_activation(
+                    owner,
+                    Some(port),
+                )
+                .await
+            } else {
+                (
+                    crate::desktop_backend_owner::probe_owned_backend_state(
+                        owner,
+                        Some(port),
+                        false,
+                    )
                     .await,
+                    false,
+                )
+            };
+            match probe {
                 crate::desktop_backend_owner::OwnedBackendProbe::Verified(
-                    crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
-                ) if verified_port == port
-            )
+                    crate::desktop_backend_owner::VerifiedOwnedBackend {
+                        port: verified_port,
+                        readiness,
+                        backend_version,
+                        ..
+                    },
+                ) => {
+                    let owned_port = verified_port == port;
+                    let (version_matches, reject_version) = pending_backend_validation(
+                        pending_backend_version,
+                        &readiness,
+                        backend_version.as_deref(),
+                        torch_warm_in_progress,
+                    );
+                    if owned_port && version_matches {
+                        validated_backend_version = backend_version;
+                    }
+                    (owned_port && version_matches, owned_port && reject_version)
+                }
+                crate::desktop_backend_owner::OwnedBackendProbe::Unmanageable {
+                    reason, ..
+                } if pending_backend_version.is_some() => {
+                    (false, staged_probe_requires_immediate_rejection(&reason))
+                }
+                _ => (false, false),
+            }
+        } else if pending_backend_version.is_some() {
+            (false, true)
         } else {
-            generic_backend_health_ok(port).await
+            (generic_backend_health_ok(port).await, false)
         };
+        if reject_staged {
+            warn!("Staged backend failed authenticated version validation");
+            roll_back_rejected_staged_backend(&app, &state, &shutdown, &diagnostics_state);
+            return;
+        }
         if ok {
             // A probe that started in time can still finish late. Emitting
             // server-port after the watchdog's server-start-timeout strands the
@@ -3597,6 +3811,14 @@ async fn validate_candidate_port(
     };
 
     if !valid {
+        if pending_backend_version.is_some()
+            && crate::staged_update::pending_versions(&diagnostics::studio_dir()).is_some()
+            && std::time::Instant::now() >= deadline
+        {
+            warn!("Staged backend validation timed out");
+            roll_back_rejected_staged_backend(&app, &state, &shutdown, &diagnostics_state);
+            return;
+        }
         if verified_late {
             warn!(
                 "Backend port {} verified after the start deadline; not emitting",
@@ -3638,6 +3860,23 @@ async fn validate_candidate_port(
             false
         }
     };
+
+    let activation_confirmed = if should_emit && pending_backend_version.is_some() {
+        validated_backend_version.as_deref().is_some_and(|version| {
+            crate::staged_update::confirm_activated(&diagnostics::studio_dir(), version)
+        })
+    } else {
+        true
+    };
+    if should_emit && !activation_confirmed {
+        if let Ok(mut proc) = state.lock() {
+            if proc.generation == generation && proc.port == Some(port) {
+                proc.port = None;
+            }
+        }
+        warn!("Staged backend confirmation changed during validation");
+        return;
+    }
 
     info!(
         "Validated backend port candidate {} valid={} emit={} in {}ms",
@@ -3761,6 +4000,7 @@ fn read_output_stream<R: std::io::Read>(
     stream: R,
     app: &AppHandle,
     state: &BackendState,
+    shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
     backend_log: &BackendLog,
     is_stderr: bool,
@@ -3831,12 +4071,14 @@ fn read_output_stream<R: std::io::Read>(
                 if let Some(port) = candidate_port {
                     let app_handle = app.clone();
                     let state_clone = Arc::clone(state);
+                    let shutdown_clone = Arc::clone(shutdown);
                     let diagnostics_clone = diagnostics_state.clone();
                     let session_id = backend_log.session_id.clone();
                     tauri::async_runtime::spawn(async move {
                         validate_candidate_port(
                             app_handle,
                             state_clone,
+                            shutdown_clone,
                             diagnostics_clone,
                             session_id,
                             generation,
@@ -3958,6 +4200,9 @@ fn read_output_stream<R: std::io::Read>(
             );
         }
         if emit_crash {
+            if request_staged_rollback_restart(app, state) {
+                return;
+            }
             error!("Backend process stdout closed unexpectedly (crash detected)");
             let _ = app.emit("server-crashed", ());
         }
@@ -5876,6 +6121,99 @@ mod managed_cli_working_dir_tests {
             backend_args(8888),
             vec!["studio", "--api-only", "-H", "127.0.0.1", "-p", "8888"]
         );
+    }
+
+    #[test]
+    fn pending_activation_requires_a_ready_backend_at_or_above_the_required_version() {
+        use crate::desktop_backend_owner::OwnedBackendReadiness;
+
+        assert_eq!(
+            pending_backend_validation(None, &OwnedBackendReadiness::Ready, None, false),
+            (true, false)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.9.1"),
+                false
+            ),
+            (true, false)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.8.4"),
+                false
+            ),
+            (false, true)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.9.2"),
+                false
+            ),
+            (true, false)
+        );
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Stale {
+                    reason: "desktop_backend_version_too_old".to_string()
+                },
+                Some("2026.9.1"),
+                false
+            ),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn pending_activation_waits_for_authenticated_backend_warmup() {
+        use crate::desktop_backend_owner::OwnedBackendReadiness;
+
+        assert_eq!(
+            pending_backend_validation(
+                Some("2026.9.1"),
+                &OwnedBackendReadiness::Ready,
+                Some("2026.9.1"),
+                true
+            ),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn pending_activation_retries_transient_authenticated_probe_failures() {
+        for reason in [
+            "desktop_login_probe_failed",
+            "desktop_auth_secret_probe_failed",
+            "desktop_auth_secret_probe_http_500 Internal Server Error",
+            "desktop_auth_health_unverified",
+            "error sending request for url",
+        ] {
+            assert!(!staged_probe_requires_immediate_rejection(reason));
+        }
+    }
+
+    #[test]
+    fn pending_activation_rejects_completed_incompatibility_evidence() {
+        for reason in [
+            "desktop_protocol_incompatible",
+            "desktop_auth_unsupported",
+            "desktop_manageability_unsupported",
+            "desktop_backend_ownership_unsupported",
+            "desktop_auth_secret_missing",
+            "desktop_auth_secret_rejected",
+            "desktop_auth_token_rejected",
+            "desktop_auth_token_response_invalid",
+            "desktop_backend_version_invalid",
+        ] {
+            assert!(staged_probe_requires_immediate_rejection(reason));
+        }
     }
 
     // The platform the bug was reported on, on the Windows leg of studio-tauri-smoke:

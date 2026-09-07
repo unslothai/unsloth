@@ -509,6 +509,7 @@ mod tests {
                     readiness: OwnedBackendReadiness::Stale {
                         reason: "backend_outdated".to_string(),
                     },
+                    backend_version: None,
                 },
             )
         };

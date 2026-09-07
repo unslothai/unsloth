@@ -166,7 +166,7 @@ def _windows_documents_dir() -> Path | None:
     if os.name != "nt":
         return None
     try:
-        import winreg  # Windows-only, and absent from some stripped builds.
+        import winreg
     except ImportError:
         return None
     try:
@@ -361,21 +361,18 @@ def _setup_cache_env() -> None:
     defaults: dict[str, str] = {
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
-        # unsloth_zoo defaults this to a bare relative name, which resolves
-        # against the CWD, and the Windows launcher runs Unsloth with
-        # WorkingDirectory=%USERPROFILE%, so the cache landed in the user home.
-        # Must be set before unsloth_zoo.compiler imports: it reads the value
-        # at import time and puts it on sys.path.
+        # unsloth_zoo defaults this to a bare relative name.
+        # It resolves against the CWD and the Windows launcher runs Unsloth with WorkingDirectory=%USERPROFILE%, so the
+        # cache landed in the user home. Must be set before unsloth_zoo.compiler imports: it reads the value at import
+        # time and puts it on sys.path.
         "UNSLOTH_COMPILE_LOCATION": str(root.parent / "compiled_cache"),
     }
     for key, value in defaults.items():
-        # Blank counts as unset: an inherited KEY= would otherwise pin the
-        # cache to "", which puts an empty entry on sys.path and sends the
-        # compiler to the system temp directory instead.
+        # Blank counts as unset: an inherited KEY= would otherwise pin the cache to "", which puts an empty entry on
+        # sys.path and sends the compiler to the system temp directory instead.
         if not (os.environ.get(key) or "").strip():
             os.environ[key] = value
-            # Best-effort: a non-writable custom HF_HOME must not crash startup;
-            # HF surfaces a clear error at download time instead.
+            # Best-effort: a non-writable custom HF_HOME must not crash startup
             try:
                 created = True
                 try:
@@ -496,10 +493,9 @@ def resolve_under_root(
 
 
 def default_run_dir_name(model_name: str) -> str:
-    # Folder-safe run name for an auto-created output dir. Repo ids keep their
-    # namespace (org/model -> org_model); local paths (incl. G:\dir\model)
-    # collapse to their final component so an absolute source can't escape
-    # outputs_root. Length-capped to stay under the filesystem name limit.
+    # Repo ids keep their namespace while local paths collapse to their final component, so an absolute source cannot
+    # escape outputs_root; length-capped to the filesystem name limit.
+    # Repo ids keep their namespace (org/model -> org_model).
     raw = str(model_name or "").strip()
     is_path = (
         "\\" in raw

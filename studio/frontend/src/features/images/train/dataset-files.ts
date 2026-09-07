@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// mirrors _DIFFUSION_DATASET_IMAGE_EXTS, _DIFFUSION_DATASET_CLIP_EXTS and
-// _DIFFUSION_DATASET_TEXT_EXTS in backend/routes/training.py.
+// Mirrors _DIFFUSION_DATASET_IMAGE_EXTS, _CLIP_EXTS and _TEXT_EXTS in
+// backend/routes/training.py.
 export const DATASET_IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".webp", ".bmp"];
 // video containers, for the families that train from clips rather than stills.
 export const DATASET_CLIP_EXTS = [".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"];
@@ -16,14 +16,14 @@ const ACCEPTED = new Set([...DATASET_MEDIA_EXTS, ...DATASET_TEXT_EXTS]);
 // a caption jsonl runs to kilobytes, so scan a prefix rather than decoding the whole upload.
 const METADATA_SCAN_BYTES = 1024 * 1024;
 
-// starlette caps a multipart body at 1000 file parts and fastapi does not raise it, so a larger
-// selection is sent in slices; the endpoint accumulates repeat uploads into the same folder.
+// starlette caps a multipart body at 1000 file parts and fastapi does not raise it, so a
+// larger selection is sent in slices; the endpoint accumulates uploads into one folder.
 export const DATASET_UPLOAD_CHUNK = 500;
 
-/** slice `files` so no request exceeds the part cap or `maxBytes`, keeping casefold-equal
- *  names together and sending those groups first: the backend can only compare names inside
- *  one request, and splitting a group is exactly what lets the second request overwrite the
- *  first. Such a group ships whole even over `maxBytes`; `oversizedChunk` catches that. */
+/** Slice `files` so no request exceeds the part cap or `maxBytes`, keeping casefold-equal names
+ *  together and sending those groups first: the backend can only compare names inside one
+ *  request, and splitting a group lets the second request overwrite the first. Such a group
+ *  ships whole even over `maxBytes`; `oversizedChunk` catches that. */
 export function chunkDatasetUpload(files: File[], maxBytes: number): File[][] {
   const groups = new Map<string, File[]>();
   for (const file of files) {
@@ -32,9 +32,9 @@ export function chunkDatasetUpload(files: File[], maxBytes: number): File[][] {
     if (group) group.push(file);
     else groups.set(key, [file]);
   }
-  // a group of more than one is a case-variant set, which the backend refuses outright on a
-  // case-insensitive dataset folder. Send those first so that refusal lands while there is
-  // still nothing committed, rather than behind slices that have already been written.
+  // A group of more than one is a case-variant set, which the backend refuses outright on a
+  // case-insensitive dataset folder. Send those first so the refusal lands while nothing is
+  // committed, rather than behind slices already written.
   const all = [...groups.values()];
   const chunks: File[][] = [];
   let current: File[] = [];
@@ -55,9 +55,8 @@ export function chunkDatasetUpload(files: File[], maxBytes: number): File[][] {
   return chunks;
 }
 
-/** the destination name in the first chunk no split can fit under `maxBytes`, or null.
- *
- *  uploads accumulate, so a chunk the endpoint 413s leaves every chunk before it on disk. */
+/** The destination name in the first chunk no split can fit under `maxBytes`, or null. Uploads
+ *  accumulate, so a chunk the endpoint 413s leaves every chunk before it on disk. */
 export function oversizedChunk(chunks: File[][], maxBytes: number): string | null {
   for (const chunk of chunks) {
     if (chunk.reduce((sum, f) => sum + f.size, 0) > maxBytes) return destinationName(chunk[0]);
@@ -65,8 +64,8 @@ export function oversizedChunk(chunks: File[][], maxBytes: number): string | nul
   return null;
 }
 
-/** the first metadata file whose captions are keyed on a subfolder path, or null. a folder pick
- *  flattens the tree, so rows keyed "images/001.png" silently resolve to no caption at all. */
+/** The first metadata file whose captions are keyed on a subfolder path, or null. A folder pick
+ *  flattens the tree, so rows keyed "images/001.png" silently resolve to no caption. */
 export async function metadataKeyedOnSubfolders(files: File[]): Promise<string | null> {
   for (const file of files) {
     if (!file.name.toLowerCase().endsWith(".jsonl")) continue;
@@ -96,10 +95,10 @@ export async function metadataKeyedOnSubfolders(files: File[]): Promise<string |
   return null;
 }
 
-// str.strip() is not trim(): Python keeps U+FEFF and strips U+001C-001F and U+0085. trim() read
-// a name ending in U+FEFF as an accepted "cat.png", but the multipart part carries the name
-// whole, so the endpoint saw a suffix with the U+FEFF still on it and refused the slice.
-// This class is exactly str.isspace() over the BMP; NUL is stripped separately, as it is there.
+// str.strip() is not trim(): Python keeps U+FEFF and strips U+001C-001F and U+0085. trim()
+// read a name ending in U+FEFF as an accepted "cat.png", but the multipart part carries the
+// name whole, so the endpoint refused the slice. This class is exactly str.isspace() over
+// the BMP; NUL is stripped separately, as it is there.
 const PY_SPACE_CLASS =
   "\\t\\n\\v\\f\\r\\u001c-\\u001f\\u0020\\u0085\\u00a0\\u1680" +
   "\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
@@ -134,9 +133,9 @@ function inHiddenPath(file: File): boolean {
   return relative ? relative.split("/").slice(1).some(isHidden) : false;
 }
 
-/** whether two item names resolve to one `<stem>.txt` sidecar, as `_shares_sidecar` does:
- *  the stems clash on an exact match, so only an extension-case pair of one spelling is exempt.
- *  images and clips are compared together, since the sidecar is keyed on the stem alone. */
+/** Whether two item names resolve to one `<stem>.txt` sidecar, as `_shares_sidecar` does: the
+ *  stems clash on an exact match, so only an extension-case pair of one spelling is exempt.
+ *  Images and clips are compared together, since the sidecar keys on the stem alone. */
 function sharesSidecar(other: string, name: string): boolean {
   const otherExt = extensionOf(other);
   if (other === name || !DATASET_MEDIA_EXTS.includes(otherExt)) return false;
@@ -184,8 +183,8 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
       skipped += 1;
       continue;
     }
-    // a dataset folder is flat, so two tree paths sharing a basename are one destination.
-    // matched exactly: only the backend knows whether the dataset filesystem folds case.
+    // A dataset folder is flat, so two tree paths sharing a basename are one destination. Matched
+    // exactly: only the backend knows whether the dataset filesystem folds case.
     const path = displayPath(file);
     const previous = seen.get(dest);
     if (previous !== undefined) {
@@ -194,8 +193,8 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
     }
     const isImage = DATASET_IMAGE_EXTS.includes(ext);
     const isClip = DATASET_CLIP_EXTS.includes(ext);
-    // two items sharing a stem resolve to one <stem>.txt caption, which the backend refuses.
-    // every accepted variant is kept and compared, since the exemption is not transitive.
+    // Two items sharing a stem resolve to one <stem>.txt caption, which the backend refuses. Every
+    // accepted variant is kept and compared, since the exemption is not transitive.
     if (isImage || isClip) {
       const key = dest.slice(0, dest.length - ext.length).toLowerCase();
       const variants = mediaStems.get(key) ?? [];
@@ -217,8 +216,8 @@ export function selectDatasetFiles(input: File[]): DatasetFileSelection {
   return { files, imageCount, clipCount, captionCount, skipped, collisions };
 }
 
-/** the first selected item the dataset folder already holds under a sidecar-sharing name, or
- *  null. the backend compares each upload against the folder, so on a chunked top-up that 400
+/** The first selected item the dataset folder already holds under a sidecar-sharing name, or
+ *  null. The backend compares each upload against the folder, so on a chunked top-up that 400
  *  lands with the slices before it already written. `existing` is the folder's item names. */
 export function existingStemClash(files: File[], existing: string[]): DatasetCollision | null {
   for (const file of files) {

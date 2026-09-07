@@ -574,6 +574,7 @@ _GUARD_FILE=$(mktemp)
 # The guard calls _python_is_skipped, _discard_venv_for_recreate and _uv_venv_arm64,
 # so the skip list, its reader, and the replacement helpers have to come along or the
 # version check silently never fires and the recreate loses the venv it was handed.
+# The awk anchors on the "independent Apple Silicon venv" substring; keep that wording in install.sh.
 {
     printf 'substep() { :; }\n'
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
@@ -582,7 +583,7 @@ _GUARD_FILE=$(mktemp)
     sed -n '/^_start_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_discard_venv_for_recreate()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_uv_venv_arm64()/,/^}/p' "$INSTALL_SH"
-    awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
+    awk '/independent Apple Silicon venv/{f=1} f{print} f&&/^fi$/{exit}' \
         "$INSTALL_SH"
 } > "$_GUARD_FILE"
 for _needed in _python_skip_applies _python_is_skipped _start_studio_venv_replacement _discard_venv_for_recreate _uv_venv_arm64; do

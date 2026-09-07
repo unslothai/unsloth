@@ -186,7 +186,7 @@ def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
     threads are never joined past the deadline, so a stuck OS call cannot delay
     interpreter exit or block the caller (``os.path.isdir`` releases the GIL).
     """
-    paths = list(paths)  # fixed input we can iterate twice; one probe per path
+    paths = list(paths)
     results: dict[str, bool] = {}
 
     def _probe(path: str) -> None:

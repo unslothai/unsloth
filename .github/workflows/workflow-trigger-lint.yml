@@ -164,5 +164,96 @@ jobs:
             tests/studio/test_windows_small_checks_stay_on_their_image.py \
             tests/studio/test_windows_ui_lanes_are_isolated.py \
             tests/studio/test_workflow_guards_run_unfiltered.py \
-            tests/security
+            tests/security \
+            --ignore=tests/security/test_custom_dtype_no_eval.py \
+            --ignore=tests/security/test_custom_dtype_wire_format.py \
+            --ignore=tests/security/test_mapper_probe_no_exec.py \
+            --ignore=tests/security/test_inherited_custom_dtype_is_neutralized.py
 
+
+  # The four security suites the job above has to --ignore. That job installs four
+  # packages on purpose and these import torch and transformers, so they were
+  # excluded there and named by no other job: a repository-wide search of workflow
+  # pytest commands finds nothing else running them. They were therefore not running
+  # in CI at all, which makes a regression in the hardening they cover mergeable
+  # behind a green tick.
+  #
+  # In THIS workflow rather than security-audit.yml, which is where the job first
+  # landed. `tests/studio/test_short_job_absorption.py` states the rule: the security
+  # suites run here now, and a second runner for the same work in security-audit.yml
+  # is the duplication that rule exists to stop. This job is not that duplication -
+  # it runs the four files the other job cannot - and it inherits this workflow's
+  # unfiltered `on.pull_request`, which is a wider trigger than the one it had.
+  #
+  # CPU torch from the dedicated index. These suites never touch a device - they
+  # parse source, stub `requests` and read env vars - so the CPU wheel is the whole
+  # dependency and it keeps the job to a couple of minutes.
+  security-regression-suites:
+    name: security suites (torch-dependent)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Harden runner (egress block)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: block
+          disable-sudo: true
+          # PyPI plus the CPU torch index, and GitHub for the checkout. These tests
+          # are network-free themselves; `tests/security/conftest.py` blocks sockets
+          # for the duration, so nothing here is dialed once pytest starts.
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+            download.pytorch.org:443
+            download-r2.pytorch.org:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install CPU torch + transformers
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
+            torch
+          # unsloth-zoo as well. All three suites import `unsloth.models`, which runs
+          # `unsloth/__init__.py`, and that raises ImportError outright when the zoo
+          # distribution is absent - `UNSLOTH_ZOO_DISABLE_GPU_INIT` does not bypass it.
+          # Without this the job would fail during collection rather than run.
+          # Triton as well. `unsloth/_gpu_init.py` imports it unconditionally, and the
+          # CPU torch wheel does not supply it - only the CUDA wheels pull
+          # pytorch-triton in. `UNSLOTH_ALLOW_CPU=1` bypasses device probing, not that
+          # import, so without this the job fails during collection and none of the
+          # four suites run. `consolidated-tests-ci.yml` installs it for the same
+          # reason on the same kind of runner.
+          python -m pip install --quiet transformers peft pytest unsloth-zoo triton
+
+      # Named one by one, not as a directory. The point of this job is those three
+      # files, and pyproject.toml sets testpaths = ["tests/security"], so a bare
+      # pytest here would silently widen into the suites the light runner already
+      # covers and the failure of THIS job would stop meaning what it says.
+      # `ubuntu-latest` has no accelerator, and every one of these files imports
+      # `unsloth.models`, which reaches `get_device_type()`. `UNSLOTH_ALLOW_CPU=1` is
+      # this repo's documented flag for importing on a driverless host, and it is what
+      # the rest of the CPU CI already uses. `UNSLOTH_ZOO_DISABLE_GPU_INIT` is not a
+      # substitute: it is a zoo flag, and against the released zoo this job installs it
+      # skips the init that binds `DEVICE_TYPE`, so `compiler.py` fails to import.
+      - name: Run the torch-dependent security suites
+        env:
+          UNSLOTH_ALLOW_CPU: '1'
+        run: |
+          python -m pytest -q \
+            tests/security/test_custom_dtype_no_eval.py \
+            tests/security/test_custom_dtype_wire_format.py \
+            tests/security/test_mapper_probe_no_exec.py \
+            tests/security/test_inherited_custom_dtype_is_neutralized.py

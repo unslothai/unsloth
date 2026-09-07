@@ -186,7 +186,7 @@ def _build_oxc_validation_function(lang: str, validation_mode: str, code_shape: 
     normalized_code_shape = code_shape if code_shape in _OXC_CODE_SHAPES else "auto"
 
     def _validator(df):
-        import pandas as pd  # lazy import for local callable runtime
+        import pandas as pd
 
         row_count = int(len(df.index))
         if row_count == 0:
@@ -235,8 +235,7 @@ def _run_oxc_batch(
         # The wrapper bounds oxlint with this; a kill here would leave the grandchild.
         "timeout_ms": int(_OXC_TIMEOUT_S * 1000),
     }
-    # Resolve a usable Node (system or the isolated install, which is not on the
-    # user's PATH); a bare "node" would fail for isolated-Node users.
+    # Resolve a usable Node: a bare "node" fails for isolated-Node users, whose install is not on PATH.
     node_executable = resolve_node_executable()
     if not node_executable:
         return _fallback_results(

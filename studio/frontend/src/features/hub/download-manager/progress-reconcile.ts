@@ -31,6 +31,18 @@ function finiteReading(value: number | null | undefined): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+// Xet commits bytes in batches, so a small transfer can sit at 0 B for its
+// whole life; show activity, not a dead 0%. Cancelling is not activity.
+export function isIndeterminateProgress(
+  progress: {
+    downloadedBytes: number;
+    fraction: number;
+  },
+  cancelling = false,
+): boolean {
+  return !cancelling && progress.downloadedBytes <= 0 && progress.fraction <= 0;
+}
+
 export function resolveProgressUpdate(
   job: ManagedDownload,
   progressResp: ProgressLike,

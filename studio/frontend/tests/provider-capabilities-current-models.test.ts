@@ -76,6 +76,73 @@ test("the gpt-5.6 family gets the gpt-5.5 reasoning ladder", () => {
   }
 });
 
+test("the gpt-5.1 and gpt-5.2 ladders drop minimal for none", () => {
+  // "minimal" was replaced by "none" from 5.1 on, and offering it fails the
+  // turn with "does not support 'minimal' with this model".
+  const ladders: Array<[string, readonly string[]]> = [
+    ["gpt-5.2", ["none", "low", "medium", "high", "xhigh"]],
+    ["gpt-5.1", ["none", "low", "medium", "high"]],
+  ];
+  for (const [model, levels] of ladders) {
+    const caps = getExternalReasoningCapabilities("openai", model);
+    assert.equal(caps.supportsReasoningOff, true, model);
+    assert.deepEqual([...caps.reasoningEffortLevels], levels, model);
+  }
+  // The Codex tunings keep reasoning mandatory: no minimal, and no none on
+  // the 5.1 line. Only codex-max has xhigh, so it sorts first.
+  const codexLadders: Array<[string, readonly string[]]> = [
+    ["gpt-5-codex", ["low", "medium", "high"]],
+    ["gpt-5.1-codex", ["low", "medium", "high"]],
+    ["gpt-5.1-codex-mini", ["low", "medium", "high"]],
+    ["gpt-5.1-codex-max", ["low", "medium", "high", "xhigh"]],
+  ];
+  for (const [model, levels] of codexLadders) {
+    const caps = getExternalReasoningCapabilities("openai", model);
+    assert.equal(caps.supportsReasoningOff, false, model);
+    assert.deepEqual([...caps.reasoningEffortLevels], levels, model);
+  }
+  // Bare gpt-5 keeps the old ladder, so the splits must not swallow it.
+  const five = getExternalReasoningCapabilities("openai", "gpt-5");
+  assert.equal(five.supportsReasoningOff, false);
+  assert.deepEqual(
+    [...five.reasoningEffortLevels],
+    ["minimal", "low", "medium", "high"],
+  );
+});
+
+test("the chat-latest aliases advertise no reasoning at all", () => {
+  // They are non-reasoning, and the family prefixes would otherwise swallow
+  // them: `gpt-5.1-chat-latest` starts with `gpt-5.1`. Advertising reasoning
+  // makes the adapter send `reasoning_effort` on every turn, which the
+  // Responses API rejects with "Unsupported parameter: 'reasoning.effort' is
+  // not supported with this model" -- so the model never answers at all.
+  for (const model of [
+    "gpt-5-chat-latest",
+    "gpt-5.1-chat-latest",
+    "gpt-5.2-chat-latest",
+    "gpt-5.3-chat-latest",
+    // Azure names its deployment without the `-latest` tail.
+    "gpt-5-chat",
+  ]) {
+    const caps = getExternalReasoningCapabilities("openai", model);
+    assert.equal(caps.supportsReasoning, false, model);
+  }
+  // The reasoning families themselves must keep theirs.
+  for (const model of ["gpt-5.1", "gpt-5.2", "gpt-5", "gpt-5.3-codex"]) {
+    assert.equal(
+      getExternalReasoningCapabilities("openai", model).supportsReasoning,
+      true,
+      model,
+    );
+  }
+  // `chatgpt-4o-latest` is a different shape and was already non-reasoning.
+  assert.equal(
+    getExternalReasoningCapabilities("openai", "chatgpt-4o-latest")
+      .supportsReasoning,
+    false,
+  );
+});
+
 test("ChatGPT subscription models expose Unsloth-owned search and code tools", () => {
 
   setProviderModelCapabilities("openai_codex", {

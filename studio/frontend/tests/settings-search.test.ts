@@ -58,6 +58,13 @@ const DESKTOP_STARTUP_ENTRIES = [
   "settings.general.startup.launchAtLogin",
 ] as const;
 const CLOSE_TO_TRAY_ENTRY = "settings.general.startup.closeToTray";
+const CURRENT_DATE_ENTRY = "settings.chat.currentDate.label";
+
+test("the current date prompt setting is searchable under Chat", () => {
+  const index = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+
+  assert.ok(index.chat.includes(CURRENT_DATE_ENTRY));
+});
 
 test("desktop startup entries are absent from browser search", () => {
   const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
@@ -67,6 +74,18 @@ test("desktop startup entries are absent from browser search", () => {
     assert.ok(desktop.general.includes(entry));
     assert.ok(!browser.general.includes(entry));
   }
+});
+
+test("the repair row is searchable on the desktop, where it exists", () => {
+  // The capability message for a host whose PyTorch cannot use its GPUs sends the user to
+  // "Repair installation in Settings", so searching Settings for it has to find it. Only
+  // on the desktop: DesktopRepairControl renders nothing in a browser, and an index entry
+  // there would scroll to a row that is not on the page.
+  const desktop = createSettingsSearchIndex({ desktop: true, closeToTray: true });
+  const browser = createSettingsSearchIndex({ desktop: false, closeToTray: false });
+
+  assert.ok(desktop.general.includes("settings.general.repairInstall.label"));
+  assert.ok(!browser.general.includes("settings.general.repairInstall.label"));
 });
 
 test("close to tray is searchable only on supported desktops", () => {
