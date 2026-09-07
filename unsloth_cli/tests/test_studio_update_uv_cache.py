@@ -386,18 +386,73 @@ def test_the_probe_leaves_uvs_tilde_alone(monkeypatch, tmp_path):
     assert seen["result"] == tmp_path / "~" / ".myuv", seen["result"]
 
 
-def test_a_probe_that_blows_up_costs_a_preference_not_the_update(monkeypatch):
+def test_a_probe_that_blows_up_costs_a_preference_not_the_update(monkeypatch, tmp_path):
     """subprocess.run is implemented with Popen, so any caller that fakes Popen reaches
-    this probe too. Losing the answer is fine; raising through an update is not."""
+    this probe too. Raising through an update is not acceptable, and neither is reporting
+    no cache at all: it falls back to the platform default install.sh:646 uses."""
     studio = _studio()
     monkeypatch.setattr(studio.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
 
     def _boom(argv, **kwargs):
         raise TypeError("object does not support the context manager protocol")
 
     monkeypatch.setattr(studio.subprocess, "run", _boom)
 
-    assert studio._uv_default_cache_dir() is None
+    assert studio._uv_default_cache_dir() == tmp_path / "uv"
+
+
+def test_a_malformed_uv_toml_beside_the_caller_does_not_hide_the_cache(monkeypatch, tmp_path):
+    """uv discovers config from the CURRENT directory, so a broken uv.toml where the user
+    happens to be makes `uv cache dir` exit nonzero even though setup.sh changes directory
+    before it runs uv. install.sh falls back to the platform default rather than calling
+    the cache cold, and so must this."""
+    studio = _studio()
+    monkeypatch.setattr(studio.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    class _Failed:
+        returncode = 2
+        stdout = ""
+
+    monkeypatch.setattr(studio.subprocess, "run", lambda argv, **kw: _Failed())
+
+    assert studio._uv_default_cache_dir() == tmp_path / "uv"
+
+
+@pytest.mark.parametrize(
+    ("system", "env", "expected"),
+    [
+        ("Linux", {"XDG_CACHE_HOME": "/xdg"}, Path("/xdg/uv")),
+        ("Linux", {"HOME": "/home/someone"}, Path("/home/someone/.cache/uv")),
+        ("Darwin", {"HOME": "/Users/someone"}, Path("/Users/someone/.cache/uv")),
+        ("Windows", {"LOCALAPPDATA": "/local"}, Path("/local/uv/cache")),
+    ],
+)
+def test_the_platform_default_matches_the_installers(monkeypatch, system, env, expected):
+    """Same locations install.sh:646 and install.ps1 use. macOS is XDG/HOME, not
+    ~/Library/Caches, which is what uv documents for Unix generally."""
+    studio = _studio()
+    monkeypatch.setattr(studio.platform, "system", lambda: system)
+    for key in ("XDG_CACHE_HOME", "HOME", "LOCALAPPDATA"):
+        monkeypatch.delenv(key, raising = False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    assert studio._uv_platform_cache_dir() == expected
+
+
+def test_no_platform_default_is_better_than_a_guess(monkeypatch):
+    """Nothing to anchor to means nothing to report; the caller then keeps the Studio
+    cache rather than probing a path assembled out of nothing."""
+    studio = _studio()
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    for key in ("XDG_CACHE_HOME", "HOME"):
+        monkeypatch.delenv(key, raising = False)
+
+    assert studio._uv_platform_cache_dir() is None
 
 
 def test_the_probe_reads_the_last_nonblank_line(monkeypatch):

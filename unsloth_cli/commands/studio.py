@@ -3680,6 +3680,22 @@ def _uv_cache_has_packages(cache_dir: Path) -> bool:
     return False
 
 
+def _uv_platform_cache_dir() -> Optional[Path]:
+    """Where uv puts its cache with no configuration, mirroring install.sh:646.
+
+    Only reached when uv cannot be asked. Asking is better, since it accounts for uv.toml
+    and UV_CONFIG_FILE, but "we could not ask" must not read as "there is no cache".
+    """
+    if platform.system() == "Windows":
+        local_app_data = (os.environ.get("LOCALAPPDATA") or "").strip()
+        return Path(local_app_data) / "uv" / "cache" if local_app_data else None
+    xdg = (os.environ.get("XDG_CACHE_HOME") or "").strip()
+    if xdg:
+        return Path(xdg) / "uv"
+    home = (os.environ.get("HOME") or "").strip()
+    return Path(home) / ".cache" / "uv" if home else None
+
+
 def _uv_default_cache_dir() -> Optional[Path]:
     """Where uv would put its cache if we set nothing.
 
@@ -3689,7 +3705,7 @@ def _uv_default_cache_dir() -> Optional[Path]:
     """
     uv = shutil.which("uv")
     if not uv:
-        return None
+        return _uv_platform_cache_dir()
     child_env = {key: value for key, value in os.environ.items() if key != "UV_CACHE_DIR"}
     try:
         result = subprocess.run(
@@ -3712,12 +3728,16 @@ def _uv_default_cache_dir() -> Optional[Path]:
         # Best effort by design. Not knowing where uv would have put its cache costs the
         # update a preference, never the update itself, so no failure to probe is worth
         # raising through the caller.
-        return None
+        return _uv_platform_cache_dir()
     if result.returncode != 0:
-        return None
+        # uv discovers config from the CURRENT directory, so a malformed uv.toml beside
+        # whoever ran `unsloth studio update` makes this exit nonzero even though setup.sh
+        # changes directory before it runs uv at all. install.sh:646 falls back to the
+        # platform default rather than declaring the cache cold, and so does this.
+        return _uv_platform_cache_dir()
     lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
     if not lines:
-        return None
+        return _uv_platform_cache_dir()
     # Absolute, because uv answers `cache-dir = "relcache"` with "relcache" and setup.sh
     # changes directory before it runs uv: a relative path we verified here would name a
     # different, cold directory there. Resolved against uv's working directory, which
