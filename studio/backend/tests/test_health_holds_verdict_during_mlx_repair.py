@@ -67,6 +67,9 @@ def apple_silicon(monkeypatch):
     # start_mlx_autorepair_if_needed() gates on this, and the real one imports mlx_vlm,
     # which is not installed here anyway.
     monkeypatch.setattr(mlx_repair, "mlx_stack_available", lambda: False)
+    # The self-heal declines on a --no-torch install, so pin the install mode rather
+    # than inherit the manifest of whatever venv these tests run in.
+    monkeypatch.setattr(mlx_repair, "_installed_without_torch", lambda: False)
     # The pre-start hold is stamped on first use and keyed by detection generation, so a
     # stamp left by an earlier test would decide this one's answer.
     import main as main_mod
