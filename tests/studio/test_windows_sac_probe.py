@@ -121,7 +121,13 @@ def test_the_scenario_loads_with_the_variant_field_and_unloads_by_model_path(tmp
         # The padded routes answer with a real payload; {} is a truncated pad.
         return 200, {"status": "done"}
 
-    def fake_stream(base_url, path, payload, token = None, timeout = 900):
+    def fake_stream(
+        base_url,
+        path,
+        payload,
+        token = None,
+        timeout = 900,
+    ):
         calls.append(("STREAM", path, payload or {}))
         return (
             200,
@@ -272,7 +278,10 @@ def test_a_tool_turn_is_ok_only_when_a_tool_actually_ran(monkeypatch):
         "_stream_events",
         lambda *a, **k: (
             200,
-            [{"type": "tool_start", "tool_name": "web_search"}, {"type": "tool_end", "tool_name": "web_search"}],
+            [
+                {"type": "tool_start", "tool_name": "web_search"},
+                {"type": "tool_end", "tool_name": "web_search"},
+            ],
             None,
         ),
     )
@@ -283,7 +292,10 @@ def test_a_tool_turn_is_ok_only_when_a_tool_actually_ran(monkeypatch):
 def test_the_powershell_probe_handles_retries_skips_and_occupied_drives():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     # -SkipStudio means signature only: no Studio start or install in the window.
-    assert "if (-not $SkipStudio -and -not (Test-StudioResponding $Port)) { Initialize-Studio $dir }" in ps1
+    assert (
+        "if (-not $SkipStudio -and -not (Test-StudioResponding $Port)) { Initialize-Studio $dir }"
+        in ps1
+    )
     # collect refuses to invent an event window.
     assert "(Get-Date).AddHours(-2)" not in ps1
     assert "no window-start.txt under" in ps1
@@ -294,7 +306,9 @@ def test_the_powershell_probe_handles_retries_skips_and_occupied_drives():
     # winget upgrade --all is opt-in, since revert cannot undo it.
     assert "if ($UpgradePackages) {" in ps1 and "if (-not $SkipUpdates) {" in ps1
     winget = ps1.index("winget upgrade --all --accept")
-    assert ps1.rfind("if ($UpgradePackages) {", 0, winget) > ps1.rfind("if (-not $SkipUpdates) {", 0, winget)
+    assert ps1.rfind("if ($UpgradePackages) {", 0, winget) > ps1.rfind(
+        "if (-not $SkipUpdates) {", 0, winget
+    )
     # A rerun keeps the first baseline and does not treat its own policy as pre-existing.
     assert "$baseline = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json" in ps1
     assert "(Test-Path -LiteralPath $NOISG_DEST) -and -not $baseline.AuditPolicyApplied" in ps1
@@ -304,7 +318,9 @@ def test_the_powershell_probe_handles_retries_skips_and_occupied_drives():
     persist = ps1.index("Set-Content -LiteralPath $baselinePath", applied)
     assert applied < persist < refresh
     # The interpreter locator shares Get-StudioHome's precedence (STUDIO_HOME alias included).
-    locator = ps1[ps1.index("function Get-StudioPython") : ps1.index("function Test-StudioResponding")]
+    locator = ps1[
+        ps1.index("function Get-StudioPython") : ps1.index("function Test-StudioResponding")
+    ]
     assert "Get-StudioHome" in locator and "$env:UNSLOTH_STUDIO_HOME" not in locator
 
 
