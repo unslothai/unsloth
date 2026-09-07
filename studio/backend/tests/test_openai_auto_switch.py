@@ -8810,7 +8810,10 @@ def _complete_minimax_pipeline(root):
     return pipeline
 
 
-def test_a_downloaded_spark_repository_resolves_to_its_llm_checkpoint(tmp_path):
+@pytest.mark.parametrize(
+    "repo", ["unsloth/Spark-TTS-0.5B", "SparkAudio/Spark-TTS-0.5B", "org/custom-voice"]
+)
+def test_a_downloaded_spark_repository_resolves_to_its_llm_checkpoint(tmp_path, repo):
     snapshot = tmp_path / "models--unsloth--Spark-TTS-0.5B" / "snapshots" / "revision"
     llm = snapshot / "LLM"
     llm.mkdir(parents = True)
@@ -8823,13 +8826,14 @@ def test_a_downloaded_spark_repository_resolves_to_its_llm_checkpoint(tmp_path):
         for i, name in enumerate(("semantic", "global"))
     }
     (llm / "tokenizer_config.json").write_text(json.dumps({"added_tokens_decoder": tokens}))
-    repo = "unsloth/Spark-TTS-0.5B"
     info = types.SimpleNamespace(id = repo, model_id = repo, path = str(snapshot), partial = False)
     entry = resolver._local_weights_entry(repo, info)
     assert entry is not None
     assert entry.load_path == str(llm)
     assert entry.is_gguf is False
     assert inference_route._target_speech_audio_type(entry.load_path, False) == "bicodec"
+    (llm / "tokenizer_config.json").write_text("{}")
+    assert resolver._local_weights_entry("org/text", info) is None
 
 
 def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):

@@ -100,12 +100,12 @@ def _resolve_load_dir(p, loader_id: Optional[str] = None):
     except Exception:
         pass
     try:
+        from utils.audio_tokens import detect_local_tts_audio_type
         from utils.models.model_config import load_model_defaults
         llm_dir = load_dir / "LLM"
-        if (
-            loader_id
-            and (load_model_defaults(loader_id) or {}).get("audio_type") == "bicodec"
-            and llm_dir.is_dir()
+        if llm_dir.is_dir() and (
+            (loader_id and (load_model_defaults(loader_id) or {}).get("audio_type") == "bicodec")
+            or detect_local_tts_audio_type(llm_dir) == "bicodec"
         ):
             return llm_dir
     except Exception:
