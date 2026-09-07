@@ -2444,20 +2444,69 @@ def patch_torchcodec_audio_decoder():
 
 
 # torch.minor -> compatible torchcodec.minor strings (see notebook_validator.py).
+# torchcodec ships no `Requires-Dist: torch`, so pip cannot catch a mismatch and this table
+# is the only check. Lockstep releases only; 0.12+ is the ABI-stable rule below.
 _TORCH_TORCHCODEC_MINORS: dict[str, set[str]] = {
+    "2.11": {"0.11"},
     "2.10": {"0.10"},
     "2.9": {"0.8", "0.9"},
     "2.8": {"0.6", "0.7"},
     "2.7": {"0.3", "0.4", "0.5"},
-    "2.6": {"0.2", "0.3"},
-    "2.5": {"0.1", "0.2"},
+    "2.6": {"0.2"},
+    "2.5": {"0.1"},
 }
+
+
+# torch.minor -> the pyproject extra that pins the matching torchcodec line.
+_TORCH_TORCHCODEC_EXTRAS: dict[str, str] = {
+    "2.11": "audio-torch211",
+    "2.10": "audio-torch210",
+}
+
+# torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION
+# to 2.11), so that half of the matrix is open-ended rather than a finite set of minors.
+_TORCHCODEC_ABI_STABLE_TORCH = (2, 11)
+_TORCHCODEC_ABI_STABLE_CODEC = (0, 12)
 
 
 def _torchcodec_exclusive_upper(pin: str) -> str:
     """Next torchcodec minor as an exclusive pip upper bound (0.10 -> <0.11.0)."""
     major, minor = pin.split(".", 1)
     return f"<{major}.{int(minor) + 1}.0"
+
+
+def _shell_env_ref(name: str) -> str:
+    """How to reference an environment variable in the shell this host pastes into.
+
+    PowerShell is Studio's supported Windows shell and does not expand `$NAME`; it needs
+    `$env:NAME`, so the POSIX spelling silently produced an empty `--index-url`.
+    """
+    if sys.platform.startswith("win"):
+        return f"$env:{name}"
+    return f'"${name}"'
+
+
+def _torch_index_url_for_remedy(local_tag: str) -> str:
+    """The index a torchcodec remedy should name for a `+local_tag` torch.
+
+    An explicitly configured index wins, exactly as it does in
+    install_python_stack._torchcodec_index_url: on an authenticated, corporate or
+    air-gapped host, telling the user to install from download.pytorch.org either fails
+    outright or bypasses the artifact source the install was configured with, and the
+    mirror is where the matching build actually is.
+    """
+    if os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip():
+        # The variable, not its value: an authenticated mirror carries credentials in its
+        # userinfo or query token, and this warning lands in terminals and CI logs. The
+        # shell expands it, so the command still works and nothing is written down.
+        return _shell_env_ref("UNSLOTH_TORCH_INDEX_URL")
+    leaf = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/") or local_tag
+    if os.environ.get("UNSLOTH_PYTORCH_MIRROR", "").strip():
+        # UNSLOTH_PYTORCH_MIRROR replaces the base every install_python_stack index is built
+        # from, so naming the public site fails on an air-gapped host. Expanded, not disclosed,
+        # as above.
+        return f"{_shell_env_ref('UNSLOTH_PYTORCH_MIRROR')}/{leaf}"
+    return f"https://download.pytorch.org/whl/{leaf}"
 
 
 def _torchcodec_version_mismatch_hint() -> str | None:
@@ -2471,28 +2520,119 @@ def _torchcodec_version_mismatch_hint() -> str | None:
     except Exception:
         return None
 
-    def _minor(version: str) -> str:
+    def _release(version: str) -> tuple:
         parts = Version(version.split("+", 1)[0]).release
-        return ".".join(str(p) for p in parts[:2])
+        return tuple(parts[:2]) + (0,) * (2 - len(parts[:2]))
 
     try:
-        torch_minor = _minor(torch.__version__)
-        codec_minor = _minor(torchcodec_version)
+        torch_release = _release(torch.__version__)
+        codec_release = _release(torchcodec_version)
     except Exception:
         # Non-PEP440 version strings must never break `import unsloth`.
         return None
-    allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
-    if allowed is None or codec_minor in allowed:
-        return None
+    if (
+        torch_release >= _TORCHCODEC_ABI_STABLE_TORCH
+        and codec_release >= _TORCHCODEC_ABI_STABLE_CODEC
+    ):
+        return None  # ABI-stable pairing, not locked to one torch minor
+    torch_minor = ".".join(str(p) for p in torch_release)
+    codec_minor = ".".join(str(p) for p in codec_release)
 
-    pin = sorted(allowed)[-1]
-    upper = _torchcodec_exclusive_upper(pin)
-    install_hint = f"`pip install 'torchcodec>={pin},{upper}'`"
-    if torch_minor == "2.10":
-        install_hint += " or `pip install 'unsloth[audio-torch210]'`"
+    def _index_flag(recommended: "tuple[int, ...]") -> str:
+        """`--index-url ...` when torch carries an accelerator tag, else "".
+
+        torchcodec ships one wheel per accelerator, so a remedy that installs the right
+        version from the default index still lands a codec that cannot dlopen on a cu126 or
+        cu128 venv. Mirrors install_python_stack._torchcodec_index_url, including the lines
+        it will not pin: torchcodec 0.1 and 0.2 exist on PyPI only.
+        """
+        if recommended < (0, 3):
+            return ""
+        local = str(getattr(torch, "__version__", "")).partition("+")[2].strip().lower()
+        if local == "cpu" or re.fullmatch(r"cu\d+", local or ""):
+            return f"--index-url {_torch_index_url_for_remedy(local)} "
+        return ""
+
+    allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
+    if allowed is None:
+        # No lockstep row: below the table stays silent; at or past the ABI floor this is a
+        # pre-0.12 codec, since 0.12+ already returned above.
+        if torch_release < _TORCHCODEC_ABI_STABLE_TORCH:
+            return None
+        abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
+        install_hint = (
+            f"`pip install {_index_flag(_TORCHCODEC_ABI_STABLE_CODEC)}'torchcodec>={abi_pin}.0'`"
+        )
+    elif codec_minor in allowed:
+        return None
+    else:
+        pin = sorted(allowed)[-1]
+        upper = _torchcodec_exclusive_upper(pin)
+        install_hint = f"`pip install {_index_flag(tuple(int(x) for x in pin.split('.')))}'torchcodec>={pin},{upper}'`"
+        extra = _TORCH_TORCHCODEC_EXTRAS.get(torch_minor)
+        # Only when no index pin is needed. An extra cannot carry one -- the marker picks the
+        # version, not the index -- and --index-url on the whole command would resolve unsloth
+        # from the torch index too, handing back the same unloadable wheel.
+        if extra is not None and not _index_flag(tuple(int(x) for x in pin.split("."))):
+            install_hint += f" or `pip install 'unsloth[{extra}]'`"
     return (
         f"torchcodec {torchcodec_version} is incompatible with torch {torch.__version__}; "
         f"install a matching build with {install_hint}."
+    )
+
+
+def _torchcodec_provenance_hint() -> "str | None":
+    """A remedy for a codec whose ACCELERATOR build does not match torch's, or None.
+
+    torchcodec ships one wheel per accelerator, so a cu128 venv holding PyPI's default 0.11
+    has the right VERSION and still cannot dlopen -- docker/Dockerfile pins cu128 by hand
+    for exactly this. The version hint above returns None there, since the minors agree, so
+    without this the codec is disabled with nothing said about how to repair it.
+
+    Only called once the codec has actually failed to load, so a working pairing this cannot
+    explain never produces a warning.
+    """
+    try:
+        import torch
+        import torchcodec
+    except Exception:
+        return None
+    torch_local = str(getattr(torch, "__version__", "")).partition("+")[2].strip().lower()
+    codec_local = str(getattr(torchcodec, "__version__", "")).partition("+")[2].strip().lower()
+    if torch_local == codec_local:
+        return None  # same provenance, so the failure is something this cannot name
+    if not (torch_local == "cpu" or re.fullmatch(r"cu\d+", torch_local or "")):
+        return None  # rocm and xpu publish no torchcodec under this name
+    index = _torch_index_url_for_remedy(torch_local)
+    codec_from = codec_local or "the default index"
+    # The window the table allows, not a bare name: the accelerator indexes carry the whole
+    # codec line, so `pip install torchcodec` on torch 2.9 trades a wrong-accelerator build
+    # for a wrong-VERSION one and audio stays disabled. Past the table, the ABI floor pins.
+    try:
+        from packaging.version import Version
+        parts = Version(str(torch.__version__).split("+", 1)[0]).release
+        torch_release = tuple(parts[:2]) + (0,) * (2 - len(parts[:2]))
+    except Exception:
+        torch_release = ()
+    allowed = _TORCH_TORCHCODEC_MINORS.get(".".join(str(p) for p in torch_release))
+    if allowed:
+        pin = sorted(allowed)[-1]
+        want = f"'torchcodec>={pin},{_torchcodec_exclusive_upper(pin)}'"
+    elif torch_release and torch_release >= _TORCHCODEC_ABI_STABLE_TORCH:
+        abi = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
+        want = f"'torchcodec>={abi}.0'"
+    else:
+        want = "torchcodec"
+    # "may be", not "is": this only establishes different indexes. torchcodec is published
+    # per accelerator on every line, 0.12+ included, so a mismatch stays possible -- but the
+    # load can equally have failed on a missing libavutil, which no reinstall fixes. Name both.
+    return (
+        f"torchcodec {getattr(torchcodec, '__version__', '?')} came from {codec_from} while "
+        f"torch {getattr(torch, '__version__', '?')} is a {torch_local} build, so the codec "
+        f"may be built for a different accelerator; audio is disabled. Try "
+        f"`pip install --force-reinstall --no-deps --index-url {index} {want}`. "
+        f"If that does not help, the failure is likely FFmpeg rather than the wheel: "
+        f"torchcodec needs libavutil / libavcodec from FFmpeg 4 through 8."
     )
 
 
@@ -2521,6 +2661,16 @@ def disable_torchcodec_if_broken():
         # RuntimeError on dlopen failure; OSError covers chained libavutil.so misses.
         from torchcodec.decoders import AudioDecoder
     except (ImportError, RuntimeError, OSError):
+        if mismatch_hint is None:
+            # Versions agree, so the load failed for another reason. A mismatched accelerator
+            # build is the one this can still name, and the one pinning the index repairs.
+            try:
+                provenance_hint = _torchcodec_provenance_hint()
+                if provenance_hint is not None:
+                    import warnings
+                    warnings.warn(provenance_hint, stacklevel = 2)
+            except Exception:
+                pass  # a diagnostic must never abort the disable fallback below
         # transformers: flip the flag (<5) and/or rebind the lru_cache'd func (>=5).
         try:
             import transformers.utils.import_utils as tf_import_utils
