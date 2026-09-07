@@ -136,7 +136,6 @@ def test_setup_token_outlives_the_time_an_operator_takes_to_type(monkeypatch):
 
 def _token_ttl_seconds() -> float:
     from datetime import datetime, timezone
-
     row = storage.get_connection().execute("SELECT expires_at FROM link_tokens").fetchone()
     return (datetime.fromisoformat(row[0]) - datetime.now(timezone.utc)).total_seconds()
 
@@ -155,9 +154,9 @@ def test_a_loopback_launch_token_is_not_bound_to_an_hour(monkeypatch):
 
     from auth.bootstrap_timeout import DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
 
-    assert _token_ttl_seconds() > DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS, (
-        "the setup token expires in an hour on a launch that never shuts down"
-    )
+    assert (
+        _token_ttl_seconds() > DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
+    ), "the setup token expires in an hour on a launch that never shuts down"
 
 
 def test_an_exposed_launch_token_is_bound_by_the_shutdown_deadline(monkeypatch):
