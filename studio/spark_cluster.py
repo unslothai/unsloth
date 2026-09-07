@@ -3261,6 +3261,8 @@ def split_rows_ttft_s(rows: int) -> float:
         if rows >= point:
             key = point
     return SPLIT_ROWS_TTFT[key][2]
+
+
 REPLICAS_MIN_USERS = 8
 REPLICAS_FEW_USERS_SPEEDUP = 1.13  # 2 to 4 users, prompt 512
 TOPOLOGIES = ("single", "replicas", "layer_split")
