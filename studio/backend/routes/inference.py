@@ -1883,6 +1883,15 @@ def _openai_llama_preemption_will_apply(llama_backend, budget: Optional[int]) ->
         return False
     if not bool(getattr(llama_backend, "_kv_cache_unified", False)):
         return False
+    # The budget above is the cache llama-server allocated, which the backend can name
+    # whether or not admission is charging against it. With admission off, or its KV
+    # accounting off (``UNSLOTH_LLAMA_ADMISSION_KV_BUDGET=0``), every lease is free: the
+    # controller registered from one learns no prompt cost and no prefill reserve, so
+    # concurrent large prompts enter together on the wire clamp alone and collide before a
+    # residency sample can say so. Optimism needs the ledger as much as the eviction.
+    config = llama_admission_config_from_env()
+    if not (config.enabled and config.kv_budget):
+        return False
     return preemption_enabled()
 
 
@@ -2721,11 +2730,22 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
         # that folds in the last residency reading, which was taken while this chat was
         # still decoding and so still counts its cells, and a lone chat judged by it
         # erased its own prompt cache on every turn.
+        # A request waiting at admission holds no KV yet and so has no participant the
+        # controller can count, but it is the clearest case of room being wanted: the lease
+        # this generation is handing back is what grants it, and its first prefill then
+        # goes into whatever this one left resident. Too short a chat to have produced a
+        # residency sample, or a slots probe that failed, and that arrival sees only its own
+        # reservation and drives the cache into the KV-full path. The queue knows.
+        try:
+            queued = int(get_llama_admission_queue(key).snapshot().queued or 0)
+        except Exception:
+            queued = 0
         contended = (
             int(getattr(snapshot, "holders", 0) or 0) > 0
             or int(getattr(snapshot, "paused", 0) or 0) > 0
             or int(getattr(snapshot, "decoding", 0) or 0) > 0
             or int(getattr(snapshot, "parked", 0) or 0) > 0
+            or queued > 0
         )
         if not contended:
             return

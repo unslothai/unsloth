@@ -163,6 +163,30 @@ class TestTheContendedCaseStillReclaims:
         inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "leaving")
         assert erasures == [0]
 
+    def test_a_request_waiting_at_admission_counts_too(self, controller, erasures, monkeypatch):
+        """A waiter holds no KV yet, so no participant counts it, but the lease this chat
+        hands back is exactly what admits it, and its first prefill lands in whatever was
+        left resident. Too short a chat to have produced a residency sample and that
+        arrival sees only its own reservation. The admission queue knows it is there."""
+
+        class _Queue:
+            def snapshot(self):
+                return type("Snap", (), {"queued": 1})()
+
+        monkeypatch.setattr(inference, "get_llama_admission_queue", lambda key: _Queue())
+        controller.register("leaving", lease = _Lease(), tokens = 2000)
+        inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "leaving")
+        assert erasures == [0], "somebody is queued for the room and the cells were kept"
+
+    def test_a_queue_that_cannot_be_read_does_not_fail_the_disarm(self, controller, erasures, monkeypatch):
+        def _boom(key):
+            raise RuntimeError("no queue")
+
+        monkeypatch.setattr(inference, "get_llama_admission_queue", _boom)
+        controller.register("leaving", lease = _Lease(), tokens = 2000)
+        inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "leaving")
+        assert erasures == [], "nobody wants the room, the prefix cache stays"
+
 
 class TestItStillCannotFailAResponse:
     def test_a_broken_controller_is_swallowed(self, monkeypatch, erasures):

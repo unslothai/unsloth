@@ -226,6 +226,42 @@ class TestThePauseIsResumed:
         assert policy.checkpoints[0].has_resume_point()
         assert policy.checkpoints[0].resumes == 1
 
+    def test_token_dense_text_is_charged_by_the_chunks_seen(self, monkeypatch):
+        """A pause aborts the attempt before its usage chunk, and the four-characters-a-
+        token estimate prices CJK and emoji at a quarter of what was decoded. One chunk is
+        about one token, and the attempt counted every one it received, so that count is
+        the floor of the charge: the same figure is replayed to the controller and taken
+        from the caller's allowance, and an undercharge there is cells the watermark
+        cannot see and output the caller never agreed to."""
+        signal = preemption.PreemptSignal()
+        policy = _RecordingPolicy()
+        dense = ["\u6708"] * 12  # twelve one-character chunks, three tokens by the estimate
+        recorder = _Recorder(
+            monkeypatch,
+            [
+                [_delta(piece) for piece in dense] + [_finish(), _done()],
+                [_delta(" done."), _finish(), _done()],
+            ],
+            signal = signal,
+        )
+        backend = recorder.backend
+
+        def pause_after_the_dense_run(response, _cancel_event, first_token_deadline = None, preempt_event = None):
+            attempt = len(recorder.payloads) - 1
+            served = 0
+            for chunk in response.chunks:
+                yield chunk
+                if attempt == 0 and chunk.startswith("data: {"):
+                    served += 1
+                    if served == len(dense):
+                        recorder.signal.request("kv_pressure")
+                        raise preemption.LlamaStreamPreempted
+
+        monkeypatch.setattr(backend, "_iter_text_cancellable", pause_after_the_dense_run)
+        _run(backend, signal = signal, policy = policy)
+        assert policy.checkpoints[0].visible_text == "".join(dense)
+        assert policy.checkpoints[0].charged_tokens >= len(dense), policy.checkpoints[0].charged_tokens
+
     def test_the_signal_is_cleared_so_the_resume_can_run(self, monkeypatch):
         """Left set, the resumed attempt would abort on its first read and spin."""
         signal = preemption.PreemptSignal()

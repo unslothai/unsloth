@@ -127,6 +127,21 @@ class TestTheGateIsTheEnforcementItself:
         monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
         assert _openai_llama_preemption_will_apply(backend, BUDGET) is True
 
+    def test_admission_accounting_off_turns_it_off(self, monkeypatch):
+        """The budget names the cache llama-server allocated whether or not admission is
+        charging against it. With the KV accounting switched off every lease is free and
+        the controller registered from one learns no prompt cost, so the optimism has to
+        go with the ledger; so does admission control itself being off."""
+        backend = self._Backend(True)
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KV_BUDGET", "0")
+        assert _openai_llama_preemption_will_apply(backend, BUDGET) is False
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KV_BUDGET", "1")
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_CONTROL", "0")
+        assert _openai_llama_preemption_will_apply(backend, BUDGET) is False
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_CONTROL", "1")
+        assert _openai_llama_preemption_will_apply(backend, BUDGET) is True
+
     def test_the_default_is_conservative(self):
         """Every caller that does not pass the flag keeps the old behaviour exactly.
 

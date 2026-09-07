@@ -7029,3 +7029,69 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
         f"the final pass sends {len(final_messages)} messages but the pool was last told "
         f"about {len(last_seen)}"
     )
+
+
+def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
+    """The gate's promise to compact an oversized call travels with that call.
+
+    In an overlapped round every call is prepared before any is settled, and the flag the
+    gate set for the first call was a loop-scoped name that the second call's preparation
+    reset. The first tool then ran, with its side effect, and its arguments were replayed
+    in full on the next request: the exact overrun the gate had let it run to avoid.
+    """
+    # Two files, so the round's keys differ and the calls overlap: edits to one file are
+    # kept in order on purpose.
+    first_turn = _two_edits_in_one_turn()
+    first_turn[0] = first_turn[0].replace(
+        'game.html\\", \\"old_string\\": \\"TODO', 'readme.md\\", \\"old_string\\": \\"TODO'
+    )
+    assert "readme.md" in first_turn[0]
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [first_turn, [_sse({"content": "Done."}), _done()]],
+        payloads,
+    )
+    monkeypatch.setattr(
+        "core.inference.studio_tool_loop.parallel_tool_calls_enabled", lambda: True
+    )
+
+    def fake_count_chat_tokens(messages, *_args, **_kwargs):
+        return len(json.dumps(messages, default = str)) // 2
+
+    monkeypatch.setattr(backend, "count_chat_tokens", fake_count_chat_tokens)
+    executed: list[str] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append(str(arguments.get("old_string")))
+        return "Wrote game.html"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    import core.inference.llama_cpp as llama_cpp_module
+
+    compacted: list[str] = []
+    real_compact = llama_cpp_module.compact_executed_call_arguments
+
+    def recording_compact(conversation, tool_call_id):
+        # The gate prices a call by compacting it too, before it runs, and a later pass
+        # may compact finished calls for reply room; the promise being kept is the
+        # compaction the settle applies the moment the tool's own result lands.
+        if sys._getframe(1).f_code.co_name == "_settle_tool_call":
+            compacted.append(tool_call_id)
+        return real_compact(conversation, tool_call_id)
+
+    monkeypatch.setattr(llama_cpp_module, "compact_executed_call_arguments", recording_compact)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Write the game"}],
+            tools = [{"type": "function", "function": {"name": "edit_file"}}],
+            max_tool_iterations = 4,
+        )
+    )
+
+    assert executed and executed[0] == "", "the oversized call was refused instead of run"
+    assert "call_big" in compacted, "the first call's promise was dropped by the second's preparation"
+    sent = json.dumps(payloads[-1]["messages"], default = str)
+    assert _BIG_BODY not in sent
