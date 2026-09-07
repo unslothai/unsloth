@@ -86,10 +86,11 @@ class TestPythonAndTerminalHonourTheArgumentEndToEnd:
 
     def test_an_oversized_request_falls_back_to_the_default_budget(self):
         default_budget = tools._tool_result_char_budget()
-        capped = tools._python_exec("print('x' * (default_budget + 5000))".replace(
-            "default_budget", str(default_budget)
-        ), max_output_chars = default_budget * 1000)
-        uncapped = tools._python_exec("print('x' * (default_budget + 5000))".replace(
-            "default_budget", str(default_budget)
-        ))
+        capped = tools._python_exec(
+            "print('x' * (default_budget + 5000))".replace("default_budget", str(default_budget)),
+            max_output_chars = default_budget * 1000,
+        )
+        uncapped = tools._python_exec(
+            "print('x' * (default_budget + 5000))".replace("default_budget", str(default_budget))
+        )
         assert len(capped) == len(uncapped)
