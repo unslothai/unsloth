@@ -91,6 +91,10 @@ _INFERENCE_SUFFIXES = (
     "/generate/stream",
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
     "/audio/speech",
+    # The streaming counterpart holds the voice slot (or an Orpheus chat slot) for the whole PCM response; it
+    # ends in /stream, so the entry above does not cover it. Untracked, an API-key training start saw a count
+    # of 0, unloaded the voice backend and cut the live clip off instead of returning 409.
+    "/audio/speech/stream",
     # Image generation holds a multi-GB pipeline for the whole request; tracking it lets other_inference_request_count()
     # see an in-flight generation so an API-key training start is refused (409). endswith avoids matching *-progress /
     # */cancel.

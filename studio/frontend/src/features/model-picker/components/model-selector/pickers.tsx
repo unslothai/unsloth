@@ -1509,7 +1509,9 @@ function useSoleDownloadedQuants(
   return { quants, pending };
 }
 
-function GgufVariantExpander({
+// Exported for the voice model selector, which offers the same quant list for a
+// GGUF voice as the chat picker does for a chat model.
+export function GgufVariantExpander({
   repoId,
   pipelineTag,
   loadId,
