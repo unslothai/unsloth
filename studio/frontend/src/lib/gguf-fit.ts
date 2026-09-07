@@ -25,6 +25,10 @@ export interface GgufFitInput {
    *  against the 0.97 default's 23.28 GiB, so a 18 to 19 GiB quant was badged
    *  `fits` beside a bar reporting an overage. */
   budgetFraction?: number;
+  /** How many GPUs `gpuGb` is the sum of. Only the reserve floor uses it, and only
+   *  above the default budget; absent means one card, which is what every verdict
+   *  scored against before it existed. */
+  gpuCount?: number;
 }
 
 /** Fraction of GPU VRAM treated as usable.
@@ -44,6 +48,9 @@ export interface GgufFitInput {
  * filter). */
 export { DEFAULT_VRAM_BUDGET_FRACTION as VRAM_HEADROOM_RATIO } from "./memory/thresholds.ts";
 import { DEFAULT_VRAM_BUDGET_FRACTION } from "./memory/thresholds.ts";
+/** The loader's absolute reserve floor, `_VRAM_FLOOR_RESERVE_MIB` (512 MiB) in llama_cpp.py.
+ *  Capped there at 3% of the card, so it never rises above the default budget's own reserve. */
+const VRAM_RESERVE_FLOOR_GB = 512 / 1024;
 /** GGUF weights are file size; runtime activations add roughly this fraction. */
 const ACTIVATIONS_RATIO = 0.15;
 /** Flat KV/context allowance at a typical 4K window. */
@@ -61,7 +68,7 @@ export function requiredGgufMemoryGb(
 
 export function classifyGgufFit(
   sizeBytes: number,
-  { gpuGb, systemRamGb, budgetFraction }: GgufFitInput,
+  { gpuGb, systemRamGb, budgetFraction, gpuCount }: GgufFitInput,
 ): GgufFitClass {
   const required = requiredGgufMemoryGb(sizeBytes);
   if (!gpuGb || gpuGb <= 0) {
@@ -77,7 +84,29 @@ export function classifyGgufFit(
     budgetFraction <= 1
       ? budgetFraction
       : DEFAULT_VRAM_BUDGET_FRACTION;
-  const budget = gpuGb * fraction;
+  // Not simply `gpuGb * fraction`. The loader's `_vram_usable_mib` charges
+  // `max((1 - frac) * total, floor)`, where the floor is `min(512 MiB, 3% of total)`, so the
+  // reserve never disappears at the top of the slider. Below the 0.97 default the percentage term
+  // always wins and this is identical; above it, `gpuGb * fraction` claimed capacity the backend
+  // does not offer, and a 20 GiB file on a full 24 GiB card at 1.0 read `fits` while `_select_gpus`
+  // fell back to --fit.
+  //
+  // Charged per CARD, not per host: `_select_gpus` calls `_vram_usable_mib` for every device and
+  // sums the results, so a k-GPU box holds back k floors. One floor for the whole box read 47.5
+  // GiB usable on two 24 GiB cards at 1.0 where the loader offers 47.0, so a file needing 47.2
+  // read `fits` against a load that fell back to --fit. Exact on matched cards, an even split on
+  // a mixed one, which is still far nearer than charging the floor once.
+  const cards =
+    typeof gpuCount === "number" && Number.isFinite(gpuCount) && gpuCount >= 1
+      ? Math.floor(gpuCount)
+      : 1;
+  const reserveFloorGb =
+    cards *
+    Math.min(
+      VRAM_RESERVE_FLOOR_GB,
+      (1 - DEFAULT_VRAM_BUDGET_FRACTION) * (gpuGb / cards),
+    );
+  const budget = gpuGb - Math.max((1 - fraction) * gpuGb, reserveFloorGb);
   if (required <= budget) return "fits";
   // Raw card, deliberately. This band means "over your budget, still card-sized",
   // which is the only thing that distinguishes it from `fits`: scoring it against

@@ -938,16 +938,18 @@ else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
 
-VENV_DIR="$STUDIO_HOME/unsloth_studio"
-VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
-VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
-VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
+STAGE_ROOT="${UNSLOTH_STUDIO_STAGE_ROOT:-}"
+RUNTIME_ROOT="${STAGE_ROOT:-$STUDIO_HOME}"
+VENV_DIR="$RUNTIME_ROOT/unsloth_studio"
+VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
+VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
+VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"
 
 # The override is validated, so a typo can no longer cost the cache. Venv-gated because
 # a writable-but-empty override still aborts at the venv check below, and clearing first
 # would cost the cache for a run that then does nothing; a fresh install has neither venv
 # nor cache. Still before any install work, while the old frontend is the one on disk.
-if [ -x "$VENV_DIR/bin/python" ]; then
+if [ -z "$STAGE_ROOT" ] && [ -x "$VENV_DIR/bin/python" ]; then
     _clear_webview_caches
 fi
 
@@ -1162,7 +1164,9 @@ decide_node_source() {
 }
 
 # Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
-if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+if [ -n "$STAGE_ROOT" ]; then
+    _NODE_PARENT="$RUNTIME_ROOT"
+elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     _NODE_PARENT="$STUDIO_HOME"
 else
     _NODE_PARENT="$HOME/.unsloth"
@@ -1436,6 +1440,12 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         substep "curl -fsSL https://unsloth.ai/install.sh | sh"
         setup_fail 1 "Virtual environment not found at $VENV_DIR"
     fi
+elif [ -n "$STAGE_ROOT" ]; then
+    VIRTUAL_ENV="$VENV_DIR"
+    PATH="$VENV_DIR/bin:$PATH"
+    export VIRTUAL_ENV PATH
+    unset PYTHONHOME
+    hash -r 2>/dev/null || true
 else
     source "$VENV_DIR/bin/activate"
 fi
@@ -1744,6 +1754,8 @@ _setup_persist_uv_path() {
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
+elif [ -n "$STAGE_ROOT" ]; then
+    step "uv" "using pip inside the staged environment"
 elif {
     _SETUP_UV_PINNED_OK=false
     if _setup_install_uv_pinned; then
@@ -1840,13 +1852,21 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
         if ! "$VENV_DIR/bin/python" -c "
-import sys
+import os, sys
 sys.path.insert(0, sys.argv[1])
 try:
     import install_manifest
 except Exception:
-    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
-sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+    # Present but unimportable is damage, not an old release, and this is the
+    # one file whose damage silences every check below. Absent keeps the old
+    # escape: separating it from an old tree needs a RECORD walk here, and the
+    # CLI already reports studio_install_manifest_missing.
+    sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)
+try:
+    ok = install_manifest.verify_install(deep = True)['ok']
+except TypeError:
+    ok = install_manifest.verify_install()['ok']  # older tree, no payload scan
+sys.exit(0 if ok else 1)
 " "$SCRIPT_DIR" 2>/dev/null; then
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
@@ -2012,9 +2032,13 @@ _target_has_pkg_version() {
 }
 _NEED_T5_INSTALL=false
 if [ -d "$STUDIO_HOME/.venv_t5" ]; then
-    # Legacy layout — migrate
-    _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
-    rm -rf "$STUDIO_HOME/.venv_t5"
+    # Legacy layout — migrate. The tiered venvs a staged run builds land under the
+    # stage root and may never be activated, so removing the live legacy one here
+    # would strip the running install of its only sidecar. The live update does it.
+    if [ -z "$STAGE_ROOT" ]; then
+        _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
+        rm -rf "$STUDIO_HOME/.venv_t5"
+    fi
     _NEED_T5_INSTALL=true
 fi
 [ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true
@@ -2460,7 +2484,9 @@ fi
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
 # default keeps ~/.unsloth/llama.cpp so pre-PR builds are still discovered.
-if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+if [ -n "$STAGE_ROOT" ]; then
+    UNSLOTH_HOME="$RUNTIME_ROOT"
+elif [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     UNSLOTH_HOME="$STUDIO_HOME"
 else
     UNSLOTH_HOME="$HOME/.unsloth"
@@ -2742,6 +2768,11 @@ else
     if [ "$_PREBUILT_STATUS" -eq 0 ]; then
         if grep -Fq "already matches" "$_PREBUILT_LOG"; then
             step "llama.cpp" "prebuilt up to date and validated"
+        elif grep -Fq "keeping the existing complete install" "$_PREBUILT_LOG"; then
+            # Exit 0 can also mean the installer kept the tree already on disk after a
+            # transient failure. "installed and validated" would name a release nothing
+            # fetched.
+            step "llama.cpp" "update unavailable, existing prebuilt kept" "$C_WARN"
         else
             step "llama.cpp" "prebuilt installed and validated"
         fi
@@ -2821,6 +2852,10 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
         : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     _NEED_LLAMA_SOURCE_BUILD=false
+fi
+
+if [ -n "$STAGE_ROOT" ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    setup_fail 1 "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 fi
 
 # ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──
@@ -3480,7 +3515,8 @@ else
             # a later setup run report "already matches" and skip repairing the
             # prebuilt over the source binary. Drop it before building.
             rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
-            if run_quiet_no_exit "whisper.cpp source build" sh "$_WHISPER_BUILD"; then
+            if run_quiet_no_exit "whisper.cpp source build" \
+                    env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"; then
                 _WHISPER_RECOVERED=true
                 step "whisper.cpp" "source build installed"
                 if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then

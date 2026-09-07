@@ -56,13 +56,15 @@ _STRING_CACHE: Dict[Tuple[_CacheKey, str], Optional[str]] = {}
 # means the file could not be read or parsed, so callers can fail closed.
 _CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
 
-# GGUF header dims for the staged/deferred-load UI: context_length, layer_count
-# (block_count), and moe_layer_count (block_count minus leading dense layers; 0
-# if not MoE). One cached pass fills all three so the staged sheet can size every
-# slider before the model loads. None = unreadable / not a GGUF. The native
-# training context length (``{arch}.context_length``) the UI shows before a model
-# loads is read from here via read_gguf_context_length.
+# GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged
+# sheet can size every slider before the model loads.
+# None = unreadable / not a GGUF, and the native ``{arch}.context_length`` the UI shows before a load is read from here
+# via read_gguf_context_length.
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
+
+
+# Cache the embedded speculative-head count separately for discovery, launch, and sizing.
+_NEXTN_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
@@ -116,7 +118,7 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
                     if len(klen_bytes) < 8:
                         break
                     klen = struct.unpack("<Q", klen_bytes)[0]
-                    if klen > 1 << 20:  # 1 MB sanity bound
+                    if klen > 1 << 20:
                         break
                     kbytes = f.read(klen)
                     if len(kbytes) < klen:
@@ -132,7 +134,7 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
                         if len(slen_bytes) < 8:
                             break
                         slen = struct.unpack("<Q", slen_bytes)[0]
-                        if slen > 1 << 22:  # 4 MB sanity bound
+                        if slen > 1 << 22:
                             break
                         sbytes = f.read(slen)
                         if len(sbytes) < slen:
@@ -183,13 +185,15 @@ def read_gguf_context_length(path: str) -> Optional[int]:
 
 
 def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Optional[Dict[str, int]]:
-    """Walk a GGUF header once and return the requested architecture-namespaced
-    uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``. Keys are
-    ``{arch}.<suffix>``; the arch is learned from ``general.architecture`` (GGUF
-    writes general.* before arch.* keys, matching the loader's own parser).
-    Returns ``None`` if not a GGUF / unreadable, else a dict (possibly empty or
-    partial when some keys are absent)."""
+    """Walk a GGUF header once and return requested architecture-namespaced
+    uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``.
+
+    GGUF does not guarantee KV order, so matching uints are buffered until
+    ``general.architecture`` identifies the active namespace. Returns ``None``
+    if the file is unreadable/not GGUF, otherwise a possibly partial dict.
+    """
     arch: Optional[str] = None
+    buffered: Dict[str, int] = {}
     found: Dict[str, int] = {}
     try:
         with open(path, "rb") as f:
@@ -206,7 +210,7 @@ def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Option
                     if len(klen_bytes) < 8:
                         break
                     klen = struct.unpack("<Q", klen_bytes)[0]
-                    if klen > 1 << 20:  # 1 MB sanity bound
+                    if klen > 1 << 20:
                         break
                     kbytes = f.read(klen)
                     if len(kbytes) < klen:
@@ -222,30 +226,42 @@ def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Option
                         if len(slen_bytes) < 8:
                             break
                         slen = struct.unpack("<Q", slen_bytes)[0]
-                        if slen > 1 << 22:  # 4 MB sanity bound
+                        if slen > 1 << 22:
                             break
                         sbytes = f.read(slen)
                         if len(sbytes) < slen:
                             break
                         arch = sbytes.decode("utf-8", "replace")
-                    elif (
-                        arch is not None
-                        and vtype in (4, 10)
-                        and key.startswith(f"{arch}.")
-                        and key[len(arch) + 1 :] in wanted_suffixes
-                    ):
+                        for suffix in wanted_suffixes:
+                            full_key = f"{arch}.{suffix}"
+                            if full_key in buffered:
+                                found[suffix] = buffered[full_key]
+                    elif vtype in (4, 10):
+                        suffix = next(
+                            (
+                                candidate
+                                for candidate in wanted_suffixes
+                                if key.endswith(f".{candidate}")
+                            ),
+                            None,
+                        )
+                        if suffix is None:
+                            if not _skip_gguf_value(f, vtype):
+                                break
+                            continue
                         width = 4 if vtype == 4 else 8
                         n_bytes = f.read(width)
                         if len(n_bytes) < width:
                             break
-                        found[key[len(arch) + 1 :]] = struct.unpack(
-                            "<I" if vtype == 4 else "<Q", n_bytes
-                        )[0]
-                        if len(found) == len(wanted_suffixes):
-                            break
+                        value = struct.unpack("<I" if vtype == 4 else "<Q", n_bytes)[0]
+                        buffered[key] = value
+                        if arch is not None and key == f"{arch}.{suffix}":
+                            found[suffix] = value
                     else:
                         if not _skip_gguf_value(f, vtype):
                             break
+                    if arch is not None and len(found) == len(wanted_suffixes):
+                        break
                 except (struct.error, UnicodeDecodeError):
                     break
     except OSError as e:
@@ -255,6 +271,31 @@ def _parse_gguf_arch_uints(path: str, wanted_suffixes: frozenset[str]) -> Option
         logger.debug(f"_parse_gguf_arch_uints: parse failure on {path}: {e}")
         return None
     return found
+
+
+def read_gguf_nextn_predict_layers(path: str) -> Optional[int]:
+    """Return the selected architecture's embedded NextN/MTP layer count.
+
+    ``0`` is a real headless verdict. ``None`` means the key is absent or the
+    header is unreadable, so callers that suppress a separate drafter can do so
+    only on a positive value.
+    """
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _NEXTN_CACHE:
+            return _NEXTN_CACHE[key]
+    values = _parse_gguf_arch_uints(path, frozenset({"nextn_predict_layers"}))
+    result = values.get("nextn_predict_layers") if values is not None else None
+    with _CACHE_LOCK:
+        while len(_NEXTN_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _NEXTN_CACHE.pop(next(iter(_NEXTN_CACHE)))
+            except StopIteration:
+                break
+        _NEXTN_CACHE[key] = result
+    return result
 
 
 def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
@@ -273,8 +314,7 @@ def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
         return None
     ctx = vals.get("context_length")
     block = vals.get("block_count")
-    # A real context/layer count is positive; treat 0/garbage as absent so the
-    # UI never builds a slider with max < min.
+    # A real context/layer count is positive; treat 0/garbage as absent
     context_length = ctx if ctx and ctx > 0 else None
     layer_count = block if block and block > 0 else None
     # MoE layer count = block_count - leading dense layers, only when experts
@@ -293,17 +333,17 @@ def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
 
 # Strings (8) and arrays (9) are handled inline.
 _FIXED_VTYPE_SIZES: Dict[int, int] = {
-    0: 1,  # uint8
-    1: 1,  # int8
-    2: 2,  # uint16
-    3: 2,  # int16
-    4: 4,  # uint32
-    5: 4,  # int32
-    6: 4,  # float32
-    7: 1,  # bool
-    10: 8,  # uint64
-    11: 8,  # int64
-    12: 8,  # float64
+    0: 1,
+    1: 1,
+    2: 2,
+    3: 2,
+    4: 4,
+    5: 4,
+    6: 4,
+    7: 1,
+    10: 8,
+    11: 8,
+    12: 8,
 }
 
 
@@ -316,7 +356,7 @@ def _skip_gguf_value(f, vtype: int) -> bool:
         if len(slen_bytes) < 8:
             return False
         slen = struct.unpack("<Q", slen_bytes)[0]
-        if slen > 1 << 30:  # 1 GB sanity bound
+        if slen > 1 << 30:
             return False
         f.seek(slen, 1)
         return True
@@ -452,7 +492,7 @@ def _parse_gguf_bool(path: str, wanted_key: str) -> Optional[bool]:
                     if len(klen_bytes) < 8:
                         break
                     klen = struct.unpack("<Q", klen_bytes)[0]
-                    if klen > 1 << 20:  # 1 MB sanity bound
+                    if klen > 1 << 20:
                         break
                     kbytes = f.read(klen)
                     if len(kbytes) < klen:
@@ -767,11 +807,10 @@ def pairing_score(
     return 0
 
 
-# GGUF ``general.architecture`` values that intrinsically identify embedding
-# models in llama.cpp. Generic ``bert`` is deliberately absent: without
-# pooling_type its required CLS/MEAN pooling cannot be recovered safely.
-# A ``cls.*`` tensor makes an encoder a sequence-classification/reranker model
-# instead, so architecture matches are gated on the tensor table below.
+# GGUF architectures that intrinsically identify embedding models. Generic ``bert`` is
+# deliberately absent: without pooling_type its required CLS/MEAN pooling cannot be recovered. A
+# ``cls.*`` tensor makes an encoder a reranker instead, so matches are gated on the tensor table.
+# The values are GGUF ``general.architecture`` strings, as llama.cpp defines them.
 GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
     {
         "modern-bert",
@@ -840,9 +879,8 @@ def is_gguf_embedding_model(
 
     arch = (architecture or meta.get("general.architecture") or "").strip().lower()
     if arch == "bert":
-        # A classifier head can prove that generic BERT is a reranker, but its
-        # absence cannot recover the missing pooling strategy. llama-server
-        # otherwise defaults to NONE and /v1/embeddings returns HTTP 400.
+        # A classifier head can prove that generic BERT is a reranker
+        # llama-server otherwise defaults to NONE and /v1/embeddings returns HTTP 400.
         return False
     if is_gguf_embedding_architecture(arch):
         # Generic BERT-family architectures also back cross-encoder rerankers.
@@ -852,9 +890,6 @@ def is_gguf_embedding_model(
     return any(_has_embedding_name_hint(value) for value in name_candidates)
 
 
-# ── speech / codec architectures ────────────────────────────────────────────
-
-# Not defined here, and deliberately not re-exported either: they live in the leaf module
-# ``utils.gguf_archs``, because importing anything from THIS package runs
-# ``utils.models.__init__``, which pulls in ``model_config`` and therefore PyYAML, and
-# ``core.inference.llama_cpp`` needs the verdict at import time. Import it from there.
+# Deliberately not re-exported: importing anything from THIS package runs utils.models.__init__,
+# which pulls in model_config and therefore PyYAML, while core.inference.llama_cpp needs the
+# verdict at import time. Import it from utils.gguf_archs.

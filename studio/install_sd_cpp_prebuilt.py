@@ -39,21 +39,15 @@ import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Sequence
 
-# Default source: the Unsloth mirror's CPU/Apple prebuilts (override with UNSLOTH_SD_CPP_REPO). GPU hosts run diffusers, so only CPU/Apple assets are needed.
+# Default source: the Unsloth mirror's CPU/Apple prebuilts (override with UNSLOTH_SD_CPP_REPO). GPU hosts run diffusers,
+# so only CPU/Apple assets are needed.
 DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 # Fallback when the mirror cannot serve this host (release missing, or a host we do not build).
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest). A missing tag falls back to latest.
-#
-# The -u<id> suffix means the mirror built upstream master-813-bfbef5b plus the patch set in its
-# patches/ directory, and the id is the hash of that set. MiniMax-H3 needs it: an unpatched build
-# aborts on the default --cfg-scale, aborts again on --vae-on-cpu, and quantizes H3's 1-D norms
-# into an output uncorrelated with its own bf16 reference. All three fixes are open upstream
-# (leejet/stable-diffusion.cpp#1861, #1862, #1863) and the patches are deleted once they ship
-# there, at which point this pin goes back to a plain upstream tag.
-#
-# leejet has no release under this name, so the upstream fallback cannot match the pin and drops
-# to leejet's latest, which is the documented behaviour for a mirror-only tag.
+# The -u<id> suffix is the mirror's patch set: an unpatched build aborts on the default --cfg-scale and on --vae-on-cpu,
+# and quantizes MiniMax-H3's 1-D norms into an output uncorrelated with its own bf16 reference
+# (leejet/stable-diffusion.cpp#1861, #1862, #1863).
 DEFAULT_TAG = "master-813-bfbef5b-u13b9d92"
 
 # Back-compat alias (some callers/tests import REPO).
@@ -114,12 +108,11 @@ def installed_accelerator(root: Path) -> Optional[str]:
     return val if isinstance(val, str) and val else None
 
 
-# Set ONLY when the on-disk record could not be written: install root -> (accelerator, the raw
-# record bytes seen at that moment). An unwritable record (a read-only file, a directory in its
-# place) otherwise means the accelerator reads as the PREVIOUS one, or as unknown, forever -- and
-# either is a mismatch for a GPU target, so every later engine selection re-downloads the same
-# multi-GB bundle. Keyed on the snapshot so it only speaks for the record it saw: once anything
-# else updates that file (the installer CLI, another Unsloth), the file is newer and wins again.
+# Set ONLY when the on-disk record could not be written: install root ->
+# An unwritable record (a read-only file, a directory in its place) otherwise means the accelerator reads as the
+# PREVIOUS one, or as unknown, forever, and either is a mismatch for a GPU target, so every later engine selection re-
+# downloads the same multi-GB bundle. Keyed on the snapshot, so once anything else updates that file it is newer and
+# wins again.
 _INSTALLED_ACCELERATOR_MEMO: dict[str, tuple[str, Optional[str]]] = {}
 
 
@@ -177,8 +170,7 @@ def _write_install_record(
         rec["ships_server"] = ships_server
         _INSTALLED_SHIPS_SERVER_MEMO[str(root)] = ships_server
     else:
-        # An install that did not report the capability must not leave an older memo standing in
-        # for this one -- the tree is now whatever this bundle put there.
+        # An install that did not report the capability must not leave an older memo standing
         _INSTALLED_SHIPS_SERVER_MEMO.pop(str(root), None)
     try:
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
@@ -214,8 +206,7 @@ def is_mirror_only_tag(tag: Optional[str]) -> bool:
     return bool(tag) and bool(_MIRROR_ONLY_TAG_RE.match(tag))
 
 
-# A mirror release built on top of an upstream one carries a "-u<short sha>" suffix naming the
-# fork commit (master-813-bfbef5b-u13b9d92 is upstream master-813-bfbef5b plus fork commit 13b9d92).
+# A mirror release built on top of an upstream one carries a "-u<short sha>" suffix naming
 _MIRROR_TAG_SUFFIX = re.compile(r"-u[0-9a-f]{7,}$")
 
 
@@ -285,13 +276,15 @@ def resolve_release_asset(
         return pool[0] if pool else None
 
     if system == "windows":
-        # Filter by host arch: an arm64 host must not install an unrunnable x64 sd-cli. No match returns None so the caller falls back.
+        # Filter by host arch: an arm64 host must not install an unrunnable x64 sd-cli. No match returns None so the
+        # caller falls back.
         pool = [a for a in zips if "bin-win" in a.lower() and any(t in a.lower() for t in arch)]
         token = _WINDOWS_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if token in a.lower()]
         if sel:
             return sel[0]
-        # An explicit GPU accelerator with no asset returns None, so the caller falls back instead of installing a CPU build.
+        # An explicit GPU accelerator with no asset returns None, so the caller falls back instead of installing a CPU
+        # build.
         if accel in ("cuda", "vulkan", "rocm"):
             return None
         # auto / cpu -> a plain avx2 CPU build, else any windows build.
@@ -304,7 +297,7 @@ def resolve_release_asset(
         # Explicit GPU accelerator: require its marker, never hand back a plain CPU build.
         marker = _LINUX_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if marker in a.lower()]
-    else:  # auto / cpu -> the plain build with no accelerator marker
+    else:
         sel = [a for a in pool if not any(m in a.lower() for m in _LINUX_ACCEL_MARKERS)]
     return sel[0] if sel else None
 
@@ -337,7 +330,7 @@ def _fetch_release(
     if tag:
         try:
             return _get(f"{base}/tags/{tag}")
-        except urllib.error.HTTPError as exc:  # pinned tag removed -> maybe latest
+        except urllib.error.HTTPError as exc:
             if exc.code != 404:
                 raise
             if not allow_latest:
@@ -537,9 +530,7 @@ _MAX_LINK_TARGET_BYTES = 4096
 _MAX_LINK_DEPTH = 40
 
 
-# Creators whose ``external_attr`` high bits are a Unix ``st_mode``: 3 (Info-ZIP, CPython) and
-# 19 (Apple's ditto, same layout). FAT and NTFS keep DOS attribute flags there, so reading a mode
-# out of one would invent symlinks the archive never described.
+# Creators whose ``external_attr`` high bits are a Unix ``st_mode``: 3 (Info-ZIP, CPython)
 _UNIX_CREATORS = (3, 19)
 
 
@@ -631,12 +622,10 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     plain: list[zipfile.ZipInfo] = []
     written: list[tuple[Path, str]] = []
     for member in zf.infolist():
-        # extractall DROPS ".." instead of cancelling the component before it, so "a/.." is "a" to
-        # it and normalising here would check a path it never writes. No release ships one.
+        # extractall DROPS ".." instead of cancelling the component before it, so "a/.." is "a"
         if ".." in PurePosixPath(member.filename).parts:
             raise RuntimeError(f"unsafe path in archive: {member.filename!r}")
-        # Lexical, never resolve()d: extraction MERGES, and resolving would follow the previous
-        # install's link and leave the real library replaced by a link to itself.
+        # Lexical, never resolve()d: extraction MERGES.
         dest = Path(os.path.normpath(base / member.filename))
         checked = dest.resolve()
         if (dest != base and base not in dest.parents) or (
@@ -659,8 +648,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
                 raise RuntimeError(
                     f"unsafe path in archive: {filename!r} is under a symlink member"
                 )
-    # Every destination this archive writes becomes its own member, so a stale link at one must
-    # not be followed.
+    # Every destination this archive writes becomes its own member.
     replaced = {str(d) for d, _ in written}
     archive = {str(d): t for d, t, _ in links}
     replaced |= {str(_plan_key(d, base, replaced, archive)) for d, _ in written}
@@ -680,9 +668,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             raise RuntimeError(f"symlink onto a reserved installer path: {member.filename!r}")
         if key.is_dir() and not key.is_symlink():
             raise RuntimeError(f"symlink member collides with a directory: {member.filename!r}")
-    # Chains are normal (libwebp.so -> .so.7 -> .so.7.2.0) but must terminate: a cycle installs a
-    # library nothing can read, so every load reinstalls it. Walk the graph the tree WILL have,
-    # keyed by landing point so alias/a and real/b count as one cycle.
+    # Chains are normal (libwebp.so -> .so.7 -> .so.7.2.0) but must terminate: a cycle installs
     by_dest = {str(keys[str(d)]): t for d, t, _ in links}
     for dest, _, member in links:
         seen, cur, hops = set(), str(keys[str(dest)]), 0
@@ -701,8 +687,7 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
             if hops > _MAX_LINK_DEPTH:
                 raise RuntimeError(f"symlink chain too deep in archive: {member.filename!r}")
             nxt = Path(os.path.normpath(os.path.join(os.path.dirname(cur), nxt)))
-            # a -> a/x never reaches a second node, so repetition never fires, yet resolving a
-            # walks a again. Anything under the link is a loop.
+            # a -> a/x never reaches a second node, so repetition never fires, yet resolving
             if Path(cur) in nxt.parents:
                 raise RuntimeError(f"symlink cycle in archive: {member.filename!r}")
             cur = str(_plan_key(nxt, base, replaced, archive))
@@ -714,10 +699,9 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
     if links:
         # extractall would create the tree itself, so the probe must not be what needs it first.
         base.mkdir(parents = True, exist_ok = True)
-        # A probe a killed install left behind must not answer for this one: symlink_to raises
-        # EEXIST on an existing path, which reads below as "no symlink support", and a restarted
-        # container reuses the pid while the directory persists. Sweep stragglers, and take a
-        # unique name so a concurrent install cannot collide either.
+        # A probe a killed install left behind must not answer for this one: symlink_to raises EEXIST on an
+        # existing path, which reads below as "no symlink support", and a restarted container reuses the
+        # pid. Sweep stragglers and take a unique name so a concurrent install cannot collide either.
         for stale in base.glob(".unsloth-symlink-probe-*"):
             try:
                 stale.unlink()
@@ -733,18 +717,14 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         else:
             # missing_ok: a concurrent install's sweep may have taken this one already.
             probe.unlink(missing_ok = True)
-    # extractall opens each destination "wb", which FOLLOWS a link a previous bundle left and
-    # writes the member into its target. Drop stale links first: a name one bundle ships as a link
-    # the next can ship as a file (the mirror ships copies where upstream ships links).
+    # extractall opens each destination "wb".
     for dest, _ in written:
         if dest.is_symlink():
             dest.unlink()
     zf.extractall(target, members = plain)
     for dest, link_target, member in links:
-        # Re-resolved HERE: the pass above ran before any link existed, so an earlier member
-        # (a -> .) can turn a later member's parent into a link and send this outside base. Both
-        # ends are checked for containment, not for being link-free, so a tree that legitimately
-        # symlinks its own subdirectory still installs.
+        # Re-resolved HERE: an earlier member can turn a later member's parent into a link and send this outside base.
+        # Both ends are checked for containment, not for being link-free.
         parent = Path(os.path.realpath(dest.parent))
         resolved = (dest.parent / link_target).resolve()
         if (parent != base and base not in parent.parents) or (
@@ -759,18 +739,15 @@ def _safe_extractall(zf: zipfile.ZipFile, target: Path) -> None:
         try:
             dest.symlink_to(link_target)
         except OSError as exc:
-            # Windows outside developer mode cannot create a link, and every Windows asset ships
-            # plain files, so flattening there costs nothing and keeps an install that used to
-            # finish finishing. Anywhere else a refusal means the filesystem cannot hold the layout
-            # sd-cli needs, and writing the link text back is the "file too short" install of #9268.
+            # Windows outside developer mode cannot create a link and every Windows asset ships plain files, so
+            # flattening costs nothing there; elsewhere a refusal means the filesystem cannot hold the layout (#9268).
             if sys.platform != "win32":
                 raise RuntimeError(
                     f"could not restore the symlink {member.filename!r}: {exc}"
                 ) from exc
-            # Load-bearing assumption: no published Windows asset ships a symlink member, so
-            # this writes the link text back only for an archive that never reaches a user.
-            # If that ever changes, this branch produces the #9268 install silently while the
-            # one above it raises, and it should be revisited rather than left as a fallback.
+            # Load-bearing assumption: no published Windows asset ships a symlink member
+            # If that ever changes, this branch produces the #9268 install silently while the one above it raises, and
+            # it should be revisited rather than left as a fallback.
             zf.extract(member, target)
 
 
@@ -821,7 +798,7 @@ def _resolve_repo_asset(
     except Exception as exc:  # noqa: BLE001 - network / rate limit -> fall back
         print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
         return None, None
-    if release is None:  # pinned tag missing and the latest fallback was withheld
+    if release is None:
         return None, None
     names = [a["name"] for a in (release.get("assets") or [])]
     chosen = resolve_release_asset(
@@ -859,11 +836,7 @@ def _resolve_with_fallback(
     if tag:
         attempts.append((primary, tag, False))
         if allow_upstream:
-            # The mirror's own tag does not exist upstream, so the pin has to be translated back
-            # to the upstream release it was built from -- otherwise this attempt always 404s and
-            # the pin degrades to upstream latest for every host the mirror does not build.
-            # This supersedes simply skipping the attempt for a mirror-only tag: skipping kept the
-            # round trip cheap but dropped the pin entirely on those hosts.
+            # The mirror's own tag does not exist upstream.
             attempts.append((UPSTREAM_FALLBACK_REPO, upstream_tag_for(tag), False))
         attempts.append((primary, None, True))
         if allow_upstream:
@@ -885,10 +858,9 @@ def _resolve_with_fallback(
                     file = sys.stderr,
                     flush = True,
                 )
-                # A mirror-only pin means the shipped default carries fixes that upstream has
-                # not released. Falling back is still better than no native engine at all for
-                # every other model, but the H3 failures are SILENT (it renders, just wrongly),
-                # so this has to be said out loud rather than left to the generic line above.
+                # A mirror-only pin means the shipped default carries fixes upstream has not released. Falling
+                # back beats no native engine, but the H3 failures are SILENT (it renders, just wrongly), so
+                # this has to be said out loud rather than left to the generic line above.
                 if mirror_only:
                     print(
                         f"warning: {repo} has no {tag}; this build lacks the MiniMax-H3 fixes, "
@@ -917,7 +889,8 @@ def install(
     has no ``sd-cli``.
     """
     target = install_dir or default_install_dir()
-    # Claim ownership of `target` only if we created it, it was empty, or it is already marked: adopting a user's non-empty dir would let a later uninstall wipe it.
+    # Claim ownership of `target` only if we created it, it was empty, or it is already marked: adopting a user's
+    # non-empty dir would let a later uninstall wipe it.
     marker = target / OWNERSHIP_MARKER
     _may_own = True
     if target.exists():
@@ -949,8 +922,7 @@ def install(
     asset = next(a for a in release["assets"] if a["name"] == chosen)
     url = asset["browser_download_url"]
     target.mkdir(parents = True, exist_ok = True)
-    # Claim ownership BEFORE any partial write: an interrupted extract leaves the target non-empty, and without
-    # the marker the next install would trip the refusal above. Only set when _may_own, so it never adopts user files.
+    # Claim ownership BEFORE any partial write: an interrupted extract leaves the target non-empty.
     if _may_own:
         try:
             marker.touch()
@@ -969,41 +941,32 @@ def install(
         print("extracting ...", flush = True)
         with zipfile.ZipFile(archive) as zf:
             supplied = _archive_binary_paths(zf, target)
-            # The boundary opens HERE, not at the sweep, whenever an existing bundle is about
-            # to gain a SECOND copy of a binary. Same path is the obvious case: zipfile rewrites
-            # each member in place, so an interrupted extract leaves the old sd-cli truncated.
-            # A different layout is the same problem one step removed, because the new copy WINS
-            # the next lookup -- _layout_candidates prefers build/bin, then the newest
-            # subdirectory by mtime -- while still having had neither the sweep, nor
-            # _make_executable, nor (on a Windows CUDA upgrade) the cudart DLLs the fetch below
-            # can still fail to get. Either way, calling that an ordinary failure makes ensure_*
-            # memoise the accelerator and serve the half-finished copy for the rest of the
-            # process. A first install has nothing to compete with, so it stays ordinary and the
-            # accelerator really is the thing that was unavailable.
+            # The boundary opens HERE, not at the sweep, whenever an existing bundle is about to gain a SECOND
+            # copy of a binary: zipfile rewrites members in place, so an interrupted extract leaves the old
+            # sd-cli truncated, and a different layout is the same problem because the new copy WINS the next
+            # lookup without having had the sweep, _make_executable, or the cudart DLLs. Treating that as an
+            # ordinary failure makes ensure_* memoise the half-finished copy for the rest of the process. A
+            # first install has nothing to compete with, so it stays ordinary.
             replacing = bool(supplied) and _tree_has_binaries(target)
             _safe_extractall(zf, target)
-        # Nothing is swept until this bundle is known to have supplied the one binary the install
-        # cannot do without. A malformed archive is caught below either way, but only AFTER the
-        # sweep would have deleted the working sd-cli that ensure_sd_cpp_binary keeps precisely so
-        # a failed upgrade still leaves something to generate with.
+        # Nothing is swept until this bundle is known to have supplied the one binary the install cannot do without, or
+        # the sweep deletes the working sd-cli kept for exactly this failure.
         cli_name = _binary_names()[0]
         if not any(p.name == cli_name for p in supplied):
             raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
-        # Windows CUDA builds need the separately-published cudart runtime DLLs. Still before the
-        # sweep, so a failure here costs nothing extra when the old copies are still in place;
-        # when the extract above already overwrote them, ``replacing`` is what makes this report
-        # as an incomplete replacement instead of a missing accelerator. Nothing it writes is an
-        # sd-cli or an sd-server, so the sweep below cannot take it.
+        # Still before the sweep, so a failure costs nothing extra while the old copies stand; nothing it writes is an
+        # sd-cli or sd-server, so the sweep cannot take it.
+        # Windows CUDA builds need the separately-published cudart runtime DLLs, and when the extract above already
+        # overwrote them ``replacing`` is what makes this report as an incomplete replacement instead of a missing
+        # accelerator.
         _maybe_fetch_windows_cudart(release, chosen, target)
-        # Extraction merges, so anything the previous bundle put somewhere this one does not write
-        # survives -- and it outranks the new copy whenever its path sorts higher. Drop what this
-        # bundle did not supply, so the tree and the record written below agree.
-        #
-        # LAST, and past it the tree is mixed whatever the layout was: the caller has to retry the
-        # sweep rather than memoise the accelerator as unavailable.
         if _may_own:
             # Set BEFORE the call, not after: the sweep removes copies one at a time, so a failure
             # inside it has already changed the tree.
+            # Extraction merges, so anything the previous bundle put somewhere this one does not write survives and outranks
+            # the new copy whenever its path sorts higher; drop what this bundle did not supply. LAST, and past it the tree
+            # is mixed whatever the layout was, so the caller has to retry the sweep rather than memoise the accelerator as
+            # unavailable.
             replacing = True
             _discard_superseded_binaries(target, supplied)
     except SupersededBinaryError:
@@ -1025,11 +988,6 @@ def install(
                     f"the managed tree was left part way through a replacement: {exc}"
                 ) from exc
             raise
-    # EVERYTHING from the sweep on is finalisation of a tree that is now a mixture of two bundles:
-    # locating the new binaries, chmod-ing them, and the record. Reported as an ordinary failure,
-    # any of these makes ensure_* memoise the accelerator as unavailable and hand back a
-    # pre-install path the sweep may already have removed. Reported as an incomplete replacement,
-    # the caller re-finds what survived and the next load retries.
     try:
         sd_cli = _locate_sd_cli(target)
         if not sd_cli:
@@ -1054,17 +1012,15 @@ def install(
         ) from exc
     # Written only now, on a complete install: a record naming an accelerator whose binaries never
     # finished extracting would suppress the very reinstall that repairs it. Only for a directory we
-    # own -- an unowned one is the user's build, which we never claim to have installed.
+    # own, since an unowned one is the user's build.
     if _may_own:
         _write_install_record(
             target,
             accelerator = accelerator,
             repo = used_repo,
             tag = release.get("tag_name"),
-            # Read off the archive's MEMBER LIST, so "this bundle is serverless" is recorded fact
-            # rather than something a later load has to infer from an sd-server not being there.
-            # A leftover server from an earlier bundle is indistinguishable on disk, which is the
-            # whole confusion the record exists to settle.
+            # Read off the archive's MEMBER LIST, so "this bundle is serverless" is recorded fact: a leftover server
+            # from an earlier bundle is indistinguishable on disk.
             ships_server = any(p.name == _binary_names()[1] for p in supplied),
         )
     # The ownership marker was written before extraction, so a crashed partial install is still recognised as ours.
@@ -1083,7 +1039,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = p.parse_args(argv)
 
     if args.print_asset:
-        # Same primary/fallback resolution as install(), so a host the mirror skips reports the upstream asset, not a false miss.
+        # Same primary/fallback resolution as install(), so a host the mirror skips reports the upstream asset, not a
+        # false miss.
         _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
         print(chosen or "(no matching prebuilt; build from source)")
         return 0 if chosen else 2

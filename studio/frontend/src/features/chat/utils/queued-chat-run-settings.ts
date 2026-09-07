@@ -33,7 +33,7 @@ const QUEUED_SETTING_KEYS = [
   "ragTopK",
   "ragAutoInject",
   "ragAutoInjectMinScore",
-  "ggufContextLength",
+  "loadedContextLength",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",

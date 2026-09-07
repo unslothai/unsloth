@@ -381,8 +381,6 @@ def test_a_timed_out_rebuild_leaves_the_behavioural_run_with_no_verdict(tmp_path
     assert "NOTHING WAS COMPARED" in out, out
     assert "ASSERTION FAILED ON ONE ARM" in out, out
     assert code == 1, out
-    # THE TWO MODES AGREE ON THIS PAYLOAD, checked rather than asserted in prose. The structural
-    # report is the one that already had this precedence rule written down, so it is the reference.
     assert U.report([shard], "structural on the same payload", frozenset()) == 1
 
 
@@ -433,13 +431,12 @@ def test_every_named_first_to_break_action_has_an_invariant():
         assert action in B.INVARIANTS, f"{action} has no behavioural invariant declared"
 
 
+# The four false greens the first review round found. Every one returned SUCCESS before the fix:
+# four different routes to a UI verdict of 'fine' over a comparison that either found nothing or
+# declined to look.
+
+
 # ── the four false greens the first review round found ──────────────
-#
-# Every one of these returned SUCCESS before the fix, which is the only reason they are grouped:
-# they are four different routes to a UI verdict of "fine" over a comparison that either found
-# nothing or declined to look.
-
-
 def test_two_full_mounts_of_different_lengths_is_a_difference_not_an_excuse():
     """THE MOST SERIOUS ONE. Neither arm is windowing, so neither is holding anything back on
     purpose, and the treatment renders fewer messages than the base -- a user-visible loss of
@@ -1404,17 +1401,17 @@ def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_p
     assert all(mode == U.WINDOWED for mode, _why in U.decide_modes([shard]).values())
 
 
+# A cell that failed its own completeness gate carries no UI verdict. `probe_thread_completeness`
+# runs before the film and `record_completeness_gate` writes the verdict against the cell, so a
+# windowed arm that kept its first and last page and lost the middle says so in its own payload,
+# and `report/payload.py::excluded_from_rows` drops it from the PERFORMANCE score. `ui_parity.py`
+# read no gate row except the windowed declaration, so the same cell's eighteen action rows were
+# still scored, and the visible region is a window on the END of the thread, which such a store
+# still fills, so the pairs matched and `--mode auto` exited 0 over a payload that had already
+# recorded the loss.
+
+
 # ── a cell that failed its own completeness gate carries no UI verdict ──
-#
-# `probe_thread_completeness` runs before the film and `record_completeness_gate` writes the
-# verdict against the cell, so a windowed arm that kept its first page and its last one and lost
-# everything between them says so in its own payload. `report/payload.py::excluded_from_rows`
-# drops that cell from the PERFORMANCE score. `ui_parity.py` read no gate row except the windowed
-# declaration, so the same cell's eighteen action rows were still scored for UI parity -- and the
-# visible region is a window on the END of the thread, which such a store still fills, so the
-# pairs matched and `--mode auto` exited 0 over a payload that had already recorded the loss.
-
-
 def _completeness_gate(
     cell_id,
     passed,
@@ -2091,8 +2088,8 @@ def test_the_coverage_floor_sums_the_windowed_and_structural_halves(tmp_path, ca
     assert "TOO LITTLE COMPARED" not in out, out
     # 1 is the digest regression the fixture carries at the 1K rung, so the floor did not mask it.
     assert code == 1, out
-    # And one more than the run can reach refuses it, which is what proves the count above is 2
-    # rather than the 3 a sum of the three reports would have produced.
+    # And one more than the run can reach refuses it, which proves the count above is 2 rather than the
+    # 3 a sum of the three reports would have produced.
     code = U.main([str(tmp_path / "sums"), "--min-compared", "3"])
     out = capsys.readouterr().out
     assert "TOO LITTLE COMPARED: 2 of 2" in out, out

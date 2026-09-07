@@ -76,11 +76,9 @@ def _slots(spec: list[tuple[str, int, Optional[int]]]) -> list[Slot]:
     ]
 
 
-# The standard film. Ordered so that the actions that must happen DURING generation come first,
-# then the ones that need a finished reply, then the destructive ones last -- delete and reopen
-# change the thread, so anything after them would be measuring a different thread.
-#
-# Timings are offsets from the moment the send button was pressed.
+# The standard film, ordered so actions that must happen DURING generation come first, then
+# ones needing a finished reply, then the destructive ones last, since delete and reopen change
+# the thread. Timings are offsets from the send button press.
 STANDARD = Scene(
     name = "standard",
     slots = _slots(
@@ -88,10 +86,9 @@ STANDARD = Scene(
             # ── during generation ────────────────────────────────────────
             ("scroll_during_generation", 3_000, 8_000),
             ("keystroke", 12_000, 6_000),
-            # 12s. The tail is a JITTERED clip capped at 6,000 characters, so its drain time varies from
-            # about 14s to 18s across the ladder, and a during-generation slot has to open before the
-            # SHORTEST of those, not the longest. At 19s, then 15s, this slot ran against a finished reply
-            # at the top rung while still being labelled "during generation".
+            # 12s: the tail is a JITTERED clip capped at 6,000 characters, so its drain varies from about
+            # 14s to 18s and a during-generation slot must open before the SHORTEST of those. At 19s, then
+            # 15s, this slot ran against a finished reply at the top rung.
             ("scroll_during_generation", 12_000, 8_000),
             ("stop_generation", 28_000, 8_000),
             # ── after the reply is complete ──────────────────────────────
@@ -102,61 +99,48 @@ STANDARD = Scene(
             ("copy_markdown", 86_000, 6_000),
             ("select_text", 93_000, 6_000),
             ("send_turn", 100_000, 12_000),
-            # 35s, not 10s. Selecting and copying the whole thread at the 1M rung took 27,690 ms -- two
-            # million characters through the clipboard -- so it blew a 10s budget by nearly three times
-            # and the OVERRUN pushed the next slot past its own start, which was recorded as
-            # `composer_fill: slot missed`. The 1M cell lost two slots that way and the cause looked like
-            # a slow machine rather than one under-budgeted action.
-            #
-            # This film is the one the 500K and 1M rungs use, so its budgets are sized from what those
-            # rungs actually cost, not from what the small ones do. At 100K the same action takes 2,476 ms.
+            # 35s, not 10s: selecting and copying the whole thread at 1M took 27,690 ms, nearly three times
+            # a 10s budget, and the OVERRUN pushed the next slot past its own start, recorded as
+            # `composer_fill: slot missed`. This film is what 500K and 1M use, so its budgets are sized
+            # from what those rungs cost; at 100K the same action takes 2,476 ms.
             ("select_all_copy", 113_000, 35_000),
             ("composer_fill", 149_000, 10_000),
             ("model_change", 160_000, 10_000),
             ("settings", 171_000, 12_000),
             ("image_upload", 184_000, 12_000),
-            # ── destructive, last ────────────────────────────────────────
             # 22,382 ms at 1M, so 30s stands.
+            # ── destructive, last ────────────────────────────────────────
             ("thread_reopen", 197_000, 30_000),
             ("delete_message", 228_000, 15_000),
         ]
     ),
 )
 
-# The quick film. The SAME fifteen actions in the same order -- a tier that drops actions cannot be
-# compared with one that does not -- on a shorter clock, for the small rungs where the stream is
-# over in seconds.
+# The quick film: the SAME fifteen actions in the same order, since a tier that drops actions
+# cannot be compared with one that does not, on a shorter clock for the small rungs.
 QUICK = Scene(
     name = "quick",
     slots = _slots(
         [
-            # BUDGETS ARE SIZED FROM MEASURED ACTION COST, not guessed. At the 100K rung -- the largest
-            # this film is used for -- every action finished inside 2.5 s: select_all_copy 2,476 ms,
-            # thread_reopen 2,234 ms, reasoning_toggle 1,788 ms, keystroke 1,041 ms, everything else under
-            # 500 ms. The budgets below carry roughly 2.5x headroom over those.
-            #
-            # The film previously ran 162 s while its actions used 6.4 s, so 96% of it was waiting for the
-            # next slot to open. That waiting is not free: it is multiplied by every cell, every arm and
-            # every repetition, and an A/B at four reps is sixteen films. Halving the film halves the cost
-            # of every comparison this tool exists to make.
-            #
-            # What CANNOT be compressed is the stream phase. The opening turn drains in 12 to 18 s, the
-            # during-generation slots have to open inside the shortest of those (14.1 s at 1M) and the
-            # after-generation slots have to open after the longest (17.8 s at 100K). The gap between
-            # 12 s and 20 s below is that constraint, not slack.
+            # BUDGETS ARE SIZED FROM MEASURED ACTION COST: at 100K, the largest rung this film is used for,
+            # every action finished inside 2.5 s (select_all_copy 2,476 ms, thread_reopen 2,234 ms,
+            # reasoning_toggle 1,788 ms, keystroke 1,041 ms, the rest under 500 ms), and the budgets carry
+            # roughly 2.5x headroom. The film previously ran 162 s while its actions used 6.4 s, and that
+            # waiting is multiplied by every cell, arm and repetition. What CANNOT be compressed is the
+            # stream phase: the opening turn drains in 12 to 18 s, during-generation slots must open inside
+            # the shortest (14.1 s at 1M) and after-generation slots after the longest (17.8 s at 100K), so
+            # the gap between 12 s and 20 s is that constraint, not slack.
             ("scroll_during_generation", 1_500, 2_500),
             ("keystroke", 5_000, 3_000),
             ("scroll_during_generation", 9_500, 2_500),
             ("stop_generation", 20_000, 3_000),
             ("scroll_after", 23_500, 2_500),
             ("reasoning_toggle", 26_500, 4_500),
-            # 1,500 rather than 4,000, and the reason is the gap AFTER it rather than the cost of
-            # the send itself. `send_turn` is a sub-100 ms action; a 4,000 ms window to start in is
-            # not headroom, it is permission to begin the follow-up four seconds late without
-            # recording a miss. The drain runs from when the send actually fires, so every one of
-            # those four seconds comes off `message_menu`'s window: measured from the latest legal
-            # send, this film left 3,500 ms for a 4,562 ms drain. The fast film had the same shape
-            # and CI failed on it. See test_settled_actions_open_after_the_follow_up_drains.
+            # 1,500 rather than 4,000, because of the gap AFTER it rather than the cost of the send:
+            # `send_turn` is a sub-100 ms action, so a 4,000 ms window is permission to begin the follow-up
+            # four seconds late without recording a miss, and every one of those seconds comes off
+            # `message_menu`'s window. Measured from the latest legal send, this film left 3,500 ms for a
+            # 4,562 ms drain; the fast film had the same shape and CI failed on it.
             ("send_turn", 31_500, 1_500),
             ("message_menu", 36_000, 3_000),
             ("copy_markdown", 39_500, 2_500),
@@ -173,78 +157,51 @@ QUICK = Scene(
     ),
 )
 
-# The fast film. FOR ITERATION, NOT FOR REPORTING -- see the banner the CLI prints.
-#
-# Same eighteen actions in the same order as the other two films, because a tier that drops
-# actions cannot tell you that your fix broke the one it dropped. What changes is the waiting.
-#
-# Budgets are sized from the costs this tool MEASURED at the 100K rung over eight cells of a null
-# control, at roughly 1.5x rather than the 2.5x the quick film carries:
-#
-#   thread_reopen  3,163 ms (close 2,205 + reopen 958)   select_all_copy  2,454 ms
-#   reasoning_toggle 2,250 ms (open 1,688 + close 563)   keystroke        1,002 ms
-#   settings 485 ms   model_change 483 ms   scroll 466 ms   stop 335 ms   copy 204 ms
-#
-# Everything else is under 100 ms. The eighteen actions cost about 12 s of real work; the standard
-# film spends 243 s and the quick film 77.5 s to deliver them. At 1.5x headroom an action that
-# overruns records `slot_missed` instead of silently pushing the next slot, which is the honest
-# failure mode and is exactly what the fixed-duration design exists to provide.
-#
-# WHAT CANNOT BE COMPRESSED, and why this film is 47 s rather than 20 s: the opening turn streams
-# a 6,000 character tail at field cadence (328.8 chars/s), so it drains in 14 to 18 s. The
-# during-generation slots must open inside the SHORTEST of those and the after-generation slots
-# after the LONGEST. The gap between 8 s and 19 s below is that constraint, not slack. Shrinking
-# it means shrinking the streamed tail, which changes the load being measured -- and streaming
-# frame cost at length is the thing most of these fixes are about.
+# The fast film. FOR ITERATION, NOT FOR REPORTING. Same eighteen actions in the same order as
+# the other two, because a tier that drops actions cannot tell you that your fix broke the one
+# it dropped; what changes is the waiting. Budgets are sized from costs measured at 100K over
+# eight null-control cells at roughly 1.5x rather than the quick film's 2.5x (thread_reopen
+# 3,163 ms and select_all_copy 2,454 ms at the top, everything past model_change under 500 ms).
+# At 1.5x headroom an action that overruns records `slot_missed` instead of silently pushing
+# the next slot. WHAT CANNOT BE COMPRESSED, and why this film is 47 s: the opening turn streams
+# a 6,000 character tail at field cadence (328.8 chars/s), draining in 14 to 18 s, so the gap
+# between 8 s and 19 s below is that constraint, and shrinking it means shrinking the streamed
+# tail, which changes the load being measured.
 FAST = Scene(
     name = "fast",
     slots = _slots(
         [
-            # 18.4 s, not 8 s. `stop_generation` starts and stops its OWN turn, so opening it while the
-            # opening tail is still draining starts a second turn on top of the first and truncates the
-            # reply being measured -- which is the defect that made the seeded-vs-streamed equivalence
-            # check read a false 20% drift earlier in this project.
-            #
-            # KEYED TO THE DECLARED TAIL, NOT TO WHAT THE CORPUS HAPPENS TO STREAM. This said 17.8 s
-            # and sat at 18.2 s, which was under the ladder's own ceiling the whole time and only
-            # passed because the 1M rung was streaming recycled text: the manifest was sized at
-            # exactly the top rung's seeded target, so all three streamed turns clamped onto the last
-            # unit. Sizing the manifest from the ladder gave 1M its own material and the drain went
-            # to 18.23 s, which is what a corpus this tier can be pointed at was always allowed to
-            # do. STREAM_TAIL_CHARS (6,000) at field cadence is 18.25 s and every rung is held under
-            # it, so that ceiling is the bound to clear, and clearing it costs 200 ms here.
-            #
-            # THE SECOND PACKING CONSTRAINT, learned the expensive way. `send_turn` starts a FOLLOW-UP
-            # turn, and a follow-up is FOLLOW_UP_CHARS (1,500) at field cadence, so it streams for 4.6 s.
-            # Anything needing a SETTLED reply -- the action bar's More and Copy buttons, select-all,
-            # delete -- does not exist while that turn is running. The first fast film opened
-            # `message_menu` 1.7 s after a `send_turn` and it recorded `NOT RUN: no More button` on
-            # 312 of 312 attempts across a 36 job sweep, silently removing the four actions that carry
-            # the largest known effect in this codebase (the message menu is the 19x one). Every
-            # post-send slot below clears 4.6 s, and test_settled_actions_open_after_the_follow_up_drains
-            # now fails any film that does not.
+            # 18.4 s, not 8 s: `stop_generation` starts and stops its OWN turn, so opening it while the
+            # opening tail is still draining truncates the reply being measured, the defect that made the
+            # seeded-vs-streamed check read a false 20% drift. KEYED TO THE DECLARED TAIL, not to what the
+            # corpus happens to stream: at 17.8 s it passed only because the 1M rung was streaming recycled
+            # text, and STREAM_TAIL_CHARS (6,000) at field cadence is 18.25 s, the ceiling to clear.
+            # THE SECOND PACKING CONSTRAINT, learned the expensive way: `send_turn` starts a FOLLOW-UP turn
+            # of FOLLOW_UP_CHARS (1,500) at field cadence, so it streams for 4.6 s, and anything needing a
+            # SETTLED reply does not exist while it runs. The first fast film opened `message_menu` 1.7 s
+            # after a `send_turn` and recorded `NOT RUN: no More button` on 312 of 312 attempts across a 36
+            # job sweep. Every post-send slot below clears 4.6 s, and
+            # test_settled_actions_open_after_the_follow_up_drains fails any film that does not.
             ("scroll_during_generation", 1_500, 1_200),
             ("keystroke", 3_000, 1_800),
             ("scroll_during_generation", 6_000, 1_200),
             ("stop_generation", 18_400, 3_000),
             ("scroll_after", 21_500, 1_200),
-            # THE BUDGET IS SIZED FROM WHAT CI MEASURES, not from the null control's 2,250 ms.
-            # On the GitHub runner this action costs 4,415.9 ms and 4,434.4 ms on two consecutive
-            # jobs -- reaching the open state alone takes 2,898.8 ms there, which already exceeds
-            # the whole-action figure the 3,500 ms budget was derived from. At 3,500 it overran by
-            # 934 ms on every run, and an overrun here lands on `send_turn`, the one slot whose
-            # downstream gap is load-bearing. 5,000 ms covers the measured cost with room.
+            # THE BUDGET IS SIZED FROM WHAT CI MEASURES, not the null control's 2,250 ms: on the GitHub
+            # runner this action costs about 4,420 ms, of which reaching the open state alone is 2,898.8
+            # ms. At 3,500 it overran by 934 ms on every run, and an overrun here lands on `send_turn`, the
+            # one slot whose downstream gap is load-bearing.
+            # 5,000 ms covers the measured cost with room.
             ("reasoning_toggle", 23_000, 5_000),
-            # MOVED OUT FROM UNDER `reasoning_toggle`, which now nominally ends at 28,000. A send
-            # slot that opens before the action before it can finish is a slot that starts late,
-            # and a send that starts late shortens the drain window of everything after it while
-            # reporting no miss of its own.
+            # MOVED OUT FROM UNDER `reasoning_toggle`: a send slot that opens before the action before it
+            # can finish starts late, and a late send shortens the drain window of everything after it
+            # while reporting no miss of its own.
+            # Which now nominally ends at 28,000.
             ("send_turn", 28_100, 1_500),
-            # THE GAP IS THE POINT, and it is measured from 29,600 -- the latest this film's send
-            # can fire -- not from 28,100. The follow-up drains in 4,562 ms nominal and 4,400 to
-            # 4,700 ms observed, so a window closing at 35,400 leaves about 1.1 s of real margin
-            # against the worst drain seen. The old packing left 38 ms, which is why CI failed on
-            # a runner no slower than the one that passed.
+            # THE GAP IS THE POINT, measured from 29,600, the latest this film's send can fire, not from
+            # 28,100. The follow-up drains in 4,562 ms nominal and 4,400 to 4,700 observed, so a window
+            # closing at 35,400 leaves about 1.1 s of margin; the old packing left 38 ms, which is why CI
+            # failed on a runner no slower than the one that passed.
             ("message_menu", 34_400, 1_000),
             ("copy_markdown", 35_400, 600),
             ("select_text", 36_200, 400),
@@ -254,12 +211,10 @@ FAST = Scene(
             ("model_change", 46_900, 1_000),
             ("settings", 48_100, 1_200),
             ("image_upload", 49_500, 800),
-            # thread_reopen 6.5 s and delete 2.5 s, not 5 s and 0.6 s. Measured at 100K the pair
-            # costs about 3.2 s, but the ACTION overran its 5 s window and pushed the last slot: the
-            # machine arrived at delete_message 834 ms after its 600 ms budget had already closed, so
-            # on a 36 job sweep delete recorded NOT EXERCISED on the base arm of every null-control
-            # cell. A last slot with no slack is a slot that measures nothing, and the film's own end
-            # is the one place an overrun has nowhere to go.
+            # thread_reopen 6.5 s and delete 2.5 s, not 5 s and 0.6 s: measured at 100K the pair costs about
+            # 3.2 s, but the ACTION overran its 5 s window and pushed the last slot, so delete recorded NOT
+            # EXERCISED on the base arm of every null-control cell in a 36 job sweep. The film's own end is
+            # the one place an overrun has nowhere to go.
             ("thread_reopen", 50_500, 6_500),
             ("delete_message", 57_200, 2_500),
         ]
@@ -285,11 +240,9 @@ class SceneRunner:
         """`t0` is the driver monotonic time the film started, i.e. when send was pressed."""
         rows: list[dict] = []
         for i, slot in enumerate(scene.slots):
-            # The GAP before this slot is itself a measured window. Without it, frame rate and
-            # blocked time would only ever be sampled inside actions -- and the quiet stretches
-            # between them, which is where the stream is doing its work unaided, would be the one
-            # part of the session nothing observed. Continuous coverage, no sampler thread, and
-            # no window ever overlaps another.
+            # The GAP before this slot is itself a measured window: without it, frame rate and blocked time
+            # would only be sampled inside actions, and the quiet stretches where the stream does its work
+            # unaided would be the one part of the session nothing observed.
             self._gap_window(f"stream:gap{i}", slot.t_start_ms, t0)
             row = self._run_slot(slot, t0)
             rows.append(row)
@@ -312,8 +265,8 @@ class SceneRunner:
         try:
             self.page.evaluate("() => window.__sb.parityVisible.watch()")
         except Exception:  # noqa: BLE001
-            # A page that cannot install it still gets a structural digest; the visible-region
-            # capture reports itself absent rather than empty, which the analysis refuses.
+            # A page that cannot install it still gets a structural digest; the visible-region capture
+            # reports itself absent rather than empty, which the analysis refuses.
             pass
 
     def _visible(self) -> dict:
@@ -380,32 +333,18 @@ class SceneRunner:
         now_ms = (time.monotonic() - t0) * 1000
         if until_ms - now_ms < 250:
             return
-        # `gap`, NOT `stream`. These windows were labelled `stream` and the label was read by
-        # people, including this project, as meaning the stream was running in them. It does not.
-        # A gap window is opened before EVERY slot, so on the standard film eighteen of them exist
-        # and only the first four contain any streaming at all; the rest are the quiet stretches
-        # between post-generation actions. Measured on a 100K cell, `stream:gap12` ran for 32.9 s
-        # at 1.6% busy with the reply finished thirty seconds earlier, and `stream:drain` -- the
-        # one window that really is about the stream -- was 7 ms long.
-        #
-        # Anyone filtering on `kind == "stream"` to find the streaming phase therefore selected
-        # mostly post-stream idle and diluted whatever they were measuring. The phase has to be
-        # detected from the SSE traffic (see instruments/streamcost.py), and this label no longer
-        # invites the mistake.
-        #
-        # The window NAME is deliberately left as `stream:gapN`. It is the join key in every
-        # payload this tool has already written and in the analysis scripts pointed at them;
-        # renaming it would break those silently, which is a worse failure than a misleading name
-        # that is now documented in INTERFACES.md and contradicted by the kind beside it.
-        # THE CENSUS IS TAKEN BEFORE THE GAP WINDOW OPENS, not at its close. Same defect as the
-        # action windows (workspace task #102) and the same fix, but the placement is different:
-        # a gap window is the QUIET stretch, and its whole purpose is to measure the page doing
-        # nothing but stream. Nineteen querySelectorAll passes over 195,000 elements at the end of
-        # it is not nothing, and it landed on the frame-rate reading for the idle phase.
-        #
-        # Before rather than after, because the gap ends the instant the next slot is due: taking
-        # it afterwards would push the action's start past its own slot and turn an instrument cost
-        # into a missed slot, which is a worse failure than the one being fixed.
+        # `gap`, NOT `stream`. These windows were labelled `stream` and read as meaning the stream was
+        # running in them. A gap window opens before EVERY slot, so on the standard film eighteen exist
+        # and only the first four contain any streaming: on a 100K cell, `stream:gap12` ran 32.9 s at
+        # 1.6% busy with the reply finished thirty seconds earlier, while `stream:drain` was 7 ms.
+        # Anyone filtering on `kind == "stream"` therefore selected mostly post-stream idle. The window
+        # NAME is deliberately left as `stream:gapN`, since it is the join key in every payload already
+        # written.
+        # THE CENSUS IS TAKEN BEFORE THE GAP WINDOW OPENS, not at its close (workspace task #102): a gap
+        # window is the QUIET stretch, and nineteen querySelectorAll passes over 195,000 elements at the
+        # end of it landed on the frame-rate reading for the idle phase. Before rather than after,
+        # because the gap ends the instant the next slot is due, so taking it afterwards would turn an
+        # instrument cost into a missed slot.
         census = self._census()
         with self.open_window(name, "gap") as window:
             window.note("census_before_gap", census)
@@ -422,8 +361,8 @@ class SceneRunner:
             ).row(slot.action, window_name, self.cell.cell_id)
 
         now_ms = (time.monotonic() - t0) * 1000
-        # Wait for the slot to open. Sleeping in small steps rather than one long sleep so a
-        # renderer crash is noticed within a fifth of a second rather than at the end of the wait.
+        # Wait for the slot to open, in small steps rather than one long sleep, so a renderer crash is
+        # noticed within a fifth of a second.
         while now_ms < slot.t_start_ms:
             time.sleep(min(0.2, (slot.t_start_ms - now_ms) / 1000))
             now_ms = (time.monotonic() - t0) * 1000
@@ -431,8 +370,8 @@ class SceneRunner:
         deadline_ms = slot.t_start_ms + slot.budget_ms
         remaining = deadline_ms - now_ms
         if remaining <= 0:
-            # THE SLOT WAS MISSED. Not an error and not a slow timing: this machine could not get
-            # here in time, the film carries on, and the row says exactly that.
+            # THE SLOT WAS MISSED. Not an error and not a slow timing: this machine could not get here in
+            # time, the film carries on, and the row says exactly that.
             self.log(
                 f"    slot missed: {slot.action} "
                 f"(due at {slot.t_start_ms}ms, reached at {now_ms:.0f}ms)"
@@ -467,86 +406,53 @@ class SceneRunner:
             window.note("action", slot.action)
             window.note("ran", result.ran)
 
-        # THE CENSUS AND THE PARITY DIGEST ARE TAKEN OUTSIDE THE WINDOW. Workspace task #102.
-        #
-        # Both used to run inside the `with`, one line above this comment, on the strength of a
-        # measurement -- "0.2ms on a 1,500-element tree" -- taken on a tree three orders of
-        # magnitude smaller than the one this benchmark exists to study. At 100K+ tokens the
-        # census walks nineteen querySelectorAll passes over ~195,000 elements and the parity
-        # digest serialises 5.6 MB of structure, and every millisecond of it was being charged to
-        # the action that happened to precede it. Measured cost of the mistake:
-        #
-        #   delete_message   reported 14.3 fps, true 49.0 fps
-        #   message_menu     reported 17.1 fps, true 73.8 fps
-        #
-        # That is not a correction at the margin. It inverted the ranking of the actions this
-        # campaign is about, and it did it in the direction that makes the standing DOM look like
-        # a smaller problem than it is, because the instrument's own cost grows with exactly the
-        # quantity under investigation.
-        #
-        # They still run at the same MOMENT -- immediately after the window closes, before the
-        # scheduler starts waiting for the next slot -- so the digest and the occupancy still come
-        # from one reading of one DOM taken at the end of the action. Only the accounting moved.
-        #
-        # The consequence, stated: the emitted `window` row no longer carries them in its notes,
-        # because the row is emitted when the window closes. They live on the ACTION row, which is
-        # where every consumer already reads them from.
-        # THE DEADLINE IS SAMPLED HERE, BEFORE THE OBSERVATIONS. Moving the census and the digest
-        # out of the measured window but leaving `over_ms` to be taken after them would have left
-        # half the defect in place: an action that finished comfortably inside its budget would
-        # still be flagged `over_budget` on the strength of a multi-megabyte serialisation that is
-        # explicitly not its cost. Charging instrument time to the thing being measured is the
-        # whole of task #102, and the budget flag is not exempt from it.
+        # THE CENSUS AND THE PARITY DIGEST ARE TAKEN OUTSIDE THE WINDOW (workspace task #102). Both used
+        # to run inside the `with`, on the strength of "0.2ms on a 1,500-element tree" measured on a
+        # tree three orders of magnitude smaller: at 100K+ the census walks nineteen querySelectorAll
+        # passes over ~195,000 elements and the digest serialises 5.6 MB, and every millisecond was
+        # charged to the preceding action, so delete_message reported 14.3 fps against a true 49.0. That
+        # inverted the ranking of the actions this campaign is about, in the direction that makes
+        # standing DOM look like a smaller problem, because the instrument's cost grows with the
+        # quantity under investigation. They still run at the same MOMENT, so the digest and occupancy
+        # come from one reading; only the accounting moved, and they now live on the ACTION row.
+        # And message_menu 17.1 fps against a true 73.8.
+        # THE DEADLINE IS SAMPLED HERE, BEFORE THE OBSERVATIONS: leaving `over_ms` to be taken after them
+        # would still flag an action `over_budget` on the strength of a multi-megabyte serialisation
+        # that is explicitly not its cost.
         window_closed_at = time.monotonic()
         over_ms = ((window_closed_at - t0) * 1000) - deadline_ms
 
-        # THE VISIBLE CAPTURE GOES FIRST, AND THE ORDER IS THE MEASUREMENT. The other two read a
-        # DOM that is sitting still; this one CLOSES an observation that has been accumulating
-        # since `_watch_visible`, and every millisecond it stays open is another millisecond in
-        # which a row can scroll into view and be counted as having been visible during the
-        # action. Taken after the census and the digest, that tail was as long as those two probes
-        # take -- and they are the one thing on this path whose cost is proportional to the arm.
-        #
-        # A fully mounted arm serialises the whole thread, a windowed arm serialises the dozen
-        # rows it has mounted, so the two arms' observers stayed open for materially different
-        # intervals: the numbers above this comment are 14.3 fps against 49.0, which is the same
-        # asymmetry expressed as time. With streaming and autoscroll still running at the close of
-        # `scroll_during_generation`, the mounted arm had the longer tail in which to admit an
-        # ordinal the windowed arm never saw, and `compare_visible` has no tolerance for that --
-        # it returns DIFFER on strict set inequality of `ever_visible`. The null control cannot
-        # absorb it either, being same-build against same-build, where both sides pay the same
-        # digest and the asymmetry does not exist.
-        #
-        # Taking it first does not make the tail zero: `capture()` still waits two frames, on
-        # purpose, so a quiet action does not report an empty viewport. It makes the tail the SAME
-        # ON BOTH ARMS, which is the property the comparison actually needs.
+        # THE VISIBLE CAPTURE GOES FIRST, AND THE ORDER IS THE MEASUREMENT. The other two read a DOM
+        # sitting still; this one CLOSES an observation accumulating since `_watch_visible`, so every
+        # millisecond it stays open is another in which a row can scroll into view and be counted as
+        # visible during the action. Taken after the census and digest, that tail was as long as those
+        # two probes take, and they are the one thing here whose cost is proportional to the arm, so the
+        # two arms' observers stayed open for materially different intervals (14.3 fps against 49.0 is
+        # the same asymmetry expressed as time). `compare_visible` returns DIFFER on strict set
+        # inequality of `ever_visible` and the null control cannot absorb it, being same-build against
+        # same-build. Taking it first does not make the tail zero, since `capture()` still waits two
+        # frames on purpose; it makes it the SAME ON BOTH ARMS.
         visible = self._visible()
         census = self._census()
         parity = self._parity()
-        # The observations DO consume wall clock before the next slot, so their cost is recorded
-        # rather than dropped -- it is simply recorded as theirs.
+        # The observations DO consume wall clock before the next slot, so their cost is recorded as
+        # theirs rather than dropped.
         observation_ms = (time.monotonic() - window_closed_at) * 1000
         row = result.row(slot.action, window_name, self.cell.cell_id)
         row["window_ms"] = window.duration_ms
-        # READ FROM THE LOCALS ABOVE, not from `window.notes`. The three observations were moved
-        # out of the measured window, so by the time this row is built they are values this method
-        # holds rather than notes the window carries.
+        # READ FROM THE LOCALS ABOVE, not from `window.notes`: the three observations were moved out of
+        # the measured window, so by now they are values this method holds.
         row["census"] = census
         row["parity"] = parity
         row["visible"] = visible
-        # The observation cost itself, so it is never invisible again. `census_cost_ms` is the
-        # page's own timing of the walk; if this pair ever comes to dominate the film's wall clock
-        # the number is in the payload rather than in someone's hypothesis.
+        # The observation cost itself, so it is never invisible again. `census_cost_ms` is the page's
+        # own timing of the walk.
         row["observation_outside_window"] = True
         row["observation_ms"] = round(observation_ms, 1)
-        # THE SCREENSHOT IS TAKEN OUTSIDE THE WINDOW, on purpose and not as a tidiness point.
-        # The film runs on a wall clock and every slot has an absolute start, so an encode charged
-        # to the measured window eats the gap before the next slot -- which is how an action comes
-        # to report a MISSED SLOT on a contended runner. `--assert-liveness` counts those, so a
-        # camera inside the window could turn a healthy run red and it would look like the harness
-        # failing rather than like the instrument taxing itself. Out here it costs the gap, which
-        # is what the gap is for. The DOM has moved on by a few milliseconds; for a picture that
-        # is nothing, and for the digest, which was taken inside, it is not true at all.
+        # THE SCREENSHOT IS TAKEN OUTSIDE THE WINDOW: the film runs on a wall clock with absolute slot
+        # starts, so an encode charged to the measured window eats the gap before the next slot, which
+        # is how an action comes to report a MISSED SLOT on a contended runner, and `--assert-liveness`
+        # counts those. Out here it costs the gap, which is what the gap is for.
         if isinstance(row.get("parity"), dict) and row["parity"].get("parity_attempted"):
             row["parity"].update(self._parity_shot(slot.action))
         # An action that ran but overran its budget has pushed nothing (the next slot has its own

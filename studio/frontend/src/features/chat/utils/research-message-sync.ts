@@ -4,7 +4,7 @@
 import type { MessageRecord } from "../types";
 
 /** Mirrors studio_db._RESEARCH_LINK_KEYS: what marks a message as owned by a research run. */
-const RESEARCH_METADATA_KEYS = [
+export const RESEARCH_METADATA_KEYS = [
   "researchRunId",
   "researchRun",
   "researchStatus",

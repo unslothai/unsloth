@@ -25,10 +25,9 @@ _NODE_VERSION_PROBE_TIMEOUT_SECONDS = 10
 _IS_WINDOWS = os.name == "nt"
 
 
-# Keep in sync with the setup scripts' Node floor: Get-NodeDecision (setup.ps1) /
-# decide_node_source (setup.sh). Vite 8 needs Node ^20.19 || >=22.12 || >=23.
-# Keep in sync with decide_node_source (setup.sh) / Get-NodeDecision (setup.ps1): both
-# require npm >= 11 before accepting a system runtime.
+# Keep in sync with the setup scripts' floors, decide_node_source (setup.sh) / Get-NodeDecision
+# (setup.ps1): Vite 8 needs Node ^20.19 || >=22.12 || >=23, and both require npm >= 11 before
+# accepting a system runtime.
 _NPM_MAJOR_FLOOR = 11
 
 
@@ -95,8 +94,7 @@ def managed_node_bin_dir() -> Path | None:
         return None
 
 
-# Success-only memoization, like _resolved_node: the installer may finish after the
-# first probe, so a negative verdict must not stick until restart.
+# Success-only memoization, like _resolved_node: the installer may finish
 _managed_node_ok: bool = False
 _usable_node_cache: dict[tuple[str, str | None], bool] = {}
 
@@ -210,8 +208,8 @@ def path_with_managed_node(
     # An empty component means the working directory on POSIX; dropping it loses it.
     entries = current.split(os.pathsep) if current else []
     normalized = os.path.normcase(os.path.normpath(bin_str))
-    # Drop any existing occurrence rather than keep it: we only get here when the PATH
-    # resolves no usable runtime, so a managed dir sitting behind a stale one must move up.
+    # Drop any existing occurrence rather than keep it: this runs only when PATH resolves no usable
+    # runtime, so a managed dir sitting behind a stale one must move up.
     kept = [
         entry
         for entry in entries
@@ -256,9 +254,8 @@ def _probe_version(
     return meets_floor(result.stdout)
 
 
-# Memoize ONLY a confirmed version-adequate executable: the installer runs in a
-# separate process and may finish after the first probe here, so a negative /
-# last-resort result must not be cached (it would stick until a backend restart).
+# Memoize ONLY a confirmed version-adequate executable: the installer runs in a separate process
+# and may finish after the first probe, so a negative result must not stick until a restart.
 _resolved_node: str | None = None
 
 

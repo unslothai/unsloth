@@ -20,9 +20,11 @@ import {
   catalogGroupFitsDevice,
   catalogToModelOptions,
   classifyGgufFit,
+  classifyMediaGgufFit,
   curatedArtifactFitsDevice,
   curatedDisplayNameFor,
   curatedRowLabelFor,
+  ggufFitRuns,
   groupForRepoId,
   groupMatchesQuery,
   loadSpecFor,
@@ -464,14 +466,90 @@ assert.equal(
 // ── classifyGgufFit ────────────────────────────────────────────────────────────
 
 const GB = 1024 ** 3;
+// Delegated to lib/gguf-fit, the formula the Hub badge uses: 0.97 of the card (or the saved VRAM
+// Budget) against weights + KV, then RAM offload at 0.5. The rule here used to be 0.7 of each
+// against the raw file size, which matched neither the Hub nor the loader.
 assert.equal(classifyGgufFit(10 * GB, { gpuGb: 24, systemRamGb: 64 }), "fits");
-assert.equal(classifyGgufFit(20 * GB, { gpuGb: 24, systemRamGb: 64 }), "tight");
+// 20 GiB needs 24.0: past the 23.28 budget, still inside the 24 GiB card.
+assert.equal(classifyGgufFit(20 * GB, { gpuGb: 24, systemRamGb: 64 }), "marginal");
+// 40 GiB needs 47.0: past the card, inside card + RAM offload.
+assert.equal(classifyGgufFit(40 * GB, { gpuGb: 24, systemRamGb: 64 }), "partial");
 assert.equal(classifyGgufFit(100 * GB, { gpuGb: 24, systemRamGb: 64 }), "oom");
 // Unknown device: never scare with OOM.
 assert.equal(classifyGgufFit(100 * GB, { gpuGb: 0, systemRamGb: 0 }), "fits");
-// Unified-memory host (no GPU budget): fit-or-oom against RAM.
-assert.equal(classifyGgufFit(30 * GB, { gpuGb: 0, systemRamGb: 64 }), "fits");
+// No GPU at all: RAM alone, at the 0.5 offload share.
+assert.equal(classifyGgufFit(20 * GB, { gpuGb: 0, systemRamGb: 64 }), "ram");
 assert.equal(classifyGgufFit(60 * GB, { gpuGb: 0, systemRamGb: 64 }), "oom");
+// The saved VRAM Budget moves the line. The old rule ignored the setting entirely, so lowering it
+// changed the Hub's verdict and left the picker's untouched.
+assert.equal(
+  classifyGgufFit(16 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.97 }),
+  "fits",
+);
+assert.equal(
+  classifyGgufFit(16 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.8 }),
+  "marginal",
+);
+// At the top of the slider the loader still keeps its 512 MiB floor (_VRAM_FLOOR_RESERVE_MIB), so
+// a 20 GiB quant needing 24.0 GiB is handed to --fit rather than admitted. `gpuGb * fraction` said
+// otherwise, and the whole point of this file is that the badge matches _select_gpus.
+assert.equal(
+  classifyGgufFit(20 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 1 }),
+  "marginal",
+);
+// The floor never exceeds the default budget's own reserve, so 0.97 is unchanged by it.
+assert.equal(
+  classifyGgufFit(19 * GB, { gpuGb: 24, systemRamGb: 0, budgetFraction: 0.97 }),
+  "fits",
+);
+// The floor is charged once per CARD: _select_gpus calls _vram_usable_mib for every device and
+// sums, so two 24 GiB cards at 1.0 offer 47.0 GiB, not 47.5. A 40.2 GiB file needs 47.23.
+assert.equal(
+  classifyGgufFit(40.2 * GB, {
+    gpuGb: 48,
+    systemRamGb: 0,
+    budgetFraction: 1,
+    gpuCount: 2,
+  }),
+  "marginal",
+);
+// Same file, same cards, counted as one box: the verdict this correction exists to remove.
+assert.equal(
+  classifyGgufFit(40.2 * GB, { gpuGb: 48, systemRamGb: 0, budgetFraction: 1 }),
+  "fits",
+);
+// Below the default the percentage term still wins on either count, so nothing moves.
+for (const gpuCount of [1, 2, 4]) {
+  assert.equal(
+    classifyGgufFit(39 * GB, {
+      gpuGb: 48,
+      systemRamGb: 0,
+      budgetFraction: 0.97,
+      gpuCount,
+    }),
+    "fits",
+  );
+}
+
+// ── classifyMediaGgufFit ──────────────────────────────────────────────────────
+// Images / Video place a GGUF through the diffusion backend, whose budget on a 64 GiB unified host
+// is (total - 20% reserve) * 0.85 = 43.5 GiB (diffusion_memory.py). This rule allows 44.8; the
+// llama.cpp one allows 62.1 and would promise loads the planner refuses.
+assert.equal(classifyMediaGgufFit(40 * GB, 64, 0), "fits"); // 40 <= 44.8
+assert.equal(classifyMediaGgufFit(50 * GB, 64, 0), "oom"); // past 44.8, no RAM tier
+// The same 50 GiB file reads as fitting under the llama.cpp rule, which is the regression this
+// guard exists to prevent: 50 * 1.15 + 1 = 58.5 <= 64 * 0.97.
+assert.equal(classifyGgufFit(50 * GB, { gpuGb: 64, systemRamGb: 0 }), "fits");
+// A discrete card with RAM keeps the offload tier the rule always had.
+assert.equal(classifyMediaGgufFit(20 * GB, 24, 64), "partial");
+assert.equal(classifyMediaGgufFit(100 * GB, 24, 64), "oom");
+// No GPU: RAM alone, fit or not.
+assert.equal(classifyMediaGgufFit(30 * GB, 0, 64), "fits");
+assert.equal(classifyMediaGgufFit(60 * GB, 0, 64), "oom");
+
+// Only oom fails to load; marginal and partial both run.
+assert.equal(ggufFitRuns("partial"), true);
+assert.equal(ggufFitRuns("oom"), false);
 
 // ── pickDefaultQuant ───────────────────────────────────────────────────────────
 
@@ -854,6 +932,26 @@ assert.equal(groupForRepoId("unsloth/whisper-large-v3-turbo", AUDIO_CATALOG)?.ta
 assert.equal(groupForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG)?.task, "stt");
 // A chat model stays unknown to the audio catalog.
 assert.equal(groupForRepoId("unsloth/Llama-3.3-70B-GGUF", AUDIO_CATALOG), null);
+// MiniMax Music3 publishes a 67 GB repository, but its official BF16 modular loader
+// fits a 24 GB CUDA card. Download bytes must not become a false OOM badge.
+const minimaxMusic = groupForRepoId("MiniMaxAI/MiniMax-Music3", AUDIO_CATALOG);
+assert.ok(minimaxMusic);
+assert.equal(
+  curatedArtifactFitsDevice(
+    "MiniMaxAI/MiniMax-Music3",
+    AUDIO_CATALOG,
+    { gpuGb: 95, systemRamGb: 0 },
+  ),
+  true,
+);
+assert.equal(
+  curatedArtifactFitsDevice(
+    "MiniMaxAI/MiniMax-Music3",
+    AUDIO_CATALOG,
+    { gpuGb: 23, systemRamGb: 256 },
+  ),
+  false,
+);
 
 // ── groupMatchesQuery ──────────────────────────────────────────────────────────
 

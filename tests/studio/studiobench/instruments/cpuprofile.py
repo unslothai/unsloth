@@ -34,12 +34,10 @@ from typing import Any
 from ..analysis import CellFailure
 from ..analysis.cpuprofile import CallFrame, CpuProfile, Sample
 
-# V8's own default is 1000 us. 100 us resolves a sub-millisecond frame without
-# the sampler itself becoming the workload.
+# V8's own default is 1000 us. 100 us resolves a sub-millisecond frame without the sampler becoming the workload.
 DEFAULT_SAMPLING_INTERVAL_US = 100
 
-# Minimum non-synthetic samples on BOTH sides before the two extraction routes
-# may be declared to agree or disagree.
+# Minimum non-synthetic samples on BOTH sides before the two extraction routes may be declared to agree or disagree.
 MIN_JS_SAMPLES_FOR_COMPARISON = 200
 
 
@@ -160,13 +158,10 @@ def compare_with_trace_profile(
             1 for s in p.samples if (f := p.nodes.get(s.node_id)) is not None and not f.is_synthetic
         )
 
-    # A comparison built on a handful of JS samples cannot distinguish the two
-    # parsers from sampling noise. Saying "agrees" there would be worse than
-    # useless and saying "disagrees" is a false alarm, so it declines to rule.
-    # V8 has ONE CpuProfiler. If the trace carried the profiler categories, the
-    # "standalone" profile IS the in-trace profile and comparing them is
-    # comparing a thing with itself, which always agrees and therefore proves
-    # nothing. Detected structurally rather than trusted to the caller.
+    # A comparison built on a handful of JS samples cannot distinguish the two parsers from sampling
+    # noise, so it declines to rule. And V8 has ONE CpuProfiler: if the trace carried the profiler
+    # categories, the 'standalone' profile IS the in-trace profile and comparing them always agrees.
+    # Detected structurally rather than trusted to the caller.
     if (
         len(standalone.samples) == len(in_trace.samples)
         and len(standalone.nodes) == len(in_trace.nodes)
@@ -221,30 +216,17 @@ def compare_with_trace_profile(
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # Harness adapter (INTERFACES.md section 3)
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# MEASURED, NOT ASSUMED, and it changed this design: V8 HAS ONE CPU PROFILER.
-# Starting `Profiler.start` while a trace with `disabled-by-default-v8.cpu_profiler`
-# is already running returns THE SAME SAMPLES. On a real capture both routes
-# reported identical counts, 2169 samples over 17 nodes, because the inspector
-# profiler and the tracing profiler share one `CpuProfiler` on the isolate.
-#
-# Two consequences, both load-bearing:
-#
-#   1. `compare_with_trace_profile` must refuse to compare a profile with
-#      itself. A cross-check that can never fail is worse than no cross-check,
-#      because it reads as corroboration.
-#   2. This instrument is only meaningful at instrument level 1, where the trace
-#      carries NO profiler categories. There it is a genuine capability: stacks
-#      without the ProfileChunk volume that dominates an L2 trace buffer. A real
-#      L1 capture confirmed the two clocks agree, with 1748 of 1748 standalone
-#      samples landing inside the trace's own `RunTask` span, so its samples can
-#      still be joined to classified task windows.
-#
-# At level 2 and above it stands down and says so, rather than quietly
-# duplicating what `tracing` already has.
+# MEASURED, NOT ASSUMED, and it changed this design: V8 HAS ONE CPU PROFILER. Starting
+# `Profiler.start` while a trace with `disabled-by-default-v8.cpu_profiler` is running returns THE
+# SAME SAMPLES: on a real capture both routes reported 2169 samples over 17 nodes, because the
+# inspector and tracing profilers share one `CpuProfiler` on the isolate.
+# Two consequences: `compare_with_trace_profile` must refuse to compare a profile with itself,
+# since a cross-check that can never fail reads as corroboration; and this instrument is only
+# meaningful at level 1, where the trace carries NO profiler categories and it gives stacks
+# without the ProfileChunk volume that dominates an L2 buffer (a real L1 capture had 1748 of 1748
+# standalone samples inside the trace's own `RunTask` span). At level 2 and above it stands down
+# and says so.
 
 import time  # noqa: E402
 

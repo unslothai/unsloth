@@ -18,6 +18,8 @@ export interface ModelOption {
   deviceSize?: string;
   deviceSizeBytes?: number;
   deviceLoaded?: boolean;
+  /** Detected local audio architecture, retained by task-owned on-device rows. */
+  audioType?: string | null;
 }
 
 export interface LoraModelOption extends ModelOption {
@@ -64,6 +66,8 @@ export interface ModelSelectorChangeMeta {
   /** Hub pipeline tag for an uncurated pick, so a task page can tell which task
    *  the repo does when it is not in the page's catalog. */
   pipelineTag?: string | null;
+  /** Detected local audio architecture, used when a filesystem path has no Hub id. */
+  audioType?: string | null;
   nativePathExpiresAtMs?: number | null;
 }
 

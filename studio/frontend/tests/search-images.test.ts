@@ -205,6 +205,20 @@ test("rewriteSearchImageTokens never touches code", () => {
   assert.equal(rewriteSearchImageTokens(fenced, KNOWN), fenced);
 });
 
+test("rewriteSearchImageTokens follows Markdown fence container boundaries", () => {
+  const falseFence = `Paragraph\n2. \`\`\`\n[[img:${ENTRY.id}]]`;
+  assert.equal(
+    rewriteSearchImageTokens(falseFence, KNOWN),
+    `Paragraph\n2. \`\`\`\n<search-image token="${ENTRY.id}"></search-image>`,
+  );
+
+  const listFence = `- \`\`\`\n  [[img:${ENTRY.id}]]\n\n[[img:${OTHER.id}]]`;
+  assert.equal(
+    rewriteSearchImageTokens(listFence, KNOWN),
+    `- \`\`\`\n  [[img:${ENTRY.id}]]\n\n<search-image token="${OTHER.id}"></search-image>`,
+  );
+});
+
 test("rewriteSearchImageTokens is a no-op without tokens", () => {
   const text = "plain [[not an image]] text";
   assert.equal(rewriteSearchImageTokens(text, KNOWN), text);

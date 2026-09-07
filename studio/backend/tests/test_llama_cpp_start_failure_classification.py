@@ -1205,7 +1205,19 @@ class TestTheDyldReasonIsBounded:
             "dyld[1]: Library not loaded: @rpath/libllama.dylib\n"
             "  Reason: tried: " + "'a' (" * 20000
         )
-        start = time.perf_counter()
+        # CPU time, not wall clock. What the caps buy is that the candidate scan
+        # stops being quadratic, and that is a cost in cycles: a runner that
+        # descheduls this thread inflates the wall reading without a single extra
+        # cycle being spent. Measured here pinned to one core, the classifier holds
+        # ~0.0097s of CPU whether it runs alone or against four spinners, while the
+        # wall reading goes to 0.0516s, 5.3x, on identical work. CI hit that at
+        # 1.006s against this 1.0s budget and failed by six milliseconds, on a
+        # classifier costing ten.
+        #
+        # The budget stays 1.0s because it is still the right number: healthy is
+        # ~0.01s and the regression it guards is 6.3s, so there are two orders of
+        # magnitude of room on either side. It is only the clock that was wrong.
+        start = time.process_time()
         msg = _classify(
             out,
             "/models/x.gguf",
@@ -1213,7 +1225,7 @@ class TestTheDyldReasonIsBounded:
             1,
             "/Users/me/.unsloth/llama.cpp/build/bin/llama-server",
         )
-        assert time.perf_counter() - start < 1.0
+        assert time.process_time() - start < 1.0
         assert "libllama.dylib" in msg
 
     def test_a_real_reason_is_not_truncated(self):

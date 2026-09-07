@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from hub.utils.hf_tokens import is_anonymous
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
@@ -26,6 +27,7 @@ from utils.models.model_config import (
     _is_mtp_drafter,
 )
 from utils.hf_cache_settings import active_hf_hub_cache
+from utils.utils import hf_env_offline
 from utils.paths.path_utils import (
     is_local_path,
     normalize_path,
@@ -363,21 +365,30 @@ def read_default_chat_template(
 
     resolved = resolve_cached_repo_id_case(name)
 
-    try:
-        # Resolve within each cached revision, newest first. A revision's sidecar
-        # supersedes its own embedded GGUF copy, but must not override a newer
-        # revision, so precedence stays per-snapshot rather than global.
-        for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
-            template = _chat_template_from_dir(snapshot, gguf_variant)
-            if template:
-                return template
-    except Exception as exc:
-        logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+    # The walk returns a private repo's raw template without asking the Hub, so a denied
+    # caller goes to the Hub and is refused there. A UI session keeps the cache.
+    if not is_anonymous(hf_token):
+        try:
+            # Resolve within each cached revision, newest first. A revision's sidecar
+            # supersedes its own embedded GGUF copy, but must not override a newer
+            # revision, so precedence stays per-snapshot rather than global.
+            for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
+                template = _chat_template_from_dir(snapshot, gguf_variant)
+                if template:
+                    return template
+        except Exception as exc:
+            logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+
+    if is_anonymous(hf_token) and hf_env_offline():
+        # Offline, hf_hub_download serves the cached copy without checking the credential,
+        # so the fallback would hand back the template the walk just refused. The route
+        # forces offline whenever the Hub looks unreachable.
+        return None
 
     try:
         from huggingface_hub import HfApi, hf_hub_download
 
-        _api = HfApi()
+        _api = HfApi(token = hf_token)
 
         def _remote_worth_downloading(rel: str) -> bool:
             # Reuse the size lookup to skip absent or oversized files.

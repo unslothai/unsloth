@@ -136,8 +136,8 @@ def run_local_agent(task: str, cancel_event: threading.Event | None = None) -> s
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    # cmd.exe splits CR/LF inside `%*` and the prompt always spans lines, so
-    # resolve npm shims here rather than spawning the .cmd raw.
+    # cmd.exe splits CR/LF inside `%*` and the prompt always spans lines, so resolve npm shims rather
+    # than spawning the .cmd raw.
     launch_command = _resolved_launch_command(executable, command[1:], child_env)
     process = subprocess.Popen(launch_command, **popen_kwargs)
     try:

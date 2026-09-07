@@ -70,34 +70,33 @@ def _page(
     rows = []
     for i in range(1, 5):
         if drop_tail and i == 4:
-            # The windowed case: the arm still DECLARES four messages through `aria-setsize`, and
-            # has unmounted the one it is writing into. That is a thread the instrument can see
-            # three quarters of, not an instrument that has stopped working.
+            # The windowed case: the arm still DECLARES four messages through `aria-setsize` and has unmounted
+            # the one it is writing into. That is a thread the instrument can see three quarters of, not an
+            # instrument that has stopped working.
             continue
         role = "user" if i % 2 else "assistant"
         last = i == 4
         if last:
-            # `live_role` is what the arm CALLS the row it is writing into. The shipped build says
-            # assistant; a build that says otherwise is the regression ordinal-role parity exists
-            # to catch, and it is asked here rather than assumed.
+            # `live_role` is what the arm CALLS the row it is writing into. The shipped build says assistant; a
+            # build that says otherwise is the regression ordinal-role parity exists to catch, and it is asked
+            # here rather than assumed.
             role = live_role
         body = tail if last else f"message {i}"
         if i == 3:
             body = user_body
         if last and not tail_has_parts:
-            # The gap between the send being accepted and the reply's first part arriving. The
-            # assistant message is mounted and publishes nothing, because it has nothing to
-            # publish: thread.tsx renders "Generating..." in place of any part.
+            # The gap between the send being accepted and the reply's first part arriving. The assistant
+            # message is mounted and publishes nothing, because thread.tsx renders "Generating..." in place of
+            # any part.
             rows.append(
                 f'<div class="row" aria-posinset="{i}" aria-setsize="4">'
                 f'<div data-role="{role}"><span>Generating...</span></div></div>'
             )
             continue
         status = running_value if (last and tail_running) else "complete"
-        # THE HOOK IS RENAMED ON EVERY MESSAGE, not only the streamed one. `data-status` is a single
-        # line in markdown-text.tsx and it is rendered for `complete` parts as well as `running`
-        # ones, so a build that renames it renames it everywhere. A fixture that renamed it on one
-        # message would be describing a build that does not exist, and would then be the only
+        # THE HOOK IS RENAMED ON EVERY MESSAGE, not only the streamed one: `data-status` is a single line
+        # in markdown-text.tsx rendered for `complete` parts as well as `running` ones. A fixture that
+        # renamed it on one message would describe a build that does not exist, and would then be the only
         # evidence that the control fires.
         attr = f'{hook}="{status}"'
         rows.append(
@@ -167,14 +166,13 @@ def _capture(browser, **kw) -> dict:
         page.close()
 
 
-#: The base arm: an ordinary settled thread on the shipped build.
+#:The base arm: an ordinary settled thread on the shipped build.
 _SETTLED = dict(tail = "the whole reply, arrived", tail_running = False, generating = False)
-#: THE TREATMENT THAT WENT BLIND, and the shape matters. `data-status` is one line in
-#: markdown-text.tsx and it is rendered for `complete` parts as well as `running` ones, so a build
-#: that renames the ATTRIBUTE renames it on every message and every settled row differs too -- which
-#: is a rendering difference in its own right and is reported as one. The interesting blindness is a
-#: build that changed the status VOCABULARY: `complete` still reads `complete`, so every settled row
-#: is byte-identical, and the only thing lost is the ability to see that a reply is being written.
+#: THE TREATMENT THAT WENT BLIND, and the shape matters. A build that renames the ATTRIBUTE renames
+#: it on every message, so every settled row differs too, which is a rendering difference in its
+#: own right. The interesting blindness is a build that changed the status VOCABULARY: `complete`
+#: still reads `complete`, so every settled row is byte-identical and the only thing lost is the
+#: ability to see that a reply is being written.
 _BLIND = dict(
     tail = "the whole reply, arr", running_value = "streaming", tail_running = True, generating = True
 )
@@ -183,7 +181,7 @@ _BLIND = dict(
 _BLIND_ATTR = dict(
     tail = "the whole reply, arr", hook = "data-state", tail_running = True, generating = True
 )
-#: The same mid-stream moment on a build whose hook IS known. Already handled, as residue.
+#:The same mid-stream moment on a build whose hook IS known. Already handled, as residue.
 _MIDSTREAM = dict(tail = "the whole reply, arr", tail_running = True, generating = True)
 
 
@@ -254,16 +252,14 @@ def test_a_lost_conversation_is_still_a_finding_while_a_reply_runs(browser):
     assert "DIFFERENT MESSAGES on screen" in got["reason"]
 
 
+# What the refusal may NOT take out with it. The blind-probe refusal is about rows whose meaning
+# depends on where the stream had got to; two kinds provably do not: a row both arms call the
+# user's, and a row whose ROLE changed. Both used to leave here as NOT COMPARABLE with an empty
+# `moved`, and `visible_report` buckets a refusal as blind and never consults it for the exit
+# code, so the run went green on them.
+
+
 # ── what the refusal may NOT take out with it ────────────────────────
-#
-# The blind-probe refusal is about rows whose meaning depends on where the stream had got to. Two
-# kinds of row in this payload provably do not: a row both arms call the user's, because a reply is
-# written into an assistant message; and a row whose ROLE changed, because a role is captured beside
-# the digest and how far a reply has arrived says nothing about whose it is. Both used to leave here
-# as NOT COMPARABLE with an empty `moved`, and `visible_report` buckets a refusal as blind and never
-# consults it for the exit code, so the run went green on them.
-
-
 def test_a_changed_user_row_survives_the_blind_refusal(browser):
     base = _capture(browser, **_SETTLED)
     treat = _capture(browser, **dict(_BLIND, user_body = "the user message, rewritten"))

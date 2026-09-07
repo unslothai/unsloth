@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ArchiveRestoreIcon, Delete02Icon } from "@hugeicons/core-free-icons";
+import {
+  ArchiveRestoreIcon,
+  AudioWave01Icon,
+  Delete02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  deleteAudioClip,
+  listAudioGallery,
+  setAudioClipFlags,
+} from "@/features/audio/api";
 import {
   deleteGalleryImage,
   fetchGalleryObjectUrl,
@@ -35,7 +44,13 @@ const ARCHIVED_THUMB_BUDGET_BYTES = 32 * 1024 * 1024;
 const THUMB_RETRY_LIMIT = 2;
 const THUMB_RETRY_DELAY_MS = 750;
 
-export type ArchivedMediaKind = "images" | "videos";
+export type ArchivedMediaKind = "images" | "videos" | "audio";
+
+const NOUN: Record<ArchivedMediaKind, string> = {
+  images: "image",
+  videos: "video",
+  audio: "clip",
+};
 
 /** The shape both galleries share, once flattened for this list. */
 interface ArchivedRow {
@@ -45,6 +60,17 @@ interface ArchivedRow {
   createdAtMs: number;
   /** Relative, auth-protected URL of the underlying file. */
   url: string;
+}
+
+interface AudioCursor {
+  mtime: number;
+  id: string;
+}
+
+interface ArchivedPage {
+  rows: ArchivedRow[];
+  hasMore: boolean;
+  nextAudioCursor: AudioCursor | null;
 }
 
 function formatCreatedAt(ms: number): string {
@@ -63,13 +89,16 @@ function formatCreatedAt(ms: number): string {
  */
 export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const isImages = kind === "images";
-  const noun = isImages ? "image" : "video";
+  const isAudio = kind === "audio";
+  const noun = NOUN[kind];
+  const Noun = noun[0].toUpperCase() + noun.slice(1);
   const [rows, setRows] = useState<ArchivedRow[]>([]);
   // `showMore` reads the row count and the drop count from refs, not state: both can change while
   // its request is in flight, and a stale closure is exactly what makes it skip a row. The ref is
   // written with every list change rather than during render, so it is current the moment a drop
   // lands instead of one render later.
   const rowsRef = useRef<ArchivedRow[]>([]);
+  const audioCursor = useRef<AudioCursor | null>(null);
   const mutations = useRef(0);
   // Restores and deletes in flight. The counter above is an EDGE, so a page starting after it moves
   // and landing before the row is dropped sees it hold still. A page applies only while this is zero.
@@ -92,7 +121,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const [visible, setVisible] = useState<ReadonlySet<string>>(new Set());
 
   const loadPage = useCallback(
-    async (offset: number) => {
+    async (offset: number, before: AudioCursor | null = null): Promise<ArchivedPage> => {
       if (isImages) {
         const page = await getGallery(offset, ARCHIVED_PAGE_SIZE, true);
         return {
@@ -103,6 +132,23 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             url: i.url,
           })),
           hasMore: page.has_more,
+          nextAudioCursor: null,
+        };
+      }
+      if (isAudio) {
+        const page = await listAudioGallery(0, ARCHIVED_PAGE_SIZE, before, true);
+        return {
+          rows: page.audio.map((a) => ({
+            id: a.id,
+            prompt: a.prompt,
+            createdAtMs: Date.parse(a.created_at),
+            url: a.url,
+          })),
+          hasMore: page.has_more,
+          nextAudioCursor:
+            page.next_before_mtime !== null && page.next_before_id !== null
+              ? { mtime: page.next_before_mtime, id: page.next_before_id }
+              : null,
         };
       }
       const page = await getVideoGallery(offset, ARCHIVED_PAGE_SIZE, true);
@@ -114,9 +160,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
           url: v.url,
         })),
         hasMore: page.has_more,
+        nextAudioCursor: null,
       };
     },
-    [isImages],
+    [isImages, isAudio],
   );
 
   useEffect(() => {
@@ -127,6 +174,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         const page = await loadPage(0);
         if (cancelled) return;
         putRows(page.rows);
+        audioCursor.current = page.nextAudioCursor;
         setHasMore(page.hasMore);
       } catch (err) {
         if (!cancelled) {
@@ -219,6 +267,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     };
   }, []);
   useEffect(() => {
+    if (isAudio) return;
     let cancelled = false;
     void (async () => {
       for (const row of rows) {
@@ -285,7 +334,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     return () => {
       cancelled = true;
     };
-  }, [rows, isImages, visible, retryTick]);
+  }, [rows, isImages, isAudio, visible, retryTick]);
 
   // Drop a row, then top the page back up if that emptied it while more remain, so the list never
   // dead-ends with rows still unreachable behind a hidden "Show more".
@@ -328,10 +377,11 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     pendingMutations.current += 1;
     try {
       if (isImages) await setGalleryImageFlags(row.id, { archived: false });
+      else if (isAudio) await setAudioClipFlags(row.id, { archived: false });
       else await setGalleryVideoFlags(row.id, { archived: false });
       dropRow(row.id, true);
       pendingMutations.current -= 1;
-      toast.success(`${isImages ? "Image" : "Video"} restored`);
+      toast.success(`${Noun} restored`);
     } catch (err) {
       pendingMutations.current -= 1;
       toast.error(`Failed to restore ${noun}`, {
@@ -347,10 +397,11 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     pendingMutations.current += 1;
     try {
       if (isImages) await deleteGalleryImage(row.id);
+      else if (isAudio) await deleteAudioClip(row.id);
       else await deleteGalleryVideo(row.id);
       dropRow(row.id, false);
       pendingMutations.current -= 1;
-      toast.success(`${isImages ? "Image" : "Video"} deleted`);
+      toast.success(`${Noun} deleted`);
     } catch (err) {
       pendingMutations.current -= 1;
       toast.error(`Failed to delete ${noun}`, {
@@ -363,16 +414,15 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     if (loadingMore.current) return;
     loadingMore.current = true;
     try {
-      // Offset paging over a list the user can shorten. A restore or delete landing while this
-      // request is in flight pulls every later row up by one, so the row at the old offset is
-      // never returned by any page and becomes unreachable. Retry at the corrected offset when
-      // that happens; the bound is only there so a burst of clicks cannot spin here.
+      // Images and videos page by offset over a shelf the user can shorten; audio uses its stable
+      // cursor. The same retry fence keeps locally mutated responses off every shelf.
       for (let attempt = 0; attempt < 4; attempt += 1) {
         const before = mutations.current;
-        const page = await loadPage(rowsRef.current.length);
+        const page = await loadPage(rowsRef.current.length, audioCursor.current);
         if (mutations.current !== before || pendingMutations.current > 0) continue;
         const seen = new Set(rowsRef.current.map((r) => r.id));
         putRows([...rowsRef.current, ...page.rows.filter((r) => !seen.has(r.id))]);
+        audioCursor.current = page.nextAudioCursor;
         setHasMore(page.hasMore);
         return;
       }
@@ -418,8 +468,13 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
             data-archived-id={row.id}
             className="group flex items-center gap-4 border-b border-border/40 px-1 py-2.5 text-sm last:border-0"
           >
-            <span className="size-10 shrink-0 overflow-hidden rounded-md bg-muted/40">
-              {thumbs[row.id] ? (
+            <span className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted/40">
+              {isAudio ? (
+                <HugeiconsIcon
+                  icon={AudioWave01Icon}
+                  className="size-4 text-muted-foreground"
+                />
+              ) : thumbs[row.id] ? (
                 isImages ? (
                   <img src={thumbs[row.id]} alt="" className="size-full object-cover" />
                 ) : (

@@ -48,11 +48,10 @@ _SIGALRM_NUMBER = 14
 # ._is_abort_exit already matches for GGML_ASSERT deaths.
 _WINDOWS_ABORT_EXIT_STATUS = 3
 
-# Anything that changes which physical device a device string names, or which kernels the
-# runtime emits for it. A change invalidates a cached verdict, since the same "cuda" or
-# "xpu" would then be a different piece of silicon: a stale pass could skip the probe on an
-# untested device, and a stale failure could pin a working one to CPU. The XPU selectors
-# matter because _TORCH_DEVICE maps DeviceType.XPU to "xpu", so this probe runs there too.
+# Anything that changes which physical device a device string names, or which kernels the runtime emits for it. A change
+# invalidates a cached verdict: a stale pass could skip the probe on an untested device, and a stale failure could pin a
+# working one to CPU. The XPU selectors matter because _TORCH_DEVICE maps DeviceType.XPU to "xpu", so this probe runs
+# there too.
 _DEVICE_IDENTITY_ENV_VARS = (
     "CUDA_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
@@ -63,10 +62,9 @@ _DEVICE_IDENTITY_ENV_VARS = (
     "ONEAPI_DEVICE_SELECTOR",
 )
 
-# The matmul tests allocation and vendor BLAS initialization. item() synchronizes
-# the result so an asynchronous driver fault cannot escape after the child exits.
-# Windows DLL directories must be registered before importing torch because those
-# registrations are process-local and are not inherited by this interpreter.
+# The matmul tests allocation and vendor BLAS initialization.
+# item() synchronizes the result so an asynchronous driver fault cannot escape after the child exits, and Windows DLL
+# directories must be registered before importing torch, since those registrations are process-local.
 _PROBE_SCRIPT = """
 import os
 import signal
@@ -249,8 +247,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             encoding = "utf-8",
             errors = "replace",
             env = utf8_child_env(env),
-            # No child_popen_kwargs() here. Its Linux preexec_fn can deadlock when
-            # this multithreaded backend forks and executes Python before exec.
+            # No child_popen_kwargs() here. Its Linux preexec_fn can deadlock
             **windows_hidden_subprocess_kwargs(),
         )
     except Exception:  # noqa: BLE001 - no child ran, so nothing was proven
@@ -297,12 +294,8 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             return False
 
         if process.returncode < 0:
-            # Killed by something that is not a hard fault: an OOM kill, a container stop,
-            # an operator. That is not evidence against the device, but it is not the clean
-            # run this returns true for either, and importing torch and building its device
-            # context is itself enough to trip a cgroup limit. Reading it as a pass would
-            # send _load_device() on to a much larger load in this process, which is the
-            # death the probe exists to prevent, so it takes the no-verdict path instead.
+            # An OOM kill or container stop is not evidence against the device but is not a clean run either, and
+            # reading it as a pass would send _load_device() into the death the probe prevents.
             return _unknown_verdict(
                 device,
                 f"was killed by signal {-process.returncode} without faulting",
@@ -335,12 +328,11 @@ def _terminate_and_drain(process: subprocess.Popen) -> str:
             _, stderr = process.communicate(timeout = _TERMINATE_GRACE_SECONDS)
             return stderr or ""
         except subprocess.TimeoutExpired:
-            continue  # still alive, escalate
+            continue
         except OSError:
-            break  # pipes are unusable, so there is nothing left to drain
+            break
 
-    # Not confirmed dead, whether it outlived SIGKILL or could not be read. Either way the
-    # last reference must not simply be dropped.
+    # Not confirmed dead, whether it outlived SIGKILL or could not be read.
     _reap_later(process)
     return stderr or ""
 

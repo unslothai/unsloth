@@ -384,8 +384,13 @@ def test_a_partial_rung_is_charged_to_the_right_card_not_to_the_pool():
     layout = graded_moe()
     plan = plan_placement(layout, [11 * GIB, 11 * GIB], 94 * GIB, 8192, opts = opts())
     if plan.spills_anything:
-        # Only a FULL spill is checkable; anything less must have abstained.
-        assert plan.host_bytes - layout.token_embd_bytes >= layout.spillable_bytes
+        partial = plan.host_bytes - layout.token_embd_bytes < layout.spillable_bytes
+        if partial:
+            # A partial spill is only ever planned when it was SELECTED device by
+            # device from each card's own rows and re-checked as a whole; the
+            # pooled pick never reaches the launch.
+            assert "device by device" in plan.reason
+            assert plan.vram_bytes <= 22 * GIB
     else:
         assert "partial spill" in plan.reason or "device" in plan.reason
 

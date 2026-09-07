@@ -3,13 +3,13 @@
 
 import {
   GPU_LAYERS_AUTO,
-  defaultInferenceParams,
   normalizeSpeculativeType,
   readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   reconcilePersistedGpuSelection,
   useChatRuntimeStore,
-} from "@/features/chat";
+} from "@/features/chat/stores/chat-runtime-store";
+import { defaultInferenceParams } from "@/features/chat/presets/preset-policy";
 // Its own module so hosts needing only the signature skip the chat runtime store.
 import { gpuFieldsSignature } from "./config-signature";
 import {

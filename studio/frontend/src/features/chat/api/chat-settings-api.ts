@@ -83,6 +83,12 @@ interface ChatSettingsResponse {
   settings: PersistedChatSettings;
 }
 
+interface ConditionalChatSettingsResponse extends ChatSettingsResponse {
+  applied: boolean;
+}
+
+export type ChatSettingsPath = [keyof PersistedChatSettings, ...string[]];
+
 function parseErrorText(status: number, body: unknown): string {
   if (
     body &&
@@ -154,4 +160,30 @@ export async function saveChatSettingsPatch(
   });
   const data = await parseJsonOrThrow<ChatSettingsResponse>(response);
   return data.settings;
+}
+
+export async function saveChatSettingsPatchIfCurrent(
+  expected: PersistedChatSettings,
+  patch: PersistedChatSettings,
+  expectedAbsent: Array<keyof PersistedChatSettings> = [],
+  expectedAbsentPaths: ChatSettingsPath[] = [],
+): Promise<{ settings: PersistedChatSettings; applied: boolean }> {
+  const response = await authFetch("/api/chat/settings/compare-and-set", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      expected,
+      expectedAbsent,
+      expectedAbsentPaths,
+      patch,
+    }),
+  });
+  // A backend without this route answers 404 (--api-only) or 405 (the browser
+  // build's GET-only SPA catch-all). The desktop app adopts any backend above a
+  // version floor, so that pairing is supported, not a bug. Report "not
+  // applied" so the caller leaves the server alone.
+  if (response.status === 404 || response.status === 405) {
+    return { settings: expected, applied: false };
+  }
+  return parseJsonOrThrow<ConditionalChatSettingsResponse>(response);
 }

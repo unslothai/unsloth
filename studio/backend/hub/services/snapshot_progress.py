@@ -37,17 +37,15 @@ logger = get_logger(__name__)
 
 # (repo_id, hf_token) -> (expected_total_bytes, expected_blob_hashes)
 SnapshotMetadataResolver = Callable[[str, Optional[str]], "tuple[int, frozenset[str]]"]
-# (repo_id, hf_token) -> the files HF says this target should contain. Optional,
-# and the only thing that lets a materialized snapshot with no manifest settle.
+# The files HF says this target should contain: optional, and the only thing that lets a
+# materialized snapshot with no manifest settle.
 SnapshotExpectedFilesResolver = Callable[
     [str, Optional[str]], Sequence["download_manifest.ExpectedFile"]
 ]
-# repo-relative snapshot path -> whether it belongs to the variant being polled.
 # Supplied per repo kind, so this module keeps knowing nothing about quant labels.
 VariantFileMatcher = Callable[[str], bool]
 
 # One progress log per 10% step per job, so an active download reports progress
-# without emitting a line on every poll.
 _progress_step_lock = threading.Lock()
 _last_progress_step: dict[str, int] = {}
 
@@ -146,9 +144,8 @@ def _variant_bytes_on_disk(
             if not download_manifest.expected_path_is_safe(expected.path):
                 continue
             if expected.sha256 and expected.sha256 in active_partial_hashes:
-                # A force/retry can leave the previous materialized file in the snapshot while
-                # a replacement for the same logical blob is being written. Count the current
-                # partial, not both generations of the file.
+                # A force or retry can leave the previous materialized file beside a replacement for the same
+                # logical blob; count the current partial, not both generations.
                 continue
             try:
                 total += (snapshot_dir / expected.path).stat().st_size
@@ -206,9 +203,8 @@ def _variant_main_shard_present(
     """
     if snapshot_dir is None or variant_file_matcher is None:
         return None
-    # An entry we could not read may BE the main shard -- a transient network-filesystem hiccup
-    # or a Windows ACL denial on one directory is not evidence the variant is gone. A positive
-    # match elsewhere still settles it; otherwise the reading stays unknown.
+    # An entry we could not read may BE the main shard, so a transient failure is not evidence the
+    # variant is gone: a positive match elsewhere still settles it, otherwise the reading is unknown.
     entries, complete = _walk_files(snapshot_dir)
     for path in entries:
         relative = path.relative_to(snapshot_dir).as_posix()
@@ -267,24 +263,21 @@ def _materialized_bytes(snapshot_dir: Path, variant_file_matcher: "VariantFileMa
     never linked contributes nothing, and the Windows copy layout is read as is.
     """
     try:
-        entries = list(snapshot_dir.rglob("*"))  # unordered: the result is a sum
+        entries = list(snapshot_dir.rglob("*"))
     except OSError:
         return 0
     # Same false "still active" as the companion clause below, reached by a stranded sidecar.
     entries = [path for path in entries if not is_appledouble_metadata(path)]
 
     def _accepts(relative: str, *, companions: bool) -> bool:
-        # A matcher that understands the distinction gets asked for it; an older one is
-        # answered as before. Only the GGUF matcher takes the keyword today.
+        # A matcher that understands the distinction gets asked for it; only the GGUF matcher takes the keyword today.
         try:
             return bool(variant_file_matcher(relative, companions = companions))
         except TypeError:
             return bool(variant_file_matcher(relative))
 
-    # Companions (mmproj, the MTP drafter) are shared by every quant in the repo, so on their
-    # own they are not evidence that THIS one is here. Deleting a quant while a sibling keeps
-    # its companion left a positive reading for the deleted variant, which hydration reads as
-    # active: it re-adopts the stale job and blocks a fresh download of the same quant.
+    # Companions are shared by every quant in the repo, so alone they are not evidence THIS one is
+    # here: a stranded companion left a positive reading that hydration re-adopts.
     owns_a_main = False
     for path in entries:
         try:
@@ -343,21 +336,11 @@ def _snapshot_complete_on_disk(
         return False
     manifest = entry_manifest.get()
     if manifest is None:
-        # No manifest, but HF metadata describes the same thing a manifest does:
-        # the exact files this download was supposed to fetch, at their declared
-        # sizes. Verify against that rather than refusing outright, because a
-        # manifest that was never written (metadata was unreachable when the run
-        # ended), was deleted, or sits under a cache scope this reader cannot
-        # name is not evidence of an unfinished download -- and refusing left a
-        # materialized snapshot partial forever.
-        #
-        # Nothing weaker will do here. The caller's expected_bytes is a catalog
-        # hint, and a byte total assembled from the shared blobs/ dir cannot
-        # tell this variant's bytes from a sibling's or a stray companion's, so
-        # neither is grounds for calling a download complete. Checking the named
-        # files against the snapshot dir also catches the case a blob-level
-        # tally structurally cannot: HF writes a blob and then links it, so a
-        # run killed in between leaves bytes that nothing points at.
+        # HF metadata names the same files a manifest does, so verify against it: a manifest never
+        # written, deleted, or under an unnameable cache scope is not evidence of an unfinished download,
+        # and refusing left a materialized snapshot partial forever.
+        # Nothing weaker will do: expected_bytes is a catalog hint, and a blobs/ tally cannot tell this
+        # variant's bytes from a sibling's.
         metadata_expected = metadata_files.get()
         if not metadata_expected:
             return False
@@ -368,15 +351,11 @@ def _snapshot_complete_on_disk(
             started_at = "",
             expected_files = metadata_expected,
         )
-    # ANY retained snapshot: the variant can be complete in an older revision while the newest
-    # holds only a sibling, and checking the newest alone left that download at 99% forever.
-    #
-    # But an older revision can carry the same FILENAMES at the same sizes and different
-    # content, and verify_against_disk does not read sha256 -- so with the resolved hashes in
-    # hand, require the snapshot's entries to actually resolve to them. Without that, a blob
-    # finalized but not yet linked (a crash between the two) let a stale revision satisfy the
-    # check and the job settled on files the app would not load. No resolved hashes means no
-    # such claim is possible, and the filename check stands alone as before.
+    # ANY retained snapshot: the variant can be complete in an older revision while the newest holds
+    # only a sibling, and checking the newest alone left that download at 99% forever.
+    # An older revision can carry the same FILENAMES at the same sizes with different content and
+    # verify_against_disk does not read sha256, so require the entries to resolve to known hashes;
+    # with none resolved the filename check stands alone.
     for snap in snapshots:
         if not download_manifest.verify_against_disk(manifest, snap).ok:
             continue
@@ -489,26 +468,20 @@ def compute_snapshot_progress(
     active_root = Path(metadata_hub_cache) if metadata_hub_cache else None
 
     expected_total = max(expected_bytes, 0)
-    # Always resolve the revision's blob hashes so stale blobs from a superseded
-    # revision can't inflate the count; hashes degrade to empty (count-all) only
-    # when metadata is unavailable (e.g. offline). Take the larger total so a low
-    # caller hint can't cap the bar below the revision's real size.
+    # Always resolve the revision's blob hashes so stale blobs from a superseded revision cannot
+    # inflate the count; they degrade to empty (count-all) only when metadata is unavailable (e.g.
+    # offline). Take the larger total so a low caller hint cannot cap the bar.
     meta_total, expected_hashes = metadata_resolver(repo_id, hf_token)
     meta_total = max(0, meta_total)
     expected_total = max(expected_total, meta_total)
 
-    # Without resolved hashes, a variant must not count unscoped blobs: sibling
-    # quants share one blobs/ dir, so a sibling's bytes (or .incomplete) would be
-    # misattributed and make the bar jump backward. A no-variant snapshot owns
-    # the whole dir, so it counts unscoped.
+    # Without resolved hashes a variant must not count unscoped blobs, since sibling quants share one
+    # blobs/ dir; a no-variant snapshot owns the whole dir and counts unscoped.
     count_unscoped = variant is None
-    # An empty hash set is "the expected file set could not be determined", not
-    # "this variant has no bytes" -- model_info failing (offline, or a 401 on a
-    # gated repo) is negatively cached, so one failed lookup keeps the set empty
-    # for the whole TTL. Filtering every blob out then reports a finished 33 GB
-    # variant as "0 B of 33 GB" and, because completion is never observed, leaves
-    # Retry/Resume on the card. Fall back to the variant's own files in the
-    # snapshot dir, which stay attributable when the blob hashes do not.
+    # An empty hash set means the expected file set could not be determined, not that the variant has
+    # no bytes: model_info failing (offline, or a 401 on a gated repo) is negatively cached, so one
+    # failed lookup would report a finished 33 GB variant as "0 B of 33 GB" for the whole TTL. Fall
+    # back to the snapshot dir's own files.
     variant_file_set_unknown = variant is not None and not expected_hashes
     # Resolved at most once, and only if a reading gets far enough to need it.
     metadata_files: "_Lazy[tuple[download_manifest.ExpectedFile, ...]]" = _Lazy(
@@ -520,9 +493,8 @@ def compute_snapshot_progress(
     )
 
     readings: list[tuple[int, int, Optional[str], bool, Optional[bool]]] = []
-    # The enumeration suppresses OSError per root, so an unreadable cache root came back as
-    # "no dirs" -- indistinguishable from a wiped cache, and hydration retires the job on
-    # that. Collected so the empty answer below can say unknown instead of absent.
+    # The enumeration suppresses OSError per root, so an unreadable cache root came back as "no dirs",
+    # indistinguishable from a wiped cache, which hydration retires the job on.
     scan_errors: list = []
     cache_dirs = (
         preferred_repo_cache_dirs(
@@ -539,21 +511,19 @@ def compute_snapshot_progress(
     )
     for entry in cache_dirs:
         completed_bytes = 0
-        # Keyed by logical blob: a broken advisory lock leaves several process-unique writers
-        # racing on one etag, and each downloads the WHOLE file, so summing them overshoots.
+        # Keyed by logical blob: a broken advisory lock leaves several writers racing on one etag, each
+        # downloading the WHOLE file, so summing them overshoots.
         partial_bytes: dict[str, int] = {}
         completed_hashes: set[str] = set()
-        # A partial this reading could not attribute to any target. It is not evidence FOR this
-        # variant -- it may be a sibling quant's -- but with the hashes unresolved it is not
-        # evidence against it either, and the by-name scan cannot see it because a partial is
-        # not linked into a snapshot yet.
+        # A partial attributable to no target is not evidence for this variant, nor against it while the
+        # hashes are unresolved, and the by-name scan cannot see it.
         unattributable_partial = False
         cache_path = hf_cache_scan.resolve_hf_cache_realpath(entry)
         blobs_dir = entry / "blobs"
+        # Skip a blob that vanished mid-poll rather than zeroing the reading.
         try:
-            # os.stat, not Path.is_dir(): is_dir() swallows the OSError and answers False, so a
-            # Windows ACL or network-filesystem failure on the directory ITSELF read as "no
-            # blobs here" -- a MEASURED absence, which hydration retires the job on.
+            # os.stat, not Path.is_dir(): is_dir() swallows the OSError and answers False, turning a Windows ACL
+            # or network-filesystem failure into a MEASURED absence hydration retires on.
             blobs_present = stat_module.S_ISDIR(os.stat(blobs_dir).st_mode)
         except FileNotFoundError:
             blobs_present = False
@@ -564,13 +534,11 @@ def compute_snapshot_progress(
             try:
                 blob_entries = list(blobs_dir.iterdir())
             except OSError as exc:
-                # An unreadable blobs dir is not an empty one. Swallowing it produced a
-                # measured zero -- target_present false, cache_measured true -- and hydration
-                # retires a job whose cache was never actually read.
+                # An unreadable blobs dir is not an empty one: swallowing it produced a measured zero
+                # (target_present false, cache_measured true) and retired a job whose cache was never read.
                 scan_errors.append(exc)
                 blob_entries = []
             for f in blob_entries:
-                # Skip a blob that vanished mid-poll rather than zeroing the reading.
                 try:
                     if not f.is_file():
                         continue
@@ -594,29 +562,19 @@ def compute_snapshot_progress(
                         completed_hashes.add(f.name)
                         completed_bytes += f.stat().st_size
                 except OSError as exc:
-                    # A blob we could not inspect is not a blob that is not there. Swallowing it
-                    # produced a MEASURED absence, which hydration reads as "gone" and retires a
-                    # persisted download whose target may be intact behind the error.
+                    # A blob we could not inspect is not a blob that is not there: swallowing it produced a MEASURED
+                    # absence, which hydration reads as gone.
                     scan_errors.append(exc)
                     continue
-        # A finalized blobs/<hash> supersedes every partial for the same logical blob: the racer
-        # that installed the file settled it, so a leftover writer's bytes are a duplicate, not
-        # progress. Counting both overshot the expected total and, because completion requires
-        # no bytes in flight, pinned a fully downloaded variant at 0.99 until the orphan was
-        # swept -- and an orphan outlives the process that would have unlinked it on the way out.
+        # A finalized blobs/<hash> supersedes every partial for the same logical blob, so counting both
+        # overshot the expected total and pinned a downloaded variant at 0.99 until the orphan was swept.
         for blob_hash in completed_hashes:
             partial_bytes.pop(blob_hash, None)
-        # Largest wins, deliberately, even though a killed attempt's partial can sit beside its
-        # replacement's under the same etag. Preferring the freshest mtime reads better against
-        # a corpse but oscillates between two GENUINELY live writers, which is what a broken
-        # advisory lock produces: each write makes a different one newest, so the bar would
-        # jump between the leader and the straggler.
-        #
-        # A corpse is not this reading's problem to solve, because it should not outlive the
-        # job that made it: a terminal job sweeps its own blobs without waiting out the
-        # abandonment grace, and a backend that died before it could is caught at boot. If one
-        # survives both (an unrelated client holding the blob lock over it) the bar over-reads
-        # until the next sweep, which is a smaller wrong than a reading that will not sit still.
+        # Largest wins deliberately: preferring the freshest mtime reads better against a corpse but
+        # oscillates between two genuinely live writers, which is what a broken advisory lock produces.
+        # A corpse should not outlive the job that made it (a terminal job sweeps its own blobs, and a
+        # backend that died first is caught at boot); if one survives both, over-reading until the next
+        # sweep is a smaller wrong than a reading that will not sit still.
         in_progress_bytes = sum(partial_bytes.values())
         snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
             lambda entry = entry: _retained_snapshot_dirs(entry)
@@ -630,12 +588,9 @@ def compute_snapshot_progress(
             )
         )
         if variant is not None:
-            # The best reading across every retained snapshot, for the same reason presence is
-            # established across all of them: the variant can live in an older revision while
-            # the newest holds a sibling, and reading only the newest reported 0 bytes for a
-            # complete cached quant. Do this even when hashes resolved: huggingface_hub 1.18's
-            # Windows copy layout can move a completed file directly into the snapshot and
-            # leave no finalized entry in blobs/, so a blob-only tally stays at zero.
+            # The best reading across every retained snapshot, since the variant can live in an older
+            # revision, and because huggingface_hub 1.18's Windows copy layout can move a completed file
+            # straight into the snapshot and leave a blob-only tally at zero.
             manifest = entry_manifest.get()
             on_disk = max(
                 (
@@ -650,50 +605,34 @@ def compute_snapshot_progress(
                 ),
                 default = 0,
             )
-            # Clamped, because the matcher behind the no-manifest half of that reading accepts
-            # every companion in the repo and so can overshoot.
+            # Clamped, because the matcher behind the no-manifest half accepts every companion in the repo and
+            # so can overshoot.
             if expected_total > 0:
                 on_disk = min(on_disk, expected_total)
             completed_bytes = max(completed_bytes, on_disk)
-        # Does THIS target have anything here, as opposed to the repo dir existing at all?
-        # Sibling quants share one repo cache dir, so deleting a variant's files leaves the
-        # dir standing and the reading came back "zero bytes, cache_path names a directory"
-        # -- which hydration reads as resumable and adopts as a phantom, blocking a fresh
-        # download of that same variant until the idle grace expires. False only on positive
-        # evidence of absence: a named variant, a file set we could resolve, no manifest of
-        # its own and nothing counted. Anything less certain stays None.
+        # Sibling quants share one repo cache dir, so deleting a variant's files leaves the dir standing
+        # and the reading came back "zero bytes, cache_path names a directory", which hydration adopts as
+        # a phantom. False only on positive evidence of absence; anything less certain stays None.
         target_present: Optional[bool] = None
         if variant is not None and not variant_file_set_unknown:
-            # The MATERIALIZED file, not the blob tally. These counters come from the shared
-            # blobs/ dir: deleting a variant's snapshot symlink leaves its finalized blob
-            # behind, and a companion blob shared with a sibling keeps the count positive on its
-            # own -- so a quant that is gone read as present and hydration re-adopted the
-            # phantom. The by-name scan the unknown-hash branch already uses answers this
-            # properly; bytes only stand in when it cannot (nothing readable to look at), where
-            # in-progress bytes are still real evidence that this download is live.
+            # The MATERIALIZED file, not the blob tally: deleting a snapshot symlink leaves the finalized blob
+            # behind and a shared companion keeps the count positive, so a quant that is gone read as present.
+            # Bytes only stand in when there is nothing readable to scan.
             scanned = _variant_present_in_any_snapshot(entry, variant_file_matcher)
             if scanned is not None:
                 target_present = scanned or bool(in_progress_bytes)
             else:
                 target_present = bool(completed_bytes or in_progress_bytes)
         elif variant is not None:
-            # An unresolvable file set does not have to mean unknown. The byte reading above
-            # already walked the snapshot dir, whose entries are named per file, so it can
-            # answer the narrower question the hash filter could not: is a main shard of THIS
-            # quant here? Without this, a repo dir kept alive by a sibling read as "zero bytes,
-            # cache_path names a directory", which hydration adopts as a resumable phantom and
-            # which then blocks a fresh download of the deleted quant until the idle grace runs
-            # out -- the same trap as above, on the metadata-unavailable path.
-            # ...across EVERY snapshot the entry retains, not only the newest by mtime. A cache
-            # can hold several revisions, and the requested quant living in an older one while
-            # the newest holds a sibling read as absent -- and hydration retires a job whose
-            # target is still usable.
+            # The byte reading already walked the snapshot dir, whose entries are named per file, so it can
+            # answer whether a main shard of THIS quant is here; without it a repo dir kept alive by a sibling
+            # read as "zero bytes, cache_path names a directory" and was adopted as a resumable phantom.
+            # Across EVERY snapshot the entry retains, not only the newest: a quant living in an older
+            # revision read as absent and hydration retired a job whose target is still usable.
             scanned = _variant_present_in_any_snapshot(entry, variant_file_matcher)
             if scanned is not None:
-                # ...unless the shared blobs/ dir holds a partial nothing here can attribute.
-                # An idle or restarted download whose hashes were refused has its bytes in an
-                # .incomplete blob that is not linked into any snapshot yet, so the by-name scan
-                # answers a confident "absent" -- and hydration retires a job that is resumable.
+                # Unless the shared blobs/ dir holds an unattributable partial: an idle or restarted download
+                # whose hashes were refused has its bytes in an .incomplete blob no snapshot links.
                 target_present = None if (not scanned and unattributable_partial) else scanned
         readings.append(
             (
@@ -719,52 +658,39 @@ def compute_snapshot_progress(
 
     selected = max(
         readings,
-        # complete_on_disk last-but-one: two remembered caches can clamp to the SAME byte total
-        # while only one has a manifest that verifies against disk, and root order then carried
-        # the unverified reading -- the response stayed capped at 99% and kept offering Retry.
+        # complete_on_disk last-but-one: two remembered caches can clamp to the SAME byte total while only
+        # one has a manifest that verifies against disk, and root order then capped the response at 99%.
         key = lambda item: (item[0] + item[1], bool(item[3]), item[0]),
         default = None,
     )
     if selected is None:
-        # Nothing measured AND a root that could not be listed: the cache may be entirely
-        # intact behind that error, so this is unknown, not gone.
+        # Nothing measured AND a root that could not be listed: the cache may be entirely intact behind that
+        # error, so this is unknown, not gone.
         if scan_errors:
             return _empty_progress(expected_bytes, measured = False)
         return empty
 
     completed_bytes, in_progress_bytes, cache_path, complete_on_disk, target_present = selected
-    # Presence is a property of the SET of caches, not of the one that happened to hold the most
-    # bytes. A sibling-only repo dir and a cache that still holds this variant's manifest both
-    # read as zero bytes, so root order alone could pick the False and retire a job whose target
-    # another scanned cache proves is there. A positive reading anywhere wins.
+    # Presence is a property of the SET of caches: a sibling-only repo dir and a cache still holding
+    # this variant's manifest both read as zero bytes, so a positive reading anywhere wins.
     presence = [reading[4] for reading in readings]
     if any(verdict is True for verdict in presence):
         target_present = True
     elif any(verdict is None for verdict in presence):
-        # And absence needs EVERY scanned cache to say so. One unknown reading -- a cache with
-        # no readable snapshot to identify the variant from, whose shared blobs dir may still
-        # hold an unattributable partial -- is not evidence the target is gone.
+        # Absence needs EVERY scanned cache to say so: one unknown reading is not evidence the target is gone.
         target_present = None
     downloaded_bytes = completed_bytes + in_progress_bytes
-    # A reading taken while some root could not be listed is only ever a LOWER bound. The
-    # active root raising EACCES/EIO while a remembered cache still holds the repo dir (with a
-    # sibling quant in it) gives a non-null selection carrying target_present False and zero
-    # bytes -- and hydration reads that as "the variant was deleted" and retires the job,
-    # though the inaccessible root may hold every byte of it. Absence claims need a complete
-    # scan behind them, so downgrade them to unknown; a positive reading is unaffected,
-    # because bytes we did see are bytes that are there.
+    # A reading taken while some root could not be listed is only ever a LOWER bound: the active root
+    # raising EACCES/EIO while a remembered cache holds the repo dir gives target_present False and
+    # zero bytes, which hydration reads as "deleted". Downgrade absence claims to unknown; a positive
+    # reading is unaffected.
     scan_incomplete = bool(scan_errors)
     if scan_incomplete:
         if not target_present:
             target_present = None
-    # Subtract the companion baseline only while still counted in completed_bytes
-    # and the variant is not yet verified complete, else genuine progress reads as
-    # 0-byte. A baseline that covers the whole expected total is never subtracted
-    # either: a variant that was already on disk when the job was claimed carries
-    # exactly that, and netting it out leaves "0 B of 0 B" -- nothing for the bar
-    # to draw and, to the frontend, a job to evict. complete_on_disk covered that
-    # only while completion could be verified, which is the one thing an
-    # unresolvable file set takes away.
+    # Subtract the companion baseline only while it is still counted in completed_bytes and the
+    # variant is unverified, and never when it covers the whole expected total: that leaves
+    # "0 B of 0 B", which the frontend evicts as a dead job.
     effective_baseline_bytes = (
         completed_baseline_bytes
         if (
@@ -801,8 +727,8 @@ def compute_snapshot_progress(
             "cache_measured": not scan_incomplete,
         }
 
-    # Cap at 0.99 until the manifest-backed disk check verifies completion: on
-    # resume, completed bytes can sit above the threshold while files still download.
+    # Cap at 0.99 until the manifest-backed disk check verifies completion: on resume, completed bytes
+    # can sit above the threshold while files still download.
     progress = (
         1.0
         if complete_on_disk

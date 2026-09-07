@@ -110,6 +110,7 @@ export function ArtifactSurface({
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<Element | null>(null);
   const filename = getArtifactFilename(artifact);
   const sourceMarkdown = useMemo(
@@ -312,6 +313,7 @@ export function ArtifactSurface({
             </Button>
           ) : null}
           <Button
+            ref={closeButtonRef}
             type="button"
             variant="ghost"
             size="icon"
@@ -344,6 +346,9 @@ export function ArtifactSurface({
             title={artifact.title}
             fill={true}
             className="h-full"
+            actionFocusTargetRef={
+              variant === "overlay" ? closeButtonRef : undefined
+            }
           />
         ) : (
           <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">

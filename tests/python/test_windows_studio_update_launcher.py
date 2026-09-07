@@ -125,6 +125,27 @@ def _update(studio, *, verify = True):
     studio.update(local = False, package = "unsloth", verbose = False, verify = verify)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows DLL locking only")
+@pytest.mark.parametrize("entry", ["unsloth", "-m"])
+@pytest.mark.parametrize("command", ["setup", "update"])
+def test_windows_mutating_entry_does_not_load_pydantic_core(entry, command):
+    code = f"""
+import sys
+sys.argv = [{entry!r}, "studio", {command!r}]
+from unsloth_cli import app
+assert "pydantic_core" not in sys.modules
+assert "unsloth_cli.commands.train" not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd = REPO_ROOT,
+        capture_output = True,
+        text = True,
+        check = False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_setup_noop_preserves_launcher_and_removes_backup(monkeypatch, studio, tmp_path):
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
@@ -322,6 +343,42 @@ def test_non_windows_preserves_call_order_without_launcher_operations(
 
     assert calls == ["setup", "verify", "refresh"]
     assert list(tmp_path.rglob("unsloth.exe*")) == []
+
+
+def test_an_in_process_update_does_not_stage(monkeypatch, studio, tmp_path):
+    """`stage` defaults to typer's OptionInfo, and that sentinel is truthy.
+
+    Only the CLI resolves it to a bool, so a plain `if stage:` sends every
+    in-process call down the staging path and skips the update entirely.
+    """
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(studio.sys, "executable", str(tmp_path / "bin" / "python"))
+    monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda: None)
+    staged = []
+    monkeypatch.setattr(studio, "_stage_update", lambda **kwargs: staged.append(kwargs))
+    calls = []
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: calls.append("setup"))
+    # Tolerant of the verify hook's arity, which is not what this test pins.
+    monkeypatch.setattr(
+        studio, "_fail_if_install_damaged", lambda *_a, **_k: calls.append("verify")
+    )
+    monkeypatch.setattr(
+        studio, "_refresh_desktop_shortcuts", lambda **_kwargs: calls.append("refresh")
+    )
+    for name in (
+        "SKIP_STUDIO_BASE",
+        "STUDIO_PACKAGE_NAME",
+        "STUDIO_LOCAL_INSTALL",
+        "STUDIO_LOCAL_REPO",
+        "UNSLOTH_TAURI_UPDATE",
+        "UNSLOTH_STUDIO_STAGE_ROOT",
+    ):
+        monkeypatch.delenv(name, raising = False)
+
+    _update(studio)
+
+    assert staged == []
+    assert calls == ["setup", "verify", "refresh"]
 
 
 def _shim(studio, payload = ORIGINAL_LAUNCHER):

@@ -57,9 +57,9 @@ class _Verdict:
 
 
 class _Bundle:
-    # WHAT `browser.launch` WOULD HAVE RESOLVED on the machine running this test. `run_meta`
-    # records the engine and `requested_identity` resolves the same way, so a stub that names a
-    # fixed one would make a legitimate resume look like an engine change off Linux and macOS.
+    # WHAT `browser.launch` WOULD HAVE RESOLVED on the machine running this test. `run_meta` records the
+    # engine and `requested_identity` resolves the same way, so a stub naming a fixed one would make a
+    # legitimate resume look like an engine change off Linux and macOS.
     engine = browser_mod.default_engine()[0]
     engine_note = "stubbed for this test"
     browser = context = page = cdp = None
@@ -433,15 +433,14 @@ def test_a_plain_run_and_a_plain_resume_are_unaffected(studio):
     )
 
 
+# The external probe on the record. `SBENCH_EXTRA_INIT_SCRIPT` is an ENVIRONMENT variable, so it
+# outlives the command that wanted it: a resume under a shell that still has it set runs the rungs
+# still owed with the probe in the page and appends a probed `run_meta`, and `refuse_if_probed`
+# reads every `run_meta` in a file, so cells recorded cleanly before it stop being scorable too,
+# permanently. So `run_meta` has to carry the probe and `--resume` has to compare it.
+
+
 # ── the external probe on the record ────────────────────────────────────────────────────────
-#
-# `SBENCH_EXTRA_INIT_SCRIPT` is an ENVIRONMENT variable, not a flag, so it outlives the command
-# that wanted it. A resume under a shell that still has it set runs the rungs still owed with the
-# probe in the page and appends a probed `run_meta`, and `refuse_if_probed` reads every `run_meta`
-# in a file: the cells recorded cleanly before it stop being scorable too, permanently, because a
-# payload is append-only. So `run_meta` has to carry the probe and `--resume` has to compare it.
-
-
 class _ProbedBundle(_Bundle):
     """A probe run attaches console and `pageerror` listeners, which a `None` page cannot take."""
 
@@ -645,8 +644,8 @@ def test_a_fresh_probe_run_replaces_the_summary_it_inherited(studio, monkeypatch
     assert "NO SUMMARY" in text
     assert script.name in text
     assert "studiobench summary" not in text
-    # The evidence itself is untouched: the refusal replaces the report, never the payload the
-    # summary described, which is still on disk under its archived name.
+    # The evidence itself is untouched: the refusal replaces the report, never the payload the summary
+    # described, which is still on disk under its archived name.
     assert len(list(Paths.under(studio["out"]).out.glob("payload-*.jsonl"))) == 1
 
 
@@ -843,11 +842,11 @@ def test_an_attached_null_control_registers_one_provider_for_the_one_studio(stud
     args = _args(studio, "--attach", url, "--attach-b", url, "--branch", "main", "--ab", "main")
     assert sb.run(args, ab_ref = "main") == 0
 
-    # THE SYMPTOM FIRST. Whatever the bookkeeping below says, the failure a cell actually meets is
-    # a seed script that SELECTS a provider the backend no longer has, so that is what this pins:
-    # every id named by a script scoped to this origin is still live there, and no live id is
-    # unnamed. Asserting only "nothing was deleted" would pass a future fix that deleted and then
-    # re-seeded both scripts with the survivor, and would fail a fix that never selects at all.
+    # THE SYMPTOM FIRST. Whatever the bookkeeping says, the failure a cell meets is a seed script that
+    # SELECTS a provider the backend no longer has, so that is what this pins: every id named by a
+    # script scoped to this origin is still live there, and no live id is unnamed. Asserting only
+    # 'nothing was deleted' would pass a fix that deleted and re-seeded both scripts with the
+    # survivor.
     selected = _selected_provider_ids(scripts, url)
     assert selected == set(backend.live[url])
     assert selected, "the one Unsloth must still have a provider selected"

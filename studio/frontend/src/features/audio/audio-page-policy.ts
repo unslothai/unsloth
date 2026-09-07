@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
+import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
 
 export type AudioBusy =
   | "loading"
@@ -10,12 +11,140 @@ export type AudioBusy =
   | "transcribing"
   | null;
 
+export type AudioGenerationPhase =
+  | "preparing"
+  | "generating"
+  | "stopping"
+  | "finishing"
+  | null;
+
+export type AudioGenerationPresentation = {
+  status: string;
+  actionLabel: string;
+  canStop: boolean;
+};
+
+/** Project request-lifetime phases into truthful UI copy. Audio generation has no
+ * browser-visible numeric progress, so these labels never imply a fraction or ETA. */
+export function audioGenerationPresentation(
+  phase: AudioGenerationPhase,
+): AudioGenerationPresentation | null {
+  switch (phase) {
+    case "preparing":
+      return {
+        status: "Preparing audio…",
+        actionLabel: "Preparing…",
+        canStop: false,
+      };
+    case "generating":
+      return {
+        status: "Generating audio…",
+        actionLabel: "Stop",
+        canStop: true,
+      };
+    case "stopping":
+      return {
+        status: "Stopping audio…",
+        actionLabel: "Stopping…",
+        canStop: false,
+      };
+    case "finishing":
+      return {
+        status: "Finishing audio…",
+        actionLabel: "Finishing…",
+        canStop: false,
+      };
+    case null:
+      return null;
+  }
+}
+
 export type AudioPickTask = "tts" | "stt" | null;
 export type AudioCreateMode = "speak" | "transcribe";
 export type SttEngine = "transformers" | "gguf" | "mtmd";
 
-const TTS_AUDIO_TYPES = new Set(["snac", "csm", "bicodec", "dac"]);
+const TTS_AUDIO_TYPES = new Set([
+  "snac",
+  "csm",
+  "bicodec",
+  "dac",
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
 const GGUF_TTS_AUDIO_TYPES = new Set(["snac", "bicodec", "dac"]);
+const NATIVE_TTS_AUDIO_TYPES = new Set([
+  "higgs_tts2",
+  "moss_tts_local",
+  "moss_tts_nano",
+  "higgs_tts3",
+  "minimax_music3",
+]);
+export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
+export const MOSS_TTS_DEFAULT_SECONDS = 15;
+export const MOSS_TTS_MAX_FRAMES = 32768;
+export const MOSS_TTS_MAX_SECONDS =
+  MOSS_TTS_MAX_FRAMES / MOSS_TTS_FRAMES_PER_SECOND;
+export const MINIMAX_MUSIC_FRAMES_PER_SECOND = 25;
+export const MINIMAX_MUSIC_DEFAULT_SECONDS = 30;
+export const MINIMAX_MUSIC_MAX_FRAMES = 9000;
+export const MINIMAX_MUSIC_MAX_SECONDS =
+  MINIMAX_MUSIC_MAX_FRAMES / MINIMAX_MUSIC_FRAMES_PER_SECOND;
+
+export type NativeAudioInstructionsKind = "scene" | "style" | "music";
+
+export function nativeAudioInstructionsKind(
+  audioType?: string | null,
+): NativeAudioInstructionsKind | null {
+  if (audioType === "higgs_tts2") {
+    return "scene";
+  }
+  if (audioType === "moss_tts_local") {
+    return "style";
+  }
+  if (audioType === "minimax_music3") {
+    return "music";
+  }
+  return null;
+}
+
+export function minimaxMusicFramesForSeconds(seconds: number): number {
+  const exactFrames = seconds * MINIMAX_MUSIC_FRAMES_PER_SECOND;
+  return Math.min(
+    MINIMAX_MUSIC_MAX_FRAMES,
+    Math.max(
+      1,
+      Math.floor(
+        exactFrames + Number.EPSILON * Math.max(1, Math.abs(exactFrames)),
+      ),
+    ),
+  );
+}
+
+export function mossTtsFramesForSeconds(
+  seconds: number,
+  maxFrames = MOSS_TTS_MAX_FRAMES,
+): number {
+  return Math.min(
+    Math.max(1, Math.floor(maxFrames)),
+    Math.max(1, Math.floor(seconds * MOSS_TTS_FRAMES_PER_SECOND)),
+  );
+}
+
+export function mossTtsMaxFrames(
+  audioType?: string | null,
+  contextLength?: number | null,
+): number | null {
+  if (audioType !== "moss_tts_local" && audioType !== "moss_tts_nano") {
+    return null;
+  }
+  const detected = Math.floor(Number(contextLength));
+  return Number.isFinite(detected) && detected > 0
+    ? detected
+    : MOSS_TTS_MAX_FRAMES;
+}
 
 export function isTtsAudioType(
   audioType?: string | null,
@@ -26,6 +155,26 @@ export function isTtsAudioType(
       (isGguf
         ? GGUF_TTS_AUDIO_TYPES.has(audioType)
         : TTS_AUDIO_TYPES.has(audioType)),
+  );
+}
+
+export function trainedTtsCheckpointIsLoadable(
+  audioType?: string | null,
+  exportType?: string | null,
+): boolean {
+  return nativeAudioCheckpointIsLoadable(audioType, exportType);
+}
+
+export function trainedTtsCheckpointIsRunnableOnMac(
+  audioType?: string | null,
+  exportType?: string | null,
+): boolean {
+  if (exportType === "gguf") return true;
+  return Boolean(
+    exportType === "merged" &&
+      audioType &&
+      NATIVE_TTS_AUDIO_TYPES.has(audioType) &&
+      audioType !== "minimax_music3",
   );
 }
 
@@ -84,8 +233,15 @@ export function resolveAudioPickTask(
 
 /** Generation can be cancelled as part of a mode transition. Model lifecycle
  * and transcription operations must settle before their controls disappear. */
-export function canTransitionAudioMode(busy: AudioBusy): boolean {
-  return busy === null || busy === "generating";
+export function canTransitionAudioMode(
+  busy: AudioBusy,
+  generationPhase: AudioGenerationPhase = busy === "generating"
+    ? "generating"
+    : null,
+): boolean {
+  return (
+    busy === null || (busy === "generating" && generationPhase === "generating")
+  );
 }
 
 /** A managed TTS completion owns auto-load only while the same staging generation is
@@ -113,18 +269,20 @@ export function exactGgufLoadSelector(
 
 export type MacTtsPickAction = "allow" | "use-gguf-sibling" | "reject";
 
-/** MLX has no TTS decoder. A Mac TTS pick is runnable only when it already is
- * GGUF or its curated family publishes a GGUF sibling. */
+/** MLX has no codec TTS decoder. Curated native PyTorch audio models bypass MLX;
+ * other Mac picks still need GGUF or a family GGUF sibling. */
 export function macTtsPickAction({
   isMac,
   isGguf,
   ggufSibling,
+  nativeRuntime = false,
 }: {
   isMac: boolean;
   isGguf: boolean;
   ggufSibling: string | null;
+  nativeRuntime?: boolean;
 }): MacTtsPickAction {
-  if (!isMac || isGguf) return "allow";
+  if (!isMac || isGguf || nativeRuntime) return "allow";
   return ggufSibling ? "use-gguf-sibling" : "reject";
 }
 
@@ -200,11 +358,10 @@ export function mergeGalleryPage<T extends { id: string }>(
   const oldestInPage = cached.findIndex(
     (clip) => clip.id === page[page.length - 1].id,
   );
-  // No overlap with a non-empty cache means the page has moved past everything held, so
-  // stitching would render a gap as contiguous and no cursor could ever reach it.
-  if (oldestInPage === -1) {
-    const overlaps = cached.some((clip) => inPage.has(clip.id));
-    if (!overlaps && cached.length > 0) return { clips: [...page], stitched: false };
+  // Without that boundary the cache cannot prove where safe scrollback begins: an external archive
+  // can shift one unseen row into the page while every earlier row still overlaps.
+  if (oldestInPage === -1 && cached.length > 0) {
+    return { clips: [...page], stitched: false };
   }
   const scrollback = oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
   const tail = scrollback.filter(

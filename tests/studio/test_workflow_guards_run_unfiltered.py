@@ -41,6 +41,9 @@ EXEMPT = {
     "test_tauri_branding_contract.py",
     # Imports a local `utils` helper that resolves only under the full test environment.
     "test_update_release_notes.py",
+    # Spoofs the hardware stack, so it imports numpy/torch through the studio backend.
+    # It runs in the Studio backend job, which installs them; this one deliberately does not.
+    "test_mlx_context_platform_matrix.py",
 }
 
 

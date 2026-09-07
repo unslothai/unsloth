@@ -16,6 +16,13 @@ from utils.paths import (
     resolve_output_dir,
     resolve_export_dir,
 )
+from hub.utils.hf_tokens import (
+    ANONYMOUS_CACHE_IDENTITY,
+    HfTokenArg,
+    apply_token_to_child_env,
+    is_anonymous,
+    normalize_token,
+)
 from utils.utils import without_hf_auth
 from utils.training_runs import (
     base_model_from_run_dir_name as _base_model_from_dir_name,
@@ -31,6 +38,7 @@ from utils.models.gguf_metadata import (
     mmproj_accepts_image,
     pairing_score,
     read_gguf_general_metadata,
+    read_gguf_nextn_predict_layers,
 )
 import structlog
 from loggers import get_logger
@@ -278,6 +286,8 @@ MODEL_NAME_MAPPING = {
     ],
     "unsloth_LFM2-1.2B.yaml": [
         "unsloth/LFM2-1.2B",
+        "LiquidAI/LFM2-1.2B",
+        "unsloth/LFM2-1.2B-unsloth-bnb-4bit",
     ],
     "unsloth_llama-3-8b-bnb-4bit.yaml": [
         "unsloth/llama-3-8b",
@@ -543,6 +553,25 @@ def load_model_config(
     from transformers import AutoConfig
 
     revision_kwargs = {"revision": revision} if revision is not None else {}
+
+    if is_anonymous(token):
+        # `False` is falsy: without this it falls past both branches to the ambient call.
+        # Passed as the sentinel rather than via without_hf_auth(), which mutates HF_TOKEN
+        # process-wide and would strip a concurrent download's credential.
+        # token=False denies auth, not the cache, so offline it would read a cached private
+        # config.json anyway; with no network this caller gets nothing instead.
+        if local_files_only or _env_offline():
+            raise OSError(
+                f"config.json for {model_name} is not available to an unauthorized caller"
+            )
+        return AutoConfig.from_pretrained(
+            model_name,
+            trust_remote_code = trust_remote_code,
+            token = False,
+            local_files_only = local_files_only,
+            cache_dir = active_hf_hub_cache(),
+            **revision_kwargs,
+        )
 
     if token:
         return AutoConfig.from_pretrained(
@@ -872,6 +901,13 @@ def __getattr__(name: str) -> Any:
     return _lazy_module_attr(name)
 
 
+def _vision_check_child_env(hf_token: HfTokenArg) -> Dict[str, str]:
+    """Child environment for the vision-check probe, carrying the caller's credential."""
+    env = utf8_child_env(get_hf_cache_paths().child_env(child_env_without_native_path_secret()))
+    apply_token_to_child_env(env, hf_token)
+    return env
+
+
 def _is_vision_model_subprocess(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -884,7 +920,8 @@ def _is_vision_model_subprocess(
     or None for transient failures (timeouts, subprocess errors), which are not
     cached so they can be retried.
     """
-    token_arg = hf_token or ""
+    # Only an explicit token travels in argv; the env below enforces the boundary.
+    token_arg = hf_token if isinstance(hf_token, str) else ""
 
     # Latest-only architectures need the latest sidecar for AutoConfig; other tiers keep 5.5.
     sidecar_dir = _VENV_T5_DIR
@@ -914,9 +951,7 @@ def _is_vision_model_subprocess(
             encoding = "utf-8",
             errors = "replace",
             timeout = 60,
-            env = utf8_child_env(
-                get_hf_cache_paths().child_env(child_env_without_native_path_secret())
-            ),
+            env = _vision_check_child_env(hf_token),
             **_windows_hidden_subprocess_kwargs(),
         )
 
@@ -957,9 +992,14 @@ def _is_vision_model_subprocess(
         return None
 
 
-def _token_fingerprint(token: Optional[str]) -> Optional[str]:
-    """SHA256 digest of the token for use as a cache key (avoids storing the
-    raw bearer token in process memory)."""
+def _token_fingerprint(token: HfTokenArg) -> Optional[str]:
+    """SHA256 digest of the token as a cache key (never the raw bearer in memory).
+
+    The sentinel takes its own identity: sharing ``None``'s slot would serve a caller
+    denied the ambient token a result fetched with it.
+    """
+    if is_anonymous(token):
+        return ANONYMOUS_CACHE_IDENTITY
     if token is None:
         return None
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -1029,6 +1069,10 @@ def is_vision_model(
         resolved_name = model_name
     # Key on effective offline (kwarg OR env) so an offline probe can't poison a later lookup.
     effective_offline = bool(local_files_only or _env_offline())
+    # Offline the probe reads the cache and never authorizes, so local_files_only=False
+    # does not put an anonymous caller back on the wire. It gets the default instead.
+    if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
+        return False
     cache_key: _CapabilityCacheKey = (
         resolved_name,
         _token_fingerprint(hf_token),
@@ -1172,8 +1216,7 @@ def detect_audio_type(
     """Detect if a model is an audio model and return its type.
 
     Works for any model via tokenizer_config.json special tokens.
-    Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
-    'audio_vlm') or None.
+    Returns an audio_type string from ``VALID_AUDIO_TYPES`` or None.
 
     A None here is ambiguous: it covers both "not an audio model" and "the repo
     could not be read". Callers that gate a user action on the answer want
@@ -1209,8 +1252,20 @@ def detect_audio_type_checked(
     if not model_name:
         return None, True
 
+    try:
+        from core.inference.native_audio import NATIVE_AUDIO_MODEL_IDS
+        curated_type = NATIVE_AUDIO_MODEL_IDS.get(str(model_name).strip().lower())
+    except Exception:
+        curated_type = None
+    if curated_type:
+        return curated_type, True
+
     # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
     effective_offline = bool(local_files_only or _env_offline())
+    # Offline the probe reads the cache and never authorizes, so local_files_only=False
+    # does not put an anonymous caller back on the wire. Inconclusive for it instead.
+    if effective_offline and is_anonymous(hf_token) and not is_local_path(model_name):
+        return None, False
     # Checked on the RAW name, before the casing resolution below, because resolving a
     # repo id that is not in the cache walks every cache directory, and that walk is the
     # cost this cache exists to avoid. A casing variant just takes its own entry, which
@@ -1246,6 +1301,16 @@ def detect_audio_type_checked(
         # Only definitive results are cached, so a hit is definitive by construction.
         return _audio_detection_cache[cache_key], True
 
+    config_kwargs = {"local_files_only": effective_offline}
+    if revision is not None:
+        config_kwargs["revision"] = revision
+    result = _detect_audio_from_config(model_name, hf_token, **config_kwargs)
+    if result:
+        _audio_detection_cache[cache_key] = result
+        _audio_offline_miss_cache.pop(miss_key, None)
+        logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
+        return result, True
+
     tokenizer_kwargs = {"local_files_only": effective_offline}
     if revision is not None:
         tokenizer_kwargs["revision"] = revision
@@ -1267,6 +1332,32 @@ def detect_audio_type_checked(
             f"tokenizer_config.json was unreadable (gated, offline or upstream error)"
         )
     return result, definitive
+
+
+def _detect_audio_from_config(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Optional[str]:
+    """Detect native audio architectures whose tokenizer has no codec markers.
+
+    Curated remote IDs are handled before this helper. Here only bounded local
+    metadata is read, so capability detection never adds a Hub request or fetches
+    weights. A failed read deliberately falls through to the established tokenizer
+    detector so its definitive/transient semantics stay unchanged.
+    """
+    try:
+        del hf_token, local_files_only, revision
+        if not is_local_path(model_name):
+            return None
+        local_path = Path(normalize_path(model_name)).expanduser()
+        from core.inference.native_audio import native_audio_type_from_local_path
+
+        return native_audio_type_from_local_path(str(local_path))
+    except Exception as exc:
+        logger.debug("Could not read audio model_type for '%s': %s", model_name, exc)
+        return None
 
 
 def _detect_audio_from_tokenizer(
@@ -1298,7 +1389,9 @@ def _detect_audio_from_tokenizer(
             if local_path.is_dir():
                 roots.append(local_path)
         else:
-            repo_dir = get_cache_path(model_name)
+            # Read before any network branch and never authorizes, so it would serve a
+            # cached private repo's audio tokens online as well as offline.
+            repo_dir = None if is_anonymous(hf_token) else get_cache_path(model_name)
             if repo_dir is not None and repo_dir.is_dir():
                 snapshots_dir = repo_dir / "snapshots"
                 if snapshots_dir.is_dir() and revision is None:
@@ -1359,7 +1452,8 @@ def _detect_audio_from_tokenizer(
     except Exception:
         return None, read_any
 
-    token = hf_token or os.environ.get("HF_TOKEN")
+    # `False` is falsy, so `or` would reach past it to the ambient credential.
+    token = None if is_anonymous(hf_token) else (hf_token or os.environ.get("HF_TOKEN"))
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     transient = False  # a fetch failed for a non-404 reason (network/5xx)
@@ -1830,6 +1924,10 @@ def detect_mtp_file(
     rules (a native lease) keeps scanning instead of treating the first
     rejection as no drafter at all.
     """
+
+    if Path(path).is_file() and (read_gguf_nextn_predict_layers(path) or 0) > 0:
+        # A root mtp-*.gguf may mirror an embedded head; -md would replace it.
+        return None
 
     def _matches_weight(candidate: Path) -> bool:
         return _drafter_matches_weight(candidate.name, weight_name, kind = "mtp")
@@ -3051,6 +3149,10 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     # online lookup can memoize True from tags with no weights cached, and a cached negative can
     # be invalidated by later materialization. The cache probe is local-only, so it's cheap.
     if not is_local_path(model_name) and hf_env_offline():
+        # The marker is read off the HF cache and never authorizes. Offline this caller
+        # cannot establish access, so it reports the default rather than the cache.
+        if is_anonymous(hf_token):
+            return False
         return _embedding_marker_in_hf_cache(model_name)
 
     cache_key = (model_name, hf_token)
@@ -3090,6 +3192,9 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
     except Exception as e:
         # Timeout or transient network error: fall back to the local cache marker, don't hard-fail.
         logger.warning(f"Could not determine if {model_name} is embedding model: {e}")
+        if is_anonymous(hf_token):
+            # The anonymous 404 lands here too, and the marker read never authorizes.
+            return False
         is_emb = _embedding_marker_in_hf_cache(model_name)
         _embedding_detection_cache[cache_key] = is_emb
         return is_emb
@@ -3425,7 +3530,7 @@ def get_base_model_from_lora_identifier(
     if hf_file_definitely_absent(
         identifier,
         "adapter_config.json",
-        token = hf_token if hf_token else None,
+        token = normalize_token(hf_token),
     ):
         return None
 
@@ -3435,7 +3540,7 @@ def get_base_model_from_lora_identifier(
             cfg_path = hf_hub_download(
                 identifier,
                 "adapter_config.json",
-                token = hf_token if hf_token else None,
+                token = normalize_token(hf_token),
                 cache_dir = active_hf_hub_cache(),
             )
         except (EntryNotFoundError, RepositoryNotFoundError):
@@ -3598,7 +3703,7 @@ class ModelConfig:
     is_lora: bool  # LoRA adapter?
     is_gguf: bool = False  # GGUF model?
     is_audio: bool = False  # TTS audio model?
-    audio_type: Optional[str] = None  # Audio codec type: 'snac', 'csm', 'bicodec', 'dac'
+    audio_type: Optional[str] = None  # Codec or native audio generation architecture.
     has_audio_input: bool = False  # Accepts audio input (ASR/speech understanding)
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
     # ``(repo, variant, path, sizes)`` for a GGUF verified during config resolution;
@@ -3909,7 +4014,9 @@ class ModelConfig:
                         verified_gguf = (identifier, variant, verified_file, sizes)
 
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
-                logger.info(
+                # Debug: from_identifier is re-resolved on every validate, estimate and
+                # load. The load path announces the model it actually starts.
+                logger.debug(
                     f"Detected remote GGUF repo '{identifier}', "
                     f"variant={variant}, vision={has_vision}"
                 )

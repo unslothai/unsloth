@@ -124,9 +124,9 @@ def test_a_clean_stream_is_scoreable_and_counts_every_character(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the
-        # id is which decoder the two numbers above are about, and the exact integer
-        # depends on how many decoders the page has built before this assertion.
+        # Not pinned to a value: the id says which decoder the two numbers above are about, and the integer
+        # depends on how many decoders the page has built.
+        # Same footing as `carried_flushes` beside it.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -206,18 +206,15 @@ def test_a_clean_window_stays_scoreable(page):
     assert out["reply_chars_delta"] == len("all good")
 
 
+# A frame split INSIDE the "data:" prefix. The hook starts buffering when a chunk contains a
+# complete `data:`, but the socket can cut a frame between the "da" and the "ta:": neither half
+# contains the marker or completes a buffered frame, so both were discarded and the frame's
+# characters left the denominator WITHOUT incrementing `wireParseFailures`. Later frames then make
+# the window look scoreable while the count underneath is short, inflating every
+# cost-per-character at exactly the moment the instrument exists to measure.
+
+
 # ── a frame split INSIDE the "data:" prefix ─────────────────────────
-#
-# The hook starts buffering when a chunk contains a complete `data:`. The socket does not respect
-# that boundary: it can cut a frame anywhere, including between the "da" and the "ta:". Neither
-# half then contains the marker and neither completes a buffered frame, so both were discarded --
-# and the frame's characters left the denominator WITHOUT incrementing `wireParseFailures`, so the
-# window-integrity check above could not see it either. Later frames make the window look
-# scoreable while the count underneath it is short, which inflates every cost-per-character
-# derived from it, at exactly the moment the instrument exists to measure: chunks arrive ragged
-# when the renderer is jammed.
-
-
 def _halves(text: str, at: int) -> tuple:
     return text[:at], text[at:]
 
@@ -236,9 +233,8 @@ def test_the_counter_survives_a_split_inside_the_data_prefix(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the
-        # id is which decoder the two numbers above are about, and the exact integer
-        # depends on how many decoders the page has built before this assertion.
+        # Not pinned to a value: the id says which decoder the two numbers above are about.
+        # Same footing as `carried_flushes` beside it.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -277,9 +273,8 @@ def test_unrelated_text_ending_in_a_marker_letter_does_not_corrupt_the_next_fram
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the
-        # id is which decoder the two numbers above are about, and the exact integer
-        # depends on how many decoders the page has built before this assertion.
+        # Not pinned to a value: the id says which decoder the two numbers above are about.
+        # Same footing as `carried_flushes` beside it.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -438,9 +433,8 @@ def test_an_aborted_frame_does_not_follow_the_stream_that_replaces_it(page):
         "failures": 0,
         "pending_chars": 0,
         "carried_flushes": got["carried_flushes"],
-        # Not pinned to a value, on the same footing as `carried_flushes` beside it: the
-        # id is which decoder the two numbers above are about, and the exact integer
-        # depends on how many decoders the page has built before this assertion.
+        # Not pinned to a value: the id says which decoder the two numbers above are about.
+        # Same footing as `carried_flushes` beside it.
         "decoder_id": got["decoder_id"],
     }, got
 
@@ -534,8 +528,8 @@ def test_an_abort_does_not_cost_the_next_response_its_reading_when_that_one_is_s
     _feed(page, tail)
     out = inst.close(_Window())
     assert out["reply_chars_delta"] == len("a clean reply"), out
-    # The new response DID carry a frame across a decode boundary, so the counter really moved:
-    # this window is accepted despite that, not because nothing was counted.
+    # The new response DID carry a frame across a decode boundary, so the counter really moved: this
+    # window is accepted despite that, not because nothing was counted.
     assert out["wire_carried_frames_counted_in_window"] == 0, out
     assert out["reply_chars_scoreable"] is True, out
 
@@ -595,15 +589,14 @@ def test_a_frame_that_really_did_straddle_the_open_still_refuses_its_window(page
     assert out["reply_chars_scoreable"] is False, out
 
 
+# The tail of a split frame is stream traffic on the numerator too. `noteSse` was gated on the
+# marker while the character counter was gated on `looksSse || pending`, so the two halves of one
+# frame went to two different things: the tail's characters into the denominator and its render
+# work nowhere. The bias is downward on `stream_delta_cost_ms_per_kchar` and grows with
+# fragmentation, which is the regime the instrument exists to measure.
+
+
 # ── the tail of a split frame is stream traffic on the numerator too ─────────
-#
-# `noteSse` was gated on the marker while the character counter was gated on `looksSse ||
-# pending`, so the two halves of one frame were attributed to two different things: the tail's
-# characters went into the denominator and its render work went nowhere. The bias is downward on
-# `stream_delta_cost_ms_per_kchar` and it grows with fragmentation, which is the regime the
-# instrument exists to measure.
-
-
 def test_the_tail_of_a_split_frame_is_counted_as_stream_traffic(page):
     """THE DEFECT, at the quantity the numerator is built from.
 

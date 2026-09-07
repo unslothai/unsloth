@@ -199,14 +199,7 @@ SUMMARY_HEADING = "### VirusTotal release asset scan"
 
 
 def submission_packet_lines(detected: Sequence[FileReport]) -> list[str]:
-    """Pre-fill a false-positive submission for every flagged asset.
-
-    The build job assembles one too, but only for the Windows `-setup.exe`, so the detection
-    that actually arrived -- `Trojan:Script/Wacatac.B!ml` on the 0.1.701-beta Linux AppImage --
-    produced nothing to submit. Anything flagged here gets a packet, whatever built it.
-
-    Engine names are not repeated: third-party text, already escaped under "Flagging engines".
-    """
+    """Build a false-positive submission packet for every flagged asset."""
     lines = [
         "",
         "#### False-positive submission packet",
@@ -268,9 +261,7 @@ def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
         for report in notes:
             lines.append(f"- `{_md_code(report.name)}`: {_md_text(report.note)}")
 
-    # Keyed on the counts, not the engine list: stats and results are separate fields of the
-    # same response, so an asset can carry a flagged count with no readable results map. The
-    # table would report it and the packet would skip it, which is the one asset that needs one.
+    # Use the flagged count because the results map may be absent.
     flagged = [report for report in reports if report.stats is not None and report.stats.flagged]
     if flagged:
         lines += submission_packet_lines(flagged)

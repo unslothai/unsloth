@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { LlamaUpdateChangelogPanel } from "@/components/update/llama-update-changelog-panel";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
@@ -82,6 +83,7 @@ export function LlamaUpdateBanner({
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
   const showBannerPref = useShowLlamaUpdateBanner();
+  const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   // Not gated on showBannerPref: this hook instance is the app-wide listener
   // for a cross-tab reload_required resync (the settings-sheet's own instance
   // only runs during an MTP-fallback rebuild), so muting the banner must not
@@ -115,6 +117,15 @@ export function LlamaUpdateBanner({
     (status.update_available || applying);
   const sizeBytes = status?.update_size_bytes ?? null;
   const component = status?.component ?? "llama.cpp";
+  const latestTag = status?.latest_tag ?? null;
+  const installedTag = status?.installed_tag ?? null;
+  const changelogKey =
+    component === "llama.cpp" && installedTag && latestTag
+      ? `${installedTag}\0${latestTag}`
+      : null;
+  const changelogAvailable = Boolean(changelogKey && !status?.source_build);
+  const changelogOpen =
+    changelogKey !== null && changelogVersion === changelogKey;
   const sizeLabel =
     sizeBytes && sizeBytes > 0
       ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
@@ -133,14 +144,13 @@ export function LlamaUpdateBanner({
     <div
       className={cn(
         positioned
-          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[400px]"
-          : // shrink-0: nothing in this card can give up height, so a capped
-            // stack squeezing it only prints its text over its own buttons.
-            "pointer-events-auto w-[calc(100vw-2rem)] max-w-[400px] shrink-0",
+          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[448px]"
+          : // The desktop updater's floor: in a capped stack only the notes give up height.
+            "pointer-events-auto flex min-h-[calc(117px+93px*var(--ui-font-scale,1))] w-[calc(100vw-2rem)] max-w-[448px] flex-col max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
       )}
       data-testid="llama-update-banner"
     >
-      <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+      <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
         {applying ? null : (
           <button
             type="button"
@@ -166,7 +176,7 @@ export function LlamaUpdateBanner({
           </button>
         )}
 
-        <div className="flex min-w-0 items-start gap-4 pr-6">
+        <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
           <Download
             aria-hidden="true"
             className="mt-1 size-5 shrink-0 text-foreground"
@@ -191,7 +201,22 @@ export function LlamaUpdateBanner({
           </div>
         </div>
 
+        {/* changelogAvailable, not just changelogOpen: if the install turns into
+            a source build while the panel is open, the toggle unmounts and the
+            panel would otherwise be left on screen with no way to close it. */}
+        {!applying &&
+        changelogAvailable &&
+        changelogOpen &&
+        installedTag &&
+        latestTag ? (
+          <LlamaUpdateChangelogPanel
+            installedTag={installedTag}
+            latestTag={latestTag}
+          />
+        ) : null}
+
         {applying ? (
+          // biome-ignore lint/a11y/useFocusableInteractive: a read-only progress indicator must not add a keyboard stop
           <div
             className="mb-1.5 mt-4 h-1 overflow-hidden rounded-full bg-muted"
             role="progressbar"
@@ -211,25 +236,46 @@ export function LlamaUpdateBanner({
             />
           </div>
         ) : (
-          <div className="mt-2 flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-auto rounded-full px-3 py-2 text-ui-13 font-medium text-foreground"
-              onClick={snooze}
-              data-testid="llama-update-snooze-button"
-            >
-              Remind me later
-            </Button>
-            <Button
-              size="sm"
-              // Align pill edge with card padding.
-              className="-mr-1 h-auto rounded-full px-3.5 py-2 text-ui-13"
-              onClick={handleUpdate}
-              data-testid="llama-update-button"
-            >
-              Update
-            </Button>
+          <div
+            className={cn(
+              "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
+              changelogAvailable ? "justify-between" : "justify-end",
+            )}
+          >
+            {changelogAvailable ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="-ml-2 h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                onClick={() =>
+                  setChangelogVersion(changelogOpen ? null : changelogKey)
+                }
+                aria-expanded={changelogOpen}
+                data-testid="llama-update-changelog-toggle"
+              >
+                {changelogOpen ? "Hide what's new" : "Show what's new"}
+              </Button>
+            ) : null}
+            <div className="flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-auto whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+                onClick={snooze}
+                data-testid="llama-update-snooze-button"
+              >
+                Remind me later
+              </Button>
+              <Button
+                size="sm"
+                // Align pill edge with card padding.
+                className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
+                onClick={handleUpdate}
+                data-testid="llama-update-button"
+              >
+                Update
+              </Button>
+            </div>
           </div>
         )}
       </div>

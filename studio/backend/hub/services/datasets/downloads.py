@@ -70,8 +70,7 @@ def get_dataset_snapshot_metadata_cached(
             size, hashes, restricted, cached_fp, ts = cached
             if (time.monotonic() - ts) >= _DATASET_SIZE_POS_TTL:
                 del _dataset_size_cache[repo_id]
-            # A gated/private repo's metadata is only served back to the token
-            # that fetched it; another token may have no access at all.
+            # A gated or private repo's metadata is only served back to the token that fetched it.
             elif not restricted or cached_fp == token_fp:
                 _dataset_size_cache.move_to_end(repo_id)
                 return size, hashes
@@ -165,7 +164,7 @@ async def download_dataset_response(
     key = _download_job_key(repo_id)
 
     # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
-    # makes that outlast its 3s budget while every other Unsloth request waits behind it.
+    # makes that outlast its 3s budget while every other request waits behind it.
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
         getattr(body, "transport_mode", None),
@@ -188,9 +187,8 @@ async def download_dataset_response(
     )
     generation = _registry.current_generation(key)
     if not claimed:
-        # Pollable when rejected by this repo's own in-flight job, and that is
-        # also the only case that attached to anything; an in-progress delete
-        # leaves no job, so both come from ``adoptable``.
+        # Both come from adoptable: an in-progress delete leaves no job, and only an in-flight job of this
+        # repo attached to anything.
         adoptable = _registry.adoptable(key)
         return {
             "repo_id": repo_id,
@@ -198,11 +196,11 @@ async def download_dataset_response(
             "accepted": adoptable,
             "attached": adoptable,
             "generation": generation,
-            # An adopted job keeps the transport it started on, so report it
-            # rather than let the caller assume the one it asked for.
+            # An adopted job keeps the transport it started on, so report it rather than let the caller assume
+            # the one it asked for.
             "transport": _registry.job_transport(key),
-            # And its cancel marker: a run that fell back from Xet to HTTP
-            # still cancels into a restart-only partial.
+            # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
+            # partial.
             "cancel_transport": _registry.job_cancel_transport(key),
         }
     download_manifest.clear_cancel_marker(
@@ -239,8 +237,7 @@ async def download_dataset_response(
         "accepted": True,
         "attached": False,
         "generation": generation,
-        # See models: the resolved transport, which a downgrade can make
-        # different from the one requested.
+        # See models: the resolved transport, which a downgrade can make different from the one requested.
         "transport": transport,
     }
 

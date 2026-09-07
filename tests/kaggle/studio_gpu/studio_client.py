@@ -368,9 +368,22 @@ def nonfinite_losses(status: Any) -> list:
 
 
 def newest_gguf(root: str | Path) -> Path | None:
-    """The most recently written ``.gguf`` under ``root``, if any."""
+    """The most recently written MODEL ``.gguf`` under ``root``, if any.
+
+    ``mmproj`` sidecars are excluded, and that is not a tidy-up. A vision export
+    writes two files -- ``Qwen3.5-2B.Q8_0.gguf`` and
+    ``Qwen3.5-2B.F16-mmproj.gguf`` -- and the projector is often the newer of
+    the two. Handing it to llama.cpp as a model is not an error: the server
+    starts, reports ``gpu_layers=-1``, offloads nothing and still returns text,
+    so the run reads as a GPU failure in the export assertion. Measured on
+    kernel unsloth-probe-studio-full2-815a0c, where exactly that happened.
+    """
     root = Path(root)
     if not root.is_dir():
         return None
-    candidates = sorted(root.rglob("*.gguf"), key = lambda p: p.stat().st_mtime, reverse = True)
+    candidates = sorted(
+        (p for p in root.rglob("*.gguf") if "mmproj" not in p.name.lower()),
+        key = lambda p: p.stat().st_mtime,
+        reverse = True,
+    )
     return candidates[0] if candidates else None

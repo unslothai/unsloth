@@ -42,8 +42,7 @@ def _path_inside_venv(path: str) -> bool:
     try:
         # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
         root = os.path.normcase(os.path.realpath(sys.prefix))
-        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on
-        # it. A venv is never at root, so treat that as outside.
+        # Guard a root-dir prefix (C:\ or /): commonpath would match every path
         if os.path.dirname(root) == root:
             return False
         return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
@@ -119,10 +118,8 @@ def _run_amd_smi(
     if _amd_smi_disabled:
         return None
     if not _amd_smi_allowed():
-        # Permanently skip amd-smi on Windows w/o a HIP SDK: every call would
-        # pop a UAC/DiskPart prompt (see _amd_smi_allowed). VRAM polling is then
-        # unavailable, but that beats the prompt. Opt back in with
-        # UNSLOTH_ENABLE_AMD_SMI=1.
+        # Permanently skip amd-smi on Windows without a HIP SDK: every call pops a UAC/DiskPart prompt. VRAM polling is
+        # then unavailable, which beats the prompt (UNSLOTH_ENABLE_AMD_SMI=1 opts back in).
         if not _amd_smi_disabled:
             logger.info(
                 "amd-smi disabled on Windows (no HIP SDK detected) to avoid a "
@@ -132,11 +129,9 @@ def _run_amd_smi(
             _amd_smi_disabled = True
         return None
     if shutil.which("amd-smi") is None:
-        # amd-smi does not exist on Windows (neither Adrenalin nor the HIP SDK
-        # ship a CLI) and can be absent on minimal Linux installs. Disable the
-        # poller in one step instead of burning the 3-strike circuit breaker
-        # on guaranteed FileNotFoundError spawns. Unsloth's VRAM display falls
-        # back to torch mem_get_info.
+        # amd-smi does not exist on Windows and can be absent on minimal Linux, so disable the poller in one step
+        # instead of burning the 3-strike breaker on guaranteed FileNotFoundError spawns.
+        # Unsloth's VRAM display falls back to torch mem_get_info.
         if not _amd_smi_disabled:
             logger.info(
                 "amd-smi not found on PATH; GPU utilization polling via "
@@ -190,11 +185,10 @@ def _run_amd_smi(
             _amd_smi_disabled = True
         return None
     if not result.stdout.strip():
-        # Exit 0 with no output (no GPUs visible, or a version emitting nothing
-        # for --json). Not a tool failure, so don't trip the circuit breaker.
+        # Exit 0 with no output
         logger.debug("amd-smi exited 0 but returned no output")
         return None
-    _amd_smi_consecutive_failures = 0  # reset on success
+    _amd_smi_consecutive_failures = 0
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -260,8 +254,8 @@ def _parse_memory_mb(value: Any) -> Optional[float]:
         return num / (1024 * 1024)
 
     # No explicit unit: default to MB (the amd-smi convention for bare numbers).
-    # A bytes-above-~10M heuristic was dropped because it misclassified small
-    # VRAM allocations; modern amd-smi always ships explicit units.
+    # A bytes-above-~10M heuristic was dropped because it misclassified small VRAM allocations; modern amd-smi always
+    # ships explicit units.
     return num
 
 
@@ -452,8 +446,7 @@ def get_gpu_vram_report() -> tuple[dict[int, tuple[int, int]], list[int]]:
         used_mb, total_mb = _vram_used_total_mb(gpu_data)
         if used_mb is None or total_mb is None or total_mb <= 0:
             continue
-        # Clamp: a used reading above total (seen when a card reports a stale
-        # figure mid-reset) must not become negative free.
+        # Clamp: a used reading above total
         out[idx] = (int(max(0.0, total_mb - used_mb)), int(total_mb))
     return out, enumerated
 
@@ -541,10 +534,7 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
     if data is None:
         return {"available": False}
 
-    # amd-smi may return:
-    #   - a list of GPU dicts (older versions)
-    #   - a dict with a "gpu_data" key wrapping a list (newer versions)
-    #   - a single GPU dict (rare)
+    # amd-smi may return a list of GPU dicts, a dict wrapping one under "gpu_data", or a single GPU dict.
     if isinstance(data, dict) and "gpu_data" in data:
         data = data["gpu_data"]
     if isinstance(data, list):

@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useLatestRef } from "../hooks/use-latest-ref";
 import type { ResolvedTransport } from "./constants";
 import type { TransportConflictInfo } from "./types";
 import {
+  conflictInfoForOwner,
   type DownloadKind,
   type JobListeners,
   downloadManager,
   jobKeyOf,
+  repoKeyOf,
   selectActiveJob,
   subscribeJobListeners,
   useDownloadManagerStore,
@@ -115,12 +117,47 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
     () => jobKeyOf(kind, repoId, activeVariant ?? null),
     [activeVariant, kind, repoId],
   );
-  const transportConflict = useDownloadManagerStore(
-    (state) => state.conflicts[conflictKey]?.info ?? null,
+  const repoConflictKey = useMemo(
+    () => repoKeyOf(kind, repoId),
+    [kind, repoId],
   );
+  const visibleConflict = useDownloadManagerStore(
+    useShallow((state) => {
+      const exact = state.conflicts[conflictKey];
+      const exactInfo = conflictInfoForOwner(exact, "caller");
+      if (exactInfo) return { key: conflictKey, info: exactInfo };
+      const scoped = Object.entries(state.conflicts).find(
+        ([key, entry]) =>
+          key.startsWith(`${repoConflictKey}#`) && entry.owner === "caller",
+      );
+      return scoped
+        ? { key: scoped[0], info: scoped[1].info }
+        : { key: conflictKey, info: null };
+    }),
+  );
+  const visibleConflictKey = visibleConflict.key;
+  const transportConflict = visibleConflict.info;
 
+  // Chat and Video staging park this hook on an idle repo id when the queue
+  // clears. Keep that conflict for Hub, but remember its key so a later real
+  // repo replacement clears the superseded request.
+  const repoIdRef = useRef(repoId);
+  const preservedConflictKeyRef = useRef<string | null>(null);
+  repoIdRef.current = repoId;
   useEffect(
     () => () => {
+      const parked = repoIdRef.current;
+      if (
+        parked === "__staged_download_idle__" ||
+        parked === "__hub_autoload_idle__"
+      ) {
+        preservedConflictKeyRef.current = conflictKey;
+        return;
+      }
+      if (preservedConflictKeyRef.current) {
+        downloadManager.cancelConflict(preservedConflictKeyRef.current);
+        preservedConflictKeyRef.current = null;
+      }
       downloadManager.cancelConflict(conflictKey);
     },
     [conflictKey],
@@ -158,16 +195,16 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   );
 
   const resumeConflict = useCallback(
-    () => downloadManager.resumeConflict(conflictKey),
-    [conflictKey],
+    () => downloadManager.resumeConflict(visibleConflictKey),
+    [visibleConflictKey],
   );
   const restartConflict = useCallback(
-    () => downloadManager.restartConflict(conflictKey),
-    [conflictKey],
+    () => downloadManager.restartConflict(visibleConflictKey),
+    [visibleConflictKey],
   );
   const cancelConflict = useCallback(
-    () => downloadManager.cancelConflict(conflictKey),
-    [conflictKey],
+    () => downloadManager.cancelConflict(visibleConflictKey),
+    [visibleConflictKey],
   );
 
   const progress = useMemo<DownloadJobProgress | null>(

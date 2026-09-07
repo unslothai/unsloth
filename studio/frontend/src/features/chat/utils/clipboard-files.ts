@@ -204,7 +204,11 @@ export function pasteClipboardFiles(
   }
 
   const advertisesFiles = clipboardAdvertisesFiles(clipboardData);
-  if (!advertisesFiles && clipboardHasPlainText(clipboardData)) return;
+  const hasUriList = Array.from(clipboardData.types).some((type) =>
+    type.toLowerCase().includes("uri-list"),
+  );
+  if (!advertisesFiles && (clipboardHasPlainText(clipboardData) || hasUriList))
+    return;
 
   if (advertisesFiles) event.preventDefault();
   addNativeClipboardFiles(addFiles, onError);

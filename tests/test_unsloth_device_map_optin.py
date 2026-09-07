@@ -73,6 +73,8 @@ def _load(
             exec(ast.get_source_segment(_SRC, node), ns)
         elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) in (
             "UNSLOTH_DEVICE_MAP",
+            "UNSLOTH_BALANCED_DEVICE_MAP",
+            "_PLANNED_DEVICE_MAPS",
             "DEFAULT_DEVICE_MAP",
             "_SIZE_UNITS",
         ):
@@ -377,6 +379,74 @@ def test_an_infeasible_plan_is_raised_not_swallowed():
     ns = _load(planner = _infeasible)
     with pytest.raises(DeviceMapInfeasible):
         ns["resolve_unsloth_device_map"]("unsloth", "m")
+
+
+# ------------------------------------------------- the second name, whose decline shards
+
+
+@pytest.mark.parametrize(
+    "kwargs,devices,planner",
+    [
+        ({"skip_reason": "text_only"}, 2, None),
+        ({"fast_inference": True}, 2, None),
+        ({"full_finetuning": True}, 2, None),
+        ({}, 2, lambda *a, **k: None),
+        ({}, 2, lambda *a, **k: (_ for _ in ()).throw(RuntimeError("hub unreachable"))),
+    ],
+)
+def test_the_balanced_sentinel_declines_to_balanced_not_sequential(kwargs, devices, planner):
+    """`"unsloth_balanced"` is the same plan with a different answer when it is declined.
+
+    "sequential" is not a shard: `get_max_memory` gives cuda:0 its whole free budget, so
+    `infer_auto_device_map` fills it first and a model that fits lands there whole. On
+    `unsloth/Qwen2.5-7B-Instruct` in bf16 across two cards, 16 GiB each, "sequential"
+    answers {'0': 1} where "balanced" answers {'0': 13, '1': 19}. A caller that asked to
+    plan across several cards wants a split even when the planner declines, and it
+    declines on more shapes than a caller can enumerate -- a full finetune, an
+    `auto_model` with no `_model_mapping`, a prequantized Falcon-H1 checkpoint.
+    """
+    ns = _load(devices = devices, planner = planner)
+    assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m", **kwargs) == "balanced"
+    # The plain sentinel is unchanged: an existing caller keeps the answer it had.
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m", **kwargs) == "sequential"
+
+
+@pytest.mark.parametrize("devices", [0, 1])
+def test_the_balanced_sentinel_declines_to_balanced_on_one_device_too(devices):
+    """The silent fallbacks are the easy ones to leave hardcoded, and both were."""
+    ns = _load(devices = devices, planner = lambda *a, **k: pytest.fail("nothing to plan"))
+    assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m") == "balanced"
+
+
+def test_both_names_plan_identically_when_the_planner_answers():
+    """The name chooses the fallback and nothing else, so a plan is not a second code
+    path that could drift."""
+    planned = {"": 0, "model.vision_tower": 1}
+    for name in ("unsloth", "unsloth_balanced"):
+        ns = _load(planner = lambda *a, **k: _Plan(dict(planned)))
+        assert ns["resolve_unsloth_device_map"](name, "m") == planned
+
+
+def test_an_infeasible_plan_is_still_raised_for_the_balanced_name():
+    """The one deliberate raise must not be softened into a shard by the new name."""
+
+    class DeviceMapInfeasible(RuntimeError):
+        pass
+
+    def _infeasible(*a, **k):
+        raise DeviceMapInfeasible("needs 7.57 GiB free on cuda:0, has 4.10 GiB")
+
+    ns = _load(planner = _infeasible)
+    with pytest.raises(DeviceMapInfeasible):
+        ns["resolve_unsloth_device_map"]("unsloth_balanced", "m")
+
+
+def test_the_default_device_map_still_resolves_to_the_plain_sentinel():
+    """An omitted device_map becomes the planner, and its decline has always been
+    "sequential" -- which is also what an omitted device_map got before planning existed.
+    Widening that to "balanced" would change what every single-card caller loads."""
+    ns = _load()
+    assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
 
 
 # ------------------------------------------------------------- when it does plan

@@ -16,20 +16,51 @@ import textwrap
 import time
 from pathlib import Path
 
-from appimage_test_support import assert_no_loader_errors
+from appimage_test_support import (
+    FIXTURE_BACKEND_VERSION,
+    assert_fixture_version_clears_floor,
+    assert_no_loader_errors,
+)
 
 ROOT_ID = "a" * 64
 DESKTOP_SECRET = "appimage-portability-secret"
 
 
-def _minimum_backend_version(repo_root: Path) -> str:
-    source = (repo_root / "studio/src-tauri/src/preflight/version.rs").read_text(encoding = "utf-8")
-    marker = 'MIN_DESKTOP_BACKEND_VERSION: &str = "'
-    start = source.find(marker)
-    if start < 0:
-        raise RuntimeError("Could not read the minimum desktop backend version")
-    start += len(marker)
-    return source[start : source.index('"', start)]
+# The dispositions that mean the app gave up on the fixture and went to repair.
+# Without this the run just times out after 45s on "never completed desktop
+# authentication", which says nothing about why; the reason is in tauri.log and
+# nobody reads it, so the nightly sat red for weeks looking like a webview fault.
+# ExternalConflict is here for the same reason though it is not a repair: another
+# backend already owns the port, so the fixture is never contacted and the wait can
+# only expire. It is what a developer box with a Studio already running produces.
+_GAVE_UP_MARKERS = (
+    "start_managed_repair command called",
+    "disposition=ManagedStale",
+    "disposition=ExternalConflict",
+)
+
+
+def _abandoned_reason(tauri_log: Path) -> str | None:
+    """The preflight verdict, when it means desktop auth will never be attempted.
+
+    Quotes the `disposition=` line, which names the outcome, plus the `Stale {...}`
+    line when there is one, since that is what carries the reason. Reporting the
+    first interesting line instead is worse than useless: on a box where preflight
+    read the install as Ready and then hit a port conflict, it quoted the Ready.
+    """
+    try:
+        text = tauri_log.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    if not any(marker in text for marker in _GAVE_UP_MARKERS):
+        return None
+    lines = [line.strip() for line in text.splitlines()]
+    disposition = next(
+        (line for line in reversed(lines) if "desktop_preflight completed" in line), None
+    )
+    stale = next((line for line in reversed(lines) if "Stale {" in line), None)
+    detail = " | ".join(part for part in (disposition, stale) if part)
+    return detail or "preflight abandoned the fixture backend; see tauri.log"
 
 
 def _write_fixture(art_dir: Path, home: Path, version: str) -> Path:
@@ -198,7 +229,8 @@ def main() -> None:
     install_id = home / ".unsloth/studio/share/studio_install_id"
     install_id.parent.mkdir(parents = True)
     install_id.write_text(ROOT_ID, encoding = "utf-8")
-    request_log = _write_fixture(art_dir, home, _minimum_backend_version(repo_root))
+    assert_fixture_version_clears_floor(repo_root)
+    request_log = _write_fixture(art_dir, home, FIXTURE_BACKEND_VERSION)
 
     env = {
         **os.environ,
@@ -281,6 +313,12 @@ def main() -> None:
                         f"on {display_backend}"
                     )
                     return
+            reason = _abandoned_reason(home / ".unsloth/studio/tauri.log")
+            if reason is not None:
+                raise RuntimeError(
+                    "Preflight never adopted the fixture backend, so desktop auth was "
+                    f"never attempted: {reason}"
+                )
             time.sleep(0.25)
         raise RuntimeError("Packaged webview never completed desktop authentication")
     finally:

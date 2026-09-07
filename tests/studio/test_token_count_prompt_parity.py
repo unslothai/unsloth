@@ -32,10 +32,11 @@ from _node_harness import (
 
 ADAPTER = source_path("studio/frontend/src/features/chat/api/chat-adapter.ts")
 CAPABILITIES = source_path("studio/frontend/src/features/chat/provider-capabilities.ts")
+MODEL_SIZE = source_path("studio/frontend/src/lib/model-size.ts")
 
 TEMP = WORKDIR / "temp" / "token_count_prompt_parity"
 
-SOURCES = (ADAPTER, CAPABILITIES)
+SOURCES = (ADAPTER, CAPABILITIES, MODEL_SIZE)
 
 
 def _canvas_constants() -> str:
@@ -64,12 +65,32 @@ def _outbound_builder() -> str:
 
 
 def _extras_builder() -> str:
-    """buildLocalTokenCountExtras, the tool flags the count sends."""
-    return slice_between(
-        read(ADAPTER),
-        "export async function buildLocalTokenCountExtras(",
-        "\n\nasync function resolveUseAdapter(",
-    )
+    """buildLocalTokenCountExtras, the tool flags the count sends, and the Auto-inject
+    resolution it shares with the request build.
+
+    Joined on blank lines, not concatenated: a slice that starts on the previous slice's
+    closing brace is not a declaration _harness_bindings can see, so resolve_dependencies
+    pulls its own copy and node refuses the duplicate.
+    """
+    parts = [
+        read(MODEL_SIZE).split("\n", 2)[2],
+        slice_between(
+            read(ADAPTER),
+            "const AUTOINJECT_AUTO_MAX_SIZE_B =",
+            "\n\ntype ThreadRecordReader",
+        ),
+        slice_between(
+            read(ADAPTER),
+            "function resolveAutoInject(",
+            "\n\n/** Server-side usage data",
+        ),
+        slice_between(
+            read(ADAPTER),
+            "export async function buildLocalTokenCountExtras(",
+            "\n\nasync function resolveUseAdapter(",
+        ),
+    ]
+    return "\n\n".join(part.strip("\n") for part in parts) + "\n"
 
 
 def _reasoning_builder() -> str:
@@ -358,3 +379,80 @@ def test_the_rag_scope_a_count_sends_is_never_empty(thread_id, expected_thread_i
         "keys"
     ), "an empty rag_scope is falsy server-side and drops the tool and the nudge"
     assert (out.get("scope") or {}).get("thread_id") == expected_thread_id
+
+
+def test_the_count_sends_every_setting_that_changes_the_rendered_prompt():
+    """The backend prices the tool loop the settings describe: its gate, its call budget,
+    and whether it retrieves. Omitting one priced the server's defaults."""
+    settings = RAG_ON.rstrip(" }") + ', permissionMode: "ask", maxToolCallsPerMessage: 0 }'
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ buildLocalTokenCountExtras, seed }} from "./harness.ts";
+            seed({settings});
+            const on = await buildLocalTokenCountExtras("thread-a");
+            seed({{ residentCheckpoint: "org/Model-70B" }});
+            const large = await buildLocalTokenCountExtras("thread-a");
+            seed({{ ragAutoInject: "off", residentCheckpoint: "org/Model-4B" }});
+            const injectOff = await buildLocalTokenCountExtras("thread-a");
+            seed({{ supportsTools: false }});
+            const off = await buildLocalTokenCountExtras("thread-a");
+            console.log(JSON.stringify({{ on, large, injectOff, off }}));
+            """
+        )
+    )
+    on, off = out["on"], out["off"]
+    assert on.get("permission_mode") == "ask", "the gate that holds the loop's retrieval"
+    assert on.get("max_tool_calls_per_message") == 0, "Off suppresses the loop entirely"
+    assert (on.get("rag_scope") or {}).get("autoinject") is True
+    # The values, not the keys: unknown size on, Auto off above the threshold.
+    assert (out["large"].get("rag_scope") or {}).get("autoinject") is False
+    off_scope = out["injectOff"].get("rag_scope") or {}
+    assert (off_scope.get("autoinject"), off_scope.get("whole_doc")) == (False, False)
+    # Explicit, and with no budget beside it, as the send is: an omitted flag would let
+    # `unsloth studio run --enable-tools` answer for the count.
+    assert off.get("enable_tools") is False
+    assert "max_tool_calls_per_message" not in off
+
+
+# Tools on, RAG deliberately off: the archive tool is gated on the thread id alone, so a
+# scope-only id would leave it unpriced exactly when RAG is not in play.
+TOOLS_ON_RAG_OFF = (
+    "{ supportsTools: true, toolsEnabled: true, codeToolsEnabled: false, "
+    "artifactsEnabled: false, mcpEnabledForChat: false, ragEnabled: false, "
+    'ragSource: { type: "thread" }, ragMode: "hybrid", ragTopK: 5, '
+    "autoHealToolCalls: true }"
+)
+
+
+@pytest.mark.parametrize(
+    ("thread_id", "expected"),
+    [("undefined", None), ('"thread-a"', "thread-a")],
+    ids = ["unpersisted_new_chat", "persisted_thread"],
+)
+def test_the_count_sends_the_thread_id_at_top_level_even_with_rag_off(thread_id, expected):
+    """`_select_request_tools` reads `payload.thread_id`, not the one inside `rag_scope`.
+
+    An archived thread puts `search_conversation` and its compaction nudge in the prompt,
+    so a count that only ever nests the id under a RAG scope under-reports every archived
+    conversation whose Docs pill is off, and the bar claims room the completion lacks.
+    """
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ buildLocalTokenCountExtras, seed }} from "./harness.ts";
+            seed({TOOLS_ON_RAG_OFF});
+            const extras = await buildLocalTokenCountExtras({thread_id});
+            console.log(JSON.stringify({{
+              threadId: extras.thread_id ?? null,
+              ragScope: extras.rag_scope ?? null,
+            }}));
+            """
+        )
+    )
+    assert out.get("ragScope") is None, "RAG is off, so there is no scope to hide the id in"
+    assert (
+        out.get("threadId") == expected
+    ), "the archive tool and its nudge are gated on the top-level thread id"

@@ -67,7 +67,7 @@ _QUEUE_BUTTON_RUNNING = """
 </div>
 """
 
-#: The queued branch: `isQueueRunning && !thread.isRunning`, with the active item undispatched.
+#:The queued branch: `isQueueRunning && !thread.isRunning`, with the active item undispatched.
 _QUEUE_BUTTON_IDLE = """
 <button class="aui-composer-send ml-1.5 size-9 rounded-full" aria-label="Queue message">
   <span class="aui-sr-only">Queue message</span>
@@ -81,10 +81,10 @@ _STOP_BUTTON = """
 """
 
 #: The DISPATCHED queued branch: `isQueueRunning && !thread.isRunning` with `queueEntry.dispatched`,
-#: which renders a stop control the thread does not report itself running behind. Neither
-#: `stopButton()` nor `queueButton()` matches it, so on its own it reads exactly like a settled
-#: composer. `getPromptQueueUIItemsForRun` drops dispatched items, so the queue surface can be gone
-#: here too -- which is why this state has to be recognised from its own control.
+#: rendering a stop control the thread does not report itself running behind. Neither
+#: `stopButton()` nor `queueButton()` matches it, so on its own it reads like a settled composer,
+#: and `getPromptQueueUIItemsForRun` drops dispatched items so the queue surface can be gone too,
+#: which is why this state must be recognised from its own control.
 _STOP_QUEUED_BUTTON = """
 <button class="aui-composer-cancel ml-1.5 size-9 rounded-full" aria-label="Stop queued message">
   <span class="aui-sr-only">Stop queued message</span>
@@ -92,8 +92,8 @@ _STOP_QUEUED_BUTTON = """
 """
 
 #: `PromptQueueStack`, which renders inside the composer root whenever the run has an item left to
-#: show. An undispatched active item is always one of them, so this surface is up in every state
-#: that renders the queued-idle Queue button.
+#: show. An undispatched active item is always one, so this surface is up in every state that
+#: renders the queued-idle Queue button.
 _QUEUE_STACK = """
 <div aria-label="Prompt queue, 1 of 2">
   <div>a prompt that has not been dispatched</div>
@@ -155,9 +155,9 @@ BLIND = dict(
     queue_stack = False,
     statuses = [None, None, None, None],
 )
-#: The cost of reading the queue surface, pinned rather than left for a later reader to find: a
-#: queue run with a prompt still waiting, a reply genuinely streaming, and text in the composer.
-#: The surface is up and the Queue button is the only control, so the control is not armed.
+#: The cost of reading the queue surface, pinned rather than left for a later reader: a queue run
+#: with a prompt still waiting, a reply genuinely streaming, and text in the composer. The surface
+#: is up and the Queue button is the only control, so the control is not armed.
 QUEUED_AND_STREAMING_BLIND = dict(
     control = _QUEUE_BUTTON_RUNNING,
     queue_stack = True,
@@ -202,7 +202,7 @@ def _capture(
 ) -> dict:
     page.set_content(_page(tail = tail, **state))
     # After the content, not before it: `set_content` does not reliably run init scripts, and the
-    # symptom is `window.__sb` simply not existing, which reads like a broken instrument.
+    # symptom is `window.__sb` simply not existing.
     page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
     page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
     got = page.evaluate("() => window.__sb.parity.capture()")
@@ -298,14 +298,14 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     assert 'aria-label="Stop queued message"' in src
 
 
+#: An overlay is walked from `document`, OUTSIDE `.aui-thread-root`, so its digest carries neither
+#: the streamed message nor the composer, which makes it readable on a pair whose stream could not
+#: be placed.
 # ── what the blind-probe refusal may NOT take out with it ────────────
 
-#: An overlay is walked from `document`, OUTSIDE `.aui-thread-root`. Its digest therefore carries
-#: neither the streamed message nor the composer, which is what makes it readable on a pair whose
-#: stream could not be placed.
 _MENU = '<div role="menu"><div class="item">Rename</div></div>'
 _MENU_CHANGED = '<div role="menu"><div class="item">Rename thread</div></div>'
-#: The composer of a thread that is NOT generating. `_STOP_BUTTON` is the same composer generating.
+#:The composer of a thread that is NOT generating. `_STOP_BUTTON` is the same composer generating.
 _SEND_BUTTON = (
     '<button class="aui-composer-send" aria-label="Send message">'
     '<span class="aui-sr-only">Send message</span></button>'
@@ -396,12 +396,12 @@ def test_the_scaffold_is_not_an_independent_surface_and_here_is_why(page):
     )
 
 
-# ── the composer is not a rendering difference ───────────────────────
-#
-# The pair this whole change is about: one arm has finished its reply, the other is still writing
-# it. Its messages are withheld correctly. Its COMPOSER was not, because the dock is inside
-# `.aui-thread-root` and the scaffold therefore carries Stop on one arm and Send on the other.
+# The composer is not a rendering difference. The pair this change is about: one arm has finished
+# its reply, the other is still writing it. Its messages are withheld correctly; its COMPOSER was
+# not, because the dock is inside `.aui-thread-root` and the scaffold therefore carries Stop on
+# one arm and Send on the other.
 
+# ── the composer is not a rendering difference ───────────────────────
 _SETTLED_STATUSES = ["complete", "complete", "complete", "complete"]
 _STREAMING_STATUSES = ["complete", "complete", "complete", "running"]
 
@@ -613,16 +613,14 @@ def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):
     assert P.compare(base, treat)["verdict"] == P.NOT_COMPARABLE
 
 
+# The style probe walks the run-state control too. `report` now collects the style verdict BEFORE
+# it buckets a structural refusal, because the computed-style probe is an independent reading,
+# and that makes its own reading of the composer swap visible for the first time: it walks the
+# Send and Stop buttons as SEPARATE selectors whose names go into its signature, so the pairs the
+# refusals exist to withhold arrived at the advisory line instead.
+
+
 # ── the style probe walks the run-state control too ──────────────────
-#
-# `report` now collects the style verdict BEFORE it buckets a structural refusal, because the
-# computed-style probe is an independent reading and the refusal is not about it. That makes the
-# probe's own reading of the composer swap visible for the first time, and the probe walks
-# `button[aria-label="Send message"]` and `button[aria-label="Stop generating"]` as SEPARATE
-# selectors whose names go into its signature. So the pairs the refusals above exist to withhold
-# arrived at the advisory line instead.
-
-
 def _capture_html_raw(page, html: str) -> dict:
     """`_capture_html`, keeping `styles.sig` so a test can say WHY the digest moved."""
     page.set_content(html)

@@ -14,6 +14,7 @@ assigned to a GPU so the cache stays with it).
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 
 import pytest
 
@@ -80,6 +81,9 @@ class _Stub:
     # Discrete CUDA by default. An integrated SoC (Jetson, DGX Spark) is the
     # unified-memory answer on the CUDA side, exercised deliberately below.
     _integrated_cuda = False
+    # A generative model by default, which is every existing case here. The
+    # --embedding server has no decode phase at all and is exercised below.
+    is_embedding_gguf = False
 
     def _amd_apu_wants_unified_memory(self, gpu_indices = None):
         return self._unified
@@ -130,7 +134,26 @@ class _Stub:
             ),
             lm_head_bytes = self._lm_head_bytes or 0,
             token_embd_bytes = 512 * MIB,
-            kv_bytes_per_token_f16 = 65536,
+            # 96 KiB per token, i.e. 3 GiB at the 32768 these tests plan at.
+            # RE-ANCHORED, deliberately, and not to make a particular assertion
+            # pass. At the old 64 KiB the stub's dense cell sat inside the cost
+            # gate's 10% near-tie band at EVERY budget, so whether a plumbing
+            # test got a spill back was decided by the +/-1 block that
+            # _select_blocks and the fallback's layer loop each round off, not by
+            # anything the test was about: sweeping free VRAM by the GiB gave
+            # S S D D S S S D S S D D, a comb with no trend in it. Two changes
+            # landed on that comb at once -- lm_head is no longer charged to the
+            # fitter's host side (it never leaves the device on a partial fit),
+            # and the fitter's moved cache is now priced at the calibrated cache
+            # rate -- and re-rolled it.
+            #
+            # A cache this size is what a 64-layer dense model with 6 KV heads at
+            # head_dim 256 actually reserves at 32K, and it puts the planner's
+            # KV-residency advantage clear of the rounding, so these tests go back
+            # to asserting what the seam HANDS the planner. It does not make the
+            # gate lenient: 3, 4, 5 and 16 GiB still decline, the first three
+            # because spilling nearly everything really does lose to the fitter.
+            kv_bytes_per_token_f16 = 98304,
             n_ctx_train = 262144,
             is_moe = bool(self.n_moe_layers),
             n_expert = 256 if self.n_moe_layers else 0,
@@ -143,7 +166,9 @@ class _Stub:
 
 def _inputs(
     model_size = 30 * GIB,
-    kv = 2 * GIB,
+    # Matches the layout's own 96 KiB per token at 32768 above, so the floor the
+    # seam passes and the product the layout computes describe one cache.
+    kv = 3 * GIB,
     free_mib = 24 * 1024,
     indices = None,
     usable_mib = None,
@@ -152,12 +177,15 @@ def _inputs(
     shared = None,
     gpus = None,
     n_parallel = 1,
+    n_threads = None,
     compute_flat = 0,
     ctx_compute = 0,
     env_mmproj = 0,
     env_mmproj_unsized = False,
     separate_draft = False,
     n_ctx = 32768,
+    n_ubatch = None,
+    reserve_floor = 0,
 ):
     return {
         "model_size": model_size,
@@ -171,9 +199,12 @@ def _inputs(
         "env_mmproj_unsized": env_mmproj_unsized,
         "gpu_indices": indices,
         "soft_overhead": 0,
+        "reserve_floor_bytes": reserve_floor,
         "model_path": "/models/stub.gguf",
         "n_ctx": n_ctx,
+        "n_ubatch": n_ubatch,
         "n_parallel": n_parallel,
+        "n_threads": n_threads,
         "shared_gpu_ids": set() if shared is None else set(shared),
         "separate_draft_on_gpu": separate_draft,
         **({} if mtp is None else {"mtp_will_engage": mtp}),
@@ -812,8 +843,12 @@ def test_the_planner_gets_the_budget_the_fit_tested_not_raw_free():
     -ot overrides, and then appends --fit off over the result.
     """
     stub = _Stub()
-    on_free = _plan(stub, free_mib = 14 * 1024)
-    on_budget = _plan(stub, free_mib = 14 * 1024, usable_mib = 13 * 1024)
+    # 12 and 11 GiB, not 14 and 13: at 13 the gate declines on its own merits
+    # (see the cache re-anchor on _Stub), and this test is about which NUMBER the
+    # seam hands the planner, so both arms have to be on the planning side of the
+    # gate for the block counts to be comparable at all.
+    on_free = _plan(stub, free_mib = 12 * 1024)
+    on_budget = _plan(stub, free_mib = 12 * 1024, usable_mib = 11 * 1024)
 
     assert on_free is not None and on_budget is not None
     assert on_free.spills_anything and on_budget.spills_anything
@@ -1305,8 +1340,11 @@ def test_a_multi_gpu_separate_drafter_declines_rather_than_booking_it_on_device_
         # 9 GiB, not 10: the split reserve is charged once for the SECOND card
         # now rather than to both, so the old pair left a deficit a PARTIAL spill
         # covered, and a partial multi-GPU spill abstains before it ever reaches
-        # the per-device check this test is about.
-        gpus = [(0, 9 * 1024), (1, 3 * 1024)],
+        # the per-device check this test is about. The second card carries its
+        # own pipeline reserve on top of its two rows, so 3 GiB flat is a
+        # per-device shortfall on its own; 3.25 GiB keeps the control about the
+        # drafter and not about the card.
+        gpus = [(0, 9 * 1024), (1, 3 * 1024 + 256)],
     )
     # Before this abstain the same inputs produced a real plan -- every block
     # spilled, -ngl -1 --fit off emitted -- with the whole 3 GiB booked on
@@ -1536,9 +1574,9 @@ def test_an_inherited_tensor_split_scrubbed_with_its_mode_is_not_planned_against
         mod.plan_placement = real
 
     assert scrubbed == [8 * 1024 * MIB, 16 * 1024 * MIB], "the child never sees that -ts"
-    # Not vacuous: with no inherited mode to drag it out, it IS the row weight,
-    # scaled onto the same magnitude as the free-VRAM numbers.
-    assert survives == [9 * 16 * 1024 * MIB, 16 * 1024 * MIB]
+    # Not vacuous: with no inherited mode to drag it out, the float shares reach
+    # the row model exactly as llama.cpp parsed them.
+    assert survives == [9.0, 1.0]
 
 
 @pytest.mark.parametrize("value", ["nan,1", "inf,1", "1,nan", "-nan,1", "infinity,1"])
@@ -1558,6 +1596,16 @@ def test_a_non_finite_tensor_split_declines_instead_of_raising(value):
     # Not vacuous: finite shares still parse and still plan.
     assert _extra_args_tensor_split(["-ts", "3,1"], {}) == [3.0, 1.0]
     assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", "3,1"]) is not None
+
+
+def test_a_cumulative_float32_tensor_split_overflow_declines_instead_of_raising():
+    from core.inference.llama_cpp import _extra_args_tensor_split
+
+    value = "3e38,3e38"
+    assert _extra_args_tensor_split(["-ts", value], {}) is None
+    two_cards = [(0, 14 * 1024), (1, 14 * 1024)]
+    assert _plan(_Stub(), gpus = two_cards, extra_args = ["-ts", value]) is None
+    assert _plan(_Stub(), gpus = two_cards, env = {"LLAMA_ARG_TENSOR_SPLIT": value}) is None
 
 
 def test_the_vector_refuses_a_cache_the_estimator_prices_on_another_path():
@@ -1745,7 +1793,7 @@ def test_a_single_card_pays_no_split_reserve():
     assert _usable_vram([card], opts, short // 2) == card
 
 
-def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
+def test_the_cost_model_is_told_physical_cores_not_hyperthreads(monkeypatch):
     """Spilled decode gets physical cores, so the penalty must be priced on them.
 
     Studio leaves --threads unset on purpose, and an unset --threads makes
@@ -1756,6 +1804,7 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
     """
     import core.inference.llama_cpp as llama_mod
 
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
     assert llama_mod._spilled_decode_threads() >= 1
 
     class _FakePsutil:
@@ -1764,8 +1813,12 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
             return 12 if logical else 6
 
     import sys
+
     saved = sys.modules.get("psutil")
     sys.modules["psutil"] = _FakePsutil
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(12)), raising = False
+    )
     try:
         assert llama_mod._spilled_decode_threads() == 6, "logical count reached the cost model"
     finally:
@@ -1774,8 +1827,7 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
         else:
             sys.modules["psutil"] = saved
 
-    # A host that cannot answer falls back rather than guessing a ratio: halving
-    # a machine with no SMT would trade one wrong answer for another.
+    # Match llama.cpp's own last resort when physical topology is unavailable.
     class _NoAnswer:
         @staticmethod
         def cpu_count(logical = True):
@@ -1783,13 +1835,605 @@ def test_the_cost_model_is_told_physical_cores_not_hyperthreads():
 
     sys.modules["psutil"] = _NoAnswer
     try:
-        import os as _os
-        assert llama_mod._spilled_decode_threads() == (_os.cpu_count() or 1)
+        for logical, expected in ((2, 2), (4, 4), (8, 4), (16, 8), (None, 4)):
+            monkeypatch.setattr(llama_mod.os, "cpu_count", lambda answer = logical: answer)
+            monkeypatch.setattr(
+                llama_mod.os,
+                "sched_getaffinity",
+                lambda _pid, answer = logical: set(range(answer or 1)),
+            )
+            assert llama_mod._spilled_decode_threads() == expected
     finally:
         if saved is None:
             del sys.modules["psutil"]
         else:
             sys.modules["psutil"] = saved
+
+
+def test_thread_overrides_reach_the_cost_model(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    seen = []
+
+    def _threads(n_threads = None, extra_args = None):
+        seen.append((n_threads, extra_args))
+        return int(n_threads or 8)
+
+    monkeypatch.setattr(llama_mod, "_spilled_decode_threads", _threads)
+    plan = _plan(
+        _Stub(),
+        free_mib = 14 * 1024,
+        n_threads = 3,
+        extra_args = ["--threads", "2"],
+        env = {"LLAMA_ARG_THREADS": "1"},
+    )
+
+    assert plan is not None and plan.spills_anything
+    expected = [(3, ["--threads", "2"])]
+    assert seen == expected
+
+
+def test_thread_override_precedence_matches_the_launched_command(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
+
+    class _FakePsutil:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 12 if logical else 6
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(12)), raising = False
+    )
+    assert llama_mod._spilled_decode_threads() == 6
+    assert llama_mod._spilled_decode_threads(3) == 3
+    assert llama_mod._spilled_decode_threads(3, ["--threads", "4"]) == 4
+    assert llama_mod._spilled_decode_threads(3, ["-t=5", "--threads=1"]) == 1
+
+
+def test_smt_workers_do_not_multiply_math_core_capacity(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
+
+    class _SmtHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 16 if logical else 8
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)), raising = False
+    )
+    monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 16)
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "4"]) == 4
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "16"]) is None
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) is None
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "0"]) is None
+
+    class _NonSmtHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 8
+
+    monkeypatch.setitem(sys.modules, "psutil", _NonSmtHost)
+    monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 8)
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) == 8
+
+
+def test_default_thread_override_uses_native_logical_count(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    class _SmtHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 16 if logical else 8
+
+    import sys
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
+    monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 2)
+    monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
+    assert llama_mod._spilled_decode_threads(extra_args = ["--threads", "-1"]) is None
+
+
+def test_inherited_linux_cpu_affinity_declines_spill_pricing(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    class _SmtHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 16 if logical else 8
+
+    import sys
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
+    monkeypatch.setattr(llama_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        llama_mod.os,
+        "uname",
+        lambda: SimpleNamespace(machine = "x86_64"),
+        raising = False,
+    )
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: {0, 1}, raising = False)
+    monkeypatch.setitem(sys.modules, "psutil", _SmtHost)
+    assert llama_mod._spilled_decode_threads() is None
+
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)))
+    assert llama_mod._spilled_decode_threads() == 8
+
+
+def test_inherited_linux_arm_cpu_affinity_declines_spill_pricing(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    class _ArmHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 72 if logical else 36
+
+    import sys
+
+    monkeypatch.setattr(llama_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        llama_mod.os,
+        "uname",
+        lambda: SimpleNamespace(machine = "aarch64"),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(4)), raising = False
+    )
+    monkeypatch.setitem(sys.modules, "psutil", _ArmHost)
+    assert llama_mod._spilled_decode_threads() is None
+
+
+def test_oversubscribed_decode_threads_decline_spill_planning(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
+    monkeypatch.setattr(llama_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        llama_mod.os,
+        "uname",
+        lambda: SimpleNamespace(machine = "x86_64"),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(16)), raising = False
+    )
+    assert _plan(_Stub(), free_mib = 14 * 1024, extra_args = ["--threads", "16"]) is None
+    plan = _plan(
+        _Stub(),
+        free_mib = 14 * 1024,
+        extra_args = ["--threads", "4"],
+    )
+    assert plan is not None and plan.spills_anything
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--cpu-range", "0-2", "--cpu-strict", "1"],
+        ["-C", "0x3"],
+        ["--cpu-mask=0x3"],
+    ],
+)
+def test_affinity_constrained_decode_declines_spill_planning(monkeypatch, extra_args):
+    import core.inference.llama_cpp as llama_mod
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
+    assert _plan(_Stub(), free_mib = 14 * 1024, extra_args = extra_args) is None
+
+
+def test_linux_hybrid_math_cores_exclude_efficiency_cores(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    sibling_sets = [f"{core},{core + 8}" for core in range(8)]
+    sibling_sets.extend(f"{core},{core + 8}" for core in range(8))
+    sibling_sets.extend(str(cpu) for cpu in range(16, 32))
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = tmp_path / f"cpu{cpu}"
+        (cpu_path / "topology").mkdir(parents = True)
+        (cpu_path / "topology" / "thread_siblings").write_text(sibling_set)
+        capacity = 1024 if cpu < 16 else 512
+        (cpu_path / "cpu_capacity").write_text(str(capacity))
+
+    assert _linux_math_core_count(tmp_path, logical_cpus = 32, vendor_id = "GenuineIntel") == 8
+
+
+def test_linux_hybrid_pmu_excludes_efficiency_cores_without_capacity(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    sibling_sets = [f"{core},{core + 4}" for core in range(4)]
+    sibling_sets.extend(f"{core},{core + 4}" for core in range(4))
+    sibling_sets.extend(str(cpu) for cpu in range(8, 16))
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(sibling_set)
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("0-7")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("8-15")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+        )
+        == 4
+    )
+
+
+@pytest.mark.parametrize("source", ["pmu", "capacity"])
+def test_linux_no_smt_hybrid_matches_llama_cpu_loop(tmp_path, source):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    for cpu in range(8):
+        cpu_path = cpu_root / f"cpu{cpu}"
+        (cpu_path / "topology").mkdir(parents = True)
+        (cpu_path / "topology" / "thread_siblings").write_text(str(cpu))
+        if source == "capacity":
+            (cpu_path / "cpu_capacity").write_text("1024" if cpu < 4 else "512")
+    if source == "pmu":
+        (event_root / "cpu_core").mkdir(parents = True)
+        (event_root / "cpu_core" / "cpus").write_text("0-3")
+        (event_root / "cpu_atom").mkdir()
+        (event_root / "cpu_atom" / "cpus").write_text("4-7")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+        )
+        == 2
+    )
+
+
+def test_linux_sparse_online_hybrid_matches_llama_physical_fallback(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    sibling_sets = [f"{cpu},{cpu + 8}" for cpu in range(8)]
+    sibling_sets.extend(f"{cpu - 8},{cpu}" for cpu in range(8, 16))
+    sibling_sets.extend(str(cpu) for cpu in range(16, 24))
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(sibling_set)
+    (cpu_root / "online").write_text("0-7,16-23")
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("0-7")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("16-23")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+        )
+        == 16
+    )
+
+
+def test_linux_smt_disabled_hybrid_skips_offline_siblings(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    sibling_sets = [f"{cpu // 2 * 2},{cpu // 2 * 2 + 1}" for cpu in range(16)]
+    sibling_sets.extend(str(cpu) for cpu in range(16, 24))
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(sibling_set)
+    (cpu_root / "online").write_text("0,2,4,6,8,10,12,14,16-23")
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("0,2,4,6,8,10,12,14")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("16-23")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+        )
+        == 8
+    )
+
+
+def test_linux_hybrid_unpinnable_cpu_matches_llama_physical_fallback(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    sibling_sets = [f"{cpu // 2 * 2},{cpu // 2 * 2 + 1}" for cpu in range(16)]
+    sibling_sets.extend(str(cpu) for cpu in range(16, 24))
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(sibling_set)
+    (cpu_root / "online").write_text("0-23")
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("0-15")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("16-23")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+            pinnable_cpus = set(range(8)),
+        )
+        == 16
+    )
+
+
+def test_linux_hybrid_affinity_probe_failure_matches_physical_fallback(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    for cpu in range(8):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(str(cpu))
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("0-3")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("4-7")
+
+    def fail_affinity(_pid):
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(llama_mod.os, "sched_getaffinity", fail_affinity, raising = False)
+    monkeypatch.setattr(llama_mod.os, "sched_setaffinity", lambda _pid, _cpus: None, raising = False)
+    assert (
+        llama_mod._linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+            probe_affinity = True,
+        )
+        == 8
+    )
+
+
+def test_linux_hybrid_affinity_restore_failure_stays_in_worker(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    for cpu in range(8):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(str(cpu))
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("0-3")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("4-7")
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(8)), raising = False
+    )
+    caller_thread = llama_mod.threading.get_ident()
+    affinity_threads = []
+
+    def restore_fails(_pid, cpus):
+        affinity_threads.append(llama_mod.threading.get_ident())
+        if len(cpus) > 1:
+            raise OSError("restore failed")
+
+    monkeypatch.setattr(llama_mod.os, "sched_setaffinity", restore_fails, raising = False)
+    assert (
+        llama_mod._linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+            probe_affinity = True,
+        )
+        == 2
+    )
+    assert affinity_threads
+    assert all(thread != caller_thread for thread in affinity_threads)
+
+
+def test_linux_hybrid_with_unreadable_core_mask_is_conservative(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    for cpu in range(4):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(str(cpu))
+    (event_root / "cpu_atom").mkdir(parents = True)
+    (event_root / "cpu_atom" / "cpus").write_text("2-3")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+        )
+        == 1
+    )
+
+
+def test_linux_hybrid_with_only_efficiency_cores_matches_llama_fallback(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    cpu_root = tmp_path / "cpu"
+    event_root = tmp_path / "events"
+    for cpu in range(4):
+        cpu_path = cpu_root / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(str(cpu))
+    (event_root / "cpu_core").mkdir(parents = True)
+    (event_root / "cpu_core" / "cpus").write_text("")
+    (event_root / "cpu_atom").mkdir()
+    (event_root / "cpu_atom" / "cpus").write_text("0-3")
+
+    assert (
+        _linux_math_core_count(
+            cpu_root,
+            vendor_id = "GenuineIntel",
+            event_source_root = event_root,
+        )
+        == 4
+    )
+
+
+def test_linux_topology_ignores_python_cpu_count_override(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    for cpu in range(4):
+        cpu_path = tmp_path / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(str(cpu))
+    monkeypatch.setattr(llama_mod.os, "cpu_count", lambda: 2)
+
+    assert llama_mod._linux_math_core_count(tmp_path, vendor_id = "AuthenticAMD") == 4
+
+
+def test_linux_non_hybrid_topology_excludes_offline_cores(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+
+    sibling_sets = ["0,4", "1,5", "2,6", "3,7", "0,4", "1,5", "2,6", "3,7"]
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = tmp_path / f"cpu{cpu}" / "topology"
+        cpu_path.mkdir(parents = True)
+        (cpu_path / "thread_siblings").write_text(sibling_set)
+    (tmp_path / "online").write_text("0-2,4-6")
+
+    assert _linux_math_core_count(tmp_path, vendor_id = "AuthenticAMD") == 3
+
+
+def test_linux_amd_capacity_classes_keep_all_physical_cores(tmp_path):
+    from core.inference.llama_cpp import _linux_math_core_count
+    for cpu in range(24):
+        cpu_path = tmp_path / f"cpu{cpu}"
+        (cpu_path / "topology").mkdir(parents = True)
+        (cpu_path / "topology" / "thread_siblings").write_text(str(cpu))
+        (cpu_path / "cpu_capacity").write_text("1024" if cpu < 8 else "512")
+
+    assert _linux_math_core_count(tmp_path, logical_cpus = 24, vendor_id = "AuthenticAMD") == 24
+
+
+@pytest.mark.parametrize(
+    ("sibling_sets", "expected"),
+    [
+        (["0,4", "1,5", "2,6", "3,7", "0,4", "1,5", "2,6", "3,7"], 4),
+        ([str(cpu) for cpu in range(8)], 8),
+    ],
+)
+def test_linux_smt_and_non_smt_core_counts(tmp_path, sibling_sets, expected):
+    from core.inference.llama_cpp import _linux_math_core_count
+    for cpu, sibling_set in enumerate(sibling_sets):
+        cpu_path = tmp_path / f"cpu{cpu}"
+        (cpu_path / "topology").mkdir(parents = True)
+        (cpu_path / "topology" / "thread_siblings").write_text(sibling_set)
+
+    assert _linux_math_core_count(tmp_path, logical_cpus = len(sibling_sets)) == expected
+
+
+def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
+    import core.inference.llama_cpp as llama_mod
+
+    class _PhysicalHost:
+        @staticmethod
+        def cpu_count(logical = True):
+            return 24 if logical else 12
+
+    import sys
+
+    monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: None)
+    monkeypatch.setattr(
+        llama_mod.os, "sched_getaffinity", lambda _pid: set(range(24)), raising = False
+    )
+    monkeypatch.setitem(sys.modules, "psutil", _PhysicalHost)
+    assert llama_mod._spilled_decode_threads() == 12
+
+
+def test_the_seam_scores_at_the_micro_batch_that_launches():
+    """rank() amortises the spilled-weight stream over ONE ubatch.
+
+    The launch already resolves the Studio field, the extras, LLAMA_ARG_UBATCH
+    and the slot-dependent floor into ``_effective_ubatch`` and then emits it, so
+    scoring at PlanOptions' 512 default while the child runs ``-ub 64`` prices
+    prefill eight times too cheap. Measured on the head of this branch before the
+    fitter model was corrected, that alone flipped 66 cells of a dense-27B sweep
+    from spill to abstain, i.e. the gate returned the opposite placement from the
+    one the launch actually gets.
+    """
+    seen = {}
+
+    def _capture(*args, **kwargs):
+        seen["opts"] = kwargs["opts"]
+        raise AssertionError("stop after the options are built")
+
+    import core.inference.offload_planner as planner_mod
+
+    real = planner_mod.plan_placement
+    planner_mod.plan_placement = _capture
+    try:
+        for launched, expected in ((64, 64), (2048, 2048), (None, 512), (0, 512)):
+            seen.clear()
+            with pytest.raises(AssertionError):
+                _plan(_Stub(), free_mib = 14 * 1024, n_ubatch = launched)
+            assert seen["opts"].n_ubatch == expected, launched
+    finally:
+        planner_mod.plan_placement = real
+
+
+def test_an_embedding_server_is_scored_without_a_decode_phase():
+    """``--embedding`` returns the pooled vector; there is no generation at all.
+
+    So a spill's decode advantage -- which on a routed MoE is its ENTIRE
+    advantage, since experts are charged ``n_expert_used / n_expert`` for
+    generation but full bytes for prefill -- is winnings this workload can never
+    collect. On the head of this branch, scoring 256 phantom generated tokens
+    flipped 452 cells of a dense-27B sweep from abstain to spill.
+    """
+    seen = {}
+
+    def _capture(*args, **kwargs):
+        seen["opts"] = kwargs["opts"]
+        raise AssertionError("stop after the options are built")
+
+    import core.inference.offload_planner as planner_mod
+
+    real = planner_mod.plan_placement
+    planner_mod.plan_placement = _capture
+    try:
+        generative = _Stub()
+        with pytest.raises(AssertionError):
+            _plan(generative, free_mib = 14 * 1024)
+        assert seen["opts"].workload_generated_tokens > 0
+
+        embedder = _Stub()
+        embedder.is_embedding_gguf = True
+        seen.clear()
+        with pytest.raises(AssertionError):
+            _plan(embedder, free_mib = 14 * 1024)
+        assert seen["opts"].workload_generated_tokens == 0
+        assert seen["opts"].workload_prompt_tokens > 0, "prefill is the whole workload here"
+    finally:
+        planner_mod.plan_placement = real
 
 
 # ------------------------------------------------- the planner's own rungs 0-2
@@ -1996,9 +2640,24 @@ def test_the_planner_reserve_is_never_below_the_validated_curve(monkeypatch):
     plus the compute term, so the planner saw about 700 MiB of reserve at short
     context where 1536 was measured to be needed. The TOTAL (withheld + charged)
     must never fall below the curve; on the 40 GiB card nothing changes.
-    """
-    from core.inference import offload_planner
 
+    The floor is priced where the withholding happens, in load_model's snapshot, and
+    reaches the planner as one explicit term; the seam applies it last, after the
+    projector's surcharge has been handed over as its own rung.
+    """
+    import inspect
+
+    from core.inference import llama_cpp, offload_planner
+
+    # The helper: whichever device had the least withheld anchors the floor.
+    assert llama_cpp._reserve_floor_bytes([369 * MIB]) == 1536 * MIB - 369 * MIB
+    assert llama_cpp._reserve_floor_bytes([1600 * MIB]) == 0
+    assert llama_cpp._reserve_floor_bytes([1600 * MIB, 369 * MIB]) == 1536 * MIB - 369 * MIB
+    assert llama_cpp._reserve_floor_bytes([]) == 0
+    assert llama_cpp._reserve_floor_bytes([-5]) == 1536 * MIB
+
+    # The seam charges max(its own terms, the floor), and the floor is applied
+    # AFTER the projector surcharge leaves the fused terms.
     captured = {}
 
     def capture(layout, vram, host, ctx, **kw):
@@ -2013,6 +2672,7 @@ def test_the_planner_reserve_is_never_below_the_validated_curve(monkeypatch):
         usable_mib = 12 * 1024 - 369,
         compute_flat = 320 * MIB,
         ctx_compute = 14 * MIB,
+        reserve_floor = llama_cpp._reserve_floor_bytes([withheld_12]),
     )
     assert captured["opts"].overhead_bytes_per_device + withheld_12 >= 1536 * MIB
     assert captured["opts"].overhead_bytes_per_device == 1536 * MIB - withheld_12
@@ -2025,6 +2685,13 @@ def test_the_planner_reserve_is_never_below_the_validated_curve(monkeypatch):
         usable_mib = 40 * 1024 - 1600,
         compute_flat = 320 * MIB,
         ctx_compute = 14 * MIB,
+        reserve_floor = llama_cpp._reserve_floor_bytes([withheld_40]),
     )
     assert captured["opts"].overhead_bytes_per_device == 14 * MIB
     assert captured["opts"].overhead_bytes_per_device + withheld_40 >= 1536 * MIB
+
+    # And load_model really prices it from the same usable budget it hands over.
+    src = inspect.getsource(llama_cpp.LlamaCppBackend)
+    assert '"reserve_floor_bytes": _reserve_floor_bytes(' in src
+    seam = inspect.getsource(llama_cpp.LlamaCppBackend._planned_tensor_spill)
+    assert 'inputs.get("reserve_floor_bytes")' in seam

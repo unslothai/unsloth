@@ -114,16 +114,38 @@ def _texts(completions) -> list[str]:
     return out
 
 
+# Chosen so the reward can never saturate. len/(len+SCALE) is strictly
+# increasing on [0, inf), maps into (0, 1), and equals 0.5 at SCALE characters,
+# so it stays informative at every length instead of only below a cap.
+_LENGTH_SCALE = 200.0
+
+
 def reward_length(completions, **kwargs) -> list[float]:
-    """Longer completions score higher, saturating at 200 characters.
+    """Longer completions score higher, without ever saturating.
 
     Deterministic given the text, yet SENSITIVE to a group's diversity: a
-    constant reward would zero `reward_std` on a healthy run and destroy the
-    only instrument this leg has.
+    constant reward zeroes `reward_std` on a healthy run and destroys the only
+    instrument this leg has.
+
+    THAT IS NOT HYPOTHETICAL - this function used to be
+
+        min(len(t), 200) / 200.0
+
+    and the docstring above already claimed it was diversity-sensitive. It was
+    not. Kernels unsloth-probe-grpo-rep2-b03be8 and -rep3-bc3828 recorded
+    completions of 2534 to 3396 characters, an order of magnitude past the cap,
+    so every completion scored exactly 1.0, every group tied, and the leg failed
+    with `reward_std was zero on every step` - a red that looks like a broken
+    generation path and is really a reward that stopped measuring anything.
+    Two of three runs died this way, which made it the leg's dominant failure.
+
+    The cap was the whole problem: it was set BELOW the lengths the model
+    actually produces, so the one region it discriminated in was the one region
+    the run never visited.
     """
     texts = _texts(completions)
     SEEN_COMPLETIONS.append(texts)
-    return [min(len(t), 200) / 200.0 for t in texts]
+    return [len(t) / (len(t) + _LENGTH_SCALE) for t in texts]
 
 
 def reward_digit(completions, **kwargs) -> list[float]:

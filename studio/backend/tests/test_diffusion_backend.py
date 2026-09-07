@@ -453,6 +453,119 @@ def test_a_stray_upstream_file_does_not_disable_the_mirror(monkeypatch, tmp_path
     assert prefer_ungated_mirror(gated, files = wanted[:1]) == gated
 
 
+def test_a_repack_split_across_the_two_cache_roots_still_counts(monkeypatch, tmp_path):
+    """A pair split by a cache-folder change is held by neither root alone, but IS reusable.
+
+    The callers that pass ``other_root`` fetch with ``reuse_other_cache_root``, which resolves
+    each file through whichever root holds it. Asking each root for the whole set therefore calls
+    a split pair absent and re-pulls several GB the two roots already have between them (offline,
+    it fails outright). Reachable with an interrupted download either side of the change: the file
+    fetched before it stays in the old root, the one fetched after lands in the new one.
+    """
+    from huggingface_hub import constants
+
+    from core.inference.diffusion_families import _upstream_is_cached, prefer_cached_legacy_source
+
+    repack = "Comfy-Org/z_image_turbo"
+    mirror = "unsloth/Z-Image-Turbo-ComfyUI"
+    first, second = "split_files/vae/ae.safetensors", "split_files/text_encoders/te.safetensors"
+    live, other = tmp_path / "live", tmp_path / "other"
+
+    def seed(root, name):
+        rev = root / f"models--{repack.replace('/', '--')}" / "snapshots" / ("d" * 40)
+        (rev / name).parent.mkdir(parents = True, exist_ok = True)
+        (rev / name).write_bytes(b"x")
+        refs = root / f"models--{repack.replace('/', '--')}" / "refs"
+        refs.mkdir(parents = True, exist_ok = True)
+        (refs / "main").write_text("d" * 40, encoding = "utf-8")
+
+    seed(other, first)  # fetched before the cache-folder change
+    seed(live, second)  # fetched after it
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(live))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(other))
+
+    wanted = (first, second)
+    assert _upstream_is_cached(repack, wanted, other_root = True) is True
+    assert prefer_cached_legacy_source(mirror, wanted) == repack
+
+    # The live root alone is still the live root alone: a from_pretrained pinned to it cannot see
+    # the other one, so the default probe must NOT count the split.
+    assert _upstream_is_cached(repack, wanted) is False
+
+    # And a file neither root holds is still missing, so the union is not a free pass.
+    assert (
+        _upstream_is_cached(repack, (*wanted, "split_files/absent.safetensors"), other_root = True)
+        is False
+    )
+
+
+def test_the_two_root_union_does_not_relax_the_revision_rule(monkeypatch, tmp_path):
+    """Per-file across roots, whole-set within one: a superseded revision contributes nothing.
+
+    Only the revision refs/main names can satisfy a fetch, and that stays true per root. Without
+    the split the union would let an old complete revision in one root paper over the new
+    incomplete one in the other.
+    """
+    from huggingface_hub import constants
+
+    from core.inference.diffusion_families import _upstream_is_cached
+
+    repack = "Comfy-Org/z_image_turbo"
+    first, second = "split_files/vae/ae.safetensors", "split_files/text_encoders/te.safetensors"
+    live, other = tmp_path / "live", tmp_path / "other"
+
+    def seed(root, name, revision, ref):
+        base = root / f"models--{repack.replace('/', '--')}"
+        rev = base / "snapshots" / revision
+        (rev / name).parent.mkdir(parents = True, exist_ok = True)
+        (rev / name).write_bytes(b"x")
+        (base / "refs").mkdir(parents = True, exist_ok = True)
+        (base / "refs" / "main").write_text(ref, encoding = "utf-8")
+
+    # Each root holds one file, but only under a revision refs/main has moved off.
+    seed(other, first, "old", ref = "new")
+    seed(live, second, "old", ref = "new")
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(live))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(other))
+
+    assert _upstream_is_cached(repack, (first, second), other_root = True) is False
+
+
+def test_the_union_never_borrows_across_revisions_inside_one_root(monkeypatch, tmp_path):
+    """Split across ROOTS is reusable; split across SNAPSHOTS of one root is not.
+
+    A commit-pinned download leaves no refs/main, so every snapshot is a candidate. Answering the
+    set name by name would then let an old snapshot complete a newer one inside the same root,
+    which no fetch can do: a fetch that lands in a root lands in ONE revision of it. Studio never
+    pins a revision itself, but the cache is shared with anything else that does.
+    """
+    from huggingface_hub import constants
+
+    from core.inference.diffusion_families import _upstream_is_cached
+
+    repack = "Comfy-Org/z_image_turbo"
+    first, second = "split_files/vae/ae.safetensors", "split_files/text_encoders/te.safetensors"
+    live, other = tmp_path / "live", tmp_path / "other"
+    other.mkdir()
+
+    def seed(root, name, revision):
+        rev = root / f"models--{repack.replace('/', '--')}" / "snapshots" / revision
+        (rev / name).parent.mkdir(parents = True, exist_ok = True)
+        (rev / name).write_bytes(b"x")
+
+    # No refs/main anywhere, and the two names live in different snapshots of the SAME root.
+    seed(live, first, "a" * 40)
+    seed(live, second, "b" * 40)
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(live))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(other))
+
+    assert _upstream_is_cached(repack, (first, second), other_root = True) is False
+
+    # One snapshot holding both is the ordinary no-ref case, and still counts.
+    seed(live, second, "a" * 40)
+    assert _upstream_is_cached(repack, (first, second), other_root = True) is True
+
+
 def test_te_prequant_equivalence_group_accepts_a_mirrored_base():
     """The T5-XXL artifact is shared across the FLUX.1 releases through an equivalence group of
     UPSTREAM ids. A mirrored base is a different string, so without normalising it the pre-cast

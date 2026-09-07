@@ -41,9 +41,33 @@ def _resolve(tag = "latest", **kw):
 def test_fast_path_yields_latest_without_api(monkeypatch):
     sentinel = object()
     monkeypatch.delenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", raising = False)
-    monkeypatch.setattr(ILP, "_download_host_resolved_release", lambda _repo: sentinel)
+    monkeypatch.setattr(ILP, "_download_host_resolved_release", lambda _repo, _tag = "": sentinel)
     monkeypatch.setattr(ILP, "iter_published_release_bundles", _api_raises)
     assert _resolve() == [sentinel]
+
+
+def test_fast_path_yields_pinned_tag_without_api(monkeypatch):
+    pin = "b9964-mix-53618c5"
+    monkeypatch.delenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", raising = False)
+    seen: dict[str, str] = {}
+
+    class _Bundle:
+        release_tag = pin
+        upstream_tag = UPSTREAM_TAG
+
+    class _Resolved:
+        bundle = _Bundle()
+
+    def _fast(_repo, published_release_tag = ""):
+        seen["tag"] = published_release_tag
+        return _Resolved()
+
+    monkeypatch.setattr(ILP, "_download_host_resolved_release", _fast)
+    monkeypatch.setattr(ILP, "pinned_published_release_bundle", _api_raises)
+    resolved = list(ILP.iter_resolved_published_releases("latest", FORK_REPO, pin))
+    assert len(resolved) == 1
+    assert resolved[0].bundle.release_tag == pin
+    assert seen["tag"] == pin
 
 
 def test_fast_path_disabled_by_caller_uses_api(monkeypatch):
@@ -73,7 +97,7 @@ def test_fast_path_skipped_for_non_latest_request(monkeypatch):
 
 def test_fast_path_none_falls_back_to_api(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", raising = False)
-    monkeypatch.setattr(ILP, "_download_host_resolved_release", lambda _repo: None)
+    monkeypatch.setattr(ILP, "_download_host_resolved_release", lambda _repo, _tag = "": None)
     used = {"api": False}
 
     def _api(*_a, **_k):
@@ -182,7 +206,7 @@ def _stub_downloads(
 
 def test_resolved_release_adds_tag_pinned_url_for_manifest_only_asset(monkeypatch):
     _stub_downloads(monkeypatch, _sha_payload(), _manifest_bytes())
-    resolved = ILP._download_host_resolved_release(FORK_REPO)
+    resolved = ILP._download_host_resolved_release(FORK_REPO, RELEASE_TAG)
     assert resolved is not None
     assert resolved.bundle.release_tag == RELEASE_TAG
     # Binary is named only in the manifest, yet the fast path must expose a
@@ -220,7 +244,7 @@ def test_resolved_release_manifest_404_falls_back(monkeypatch):
         None,
     )
     _stub_downloads(monkeypatch, _sha_payload(), not_found)
-    assert ILP._download_host_resolved_release(FORK_REPO) is None
+    assert ILP._download_host_resolved_release(FORK_REPO, RELEASE_TAG) is None
 
 
 # --- _download_host_latest_release_tag (redirect resolution) -------------------

@@ -48,8 +48,7 @@ _OLLAMA_LOADABLE_LAYER_MEDIA_TYPES = frozenset(
     {
         "application/vnd.ollama.image.model",
         "application/vnd.ollama.image.projector",
-        # License text does not affect model behavior and does not need to be
-        # carried into llama.cpp.
+        # License text does not affect model behavior and does not need to be carried into llama.cpp.
         "application/vnd.ollama.image.license",
     }
 )
@@ -149,8 +148,8 @@ def _ollama_links_dir(ollama_dir: Path) -> Optional[Path]:
     if _ensure_writable_dir(primary) is not None:
         return primary
 
-    # Namespace by a hash of the ollama_dir so two different Ollama roots
-    # don't collide. This is a cache path, not a security boundary.
+    # Namespace by a hash of the ollama_dir so two different Ollama roots do not collide. A cache path,
+    # not a security boundary.
     try:
         digest = hashlib.sha256(str(ollama_dir.resolve()).encode()).hexdigest()[:12]
     except (OSError, RuntimeError):
@@ -192,8 +191,7 @@ def _make_ollama_blob_link(link_dir: Path, link_name: str, target: Path) -> Opti
         logger.debug("Could not resolve Ollama blob %s: %s", target, e)
         return None
 
-    # Skip if the link already points at the same blob. Use samefile, not size:
-    # `ollama pull` can swap a tag to a same-sized blob, leaving a stale link.
+    # samefile, not size: `ollama pull` can swap a tag to a same-sized blob, leaving a stale link.
     try:
         if link_path.exists() and os.path.samefile(str(link_path), str(resolved)):
             return str(link_path)

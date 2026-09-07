@@ -246,12 +246,10 @@ def _inject_local_structured_response_format(
         if not isinstance(params, dict):
             params = {}
             clone["inference_parameters"] = params
-        # BaseInferenceParams is extra="forbid", so response_format can't sit at
-        # the top level. Its `extra_body` passthrough is spread into the request
-        # body top level by the OpenAI client, where llama-server reads
-        # response_format. Per tools/server/README.md the schema sits directly
-        # under response_format (not nested in a json_schema object as OpenAI
-        # expects) and is converted to a GBNF grammar for sampling.
+        # BaseInferenceParams is extra="forbid", so response_format rides `extra_body`; llama-server reads the schema
+        # directly under it, not nested in a json_schema object.
+        # Per tools/server/README.md the schema sits directly under response_format and is converted to a GBNF grammar
+        # for sampling.
         extra_body = params.get("extra_body")
         if not isinstance(extra_body, dict):
             extra_body = {}
@@ -259,11 +257,9 @@ def _inject_local_structured_response_format(
             "type": "json_schema",
             "schema": output_format,
         }
-        # The OpenAI chat endpoint now returns raw JSON by default for
-        # response_format requests (spec compliance for public clients). This
-        # internal opt-in flag rides through the OpenAI SDK's extra_body
-        # passthrough alongside response_format and re-enables the ```json
-        # markdown fence that data_designer's structured-output parser expects.
+        # Internal opt-in that re-enables the ```json fence data_designer's structured-output parser expects, which the
+        # spec-compliant default now omits.
+        # The flag rides through the OpenAI SDK's extra_body passthrough alongside response_format.
         extra_body["_unsloth_guided_fence"] = True
         params["extra_body"] = extra_body
         new_configs.append(clone)
@@ -288,8 +284,8 @@ def _inject_local_providers(
     if not providers:
         return None
 
-    # Collect local providers and pop is_local from ALL dicts. Strict `is True`
-    # guard so malformed payloads (1, "true") don't trigger the loopback rewrite.
+    # Strict `is True` so malformed payloads (1, "true") do not trigger the loopback rewrite.
+    # Collect local providers and pop is_local from ALL dicts.
     local_indices: list[int] = []
     for i, provider in enumerate(providers):
         if not isinstance(provider, dict):
@@ -303,9 +299,8 @@ def _inject_local_providers(
 
     endpoint = _resolve_local_v1_endpoint(request)
 
-    # Only gate on model-loaded if a local provider is reachable from an LLM
-    # column via a model_config. Orphan model_config nodes shouldn't block runs;
-    # the recipe never calls /v1 for them.
+    # Gate on model-loaded only for a local provider reachable from an LLM column: orphan
+    # model_config nodes never reach /v1 and must not block runs.
     local_names = {providers[i].get("name") for i in local_indices if providers[i].get("name")}
     used_aliases = _used_llm_model_aliases(recipe)
     referenced_providers = {
@@ -322,7 +317,7 @@ def _inject_local_providers(
         # the model is unloaded or swapped before the subprocess calls it.
         _ensure_selected_local_model_loaded(recipe, local_names)
 
-        from auth import storage  # deferred: avoids circular import
+        from auth import storage
 
         # Mint an internal sk-unsloth-* key scoped to this run via the unified
         # API-key path. Marked internal so it's hidden from the user's key list;
@@ -337,9 +332,8 @@ def _inject_local_providers(
         )
         internal_key_id = int(row["id"])
 
-    # Strip stale "external"-only fields (extra_headers/extra_body/api_key_env)
-    # the frontend may have serialized; a provider flipped from external to local
-    # could otherwise carry invalid JSON or rogue auth headers into the /v1 call.
+    # Strip stale external-only fields (extra_headers/extra_body/api_key_env): a provider
+    # flipped external -> local would carry invalid JSON or rogue auth headers into /v1.
     for i in local_indices:
         providers[i]["endpoint"] = endpoint
         providers[i]["api_key"] = token
@@ -348,21 +342,18 @@ def _inject_local_providers(
         providers[i].pop("extra_headers", None)
         providers[i].pop("extra_body", None)
 
-    # Force skip_health_check on local model_configs. llama-server's /v1/models
-    # response can differ from the selected id (cache aliases, GGUF variants),
-    # and we already gated on a loaded backend, so the health check would be
-    # redundant and could reject valid local selections.
+    # llama-server's /v1/models can differ from the selected id (cache aliases, GGUF variants), and a loaded backend was
+    # already gated on, so the health check only mis-rejects.
+    # Force skip_health_check on local model_configs.
     for mc in recipe.get("model_configs", []):
         if not isinstance(mc, dict):
             continue
         if mc.get("provider") in local_names:
             mc["skip_health_check"] = True
-            # Disable thinking for local data-recipe inference. The
-            # <think>...</think> preamble roughly doubles tokens per row and
-            # pushes answers past data_designer's json-fence regex. Forward
-            # chat_template_kwargs={enable_thinking: False} via extra_body so
-            # llama-server renders the template without it: llm-text columns get
-            # the latency cut, structured columns stop leaking think tags.
+            # Disable thinking for local recipe inference: the <think> preamble roughly doubles tokens per row and
+            # pushes answers past data_designer's json-fence regex.
+            # Forwarded as chat_template_kwargs={enable_thinking: False} via extra_body so llama-server renders the
+            # template without it.
             params = mc.get("inference_parameters")
             if not isinstance(params, dict):
                 params = {}
@@ -448,9 +439,8 @@ def create_job(
             log = logger,
         ) from exc
 
-    # Single try over get_job_manager() AND mgr.start() so a minted key never
-    # outlives the request on an unexpected exception; without the bare except it
-    # would live until its 24h TTL.
+    # One try over get_job_manager() AND mgr.start(), so an unexpected exception cannot leave
+    # a minted key alive for its full 24h TTL.
     try:
         mgr = get_job_manager()
         job_id = mgr.start(
@@ -489,7 +479,7 @@ def create_job(
 def _revoke_internal_api_key_safe(key_id: int) -> None:
     """Best-effort revoke of a workflow-minted key; never mask the caller's error."""
     try:
-        from auth import storage  # deferred: avoids circular import
+        from auth import storage
         storage.revoke_internal_api_key(key_id)
     except Exception:
         pass

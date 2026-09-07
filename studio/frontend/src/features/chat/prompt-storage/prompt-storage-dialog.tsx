@@ -77,6 +77,7 @@ import {
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { toolResultModelText } from "../api/chat-adapter";
+import { toolCallReplayArguments } from "../tool-call-arguments";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
@@ -351,7 +352,10 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       } else if (p.type === "tool-call") {
         const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${toolCalls.length}`;
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
-        const argsStr = p.args != null ? JSON.stringify(p.args) : (typeof p.argsText === "string" ? p.argsText : "{}");
+        const argsStr = toolCallReplayArguments(
+          typeof p.argsText === "string" ? p.argsText : undefined,
+          p.args,
+        );
         toolCalls.push({ id, type: "function", function: { name, arguments: argsStr } });
         if (p.result !== undefined && p.result !== null) {
           // Keep base64 image payloads out of exports: MCP image results carry

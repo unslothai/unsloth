@@ -30,16 +30,15 @@ import threading as _threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
-# torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected.
+# torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
-# v2 is v1 plus an ACTIVATION ROTATION (see ``diffusion_convrot``): the weights are stored in a
-# rotated basis and are wrong unless the loader rotates the activations to match. That is the one
-# on-disk change a released Unsloth cannot ignore safely -- an old build reading a rotated artifact
-# as v1 would load it clean, raise nothing and render quietly wrong pixels forever -- so it gets a
-# tag old builds refuse outright, and the load drops to dense instead. Strictly a biconditional:
-# a v2 artifact MUST declare a rotation and a v1 artifact must NOT, both checked below, so neither
-# a hand-edited tag nor a builder that forgot one half can produce something that loads.
+# v2 is v1 plus an ACTIVATION ROTATION (see ``diffusion_convrot``): the weights are stored in a rotated basis and are
+# wrong unless the loader rotates the activations to match. That is the one on-disk change a released Unsloth cannot
+# ignore safely -- an old build reading a rotated artifact as v1 would load it clean, raise nothing and render quietly
+# wrong pixels forever -- so it gets a tag old builds refuse outright, and the load drops to dense instead. Strictly a
+# biconditional: a v2 artifact MUST declare a rotation and a v1 artifact must NOT, both checked below, so neither a
+# hand-edited tag nor a builder that forgot one half can produce something that loads.
 PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
 PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED)
@@ -51,28 +50,23 @@ def prequant_format_for(metadata: Any) -> str:
     return PREQUANT_FORMAT_ROTATED if declares_rotation(metadata) else PREQUANT_FORMAT
 
 
-# A request-supplied ``kind == "path"`` is read ONLY inside an operator-configured directory
-# ALLOWLIST: an arbitrary path is an arbitrary MODEL. Not a code-execution gate -- the load is
-# weights_only either way.
+# A request-supplied ``kind == "path"`` is read ONLY inside an operator-configured directory ALLOWLIST: an arbitrary
+# path is an arbitrary MODEL. Not a code-execution gate -- the load is weights_only either way.
 ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
 
-# The constructors a pre-quant checkpoint's pickle may name, on top of what ``weights_only``
-# already permits (storages, dtypes, ``_rebuild_*``, ``OrderedDict``, ``torch.device``,
-# ``_get_layout``). Surveyed across every hosted checkpoint Unsloth resolves (image + video, fp8 +
-# int8, rotated and not) this is the complete set, so the load runs ``weights_only = True`` and a
-# checkpoint naming anything else is refused before one opcode of it executes, hosted or local.
-#
-# Registered under the name the PICKLE records, which for a re-exported class is not the class's
-# own ``__module__`` (``torchao.quantization.Float8Tensor`` really lives in
-# ``...quantize_.workflows.float8.float8_tensor``), so both spellings are listed. Names a given
-# torchao lacks are skipped rather than raised: the set spans every release
-# ``install_python_stack`` pins (0.14, 0.16, 0.17) and an absent class could not have produced a
-# loadable checkpoint here anyway.
-#
-# Adding a scheme means adding its constructors here; forgetting warns and falls back to
-# dense-quantise, never a silent unpickle.
+# constructors a pre-quant checkpoint's pickle may name on top of what weights_only permits;
+# The constructors a pre-quant checkpoint's pickle may name, on top of what ``weights_only`` already permits (storages,
+# dtypes, ``_rebuild_*``, ``OrderedDict``, ``torch.device``, ``_get_layout``). Surveyed across every hosted checkpoint
+# Unsloth resolves (image + video, fp8 + int8, rotated and not) this is the complete set, so the load runs
+# ``weights_only = True`` and a checkpoint naming anything else is refused before one opcode of it executes, hosted or
+# local.  Registered under the name the PICKLE records, which for a re-exported class is not the class's own
+# ``__module__`` (``torchao.quantization.Float8Tensor`` really lives in
+# ``...quantize_.workflows.float8.float8_tensor``), so both spellings are listed. Names a given torchao lacks are
+# skipped rather than raised: the set spans every release ``install_python_stack`` pins (0.14, 0.16, 0.17) and an absent
+# class could not have produced a loadable checkpoint here anyway.  Adding a scheme means adding its constructors here;
+# forgetting warns and falls back to dense-quantise, never a silent unpickle.
 _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
-    # int8: AffineQuantizedTensor + its plain layout, wrapped for dynamic activation quant.
+    # int8: AffineQuantizedTensor + its plain layout, wrapped for dynamic activation quant
     ("torchao.dtypes.affine_quantized_tensor", "AffineQuantizedTensor"),
     ("torchao.dtypes.uintx.plain_layout", "PlainAQTTensorImpl"),
     ("torchao.dtypes.utils", "PlainLayout"),
@@ -91,16 +85,16 @@ _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
     ("torchao.quantization.granularity", "PerRow"),
     ("torchao.quantization.granularity", "PerTensor"),
     ("torchao.float8.inference", "Float8MMConfig"),
-    # mxfp8 / nvfp4: no hosted checkpoint uses these, but they are TQ_SCHEMES that
-    # scripts/build_prequant_checkpoint.py bakes, so a LOCAL override can be either. torchao only
-    # registers them on import of the prototype package, which nothing on this path imports.
+    # mxfp8 / nvfp4: no hosted checkpoint uses these, but they are TQ_SCHEMES that scripts/build_prequant_checkpoint.py
+    # bakes, so a LOCAL override can be either. torchao only registers them on import of the prototype package, which
+    # nothing on this path imports.
     ("torchao.prototype.mx_formats.mx_tensor", "MXTensor"),
     ("torchao.prototype.mx_formats.mx_tensor", "QuantizeTensorToMXKwargs"),
     ("torchao.prototype.mx_formats.config", "ScaleCalculationMode"),
     ("torchao.prototype.mx_formats.nvfp4_tensor", "NVFP4Tensor"),
     ("torchao.prototype.mx_formats.nvfp4_tensor", "QuantizeTensorToNVFP4Kwargs"),
-    # The version string torch.save stamps into the subclass state: not in torch's default set,
-    # and without it every torchao checkpoint refuses to load.
+    # The version string torch.save stamps into the subclass state: not in torch's default set, and without it every
+    # torchao checkpoint refuses to load.
     ("torch.torch_version", "TorchVersion"),
 )
 
@@ -124,9 +118,9 @@ _SAFE_GLOBALS_REGISTERED: Optional[bool] = None
 # Filled in by the registration: which of the names above this install actually resolved.
 _RESOLVED_SAFE_GLOBALS: set = set()
 
-# What a checkpoint of each scheme actually NAMES, read off the artifacts with pickletools rather
-# than assumed: every hosted repo the family tables list, plus a local bake of each scheme for the
-# two nothing hosts. Only these are required, so dropping an unused name does not fail a scheme.
+# What a checkpoint of each scheme actually NAMES, read off the artifacts with pickletools rather than assumed: every
+# hosted repo the family tables list, plus a local bake of each scheme for the two nothing hosts. Only these are
+# required, so dropping an unused name does not fail a scheme.
 _SCHEME_REQUIRED_GLOBALS: dict = {
     "int8": frozenset(
         {
@@ -216,23 +210,21 @@ def _register_prequant_safe_globals() -> bool:
             import torch
 
             add = getattr(torch.serialization, "add_safe_globals", None)
-            # A STUBBED torchao (Windows ROCm) fabricates a class for every name asked of it, so
-            # the allowlist would register fakes and answer yes for an install that cannot
-            # rebuild a single quantized tensor.
+            # A STUBBED torchao (Windows ROCm) fabricates a class for every name asked of it, so the allowlist would
+            # register fakes and answer yes for an install that cannot rebuild a single quantized tensor.
             if add is not None and not is_stubbed("torchao") and _tuple_safe_globals_supported():
                 pairs = _prequant_safe_globals()
                 resolved = {name for _obj, name in pairs}
-                # "Some entries resolved" is not "a checkpoint can be opened". The floor is what
-                # EVERY artifact needs whatever its scheme: the version stamp plus at least one
-                # real torchao tensor class. Per-SCHEME completeness is asked separately, by the
-                # caller that knows which scheme it is about to plan for.
+                # "Some entries resolved" is not "a checkpoint can be opened". The floor is what EVERY artifact needs
+                # whatever its scheme: the version stamp plus at least one real torchao tensor class. Per-SCHEME
+                # completeness is asked separately, by the caller that knows which scheme it is about to plan for.
                 if "torch.torch_version.TorchVersion" in resolved and any(
                     name.startswith("torchao.") for name in resolved
                 ):
                     add(pairs)
                     _RESOLVED_SAFE_GLOBALS.update(resolved)
-                    # The same derivation the unpickler runs, so a form this torch cannot express
-                    # fails here rather than under a load a plan was already sized on.
+                    # The same derivation the unpickler runs, so a form this torch cannot express fails here rather than
+                    # under a load a plan was already sized on.
                     try:
                         torch._weights_only_unpickler._get_user_allowed_globals()
                     except AttributeError:  # noqa: BLE001 -- private; absence is not a failure
@@ -304,7 +296,7 @@ def _allowed_prequant_roots() -> list:
             continue  # a bare on/off value is not a directory
         try:
             roots.append(os.path.realpath(os.path.expanduser(part)))
-        except Exception:  # noqa: BLE001 — a bad entry is simply not allowlisted
+        except Exception:  # noqa: BLE001 - a bad entry is simply not allowlisted
             continue
     return roots
 
@@ -399,24 +391,20 @@ def resolve_prequant_source(
 
         repo_id = family_prequant_repo(fam, scheme, base_repo = base_repo)
         preferred = family_prequant_filename(fam, scheme, task = task)
-        # What the same call would have resolved WITHOUT a task, which is what decides whether a
-        # fallback is safe below. Skipped when no task was asked for, since then the two are the
-        # same lookup.
+        # What the same call would have resolved WITHOUT a task, which is what decides whether a fallback is safe below.
+        # Skipped when no task was asked for, since then the two are the same lookup.
         agnostic = family_prequant_filename(fam, scheme) if task else preferred
-    except Exception:  # noqa: BLE001 — a bad family object must not break the load
+    except Exception:  # noqa: BLE001 - a bad family object must not break the load
         repo_id = None
     if repo_id:
         derived = prequant_repo_filename(repo_id, scheme)
-        # A family may name a SECOND artifact for the same repo and scheme (today: MiniMax-H3's
-        # rotated INT8 denoiser). It becomes the primary and the derived name becomes the
-        # fallback, so a build that knows the new name gets it and every older build keeps
-        # resolving the artifact it already understands. Without an override nothing changes: the
-        # derived name is primary and the legacy transformer_<scheme>.pt is the fallback.
-        #
-        # A TASK-SPECIFIC name gets NO fallback. The other artifacts in the repo are the same
-        # family, the same scheme and the same base, so every check the loader makes would pass
-        # on them -- the fallback would quietly install another partition's denoiser and generate
-        # from the wrong weights, which is precisely what naming the artifact per task prevents.
+        # A family may name a SECOND artifact for the same repo and scheme (today: MiniMax-H3's rotated INT8 denoiser).
+        # It becomes the primary and the derived name becomes the fallback, so a build that knows the new name gets it
+        # and every older build keeps resolving the artifact it already understands. Without an override nothing
+        # changes: the derived name is primary and the legacy transformer_<scheme>.pt is the fallback.  A TASK-SPECIFIC
+        # name gets NO fallback. The other artifacts in the repo are the same family, the same scheme and the same base,
+        # so every check the loader makes would pass on them -- the fallback would quietly install another partition's
+        # denoiser and generate from the wrong weights, which is precisely what naming the artifact per task prevents.
         # Absent is better than wrong here: no artifact means the released bfloat16 denoiser.
         task_specific = preferred is not None and preferred != agnostic
         return PrequantSource(
@@ -453,9 +441,9 @@ def local_prequant_scheme(path: str) -> Optional[str]:
     try:
         real = os.path.expanduser(path)
         st = os.stat(real)
-        # Nanoseconds, not int(st_mtime): an atomic swap for a same-sized artifact inside the same
-        # second would otherwise reuse the previous scheme for the life of the process, and int8
-        # and fp8 checkpoints of one model are exactly that shape.
+        # Nanoseconds, not int(st_mtime): an atomic swap for a same-sized artifact inside the same second would
+        # otherwise reuse the previous scheme for the life of the process, and int8 and fp8 checkpoints of one model are
+        # exactly that shape.
         key = (real, st.st_mtime_ns, int(st.st_size))
     except Exception:  # noqa: BLE001 -- unreadable is "unknown", handled by the caller
         return None
@@ -539,13 +527,13 @@ def _cached_in_root(
         import os
 
         from huggingface_hub import try_to_load_from_cache
-    except Exception:  # noqa: BLE001 — no cache API to ask: treat as not cached
+    except Exception:  # noqa: BLE001 - no cache API to ask: treat as not cached
         return None
     try:
         hit = try_to_load_from_cache(source.location, name, cache_dir = root)
-    except Exception:  # noqa: BLE001 — a malformed cache entry is not a hit
+    except Exception:  # noqa: BLE001 - a malformed cache entry is not a hit
         return None
-    # A str is the cached path; a miss is None and a known-absent file is a sentinel object.
+    # a str is the cached path; a miss is None and a known-absent file is a sentinel object
     return hit if isinstance(hit, str) and os.path.isfile(hit) else None
 
 
@@ -636,8 +624,8 @@ def load_prequantized_transformer(
     artifact.
     """
     try:
-        # A request-supplied local path names arbitrary WEIGHTS, a different question from the
-        # deserialization one below: allowlisted or not, the file is read weights_only.
+        # A request-supplied local path names arbitrary WEIGHTS, a different question from the deserialization one
+        # below: allowlisted or not, the file is read weights_only.
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
                 logger,
@@ -656,11 +644,10 @@ def load_prequantized_transformer(
         if path is None:
             return None
 
-        # A torch.save pickle, deserialized under the constructor ALLOWLIST above and never as a
-        # free-running one. First-party hosting is no reason to execute whatever bytes arrive: the
-        # artifact is mutable, fetched over the network, and reached by loads that never asked for
-        # one (auto resolves an unset precision to a hosted checkpoint), so a mutated file must
-        # fail to load rather than run.
+        # A torch.save pickle, deserialized under the constructor ALLOWLIST above and never as a free-running one.
+        # First-party hosting is no reason to execute whatever bytes arrive: the artifact is mutable, fetched over the
+        # network, and reached by loads that never asked for one (auto resolves an unset precision to a hosted
+        # checkpoint), so a mutated file must fail to load rather than run.
         ckpt = _torch_load_prequant(path, map_location = "cpu")
         if not _validate_checkpoint(
             ckpt, scheme, base, logger, min_features = min_features, fast_accum = fast_accum
@@ -669,9 +656,9 @@ def load_prequantized_transformer(
         state_dict = ckpt["state_dict"]
         _pin_kernel_preference(state_dict, logger)
 
-        # Read from the root that actually supplied the checkpoint: after a mid-session cache change
-        # the pinned root may be gone or read-only, and load_config's raise is swallowed below into
-        # a None return, silently dropping a prequant whose checkpoint is cached and already loaded.
+        # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root may
+        # be gone or read-only, and load_config's raise is swallowed below into a None return, silently dropping a
+        # prequant whose checkpoint is cached and already loaded.
         config = _load_transformer_config(
             transformer_cls,
             base,
@@ -688,48 +675,47 @@ def load_prequantized_transformer(
             transformer = transformer_cls.from_config(config)
         if prepare_model is not None:
             prepare_model(transformer, metadata)
-        # assign=True swaps in the loaded tensors instead of copying into meta (a no-op); strict=True since the saved dict is the full state dict of the same class.
         transformer.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(transformer):
-            # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
+            # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
+            # they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
             transformer = transformer_cls.from_config(config)
-            # The retry REPLACES the module, so the hook has to run again: skipping it here would
-            # load the same state dict into a differently shaped model, and this branch is the one
-            # families with non-persistent buffers always take -- the mismatch would be the norm,
-            # not the corner case, and strict=True would surface it as a bare key error.
+            # The retry REPLACES the module, so the hook has to run again: skipping it here would load the same state
+            # dict into a differently shaped model, and this branch is the one families with non-persistent buffers
+            # always take -- the mismatch would be the norm, not the corner case, and strict=True would surface it as a
+            # bare key error.
             if prepare_model is not None:
                 prepare_model(transformer, metadata)
             transformer.load_state_dict(state_dict, strict = True, assign = True)
 
-        # The ONLINE half of an activation rotation, applied here rather than in a family's
-        # ``prepare_model`` hook so that no route can load a rotated checkpoint without it: the
-        # offline half is already baked into the weights that were just assigned, and a rotated
-        # weight met by an unrotated activation renders plausible garbage with nothing to catch.
-        # A no-op for every artifact that declares no rotation, and a RAISE (caught below into the
-        # dense fallback) for one this build cannot honour exactly. After load_state_dict because
-        # the meta retry above rebuilds the module; before apply_small_m_padding because padding
-        # reparents the Linears and the recorded fqns name the unwrapped tree.
+        # The ONLINE half of an activation rotation, applied here rather than in a family's ``prepare_model`` hook so
+        # that no route can load a rotated checkpoint without it: the offline half is already baked into the weights
+        # that were just assigned, and a rotated weight met by an unrotated activation renders plausible garbage with
+        # nothing to catch. A no-op for every artifact that declares no rotation, and a RAISE (caught below into the
+        # dense fallback) for one this build cannot honour exactly. After load_state_dict because the meta retry above
+        # rebuilds the module; before apply_small_m_padding because padding reparents the Linears and the recorded fqns
+        # name the unwrapped tree.
         from .diffusion_convrot import apply_activation_rotation
 
         apply_activation_rotation(transformer, metadata, logger = logger)
 
         transformer = transformer.to(device)
-        # Same small-M row padding the runtime quantise path applies, and for the same reason: a
-        # checkpoint built under the current exclusion set QUANTISES the family's small-M linears,
-        # so without the wrappers they would raise inside _int_mm the moment the compiled scope
-        # reaches them. After load_state_dict, since wrapping reparents the Linears; after .to()
-        # so the granularity probe reads the device tensors the GEMM will actually see.
+        # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built under
+        # the current exclusion set QUANTISES the family's small-M linears, so without the wrappers they would raise
+        # inside _int_mm the moment the compiled scope reaches them. After load_state_dict, since wrapping reparents the
+        # Linears; after.to() so the granularity probe reads the device tensors the GEMM will see.
         from .diffusion_transformer_quant import apply_small_m_padding
 
         apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
-        # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so train/eval-sensitive layers cannot make prequant inference diverge.
+        # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so
+        # train/eval-sensitive layers cannot make prequant inference diverge.
         try:
             transformer.eval()
-        except Exception:  # noqa: BLE001 — eval() is best-effort
+        except Exception:  # noqa: BLE001 - eval() is best-effort
             pass
-        try:  # diagnostic marker, mirrors the runtime-quant path
+        try:
             transformer._unsloth_runtime_quant = scheme
-        except Exception:  # noqa: BLE001 — marker is best-effort
+        except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         if logger is not None:
             logger.info(
@@ -739,7 +725,7 @@ def load_prequantized_transformer(
                 device,
             )
         return transformer
-    except Exception as exc:  # noqa: BLE001 — fall back to the dense-quantise path
+    except Exception as exc:  # noqa: BLE001 - fall back to the dense-quantise path
         _warn(logger, f"{scheme}:{source.kind}", exc)
         return None
 
@@ -752,7 +738,7 @@ def _entry_not_found_errors() -> tuple:
     Private markers on an unexpected layout are raised by nothing, keeping today's behaviour."""
     try:
         from huggingface_hub.errors import EntryNotFoundError
-    except Exception:  # noqa: BLE001 — older/newer hub layouts
+    except Exception:  # noqa: BLE001 - older/newer hub layouts
 
         class EntryNotFoundError(Exception):  # type: ignore[no-redef]
             pass
@@ -806,7 +792,7 @@ def _download_checkpoint_name(
                 if not propagate_missing:
                     return elsewhere
                 raise
-            except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
+            except Exception:  # noqa: BLE001 - revalidation is a bonus, never a new failure
                 return elsewhere
     return hf_hub_download(
         repo_id = source.location,
@@ -851,7 +837,6 @@ def _resolve_checkpoint_path(
         except EntryNotFoundError:
             if not has_fallback:
                 raise
-            # Primary genuinely absent: same other-root treatment, with nothing left after it.
             return _download_checkpoint_name(
                 source,
                 source.fallback_filename,
@@ -875,12 +860,12 @@ def _config_cache_roots(checkpoint_path: str, cache_dir: Optional[str]) -> tuple
     import os
 
     try:
-        # normcase before comparing: on Windows C:\Users vs c:\users would read as "not under the
-        # live root" and silently reverse the order below.
+        # normcase before comparing: on Windows C:\Users vs c:\users would read as "not under the live root" and
+        # silently reverse the order below
         root = os.path.normcase(os.path.realpath(cache_dir))
         real = os.path.normcase(os.path.realpath(checkpoint_path))
         under_live = real == root or real.startswith(root + os.sep)
-    except Exception:  # noqa: BLE001 — an unresolvable path keeps today's order
+    except Exception:  # noqa: BLE001 - an unresolvable path keeps today's order
         under_live = True
     return (cache_dir, None) if under_live else (None, cache_dir)
 
@@ -909,7 +894,7 @@ def _load_transformer_config(
                 cache_dir = root,
                 local_files_only = local_files_only,
             )
-        except Exception as exc:  # noqa: BLE001 — try the other root before giving up
+        except Exception as exc:  # noqa: BLE001 - try the other root before giving up
             last = exc
     raise last  # type: ignore[misc]
 
@@ -1014,7 +999,8 @@ def _validate_checkpoint(
     if meta.get("scheme") != scheme:
         _warn(logger, scheme, ValueError(f"checkpoint scheme {meta.get('scheme')!r} != {scheme!r}"))
         return False
-    # fp8 REQUIRES per-row granularity (per-tensor collapses outlier-heavy DiTs to noise). An old checkpoint omits ``fp8_granularity`` or records non-per-row, so reject and let the loader re-quantise.
+    # fp8 REQUIRES per-row granularity (per-tensor collapses outlier-heavy DiTs to noise). An old checkpoint omits
+    # ``fp8_granularity`` or records non-per-row, so reject and let the loader re-quantise.
     from .diffusion_transformer_quant import FP8_GRANULARITY, TQ_FP8
 
     if scheme == TQ_FP8 and meta.get("fp8_granularity") != FP8_GRANULARITY:
@@ -1027,18 +1013,18 @@ def _validate_checkpoint(
             ),
         )
         return False
-    # fp8 also REQUIRES the activation scale floor, and this is checked on the loaded TENSORS, not
-    # on metadata. torchao's per-row activation quantiser divides by each row's amax, so a zero row
-    # (qwen's text stream emits them) gives scale 0 and NaN qdata unless activation_value_lb floors
-    # it. That floor is serialised per tensor as act_quant_kwargs.hp_value_lb, so an artifact built
-    # before the fix stays broken however it is loaded, and it predates any metadata field we could
-    # stamp -- and "absent is accepted for back-compat", the convention every check above follows,
-    # is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
+    # fp8 also REQUIRES the activation scale floor, and this is checked on the loaded TENSORS, not on metadata.
+    # torchao's per-row activation quantiser divides by each row's amax, so a zero row (qwen's text stream emits them)
+    # gives scale 0 and NaN qdata unless activation_value_lb floors it. That floor is serialised per tensor as
+    # act_quant_kwargs.hp_value_lb, so an artifact built before the fix stays broken however it is loaded, and it
+    # predates any metadata field we could stamp -- and "absent is accepted for back-compat", the convention every check
+    # above follows, is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
     if scheme == TQ_FP8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger):
         return False
     ckpt_base = meta.get("base_model_id")
     if base:
-        # Keys matching a different base can load strict=True and generate from the wrong weights. Our builder always records base_model_id, so one omitting it against a requested base is untrustworthy.
+        # Keys matching a different base can load strict=True and generate from the wrong weights. Our builder always
+        # records base_model_id, so one omitting it against a requested base is untrustworthy.
         if not ckpt_base:
             _warn(
                 logger,
@@ -1060,12 +1046,15 @@ def _validate_checkpoint(
                 ValueError(f"checkpoint min_features {ckpt_min!r} != runtime {min_features!r}"),
             )
             return False
-    # The int8 exclusion set is scheme-derived, so a token-list change would leave old checkpoints with a stale baked set that passes scheme+min_features then crashes at the first denoise. Reject a recorded mismatch; absent is accepted.
+    # The int8 exclusion set is scheme-derived, so a token-list change would leave old checkpoints with a stale baked
+    # set that passes scheme+min_features then crashes at the first denoise. Reject a recorded mismatch; absent is
+    # accepted.
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
 
-        # The exclude set derives from scheme AND family, so use the recorded family: an artifact baked under an older token list is rejected and re-quantised, not loaded crashing.
+        # The exclude set derives from scheme AND family, so use the recorded family: an artifact baked under an older
+        # token list is rejected and re-quantised, not loaded crashing.
         expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
         if tuple(ckpt_excludes) != expected:
             _warn(
@@ -1076,7 +1065,8 @@ def _validate_checkpoint(
                 ),
             )
             return False
-    # require_bf16 (skip non-bf16 Linears) is scheme-pinned; recording and verifying it stops a future _REQUIRE_BF16_SCHEMES change loading an old-filter checkpoint. Absent accepted.
+    # require_bf16 (skip non-bf16 Linears) is scheme-pinned; recording and verifying it stops a future
+    # _REQUIRE_BF16_SCHEMES change loading an old-filter checkpoint. Absent accepted.
     ckpt_require_bf16 = meta.get("require_bf16")
     if ckpt_require_bf16 is not None:
         from .diffusion_transformer_quant import _REQUIRE_BF16_SCHEMES
@@ -1090,7 +1080,7 @@ def _validate_checkpoint(
                 ),
             )
             return False
-    # fp8 fast-accum is baked into the saved kernels; only enforce when the caller forces it.
+    # fp8 fast-accum is baked into the saved kernels; only enforce when the caller forces it
     if fast_accum is not None:
         ckpt_fa = meta.get("fast_accum")
         if ckpt_fa is not None and bool(ckpt_fa) != bool(fast_accum):
@@ -1162,8 +1152,8 @@ def pin_prequantized_module(
         try:
             # Drop the accelerate hook so no pre_forward/offload ever moves this module again ...
             target.remove()
-            # ... and unlist it, so another component's pre_forward cannot pick it as the thing to
-            # evict (which would move it to the CPU with no hook left to bring it back).
+            # ... and unlist it, so another component's pre_forward cannot pick it as the thing to evict (which would
+            # move it to the CPU with no hook left to bring it back).
             for hook in hooks:
                 others = getattr(getattr(hook, "hook", None), "other_hooks", None)
                 if others:

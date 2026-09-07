@@ -92,12 +92,24 @@ export async function loadGenerationOverlaySnapshot<TMessage, TRun>(
   threadId: string,
   listActiveRuns: (id: string) => Promise<TRun[]>,
   listMessages: (id: string) => Promise<TMessage[]>,
-): Promise<{ messages: TMessage[]; activeRuns: TRun[] }> {
+): Promise<{
+  messages: TMessage[];
+  activeRuns: TRun[];
+  /**
+   * False when the active-run read failed, so its empty list is "unknown", not "none".
+   * A caller that decides a reply is dead from an absent run has to tell the two apart.
+   */
+  activeRunsLoaded: boolean;
+}> {
   // Runs first closes the create-between-snapshots gap. If a run commits after
   // this read, the later message snapshot already carries its durable metadata.
-  const activeRuns = await listActiveRuns(threadId).catch(() => []);
+  let activeRunsLoaded = true;
+  const activeRuns = await listActiveRuns(threadId).catch(() => {
+    activeRunsLoaded = false;
+    return [];
+  });
   const messages = await listMessages(threadId);
-  return { messages, activeRuns };
+  return { messages, activeRuns, activeRunsLoaded };
 }
 
 type RecoveryUsage = {
@@ -273,6 +285,16 @@ export function generationNeedsRecovery(
   metadata: Record<string, unknown>,
 ): boolean {
   const status = String(metadata.generationStatus) as StoredGenerationStatus;
+  // Stamped by a follower that hit its no-progress deadline. Re-following on every
+  // recovery trigger is what turned one stuck run into a permanently blocked composer;
+  // history.load clears the marker if /chat-runs/active still names the run.
+  //
+  // Non-terminal only: a run the backend finished is stored completed and unsettled, and
+  // /chat-runs/active excludes completed runs, so honouring the marker there would leave
+  // that reply running forever with its event tail never imported.
+  if (metadata.generationLocallyInterrupted === true && !TERMINAL.has(status)) {
+    return false;
+  }
   return (
     typeof metadata.generationRunId === "string" &&
     (metadata.generationSettled !== true || !TERMINAL.has(status))
@@ -411,10 +433,34 @@ export function subscribeGenerationRecoveryTriggers(
  * needs to expire it.
  */
 const liveGenerationRuns = new Set<string>();
+// runId -> owning thread. The Set above answers "is this run live"; the checkpoint
+// scheduler needs the inverse, "does this thread have a durable run at all".
+const liveGenerationThreads = new Map<string, string>();
+
+/**
+ * Runs claimed before the server admitted them.
+ *
+ * The early claim stops a recovery trigger starting a second follower during that await.
+ * Boundedness is separate: until the POST lands the thread's checkpoints are its only
+ * persistence, and createChatGenerationRun retries until aborted, so the await can outlast
+ * the cap.
+ */
+const provisionalGenerationRuns = new Set<string>();
 
 /** Claim a run as streamed by this tab. Pair with `releaseLiveGenerationRun` in a finally. */
-export function claimLiveGenerationRun(runId: string): void {
+export function claimLiveGenerationRun(
+  runId: string,
+  threadId?: string,
+  options?: { provisional?: boolean },
+): void {
   liveGenerationRuns.add(runId);
+  if (threadId) liveGenerationThreads.set(runId, threadId);
+  // A later non-provisional claim confirms admission, so this clears as well as sets.
+  if (options?.provisional) {
+    provisionalGenerationRuns.add(runId);
+  } else {
+    provisionalGenerationRuns.delete(runId);
+  }
 }
 
 /**
@@ -425,9 +471,134 @@ export function claimLiveGenerationRun(runId: string): void {
  */
 export function releaseLiveGenerationRun(runId: string): void {
   liveGenerationRuns.delete(runId);
+  liveGenerationThreads.delete(runId);
+  provisionalGenerationRuns.delete(runId);
 }
 
 /** Whether this tab is the one streaming `runId`. */
 export function isLiveGenerationRun(runId: string): boolean {
   return liveGenerationRuns.has(runId);
+}
+
+/**
+ * Whether `threadId` has a durable run, either streaming here or named by the server. A
+ * subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence.
+ */
+export function threadHasDurableGenerationRun(threadId: string): boolean {
+  for (const [runId, owner] of liveGenerationThreads.entries()) {
+    if (owner === threadId && !provisionalGenerationRuns.has(runId)) return true;
+  }
+  for (const owner of serverActiveGenerationRuns.values()) {
+    if (owner === threadId) return true;
+  }
+  return false;
+}
+
+/**
+ * Runs the server has named as still going, keyed by the thread whose load asked.
+ *
+ * Persisted metadata is not evidence of a live run: a run that never terminalises leaves
+ * `generationStatus: "running"` in storage for good, and a reload rebuilds a running
+ * message straight back out of it. Only `/api/inference/chat-runs/active` can say a run
+ * is still going. Module state, so a reload drops the previous session's word for it.
+ */
+const serverActiveGenerationRuns = new Map<string, string>();
+
+/**
+ * Replace what the server last said about `threadId`. Call only after a SUCCESSFUL read
+ * of the active-run list: a failed read is not a report of "nothing is running", and
+ * treating it as one would mark a live reply interrupted.
+ */
+export function syncServerActiveGenerationRuns(
+  threadId: string,
+  runIds: Iterable<string>,
+): void {
+  for (const [runId, owner] of [...serverActiveGenerationRuns]) {
+    if (owner === threadId) serverActiveGenerationRuns.delete(runId);
+  }
+  for (const runId of runIds) serverActiveGenerationRuns.set(runId, threadId);
+  serverAnsweredThreads.add(threadId);
+}
+
+/**
+ * Threads the server has answered the active-run question for. Per thread, not per
+ * process: one global flag let A's answer turn a FAILED read for B into an empty list.
+ */
+const serverAnsweredThreads = new Set<string>();
+
+export function serverHasAnsweredActiveRuns(threadId: string): boolean {
+  return serverAnsweredThreads.has(threadId);
+}
+
+/**
+ * Forget what the server last said about `threadId`, because the newest read failed.
+ *
+ * The answer is a point in time, not a permanent property. Another tab can start a run
+ * after a successful read, so keeping the old answer once a refresh has failed would
+ * restore that genuinely running reply as interrupted.
+ */
+export function markServerActiveGenerationRunsUnknown(threadId: string): void {
+  serverAnsweredThreads.delete(threadId);
+  // The run mappings go with it. They are the same stale answer in another shape, and
+  // isServerActiveGenerationRun is consulted BEFORE the local-interruption marker, so a
+  // leftover entry restores the message as running while generationNeedsRecovery still
+  // refuses to start a follower: a blocked composer with neither recovery nor a local
+  // Stop handle, which is the wedge this PR exists to remove.
+  for (const [runId, owner] of [...serverActiveGenerationRuns]) {
+    if (owner === threadId) serverActiveGenerationRuns.delete(runId);
+  }
+}
+
+/**
+ * Drop one run from the server-active map now that it has reached a terminal status.
+ *
+ * Only another successful sync would otherwise remove it, so the thread would keep
+ * reading as durable and a later subscriber-owned stream on it would be capped, losing
+ * the periodic saves that are that stream's only persistence.
+ */
+export function forgetServerActiveGenerationRun(runId: string): void {
+  serverActiveGenerationRuns.delete(runId);
+}
+
+/** Test-only: forget every active-run answer. */
+export function resetServerActiveGenerationRuns(): void {
+  serverActiveGenerationRuns.clear();
+  serverAnsweredThreads.clear();
+  liveGenerationThreads.clear();
+  liveGenerationRuns.clear();
+  provisionalGenerationRuns.clear();
+}
+
+/** Whether the server has named `runId` as still going in this session. */
+export function isServerActiveGenerationRun(runId: string): boolean {
+  return serverActiveGenerationRuns.has(runId);
+}
+
+/**
+ * Whether a restored assistant message may be shown as still generating.
+ *
+ * The corroboration gate: unfinished metadata says only that this reply once had a run,
+ * never that the run is still alive.
+ */
+export function generationIsCorroboratedLive(
+  metadata: Record<string, unknown>,
+  threadId?: string,
+): boolean {
+  const runId = metadata.generationRunId;
+  if (typeof runId !== "string") return false;
+  if (isLiveGenerationRun(runId) || isServerActiveGenerationRun(runId)) return true;
+  // A follower already gave up on this run locally. Without this it keeps taking the
+  // benefit of the doubt below, so every online/pageshow/visibility trigger starts
+  // another follower that republishes the message as running and blocks the composer
+  // again. Only the server naming the run live may revive it, and the two checks above
+  // are exactly that.
+  if (
+    metadata.generationLocallyInterrupted === true &&
+    !TERMINAL.has(String(metadata.generationStatus) as StoredGenerationStatus)
+  ) {
+    return false;
+  }
+  // No answer for THIS thread is not a "no". Stay with the persisted status until this
+  // thread's own read has landed; the recovery follower settles it from there.
+  return threadId === undefined || !serverHasAnsweredActiveRuns(threadId);
 }

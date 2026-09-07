@@ -242,7 +242,7 @@ def spoof_hardware(monkeypatch):
                 ):
                     if name == "mlx" or name.startswith("mlx."):
                         raise ImportError(
-                            f"mlx import blocked by spoof_hardware " f"(profile={profile.name})"
+                            f"mlx import blocked by spoof_hardware (profile={profile.name})"
                         )
                     return None
 
@@ -303,9 +303,9 @@ def test_studio_detect_hardware_matches_profile(profile, spoof_hardware):
         f"profile {profile.name}: expected {profile.expect_device_type}, "
         f"got {detected!r}. {profile.extra_notes}"
     )
-    assert hw.IS_ROCM is profile.expect_is_rocm, (
-        f"profile {profile.name}: expected IS_ROCM={profile.expect_is_rocm}, " f"got {hw.IS_ROCM}"
-    )
+    assert (
+        hw.IS_ROCM is profile.expect_is_rocm
+    ), f"profile {profile.name}: expected IS_ROCM={profile.expect_is_rocm}, got {hw.IS_ROCM}"
 
 
 @pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
@@ -415,6 +415,8 @@ def _loader_device_map_helpers():
                 exec(_ast.get_source_segment(source, node), namespace)
             elif isinstance(node, _ast.Assign) and getattr(node.targets[0], "id", None) in (
                 "UNSLOTH_DEVICE_MAP",
+                "UNSLOTH_BALANCED_DEVICE_MAP",
+                "_PLANNED_DEVICE_MAPS",
                 "DEFAULT_DEVICE_MAP",
                 "_SIZE_UNITS",
             ):
@@ -435,11 +437,12 @@ def _loader_device_map_helpers():
 def test_studio_placement_survives_the_loader_opt_in(
     profile, gpu_ids, opt_in, spoof_hardware, monkeypatch
 ):
-    """Whatever Unsloth decided, the loader hands the same thing to transformers.
+    """Whatever Unsloth decided, the loader hands transformers a map of the same shape.
 
-    The one value the opt-in can rewrite is "sequential", and Unsloth only produces that
-    when it selected a single device -- at which point the worker has already narrowed the
-    visible set, the planner sees one GPU and declines back to "sequential".
+    "sequential" and "balanced" survive untouched. "unsloth_balanced" is a request to
+    plan, so the loader may answer with a plan or, when it declines -- as it does here,
+    with no planner installed -- with the sharding map that name declines to. What it
+    must never do is turn a multi-GPU ask into "sequential", which fills cuda:0 first.
     """
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
@@ -448,7 +451,7 @@ def test_studio_placement_survives_the_loader_opt_in(
         pytest.skip(f"{profile.name} does not take an explicit gpu_ids")
 
     device_map = hw.get_device_map(gpu_ids)
-    assert device_map in ("balanced", "sequential")
+    assert device_map in ("balanced", "sequential", "unsloth_balanced")
 
     if opt_in == "unset":
         monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
@@ -463,7 +466,9 @@ def test_studio_placement_survives_the_loader_opt_in(
     resolved = loader["resolve_unsloth_device_map"](
         loader["requested_device_map"](device_map), "unsloth/Qwen3-0.6B"
     )
-    assert resolved == device_map, (
+    # No planner module is installed, so a planned name always reaches its fallback.
+    expected = loader["_PLANNED_DEVICE_MAPS"].get(device_map, device_map)
+    assert resolved == expected, (
         f"profile {profile.name}, gpu_ids={gpu_ids}, UNSLOTH_AUTO_DEVICE_MAP={opt_in}: "
         f"Unsloth asked for {device_map!r} and the loader produced {resolved!r}"
     )
@@ -472,12 +477,18 @@ def test_studio_placement_survives_the_loader_opt_in(
 @pytest.mark.parametrize("profile", PROFILES, ids = PROFILE_IDS)
 def test_studio_never_speaks_the_planning_sentinel(profile, spoof_hardware):
     """get_device_map is the only thing that names a placement for Unsloth's loads, and
-    "unsloth" is not one of its answers on any backend. If it ever becomes one, the
-    Unsloth-side reasoning above stops holding and this fails first."""
+    the plain "unsloth" sentinel is not one of its answers on any backend.
+
+    That name declines to "sequential", which gives cuda:0 its whole free budget and so
+    puts a model that fits there on one card. Every path the planner vetoes -- a full
+    finetune, an `auto_model` with no `_model_mapping`, a Falcon-H1 checkpoint missing
+    the mamba exclusions -- ends in that fallback, so a multi-GPU ask has to use the
+    name whose fallback still shards.
+    """
     spoof_hardware(profile)
     hw = _import_studio_hardware_module()
     answers = {hw.get_device_map(None), hw.get_device_map([])}
     if hw.get_device() in (hw.DeviceType.CUDA, hw.DeviceType.XPU):
         answers |= {hw.get_device_map([0]), hw.get_device_map([0, 1])}
     assert "unsloth" not in answers
-    assert answers <= {"balanced", "sequential"}
+    assert answers <= {"balanced", "sequential", "unsloth_balanced"}

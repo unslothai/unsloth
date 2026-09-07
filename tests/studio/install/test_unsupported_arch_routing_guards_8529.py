@@ -241,6 +241,12 @@ def _run_sh_get_torch_index_url(arch: str, rocm_tag: str = "") -> "tuple[str, st
     script = (
         _sh_function_body(src, "_amd_arch_index_family_for_gfx")
         + "\n"
+        + _sh_function_body(src, "_amd_probe_arches")
+        + "\n"
+        + _sh_function_body(src, "_amd_agreed_index_family")
+        + "\n"
+        + _sh_function_body(src, "_amd_sole_index_arch")
+        + "\n"
         + _sh_function_body(src, "get_torch_index_url")
         + "\n"
         + _INDEX_URL_STUBS
@@ -613,6 +619,9 @@ def _run_summary_guard(tmp_path, lspci_lines: "list[str]") -> str:
             "_infer_linux_unsupported_amd_gfx_arch",
             "_infer_linux_amd_gfx_arch",
             "_amd_arch_index_family_for_gfx",
+            "_amd_probe_arches",
+            "_amd_agreed_index_family",
+            "_amd_sole_index_arch",
             "_amd_gpu_present_via_pci",
         )
     )

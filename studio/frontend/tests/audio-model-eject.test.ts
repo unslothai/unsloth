@@ -67,7 +67,7 @@ test("a Speak load asks the same question and forces from the answer", () => {
   // The slot is claimed before the await, so a routed pick arriving mid-dialog queues.
   assert.match(
     source,
-    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
+    /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*\};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
   );
   // Declining releases the slot and drops the queued pick, which would else re-ask.
   assert.match(
@@ -106,7 +106,7 @@ test("a model swap holds Chat's lifecycle gate across the question", () => {
   // Released before the queued replay, which needs the gate for its own attempt.
   assert.match(
     source,
-    /ttsLoadInFlight\.current = false;[\s\S]{0,120}?releaseLifecycle\(\);[\s\S]*?replayQueuedTtsPick\(\);/,
+    /if \(activeRef\.current\) await refreshStatus\(\);\s*ttsLoadInFlight\.current = false;[\s\S]{0,120}?releaseLifecycle\(\);[\s\S]*?replayQueuedTtsPick\(\);/,
   );
   // Eject takes it before it goes busy, so it is held across its own question too.
   assert.match(
@@ -124,7 +124,7 @@ test("a load confirmed after Audio is hidden is deferred, not sent", () => {
   // nothing to abort. Sending anyway let a hidden page replace the visible page's model.
   assert.match(
     source,
-    /if \(!activeRef\.current\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}/,
+    /if \(!activeRef\.current\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*\};\s*return;\s*\}/,
   );
   // The activation effect replays exactly that queue, so the pick is not lost.
   assert.match(
@@ -201,7 +201,7 @@ test("a dictation model this page did not load survives a mode switch", () => {
   // Eject unloaded a model this page never loaded. Model only, not model plus engine: a
   // "gguf" pick without whisper-server is served by the Transformers fallback and reports
   // residency under that engine, so requiring the requested engine leaked the sidecar.
-  assert.match(source, /claim !== null && claim === sttLoadedModel;/);
+  assert.match(source, /claim !== null &&\s*claim === sttLoadedModel;/);
   // Ownership is claimed after a successful load, not before it: claiming up front left the
   // flag set when a download was cancelled while the backend kept the previous resident
   // model, so leaving Transcribe unloaded another surface's model.

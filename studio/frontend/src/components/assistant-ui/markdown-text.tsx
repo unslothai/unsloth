@@ -24,6 +24,7 @@ import {
   searchImagesSignature,
 } from "@/features/chat/search-images/search-images";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
@@ -78,6 +79,8 @@ import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
   IncrementalMarkdownCache,
+  markdownRenderKey,
+  parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
 } from "./streaming-render-schedule";
 
@@ -746,19 +749,21 @@ const MarkdownTextImpl = () => {
     () =>
       stabilizeStreamingMarkdown(
         preprocessLaTeX(
-          rewriteSearchImageTokens(
-            placeSubjectImages(
-              // No images means nothing to hold back, not even a trailing `[`.
-              holdBackPartialSearchImageToken(
-                displayText,
-                isStreaming && searchImages.size > 0,
+          normalizeEscapedInlineMath(
+            rewriteSearchImageTokens(
+              placeSubjectImages(
+                // no images means nothing to hold back, including a trailing bracket.
+                holdBackPartialSearchImageToken(
+                  displayText,
+                  isStreaming && searchImages.size > 0,
+                ),
+                searchImages,
+                isStreaming,
+                precedingText,
+                messageTexts,
               ),
               searchImages,
-              isStreaming,
-              precedingText,
-              messageTexts,
             ),
-            searchImages,
           ),
         ),
         isStreaming,
@@ -779,6 +784,7 @@ const MarkdownTextImpl = () => {
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
+  const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
@@ -792,10 +798,13 @@ const MarkdownTextImpl = () => {
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={status.type} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
-            parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
+            parseMarkdownIntoBlocksFn={
+              incrementalRender?.parseMarkdownIntoBlocks ??
+              parseMarkdownIntoRenderableBlocks
+            }
             isAnimating={isStreaming}
             animated={STREAMDOWN_IMMEDIATE_UPDATES}
             plugins={STREAMDOWN_PLUGINS}
