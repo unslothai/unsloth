@@ -2474,8 +2474,7 @@ def rule_inst_004_torchcodec_torch(
     # 0.12.0rc1 below the ABI floor (PEP 440, correctly) and fired R-INST-004 on an upgrade
     # range whose every stable member is fine.
     codec_clears_abi = at_least(codec_v, TORCHCODEC_ABI_STABLE_CODEC) or (
-        not codec_exact
-        and cmp_versions(version_minor(codec_v), TORCHCODEC_ABI_STABLE_CODEC) >= 0
+        not codec_exact and cmp_versions(version_minor(codec_v), TORCHCODEC_ABI_STABLE_CODEC) >= 0
     )
     if at_least(torch_v, TORCHCODEC_ABI_STABLE_TORCH) and codec_clears_abi:
         return findings  # ABI-stable pairing, not locked to one torch minor

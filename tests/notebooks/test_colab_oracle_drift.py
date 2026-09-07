@@ -416,8 +416,6 @@ def test_a_write_failure_removes_a_file_that_was_not_there_before(oracle, tmp_pa
         return real_write(path, data)
 
     monkeypatch.setattr(nv, "_atomic_write_bytes", flaky)
-    rc = nv.cmd_refresh_colab(
-        argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
-    )
+    rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
     assert rc == 2
     assert list(out_dir.iterdir()) == []
