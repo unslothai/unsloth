@@ -18652,10 +18652,12 @@ def _normalise_chat_content_parts(payload) -> None:
     field never sees is a recording none of those checks can act on.
 
     The field holds one recording and ``_inject_audio_part`` appends it to the last user message,
-    so a recording carried on an earlier turn is replayed on the latest one. That loses the turn
-    it was authored on, which is the price of a positionless field; carrying several recordings
-    with their turns is a larger change than this, so two of them are refused rather than silently
-    reduced to one. An explicit ``audio_base64`` still wins over a part.
+    so it cannot express which turn a recording was authored on. A request whose audio sits on an
+    earlier turn is therefore refused rather than replayed on the latest one: moving it changes
+    what the model is asked about, and answering a different question than the caller sent is
+    worse than declining. Two recordings are refused for the same reason. Carrying several with
+    their turn association intact needs the field to become a list, which is a larger change than
+    this. An explicit ``audio_base64`` still wins over a part.
     """
     # Only a user turn can carry a recording into the model, and the strip below clears the part
     # from every role. Say so rather than deleting an assistant-history clip in silence.
@@ -18667,9 +18669,13 @@ def _normalise_chat_content_parts(payload) -> None:
                 "messages",
                 f"Audio input is supported on a user message, not on a '{msg.role}' one.",
             )
+    last_user = None
+    for index, msg in enumerate(payload.messages):
+        if msg.role == "user":
+            last_user = index
     parts = [
-        part
-        for msg in payload.messages
+        (index, part)
+        for index, msg in enumerate(payload.messages)
         if isinstance(msg.content, list) and msg.role == "user"
         for part in msg.content
         if isinstance(part, InputAudioContentPart)
@@ -18680,7 +18686,13 @@ def _normalise_chat_content_parts(payload) -> None:
             "Only one audio recording per request is supported, and this one carries "
             f"{len(parts)}.",
         )
-    lifted = parts[0].input_audio.data if parts else None
+    if parts and parts[0][0] != last_user:
+        _raise_unsupported_openai_parameter(
+            "messages",
+            "Audio input is supported on the latest user message, and this one carries it on an "
+            "earlier turn. Re-send the recording on the current turn.",
+        )
+    lifted = parts[0][1].input_audio.data if parts else None
     for msg in payload.messages:
         if not isinstance(msg.content, list):
             continue
