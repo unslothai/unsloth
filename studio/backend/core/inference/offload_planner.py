@@ -403,6 +403,57 @@ class PlanOptions:
     # caller asking the planner what it CAN do is not asking whether it should.
     require_cost_win: bool = False
 
+    # ---- rungs 0 to 2: things a launch can give up BEFORE it spills a weight. ----
+    # Every default below means "not supplied", so a call that sets none of them is
+    # byte-identical to the planner before they existed. The owner's priority
+    # order for what a launch KEEPS is: generation speed, context, the prompt
+    # cache, MTP / speculative draft, --parallel, mmproj resident. The ladder gives
+    # those up in reverse, and every one of the three below is free per token,
+    # which is why they sit above the first FFN rung.
+    #
+    # Vision projector bytes on the device, SEPARATE from ``extra_resident_bytes``
+    # (a caller that sets this must stop folding the projector into that scalar, or
+    # it is charged twice). ``mmproj_movable`` is True only when the caller would
+    # accept ``--no-mmproj-offload``; the projector runs once per IMAGE, not per
+    # token, so moving it costs nothing on decode.
+    mmproj_bytes: int = 0
+    mmproj_movable: bool = False
+    # Slot count the cache floor was priced at, and the fewest slots the caller will
+    # serve. Rung 1 steps the count down ONE slot at a time, re-pricing the cache at
+    # each step, because the cache is what a slot costs: ~300 MiB per slot flat in
+    # context on a sliding-window model, and linear in slots times per-sequence
+    # context otherwise, which at n_ctx 132096 is ~6 GiB across four slots.
+    n_parallel: int = 1
+    min_parallel: int = 1
+    # slots -> cache bytes the caller priced at the requested context for that slot
+    # count. Authoritative where present; see ``_kv_floor_at`` for the fallback and
+    # the one shape (sliding window, no map) where there is none and rung 1 is
+    # skipped.
+    kv_bytes_floor_by_parallel: Mapping[int, int] = field(default_factory = dict)
+    # The MTP nextn block plus its cache, or a separate draft model plus its cache,
+    # on the device. Charged unless rung 2 drops it. ``draft_drop_penalty_frac`` is
+    # the generation cost of losing the draft, as a fraction of the plan's request
+    # time; 0 until it is measured, which makes rung 2 free, the owner's stated
+    # ordering.
+    draft_bytes: int = 0
+    draft_droppable: bool = False
+    draft_drop_penalty_frac: float = 0.0
+    # llama-server's default prompt-cache bound (--cache-ram, MiB). Host RAM, so it
+    # competes with the plan only through the --load-mode none footprint; the plan
+    # clamps it to what the host has left and reports the clamp only when it binds.
+    cache_ram_default_mib: int = 8192
+    # MoE at a long prompt is the one operating point where -ot measured WORSE than
+    # llama.cpp's own layerwise fit: 0.94 to 0.97x at PP 32768 on 5 cells, 2 models,
+    # 3 hosts, against 1.05 to 1.08x at PP 2048. The cost model cannot see it (the
+    # MoE fallback spills through the same -ot mechanism, so both arms carry the
+    # same per-byte prefill penalty and ``rank`` can only report a near-tie), so it
+    # is a hard gate on the per-slot context. 0 disables it.
+    moe_long_prompt_ctx: int = 32768
+    # Step of the descending context ladder a FIT_ONLY shrink walks. Feasibility is
+    # monotone in context; the cost gate's acceptance is not, so a binary search can
+    # skip the largest accepted context. 256-aligned.
+    ctx_step: int = 1024
+
 
 @dataclass(frozen = True)
 class Plan:
@@ -457,18 +508,89 @@ def _device_reserve(opts: PlanOptions, n_ctx: int) -> int:
     return max(0, opts.overhead_bytes_per_device) + over * max(0, opts.overhead_bytes_per_token)
 
 
-def _usable_vram(vram_bytes_per_device: Sequence[int], opts: PlanOptions, n_ctx: int) -> int:
+def _usable_vram(
+    vram_bytes_per_device: Sequence[int],
+    opts: PlanOptions,
+    n_ctx: int,
+    *,
+    outside_layout_bytes: Optional[int] = None,
+) -> int:
     """Total creditable VRAM: every device pays the fixed per-device overhead,
     the split pays for each device AFTER the first, then the pool pays once for
     whatever sits on a card outside the layout.
 
     ``n_ctx`` is required rather than defaulted: the reserve is context dependent and a caller
     that silently got the flat term would under-reserve at long context and fail the load.
+    ``outside_layout_bytes`` is what rungs 0 to 2 have left on the card; ``None`` charges the
+    full amount, which is what every call that predates those rungs meant.
     """
     reserve = _device_reserve(opts, n_ctx)
     pooled = sum(max(0, v - reserve) for v in vram_bytes_per_device)
     split = max(0, len(vram_bytes_per_device) - 1) * max(0, opts.pipeline_overhead_bytes)
-    return pooled - split - max(0, opts.extra_resident_bytes)
+    outside = (
+        _outside_layout_bytes(opts) if outside_layout_bytes is None else max(0, outside_layout_bytes)
+    )
+    return pooled - split - outside
+
+
+@dataclass(frozen = True)
+class _Knobs:
+    """What rungs 0 to 2 have given up so far. Immutable; a rung returns a new one."""
+
+    n_parallel: int
+    mmproj_to_host: bool = False
+    draft_dropped: bool = False
+
+
+def _outside_layout_bytes(opts: PlanOptions, knobs: Optional[_Knobs] = None) -> int:
+    """Device bytes the layout cannot see: the caller's scalar, the projector unless
+    rung 0 moved it, and the draft unless rung 2 dropped it."""
+    total = max(0, opts.extra_resident_bytes)
+    if not (knobs and knobs.mmproj_to_host):
+        total += max(0, opts.mmproj_bytes)
+    if not (knobs and knobs.draft_dropped):
+        total += max(0, opts.draft_bytes)
+    return total
+
+
+def _kv_floor_at(
+    layout: ModelLayout,
+    opts: PlanOptions,
+    kv_bytes_floor: int,
+    requested_ctx: int,
+    n_ctx: int,
+    n_parallel: int,
+) -> Optional[int]:
+    """The caller's cache floor re-priced for ``(n_ctx, n_parallel)``; ``None`` when it cannot be.
+
+    The floor is a measurement at the requested context and the caller's slot count. Moving
+    either axis needs a rule:
+
+    - a different slot count takes the caller's ``kv_bytes_floor_by_parallel`` entry when it
+      has one. Without one, a non-SWA cache scales linearly in slots (each slot is a
+      per-sequence cache), and ``cache_bytes`` still takes the max against the layout's own
+      product, which is what keeps the linear guess from under-reserving. A sliding-window
+      cache has NO product to fall back on -- the layout's product has no window term, the
+      reason ``plan_placement`` abstains on SWA without a floor at all -- so without the map
+      the answer is ``None`` and the rung that asked is skipped rather than guessed;
+    - a different context scales a non-SWA floor linearly in context and leaves an SWA floor
+      flat, since a windowed cache is capped per slot by the window (measured 300 MiB per
+      slot from n_ctx 9216 to 132096 on gemma-4-26B), which is the safe direction for both.
+    """
+    at = max(1, opts.n_parallel)
+    want = max(1, n_parallel)
+    base = max(0, kv_bytes_floor)
+    if want != at:
+        mapped = opts.kv_bytes_floor_by_parallel.get(want)
+        if mapped is not None:
+            base = max(0, int(mapped))
+        elif layout.has_swa:
+            return None
+        else:
+            base = base * want // at
+    if requested_ctx > 0 and n_ctx != requested_ctx and base > 0 and not layout.has_swa:
+        base = base * n_ctx // requested_ctx
+    return base
 
 
 @dataclass(frozen = True)
@@ -944,12 +1066,17 @@ def resident_floor_bytes(
     kv_quantised: bool = False,
     kv_bytes_floor: int = 0,
     kv_on_host: bool = False,
+    n_seq: int = 1,
 ) -> int:
     """VRAM needed with EVERY spillable tensor already on the host.
 
     Attention weights, norms, routers, shared experts, the recurrent state, the
     cache and lm_head. Below this, ``-ot`` has nothing left to give and only a
     smaller quant or less context can help.
+
+    ``n_seq`` is the slot count: the recurrent state is one copy PER SEQUENCE
+    (offload_layout.py documents it as such), so a caller that knows its slot
+    count charges it that many times. 1 keeps the old arithmetic.
     """
     if kv_on_host:
         # Both caches follow the same scalar, so neither is VRAM here.
@@ -958,7 +1085,7 @@ def resident_floor_bytes(
         layout.block_resident_bytes
         + layout.lm_head_bytes
         + layout.other_resident_bytes
-        + layout.recurrent_bytes
+        + layout.recurrent_bytes * max(1, n_seq)
         + cache_bytes(layout, n_ctx, kv_quantised = kv_quantised, kv_bytes_floor = kv_bytes_floor)
     )
 
@@ -970,6 +1097,7 @@ def all_resident_bytes(
     kv_quantised: bool = False,
     kv_bytes_floor: int = 0,
     kv_on_host: bool = False,
+    n_seq: int = 1,
 ) -> int:
     """VRAM needed with nothing spilled. token_embd is excluded: it is never
     GPU-resident (llama-model.cpp pins dev_input to the CPU unconditionally)."""
@@ -980,6 +1108,7 @@ def all_resident_bytes(
             kv_quantised = kv_quantised,
             kv_bytes_floor = kv_bytes_floor,
             kv_on_host = kv_on_host,
+            n_seq = n_seq,
         )
         + layout.spillable_bytes
     )
@@ -1250,8 +1379,12 @@ def _per_device_shortfall(
     kv_bytes_floor: int,
     split_weights_per_device: Sequence[int] = (),
     kv_layer_weights: Sequence[int] = (),
+    extra_on_device0: Optional[int] = None,
 ) -> Optional[str]:
     """``None`` when every device provably fits, else why it cannot be shown to.
+
+    ``extra_on_device0`` is what rungs 0 to 2 have left outside the layout on the
+    main device; ``None`` charges the caller's scalar as before.
 
     A pooled budget is not a per-device fit test, and it does not become one just
     because every spillable block was taken. llama.cpp hands out CONTIGUOUS ROW
@@ -1331,7 +1464,11 @@ def _per_device_shortfall(
         # Everything outside the layout sits on the main device, which is
         # devices[0] once -sm none has already pruned the list.
         if device == 0:
-            used += max(0, opts.extra_resident_bytes)
+            used += (
+                _outside_layout_bytes(opts)
+                if extra_on_device0 is None
+                else max(0, extra_on_device0)
+            )
         headroom = max(0, vram_bytes_per_device[device] - _device_reserve(opts, n_ctx))
         if used > headroom:
             return (
