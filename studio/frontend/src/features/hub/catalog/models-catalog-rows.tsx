@@ -633,6 +633,7 @@ export const InventoryRow = memo(function InventoryRow({
       : row.source === "hf_cache" && row.repoId
         ? row.repoId
         : null;
+  const rowCachePath = row.kind === "cache" ? row.cachePath ?? undefined : row.path;
   const canDelete = cacheDeletableRepoId !== null;
   const partialRepoId = row.partial
     ? row.kind === "cache"
@@ -758,12 +759,12 @@ export const InventoryRow = memo(function InventoryRow({
               }
         }
         cachePath={
-          isDataset || !deletableRepoId ? undefined : { repoId: deletableRepoId }
+          isDataset || !deletableRepoId ? undefined : { repoId: deletableRepoId, cachePath: rowCachePath }
         }
         del={deletableRepoId ? {
           title: isDataset ? "Delete cached dataset?" : "Delete cached model?",
           // Datasets have no companion base repo, so only models get a preview.
-          impact: isDataset ? undefined : { repoId: deletableRepoId },
+          impact: isDataset ? undefined : { repoId: deletableRepoId, cachePath: rowCachePath },
           description: (
             <>
               This will remove{" "}
@@ -783,8 +784,6 @@ export const InventoryRow = memo(function InventoryRow({
           onConfirm: async () => {
             // Delete only the copy this row shows: cache rows carry the owning
             // cache path, so pass it through and leave other caches untouched.
-            const rowCachePath =
-              row.kind === "cache" ? (row.cachePath ?? undefined) : undefined;
             if (isDataset) {
               await deleteCachedDataset(deletableRepoId, rowCachePath);
             } else {
