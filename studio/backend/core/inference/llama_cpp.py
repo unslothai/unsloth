@@ -26282,8 +26282,13 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"Could not terminate server descendants: {e}")
 
-    def _kill_process(self):
-        """Terminate the subprocess if running."""
+    def _kill_process(self, *, teardown: bool = False):
+        """Terminate the subprocess if running.
+
+        ``teardown`` marks an app-level stop (shutdown, atexit) rather than the
+        retry ladder reaping a child it is about to replace: only the former may
+        end an in-flight health wait.
+        """
         # Stop the watchdog before a deliberate kill so a planned reload/unload
         # isn't seen as a crash; a real crash never routes through here.
         self._stop_mtp_crash_watchdog()
@@ -26309,6 +26314,13 @@ class LlamaCppBackend:
         _pid = getattr(self._process, "pid", None)
         _pgid = self._leading_process_group(_pid)
         _descendants = self._collect_descendants(_pid)
+        if teardown:
+            # Published BEFORE the signal, not in the finally: the reference stays
+            # set across the waits below, so a concurrent _wait_for_health would
+            # read this deliberate exit as a startup crash and let the caller
+            # respawn during app shutdown. Only the teardown callers set this; the
+            # retry ladder's own reaping must stay recoverable.
+            self._health_wait_torn_down = True
         try:
             if terminable:
                 self._process.terminate()
@@ -26837,7 +26849,7 @@ class LlamaCppBackend:
         return killed
 
     def _cleanup(self):
-        """atexit handler to ensure llama-server is terminated.
+        """atexit handler to ensure llama-server is terminated (a teardown).
 
         Nothing here may report a failure through the logging machinery. By the
         time atexit runs, the streams the handlers write to can already be closed,
@@ -26855,7 +26867,7 @@ class LlamaCppBackend:
         raise_exceptions = logging.raiseExceptions
         logging.raiseExceptions = False
         try:
-            self._kill_process()
+            self._kill_process(teardown = True)
             # TemporaryDirectory's exit hook runs first and cannot delete a staged
             # runtime whose server is alive (Windows locks the exe). Retry post-kill.
             self._cleanup_cpu_fallback_runtime()
@@ -27856,6 +27868,9 @@ class LlamaCppBackend:
         # Why this wait ended, for callers that must tell a cancel apart from a crash:
         # a cancel landing during CPU-fallback staging is not a cancelled wait.
         self._health_wait_cancelled = False
+        # Per-wait, like the flag above: a teardown that reaped an earlier child
+        # must not end the wait belonging to the load that replaced it.
+        self._health_wait_torn_down = False
 
         while time.monotonic() < deadline:
             # unload_model() blocks on self._lock, which the load holds across this wait.
@@ -27876,6 +27891,13 @@ class LlamaCppBackend:
                 return False
             # Process crashed?
             if process.poll() is not None:
+                # A teardown publishes itself before it signals and holds the
+                # reference across its waits, so an exit seen while that flag
+                # stands is deliberate: not a crash, and nothing may respawn.
+                if getattr(self, "_health_wait_torn_down", False):
+                    logger.info("llama-server was torn down while waiting for it to become healthy")
+                    self._health_wait_cancelled = True
+                    return False
                 # Let the drain thread collect final output.
                 if self._stdout_thread is not None:
                     self._stdout_thread.join(timeout = 2)

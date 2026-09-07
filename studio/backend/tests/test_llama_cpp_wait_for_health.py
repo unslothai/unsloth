@@ -165,6 +165,60 @@ class TestWaitForHealthResilience:
             t.join(5.0)
         assert b._health_wait_cancelled is True
 
+    def test_a_signalled_exit_during_teardown_is_not_a_startup_crash(self, monkeypatch):
+        """_kill_process holds the reference across its terminate/wait, so for up to
+        ~10s the loop sees a populated process whose poll() is the SIGTERM code. The
+        None check alone only covers teardown AFTER cleanup finished, so the kill
+        publishes its terminal state before signalling; otherwise -15 reads as a
+        startup crash and the retry ladder respawns a server during shutdown."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+
+        def probe(*a, **kw):
+            # The shutdown thread arriving mid-wait: publish, then signal. The
+            # reference stays set, which is the whole point of the window. Done
+            # here rather than before the call because the wait resets the flag on
+            # entry, so only a teardown landing DURING a wait is this case.
+            b._health_wait_torn_down = True
+            b._process.poll.return_value = -15
+            b._process.returncode = -15
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        with mock.patch("core.inference.llama_cpp.logger") as log:
+            assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
+        assert not any("exited with code" in str(c) for c in log.error.call_args_list)
+
+    @pytest.mark.parametrize("teardown", [True, False])
+    def test_kill_process_publishes_a_teardown_before_it_signals(self, teardown):
+        """The ordering the test above depends on: published before terminate(),
+        not in the finally that clears the reference.
+
+        Only for a teardown. The retry ladder reaps a crashed child through this
+        same method between attempts, and marking that terminal would abort loads
+        the --fit off and CPU fallbacks currently recover."""
+        b = _make_backend()
+        b._health_wait_torn_down = False
+        b._stop_mtp_crash_watchdog = lambda *a, **kw: None
+        b._reset_effective_parallel_slots = lambda *a, **kw: None
+        b._leading_process_group = lambda *a, **kw: None
+        b._collect_descendants = lambda *a, **kw: []
+        b._kill_process_group = lambda *a, **kw: None
+        b._terminate_descendants = lambda *a, **kw: None
+        seen = {}
+
+        def _terminate():
+            # What a racing _wait_for_health would observe at this instant.
+            seen["flag_at_signal"] = b._health_wait_torn_down
+            seen["process_still_set"] = b._process is not None
+
+        b._process.terminate = _terminate
+        b._process.poll.return_value = -15
+        b._kill_process(teardown = teardown)
+        assert seen["process_still_set"] is True, "the window this guards would not exist"
+        assert seen["flag_at_signal"] is teardown, "teardown published late, or a reap marked terminal"
+
     def test_a_crash_still_reports_the_exit_code(self, monkeypatch):
         """The teardown guard must not swallow the crash branch: an exited
         process still has to name its exit code and its output."""

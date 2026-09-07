@@ -1639,7 +1639,7 @@ def _graceful_shutdown(server = None):
     try:
         from routes.inference import _llama_cpp_backend
         if _llama_cpp_backend is not None:
-            _llama_cpp_backend._kill_process()
+            _llama_cpp_backend._kill_process(teardown = True)
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
