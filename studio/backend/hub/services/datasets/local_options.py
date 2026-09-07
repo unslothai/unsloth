@@ -220,8 +220,7 @@ def _snapshot_metadata_file(snapshot: Path, name: str) -> Optional[Path]:
     return path if 0 < size <= _MAX_METADATA_BYTES else None
 
 
-# _read_card_metadata returns this when a card has front matter datasets cannot parse.
-# DatasetCard.load raises on it, so nothing in the snapshot is loadable.
+# DatasetCard.load raises on front matter datasets cannot parse, so nothing in the snapshot is loadable.
 _UNPARSABLE_METADATA = object()
 
 
@@ -238,8 +237,7 @@ def _read_card_metadata(path: Path) -> Any:
         except YAMLError:
             return _UNPARSABLE_METADATA
         if payload is None:
-            # Empty, comment-only or null front matter, which RepoCard reads as an empty
-            # card rather than refusing.
+            # Empty, comment-only or null front matter, which RepoCard reads as an empty card rather than refusing.
             return {}
     except StopIteration:
         # Front matter that never closes is not front matter at all.
@@ -252,24 +250,17 @@ def _read_card_metadata(path: Path) -> Any:
     return payload if isinstance(payload, dict) else _UNPARSABLE_METADATA
 
 
-# --- Split inference for cached datasets whose card declares nothing ------------------
-#
-# datasets resolves a metadata-free directory with get_data_patterns: it tries sharded
-# data/{split}-NNNNN-of-NNNNN files, then directory-name keywords, then filename keywords,
-# and falls back to one train split holding everything. The first stage that names any
-# split wins, and one builder is chosen for all of them. This mirrors that without
-# importing datasets, which dataset_cache.py forbids on cache paths.
-#
-# The contract is that an offered split has to be trainable: anything looser is offered and
-# then 422s, anything tighter hides a usable option. Deliberately tighter in two places,
-# both to keep training inside the cache: a file whose symlink leaves the repository is
-# refused, and only the extensions Unsloth can train on are offered.
+# Mirrors datasets' get_data_patterns (sharded data/{split}-NNNNN files, then directory keywords,
+# then filename keywords, then one train split) without importing datasets, which
+# dataset_cache.py forbids on cache paths.
+# An offered split has to be trainable, and this is deliberately tighter in two places: a file
+# whose symlink leaves the repository is refused, and only trainable extensions are offered.
 
-# Only names are read during the scan, so this can sit well above any real snapshot. Past
-# it the result would depend on traversal order, so nothing is offered.
+# Past this the result would depend on traversal order, so nothing is offered.
+# --- Split inference for cached datasets whose card declares nothing ------------------
 _MAX_SNAPSHOT_DATA_FILES = 200_000
-# datasets drops these by basename before it infers anything, so a metadata-only cache is
-# empty rather than a bogus train split.
+# datasets drops these by basename before it infers anything, so a metadata-only cache is empty
+# rather than a bogus train split.
 _IGNORED_DATA_FILENAMES = frozenset(
     {
         "README.md",
@@ -283,11 +274,11 @@ _IGNORED_DATA_FILENAMES = frozenset(
 # What fsspec can decompress in an Unsloth install, as suffixes that sit after the real one.
 _COMPRESSION_EXTENSIONS = frozenset({".gz", ".gzip", ".bz2", ".xz", ".zip"})
 # Named by datasets but needing codecs an Unsloth install does not ship, so they raise
-# "Compression type not supported" and offering them would put a dead split in the picker.
-# .lzma is the legacy alone-format: datasets registers .xz for its filter, not this.
+# "Compression type not supported" and would put a dead split in the picker; .lzma is the legacy
+# alone-format, for whose filter datasets registers .xz.
 _UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4", ".lzma"})
-# datasets picks one builder for the whole dataset, from the extensions it finds. Splits
-# that disagree make it raise, so a snapshot mixing formats is not offerable at all.
+# datasets picks one builder for the whole dataset, and splits that disagree make it raise, so a
+# snapshot mixing formats is not offerable at all.
 _MODULE_EXTENSIONS = {
     "arrow": ".arrow",
     "csv": ".csv",
@@ -300,19 +291,15 @@ _MODULE_EXTENSIONS = {
     "xml": ".xml",
     "hdf5": ".h5 .hdf5",
 }
-# The folder builders. datasets registers only these in both letter cases, so only their
-# extensions match case-insensitively; everything else is matched by a case-sensitive glob.
+# datasets registers only the folder builders in both letter cases, so only their extensions match case-insensitively.
 _FOLDER_EXTENSIONS = frozenset(
-    # imagefolder
     ".apng .blp .bmp .bufr .bw .cur .dcx .dds .dib .emf .eps .fit .fits .flc .fli .ftc .ftu "
     ".gbr .gif .grib .icb .icns .ico .iim .im .j2c .j2k .jfif .jp2 .jpc .jpe .jpeg .jpf "
     ".jpg .jpx .msp .pbm .pcd .pcx .pgm .png .pnm .ppm .ps .psd .pxr .ras .rgb .rgba .sgi "
     ".tga .tif .tiff .vda .vst .webp .wmf .xbm .xpm "
-    # audiofolder
     ".3g2 .3gp .aiff .asf .au .avr .caf .f4v .flac .flv .htk .ircam .m4v .mat4 .mat5 .mp3 "
     ".mpc2k .mpg .mxf .nist .nut .ogg .ogm .opus .paf .pvf .raw .rf64 .sd2 .sds .svx .voc "
     ".w64 .wav .wavex .webm .wma .wmv .wve .xi "
-    # videofolder and pdffolder
     ".avi .mkv .mov .mp4 .mpeg .pdf".split()
 )
 _EXTENSION_MODULES = {
@@ -321,8 +308,8 @@ _EXTENSION_MODULES = {
 # datasets infers a split's module from its first 200 files, in resolved (sorted) order.
 _MAX_MODULE_INFERENCE_FILES = 200
 # datasets' tie-break once the counts are level, then the extension string itself.
-# TRAINING_DATA_EXTS only ever resolves to these, so any other builder means the
-# snapshot holds nothing trainable and no file needs opening to find that out.
+# TRAINING_DATA_EXTS only ever resolves to these, so any other builder means the snapshot holds
+# nothing trainable.
 _TRAINABLE_MODULES = frozenset({"csv", "json", "parquet"})
 _ROW_PROBE_BYTES = 8192
 _EXTENSION_PRIORITY = (".parquet", ".jsonl", ".json", ".csv")
@@ -348,8 +335,8 @@ _DIR_NAME_KEYWORD_PATTERNS = (
 )
 # data/{split}-NNNNN-of-NNNNN*.*, where a * matches nothing as happily as something.
 _SHARDED_DATA_RE = re.compile(r"^data/(?P<split>[^/]*)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]*$")
-# datasets' own split grammar, which is stricter than the one the picker accepts. A shard
-# named outside it makes the whole snapshot unloadable rather than falling through.
+# datasets' own split grammar is stricter than the one the picker accepts: a shard named outside it
+# makes the whole snapshot unloadable rather than falling through.
 _SHARD_SPLIT_RE = re.compile(r"^\w+(\.\w+)*$")
 
 
@@ -423,15 +410,15 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
         for filename in filenames:
             if filename in _IGNORED_DATA_FILENAMES or filename.startswith("."):
                 continue
-            # resolve_pattern keeps a link only when its target is a file, so a dangling
-            # one is not a file datasets sees, let alone one that condemns its split.
+            # resolve_pattern keeps a link only when its target is a file, so a dangling one is not a file
+            # datasets sees.
             if not (base / filename).is_file():
                 continue
-            # Files with no builder of their own are kept: they cannot win the vote, but a
-            # split holding nothing else is one datasets refuses to build.
+            # Files with no builder of their own are kept: they cannot win the vote, but a split holding nothing
+            # else is one datasets refuses to build.
             if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
-                # Past the cap this is a traversal-order prefix, which cannot be compared
-                # with what the loader would resolve.
+                # Past the cap this is a traversal-order prefix, which cannot be compared with what the loader would
+                # resolve.
                 return None
             found.append(PurePosixPath((relative / filename).as_posix()))
     found.sort(key = lambda path: path.as_posix())
@@ -530,8 +517,8 @@ def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Opt
         resolved = resolved_dataset_snapshot_file(snapshot, path.as_posix())
         if resolved is None or _blocked_by_compression(path.name, module):
             return None
-        # Once a builder is chosen, datasets reads only what that builder claims, so a
-        # training file left behind by a folder builder is not data this split offers.
+        # Once a builder is chosen datasets reads only what that builder claims, so a training file left
+        # behind by a folder builder is not data this split offers.
         if _file_module(path.name) != module or not _trainable_name(path.name):
             continue
         if _empty_payload(resolved):
@@ -540,8 +527,8 @@ def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Opt
         if _rowless(resolved, path.name, module):
             continue
         trainable = True
-    # Every builder but json fails outright on a file with no rows, and datasets prepares
-    # every split before handing one back, so such a file condemns its siblings too.
+    # Every builder but json fails outright on a file with no rows, and datasets prepares every split
+    # before handing one back, so such a file condemns its siblings too.
     if empty and module != "json":
         return None
     return trainable
@@ -642,8 +629,8 @@ def _declares_configs(snapshot: Path, name: str) -> bool:
     if not isinstance(payload, dict):
         # DatasetCardData updates a dict from it, which raises on anything else.
         return bool(payload)
-    # Only configs count: 4.3.0 builds no config from dataset_info declared here, so a
-    # feature schema in this file leaves the loader inferring the files by pattern.
+    # Only configs count: 4.3.0 builds no config from dataset_info declared here, so a feature schema
+    # leaves the loader inferring the files by pattern.
     return bool(payload.get("configs"))
 
 
@@ -662,9 +649,8 @@ def _malformed_info(payload: Any) -> bool:
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     options: set[tuple[str, str]] = set()
 
-    # Metadata we cannot read still names the loader's configs, so inference must not
-    # step in beside it: a card too large or too unsafe to open, or the standalone yaml
-    # file, which datasets reads as a card and we do not.
+    # Metadata we cannot read still names the loader's configs, so inference must not step in beside it:
+    # a card too large or unsafe to open, or the standalone yaml file.
     declared = _unreadable_metadata(snapshot, "README.md") or _declares_configs(
         snapshot, ".huggingface.yaml"
     )
@@ -675,15 +661,15 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             # datasets raises out of DatasetCard.load, so no option here would ever start.
             return options
         if isinstance(card_data, dict):
-            # datasets merges the standalone YAML into the card, so a README that
-            # declares nothing does not undo a declaration made there.
+            # datasets merges the standalone YAML into the card, so a README that declares nothing does not undo
+            # a declaration made there.
             declared = declared or bool(card_data.get("configs"))
             _add_config_options(options, card_data.get("configs"))
             named = len(options)
             info = card_data.get("dataset_info")
             _add_dataset_info_options(options, info)
-            # dataset_info carrying only a feature schema names no config, so datasets
-            # still resolves the files by pattern and inference has to run.
+            # dataset_info carrying only a feature schema names no config, so datasets still resolves the files
+            # by pattern and inference has to run.
             declared = (
                 declared or len(options) > named or _malformed_info(info) or _declares_splits(info)
             )
@@ -691,7 +677,7 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)
         if metadata is None:
-            # datasets json.loads dataset_infos.json unconditionally, so one it cannot
+            # datasets json.loads dataset_infos.json unconditionally while resolving configs, so one it cannot
             # read raises before any split exists, inferred or not.
             declared = declared or (
                 filename == "dataset_infos.json" and _metadata_present(snapshot, filename)
@@ -699,17 +685,16 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             continue
         payload = _safe_json_file(metadata, snapshot, allow_snapshot_symlink = True)
         if filename == "dataset_infos.json":
-            # datasets json.loads this one while resolving configs, so a file it cannot
-            # parse raises before any split exists, inferred or not.
+            # datasets json.loads this one while resolving configs, so a file it cannot parse raises before any
+            # split exists, inferred or not.
             declared = declared or payload is None
             _add_dataset_info_options(options, payload)
         else:
             _add_info_options(options, payload)
 
     if not options and not declared:
-        # Nothing was declared, which is the case #8140 reports: the loader still resolves
-        # the files by pattern, so the picker infers the same splits it would. A card that
-        # did declare something names its own configs, which inference cannot reproduce.
+        # Nothing was declared, the case #8140 reports: the loader still resolves the files by pattern, so
+        # the picker infers the same splits.
         options.update(_inferred_snapshot_options(snapshot))
     return options
 

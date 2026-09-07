@@ -515,30 +515,42 @@ class TestKnown211SetParity:
             ), f"{label} floor gate must not use the unanchored ^rocm(\\d+)\\.(\\d+) prefix"
 
     def test_install_ps1_bounds_unknown_leaf_pinned_torch(self):
-        """install.ps1's pinned-torch install must bound BOTH companions on EVERY
-        index, cu<digits> families included: torchaudio 2.11 dropped its exact torch
-        pin from the wheel metadata, so a bare companion beside torch<2.11 can
-        resolve a mismatched 2.11.0 build (Codex P2, then unconditional per the
-        torchaudio 2.11 unpinning)."""
+        """install.ps1's pinned-torch install must bound the whole trio on EVERY
+        index with the default torch 2.11 line (<2.12 trio, matching install.sh's
+        ceiling-composed default and _CUDA_TORCH_PKG_SPEC): torchaudio 2.11
+        dropped its exact torch pin from the wheel metadata, so a bare companion
+        beside a capped torch can resolve a mismatched build."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert (
-            '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"' in text
-        ), "install.ps1 custom-pin install must bound torchvision (>=0.19,<0.26.0)"
+            '$_pinTorchSpec = "torch>=2.4,<2.12.0"' in text
+        ), "install.ps1 default install must use the torch 2.11 line (<2.12.0)"
         assert (
-            '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"' in text
-        ), "install.ps1 custom-pin install must bound torchaudio (>=2.4,<2.11.0)"
-        # No cu-family exemption: the bounds apply unconditionally.
+            '$_pinVisionSpec = "torchvision>=0.19,<0.27.0"' in text
+        ), "install.ps1 must pair torchvision <0.27.0 with torch <2.12"
+        assert (
+            '$_pinAudioSpec = "torchaudio>=2.4,<2.12.0"' in text
+        ), "install.ps1 must pair torchaudio <2.12.0 with torch <2.12"
         assert (
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
-        # The bounded companions must actually be passed to the install command.
+        # No stale 2.10-line DEFAULT remains. Checked against the default trio's own assignments,
+        # not a blanket "<2.11.0 appears nowhere": Get-XpuTorchSpecs keeps a curated sub-2.11 cap.
+        for _stale in (
+            '$_pinTorchSpec = "torch>=2.4,<2.11.0"',
+            '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"',
+            '$_pinAudioSpec = "torchaudio>=2.4,<2.11.0"',
+            '$_torchSpecs = @("torch>=2.4,<2.11.0"',
+        ):
+            assert (
+                _stale not in text
+            ), f"install.ps1 must not retain the <2.11.0 default torch line: {_stale}"
         # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
-            '$_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)' in text
-        ), "install.ps1 custom-pin install must build the bounded spec list"
+            "$_torchSpecs = @($_pinTorchSpec, $_pinVisionSpec, $_pinAudioSpec)" in text
+        ), "install.ps1 pinned install must build the bounded trio spec list"
         assert (
             "@_torchSpecs --default-index $TorchIndexUrl" in text
-        ), "install.ps1 custom-pin install must pass the bounded companion specs to uv"
+        ), "install.ps1 pinned install must pass the bounded trio specs to uv"
 
     def test_gfx_allowlist_matches_across_installers(self):
         # The gfx 2.11 allowlist {gfx120x-all, gfx1151, gfx1150} must appear in each.
@@ -827,9 +839,9 @@ class TestPinnedIndexClearsUvEnvParity:
         # The custom-leaf branch bounds torch AND both companions (parity with the
         # other installers' custom-pin trio bounds), gated on a non-cu-family leaf.
         for spec in (
-            '$cudaTorchSpec = "torch>=2.4,<2.11.0"',
-            '$cudaVisionSpec = "torchvision>=0.19,<0.26.0"',
-            '$cudaAudioSpec = "torchaudio>=2.4,<2.11.0"',
+            '$cudaTorchSpec = "torch>=2.4,<2.12.0"',
+            '$cudaVisionSpec = "torchvision>=0.19,<0.27.0"',
+            '$cudaAudioSpec = "torchaudio>=2.4,<2.12.0"',
         ):
             assert spec in text, f"setup.ps1 must bound the custom-leaf trio: {spec}"
         assert (
@@ -1074,3 +1086,112 @@ class TestAmdBnbFloorParity:
             assert (
                 "4-bit QLoRA needs a source build" in text
             ), f"{name} must tell aarch64 users 4-bit needs a source build"
+
+
+class TestInstallUvCacheRootParity:
+    """Both top-level installers must expose the same automatic cache policy."""
+
+    def test_option_and_environment_names_match(self):
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        for source in (sh, ps1):
+            assert "--isolated-uv-cache" in source
+            assert "UNSLOTH_ISOLATE_UV_CACHE" in source
+            assert "--isolated-uv-cache" in source[:1200]
+            assert "UNSLOTH_ISOLATE_UV_CACHE" in source[:1200]
+
+        assert "_ISOLATE_UV_CACHE=false" in sh
+        assert "--isolated-uv-cache) _ISOLATE_UV_CACHE=true" in sh
+        assert "$IsolateUvCache = $false" in ps1
+        assert '"--isolated-uv-cache" { $IsolateUvCache = $true }' in ps1
+        assert "$env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')" in ps1
+
+    def test_selectors_share_precedence_markers_modes_and_messages(self):
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
+        for source in (sh, ps1):
+            for marker in ("CACHEDIR.TAG", ".gitignore"):
+                assert marker in source
+            for mode in ("custom", "shared", "studio", "isolated"):
+                assert f'"{mode}"' in source or f"'{mode}'" in source or f"={mode}" in source
+            for message in (
+                "preserving custom UV_CACHE_DIR",
+                "reusing existing shared cache",
+                "avoid duplicate Torch/CUDA downloads",
+                "using new Studio-owned cache",
+                "already-cached packages may download again",
+                "so cached packages may download again",
+            ):
+                assert message in source
+            # Both selectors must agree: a metadata-only cache is cold.
+            for bucket in ("archive", "builds", "built-wheels", "wheels", "sdists"):
+                assert bucket in source, bucket
+            for metadata_suffix in (".msgpack", ".http", ".rev", ".lock"):
+                assert metadata_suffix in source, metadata_suffix
+
+        assert "${XDG_CACHE_HOME}/uv" in sh
+        assert "${HOME}/.cache/uv" in sh
+        assert 'Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"' in ps1
+        selector = ps1.split("function Set-StudioUvCacheEnvironment", 1)[1].split(
+            "function Set-StudioUvCacheForLaunch", 1
+        )[0]
+        assert "Get-ChildItem -LiteralPath $sharedCache -Directory -Force" in selector
+        assert "Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force" in selector
+        # Must not fail closed: one denied subdirectory would read as an empty cache.
+        assert "-ErrorAction SilentlyContinue -ErrorVariable scanErrors" in selector
+        assert "-ErrorAction Stop" not in selector.split("foreach ($bucket in $buckets)", 1)[1]
+        # -L on the sh side for the same reason Get-ChildItem -Recurse follows links.
+        assert "find -L " in sh
+
+    def test_shell_order_wsl_handoff_and_autostart_boundary(self):
+        source = INSTALL_SH.read_text(encoding = "utf-8")
+        resolved = source.index("\n_resolve_studio_destinations\n")
+        uv_setup = source.index("\n# ── Install uv ──\n")
+        configured = source.index("\n_configure_uv_cache\n", uv_setup)
+        launch_boundary = source.index("_prepare_studio_uv_cache_for_launch\n", configured)
+        autostart = source.index(
+            '(trap - INT; exec "$VENV_DIR/bin/unsloth" studio', launch_boundary
+        )
+
+        assert "_configure_uv_cache() {" in source
+        assert "_prepare_studio_uv_cache_for_launch() {" in source
+        assert resolved < uv_setup < configured < launch_boundary < autostart
+        reroute = source.split("_maybe_reroute_strixhalo_to_2404() {", 1)[1].split(
+            "_maybe_reroute_strixhalo_to_2404 || true", 1
+        )[0]
+        assert "export UNSLOTH_ISOLATE_UV_CACHE=1" in reroute
+        assert "unset UV_CACHE_DIR" in reroute
+        assert 'case "${UV_CACHE_DIR-}" in' in reroute
+        assert "*[![:space:]]*)" in reroute
+
+    def test_powershell_order_handoff_and_restoration(self):
+        source = INSTALL_PS1.read_text(encoding = "utf-8")
+        resolved = source.index('$VenvDir = Join-Path $StudioHome "unsloth_studio"')
+        captured = source.index("$hadPreviousUvCacheDir =")
+        uv_setup = source.index("if (-not (Test-UvVersionOk))", captured)
+        configured = source.index(
+            "Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache",
+            uv_setup,
+        )
+        tauri_return = source.index("if ($TauriMode)", configured)
+        handoff = source.index("Set-StudioUvCacheForLaunch -StudioRoot $StudioHome", tauri_return)
+        autostart = source.index("$studioAutoStartProcess = Start-Process", handoff)
+        restored = source.index("Restore-StudioUvCacheEnvironment -WasPresent", autostart)
+
+        assert (
+            resolved
+            < captured
+            < uv_setup
+            < configured
+            < tauri_return
+            < handoff
+            < autostart
+            < restored
+        )
+        selector = source.split("function Set-StudioUvCacheEnvironment", 1)[1].split(
+            "function Set-StudioUvCacheForLaunch", 1
+        )[0]
+        assert "Read-Host" not in selector
+        assert "Set-StudioUvCacheForLaunch" in source
+        assert "Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $PreviousValue" in source
+        assert "Remove-Item -LiteralPath Env:UV_CACHE_DIR" in source

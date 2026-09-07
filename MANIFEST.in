@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# The only veto that travels inside the sdist, so it holds for the wheel too:
+# `python -m build` rebuilds the wheel from the sdist, where exclude-package-data
+# and packages.find no longer bite (no .git tree for the file finder).
+prune tests
+prune studio/backend/tests
+prune studio/backend/hub/tests
+prune studio/frontend/tests
+prune unsloth_cli/tests
+prune unsloth/kernels/moe/tests
+
+# Backstop for a suite added anywhere else later. `prune` and a `*` glob are both
+# single-level, so this needs `**`, and it cannot see a root-level tests/ at all.
+global-exclude */tests/**

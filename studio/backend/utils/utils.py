@@ -19,9 +19,11 @@ from utils.paths.path_utils import is_appledouble_metadata
 logger = get_logger(__name__)
 
 
+# An offline load must never touch the network (a DNS-dead session hangs on hub retries), so
+# these read the local HF cache.
+
 # ── Offline / HF-cache helpers ──────────────────────────────────
 # An offline load must never touch the network (a DNS-dead session hangs on hub retries); these read the local HF cache.
-
 _HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
@@ -38,6 +40,24 @@ def hf_env_offline() -> bool:
         if os.environ.get(var, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES:
             return True
     return False
+
+
+def anonymous_and_offline(hf_token) -> bool:
+    """The one condition under which a Hub-reaching request can only be answered by disk.
+
+    ``token=False`` denies authentication, not the cache: offline, huggingface_hub and
+    datasets both resolve a previously downloaded private repo without ever authorizing.
+    A caller holding the anonymous sentinel has no network to establish access over, so
+    every downstream read is a disk read it never earned.
+
+    Guarding this at the route entry rather than at each call site is deliberate. The
+    per-site version was fixed six times -- the snapshot walk, the config probes, the
+    embedding marker, the GGUF listing, the preview slices, AutoConfig -- and each fix
+    only moved the boundary to the next reader. This states the rule once, before any of
+    them run, so a path nobody has enumerated is covered too.
+    """
+    from hub.utils.hf_tokens import is_anonymous
+    return is_anonymous(hf_token) and hf_env_offline()
 
 
 def canonical_model_repo_id(model_name: str) -> str:
@@ -78,7 +98,7 @@ def _stdlib_proxy_for_url(url: str) -> Optional[str]:
         if proxy_bypass(host):
             return None
     except Exception:
-        pass  # a bypass lookup that fails is not a bypass
+        pass
     proxies = {k.lower(): v for k, v in getproxies().items()}
     scheme = (parsed.scheme or "https").lower()
     # select_proxy order: scheme://host, then scheme, then the all catch-all.
@@ -219,7 +239,7 @@ def hf_tcp_reachable(timeout: float = 3.0, endpoint: Optional[str] = None) -> bo
 
     host, port = hf_connect_target(endpoint)
     if not host:
-        return True  # no target to test: a config problem, not a dead network
+        return True
     try:
         with _socket.create_connection((host, port), timeout = timeout):
             return True
@@ -228,7 +248,7 @@ def hf_tcp_reachable(timeout: float = 3.0, endpoint: Optional[str] = None) -> bo
     except OSError:
         return False
     except Exception:
-        return True  # not a socket answer (bad port, None host): inconclusive, fail open
+        return True
 
 
 def hf_dns_dead(timeout: float = 2.0) -> bool:
@@ -306,9 +326,7 @@ def hf_unreachable(timeout: int = 3) -> bool:
         try:
             from utils.transformers_version import hf_endpoint_unreachable
 
-            # Both flags off for the same reason: an ambiguous answer must not force offline. Through a proxy
-            # a clean timeout only means slow and the hub client's longer request may succeed, so an uncached
-            # load must not be turned cache-only here. Matches the worker's call.
+            # Both flags off for the same reason: an ambiguous answer must not force offline.
             unreachable = hf_endpoint_unreachable(
                 timeout,
                 gateway_errors_offline = False,
@@ -695,11 +713,8 @@ def checkpoint_directory_is_complete(root: Path, weights = None) -> bool:
             if relative.is_absolute() or ".." in relative.parts:
                 continue
             module_root = root.joinpath(*relative.parts)
-            # A declared module the directory does not have at all is a torn
-            # checkpoint, whatever the others hold: checking only roots that
-            # carry weights passed one missing 0_Transformer entirely.
-            # Existence is the whole test, since config-only modules such as
-            # Pooling have no weight family.
+            # A declared module the directory lacks entirely is a torn checkpoint whatever the others hold; existence is
+            # the whole test, since config-only modules have no weight family.
             if module_root != root and not module_root.is_dir():
                 return False
             if any(path == module_root or module_root in path.parents for path in weights):
@@ -771,10 +786,8 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
             # unrelated .incomplete blob left under the repository by another
             # revision or scoped GGUF job.
             return download_manifest.verify_against_disk(manifest, snapshot).ok
-        # No manifest: every model on disk before this build is such a cache.
-        # Judge THIS snapshot's own links, not every blob in the cache directory it
-        # shares, or a stray .incomplete from another revision condemns a model
-        # that is fully present.
+        # Judge THIS snapshot's own links, not every blob in the shared cache directory, or a stray .incomplete from
+        # another revision condemns a model that is fully present.
         if snapshot_has_broken_symlinks(snapshot):
             return False
 
@@ -782,25 +795,23 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
     except OSError:
         return False
     except Exception:
-        # Completeness is a safety property here: an unprovable partial must keep
-        # the pending marker so the loader cannot silently reach the network.
+        # Completeness is a safety property here: an unprovable partial must keep the pending marker so
+        # the loader cannot silently reach the network.
         return False
+
+
+# Never return raw exception text to clients: log server-side, return generic.
 
 
 # ── Client-safe error helpers ───────────────────────────────────
 # Never return raw exception text to clients; log server-side, return generic.
-
-
 def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
     """Map an exception to a generic, client-safe message (never raw
     ``str(error)``, which can leak paths). Log the real exception server-side.
     """
-    # A mid-stream llama-server failure carries a message that was written to be shown,
-    # so the leak this function guards against does not apply to it. Without this the
-    # non-streaming paths reduced it to the fallback while streaming clients got the
-    # cause, which is the same "reaches the user stripped of its reason" defect one layer
-    # further out. Imported lazily: utils is low level and must not depend on
-    # core.inference at import time.
+    # A mid-stream llama-server failure carries a message that was written to be shown
+    # Without this the non-streaming paths reduced it to the fallback while streaming clients got the cause. Imported
+    # lazily: utils is low level and must not depend on core.inference at import time.
     try:
         from core.inference.stream_errors import LlamaStreamError  # noqa: PLC0415
         if isinstance(error, LlamaStreamError) and error.friendly:
@@ -839,6 +850,7 @@ def log_and_http_error(
     *,
     event: str = "request_failed",
     log = None,
+    headers: Optional[dict] = None,
 ):
     """Log ``error`` in full server-side and return an ``HTTPException`` whose
     ``detail`` is only ``public_message`` -- never the raw exception text.
@@ -847,9 +859,15 @@ def log_and_http_error(
     """
     from fastapi import HTTPException
 
-    # exc_info=error works for both structlog and stdlib loggers.
-    (log or logger).error(f"{event}: {error}", exc_info = error)
-    return HTTPException(status_code = status_code, detail = public_message)
+    # A 4xx is a normal outcome the caller handles.
+    # One warning line and no traceback: at error with exc_info, one generation buried the log under 54 rejected saves.
+    # 5xx keeps the traceback, and exc_info works for structlog too.
+    emitter = log or logger
+    if 400 <= status_code < 500:
+        emitter.warning(f"{event}: {error}")
+    else:
+        emitter.error(f"{event}: {error}", exc_info = error)
+    return HTTPException(status_code = status_code, detail = public_message, headers = headers)
 
 
 @contextmanager
@@ -950,12 +968,12 @@ def format_error_message(error: Exception, model_name: str) -> str:
     if (
         "out of memory" in error_str
         or "out of device memory" in error_str
-        or "out_of_device_memory" in error_str  # ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY
-        or "out_of_host_memory" in error_str  # ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY
+        or "out_of_device_memory" in error_str
+        or "out_of_host_memory" in error_str
         or "not enough memory" in error_str
         or "cannot allocate memory" in error_str
         or "memory allocation failed" in error_str
-        or "cublas_status_alloc_failed" in error_str  # cuBLAS workspace OOM
+        or "cublas_status_alloc_failed" in error_str
         or ("cuda error" in error_str and "alloc" in error_str)
         or ("xpu" in error_str and ("alloc" in error_str or "memory" in error_str))
         or isinstance(error, MemoryError)

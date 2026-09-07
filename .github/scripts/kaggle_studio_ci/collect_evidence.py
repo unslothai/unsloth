@@ -154,8 +154,8 @@ def main() -> int:
 
     missing = [i for i in range(1, total + 1) if i not in chunks]
     if missing:
-        # Report rather than guess. A bundle reassembled out of a truncated
-        # log decodes to something, and that something is not the evidence.
+        # A bundle reassembled from a truncated log decodes to something, and that something is not the evidence.
+        # Report rather than guess.
         print(
             f"[evidence] {len(missing)} of {total} chunks are missing "
             f"(first: {missing[0]}), so the bundle is incomplete and is not "

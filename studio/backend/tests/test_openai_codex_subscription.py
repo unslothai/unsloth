@@ -1539,6 +1539,85 @@ def _codex_chat_gate(
     return excinfo.value
 
 
+def test_codex_chat_receives_the_current_date(monkeypatch):
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf
+
+    model = get_provider_info("openai_codex")["default_models"][0]
+    monkeypatch.setattr(
+        inf.providers_db,
+        "get_provider",
+        lambda _pid: {
+            "id": _pid,
+            "provider_type": "openai_codex",
+            "base_url": OPENAI_CODEX_API_BASE,
+            "display_name": "ChatGPT subscription",
+            "is_enabled": True,
+            "models": [model],
+        },
+    )
+    monkeypatch.setattr(codex_auth, "load_oauth_bundle", lambda _pid: {"account_id": "acct-1"})
+    monkeypatch.setattr(codex_client, "subscription_catalog_matches_account", lambda *_args: True)
+    monkeypatch.setattr(codex_client, "subscription_catalog_known", lambda _pid: False)
+    monkeypatch.setattr(codex_client, "subscription_catalog_stale", lambda _pid: False)
+    monkeypatch.setattr(codex_client, "saved_models_proven_for", lambda *_args: True)
+
+    async def _resolve_access(_provider_id, **_kwargs):
+        return "token", "acct-1"
+
+    monkeypatch.setattr(codex_auth, "resolve_access", _resolve_access)
+    captured = {}
+
+    class FakeCodexClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def stream(self, **kwargs):
+            captured.update(kwargs)
+
+            async def _stream():
+                yield 'data: {"type":"response.completed"}'
+
+            return _stream()
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(codex_client, "OpenAICodexClient", FakeCodexClient)
+    monkeypatch.setattr(
+        inf,
+        "current_date_prompt_line",
+        lambda **_kwargs: "The current date is 2026-08-15.",
+    )
+
+    async def _is_disconnected():
+        return False
+
+    request = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(skip_api_monitor = True),
+        is_disconnected = _is_disconnected,
+    )
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        provider_id = "codex-1",
+        external_model = model,
+        stream = True,
+    )
+
+    async def _run():
+        response = await inf._proxy_to_external_provider(payload, request, current_subject = "t")
+        return [chunk async for chunk in response.body_iterator]
+
+    asyncio.run(_run())
+
+    assert captured["messages"][0] == {
+        "role": "system",
+        "content": "The current date is 2026-08-15.",
+    }
+    assert captured["messages"][1] == {"role": "user", "content": "hello"}
+
+
 def test_chat_accepts_a_plan_listed_slug_the_seed_does_not_carry(monkeypatch):
     """A slug the picker offered and the provider routes saved must be chattable.
 

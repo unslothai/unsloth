@@ -35,6 +35,7 @@ import {
   useTheme,
 } from "@/features/settings";
 import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
+import { TauriRepairContext } from "@/hooks/tauri-repair-context";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
@@ -47,6 +48,7 @@ import {
   type CSSProperties,
   type ReactNode,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -423,6 +425,11 @@ function TauriUpdateLayer({
       // cards still land on 16px, since the box sits on the floor and the
       // bottom gutter carries them back up.
       className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+      // The rail is measured from the outside, per card, by
+      // tests/studio/playwright_update_banner_layout.py. Reaching it through
+      // whichever banner happens to be up finds nothing when none is, which is
+      // exactly the state the download panel has to be judged in.
+      data-testid="overlay-rail"
       // Block gutter in px, never a spacing utility: those are rem, and at any
       // root but 16px the cards would drift off the corner. Across stays a
       // utility, since px-3 and -mx-3 cancel whatever a rem is worth.
@@ -435,6 +442,8 @@ function TauriUpdateLayer({
       <UpdateBanner
         status={update.status}
         info={update.info}
+        preparation={update.preparation}
+        logs={update.logs}
         dismissed={update.dismissed}
         lastFailure={update.lastFailure}
         isExternalServer={isExternalServer}
@@ -474,6 +483,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-mac-titlebar-height": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
   "--studio-desktop-titlebar-height": NATIVE_MAC_TITLEBAR_HEIGHT_VAR,
+  "--studio-titlebar-navigation-margin-top": "4px",
   "--studio-titlebar-navigation-offset-y": "4px",
   "--studio-mac-traffic-light-inset": NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR,
   "--studio-collapsed-chat-controls-inset": `calc(110px + ${NATIVE_MAC_TRAFFIC_LIGHT_INSET_VAR})`,
@@ -564,7 +574,25 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     retryInstall,
     approveElevation,
     copyDiagnostics,
+    startRepair,
   } = useTauriBackend();
+
+  // Settings' manual repair reruns the INSTALLER, not `studio update`: an update reuses the
+  // environment it finds, so a venv whose PyTorch was replaced by a CPU-only wheel comes back
+  // from a successful update still CPU-only.
+  //
+  // Through a ref, not a dependency: startRepair is a plain function declaration rebuilt on
+  // every render, so listing it would give the context a new identity on each status tick and
+  // pinning it with [] would freeze the first render's closure.
+  const startRepairRef = useRef(startRepair);
+  startRepairRef.current = startRepair;
+  const repairController = useMemo(
+    () => ({
+      repairInstall: () => startRepairRef.current({ forceInstaller: true }),
+      isExternalServer,
+    }),
+    [isExternalServer],
+  );
 
   const appliedWindowModeRef = useRef<TauriWindowMode | null>(null);
   const hasEnteredAppModeRef = useRef(false);
@@ -725,6 +753,11 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           // padding. The cards still land on 16px, since the box sits on the
           // floor and the bottom gutter carries them back up.
           className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+          // The rail is measured from the outside, per card, by
+          // tests/studio/playwright_update_banner_layout.py. Reaching it through
+          // whichever banner happens to be up finds nothing when none is, which is
+          // exactly the state the download panel has to be judged in.
+          data-testid="overlay-rail"
           // Block gutter in px, never a spacing utility: those are rem, and at
           // any root but 16px the cards would drift off the corner.
           style={{
@@ -790,10 +823,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   // alike, and a declined quit puts the user back where they were rather than remounting
   // the tree under them.
   const content = (
-    <>
+    <TauriRepairContext.Provider value={repairController}>
       {shell}
       {closing && <ClosingScreen />}
-    </>
+    </TauriRepairContext.Provider>
   );
 
   const chromeVars = (

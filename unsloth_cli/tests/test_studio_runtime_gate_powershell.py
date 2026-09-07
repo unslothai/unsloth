@@ -50,12 +50,11 @@ def test_returns_the_bare_name_as_a_last_resort(monkeypatch, tmp_path):
     assert resolve_windows_powershell() == "powershell.exe"
 
 
-# ── the callers ────────────────────────────────────────────────────────────────────
-#
-# Resolving in the gate alone does not fix #9440: setup() and update() both run the gate and
-# then hand off to PowerShell again, so every spawn on that path has to use the resolver or the
-# install dies at the next one with the same WinError 2.
+# The callers. Resolving in the gate alone does not fix #9440: setup() and update() both run the
+# gate and then hand off to PowerShell again, so every spawn on that path has to use the resolver
+# or the install dies at the next one with the same WinError 2.
 
+# ── the callers ────────────────────────────────────────────────────────────────────
 _RESOLVED = ntpath.join(r"C:\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 
 

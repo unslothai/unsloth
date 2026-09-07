@@ -152,6 +152,13 @@ import _platform_compat  # noqa: F401
 
 from loggers import get_logger, install_uvicorn_duplicate_exception_filter
 from startup_banner import print_studio_access_banner, print_studio_stop_hint
+from utils.host_policy import (
+    is_wildcard_host,
+    normalize_wildcard_bind_host,
+    resolved_bind_address_count,
+    wildcard_ip_versions,
+    wildcard_loopback_host,
+)
 
 logger = get_logger(__name__)
 
@@ -169,16 +176,41 @@ def public_check_disabled() -> bool:
     return os.environ.get(DISABLE_PUBLIC_CHECK_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
+def _resolve_lan_ip(ip_version: int = 4) -> str:
+    """This machine's own LAN-facing address. No third-party network call.
+
+    Discovery is a UDP route lookup plus the active interfaces; the lookup only
+    fixes the local end of the socket and sends no packet.
+    """
+    from lan_access import detect_lan_addresses
+
+    try:
+        addresses = detect_lan_addresses(ip_version)
+    except Exception:
+        addresses = []
+    if addresses:
+        return addresses[0]
+    return "0.0.0.0" if ip_version == 4 else "::"
+
+
 def _resolve_external_ip() -> str:
     """Resolve the machine's external IP address.
 
     Tries, in order:
     1. GCE metadata server (instant on Google Cloud VMs)
     2. ifconfig.me (anywhere with internet, skipped by UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK)
-    3. LAN IP via UDP socket trick (fallback)
+    3. The default route's own source address (fallback)
+
+    This is the machine's INTERNET-facing address, used for the reachability
+    probe and the Cloudflare messaging -- not for "another device on your
+    network," which _network_share_host_for_bind answers instead. Step 3 stays
+    a raw route lookup rather than _resolve_lan_ip: that one filters out every
+    address a LAN peer cannot open (WSL's NAT side, link-local), which is the
+    right policy for an address we advertise and the wrong one for a last-resort
+    answer to "where am I".
     """
-    import urllib.request
     import socket
+    import urllib.request
 
     # 1. GCE metadata server (<10ms on GCE, times out fast elsewhere).
     try:
@@ -203,7 +235,8 @@ def _resolve_external_ip() -> str:
         except Exception:
             pass
 
-    # 3. Fallback: LAN IP via UDP socket trick
+    # 3. Fallback: the source address the default route picks. A UDP connect only
+    # fixes the local end of the socket; nothing is sent to the target.
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -214,16 +247,21 @@ def _resolve_external_ip() -> str:
         return "0.0.0.0"
 
 
-def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> None:
-    """Rewrite Uvicorn's startup log line: swap wildcard bind for the
-    externally-reachable address, use our Mac-aware stop hint, and rename the
-    prefix to "Unsloth Studio running on"."""
+def _install_uvicorn_startup_log_rewrite(bind_host: str) -> None:
+    """Rewrite Uvicorn's startup log line: swap a wildcard bind for the address
+    this machine answers on, use our Mac-aware stop hint, and rename the prefix
+    to "Unsloth Studio running on".
+
+    The line is a claim about where the server is reachable, so the address is
+    _network_share_host_for_bind's, resolved here rather than passed in so no
+    caller can hand it the internet-facing one (#8868). With no LAN address to
+    name, the guard below leaves uvicorn's raw wildcard.
+    """
     import logging
     import re
 
-    rewrite_host = (
-        bind_host in ("0.0.0.0", "::") and bool(display_host) and display_host != bind_host
-    )
+    display_host = _network_share_host_for_bind(bind_host)
+    rewrite_host = is_wildcard_host(bind_host) and bool(display_host) and display_host != bind_host
     new_suffix = "(To stop: press Ctrl+C -- on macOS, Control+C not Command+C)"
     old_suffix_re = re.compile(r"\(Press CTRL\+C to quit\)")
     old_prefix = "Uvicorn running on "
@@ -374,7 +412,7 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
     import urllib.parse
     import urllib.request
 
-    if not display_host or display_host in ("0.0.0.0", "::"):
+    if not display_host or is_wildcard_host(display_host):
         return
 
     use_color = _stdout_color_ok()
@@ -409,7 +447,7 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         return
 
     try:
-        qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})
+        qs = urllib.parse.urlencode({"host": f"{_url_host(display_host)}:{port}", "max_nodes": 3})
         req = urllib.request.Request(
             f"https://check-host.net/check-tcp?{qs}",
             headers = {
@@ -519,17 +557,70 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
 
 
 def _display_host_for_bind(host: str) -> str:
-    return _resolve_external_ip() if host in ("0.0.0.0", "::") else host
+    wildcard_versions = wildcard_ip_versions(host)
+    if not wildcard_versions:
+        return host
+    ipv4_display_host = None
+    if 4 in wildcard_versions:
+        ipv4_display_host = _resolve_external_ip()
+        if not is_wildcard_host(ipv4_display_host):
+            return ipv4_display_host
+    if 6 in wildcard_versions:
+        from lan_access import detect_lan_addresses
+        addresses = detect_lan_addresses(6)
+        if addresses:
+            return addresses[0]
+    return ipv4_display_host or "::"
+
+
+def _network_share_host_for_bind(host: str) -> str:
+    """The address to hand another device on this LAN, or to build the API
+    panel's direct base URL from.
+
+    Deliberately not _display_host_for_bind: that answers "what is this
+    machine's internet-facing address" (right for the reachability probe and the
+    Cloudflare line), and for a wildcard bind that can be a public WAN IP a LAN
+    peer cannot route to (#8868). Only a family the wildcard actually binds is
+    resolved, so an IPv6-only launch is never advertised at an IPv4 address.
+    """
+    wildcard_versions = wildcard_ip_versions(host)
+    if not wildcard_versions:
+        return host
+    for ip_version in wildcard_versions:
+        lan_host = _resolve_lan_ip(ip_version)
+        if not is_wildcard_host(lan_host):
+            return lan_host
+    return host
 
 
 def _loopback_bind_host_for(host: str) -> str:
-    return "::1" if host == "::" else "127.0.0.1"
+    return wildcard_loopback_host(host) or "127.0.0.1"
 
 
 def _url_host(host: str) -> str:
+    url_host = host.replace("%", "%25")
     return (
-        f"[{host}]" if ":" in host and not (host.startswith("[") and host.endswith("]")) else host
+        f"[{url_host}]"
+        if ":" in url_host and not (url_host.startswith("[") and url_host.endswith("]"))
+        else url_host
     )
+
+
+def _direct_server_url(host: str, port: int) -> "Optional[str]":
+    """The API panel's direct (non-tunnel) base, or None when this launch has no
+    address worth publishing.
+
+    The frontend prefers any non-null server_url over the origin the client
+    reached, so publishing ``http://0.0.0.0:<port>`` (a wildcard bind with no LAN
+    address: WSL behind NAT, loopback-only) would put an unroutable address in
+    the API examples, the desktop agent command and a copied preview link.
+    """
+    if not port or port <= 0:
+        return None
+    share_host = _network_share_host_for_bind(host)
+    if is_wildcard_host(share_host):
+        return None
+    return f"http://{_url_host(share_host)}:{port}"
 
 
 def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
@@ -554,7 +645,7 @@ def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]")
         )
     from utils.host_policy import is_external_host
 
-    if host in ("0.0.0.0", "::") or is_external_host(host):
+    if is_external_host(host):
         return (
             f"Server-side tools are {state} and this port is network-reachable. "
             "Anyone who can reach it with the API key can run code on this "
@@ -596,12 +687,15 @@ def _emit_startup_output(
     if secure:
         _emit_secure_startup_output(port, enable_tools)
         return
-    wildcard_bind = host in ("0.0.0.0", "::")
+    wildcard_bind = is_wildcard_host(host)
     localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
     print_studio_access_banner(
         port = port,
         bind_host = host,
         display_host = display_host,
+        # The "from another device on your network" line needs the LAN address,
+        # not display_host's possibly-public one (#8868).
+        network_host = _network_share_host_for_bind(host),
         include_stop_hint = False,
         lan_addresses = lan_addresses,
     )
@@ -761,11 +855,10 @@ def _addresses_collide(recorded: "str | None", host: str, port: int) -> bool:
     *recorded* may list several addresses. Unknown or wildcard on either side
     collides: refusing with a clear message beats silently starting a duplicate.
     """
-    wildcards = ("0.0.0.0", "::", "")
-    if not recorded or host in wildcards:
+    if not recorded or is_wildcard_host(host):
         return True
     listed = {a.strip() for a in recorded.split(",") if a.strip()}
-    if not listed or listed & set(wildcards):
+    if not listed or any(is_wildcard_host(address) for address in listed):
         return True
     return bool(listed & _bind_addresses(host, port))
 
@@ -781,18 +874,32 @@ def _is_port_free(host: str, port: int) -> bool:
 
     # 1. Can we bind to the requested address? getaddrinfo resolves both
     #    IPv4 and IPv6 to the right address family.
+    sockets = []
     try:
         addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-        family, socktype, proto, _, sockaddr = addr_info[0]
-        with socket.socket(family, socktype, proto) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(sockaddr)
+        seen = set()
+        for family, socktype, proto, _, sockaddr in addr_info:
+            key = (family, socktype, proto, sockaddr)
+            if key in seen:
+                continue
+            seen.add(key)
+            probe = socket.socket(family, socktype, proto)
+            sockets.append(probe)
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
+                probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            probe.bind(sockaddr)
+        if not sockets:
+            return False
     except OSError:
         return False
+    finally:
+        for probe in sockets:
+            probe.close()
 
     # 2. On a wildcard bind, verify localhost isn't already claimed by another
     #    process (e.g. an SSH -L tunnel); a successful connect means it is.
-    if host in ("0.0.0.0", "::"):
+    if is_wildcard_host(host):
         for loopback, family in [
             ("127.0.0.1", socket.AF_INET),
             ("::1", socket.AF_INET6),
@@ -1968,7 +2075,7 @@ def _cloudflare_tunnel_should_start(
         return False
     if secure:
         return True
-    return host in ("0.0.0.0", "::") and not api_only
+    return is_wildcard_host(host) and not api_only
 
 
 def _final_bound_port(server, requested_port: int) -> int:
@@ -1981,6 +2088,23 @@ def _final_bound_port(server, requested_port: int) -> int:
             if isinstance(address, tuple) and len(address) >= 2 and int(address[1]) > 0:
                 return int(address[1])
     raise RuntimeError("Uvicorn did not expose its final bound port")
+
+
+def _bound_request_host(server) -> str:
+    """Return a literal address from Uvicorn's active listener sockets."""
+    for listener in getattr(server, "servers", ()):
+        for sock in getattr(listener, "sockets", ()) or ():
+            address = sock.getsockname()
+            if not isinstance(address, tuple) or not address or not isinstance(address[0], str):
+                continue
+            host = address[0]
+            loopback_host = wildcard_loopback_host(host)
+            if loopback_host is not None:
+                return loopback_host
+            if len(address) >= 4 and address[3] and ":" in host and "%" not in host:
+                return f"{host}%{address[3]}"
+            return host
+    raise RuntimeError("Uvicorn did not expose its bound address")
 
 
 _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
@@ -2307,6 +2431,9 @@ def run_server(
     """
     global _server, _server_thread, _shutdown_event
 
+    if not isinstance(host, str) or not host.strip():
+        raise SystemExit("--host cannot be empty; use 0.0.0.0 to bind every IPv4 interface.")
+
     boot_started = time.perf_counter()
 
     # --secure exposes ONLY the Cloudflare link, so --secure --no-cloudflare contradicts
@@ -2317,6 +2444,16 @@ def run_server(
         raise SystemExit(
             "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare."
         )
+    if not secure:
+        try:
+            host = normalize_wildcard_bind_host(host)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from None
+        if port == 0 and resolved_bind_address_count(host) > 1:
+            raise SystemExit(
+                "--port 0 cannot be used when --host resolves to multiple bind addresses; "
+                "choose an explicit port."
+            )
 
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8. Before the tee, so
     # it reaches the console stream rather than the wrapper.
@@ -2557,9 +2694,10 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
-    # Resolve once; shared by the log rewrite and banner.
+    # For the banner and the reachability probe; the startup log line resolves
+    # its own, LAN-only, answer.
     display_host = _display_host_for_bind(host)
-    _install_uvicorn_startup_log_rewrite(host, display_host)
+    _install_uvicorn_startup_log_rewrite(host)
     # LoggingMiddleware already logs every unhandled request exception with its full
     # traceback as a structured event; without this uvicorn prints the same traceback
     # again on stderr and the desktop shell copies it into tauri.log line by line.
@@ -2614,12 +2752,9 @@ def run_server(
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
     # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
+    app.state.server_request_host = None
     # Direct (non-tunnel) base for the API panel; resolve wildcard binds to the LAN IP.
-    if port and port > 0:
-        _direct_host = _display_host_for_bind(host)
-        app.state.server_url = f"http://{_url_host(_direct_host)}:{port}"
-    else:
-        app.state.server_url = None
+    app.state.server_url = _direct_server_url(host, port)
     # raw bind address: the keyless exposure warning must tell loopback from a wildcard bind
     app.state.bind_host = host
     app.state.secure = secure
@@ -2760,7 +2895,8 @@ def run_server(
 
     port = _final_bound_port(_server, port)
     app.state.server_port = port
-    app.state.server_url = f"http://{_url_host(_display_host_for_bind(host))}:{port}"
+    app.state.server_request_host = _bound_request_host(_server)
+    app.state.server_url = _direct_server_url(host, port)
     app.state.remote_access_port = port
     app.state.lan_access_port = port
 
@@ -2809,7 +2945,11 @@ def run_server(
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel
-            start_studio_tunnel(port, managed_by = "launch")
+            start_studio_tunnel(
+                port,
+                managed_by = "launch",
+                origin_host = app.state.server_request_host,
+            )
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
 

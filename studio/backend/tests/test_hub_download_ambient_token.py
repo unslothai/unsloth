@@ -25,10 +25,12 @@ from auth.authentication import (
 )
 from hub.routes import datasets as datasets_routes
 from hub.routes import inventory as inventory_routes
+from hub.dependencies import get_request_hf_token
 from hub.services import download_lifecycle
 from hub.services.datasets import downloads as dataset_downloads
 from hub.services.models import downloads as model_downloads
 from hub.utils import download_registry, state_dir
+from routes import models as models_routes
 
 
 class _Proc:
@@ -71,9 +73,96 @@ def _client(via_api_key: bool) -> TestClient:
     return TestClient(app)
 
 
+def _models_client(via_api_key: bool) -> TestClient:
+    app = FastAPI()
+    app.include_router(models_routes.router, prefix = "/api/models")
+    app.dependency_overrides[get_current_subject] = lambda: "alice"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
+    return TestClient(app)
+
+
 @pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, True)])
 def test_only_a_ui_session_may_borrow_the_backend_token(via_api_key, expected):
     assert asyncio.run(allow_ambient_hf_token(via_api_key = via_api_key)) is expected
+
+
+@pytest.mark.parametrize(
+    "hf_token, allow_ambient, expected",
+    [
+        (None, False, False),
+        (None, True, None),
+        ("request-token", False, "request-token"),
+        (" request-token ", True, "request-token"),
+    ],
+)
+def test_request_metadata_token_keeps_the_caller_boundary(hf_token, allow_ambient, expected):
+    resolved = get_request_hf_token(
+        hf_token = hf_token,
+        allow_ambient_token = allow_ambient,
+    )
+    assert resolved == expected
+    if expected in (None, False):
+        assert resolved is expected
+
+
+@pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, None)])
+def test_gguf_metadata_route_does_not_lend_api_keys_the_backend_token(
+    monkeypatch, via_api_key, expected
+):
+    seen = {}
+
+    async def _fake(repo_id, **kwargs):
+        seen["repo_id"] = repo_id
+        seen["hf_token"] = kwargs["hf_token"]
+        return {"repo_id": repo_id, "variants": []}
+
+    monkeypatch.setattr(inventory_routes.gguf_variants, "get_gguf_variants_response", _fake)
+    response = _client(via_api_key).get(
+        "/api/hub/gguf-variants?repo_id=attacker/private-model",
+        headers = {"Authorization": "Bearer token"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert seen == {"repo_id": "attacker/private-model", "hf_token": expected}
+
+
+def test_explicit_metadata_token_wins_for_an_api_key(monkeypatch):
+    seen = {}
+
+    async def _fake(repo_id, **kwargs):
+        seen["hf_token"] = kwargs["hf_token"]
+        return {"repo_id": repo_id, "variants": []}
+
+    monkeypatch.setattr(inventory_routes.gguf_variants, "get_gguf_variants_response", _fake)
+    response = _client(True).get(
+        "/api/hub/gguf-variants?repo_id=owner/private-model",
+        headers = {
+            "Authorization": "Bearer token",
+            "X-Unsloth-HF-Token": "request-token",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert seen["hf_token"] == "request-token"
+
+
+@pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, None)])
+def test_compatibility_progress_route_keeps_the_caller_boundary(monkeypatch, via_api_key, expected):
+    seen = {}
+
+    async def _fake(repo_id, **kwargs):
+        seen["repo_id"] = repo_id
+        seen["hf_token"] = kwargs["hf_token"]
+        return {"repo_id": repo_id, "progress": 0.0}
+
+    monkeypatch.setattr(model_downloads, "get_download_progress_response", _fake)
+    response = _models_client(via_api_key).get(
+        "/api/models/download-progress?repo_id=attacker/private-model",
+        headers = {"Authorization": "Bearer token"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert seen == {"repo_id": "attacker/private-model", "hf_token": expected}
 
 
 @pytest.mark.parametrize("via_api_key, expected", [(True, False), (False, True)])

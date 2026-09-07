@@ -137,10 +137,9 @@ export async function encryptProviderApiKey(
 }
 
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  // include_hidden asks for the backend-only entries (the self-hosted presets),
-  // which carry the studio-tools capability the composer gates on. An older
-  // backend ignores the parameter and returns the visible entries, so the
-  // capability simply reads as unknown and the pills stay closed.
+  // include_hidden asks for the backend-only entries (the self-hosted presets), which carry the
+  // studio-tools capability the composer gates on. An older backend ignores the parameter and
+  // returns the visible entries, so the capability reads as unknown and the pills stay closed.
   const response = await authFetch("/api/providers/registry?include_hidden=true");
   return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
 }
@@ -183,9 +182,8 @@ export async function deleteProviderConfig(providerId: string): Promise<void> {
   const response = await authFetch(`/api/providers/${providerId}`, {
     method: "DELETE",
   });
-  // Treat 404 as success: another tab already deleted this provider, so pruning
-  // the stale cache is correct. Otherwise the caller throws and the user is stuck
-  // with an entry they cannot remove from the UI.
+  // Treat 404 as success: another tab already deleted this provider, so pruning the stale cache is
+  // correct. Otherwise the caller throws and the user is stuck with an entry they cannot remove.
   if (response.status === 404) {
     return;
   }
@@ -318,11 +316,11 @@ export async function listProviderModels(payload: {
 
 export interface CodexSubscriptionModels {
   models: ProviderModelInfo[];
-  /** Every model the plan returned, offered or not: absent from this means the account
-   * cannot reach it, while present-but-unoffered only means it is no longer shown. */
+  /** Every model the plan returned, offered or not: absent from this means the account cannot reach
+   *  it, while present-but-unoffered only means it is no longer shown. */
   known?: ProviderModelInfo[];
-  /** "reauthorization_required" is a curated answer that also says the connection has
-   * to be reconnected: the picker must not treat it as the plan's catalog. */
+  /** "reauthorization_required" is a curated answer that also says the connection has to be
+   *  reconnected: the picker must not treat it as the plan's catalog. */
   source: "subscription" | "curated" | "reauthorization_required";
 }
 

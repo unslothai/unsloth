@@ -24,8 +24,7 @@ _CTRL_Z = "\x1a"
 _BACKSPACES = ("\x7f", "\x08")
 _SUBMITS = ("\r", "\n")
 
-# Env var that supplies the initial admin password non-interactively (mirror in
-# unsloth_cli/commands/_password_prompt.py). Keep the name in sync.
+# Mirror in unsloth_cli/commands/_password_prompt.py; keep the name in sync.
 SUPPLIED_PASSWORD_ENV = "UNSLOTH_STUDIO_PASSWORD"
 
 
@@ -33,8 +32,7 @@ def _getch_windows() -> str:  # pragma: no cover - exercised via fake on Linux C
     import msvcrt
 
     ch = msvcrt.getwch()
-    # Function/arrow keys arrive as a two-wchar \x00/\xe0 sequence; consume the
-    # second half and report a no-op control char.
+    # Function/arrow keys arrive as a two-wchar \x00/\xe0 sequence; consume the second half.
     if ch in ("\x00", "\xe0"):
         msvcrt.getwch()
         return "\x00"
@@ -69,7 +67,7 @@ class _RestoreTtyOnSignals:
                 continue
             try:
                 self._previous.append((sig, signal.signal(sig, _restore_and_reraise)))
-            except (ValueError, OSError):  # non-main thread / unsupported
+            except (ValueError, OSError):
                 pass
         return self
 
@@ -99,20 +97,18 @@ class _prompt_raw_mode:
         try:
             import termios
             import tty
-        except ImportError:  # non-POSIX (Windows uses msvcrt, no mode to hold)
+        except ImportError:
             return self
         try:
             fd = sys.stdin.fileno()
             old_attrs = termios.tcgetattr(fd)
         except (AttributeError, ValueError, OSError, termios.error):
-            return self  # redirected / captured stdin (tests): nothing to hold
+            return self
         self._fd = fd
         self._old_attrs = old_attrs
         self._signals = _RestoreTtyOnSignals(fd, old_attrs)
         self._signals.__enter__()
-        # cbreak (not raw) keeps output post-processing while disabling echo/line
-        # buffering. It leaves ISIG on, so clear it and surface Ctrl-C as \x03 to
-        # the caller loop, which restores the tty itself.
+        # cbreak leaves ISIG on, so clear it and surface Ctrl-C as \x03 for the caller loop to restore the tty.
         tty.setcbreak(fd, termios.TCSADRAIN)
         new_attrs = termios.tcgetattr(fd)
         new_attrs[3] &= ~termios.ISIG
@@ -131,9 +127,7 @@ class _prompt_raw_mode:
 
 
 def _getch_posix() -> str:  # pragma: no cover - needs a real tty
-    # Terminal already in cbreak+no-echo for the whole line (_prompt_raw_mode),
-    # so just read. Byte-at-a-time incremental decode so a multi-byte UTF-8 char
-    # straddling a read boundary isn't dropped.
+    # Byte-at-a-time decode so a multi-byte UTF-8 char straddling a read boundary is not dropped.
     import codecs
 
     fd = sys.stdin.fileno()
@@ -141,7 +135,7 @@ def _getch_posix() -> str:  # pragma: no cover - needs a real tty
     while True:
         b = os.read(fd, 1)
         if not b:
-            return ""  # stream EOF; caller raises EOFError
+            return ""
         ch = decoder.decode(b)
         if ch:
             return ch
@@ -164,11 +158,11 @@ def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
     with _prompt_raw_mode():
         while True:
             key = _getch()
-            if key == "":  # stream ended mid-line: abort, don't submit a partial
+            if key == "":
                 out.write("\n")
                 out.flush()
                 raise EOFError
-            for ch in key:  # a paste can deliver several chars per read
+            for ch in key:
                 if ch in _SUBMITS:
                     out.write("\n")
                     out.flush()
@@ -182,14 +176,14 @@ def _read_password(prompt: str, *, out: "TextIO | None" = None) -> str:
                         out.write("\n")
                         out.flush()
                         raise EOFError
-                    continue  # ignore mid-input
+                    continue
                 if ch in _BACKSPACES:
                     if chars:
                         chars.pop()
                         out.write("\b \b")
                         out.flush()
                     continue
-                if ch < " ":  # other control characters (tab, escape, ...)
+                if ch < " ":
                     continue
                 chars.append(ch)
                 out.write("*")

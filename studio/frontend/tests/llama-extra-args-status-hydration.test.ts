@@ -38,6 +38,21 @@ test("the applier seeds the loaded baseline from the status echo", () => {
   );
 });
 
+test("the CLI adoption path hydrates settings while it owns the load lease", () => {
+  assert.match(
+    APPLIER,
+    /const seedLoadParams = options\.seedLoadParams \?\? !prevState\.modelLoading/,
+  );
+  assert.match(
+    APPLIER,
+    /seedLoadParams: options\?\.allowWhileModelLoading/,
+  );
+  assert.match(
+    APPLIER,
+    /!status\.active_model \|\|\s*\(status\.loading\?\.length \?\? 0\) > 0 \|\|\s*isSpeechOnlyStatus\(status\)/,
+  );
+});
+
 test("an older backend that omits the field changes nothing", () => {
   // undefined is "this server does not publish it", which must leave a baseline this
   // tab recorded first-hand alone rather than clearing it to null.

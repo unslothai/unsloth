@@ -56,6 +56,9 @@ class AudioCodecManager:
         self._bicodec_code_dir = None
         self._dac_audio_codec = None
         self._outetts_code_dir = None
+        # The loaders reuse a resident codec, so a later request gets the first
+        # placement rather than the one it asked for.
+        self._codec_devices: dict = {}
 
     def load_codec(
         self,
@@ -89,6 +92,7 @@ class AudioCodecManager:
             .to(device)
             .eval()
         )
+        self._codec_devices["snac"] = device
         logger.info("Loaded SNAC codec (24kHz)")
 
     def _load_bicodec(
@@ -109,6 +113,7 @@ class AudioCodecManager:
         tokenizer_path = model_repo_path or spark_code_dir
         self._bicodec_repo_path = tokenizer_path
         self._bicodec_tokenizer = BiCodecTokenizer(tokenizer_path, device)
+        self._codec_devices["bicodec"] = device
         logger.info(f"Loaded BiCodec tokenizer from {tokenizer_path}")
 
     def _load_dac(self, device: str) -> None:
@@ -133,6 +138,7 @@ class AudioCodecManager:
         )
         processor = AudioProcessor(config = dummy_config)
         self._dac_audio_codec = processor.audio_codec
+        self._codec_devices["dac"] = device
         logger.info("Loaded DAC audio codec")
 
     # ── Decoders ─────────────────────────────────────────────────
@@ -144,7 +150,6 @@ class AudioCodecManager:
         strips EOS (128258), redistributes 7-per-frame codes into 3 SNAC layers.
         Returns (wav_bytes, 24000).
         """
-        # Find START_OF_SPEECH token (128257)
         token_indices = (generated_ids == 128257).nonzero(as_tuple = True)
         if len(token_indices[1]) > 0:
             cropped = generated_ids[:, token_indices[1][-1] + 1 :]
@@ -154,10 +159,8 @@ class AudioCodecManager:
             cropped = generated_ids
         row = cropped[0]
 
-        # Remove EOS tokens (128258)
         row = row[row != 128258]
 
-        # Trim to multiple of 7
         row = row[: (len(row) // 7) * 7]
         if len(row) == 0:
             raise ValueError("No valid audio codes found after START_OF_SPEECH token")
@@ -210,8 +213,7 @@ class AudioCodecManager:
 
         semantic_ids = torch.tensor([int(t) for t in semantic_matches]).long().unsqueeze(0)
 
-        # Speaker encoder expects exactly 32 global tokens (token_num=32);
-        # pad with zeros or truncate.
+        # Speaker encoder expects exactly 32 global tokens (token_num=32); pad with zeros or truncate.
         GLOBAL_TOKEN_NUM = 32
         if global_matches:
             raw = [int(t) for t in global_matches]
@@ -220,7 +222,7 @@ class AudioCodecManager:
         if len(raw) < GLOBAL_TOKEN_NUM:
             raw = raw + [0] * (GLOBAL_TOKEN_NUM - len(raw))
         raw = raw[:GLOBAL_TOKEN_NUM]
-        global_ids = torch.tensor(raw).long().unsqueeze(0)  # (1, 32)
+        global_ids = torch.tensor(raw).long().unsqueeze(0)
 
         self._bicodec_tokenizer.device = device
         self._bicodec_tokenizer.model.to(device)
@@ -262,7 +264,14 @@ class AudioCodecManager:
         token_ids: Optional[list] = None,
         text: Optional[str] = None,
     ) -> Tuple[bytes, int]:
-        """Unified decode — dispatches to the right codec decoder."""
+        """Unified decode — dispatches to the right codec decoder.
+
+        ``device`` is what the caller would like. Where the codec is actually
+        resident wins: input tensors built on another device fail outright for SNAC
+        and DAC, and BiCodec would move a CPU-resident codec onto the card, taking
+        the VRAM a CPU RAM load promised not to take.
+        """
+        device = self._codec_devices.get(audio_type, device)
         if audio_type == "snac":
             if not token_ids:
                 raise ValueError("SNAC decoding requires token_ids")
@@ -297,4 +306,5 @@ class AudioCodecManager:
         if self._outetts_code_dir is not None:
             deactivate_pinned_package("outetts", self._outetts_code_dir)
             self._outetts_code_dir = None
+        self._codec_devices.clear()
         logger.info("Unloaded all audio codecs")

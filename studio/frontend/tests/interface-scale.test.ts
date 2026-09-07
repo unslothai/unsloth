@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
-import { setImmediate } from "node:timers/promises";
 
 register("./helpers/tauri-webview-resolver.mjs", import.meta.url);
 
@@ -193,6 +192,10 @@ test(
     const { mod, control, styles } = await load(true);
     let nativeZoom = 1;
     let releaseWedged: () => void = () => undefined;
+    let markRestored: () => void = () => undefined;
+    const restored = new Promise<void>((resolve) => {
+      markRestored = resolve;
+    });
     control.setZoom = (zoom) => {
       control.zooms.push(zoom);
       if (zoom === 0.75) {
@@ -204,13 +207,17 @@ test(
         });
       }
       nativeZoom = zoom;
+      if (control.zooms.length === 3) {
+        markRestored();
+      }
       return Promise.resolve();
     };
 
     await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
     await mod.applyInterfaceScale(125);
     releaseWedged();
-    await setImmediate();
+    await restored;
+    await mod.applyInterfaceScale(125);
 
     assert.equal(nativeZoom, 1.25);
     assert.deepEqual(control.zooms, [0.75, 1.25, 1.25]);
