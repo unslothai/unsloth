@@ -297,7 +297,8 @@ def exercise_permission_mode_controls(page, shoot):
         "Full access",
     ):
         expect(menu.get_by_role("menuitem").filter(has_text = label).first).to_be_visible()
-    if menu.get_by_text("Off", exact = True).count() != 0:
+    # "Off" is a valid Network status; only the removed permission choice is forbidden.
+    if menu.get_by_role("menuitem", name = "Off", exact = True).count() != 0:
         fail("legacy Off label is still visible")
     if menu.locator('[role="menuitem"] button, [role="menuitem"] [role="button"]').count():
         fail("permission menu contains nested interactive controls")

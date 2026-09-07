@@ -80,6 +80,34 @@ def _studio_home_root(tmp_path_factory):
 _studio_home_counter = itertools.count()
 
 
+@pytest.fixture
+def limited_tool_execution(request):
+    """Authorize Limited explicitly in tests of output/files rather than native isolation.
+
+    Required mode remains covered by its denial and opt-in native suites. The
+    factory binds real consent to the capability generation at the call site.
+    """
+    from core.inference import tool_isolation
+
+    def issue():
+        subject = "offline-behavior-test"
+        session = request.node.nodeid
+        capability = tool_isolation.capability_snapshot()
+        grant = tool_isolation.issue_limited_grant(
+            current_subject = subject,
+            tool_ui_session_id = session,
+            probe_generation = capability.probe_generation,
+        )
+        return {
+            "tool_execution_mode": "limited",
+            "current_subject": subject,
+            "tool_ui_session_id": session,
+            "limited_grant": grant.token,
+        }
+
+    return issue
+
+
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     """Mechanism: tests/_shared/installer_venv_root.py.

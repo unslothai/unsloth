@@ -28,6 +28,7 @@ _UNICODE = "café — 数字 → ✓ 😀"
 
 
 @pytest.mark.parametrize("disable_sandbox", [False, True])
-def test_python_exec_round_trips_non_ascii(disable_sandbox):
-    out = _python_exec(f"print({_UNICODE!r})", disable_sandbox = disable_sandbox)
+def test_python_exec_round_trips_non_ascii(disable_sandbox, limited_tool_execution):
+    execution = {} if disable_sandbox else limited_tool_execution()
+    out = _python_exec(f"print({_UNICODE!r})", disable_sandbox = disable_sandbox, **execution)
     assert _UNICODE in out, repr(out)

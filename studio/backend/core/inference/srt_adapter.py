@@ -34,7 +34,7 @@ def validate_roots(roots: list[str], workdir: str) -> list[str]:
         if not any(root == parent or root.startswith(parent + os.sep) for parent in scan_roots):
             scan_roots.append(root)
     try:
-        mount_lines = Path("/proc/self/mountinfo").read_text().splitlines()
+        mount_lines = Path("/proc/self/mountinfo").read_text(encoding = "utf-8").splitlines()
     except OSError as exc:
         raise SrtError("Cannot inspect nested runtime mounts") from exc
     denied_mounts = []

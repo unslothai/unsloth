@@ -61,7 +61,8 @@ def test_windows_uses_bash_when_present(monkeypatch):
 def test_windows_falls_back_to_cmd_without_bash(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: None)
-    assert tools._get_shell_cmd("echo hi") == ["cmd", "/c", "echo hi"]
+    # /d disables per-user AutoRun commands before the requested command.
+    assert tools._get_shell_cmd("echo hi") == ["cmd", "/d", "/c", "echo hi"]
 
 
 def test_prefers_git_for_windows_over_path(monkeypatch, tmp_path):

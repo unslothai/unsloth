@@ -48,6 +48,9 @@ def _link_dir(link: Path, target: Path) -> None:
 
 
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
+    # This helper transports JSON; pair the child's encoding with the decoder
+    # instead of interpreting UTF-8 output with a Windows ANSI code page.
+    script = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n" + script
     # run_pwsh, not subprocess.run: $shell is always pwsh or powershell (see POWERSHELLS), and every venv and rollback
     # case in this file reads its stdout, so an interpreter that died at startup would surface as install.ps1 losing
     # half a moved environment.
@@ -57,6 +60,7 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
         check = True,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
         env = env,
         timeout = 30,
     )
@@ -817,10 +821,19 @@ foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_a_non_ascii_marker_survives_the_rollback(tmp_path: Path, shell: str):
+def test_a_non_ascii_marker_survives_the_rollback(tmp_path: Path, shell: str, monkeypatch):
     """The update writes this file BOM-less UTF-8, and Windows PowerShell 5.1 reads a
     BOM-less file with the active ANSI code page, so a non-ASCII path came back as
     mojibake and the rollback wrote that back over a marker that had been correct."""
+    original_runner = run_pwsh
+
+    def ansi_default_runner(*args, **kwargs):
+        # Reproduce hosted Windows' default decoder even on a UTF-8 host.
+        # An explicit transport encoding must take precedence.
+        kwargs.setdefault("encoding", "cp1252")
+        return original_runner(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "run_pwsh", ansi_default_runner)
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
@@ -857,6 +870,7 @@ Restore-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME
     result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
 
     assert result["After"] == expected, result
+    assert marker.read_text(encoding = "utf-8-sig").strip() == expected
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")

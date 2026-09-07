@@ -29,8 +29,8 @@ for name in [config['sentinel'], config['escape']]:
         pass
     else:
         raise RuntimeError('unrelated host file is readable')
-pathlib.Path('private.txt').write_text('private write')
-assert pathlib.Path('private.txt').read_text() == 'private write'
+pathlib.Path('private.txt').write_text('private write', encoding='utf-8')
+assert pathlib.Path('private.txt').read_text(encoding='utf-8') == 'private write'
 for family, address in [(socket.AF_INET, ('127.0.0.1', config['port']))]:
     sock = socket.socket(family, socket.SOCK_STREAM)
     sock.settimeout(.5)
@@ -126,7 +126,7 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
         work = root / "work"
         work.mkdir()
         sentinel = root / "unrelated.txt"
-        sentinel.write_text("benign-srt-confidentiality-control")
+        sentinel.write_text("benign-srt-confidentiality-control", encoding = "utf-8")
         escape = work / "escape"
         escape.symlink_to(sentinel)
         unix_path = str(root / "host.sock")
@@ -138,7 +138,7 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
                 client.connect(address)
                 accepted, _ = endpoint.accept()
                 accepted.close()
-        assert sentinel.read_text() == "benign-srt-confidentiality-control"
+        assert sentinel.read_text(encoding = "utf-8") == "benign-srt-confidentiality-control"
         listener.bind(("127.0.0.1", 0))
         listener.listen()
         port = listener.getsockname()[1]
@@ -211,7 +211,7 @@ def _supported_platform_probe(*, execution_kind = None, selected_executable = No
         work = root / "work"
         work.mkdir()
         sentinel = root / "write-denied.txt"
-        sentinel.write_text("unchanged")
+        sentinel.write_text("unchanged", encoding = "utf-8")
         env = _build_safe_env(str(work))
         shell = (selected_executable if execution_kind == "terminal" else None) or shutil.which(
             "bash", path = env.get("PATH")
@@ -221,10 +221,10 @@ def _supported_platform_probe(*, execution_kind = None, selected_executable = No
         python = (selected_executable if execution_kind == "python" else None) or sys.executable
         code = """
 import pathlib, subprocess, sys
-pathlib.Path('private.txt').write_text('workdir write')
-assert pathlib.Path('private.txt').read_text() == 'workdir write'
+pathlib.Path('private.txt').write_text('workdir write', encoding='utf-8')
+assert pathlib.Path('private.txt').read_text(encoding='utf-8') == 'workdir write'
 try:
-    pathlib.Path(sys.argv[1]).write_text('unexpected write')
+    pathlib.Path(sys.argv[1]).write_text('unexpected write', encoding='utf-8')
 except OSError:
     pass
 else:
@@ -263,7 +263,7 @@ print('UNSLOTH_SRT_SUPPORTED_PROBE_OK')
         if (
             proc.returncode != 0
             or b"UNSLOTH_SRT_SUPPORTED_PROBE_OK" not in output
-            or sentinel.read_text() != "unchanged"
+            or sentinel.read_text(encoding = "utf-8") != "unchanged"
         ):
             return False, "SRT platform probe refused: " + output.decode(errors = "replace")[-1500:]
         return (

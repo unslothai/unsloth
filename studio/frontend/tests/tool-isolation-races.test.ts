@@ -7,6 +7,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import ts from "typescript";
+import { protectedIsolationDefaults } from "../src/features/chat/utils/tool-isolation-defaults.ts";
 import {
   effectiveToolNetworkPolicy,
   queuedToolNetworkPolicy,
@@ -19,6 +20,128 @@ const adapter = read("../src/features/chat/api/chat-adapter.ts");
 const store = read("../src/features/chat/stores/chat-runtime-store.ts");
 const isolation = read("../src/features/chat/tool-isolation.ts");
 const permissionSelect = read("../src/features/chat/permission-mode-select.tsx");
+for (const persisted of ["ask", "auto", "off", "full"] as const) {
+  test(`Deep Research revokes elevated execution using current chat level ${persisted}`, () => {
+    const start = store.indexOf(
+      "  setDeepResearchEnabled: (deepResearchEnabled) =>",
+    );
+    const method = store.slice(
+      start,
+      store.indexOf("  setResearchWebsitePolicy:", start),
+    );
+    for (const mode of ["full", "limited"]) {
+      let state: Record<string, unknown> = {
+        permissionMode: "full",
+        toolExecutionMode: mode,
+        limitedToolGrant: { grant: "old" },
+        bypassPermissions: true,
+        queuedSettingsEpoch: 4,
+      };
+      const context: Record<string, unknown> = {
+        set: (
+          update: (state: Record<string, unknown>) => Record<string, unknown>,
+        ) => {
+          state = { ...state, ...update(state) };
+        },
+        saveBool() {},
+        threadScopedOverride: () => persisted,
+        loadPermissionMode: () => {
+          throw Error("chat override must take precedence");
+        },
+        protectedIsolationDefaults,
+      };
+      for (const key of method.matchAll(/\bCHAT_[A-Z_]+_KEY\b/g))
+        context[key[0]] = key[0];
+      const change = runInNewContext(
+        stripTypeScriptTypes(
+          `const methods = { ${method} }; methods.setDeepResearchEnabled;`,
+        ),
+        context,
+      );
+      change(true);
+      assert.equal(
+        state.permissionMode,
+        persisted === "full" ? "auto" : persisted,
+      );
+      assert.equal(state.toolExecutionMode, "os_isolation_required");
+      assert.equal(state.limitedToolGrant, null);
+      assert.equal(state.bypassPermissions, false);
+      assert.equal(state.toolNetworkPolicy, "deny");
+      assert.equal(state.codeToolsEnabled, false);
+      assert.equal(state.queuedSettingsEpoch, 5);
+    }
+  });
+}
+
+test("composer hides inactive code isolation but retains Full and Limited warnings", () => {
+  const component = permissionSelect.slice(
+    permissionSelect.indexOf("export function PermissionModeComposerPill("),
+  );
+  const compiled = ts.transpileModule(
+    component.replace("export function", "function"),
+    {
+      compilerOptions: {
+        jsx: ts.JsxEmit.React,
+        target: ts.ScriptTarget.ES2022,
+      },
+    },
+  ).outputText;
+  for (const [codeToolsEnabled, mode, shown] of [
+    [false, "os_isolation_required", false],
+    [true, "os_isolation_required", true],
+    [false, "full", true],
+    [false, "limited", true],
+  ] as const) {
+    const state = {
+      codeToolsEnabled,
+      toolExecutionMode: mode,
+      permissionMode: mode === "full" ? "full" : "auto",
+    };
+    const context: Record<string, unknown> = {
+      React: {
+        createElement: (
+          type: unknown,
+          props: unknown,
+          ...children: unknown[]
+        ) => ({ type, props, children }),
+      },
+      useToolIsolationCapabilityRefresh() {},
+      useState: () => [false, () => {}],
+      useChatRuntimeStore: (select: (state: unknown) => unknown) =>
+        select(state),
+      permissionModeOption: () => ({
+        label: "Approve for me",
+        description: "Approval description",
+        icon: "Icon",
+      }),
+      toolIsolationPresentation: () => ({ label: "Isolation status" }),
+    };
+    for (const name of [
+      "DropdownMenu",
+      "DropdownMenuTrigger",
+      "HugeiconsIcon",
+      "ChevronDownStandardIcon",
+      "DropdownMenuContent",
+      "DropdownMenuLabel",
+      "PermissionModeMenuItems",
+      "ToolIsolationMenuSection",
+      "LimitedModeConfirmDialog",
+    ])
+      context[name] = name;
+    const tree = runInNewContext(
+      `${compiled}\nPermissionModeComposerPill;`,
+      context,
+    )();
+    const button = tree.children[0].children[0].children[0];
+    assert.equal(
+      button.props.title,
+      shown
+        ? "Approve for me: Approval description. Isolation status."
+        : "Approve for me: Approval description",
+    );
+    assert.equal(Boolean(button.children[2]), shown);
+  }
+});
 const validator = isolation.slice(
   isolation.indexOf("export function isLimitedGrantCurrent("),
   isolation.indexOf("export function toolIsolationPresentation("),

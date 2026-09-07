@@ -1103,7 +1103,7 @@ def test_every_child_starting_path_checks_the_rearm():
             assert "crashCleanupReady()" in block, f"{name} starts a child without the check"
 
 
-def test_a_tool_subprocess_is_recorded_while_it_runs(tmp_path, monkeypatch):
+def test_a_tool_subprocess_is_recorded_while_it_runs(tmp_path, monkeypatch, limited_tool_execution):
     """A force quit mid-call on macOS would otherwise leave a session-leading
     tool with nothing able to find it."""
     monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
@@ -1124,7 +1124,10 @@ def test_a_tool_subprocess_is_recorded_while_it_runs(tmp_path, monkeypatch):
         return real_adopt(pid)
 
     monkeypatch.setattr(pl, "adopt_pid", watching_adopt)
-    tools._python_exec("print('hi')", session_id = "__LOCALID_adopt01")
+    result = tools._python_exec(
+        "print('hi')", session_id = "__LOCALID_adopt01", **limited_tool_execution()
+    )
+    assert "hi" in result, result
     assert seen, "the tool subprocess was never recorded"
     # And it is not left on the record once it has exited.
     assert all(pid not in pl._tracked_pids for pid in seen), pl._tracked_pids

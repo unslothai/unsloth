@@ -204,7 +204,7 @@ def test_sandbox_listing_route_exists():
 # ---------------------------------------------------------------------------
 # 3. Reporting what a call created
 # ---------------------------------------------------------------------------
-def test_both_executors_report_created_files(tmp_path, monkeypatch):
+def test_both_executors_report_created_files(tmp_path, monkeypatch, limited_tool_execution):
     """A file is reported whether it came from python or from bash."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
@@ -217,9 +217,16 @@ def test_both_executors_report_created_files(tmp_path, monkeypatch):
     for name, run in (
         (
             "py.csv",
-            lambda: tools._python_exec("open('py.csv','w').write('a,b\\n')", session_id = session),
+            lambda: tools._python_exec(
+                "open('py.csv','w').write('a,b\\n')", session_id = session, **limited_tool_execution()
+            ),
         ),
-        ("sh.csv", lambda: tools._bash_exec("printf 'a,b\\n' > sh.csv", session_id = session)),
+        (
+            "sh.csv",
+            lambda: tools._bash_exec(
+                "printf 'a,b\\n' > sh.csv", session_id = session, **limited_tool_execution()
+            ),
+        ),
     ):
         result = run()
         print(f"\n{name} -> {result!r}")
@@ -235,14 +242,17 @@ def test_both_executors_report_created_files(tmp_path, monkeypatch):
     assert stripped.strip() == "done"
 
 
-def test_internal_temp_files_are_not_reported(tmp_path, monkeypatch):
+def test_internal_temp_files_are_not_reported(tmp_path, monkeypatch, limited_tool_execution):
     """The executor's own scratch script is not a user-facing artifact."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
     from core.inference import tools
 
     tools._workdirs.clear()
-    result = tools._python_exec("print('hi')", session_id = "__LOCALID_tmp999")
+    result = tools._python_exec(
+        "print('hi')", session_id = "__LOCALID_tmp999", **limited_tool_execution()
+    )
+    assert "hi" in result, result
     assert "studio_exec_" not in result
     assert "__FILES__" not in result
 
@@ -422,7 +432,9 @@ def test_the_walk_is_bounded(tmp_path, monkeypatch):
     assert max(name.count("/") + 1 for name in found) <= tools._MAX_SANDBOX_PATH_SEGMENTS
 
 
-def test_files_written_before_a_timeout_are_still_reported(tmp_path, monkeypatch):
+def test_files_written_before_a_timeout_are_still_reported(
+    tmp_path, monkeypatch, limited_tool_execution
+):
     """`printf data > report.csv; sleep 999` produced that file."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
@@ -433,6 +445,7 @@ def test_files_written_before_a_timeout_are_still_reported(tmp_path, monkeypatch
         "printf data > report.csv; sleep 30",
         timeout = 3,
         session_id = "__LOCALID_slowrun",
+        **limited_tool_execution(),
     )
     assert "timed out" in result
     assert "__FILES__:" in result, result
@@ -756,7 +769,7 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
     assert not (Path(resolved) / "secret.txt").exists()
 
 
-def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
+def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch, limited_tool_execution):
     """Its scratch script lives outside the sandbox, so a chat whose tools only
     printed holds just our bookkeeping and the empty TMPDIR dir, and is
     removable without the opt-in."""
@@ -766,7 +779,10 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
 
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
-    tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
+    result = tools._python_exec(
+        "print('hi')", session_id = "__LOCALID_scratch", **limited_tool_execution()
+    )
+    assert "hi" in result, result
     assert sorted(p.name for p in workdir.iterdir()) == [
         tools._SANDBOX_MARKER,
         tools._SANDBOX_TEMP_DIRNAME,
@@ -1310,7 +1326,9 @@ def test_a_marked_cwd_cache_is_still_cleared(tmp_path, monkeypatch):
     assert not (cache / "unsloth_compiled_module_gemma3.py").exists()
 
 
-def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
+def test_a_user_python_file_is_never_executor_scratch(
+    tmp_path, monkeypatch, limited_tool_execution
+):
     """The executor's own file no longer lives in the sandbox, so no filename
     is reserved and studio_exec_results.py is just a file."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -1321,7 +1339,9 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
     tools._workdirs.clear()
     session = "__LOCALID_userpy1"
     result = tools._python_exec(
-        "open('studio_exec_results.py','w').write('x = 1\\n')", session_id = session
+        "open('studio_exec_results.py','w').write('x = 1\\n')",
+        session_id = session,
+        **limited_tool_execution(),
     )
     assert "studio_exec_results.py" in result, result
 
@@ -1386,7 +1406,9 @@ def test_studios_own_sandbox_bookkeeping_is_not_a_user_file(tmp_path, monkeypatc
     assert inference._sandbox_listing_names(str(workdir)) == [".gitignore"]
 
 
-def test_a_module_written_by_an_earlier_call_is_importable(tmp_path, monkeypatch):
+def test_a_module_written_by_an_earlier_call_is_importable(
+    tmp_path, monkeypatch, limited_tool_execution
+):
     """The scratch script is what Python puts on sys.path[0], so moving it out
     of the sandbox broke `import helper` and sent __file__ outside."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -1395,16 +1417,22 @@ def test_a_module_written_by_an_earlier_call_is_importable(tmp_path, monkeypatch
 
     tools._workdirs.clear()
     session = "__LOCALID_import1"
-    tools._python_exec('open("helper.py", "w").write("VALUE = 42")', session_id = session)
-    result = tools._python_exec("import helper; print(helper.VALUE)", session_id = session)
+    tools._python_exec(
+        'open("helper.py", "w").write("VALUE = 42")', session_id = session, **limited_tool_execution()
+    )
+    result = tools._python_exec(
+        "import helper; print(helper.VALUE)", session_id = session, **limited_tool_execution()
+    )
     assert "42" in result, result
 
-    where = tools._python_exec("print(__file__)", session_id = session)
+    where = tools._python_exec("print(__file__)", session_id = session, **limited_tool_execution())
     workdir = tools.get_sandbox_workdir(session)
     assert workdir in where, where
 
 
-def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
+def test_the_scratch_script_is_never_reported_as_a_file(
+    tmp_path, monkeypatch, limited_tool_execution
+):
     """Excluded by its exact name for this one call, so a tool writing
     studio_exec_results.py still keeps it."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -1414,7 +1442,9 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     tools._workdirs.clear()
     session = "__LOCALID_scratch2"
     result = tools._python_exec(
-        'open("studio_exec_results.py", "w").write("x = 1")', session_id = session
+        'open("studio_exec_results.py", "w").write("x = 1")',
+        session_id = session,
+        **limited_tool_execution(),
     )
     files = result.split("__FILES__:")[1]
     assert "studio_exec_results.py" in files
@@ -1428,7 +1458,7 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 
 
-def test_a_turn_without_a_chat_id_reports_no_files(tmp_path, monkeypatch):
+def test_a_turn_without_a_chat_id_reports_no_files(tmp_path, monkeypatch, limited_tool_execution):
     """Every such turn shares the _default workdir, so a card pinned to it
     would later download whatever the next new chat wrote there."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
@@ -1436,10 +1466,11 @@ def test_a_turn_without_a_chat_id_reports_no_files(tmp_path, monkeypatch):
     from core.inference import tools
 
     tools._workdirs.clear()
-    result = tools._python_exec('open("first.csv", "w").write("a")')
+    result = tools._python_exec('open("first.csv", "w").write("a")', **limited_tool_execution())
     assert "__FILES__" not in result, result
     assert "__IMAGES__" not in result
-    bash_result = tools._bash_exec("printf a > second.csv")
+    bash_result = tools._bash_exec("printf a > second.csv", **limited_tool_execution())
+    assert (Path(tools.get_sandbox_workdir(None)) / "second.csv").is_file()
     assert "__FILES__" not in bash_result, bash_result
 
 
@@ -3321,7 +3352,9 @@ def test_one_call_never_reports_another_calls_scratch_script(tmp_path, monkeypat
     assert "studio_exec_abc123.py" not in sentinels, sentinels
 
 
-def test_a_program_cannot_print_its_own_file_envelope(tmp_path, monkeypatch):
+def test_a_program_cannot_print_its_own_file_envelope(
+    tmp_path, monkeypatch, limited_tool_execution
+):
     """A call that created nothing appends no envelope, so a printed one is the
     last marker in the result and is read as ours: the line disappears from the
     model's view and the UI offers a download for a file nobody wrote."""
@@ -3336,6 +3369,7 @@ def test_a_program_cannot_print_its_own_file_envelope(tmp_path, monkeypatch):
     result = tools._python_exec(
         f"print('working')\nprint({forged!r})",
         session_id = "__LOCALID_forge11",
+        **limited_tool_execution(),
     )
 
     assert "payroll.csv" in result, result  # the text itself is still shown

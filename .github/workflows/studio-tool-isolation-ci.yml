@@ -15,6 +15,7 @@ on:
       - 'studio/setup.*'
       - 'pyproject.toml'
       - '.github/workflows/studio-tool-isolation-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
 
 permissions:
@@ -44,9 +45,14 @@ jobs:
         with:
           node-version: '24'
       - name: Install Linux prerequisites without changing host confinement policy
+        timeout-minutes: 8
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '150'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap socat ripgrep
+          bash .github/scripts/retry-with-apt-lock.sh bash -c 'sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep'
+      - name: Install Python test dependencies
+        run: |
           python -m pip install pytest pytest-timeout structlog psutil Pillow fastapi
       - name: Install and verify the shipped locked helper
         run: python studio/install_srt_runtime.py

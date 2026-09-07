@@ -282,7 +282,7 @@ def test_research_presentation_is_integrated() -> None:
         "toggling deep research must re-resolve permissionMode from the chat's own level "
         "falling back to the persisted global"
     )
-    assert "permissionMode," in deep_research_update
+    assert "...protectedIsolationDefaults(permissionMode)" in deep_research_update
 
 
 def test_research_plan_and_status_contract() -> None:

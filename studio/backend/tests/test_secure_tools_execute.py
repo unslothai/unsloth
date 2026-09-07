@@ -109,7 +109,7 @@ def _tool_schema(name: str) -> dict:
     }
 
 
-def _run_one_tool(monkeypatch, tool_name: str, arguments: dict) -> str:
+def _run_one_tool(monkeypatch, tool_name: str, arguments: dict, **execution_options) -> str:
     """Drive the agentic loop with one tool call and return its real result."""
     backend = _make_backend(
         monkeypatch,
@@ -120,6 +120,7 @@ def _run_one_tool(monkeypatch, tool_name: str, arguments: dict) -> str:
             messages = [{"role": "user", "content": f"use the {tool_name} tool"}],
             tools = [_tool_schema(tool_name)],
             max_tool_iterations = 1,
+            **execution_options,
         )
     )
     tool_ends = [
@@ -139,20 +140,75 @@ def _reset_policy():
 # ── Real tool execution under the loop ──
 
 
-def test_python_tool_counts_to_100(monkeypatch):
+def test_python_tool_counts_to_100(monkeypatch, limited_tool_execution):
     # "Use the python tool to count from 1 to 100."
     expected = " ".join(str(i) for i in range(1, 101))
     result = _run_one_tool(
-        monkeypatch, "python", {"code": "print(' '.join(str(i) for i in range(1, 101)))"}
+        monkeypatch,
+        "python",
+        {"code": "print(' '.join(str(i) for i in range(1, 101)))"},
+        **limited_tool_execution(),
     )
     assert expected in result, result  # real subprocess produced the full sequence
 
 
-def test_bash_tool_returns_current_datetime(monkeypatch):
+def test_tool_loop_keeps_legacy_positional_admission_hook(monkeypatch):
+    backend = _make_backend(monkeypatch, [_final_stream()])
+    seen = []
+    # Fixed pre-isolation argument order: derive nothing from today's signature.
+    positional = (
+        [{"role": "user", "content": "positional callback"}],
+        [_tool_schema("web_search")],
+        0.6,
+        0.95,
+        20,
+        0.01,
+        None,
+        1.0,
+        0.0,
+        0.0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        False,
+        1,
+        True,
+        None,
+        300,
+        None,
+        None,
+        None,
+        None,
+        False,
+        False,
+        False,
+        None,
+        True,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        lambda conversation: seen.append(copy.deepcopy(conversation)),
+    )
+    list(backend.generate_chat_completion_with_tools(*positional, network_policy = "deny"))
+    assert seen and seen[0][-1]["content"] == "positional callback"
+
+
+def test_bash_tool_returns_current_datetime(monkeypatch, limited_tool_execution):
     # "Use the bash tool to provide today's datetime." Bound the parsed UTC time
     # to the call window rather than a hard-coded date (survives midnight/TZ).
     before = datetime.now(timezone.utc) - timedelta(seconds = 5)
-    result = _run_one_tool(monkeypatch, "terminal", {"command": "date -u +%Y-%m-%dT%H:%M:%SZ"})
+    result = _run_one_tool(
+        monkeypatch,
+        "terminal",
+        {"command": "date -u +%Y-%m-%dT%H:%M:%SZ"},
+        **limited_tool_execution(),
+    )
     after = datetime.now(timezone.utc) + timedelta(seconds = 5)
 
     match = re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", result)

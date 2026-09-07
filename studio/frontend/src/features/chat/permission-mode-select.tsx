@@ -348,8 +348,8 @@ function ToolIsolationMenuSection({
             Process Guard, sanitized environment, resource limits, descriptor
             closure, workdir policy, timeout, cancellation, and cleanup remain
             active, and code and commands are still analysed for known-dangerous
-            patterns. That analysis is best effort, not a boundary: Limited is not
-            an OS sandbox.
+            patterns. That analysis is best effort, not a boundary: Limited is
+            not an OS sandbox.
           </p>
         ) : null}
         {error ? (
@@ -361,7 +361,9 @@ function ToolIsolationMenuSection({
           onSelect={(event) => {
             // Keep the menu open so the Network row above reflects the change at once.
             event.preventDefault();
-            setNetworkPolicy(networkPolicy === "allowlist" ? "deny" : "allowlist");
+            setNetworkPolicy(
+              networkPolicy === "allowlist" ? "deny" : "allowlist",
+            );
           }}
           className={cn(
             "items-start gap-2 py-2",
@@ -406,7 +408,8 @@ function ToolIsolationMenuSection({
           Require OS isolation
         </DropdownMenuItem>
       ) : null}
-      {!loading && (!capability || capability.retryable || !capability.available) ? (
+      {!loading &&
+      (!capability || capability.retryable || !capability.available) ? (
         <DropdownMenuItem
           onSelect={(event) => {
             event.preventDefault();
@@ -436,10 +439,13 @@ export function LimitedModeConfirmDialog({
   const capability = useChatRuntimeStore((s) => s.toolIsolationCapability);
 
   return (
-    <AlertDialog open={open} onOpenChange={(nextOpen) => {
-      if (!nextOpen && loading) clearGrant();
-      onOpenChange(nextOpen);
-    }}>
+    <AlertDialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen && loading) clearGrant();
+        onOpenChange(nextOpen);
+      }}
+    >
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
           <AlertDialogTitle>Use Limited mode?</AlertDialogTitle>
@@ -591,6 +597,9 @@ export function PermissionModeComposerPill({
   );
   const ActiveIcon = active.icon;
   const fullAccess = permissionMode === "full";
+  const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
+  const showIsolation =
+    codeToolsEnabled || fullAccess || toolExecutionMode === "limited";
 
   return (
     <>
@@ -603,15 +612,21 @@ export function PermissionModeComposerPill({
             data-active={fullAccess ? "true" : "false"}
             data-variant={fullAccess ? "danger" : undefined}
             aria-label="Permission level for tool calls"
-            title={`${active.label}: ${active.description}. ${isolation.label}.`}
+            title={
+              showIsolation
+                ? `${active.label}: ${active.description}. ${isolation.label}.`
+                : `${active.label}: ${active.description}`
+            }
           >
             <span className="composer-pill-glyph">
               <ActiveIcon className="size-[15px]" strokeWidth={2} />
             </span>
             <span>{active.label}</span>
-            <span className="max-w-[190px] truncate text-ui-11 font-normal opacity-75">
-              {isolation.label}
-            </span>
+            {showIsolation ? (
+              <span className="max-w-[190px] truncate text-ui-11 font-normal opacity-75">
+                {isolation.label}
+              </span>
+            ) : null}
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
               strokeWidth={1.5}
