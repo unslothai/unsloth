@@ -927,6 +927,7 @@ def _final_bracket_closes_substitution(text: str) -> bool:
 # `name() {`, `name () {` and `function name {`. The parens must be EMPTY, so `time (pip
 # install x)` and `X=$(pip ...)` are not definitions. A body runs only when the function is
 # called, so it is exposed as conditional rather than replayed.
+_FUNCTION_NAME_RE = re.compile(r"(?:function\s+)?[A-Za-z_]\w*")
 _FUNCTION_DEF_RE = re.compile(
     r"(?:function\s+[A-Za-z_]\w*\s*(?:\(\s*\))?|[A-Za-z_]\w*\s*\(\s*\))\s*"
 )
@@ -942,6 +943,10 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     """
     stripped = command.strip()
     bang = stripped.startswith("!")
+    # Whether anything separated that `!` from what follows. Bash's negation is a reserved
+    # WORD, so `! false` inverts the status while `!false` names a command; collapsing the
+    # space made the two identical and the negation was lost.
+    spaced = bang and stripped[1:2].isspace()
     if bang:
         stripped = stripped[1:].lstrip()
     # A grouping bracket is noise, but the `)` closing a `$( )` belongs to the command: a
@@ -985,7 +990,9 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     # Each prefix's own options and operands are consumed positionally, so the executable is
     # whatever word survives rather than the first one that looks like pip.
     stripped, _prefixed = _strip_exec_prefixes(stripped)
-    return (f"!{stripped}" if bang and stripped else stripped), conditional
+    if not (bang and stripped):
+        return stripped, conditional
+    return (f"! {stripped}" if spaced else f"!{stripped}"), conditional
 
 
 # `${name:-word}`, `${name:+word}`, `${name:=word}`, `${name:?word}`: the word is expanded
@@ -1217,7 +1224,9 @@ def _piece_always_succeeds(piece: str) -> bool:
 
 
 def _piece_success_model(
-    piece: str, functions: "dict[str, bool | None] | None" = None
+    piece: str,
+    functions: "dict[str, bool | None] | None" = None,
+    notebook_bang: bool = True,
 ) -> bool | None:
     """True when the piece certainly succeeds, False when it certainly fails, else None.
 
@@ -1226,8 +1235,11 @@ def _piece_success_model(
     of pip succeeding. Reading the negation as an unknown command marked both conditional.
     """
     text = _unwrap_shell_group(piece)[0]  # `( ... )` exits with its last command's status
-    if text.startswith("!"):
-        text = text[1:].lstrip()  # the notebook's own bang, not a shell operator
+    # Only the FIRST command of a cell carries the notebook's bang, and it may be written
+    # `!cmd` or `! cmd`. Everywhere else a leading `!` is bash's negation reserved word, which
+    # the loop below counts; eating it there read `! false` as a failure.
+    if notebook_bang and text.startswith("!"):
+        text = text[1:].lstrip()
     negations = 0
     while True:
         word, rest = _split_first_word(text)
@@ -1277,6 +1289,7 @@ def _close_group(
     last_ok: list[bool | None],
     models: list[bool | None],
     pending: str,
+    notebook_bang: bool = True,
 ) -> None:
     """Fold a closing group's success into the list that contains it.
 
@@ -1286,7 +1299,10 @@ def _close_group(
     the command still in hand, which no separator has flushed.
     """
     if _unwrap_shell_group(pending)[0].strip():
-        last_ok[-1] = _left_hand_status(models, prev_ops, pending)
+        # Fold it through the group's own list rather than replacing the status with it: in
+        # `(false && pip install x)` the trailing command was short-circuited, and a brace
+        # group only escaped this because its required `;` had already flushed the pending.
+        last_ok[-1] = _left_hand_status(models, prev_ops, pending, None, notebook_bang)
     inner_model = last_ok.pop()
     inner = inner_model is True
     assured.pop()
@@ -1303,7 +1319,9 @@ def _close_group(
     )
 
 
-def _fold_pending(assured: list[bool], prev_ops: list[str], pending: str) -> None:
+def _fold_pending(
+    assured: list[bool], prev_ops: list[str], pending: str, notebook_bang: bool = True
+) -> None:
     """Fold the command in hand into the list, unless a group already spoke for it.
 
     After `(pip install x)` closes, the level's state ALREADY carries the group's status and
@@ -1312,7 +1330,7 @@ def _fold_pending(assured: list[bool], prev_ops: list[str], pending: str) -> Non
     """
     if not _unwrap_shell_group(pending)[0].strip():
         return
-    _fold_and_or(assured, prev_ops, _piece_success_model(pending) is True)
+    _fold_and_or(assured, prev_ops, _piece_success_model(pending, None, notebook_bang) is True)
 
 
 def _fold_and_or(assured: list[bool], prev_ops: list[str], piece_is_pip: bool) -> None:
@@ -1353,17 +1371,19 @@ def _left_hand_status(
     prev_ops: list[str],
     pending: str,
     functions: "dict[str, bool | None] | None" = None,
+    notebook_bang: bool = True,
+    spoken_for: bool = False,
 ) -> bool | None:
     """Fold the piece in hand into its level's running status and return the result.
 
     Called at each `&&`/`||` so the operator sees the status of everything to its left, not
     just the piece beside it.
     """
-    if not _unwrap_shell_group(pending)[0].strip():
+    if spoken_for or not _unwrap_shell_group(pending)[0].strip():
         # A group just closed and the text in hand is its bare bracket. The level ALREADY
         # carries the group's status; folding the bracket as an unknown command wiped it.
         return models[-1]
-    piece = _piece_success_model(pending, functions)
+    piece = _piece_success_model(pending, functions, notebook_bang)
     models[-1] = piece if prev_ops[-1] == "" else _fold_status(models[-1], prev_ops[-1], piece)
     return models[-1]
 
@@ -1386,6 +1406,27 @@ def _for_list_is_nonempty(text: str) -> bool:
     if not words or not any(words):
         return False
     return not any(ch in word for word in words for ch in ("$", "`", "*", "?", "["))
+
+
+def _invoked_name(piece: str) -> str:
+    """The word this piece runs, read WITHOUT stripping execution prefixes.
+
+    `env f`, `nohup f` and `command f` all look for an executable named f, so none of them
+    reaches a shell function; stripping them first made every wrapper look like a call. The
+    brackets, a function header and the body keywords do come off, since they only precede
+    the command rather than replace it.
+    """
+    text = piece.lstrip("!").strip()
+    while text[:1] in ("(", "{"):
+        text = text[1:].lstrip()
+    header = _FUNCTION_DEF_RE.match(text)
+    if header is not None:
+        text = text[header.end() :].lstrip().lstrip("({").lstrip()
+    while True:
+        word, rest = _split_first_word(text)
+        if word.lower() not in _SHELL_BODY_KEYWORDS:
+            return word
+        text = rest.lstrip()
 
 
 def _leading_shell_keywords(piece: str) -> list[str]:
@@ -1452,6 +1493,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # Each definition's exit status once its closing brace is reached. Bash requires the
     # definition to precede the call, so a single left-to-right pass always has it in hand.
     func_status: dict[str, bool | None] = {}
+    # Definition keys per name, in the order they appear.
+    instances: dict[str, list[str]] = {}
+    definitions = 0
     # Per level: whether the last command flushed there is modelled as succeeding. A group
     # exits with that status, which is what the enclosing `&&` reads.
     last_ok: list[bool | None] = [None]
@@ -1475,6 +1519,12 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # the `;;` and read an unconditional pip call as conditional.
     case_depths: list[int] = [0]
     grouping_closed = False
+    # A `( )` or `{ }` closed and nothing has been flushed since: the level's status already
+    # carries it, and the text still in hand is that group's own last command plus its
+    # bracket. Folding that again as a fresh command wiped what the group contributed.
+    closed_pending = False
+    # Inside the empty parens of a function header, whose brackets open no group.
+    func_parens = False
     # An open legacy `` `...` `` substitution: its operators belong to the inner command, so
     # without this the `;` inside one split the line into an unreadable fragment.
     in_backtick = False
@@ -1488,9 +1538,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     seps: list[str] = []
 
     def flush(separator: str = "") -> None:
-        nonlocal buf
+        nonlocal buf, closed_pending
         text = "".join(buf)
-        last_ok[-1] = _piece_success_model(text)
+        last_ok[-1] = _piece_success_model(text, func_status, not out)
         out.append((text, buf_conditional))
         seps.append(separator)
         owners.append(next((name for name in reversed(def_names) if name), None))
@@ -1498,6 +1548,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         # not unguarded: `setup() { false && pip install x; }; setup` still runs no pip.
         nodef.append(any(tails))
         buf = []
+        closed_pending = False
 
     while i < len(line):
         ch = line[i]
@@ -1544,8 +1595,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     if closing:
                         # A group exits with its last list's status, which `_close_group` is
                         # about to fold; record it here, before the pop loses it.
-                        func_status[closing] = last_ok[-1]
-                _close_group(list_has_pip, prev_ops, last_ok, list_models, "".join(buf))
+                        func_status[closing.split("#")[0]] = last_ok[-1]
+                _close_group(list_has_pip, prev_ops, last_ok, list_models, "".join(buf), not out)
+                closed_pending = True
             buf.append(ch)
             i += 1
         elif ch == "#" and (
@@ -1563,8 +1615,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # conditional than a bare command. Only an UNKNOWN left side opens a tail, and
             # the left side is the whole list: `true || false || pip install ...` skips the
             # install, and `false && true || pip install ...` always reaches it.
-            left_model = _left_hand_status(list_models, prev_ops, "".join(buf), func_status)
-            _fold_pending(list_has_pip, prev_ops, "".join(buf))
+            left_model = _left_hand_status(list_models, prev_ops, "".join(buf), func_status, not out, closed_pending)
+            _fold_pending(list_has_pip, prev_ops, "".join(buf), not out)
             prev_ops[-1] = "||"
             flush("||")
             tails[-1] = left_model is not False
@@ -1583,8 +1635,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # `nvidia-smi && pip install torch==2.12.0` installs nothing on a CPU box, and
             # R-INST-004 is error severity, so replaying it reddened CI on a correct
             # notebook.
-            left_and = _left_hand_status(list_models, prev_ops, "".join(buf), func_status)
-            _fold_pending(list_has_pip, prev_ops, "".join(buf))
+            left_and = _left_hand_status(list_models, prev_ops, "".join(buf), func_status, not out, closed_pending)
+            _fold_pending(list_has_pip, prev_ops, "".join(buf), not out)
             prev_ops[-1] = "&&"
             flush("&&")
             # A left side modelled as CERTAIN success reaches the tail as surely as the pip
@@ -1610,7 +1662,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # with its last lexical command's: `{ false && pip install x; }` fails, because the
             # install never ran. Recording the piece alone let a short-circuited command speak
             # for the group.
-            folded = _left_hand_status(list_models, prev_ops, "".join(buf), func_status)
+            folded = _left_hand_status(list_models, prev_ops, "".join(buf), func_status, not out, closed_pending)
             flush(ch if ch in "&|" else ";")
             last_ok[-1] = folded
             tails[-1] = False
@@ -1620,7 +1672,19 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf_conditional = any(tails) or any(def_levels)
             i += 1
         else:
-            if ch in "({":
+            # `f()` is a function header, not a group. Pushing a level for its empty parens
+            # and closing it one character later marked the whole body as "a group just
+            # closed", so the `;` ending that body folded nothing and the definition's status
+            # was lost. Its brackets are ordinary characters.
+            if (
+                ch == "("
+                and _FUNCTION_NAME_RE.fullmatch("".join(buf).lstrip("!").strip())
+                and line[i + 1 :].lstrip().startswith(")")
+            ):
+                func_parens = True
+            if ch == ")" and func_parens:
+                func_parens = False  # the header's own bracket, matching the skip above
+            elif ch in "({":
                 # `$(`, `<(`, `>(` open a substitution running its own commands; a bare `(`
                 # groups this line's. `${ }` expands a WORD and runs nothing, so splitting on
                 # the `||` in `${X:-a||pip install ...}` invents a command bash never runs.
@@ -1636,7 +1700,17 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 tails.append(False)
                 header = _FUNCTION_DEF_RE.fullmatch("".join(buf).lstrip("!").strip())
                 def_levels.append(ch == "{" and header is not None)
-                def_names.append(_function_name(header.group(0)) if ch == "{" and header else None)
+                if ch == "{" and header:
+                    # One key per DEFINITION, not per name: `f(){ a; }; f; f(){ b; }` calls
+                    # the FIRST body, and keying by name alone compared the call against the
+                    # last definition of `f` and left the reachable body conditional.
+                    name = _function_name(header.group(0))
+                    definitions += 1
+                    key = f"{name}#{definitions}"
+                    instances.setdefault(name, []).append(key)
+                    def_names.append(key)
+                else:
+                    def_names.append(None)
                 list_has_pip.append(False)
                 list_models.append(None)
                 prev_ops.append("")
@@ -1658,8 +1732,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                         def_levels.pop()
                         closing = def_names.pop()
                         if closing:
-                            func_status[closing] = last_ok[-1]
-                    _close_group(list_has_pip, prev_ops, last_ok, list_models, "".join(buf))
+                            func_status[closing.split("#")[0]] = last_ok[-1]
+                    _close_group(list_has_pip, prev_ops, last_ok, list_models, "".join(buf), not out)
+                    closed_pending = True
             if ch not in ")}":
                 grouping_closed = False
             buf.append(ch)
@@ -1677,7 +1752,12 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     kw_flags = [head_keyword]
     for piece, flag in rest:
         text, keyword = _unwrap_shell_group(piece.strip())
-        commands.append((f"!{text}" if text else "", flag or keyword))
+        # A space when the command itself starts with bash's negation: gluing the notebook
+        # bang to it made `! false` read as a command named `!false`, and the negation that
+        # turns the list's status around was lost.
+        commands.append(
+            (f"!{' ' if text.startswith('!') else ''}{text}" if text else "", flag or keyword)
+        )
         kw_flags.append(keyword)
     # `echo $(pip install x)` runs the install, and the outer command is not pip, so the
     # inner one is a command of its own. Read off the raw pieces, since the unwrap above
@@ -1710,7 +1790,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     body_entries: dict[str, list[tuple[int, bool]]] = {}
     # Per function body, the names it invokes unconditionally WITHIN that body. Reached only
     # once the body itself is, which is what makes the call graph transitive.
-    body_invokes: dict[str, set[str]] = {}
+    body_invokes: dict[str, set[tuple[str, int]]] = {}
     called: set[tuple[str, int]] = set()
     # Depth of open compounds at an unconditional `break`/`continue`. Bash jumps past `done`,
     # so the rest of that loop body never runs -- loop-local, unlike `exit`, which ends the
@@ -1875,9 +1955,10 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 cond_assumed[-1] = cond_assumed[-1] or _piece_assumes_pip(text)
             # A bare `setup` invokes it. Only the FIRST word: `setup --dry-run` still calls
             # it, while `echo setup` does not.
-            invoked = _split_first_word(_strip_exec_prefixes(text.lstrip("!").strip())[0].strip())[
-                0
-            ]
+            # The RAW first word. `env f`, `nohup f` and `command f` all look for an
+            # executable named f, so none of them reaches a shell function, and entering the
+            # body anyway let its `exit` truncate a line bash really carries on with.
+            invoked = _invoked_name(piece)
             # What this command's flag would be with the definition entered -- every other
             # reason it is conditional still stands.
             # `command_flag` on the HEADER piece is the definition itself, which is exactly
@@ -1897,12 +1978,15 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             )
             owner = owners[index]
             if owner is not None:
+                # Keyed by DEFINITION, not by name: `f(){ ...; }; f; f(){ :; }` calls the
+                # first body, and comparing against the final definition of the name left it
+                # conditional. `owners` already carries one key per definition.
                 def_last_index[owner] = index
                 if owner in returned:
                     continue  # the body already returned; nothing after it in this function runs
                 body_entries.setdefault(owner, []).append((len(ordered), entered))
                 if not entered:
-                    body_invokes.setdefault(owner, set()).add(invoked)
+                    body_invokes.setdefault(owner, set()).add((invoked, index))
                     if invoked == "return":
                         returned.add(owner)
                     elif separator not in ("|", "&") and _command_ends_shell(
@@ -1914,7 +1998,10 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                         ends_shell.add(owner)
             elif not piece_conditional:
                 called.add((invoked, index))
-                call_at.setdefault(invoked, len(ordered))
+                if separator not in ("|", "&"):
+                    # `f | cat` runs f in a subshell, so a terminator inside it ends only
+                    # that subshell and the parent shell reaches the next command.
+                    call_at.setdefault(invoked, len(ordered))
             ordered.append((text, piece_conditional))
             # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`
             # along with every other transparent prefix. An `exec` bash may never reach hands
@@ -1933,8 +2020,12 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 # It jumps out of the innermost LOOP, which is not always the compound it sits
                 # in: in `while ...; do if ...; then break; fi; ...; done` the `fi` closes long
                 # before the body it skipped ends. Depth of that loop, not of the jump.
+                # Only inside a loop. Bash reports "break: only meaningful in a `for', `while'
+                # or `until' loop" and carries on with the next command, so binding the jump to
+                # the enclosing `if` dropped commands that really run.
                 loop = [n for n, word in enumerate(openers) if word in ("while", "until", "for")]
-                broke_at = loop[-1] + 1 if loop else len(body_levels)
+                if loop:
+                    broke_at = loop[-1] + 1
     # A defined body is conditional until something calls it. `setup() { pip install x; };
     # setup` definitely installs, and leaving the body conditional dropped it from the replay
     # so the whole-notebook gate skipped R-INST-003/004/005 on a pairing bash performs.
@@ -1942,18 +2033,38 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # graph is walked to a fixed point rather than intersected once.
     # A call only reaches a definition that already exists: `f || true; f() { ... }` fails at
     # the call and never runs the body, so the name alone is not enough.
-    reached = {name for name, at in called if at > def_last_index.get(name, index + 1)}
-    pending_calls = list(reached)
+    def _definition_in_force(name: str, at: int) -> str | None:
+        """The definition of `name` complete before position `at`, or None."""
+        best = None
+        for key in instances.get(name, ()):
+            end = def_last_index.get(key)
+            if end is not None and end < at and (best is None or end > def_last_index[best]):
+                best = key
+        return best
+
+    reached: set[str] = set()
+    pending_calls = [
+        key for name, at in called if (key := _definition_in_force(name, at)) is not None
+    ]
+    reached.update(pending_calls)
     while pending_calls:
-        for callee in body_invokes.get(pending_calls.pop(), ()):
-            if callee not in reached:
-                reached.add(callee)
-                pending_calls.append(callee)
+        for callee, at in body_invokes.get(pending_calls.pop(), ()):
+            key = _definition_in_force(callee, at)
+            if key is not None and key not in reached:
+                reached.add(key)
+                pending_calls.append(key)
     for name in reached & body_entries.keys():
         for position, entered in body_entries[name]:
             ordered[position] = (ordered[position][0], entered)
     # The call itself hands the shell over, so nothing the caller writes after it can run.
-    cut = min((call_at[name] for name in reached & ends_shell if name in call_at), default = None)
+    cut = min(
+        (
+            call_at[key.split("#")[0]]
+            for key in reached & ends_shell
+            if key.split("#")[0] in call_at
+        ),
+        default = None,
+    )
     if cut is not None:
         del ordered[cut + 1 :]
     return ordered
@@ -2247,6 +2358,8 @@ def _removed_by_cell(install_cell: str, name: str) -> bool:
             sp = parse_spec(raw)
             if sp is None or sp.name.replace("_", "-").lower() != wanted:
                 continue
+            if _is_dry_run(inv):
+                continue  # `--dry-run` reports what pip WOULD do and changes nothing
             # Replayed in order: `pip uninstall x; pip install x` leaves x installed, and
             # answering on the first uninstall it met claimed the cell removes a dependency
             # pip puts straight back.

@@ -486,3 +486,14 @@ def test_a_rollback_survives_a_filesystem_that_is_still_full(oracle, tmp_path, m
         assert (snapshot_dir / name).read_bytes() == data, name
     # No rollback scratch left behind.
     assert not [p for p in snapshot_dir.iterdir() if p.name.endswith(".rollback")]
+
+
+def test_a_dry_run_install_does_not_undo_a_removal():
+    """`--dry-run` prints what pip would do and changes nothing, here as everywhere else.
+
+    Treating it as a real reinstall reset the removal, so R-INST-005 returned early instead of
+    reporting the dependency the cell really leaves missing.
+    """
+    assert nv._removed_by_cell("!pip uninstall -y tokenizers; pip install --dry-run tokenizers", "tokenizers")
+    # A real reinstall still puts it back.
+    assert not nv._removed_by_cell("!pip uninstall -y tokenizers; pip install tokenizers", "tokenizers")
