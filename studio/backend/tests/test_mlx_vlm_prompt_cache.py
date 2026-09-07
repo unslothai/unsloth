@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import logging
 import sys
 import types
@@ -644,3 +647,70 @@ def test_snapshot_module_imports_mlx_only_when_copying(monkeypatch):
     with pytest.raises(ImportError):
         copy_cache_entries([FakeKV()])
     assert snapshots.VLM_PROMPT_CACHE_ENTRIES == 6
+
+
+class FakeSlottedKV:
+    """A cache whose fields live in ``__slots__``: ``vars()`` cannot reach them."""
+
+    __slots__ = ("keys", "offset")
+    state = property(lambda self: self.keys)
+
+    def __init__(self):
+        self.keys = FakeArray([1, 2, 3])
+        self.offset = 3
+
+
+class FakeDictKV:
+    """A cache holding its arrays in a dict, as a hybrid layout would."""
+
+    state = property(lambda self: self.tensors)
+
+    def __init__(self):
+        self.tensors = {"keys": FakeArray([1, 2, 3])}
+        self.offset = 3
+
+
+def test_copy_walks_a_dict_held_state(fake_mx):
+    """A dict of arrays used to fall through the copier and be shared, so the store
+    would hand back a dict the next generation writes through."""
+    live = [FakeCacheList(FakeDictKV())]
+    saved = copy_cache_entries(live)
+    assert saved[0].caches[0].tensors is not live[0].caches[0].tensors
+    assert saved[0].caches[0].tensors["keys"] is not live[0].caches[0].tensors["keys"]
+    assert cache_entries_nbytes(saved) == 12
+    release_cache_entries(saved)
+    assert saved[0].caches[0].tensors["keys"] is None
+
+
+def test_copy_refuses_a_cache_it_cannot_walk_rather_than_sharing_it(fake_mx):
+    """The top level already refuses an unrecognised entry. Nested, one used to be
+    returned as itself: a live cache in the store, advanced by the turn that served it.
+    Refusing costs the next turn its reuse; sharing costs it its answer."""
+    with pytest.raises(TypeError):
+        copy_cache_entries([FakeCacheList(FakeSlottedKV())])
+
+
+def test_session_restores_the_model_when_one_host_is_named_twice(fake_mx):
+    """``policy_hosts`` is (model, language_model), and the second falls back to the
+    first when the wrapper exposes no language model, so the same object can be listed
+    twice. Unpatching it twice must not strand the recording class on the model."""
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    host = FakeHost()
+    before = type(host)
+    with VLMPromptCacheSession(store, "m", host, make_cache, policy_hosts = (host, host)):
+        pass
+    assert type(host) is before
+    assert "chunked_prefill_policy" not in vars(host)
+
+
+def test_session_restores_the_model_even_if_unpatching_fails(fake_mx):
+    """Any failure while unpatching leaves the model wrapped otherwise, and every later
+    request on that load then answers through a stale forward record."""
+    store = VLMPromptSnapshotStore(max_bytes = 10**9)
+    host = FakeHost()
+    before = type(host)
+    session = VLMPromptCacheSession(store, "m", host, make_cache, policy_hosts = (host,))
+    session.__enter__()
+    del host.chunked_prefill_policy
+    session.__exit__(None, None, None)
+    assert type(host) is before

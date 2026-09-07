@@ -70,6 +70,14 @@ def _is_cache(value):
     return hasattr(value, "__dict__") and hasattr(type(value), "state")
 
 
+def _is_opaque_cache(value):
+    """A cache whose fields this cannot reach: it carries ``state`` but keeps its
+    attributes somewhere ``vars`` does not see, as a ``__slots__`` layout does. Every
+    class mlx-vlm ships today is an ordinary one; a future one that is not must stop
+    the copy rather than be handed back as itself, which would share it."""
+    return not hasattr(value, "__dict__") and hasattr(type(value), "state")
+
+
 def _copy_value(value, mx):
     if isinstance(value, mx.array):
         return value + 0
@@ -77,11 +85,15 @@ def _copy_value(value, mx):
         return [_copy_value(item, mx) for item in value]
     if isinstance(value, tuple):
         return tuple(_copy_value(item, mx) for item in value)
+    if isinstance(value, dict):
+        return {key: _copy_value(item, mx) for key, item in value.items()}
     if _is_cache(value):
         duplicate = copy.copy(value)
         for name, item in list(vars(duplicate).items()):
             setattr(duplicate, name, _copy_value(item, mx))
         return duplicate
+    if _is_opaque_cache(value):
+        raise TypeError(f"{type(value).__name__} cannot be copied")
     return value
 
 
@@ -90,6 +102,9 @@ def _arrays(value, mx):
         yield value
     elif isinstance(value, (list, tuple)):
         for item in value:
+            yield from _arrays(item, mx)
+    elif isinstance(value, dict):
+        for item in value.values():
             yield from _arrays(item, mx)
     elif _is_cache(value):
         for item in vars(value).values():
@@ -103,6 +118,9 @@ def _release_value(value, mx):
         value[:] = [_release_value(item, mx) for item in value]
     elif isinstance(value, tuple):
         return tuple(_release_value(item, mx) for item in value)
+    elif isinstance(value, dict):
+        for key, item in list(value.items()):
+            value[key] = _release_value(item, mx)
     elif _is_cache(value):
         for name, item in list(vars(value).items()):
             setattr(value, name, _release_value(item, mx))
@@ -409,9 +427,16 @@ class VLMPromptCacheSession:
         return self
 
     def __exit__(self, *exc):
-        for host in self._patched_hosts:
-            del host.chunked_prefill_policy
-        self._forward.__exit__(*exc)
+        try:
+            for host in self._patched_hosts:
+                # ``policy_hosts`` is (model, language_model), which name one object twice
+                # when the wrapper exposes no separate language model, so the same host can
+                # be unpatched twice. Idempotent rather than a second ``del`` that raises.
+                host.__dict__.pop("chunked_prefill_policy", None)
+        finally:
+            # Whatever the policies did, the model gets its class back: one left wrapped
+            # answers every later request on this load through a stale forward record.
+            self._forward.__exit__(*exc)
         return False
 
     def find_prefix_length(self, token_ids):
