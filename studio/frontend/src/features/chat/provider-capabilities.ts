@@ -541,11 +541,16 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // OpenRouter silently drops unsupported params, so surface every knob and let the gateway
   // fan out per model.
   openrouter: ALL_SUPPORTED,
-  // Local OpenAI-compat connections use the OpenAI path, but vLLM/Ollama/llama.cpp users
-  // want top_k/min_p/repetition, so be permissive.
-  custom: ALL_SUPPORTED,
+  // An unknown OpenAI-compat endpoint may reject top_k / min_p / repetition_penalty outright
+  // (OpenAI-shaped gateways 400 on unrecognized fields), so custom stays on the baseline; the
+  // vllm / llama_cpp presets accept any base URL and surface the extra knobs.
+  custom: OPENAI_COMPAT_BASE,
   vllm: ALL_SUPPORTED,
-  ollama: ALL_SUPPORTED,
+  // Ollama's /v1 layer reads only the OpenAI-documented fields and drops top_k / min_p /
+  // repeat_penalty without an error; they live in the native /api/chat options instead.
+  // https://docs.ollama.com/api/openai-compatibility
+  ollama: OPENAI_COMPAT_BASE,
+  // The backend renames repetition_penalty to repeat_penalty for llama-server.
   llama_cpp: ALL_SUPPORTED,
 };
 

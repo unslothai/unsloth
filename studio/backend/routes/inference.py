@@ -20283,12 +20283,19 @@ async def _proxy_to_external_provider(
         api_key = api_key,
     )
 
-    # `top_k` defaults to 20 in ChatCompletionRequest because the local path
-    # expects an int, but the external-provider path treats "field omitted from
-    # JSON" as "use provider default" so callers sending only model/messages
-    # don't silently get different sampling than before this PR. Pydantic's
-    # `model_fields_set` tracks explicit-vs-default per request.
+    # `top_k` / `min_p` / `repetition_penalty` carry non-None schema defaults (20, 0.01,
+    # 1.0) because the local path expects numbers, but the external-provider path treats
+    # "field omitted from JSON" as "use provider default" so callers sending only
+    # model/messages don't silently get different sampling than before this PR. Pydantic's
+    # `model_fields_set` tracks explicit-vs-default per request. Read before
+    # `_fill_recommended_sampling_openai`, whose setattr would mark every field explicit.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
+    _min_p_explicit = payload.min_p if "min_p" in payload.model_fields_set else None
+    _repetition_penalty_explicit = (
+        payload.repetition_penalty
+        if "repetition_penalty" in payload.model_fields_set
+        else None
+    )
 
     # Unsloth-owned tool loop for every non-Codex provider that declares the
     # capability. The catalog comes from the same selector the local and Codex
@@ -20341,6 +20348,8 @@ async def _proxy_to_external_provider(
             max_tokens = _effective_max_tokens(payload),
             presence_penalty = payload.presence_penalty,
             top_k = _top_k_explicit,
+            min_p = _min_p_explicit,
+            repetition_penalty = _repetition_penalty_explicit,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
             enable_prompt_caching = payload.enable_prompt_caching,

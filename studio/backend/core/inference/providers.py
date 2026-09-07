@@ -380,6 +380,10 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "/v1/chat/completions; API key optional (required by Ollama "
             "cloud). Surfaced via CUSTOM_PROVIDER_PRESETS in the frontend."
         ),
+        # Ollama's /v1 layer reads only the OpenAI-documented fields and drops these three
+        # without an error; they live in the native /api/chat options. The panel hides them,
+        # but /v1/chat/completions is a public surface, so strip them here too.
+        "body_omit": ("top_k", "min_p", "repetition_penalty"),
         "hidden": True,
     },
     "llama_cpp": {
