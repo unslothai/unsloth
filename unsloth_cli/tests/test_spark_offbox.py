@@ -688,6 +688,24 @@ _DEVICE_MAPS = [
 ]
 
 
+def _import_loader_utils():
+    """Import loader_utils, or skip when unsloth refuses to run on this machine.
+
+    Importing `unsloth.models` runs unsloth's accelerator detection, which raises
+    NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
+    on a CPU-only host. The repo test job runs on exactly such a host, so these six
+    parametrised cases and their thirty-one siblings went red there while passing on
+    any machine with a GPU. The notice cannot be exercised where the package it lives
+    in will not import, so the honest outcome is a skip and not a failure.
+    """
+    pytest.importorskip("torch")
+    try:
+        from unsloth.models import loader_utils as LU
+    except NotImplementedError as exc:
+        pytest.skip("unsloth needs a torch accelerator to import: %s" % exc)
+    return LU
+
+
 def _spark_notice(
     monkeypatch,
     system,
@@ -697,11 +715,11 @@ def _spark_notice(
     device_count = 1,
 ):
     """Call the notice with every probe pointed at a simulated host."""
-    pytest.importorskip("torch")
     import builtins
     import platform as _platform
+
+    LU = _import_loader_utils()
     import torch
-    from unsloth.models import loader_utils as LU
 
     monkeypatch.setattr(_platform, "system", lambda: system)
     monkeypatch.setattr(_platform, "machine", lambda: machine)
@@ -754,9 +772,8 @@ def test_spark_notice_never_breaks_a_load(monkeypatch, system, machine, opener):
 
 def test_spark_notice_survives_a_broken_cuda_probe(monkeypatch):
     """torch.cuda.device_count() can raise on a broken driver; that is not our problem."""
-    pytest.importorskip("torch")
+    LU = _import_loader_utils()
     import torch
-    from unsloth.models import loader_utils as LU
 
     def boom():
         raise RuntimeError("no CUDA driver")
