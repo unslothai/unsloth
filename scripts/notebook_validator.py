@@ -417,7 +417,11 @@ PIP_LINE_RE = re.compile(
     # requiring exactly one leading bang matched nothing and the git+ ban was bypassed.
     r"^\s*!(?:\s*!)*\s*(?P<tool>(?:uv\s+)?pip|"
     + _INTERPRETER_RE
-    + r"(?:\s+-[A-Za-z]\w*)*\s+-m\s+(?:uv\s+)?pip)\s+"
+    # `-W arg` and `-X opt` take an operand, attached or separate (`python --help`), and
+    # `python -W ignore -m pip install git+...` matched nothing while requiring every
+    # intervening word to start with `-`. The operand form is tried first.
+    + r"(?:\s+-[WX]\s*\S+|\s+--check-hash-based-pycs\s+\S+|\s+-[A-Za-z]\w*)*"
+    + r"\s+-m\s+(?:uv\s+)?pip)\s+"
     r"(?P<action>install|uninstall)\b(?P<rest>.*)$",
     re.IGNORECASE | re.VERBOSE,
 )
@@ -595,6 +599,9 @@ def _split_first_word(text: str) -> tuple[str, str]:
     word: list[str] = []
     quote = ""
     depth = 0  # open `$(` nesting
+    # Open `${ }` expansions. bash keeps `TOKEN=${TOKEN:-a b}` as ONE assignment word, and
+    # tracking only `$(` ended the word at that space, leaving `b}` as the executable.
+    brace = 0
     # A `case` arm's pattern ends in an UNBALANCED `)`, so inside an open case that `)` is an
     # arm delimiter rather than the substitution's closer. Popping on it truncated the
     # assignment word in `TOKEN=$(case x in x) printf a;; esac) pip install ...`, and the
@@ -618,6 +625,12 @@ def _split_first_word(text: str) -> tuple[str, str]:
             # Only an unescaped backtick closes it; the escape above already consumed `\``.
             if ch == "`":
                 backtick = False
+            word.append(ch)
+        elif brace:
+            if ch == "{":
+                brace += 1
+            elif ch == "}":
+                brace -= 1
             word.append(ch)
         elif depth:
             # A substitution's own whitespace and quotes belong to the word: bash runs
@@ -646,6 +659,11 @@ def _split_first_word(text: str) -> tuple[str, str]:
             word.append(ch)
         elif ch == "$" and text[index + 1 : index + 2] == "(":
             depth += 1
+            word.append(ch)
+            index += 1
+            word.append(text[index])
+        elif ch == "$" and text[index + 1 : index + 2] == "{":
+            brace += 1
             word.append(ch)
             index += 1
             word.append(text[index])
@@ -951,13 +969,22 @@ def _piece_is_pip(piece: str) -> bool:
     return bool(stripped) and bool(PIP_LINE_RE.match("!" + stripped))
 
 
+# A redirection operator, optionally with its fd and its target attached (`2>&1`, `>/x`).
+_REDIRECTION_RE = re.compile(r"^\d*(?:>>|>&|&>|<<<|<<|<>|>|<)")
+# `exec`'s own options. `-a` names the argv[0] to pass on and takes an operand.
+_EXEC_LONE_FLAGS = frozenset({"-c", "-l"})
+
+
 def _command_execs(command: str) -> bool:
     """Does this command hand the shell over to `exec`?
 
-    `exec` replaces the shell with the program it names, so no later command in the same list
-    can run. Treating it as an ordinary transparent prefix replayed both installs in
+    `exec NAME` replaces the shell with that program, so no later command in the same list can
+    run. Treating it as an ordinary transparent prefix replayed both installs in
     `exec pip install torch==2.11.0; pip install torch==2.12.0` and reported the unreachable
     one as the final version.
+
+    With NO utility, `exec >/tmp/install.log` only makes the redirections permanent and the
+    shell carries on, so it hands nothing over and the commands after it still run.
     """
     text = command.lstrip("!").strip()
     while text:
@@ -967,8 +994,44 @@ def _command_execs(command: str) -> bool:
         if _ENV_ASSIGNMENT_RE.match(word):
             text = rest
             continue
-        return word.lower() == "exec"
+        if word.lower() != "exec":
+            return False
+        break
+    else:
+        return False
+    while rest:
+        word, tail = _split_first_word(rest)
+        if not word:
+            break
+        if word in _EXEC_LONE_FLAGS:
+            rest = tail
+            continue
+        if word == "-a":
+            rest = _split_first_word(tail)[1]
+            continue
+        if _REDIRECTION_RE.match(word):
+            # `> /x` carries its target as the next word; `>/x` already has it.
+            rest = _split_first_word(tail)[1] if _REDIRECTION_RE.fullmatch(word) else tail
+            continue
+        return True  # a utility to hand the shell over to
     return False
+
+
+def _fold_and_or(assured: list[bool], prev_ops: list[str], piece_is_pip: bool) -> None:
+    """Fold the piece just read into "is this and-or list assumed to have succeeded?".
+
+    `A || B` succeeds when EITHER side did, so a pip install on the left carries the list
+    however B turns out. `A && B` succeeds only when BOTH did, so an intervening command that
+    is not modelled as succeeding breaks the chain: in
+    `pip install torch && probe && pip install torchcodec`, a failing probe leaves the last
+    install unreachable, and replaying it suppressed R-INST-004 on the pair really installed.
+    """
+    if prev_ops[-1] == "||":
+        assured[-1] = assured[-1] or piece_is_pip
+    elif prev_ops[-1] == "&&":
+        assured[-1] = assured[-1] and piece_is_pip
+    else:
+        assured[-1] = piece_is_pip
 
 
 def _split_chained(line: str) -> list[tuple[str, bool]]:
@@ -1001,6 +1064,10 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # Per level: has this and-or list already run a pip command? `A && B` leaves B
     # unconditional only when something to its left is one.
     list_has_pip = [False]
+    # Per level: the operator that joined the piece in hand to the list before it. `||`
+    # succeeds when EITHER side did, `&&` only when both, so the two combine differently and
+    # the distinction cannot be recovered from `list_has_pip` alone.
+    prev_ops = [""]
     buf_conditional = False
     # One entry per open `(`/`{`: True when it opened a grouping. A `)` closing a `$( )` is
     # inside a word, so a `#` after it is a literal, not a comment.
@@ -1064,6 +1131,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             if len(tails) > 1:
                 tails.pop()
                 list_has_pip.pop()
+                prev_ops.pop()
             buf.append(ch)
             i += 1
         elif ch == "#" and (
@@ -1077,8 +1145,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf.append(ch)  # its separators are its own; the body is split on its own later
             i += 1
         elif line.startswith("||", i):
-            if _piece_is_pip("".join(buf)):
-                list_has_pip[-1] = True
+            _fold_and_or(list_has_pip, prev_ops, _piece_is_pip("".join(buf)))
+            prev_ops[-1] = "||"
             flush()
             tails[-1] = True
             buf_conditional = any(tails)
@@ -1096,8 +1164,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # `nvidia-smi && pip install torch==2.12.0` installs nothing on a CPU box, and
             # R-INST-004 is error severity, so replaying it reddened CI on a correct
             # notebook.
-            if _piece_is_pip("".join(buf)):
-                list_has_pip[-1] = True
+            _fold_and_or(list_has_pip, prev_ops, _piece_is_pip("".join(buf)))
+            prev_ops[-1] = "&&"
             flush()
             tails[-1] = not list_has_pip[-1]
             buf_conditional = any(tails)
@@ -1116,6 +1184,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             flush()
             tails[-1] = False
             list_has_pip[-1] = False
+            prev_ops[-1] = ""  # a new and-or list starts here
             buf_conditional = any(tails)
             i += 1
         else:
@@ -1131,6 +1200,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 )
                 tails.append(False)
                 list_has_pip.append(False)
+                prev_ops.append("")
                 case_depths.append(0)
                 if not "".join(buf).strip():
                     buf_conditional = any(tails)  # the group opens before the command
@@ -1143,6 +1213,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     # what it was; the pop only affects what comes after.
                     tails.pop()
                     list_has_pip.pop()
+                    prev_ops.pop()
             if ch not in ")}":
                 grouping_closed = False
             buf.append(ch)

