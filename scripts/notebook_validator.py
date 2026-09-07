@@ -912,6 +912,14 @@ def _final_bracket_closes_substitution(text: str) -> bool:
     return False
 
 
+# `name() {`, `name () {` and `function name {`. The parens must be EMPTY, so `time (pip
+# install x)` and `X=$(pip ...)` are not definitions. A body runs only when the function is
+# called, so it is exposed as conditional rather than replayed.
+_FUNCTION_DEF_RE = re.compile(
+    r"(?:function\s+[A-Za-z_]\w*\s*(?:\(\s*\))?|[A-Za-z_]\w*\s*\(\s*\))\s*"
+)
+
+
 def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     """`( pip install x )` -> `("pip install x", False)`, `then pip install x` -> `(..., True)`.
 
@@ -930,6 +938,12 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     # `{` opens a shell group only as its OWN token, so `{ pip install x; }` is a group while
     # IPython's `{sys.executable}` is one word. Stripping it always left `sys.executable}` as
     # the executable and hid the pip command. `(` needs no such space.
+    # `setup() { pip install git+... ; }` keeps its name in front of the body, so the install
+    # never reached PIP_LINE_RE and R-INST-001 went blind on a source the raw-line scan used
+    # to catch. Strip the header and let the group handling below read the body.
+    definition = _FUNCTION_DEF_RE.match(stripped)
+    if definition is not None:
+        stripped = stripped[definition.end() :].lstrip()
     while stripped:
         if stripped[0] == "(":
             stripped = stripped[1:].lstrip()
@@ -940,7 +954,7 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     stripped = stripped.strip()
     while stripped[-1:] in (")", "}") and not _final_bracket_closes_substitution(stripped):
         stripped = stripped[:-1].rstrip()
-    conditional = False
+    conditional = definition is not None  # the body runs only when the function is called
     while True:
         # Any whitespace, not a literal space: `then\tpip install ...` is the same command to
         # the shell, and leaving `then\tpip` as one word hides it from every rule.
@@ -1544,6 +1558,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             elif keyword in _SHELL_BODY_KEYWORDS:
                 if body_levels:
                     body_levels[-1] = True
+                    if keyword == "else" and test_models[-1] is not None:
+                        # The `else` of a known test is the branch that DOES run.
+                        test_models[-1] = not test_models[-1]
+                    elif keyword == "elif":
+                        # Its own test, reached only when every earlier one failed. Neither
+                        # outcome is known, so the branch is a path the notebook may take.
+                        test_models[-1] = None
                 else:
                     body_levels.append(True)
                     test_models.append(None)
@@ -1552,13 +1573,31 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 test_models.pop()
         # `flag` alone is the separator-level state: a substitution inside a compound body or
         # a case arm is expanded only when that body runs, so it inherits those too.
-        if any(model is False for model in test_models):
-            continue  # the enclosing test can never succeed, so nothing here runs
-        piece_conditional = flag or command_flag or any(body_levels)
+        # A level speaks only once its BODY has started, and what it says is the outcome of
+        # the branch in hand: `if true` certainly runs, `if false` never does, anything else
+        # is a path the notebook may take. Reading every started body as merely conditional
+        # dropped installs that always run; reading a false one as unreachable without
+        # inverting it for `else` dropped the branch that does.
+        active = [model for level, model in zip(body_levels, test_models) if level]
+        if any(model is False for model in active):
+            continue  # this branch can never be taken, so nothing in it runs
+        # `command_flag` is the `then`/`else`/arm-label the piece carries. That word means
+        # "conditional" only because the branch usually is; when the branch is KNOWN to be
+        # taken it says nothing, and letting it speak kept `if true; then pip install ...`
+        # out of the unconditional replay. A case arm always leaves a None in `active`, so
+        # this can never clear an arm label.
+        certain_branch = bool(active) and all(model is True for model in active)
+        piece_conditional = (
+            flag
+            or (command_flag and not certain_branch)
+            or any(model is not True for model in active)
+        )
         # A `case` selector sits in the same piece as the first arm, so the arm body keeps the
         # level this piece opened while the substitutions ahead of it do not.
-        selector_levels = body_levels[:-1] if opens_case else body_levels
-        sub_conditional = flag or command_flag or any(selector_levels)
+        selector = zip(body_levels[:-1], test_models[:-1]) if opens_case else zip(body_levels, test_models)
+        sub_conditional = flag or command_flag or any(
+            model is not True for level, model in selector if level
+        )
         for inner in _substitution_bodies(piece):
             ordered.extend(
                 (inner_text, sub_conditional or inner_flag)
@@ -2322,9 +2361,16 @@ def _effective_version(
         # Whatever is left still has to satisfy the requirement's own exclusions.
         if current is not None and any(_version_is_excluded(current, ver) for ver in exclusions):
             # `>=0.11,<0.12,!=0.11.0` moves off 0.11.0 and stays in the 0.11 line, so only
-            # an exclusion covering the whole minor takes the landing away.
-            if landing is not None and not any(
-                _exclusion_covers_minor(landing, ver) for ver in exclusions
+            # an exclusion covering the whole minor takes the landing away. The landing is
+            # read off the CEILING alone, so it has to be checked against the rest of the
+            # window first: `<=0.10.0,!=0.10.0,<0.12` can only resolve below 0.10, and
+            # handing back the ceiling's 0.11 fabricated a pairing R-INST-004 then accepted.
+            if (
+                landing is not None
+                and (cap is None or cmp_versions(landing, cap) <= 0)
+                and (ceiling is None or cmp_versions(landing, ceiling) < 0)
+                and (floor is None or cmp_versions(landing, floor) >= 0)
+                and not any(_exclusion_covers_minor(landing, ver) for ver in exclusions)
             ):
                 current, exact_known = landing, True
             else:

