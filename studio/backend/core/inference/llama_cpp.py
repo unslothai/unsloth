@@ -7928,6 +7928,7 @@ class LlamaCppBackend:
                 # compile exceeds this probe's timeout; no device is needed to
                 # enumerate the command-line flags.
                 probe_env["GGML_METAL_DEVICES"] = "0"
+            code_integrity_blocked: Optional[str] = None
             result = subprocess.run(
                 [bin_path, "--help"],
                 capture_output = True,
@@ -7945,6 +7946,22 @@ class LlamaCppBackend:
             )
             probe_ok = result.returncode == 0
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
+            if not probe_ok:
+                # Windows can create the process successfully and have its
+                # LOADER terminate it, which returns a CompletedProcess with the
+                # NTSTATUS as the exit code rather than raising. Classifying
+                # only in the except block below missed exactly the shape this
+                # module was written for. The status also appears in the child's
+                # own output when a dependent DLL is the refused one, so both
+                # are offered to the classifier.
+                code_integrity_blocked = code_integrity_block_reason(
+                    result.returncode
+                ) or code_integrity_block_reason(help_text)
+                if code_integrity_blocked is not None:
+                    logger.warning(
+                        "llama-server is blocked by Windows code integrity policy: "
+                        f"{code_integrity_blocked}. Binary: {bin_path}"
+                    )
             # Split into per-flag blocks (each --flag line + its indented
             # continuation), so the "argument has been removed" description
             # sits with its flag.
@@ -8131,6 +8148,7 @@ class LlamaCppBackend:
                     break
         except (OSError, subprocess.SubprocessError) as exc:
             blocked = code_integrity_block_reason(exc)
+            code_integrity_blocked = blocked
             if blocked is not None:
                 # Not a debug-level detail: nothing the user does inside Studio
                 # can recover from this, and without the log line the only
@@ -8237,20 +8255,25 @@ class LlamaCppBackend:
                 # the process lifetime, and do not make every caller repeat a
                 # 10-second timeout while a persistent failure remains (#8317).
                 #
-                # Doubling rather than a flat 30s. A transient failure still
-                # clears on the next poll, but a binary the OS refuses to run at
-                # all -- Application Control or Smart App Control denying it,
-                # which is permanent until the file or the policy changes --
-                # stops costing a 10s timeout every 30s forever. The key
-                # includes the file's mtime and size, so replacing the binary
-                # starts a fresh key with no inherited backoff.
-                delay = cls._capability_retry_backoff.get(
-                    cache_key, cls._CAPABILITY_PROBE_RETRY_SECONDS
-                )
+                # The doubling is reserved for a CONFIRMED code integrity block.
+                # Escalating on every inconclusive probe was wrong: a machine
+                # that is merely loaded times out a few probes and then carries
+                # a ten-minute stale capability set long after it recovers. A
+                # policy refusal is different in kind, being permanent until the
+                # file or the policy changes, so only that earns the long wait.
+                if code_integrity_blocked is not None:
+                    delay = cls._capability_retry_backoff.get(
+                        cache_key, cls._CAPABILITY_PROBE_RETRY_SECONDS
+                    )
+                    cls._capability_retry_backoff[cache_key] = min(
+                        delay * 2.0, cls._CAPABILITY_PROBE_RETRY_MAX_SECONDS
+                    )
+                else:
+                    # Ordinary transient failure: flat window, and drop any
+                    # escalation a previous block had built up.
+                    delay = cls._CAPABILITY_PROBE_RETRY_SECONDS
+                    cls._capability_retry_backoff.pop(cache_key, None)
                 cls._capability_retry_after[cache_key] = time.monotonic() + delay
-                cls._capability_retry_backoff[cache_key] = min(
-                    delay * 2.0, cls._CAPABILITY_PROBE_RETRY_MAX_SECONDS
-                )
             else:
                 cls._capability_retry_after.pop(cache_key, None)
                 cls._capability_retry_backoff.pop(cache_key, None)

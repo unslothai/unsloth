@@ -9,7 +9,11 @@ distinguish them.
 
 import pytest
 
-from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
+from utils.code_integrity import (
+    code_integrity_block_reason,
+    code_integrity_user_message,
+    is_bad_image_text,
+)
 
 
 class _WinError(OSError):
@@ -65,3 +69,23 @@ def test_user_message_names_the_binary_and_rules_out_reinstalling():
     # The two things users try that cannot work.
     assert "reinstalling" in message
     assert "administrator" in message
+
+
+def test_bad_image_without_a_status_is_not_called_a_policy_block():
+    """The stock Bad Image sentence is not evidence of Application Control.
+
+    Windows prints the same wording for a corrupt DLL, one built for another
+    architecture, and one whose own dependencies are missing. Those are ordinary
+    broken installs, and the advice this module gives for a policy block
+    ("reinstalling will not help") is the exact opposite of what they need.
+    """
+    corrupt = (
+        r"C:\Users\x\.unsloth\llama.cpp\build\bin\Release\ggml-base.dll is either not "
+        r"designed to run on Windows or it contains an error."
+    )
+    assert code_integrity_block_reason(corrupt) is None
+    # Still recognisable as an image load failure, just not as a policy one.
+    assert is_bad_image_text(corrupt) is True
+
+    # The same sentence WITH the status is a block, and still classified.
+    assert code_integrity_block_reason(corrupt + " Error status 0xc0e90002.") is not None

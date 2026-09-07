@@ -52,6 +52,9 @@ _BLOCK_WINERRORS = {
 # Matches the status in text form wherever it reaches us as a string: a child's
 # stderr, a Rust-side error, or the repr of an exception we did not raise.
 _STATUS_TEXT_RE = re.compile(r"0x(c0e90002|c0000428|c0000602)\b", re.IGNORECASE)
+# Kept, but deliberately NOT a classifier on its own; see the end of
+# code_integrity_block_reason. Exposed so a caller can say "this was an image
+# load failure" without claiming to know why.
 _BAD_IMAGE_RE = re.compile(
     r"is either not designed to run on Windows or it contains an error", re.IGNORECASE
 )
@@ -59,6 +62,12 @@ _POLICY_TEXT_RE = re.compile(
     r"(application control policy has blocked|blocked by (?:smart app control|group policy))",
     re.IGNORECASE,
 )
+
+
+def is_bad_image_text(error: object) -> bool:
+    """True when Windows reported a Bad Image, whatever the cause."""
+    text = error if isinstance(error, str) else str(error)
+    return bool(text) and _BAD_IMAGE_RE.search(text) is not None
 
 
 def code_integrity_block_reason(error: object) -> str | None:
@@ -95,8 +104,13 @@ def code_integrity_block_reason(error: object) -> str | None:
         return _BLOCK_STATUS_CODES[int(match.group(1), 16)]
     if _POLICY_TEXT_RE.search(text):
         return "an Application Control policy blocked this program"
-    if _BAD_IMAGE_RE.search(text):
-        return "Windows refused to load the image (Bad Image)"
+    # "Bad Image" alone is NOT enough. Windows prints that same sentence for a
+    # genuinely corrupt DLL, one built for another architecture, and one whose
+    # own dependencies are missing. Those are ordinary broken installs, and the
+    # remedy for them (reinstall) is the exact opposite of the advice this
+    # module exists to give. So the wording only counts when it arrives with a
+    # code integrity status or a policy phrase, both handled above; on its own
+    # it is left unclassified rather than reported as a policy block.
     return None
 
 
