@@ -21,7 +21,6 @@ import io
 import json
 import sys
 import tarfile
-import time
 import urllib.error
 import zipfile
 from pathlib import Path
@@ -934,11 +933,12 @@ def _github_api_403(headers):
     [
         ({}, False),
         ({"Retry-After": "5"}, True),
-        ({"X-RateLimit-Reset": str(int(time.time()) + 30)}, True),
-        ({"X-RateLimit-Reset": str(int(time.time()) + 3600)}, False),
+        ({"X-RateLimit-Reset": "1700000030"}, True),
+        ({"X-RateLimit-Reset": "1700003600"}, False),
     ],
 )
-def test_github_api_403_retries_only_with_a_reachable_reset(headers, retryable):
+def test_github_api_403_retries_only_with_a_reachable_reset(monkeypatch, headers, retryable):
+    monkeypatch.setattr(core.time, "time", lambda: 1_700_000_000.0)
     assert core.is_retryable_url_error(_github_api_403(headers)) is retryable
 
 
