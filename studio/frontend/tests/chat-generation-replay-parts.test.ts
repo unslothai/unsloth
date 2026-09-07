@@ -19,6 +19,10 @@ const { createRecoveryReplay } = await import(
   "../src/features/chat/utils/chat-generation-replay.ts"
 );
 
+const { parseAssistantContent } = await import(
+  "../src/features/chat/utils/parse-assistant-content.ts"
+);
+
 const text = (t: string) => ({ type: "text", text: t });
 const reasoning = (t: string) => ({ type: "reasoning", text: t });
 const tool = (toolCallId: string, toolName: string, extra: object = {}) => ({
@@ -204,6 +208,65 @@ test("reopening at any point of a run shows what a stream that never left shows"
   assert.deepEqual(
     expected.map((part) => part.type),
     ["reasoning", "tool-call", "text", "reasoning", "text"],
+  );
+  for (let cut = 1; cut <= frames.length; cut++) {
+    const seed = createRecoveryReplay("");
+    for (const frame of frames.slice(0, cut)) seed.applyChunk(frame);
+    const reopened = createRecoveryReplay(seed.content());
+    for (const frame of frames.slice(cut)) reopened.applyChunk(frame);
+    assert.deepEqual(
+      reopened.content() as Array<Record<string, unknown>>,
+      expected,
+      `reopening after ${cut} of ${frames.length} frames must show the same reply`,
+    );
+  }
+});
+
+// A model that carries its OWN tags inside delta.content already classifies its own thought: the live
+// stream appends such a delta verbatim and lets the tags inside it do the work. The replay closed the
+// block it happened to sit in regardless of who opened it, so the first answer delta of a tagged run cut
+// the thought mid-sentence and the model's own close tag survived as literal text in the answer part.
+test("a run whose own tags carry the thought replays as the live stream read it", () => {
+  const frames = [
+    { choices: [{ delta: { content: "<think>the thought " } }] },
+    { choices: [{ delta: { content: "still thinking</think>" } }] },
+    { choices: [{ delta: { content: "the answer" } }] },
+  ];
+  // What the tab that never left renders: the buffer the live adapter appends to, parsed once.
+  const live = parseAssistantContent(
+    frames.map((frame) => frame.choices[0].delta.content as string).join(""),
+  );
+  const replay = createRecoveryReplay("");
+  for (const frame of frames) replay.applyChunk(frame, 1000);
+  assert.deepEqual(
+    replay.content() as Array<Record<string, unknown>>,
+    live,
+    "the whole thought stays reasoning and only the answer becomes a text part",
+  );
+});
+
+test("reopening at any point of a tagged run shows what a stream that never left shows", () => {
+  const frames = [
+    { choices: [{ delta: { content: "<think>the thought " } }] },
+    { choices: [{ delta: { content: "still thinking</think>" } }] },
+    {
+      choices: [
+        {
+          delta: {
+            tool_calls: [{ index: 0, id: "call_0", function: { name: "bash", arguments: "{}" } }],
+          },
+        },
+      ],
+    },
+    { choices: [{ delta: { content: "the answer" } }] },
+  ];
+  const neverLeft = createRecoveryReplay("");
+  for (const frame of frames) neverLeft.applyChunk(frame);
+  const expected = neverLeft.content() as Array<Record<string, unknown>>;
+  assert.deepEqual(
+    expected.map((part) => part.type),
+    ["reasoning", "tool-call", "text"],
+    "the model's own tags classify the reply exactly once, and a reopen does not add a second pair",
   );
   for (let cut = 1; cut <= frames.length; cut++) {
     const seed = createRecoveryReplay("");

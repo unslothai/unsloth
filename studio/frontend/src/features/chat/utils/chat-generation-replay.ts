@@ -53,9 +53,14 @@ const THINK_CLOSE_TAG = "</think>";
 function seededReplayState(content: unknown): {
   raw: string;
   parts: PositionedReplayPart[];
+  // Whether what storage holds ends inside a thought the replay itself opened with a tag: a stored
+  // `reasoning` part carries no tag of its own, so the one re-created here is ours, and ours is the one
+  // a following answer chunk has to close. A block a model opened with a tag it carried INSIDE
+  // `delta.content` is not ours, and closing that one cuts the thought at the first answer delta.
+  reasoningOpen: boolean;
 } {
-  if (typeof content === "string") return { raw: content, parts: [] };
-  if (!Array.isArray(content)) return { raw: "", parts: [] };
+  if (typeof content === "string") return { raw: content, parts: [], reasoningOpen: false };
+  if (!Array.isArray(content)) return { raw: "", parts: [], reasoningOpen: false };
   let raw = "";
   let reasoningOpen = false;
   const parts: PositionedReplayPart[] = [];
@@ -79,7 +84,7 @@ function seededReplayState(content: unknown): {
       parts.push({ ...part, textCursor: raw.length });
     }
   }
-  return { raw, parts };
+  return { raw, parts, reasoningOpen };
 }
 
 export type RecoveryReplay = {
@@ -153,23 +158,46 @@ export function createRecoveryReplay(
    *  that is already closed -- the stray `< /think>` then reads as literal text in the part after it.
    *  The live stream cannot hit this (it appends tags into the same string it parses); a replay seeded
    *  from parts can, because the seed has to re-create the tags the parts no longer carry. */
+  // Whether the block the run being written sits inside is one THIS replay opened. The live stream
+  // closes a thought only when it opened one (`reasoningContentOpen`, set only for a
+  // `reasoning_content`/`reasoning_details` frame); a model that carries its own tags inside
+  // `delta.content` owns its own block, and its text is appended verbatim so its tags do the
+  // classifying. Closing that one instead cut the thought at the first content delta of the answer and
+  // left the model's own close tag behind as literal text in the answer part.
+  let replayOwnsOpenBlock = seeded.reasoningOpen;
+  // A frame that carries its OWN tags classifies itself, so synthesizing a second pair around it is
+  // what leaked: only a tagless chunk owes this replay a tag of its own.
+  const carriesOwnTags = (text: string): boolean =>
+    text.includes(THINK_OPEN_TAG) || text.includes(THINK_CLOSE_TAG);
+
   const grow = (kind: "text" | "reasoning", text: string): boolean => {
     if (!text) return false;
     const inside = segmented.insideThink();
     let chunk = text;
-    if (kind === "reasoning" && !inside) chunk = `${THINK_OPEN_TAG}${text}`;
-    else if (kind === "text" && inside) chunk = `${THINK_CLOSE_TAG}${text}`;
+    if (carriesOwnTags(text)) {
+      // Verbatim: its own tag does the classifying, exactly as the live stream appends it.
+    } else if (kind === "reasoning" && !inside) {
+      chunk = `${THINK_OPEN_TAG}${text}`;
+      replayOwnsOpenBlock = true;
+    } else if (kind === "text" && inside && replayOwnsOpenBlock) {
+      chunk = `${THINK_CLOSE_TAG}${text}`;
+      replayOwnsOpenBlock = false;
+    }
     raw += chunk;
     segmented.appendText(chunk);
+    // A close tag the MODEL carried closed the block it opened; nothing is left to close on its behalf.
+    if (replayOwnsOpenBlock && !segmented.insideThink()) replayOwnsOpenBlock = false;
     return true;
   };
 
   /** Close an open thought at a boundary, so the tag lands at the end of the thought run instead of at
-   *  the head of whatever part comes next. */
+   *  the head of whatever part comes next. Only a block this replay opened: a boundary inside a block a
+   *  model's own tag opened is the model's business, and closing it strays a tag into the next part. */
   const closeThought = (): void => {
-    if (!segmented.insideThink()) return;
+    if (!segmented.insideThink() || !replayOwnsOpenBlock) return;
     raw += THINK_CLOSE_TAG;
     segmented.appendText(THINK_CLOSE_TAG);
+    replayOwnsOpenBlock = false;
   };
 
   /** The card a frame names. A backend id is only the SPELLING a frame carries; the card answers to
