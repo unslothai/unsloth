@@ -22486,8 +22486,11 @@ class LlamaCppBackend:
                 # The exact tokens the tuning appended, so the arch-crash respawn can
                 # take them back off when it lands on a different device class.
                 _cache_flags_emitted: list[str] = []
+                # extra_args, not the memory policy's list: that one is built later,
+                # and a gpu_ids pin is exactly the case _strip_device_extra_args
+                # removes the flag in, which is the case this does not ask about.
                 _cache_target_unknown = gpu_ids is None and bool(
-                    _extra_args_set_any_flag(_mem_extras, _DEVICE_FLAGS)
+                    _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
                 )
                 _shared_memory_offload = (
                     sys.platform == "win32"
