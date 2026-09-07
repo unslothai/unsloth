@@ -869,7 +869,8 @@ def _http_json(
 # failure paths and the atexit backstop can tear it down without threading a handle
 # through all six agent commands. Only one agent runs per process, so one slot is enough.
 _auto_served_server: Optional[subprocess.Popen] = None
-# Model download + load can be slow; give the auto-started server room before giving up.
+# Model download + load can be slow, so this caps idle time, not total elapsed time:
+# observed progress pushes the deadline out (see `_start_studio_server`).
 _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
@@ -1000,6 +1001,7 @@ class _ModelDownloadProgress:
         self._model = model
         self._variant = variant or ""
         self._expected_bytes = 0
+        self._downloaded_bytes = 0
         self._display = _DownloadProgressDisplay()
         self._configured = False
         self._disabled = not _is_hub_model_id(model)
@@ -1073,10 +1075,15 @@ class _ModelDownloadProgress:
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
+            self._downloaded_bytes = max(0, int(reading.get("downloaded_bytes") or 0))
             self._display.update(reading)
         except Exception:
             # Progress is best-effort; never fail the load over a polling error.
             self._disabled = True
+
+    @property
+    def downloaded_bytes(self) -> int:
+        return self._downloaded_bytes
 
     def close(self) -> None:
         self._display.close()
@@ -1147,6 +1154,13 @@ def _log_tail(path: Path, lines: int = 20) -> str:
         return "\n".join(path.read_text(encoding = "utf-8", errors = "replace").splitlines()[-lines:])
     except OSError:
         return "(no server log)"
+
+
+def _log_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _redacted_log_tail(path: Path, lines: int = 20) -> str:
@@ -1319,6 +1333,8 @@ def _start_studio_server(
 
     deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
     progress: Optional[_ModelDownloadProgress] = None
+    downloaded_bytes = 0
+    log_size = 0
     early_key_seen = False
     try:
         while time.monotonic() < deadline:
@@ -1344,6 +1360,13 @@ def _start_studio_server(
                     )
             if progress is not None:
                 progress.poll()
+            # Fresh bytes or a growing log mean the child is alive, so the cap measures
+            # idle time rather than the whole download plus load.
+            log_size_now = _log_size(log_path)
+            bytes_now = progress.downloaded_bytes if progress is not None else 0
+            if bytes_now > downloaded_bytes or log_size_now > log_size:
+                deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
+            downloaded_bytes, log_size = bytes_now, log_size_now
             # New children emit an early key marker, so wait for the final model banner;
             # older children only print the key after load, so fall back to that.
             ready_signal = "Model loaded:" in tail if early_key_seen else "sk-unsloth-" in tail
@@ -1359,7 +1382,8 @@ def _start_studio_server(
             progress.close()
     _shutdown_auto_served()
     _fail(
-        f"The Unsloth server didn't become ready within {_SERVER_START_TIMEOUT_S}s. See {log_path}."
+        "The Unsloth server didn't become ready and made no progress for "
+        f"{_SERVER_START_TIMEOUT_S}s. See {log_path}."
     )
 
 
