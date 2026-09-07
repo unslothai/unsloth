@@ -958,7 +958,7 @@ export function AgentsTab() {
           ...cachedGgufs.map((cached) => cached.repo_id),
           ...localEntries.map((entry) => entry.id),
         ]);
-        // One command target per repo: prefer the active cache, then a stable snapshot.
+        // Prefer a complete copy, then the active cache, then a stable snapshot.
         const loadIds = agentCacheLoadIds(cachedGgufs);
         const labels: Record<string, string> = {};
         for (const entry of localEntries) {

@@ -5,6 +5,43 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { agentCacheLoadIds } from "../src/features/settings/lib/agent-cache-targets.ts";
 
+test("Agents preserves an active snapshot target when the repo ref cannot load it", () => {
+  assert.deepEqual(
+    agentCacheLoadIds([
+      {
+        repo_id: "Org/Model",
+        load_id: "/active/snapshots/verified",
+        active_cache: true,
+      },
+      { repo_id: "Org/Model", load_id: "/old/rev", active_cache: false },
+    ]),
+    { "org/model": "/active/snapshots/verified" },
+  );
+});
+
+test("Agents chooses a complete copy before an active partial download", () => {
+  const active = {
+    repo_id: "Org/Model",
+    load_id: "Org/Model",
+    active_cache: true,
+    partial: true,
+  };
+  const complete = {
+    repo_id: "Org/Model",
+    load_id: "/old/complete",
+    active_cache: false,
+    partial: false,
+  };
+  for (const copies of [
+    [active, complete],
+    [complete, active],
+  ]) {
+    assert.deepEqual(agentCacheLoadIds(copies), {
+      "org/model": "/old/complete",
+    });
+  }
+});
+
 test("Agents uses the active cache regardless of discovery order or repo casing", () => {
   const active = {
     repo_id: "Org/Model",
