@@ -419,14 +419,20 @@ def test_a_stop_the_loop_will_not_run_past_stays_final():
 
 
 def _call_chunk(delta, finish = None):
-    return "data: " + json.dumps({
-        "id": "x", "object": "chat.completion.chunk", "created": 1, "model": "m",
-        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-    })
+    return "data: " + json.dumps(
+        {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "m",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+    )
 
 
-_ONE_CALL = [{"index": 0, "id": "c1", "type": "function",
-              "function": {"name": "python", "arguments": "{}"}}]
+_ONE_CALL = [
+    {"index": 0, "id": "c1", "type": "function", "function": {"name": "python", "arguments": "{}"}}
+]
 
 
 def test_a_call_co_emitted_with_its_finish_reason_is_still_held_back():

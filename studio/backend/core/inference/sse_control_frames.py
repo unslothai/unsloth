@@ -294,9 +294,7 @@ class ServerToolCallStripper:
         if not payload or "choices" not in payload:
             return
         envelope = {
-            key: payload[key]
-            for key in ("id", "object", "created", "model")
-            if key in payload
+            key: payload[key] for key in ("id", "object", "created", "model") if key in payload
         }
         if envelope:
             self._last_envelope = envelope

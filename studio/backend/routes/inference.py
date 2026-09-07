@@ -3705,10 +3705,7 @@ def _request_states_no_tool_flag(payload) -> bool:
     Named for what it tests rather than for the conclusion drawn from it: on a plain
     `unsloth studio` process, where tools are on for nobody, this is still true.
     """
-    return (
-        payload.enable_tools is None
-        and not getattr(payload, "mcp_enabled", False)
-    )
+    return payload.enable_tools is None and not getattr(payload, "mcp_enabled", False)
 
 
 def _request_states_tool_intent(payload) -> bool:
