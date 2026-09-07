@@ -1389,6 +1389,26 @@ def test_save_settings_waits_for_gguf_classification():
     )
 
 
+def test_save_settings_reflects_the_context_it_pinned():
+    """A save that does not load must leave the panel showing what it stored (#10216).
+
+    `pinFixedLayerContext` writes the fitted context into the persisted config when fixed
+    GPU layers are staged against an auto-fitted model. Load could leave the displayed
+    config alone, because the load that follows re-derives the panel from the now-active
+    model. Save deliberately stays on the page, so without this the Context Length control
+    still reads "Auto" while localStorage and the API override hold a concrete number that
+    the next load applies.
+    """
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    handler = src.split("const handleSave = () => {", 1)[1].split("const handleRun", 1)[0]
+    assert (
+        "effectiveRuntimeConfig.customContextLength !== config.customContextLength" in handler
+    ), "handleSave no longer compares the persisted context against the displayed one"
+    assert (
+        "update({ customContextLength: effectiveRuntimeConfig.customContextLength, })" in handler
+    ), "handleSave no longer pushes the persisted context back into the panel"
+
+
 def test_legacy_migration_is_idempotent_and_non_destructive():
     """The v1->v2 localStorage migration (unsloth_load_settings -> unsloth_model_configs)
     is invoked on every store read, so it must be idempotent: repeated reads, browser

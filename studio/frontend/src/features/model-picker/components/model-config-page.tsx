@@ -2966,6 +2966,19 @@ export function ModelConfigPage({
       toast.error("Couldn't save settings for this model.");
       return;
     }
+    // Unlike Load, this leaves the page mounted, so the panel has to show what was actually
+    // stored. pinFixedLayerContext writes the fitted context into the saved config when fixed
+    // GPU layers are staged against an auto-fitted model; without this the Context Length
+    // control keeps reading "Auto" while storage and the API override hold a concrete number
+    // that a later load applies. Only this field can diverge: the numeric commits above already
+    // reach state through onChange, and the diffusion sanitizer never touches the context.
+    if (
+      effectiveRuntimeConfig.customContextLength !== config.customContextLength
+    ) {
+      update({
+        customContextLength: effectiveRuntimeConfig.customContextLength,
+      });
+    }
     finishPersist(defaultConfig);
   };
 
