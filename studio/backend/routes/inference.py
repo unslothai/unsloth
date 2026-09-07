@@ -4029,8 +4029,7 @@ def _confirm_gate_has_no_channel(
     """
     if not getattr(payload, "stream", False):
         # Bypass suppresses the gate in the loop, so it never prompts and needs no channel to
-        # prompt on. Read here as well as in _confirm_gate_would_prompt because the guards this
-        # replaced each paired the stream requirement with `not payload.bypass_permissions`, and
+        # prompt on. Each guard this replaced paired the stream requirement with the same flag;
         # dropping it would 400 full-access non-streaming tool runs that work today.
         if getattr(payload, "bypass_permissions", False):
             return False
