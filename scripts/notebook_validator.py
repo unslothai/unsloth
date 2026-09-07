@@ -2404,7 +2404,9 @@ def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[
 
 
 def _removed_by_cell(
-    install_cell: str, name: str, environment: dict[str, str] | None = None
+    install_cell: str,
+    name: str,
+    environment: dict[str, str] | None = None,
 ) -> bool:
     """Did this cell uninstall `name`, rather than simply never mention it?
 

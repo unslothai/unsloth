@@ -5077,9 +5077,12 @@ def test_an_uninstall_is_matched_on_the_canonical_project_name():
     colab = {"huggingface-hub": "1.2.0", "torch": "2.11.0", "python": "3.13.15"}
     assert "huggingface-hub" not in nv.resolved_set("!pip uninstall -y huggingface_hub", colab)
     # The accumulated bound goes with it, so a later reinstall does not inherit one.
-    assert nv.resolved_set(
-        '!pip install "huggingface_hub<=1.0"\n!pip uninstall -y huggingface-hub', colab
-    ).get("huggingface-hub") is None
+    assert (
+        nv.resolved_set(
+            '!pip install "huggingface_hub<=1.0"\n!pip uninstall -y huggingface-hub', colab
+        ).get("huggingface-hub")
+        is None
+    )
 
 
 def test_a_marker_false_reinstall_does_not_put_a_package_back():
