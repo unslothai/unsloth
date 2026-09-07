@@ -71,10 +71,10 @@ export function llamaUpdatePresentation(
 /**
  * Whether the banner's version line has anything to say.
  *
- * `updateAvailable` is the only field that reports the release moved. The tags cannot:
- * `installed_tag` is the normalized base tag (`b9596`) while `latest_tag` is the full
- * release identity (`b9596-mix-<sha>`), so on a fork install they differ at the very
- * release the machine is running -- which is exactly where a migration is offered.
+ * `updateAvailable` is the only field reporting that the release moved. The tags cannot:
+ * `installed_tag` is normalized (`b9596`) while `latest_tag` is the full identity
+ * (`b9596-mix-<sha>`), so a fork install shows them differing at the release it is
+ * running -- which is exactly where a migration is offered.
  */
 export function llamaReleaseChanged(
   updateAvailable: boolean,
@@ -88,9 +88,9 @@ export function llamaReleaseChanged(
 
 /** What to tell the user a finished Update actually did.
  *
- * A backend migration runs at the release already installed and can end on the backend
- * already installed, so "updated to <tag>" describes neither -- and the tag is the llama
- * one even when a pending whisper update named the toast. The job's message is accurate.
+ * A migration runs at the release already installed and can end on the backend already
+ * installed, so "updated to <tag>" describes neither -- and the tag is llama's even when
+ * a pending whisper update named the toast. The job's own message is accurate.
  */
 export function llamaUpdateToastMessage({
   component,

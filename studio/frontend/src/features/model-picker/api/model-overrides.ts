@@ -411,14 +411,13 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (typeof config.nCpuMoe === "number" && config.nCpuMoe > 0) {
     payload.n_cpu_moe = config.nCpuMoe;
   }
-  // The pin travels with its namespace: the same integers are a Vulkan ordinal under a
-  // Vulkan build and a physical index elsewhere, so after a backend change the server
-  // would otherwise pin a different device. It drops the pin on a mismatch instead.
+  // The pin travels with its namespace, or after a backend change the server pins a
+  // different device; reconcileGpuSelection drops it on a mismatch instead.
   const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
   if (config.selectedGpuIds && config.selectedGpuIds.length > 0) {
     payload.gpu_ids = config.selectedGpuIds;
     // Sent only when it is not the legacy default, so a physical pin's payload is
-    // byte-identical to what it was before this field.
+    // unchanged from before this field.
     if (gpuIndexKind !== "physical") {
       payload.gpu_index_kind = gpuIndexKind;
     }

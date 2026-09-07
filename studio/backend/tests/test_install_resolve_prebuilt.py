@@ -55,11 +55,9 @@ def _no_ambient_hip_device_mask(monkeypatch):
 def _no_amd_vulkan_icd(monkeypatch):
     """Same reason as the mask fixture: describe the host through HostInfo, not the box.
 
-    _amd_vulkan_icd_present() reads this machine's real Vulkan driver manifests, and mesa
-    installs radeon_icd.json on hosts with no AMD GPU at all, so leaving it live would make
-    the integrated-GPU route fire or not depending on which developer ran the suite. Absent
-    is the pre-#10380 answer, so every test written before that route keeps its meaning;
-    the tests that are about it turn it on explicitly."""
+    The probe reads this machine's real manifests, and mesa ships radeon_icd.json on hosts
+    with no AMD GPU, so leaving it live makes the route fire or not per developer. Absent
+    is the pre-route answer; the tests about it turn it on explicitly."""
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", lambda: False)
 
 
@@ -1673,8 +1671,6 @@ def test_route_to_vulkan_prebuilt_keeps_every_fork_windows_rocm_arch(gfx, monkey
 
 @pytest.mark.parametrize("gfx", sorted(ilp.VULKAN_PREFERRED_GFX_TARGETS))
 def test_the_integrated_archs_are_the_one_exception_to_that_sweep(gfx, monkeypatch):
-    # The sweep above runs under the no-ICD fixture, so it says these archs keep HIP with
-    # no AMD Vulkan driver present -- true, and not the default.
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", lambda: True)
@@ -1814,14 +1810,11 @@ def test_integrated_amd_prefers_vulkan_on_both_platforms(gfx, windows, amd_vulka
     assert routed.has_rocm is False
     assert routed.has_intel_gpu is True
     assert (repo, tag) == (FORK, "pin")
-    # Automatic, so the marker keeps rocm_gfx and re-selecting ROCm lands on the right
-    # bundle rather than on CPU.
+    # Automatic, so the marker keeps rocm_gfx and re-selecting ROCm finds its bundle.
     assert persist == "auto"
 
 
 def test_integrated_amd_keeps_rocm_without_an_amd_vulkan_driver(monkeypatch):
-    # The gate that makes this safe: with no AMD ICD the host would enumerate zero Vulkan
-    # devices and run on CPU, which is worse than the slower backend it has.
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
@@ -1833,8 +1826,8 @@ def test_integrated_amd_keeps_rocm_without_an_amd_vulkan_driver(monkeypatch):
 
 @pytest.mark.parametrize("gfx", ["gfx908", "gfx90a", "gfx1030", "gfx1100", "gfx1201"])
 def test_only_the_integrated_archs_are_preferred_onto_vulkan(gfx, amd_vulkan_icd):
-    # CDNA is why this is an allowlist: ROCm ships no Vulkan ICD, so gfx908/gfx90a would get
-    # a dead backend rather than a slower one. Discrete RDNA is unmeasured.
+    # Why this is an allowlist: ROCm ships no Vulkan ICD, so CDNA would get a dead backend
+    # rather than a slower one, and discrete RDNA is unmeasured.
     host = _windows_amd_host(rocm_gfx_target = gfx, rocm_gfx_targets = [gfx])
     assert ilp._should_prefer_vulkan_for_amd_igpu(host) is False
     routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
@@ -1843,8 +1836,8 @@ def test_only_the_integrated_archs_are_preferred_onto_vulkan(gfx, amd_vulkan_icd
 
 
 def test_a_discrete_card_beside_the_apu_keeps_the_whole_host_on_rocm(amd_vulkan_icd):
-    # Judged over every physical gfx: the Vulkan runtime honours no HIP mask, so routing
-    # here would hand the discrete card to Vulkan too.
+    # Judged over every physical gfx: Vulkan honours no HIP mask, so routing here would
+    # hand the discrete card over too.
     host = _windows_amd_host(
         rocm_gfx_target = "gfx1151",
         rocm_gfx_targets = ["gfx1151", "gfx1100"],
@@ -1862,8 +1855,8 @@ def test_integrated_route_declines_beside_a_physical_nvidia_card(amd_vulkan_icd)
 
 
 def test_integrated_route_declines_under_a_vulkan_device_mask(amd_vulkan_icd, monkeypatch):
-    # An ICD proves a driver is installed, not that this process is shown the device: ggml
-    # honours GGML_VK_VISIBLE_DEVICES, so a mask excluding the APU enumerates nothing.
+    # An ICD proves a driver, not that this process sees the device: a mask excluding the
+    # APU enumerates nothing.
     host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
     assert ilp._should_prefer_vulkan_for_amd_igpu(host) is False
@@ -1893,8 +1886,6 @@ def test_an_explicit_backend_opts_out_of_the_integrated_route(backend, amd_vulka
 
 
 def test_forced_vulkan_on_an_integrated_host_persists_as_automatic(amd_vulkan_icd):
-    # This box routes to Vulkan either way, so recording it automatic keeps the CPU crash
-    # recovery armed and rocm_gfx in the marker.
     host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     _routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
         host, FORK, "pin", force_cpu = False, llama_backend = "vulkan"
@@ -1910,8 +1901,8 @@ def test_force_cpu_wins_over_the_integrated_route(amd_vulkan_icd):
 
 
 def test_route_backend_request_keeps_the_arch_for_a_migrated_integrated_host(amd_vulkan_icd):
-    # persist_rocm_gfx is read before the route rewrites the host to Vulkan-only; after it
-    # the marker loses the arch and the next update re-detects a ROCm-less host.
+    # Read before the route rewrites the host to Vulkan-only; after it the marker loses
+    # the arch and the next update re-detects a ROCm-less host.
     host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     route = ilp.route_backend_request(
         backend = None, published_repo = FORK, published_release_tag = "pin", host = host
@@ -1922,8 +1913,8 @@ def test_route_backend_request_keeps_the_arch_for_a_migrated_integrated_host(amd
 
 
 def test_route_backend_request_keeps_rocm_as_the_fallback_for_the_preference(amd_vulkan_icd):
-    # The host has a working HIP bundle, but _vulkan_only_host clears has_rocm: uncarried,
-    # the selectors read the box as CPU and a bad Vulkan asset installs CPU inference.
+    # _vulkan_only_host clears has_rocm, so uncarried the selectors read this box as CPU
+    # and a bad Vulkan asset installs CPU inference.
     host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
     route = ilp.route_backend_request(
         backend = None, published_repo = FORK, published_release_tag = "pin", host = host
@@ -1934,8 +1925,8 @@ def test_route_backend_request_keeps_rocm_as_the_fallback_for_the_preference(amd
 
 
 def test_route_backend_request_carries_no_rocm_fallback_for_the_no_hip_route(monkeypatch):
-    # The control keeping the two routes apart: #7357 turns to Vulkan because no HIP
-    # prebuilt covers the arch, so a fallback would name a bundle this box cannot run.
+    # Keeps the two routes apart: #7357 turns to Vulkan because no HIP prebuilt covers the
+    # arch, so a fallback would name a bundle this box cannot run.
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", lambda: False)
     host = _windows_amd_host(rocm_gfx_target = "gfx900", rocm_gfx_targets = ["gfx900"])
     route = ilp.route_backend_request(
@@ -2021,10 +2012,8 @@ def _one_plan(*kinds, release_tag = "b1"):
 
 @pytest.mark.parametrize("rocm_plans", ["raises", "empty"])
 def test_no_rocm_attempt_means_no_cpu_tail_either(monkeypatch, amd_vulkan_icd, rocm_plans):
-    # The preference is not a rescue: this host's ROCm install works. If the ROCm attempt
-    # cannot be resolved at all, keeping the Vulkan plan's CPU tail leaves exactly the
-    # outcome the route exists to avoid -- a Vulkan asset that fails validation replacing a
-    # working GPU install with CPU inference. Failing the install is recoverable.
+    # The preference is not a rescue: this host's ROCm install works, so with nothing to
+    # insert the CPU tail is the very outcome the route exists to avoid.
     def _plans(_tag, plan_host, _repo, _release, **_kw):
         if not plan_host.has_rocm:
             return "b1", [_one_plan("windows-vulkan", "windows-cpu")]
@@ -2048,9 +2037,8 @@ def test_no_rocm_attempt_means_no_cpu_tail_either(monkeypatch, amd_vulkan_icd, r
 def test_a_release_that_is_nothing_but_cpu_fails_rather_than_installing_it(
     monkeypatch, amd_vulkan_icd, rocm_plans
 ):
-    # Filtering the tail off a plan that IS the tail leaves nothing, and keeping it whole
-    # is the same silent CPU install by another route. A source build is slow and visible;
-    # this host has a working HIP bundle either way.
+    # A plan that IS the tail cannot be narrowed, and keeping it is the same silent CPU
+    # install by another route.
     def _plans(_tag, plan_host, _repo, _release, **_kw):
         if not plan_host.has_rocm:
             return "b1", [_one_plan("windows-cpu")]
@@ -2071,15 +2059,13 @@ def test_a_release_that_is_nothing_but_cpu_fails_rather_than_installing_it(
 
 
 def test_release_order_survives_narrowing(monkeypatch, amd_vulkan_icd):
-    # Release order is preference order. Narrowing one release must not move it behind a
-    # later one, which is how an older build would end up installed.
+    # Release order is preference order, and reordering it installs an older build.
     def _plans(_tag, plan_host, _repo, _release, **_kw):
         if not plan_host.has_rocm:
             return "b2", [
                 _one_plan("windows-vulkan", "windows-cpu", release_tag = "b2"),
                 _one_plan("windows-vulkan", "windows-cpu", release_tag = "b1"),
             ]
-        # Only the older release publishes this host's ROCm bundle.
         return "b2", [_one_plan("windows-hip", release_tag = "b1")]
 
     monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _plans)
@@ -2093,7 +2079,6 @@ def test_release_order_survives_narrowing(monkeypatch, amd_vulkan_icd):
     )
     assert [p.release_tag for p in selection.release_plans] == ["b2", "b1"]
     assert [a.install_kind for a in selection.release_plans[0].attempts] == ["windows-vulkan"]
-    # b1 publishes the ROCm bundle, so its CPU tail keeps something in front of it.
     assert [a.install_kind for a in selection.release_plans[1].attempts] == [
         "windows-vulkan",
         "windows-hip",
@@ -2102,8 +2087,6 @@ def test_release_order_survives_narrowing(monkeypatch, amd_vulkan_icd):
 
 
 def test_a_plan_that_already_carries_rocm_keeps_its_cpu_tail(monkeypatch, amd_vulkan_icd):
-    # The control for the test above: the CPU tail is dropped only when nothing sits in
-    # front of it, never merely because there was nothing to insert.
     def _plans(_tag, plan_host, _repo, _release, **_kw):
         if not plan_host.has_rocm:
             return "b1", [_one_plan("windows-vulkan", "windows-hip", "windows-cpu")]
@@ -2128,10 +2111,9 @@ def test_a_plan_that_already_carries_rocm_keeps_its_cpu_tail(monkeypatch, amd_vu
 def _icd(path, library = "libvulkan_driver.so"):
     """Write a manifest where the loader would look, and return its path as a string.
 
-    Real, because the probe reads it: a driver library beside the manifest, named by a
-    relative library_path, which is the shape both Adrenalin and mesa ship. ``library =
-    None`` writes the manifest without creating the library, i.e. the leftover an
-    uninstall leaves behind.
+    Real, because the probe reads it: a driver beside the manifest named by a relative
+    library_path, the shape Adrenalin and mesa both ship. ``library = None`` omits the
+    library, i.e. the leftover an uninstall leaves behind.
     """
     path.parent.mkdir(parents = True, exist_ok = True)
     driver = path.parent / (library or "gone_driver.so")
@@ -2142,8 +2124,6 @@ def _icd(path, library = "libvulkan_driver.so"):
 
 
 def test_amd_vulkan_icd_probe_reads_the_loader_overrides_first(monkeypatch, tmp_path):
-    # The loader honours the overrides ahead of the search directories, so a host pointed
-    # at one ICD is judged on that ICD.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     monkeypatch.delenv("VK_DRIVER_FILES", raising = False)
@@ -2159,7 +2139,6 @@ def test_amd_vulkan_icd_probe_reads_the_loader_overrides_first(monkeypatch, tmp_
 def test_an_override_naming_a_removed_amd_manifest_does_not_answer_for_the_driver(
     monkeypatch, tmp_path
 ):
-    # An AMD-looking name left behind by an uninstalled driver is not evidence of an ICD.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
@@ -2171,8 +2150,7 @@ def test_an_override_naming_a_removed_amd_manifest_does_not_answer_for_the_drive
 
 
 def test_a_32_bit_linux_manifest_does_not_answer_for_the_x64_bundle(monkeypatch, tmp_path):
-    # A multilib mesa install ships radeon_icd.i686.json beside the x86_64 one, and the
-    # 32-bit half alone is no driver a 64-bit llama-server can load.
+    # multilib mesa ships radeon_icd.i686.json, which a 64-bit llama-server cannot load.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
@@ -2184,14 +2162,13 @@ def test_a_32_bit_linux_manifest_does_not_answer_for_the_x64_bundle(monkeypatch,
         _icd(icd_dir / name)
     assert ilp._amd_vulkan_icd_present() is False
 
-    # The control: the 64-bit half still answers, so this rejects the architecture.
     _icd(icd_dir / "radeon_icd.x86_64.json")
     assert ilp._amd_vulkan_icd_present() is True
 
 
 def test_an_override_of_only_stale_paths_answers_on_its_own(monkeypatch, tmp_path):
-    # Force lists: the loader reads the named files and does not search the directories at
-    # all, so falling through to a system manifest it will never read misjudges the host.
+    # A force list: the loader searches no directories, so falling through to a manifest
+    # it will never read misjudges the host.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
@@ -2208,8 +2185,7 @@ def test_an_override_of_only_stale_paths_answers_on_its_own(monkeypatch, tmp_pat
 
 
 def test_the_deprecated_override_is_not_consulted_behind_the_current_one(monkeypatch, tmp_path):
-    # VK_DRIVER_FILES supersedes VK_ICD_FILENAMES rather than joining it, so a stale AMD
-    # entry in the deprecated variable must not answer for a host pointed elsewhere.
+    # VK_DRIVER_FILES supersedes VK_ICD_FILENAMES rather than joining it.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     monkeypatch.setattr(ilp, "_vulkan_icd_search_dirs", lambda: [])
@@ -2225,8 +2201,8 @@ def test_the_deprecated_override_is_not_consulted_behind_the_current_one(monkeyp
 
 
 def test_the_icd_search_dirs_follow_the_xdg_variables(monkeypatch, tmp_path):
-    # Those paths are only the defaults. A host with a custom layout keeps its drivers where
-    # these variables point, so the defaults alone can miss the only usable manifest.
+    # Those are only the defaults, so scanning them alone misses a custom layout's only
+    # usable manifest.
     monkeypatch.setenv("XDG_DATA_DIRS", f"{tmp_path / 'a'}{os.pathsep}{tmp_path / 'b'}")
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "home-data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "home-config"))
@@ -2236,7 +2212,6 @@ def test_the_icd_search_dirs_follow_the_xdg_variables(monkeypatch, tmp_path):
     for base in ("home-config", "sys-config", "home-data", "a", "b"):
         assert str(tmp_path / base / "vulkan/icd.d") in dirs, base
     assert "/usr/share/vulkan/icd.d" not in dirs, "a set XDG_DATA_DIRS replaces the default"
-    # The loader reads its config roots before its data roots.
     assert dirs.index(str(tmp_path / "home-config" / "vulkan/icd.d")) < dirs.index(
         str(tmp_path / "home-data" / "vulkan/icd.d")
     )
@@ -2264,8 +2239,8 @@ def test_amd_vulkan_icd_probe_recognises_every_shipped_amd_manifest(
 
 
 def test_amd_vulkan_icd_probe_judges_the_manifest_name_not_the_directory(monkeypatch, tmp_path):
-    # Negative control, and a bug it caught: matching a bare "amd" anywhere in the path
-    # answers True for any host whose directories contain it -- pytest's tmp_path did.
+    # Negative control, and a bug it caught: matching "amd" anywhere in the path answered
+    # True for any host whose directories contain it -- pytest's tmp_path did.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
@@ -2289,9 +2264,7 @@ def test_amd_vulkan_icd_probe_scans_the_loader_search_directories(monkeypatch, t
 
 
 def test_a_manifest_whose_driver_is_gone_is_not_evidence(monkeypatch, tmp_path):
-    # An uninstall can leave the JSON behind. Reading the registration alone would move a
-    # working ROCm install onto a Vulkan build that enumerates nothing, which is the one
-    # direction this gate exists to prevent.
+    # A leftover JSON would move a working ROCm install onto a Vulkan build with no device.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
@@ -2299,8 +2272,6 @@ def test_a_manifest_whose_driver_is_gone_is_not_evidence(monkeypatch, tmp_path):
     stale = _icd(tmp_path / "stale" / "radeon_icd.x86_64.json", library = None)
     monkeypatch.setenv("VK_DRIVER_FILES", stale)
     assert ilp._amd_vulkan_icd_present() is False
-    # The control: the same manifest with its driver present does answer True, so the
-    # False above is the missing library rather than the name or the directory.
     monkeypatch.setenv("VK_DRIVER_FILES", _icd(tmp_path / "live" / "radeon_icd.x86_64.json"))
     assert ilp._amd_vulkan_icd_present() is True
 
@@ -2318,9 +2289,8 @@ def test_an_unparsable_or_libraryless_manifest_is_not_evidence(monkeypatch, tmp_
 
 
 def test_a_bare_driver_name_is_accepted(monkeypatch, tmp_path):
-    # Adrenalin registers "amdvlk64.dll" with no directory, which the loader resolves
-    # through the system search path. Failing that towards ROCm would decline the route on
-    # every ordinary Windows host.
+    # Adrenalin registers a bare "amdvlk64.dll", resolved through the system search path;
+    # failing that towards ROCm would decline every ordinary Windows host.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
     monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
@@ -2332,7 +2302,6 @@ def test_a_bare_driver_name_is_accepted(monkeypatch, tmp_path):
 
 
 def test_amd_vulkan_icd_probe_never_raises(monkeypatch):
-    # Advisory: an unreadable registry leaves the install where it is, never aborting.
     monkeypatch.setattr(
         ilp, "_amd_vulkan_icd_manifest_paths", lambda: (_ for _ in ()).throw(OSError("boom"))
     )
@@ -2803,11 +2772,9 @@ def test_the_forced_cpu_guard_is_not_vacuous():
 def test_the_icd_search_path_is_built_per_call_not_at_import(monkeypatch):
     """A host with no resolvable home directory must still be able to INSTALL.
 
-    ``Path.home()`` raises rather than returning a default when it cannot resolve one
-    (a Windows service account with no USERPROFILE, HOMEDRIVE or HOMEPATH). Evaluating
-    it at module scope would take the whole installer down at import, on every platform,
-    over a directory only the Vulkan probe ever reads. The user-visible failure would not
-    mention Vulkan at all, which is what makes it worth a test rather than a comment.
+    ``Path.home()`` raises rather than defaulting (a Windows service account with no
+    USERPROFILE), so evaluating it at module scope takes the installer down at import over
+    a directory only the Vulkan probe reads -- and the failure would not mention Vulkan.
     """
 
     def _no_home():
@@ -2857,7 +2824,6 @@ class _FakeIcdWinreg:
 
 def _icd_paths(monkeypatch, by_key):
     monkeypatch.setattr(ilp.sys, "platform", "win32")
-    # These would answer instead of the registry, which is the next test's subject.
     for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setitem(sys.modules, "winreg", _FakeIcdWinreg(by_key))
@@ -2867,23 +2833,19 @@ def _icd_paths(monkeypatch, by_key):
 def test_the_windows_registry_is_not_read_when_the_loader_is_forced(
     monkeypatch, _present_manifest, tmp_path
 ):
-    # VK_DRIVER_FILES overrides discovery on Windows too, so a registered AMD manifest is
-    # not evidence when the loader has been pointed elsewhere: routing on it would replace
-    # a working ROCm install with a Vulkan build that enumerates no device.
+    # VK_DRIVER_FILES overrides discovery on Windows too, so a registered manifest is not
+    # evidence when the loader has been pointed elsewhere.
     monkeypatch.setattr(ilp.sys, "platform", "win32")
     registry = {_DRIVERS_KEY: [(_present_manifest, 0, _FakeIcdWinreg.REG_DWORD)]}
     monkeypatch.setitem(sys.modules, "winreg", _FakeIcdWinreg(registry))
     for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
         monkeypatch.delenv(name, raising = False)
-    # The control: that registration does answer on its own, so a [] below is the override
-    # winning rather than a fake the walk cannot read.
     assert ilp._amd_vulkan_icd_manifest_paths() == [_present_manifest]
 
     intel = _icd(tmp_path / "intel_icd.json")
     monkeypatch.setenv("VK_DRIVER_FILES", intel)
     assert ilp._amd_vulkan_icd_manifest_paths() == [intel]
     assert _REAL_AMD_VULKAN_ICD_PRESENT() is False
-    # VK_DRIVER_FILES supersedes the older name rather than joining it.
     monkeypatch.setenv("VK_ICD_FILENAMES", _present_manifest)
     assert ilp._amd_vulkan_icd_manifest_paths() == [intel]
     monkeypatch.delenv("VK_DRIVER_FILES")
@@ -2900,15 +2862,13 @@ def _present_manifest(tmp_path):
 
 
 def test_the_windows_radeon_manifest_is_recognized(monkeypatch):
-    # Adrenalin registers amd-vulkan64.json, not amdvlk64.json. Knowing only the AMDVLK
+    # Adrenalin registers amd-vulkan64.json, not amdvlk64.json; knowing only the AMDVLK
     # spelling answered False on the ordinary Windows gfx115x host.
     monkeypatch.setattr(
         ilp,
         "_amd_vulkan_icd_manifest_paths",
         lambda: [r"C:\Windows\System32\amd-vulkan64.json"],
     )
-    # The name is this test's subject; the manifest is a path no filesystem here has, so
-    # the contents check is stood down rather than answering for it.
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_usable", lambda _path: True)
     assert _REAL_AMD_VULKAN_ICD_PRESENT() is True
 
@@ -2916,8 +2876,8 @@ def test_the_windows_radeon_manifest_is_recognized(monkeypatch):
 def test_a_disabled_registry_registration_does_not_answer_for_the_driver(
     monkeypatch, _present_manifest
 ):
-    # Value name is the manifest path, DWORD data the enable flag: zero loads it, anything
-    # else the loader skips (LoaderDriverInterface.md).
+    # Value name is the manifest path, DWORD data the enable flag: only zero loads
+    # (LoaderDriverInterface.md).
     disabled = _icd_paths(
         monkeypatch,
         {_DRIVERS_KEY: [(_present_manifest, 1, _FakeIcdWinreg.REG_DWORD)]},
@@ -2931,14 +2891,11 @@ def test_a_disabled_registry_registration_does_not_answer_for_the_driver(
 
 
 def test_an_enabled_registration_whose_manifest_is_gone_does_not_answer(monkeypatch, tmp_path):
-    # An uninstall leaving its registration behind would answer for a loader that can open
-    # nothing. Same rule the override list follows.
     missing = str(tmp_path / "gone" / "amd-vulkan64.json")
     assert _icd_paths(monkeypatch, {_DRIVERS_KEY: [(missing, 0, _FakeIcdWinreg.REG_DWORD)]}) == []
 
 
 def test_a_32_bit_registration_does_not_answer_for_the_x64_bundle(monkeypatch, tmp_path):
-    # A 64-bit process cannot load a 32-bit ICD, and WOW6432Node is where those live.
     wow = str(tmp_path / "amd-vulkan32.json")
     _icd(tmp_path / "amd-vulkan32.json")
     paths = _icd_paths(
@@ -2949,7 +2906,6 @@ def test_a_32_bit_registration_does_not_answer_for_the_x64_bundle(monkeypatch, t
 
 
 def test_a_non_dword_icd_registration_is_ignored(monkeypatch, _present_manifest):
-    # The interface specifies a DWORD; anything else carries no readable enable flag.
     paths = _icd_paths(
         monkeypatch,
         {_DRIVERS_KEY: [(_present_manifest, "0", _FakeIcdWinreg.REG_SZ)]},

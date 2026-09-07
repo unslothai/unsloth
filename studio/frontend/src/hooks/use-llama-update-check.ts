@@ -48,9 +48,8 @@ export interface LlamaUpdateStatus {
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
   update_size_bytes: number | null;
-  // The install recorded an automatic backend choice and detection now resolves
-  // elsewhere, so Update would move it. Independent of update_available: the server
-  // reports this only when the release is current and the backend has drifted.
+  // The install recorded "auto" and detection now resolves elsewhere, so Update would move
+  // it. Independent of update_available: reported only when the release is current.
   backend_migration_available: boolean;
   from_backend: string | null;
   to_backend: string | null;
@@ -117,8 +116,8 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       typeof details.update_size_bytes === "number"
         ? details.update_size_bytes
         : null,
-    // Always read from the top level: a backend belongs to the llama.cpp install
-    // whatever component the version fields are describing.
+    // Always from the top level: the backend belongs to the llama.cpp install whatever
+    // component the version fields describe.
     backend_migration_available: s.backend_migration_available === true,
     from_backend: typeof s.from_backend === "string" ? s.from_backend : null,
     to_backend: typeof s.to_backend === "string" ? s.to_backend : null,
@@ -185,8 +184,8 @@ export interface LlamaApplyResult {
   tag?: string | null;
   reloadRequired?: boolean | null;
   error?: string | null;
-  // What the job itself says it did. A migration can finish at the release and on the
-  // backend it started from, so "updated to <tag>" from the version fields fits neither.
+  // What the job says it did: a migration can finish at the release and on the backend it
+  // started from, so "updated to <tag>" fits neither.
   message?: string;
 }
 

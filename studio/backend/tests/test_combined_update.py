@@ -784,7 +784,6 @@ def test_a_migrated_llama_re_pairs_the_chained_phase(monkeypatch):
     installed = wupd.run_chained_phase_after_llama(_slim_phase(backend = "rocm"), lambda _f: None)
     assert seen["backend"] == "vulkan"
     assert installed["backend"] == "vulkan"
-    # And the asset with it: the old one carries the ROCm arch flags the installer derives.
     assert installed["asset"] == "llama-b1-bin-win-vulkan-x64.zip"
 
 

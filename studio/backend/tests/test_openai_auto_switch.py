@@ -6243,7 +6243,6 @@ def test_gpu_index_kind_is_stored_only_when_it_is_not_the_legacy_default():
         ({}, "physical"),
         ({"gpu_ids": [0]}, "physical"),
         ({"gpu_ids": [0], "gpu_index_kind": "vulkan"}, "vulkan"),
-        # A row this build cannot read is not evidence of a Vulkan pin.
         ({"gpu_ids": [0], "gpu_index_kind": "metal"}, "physical"),
         ({"gpu_ids": [0], "gpu_index_kind": None}, "physical"),
     ],
@@ -6783,9 +6782,8 @@ def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
 
 
 def test_a_fill_never_labels_the_server_s_gpu_pin_with_this_browser_s_index_space(override_store):
-    # Two browsers against one server: the stored pin is physical ids from a ROCm-era save
-    # and this backfill offers Vulkan ordinals. The ids belong to the space they were
-    # written in, so the qualifier cannot arrive without them.
+    # Two browsers against one server: the stored pin is physical and this backfill offers
+    # Vulkan ordinals, so the qualifier cannot arrive without its ids.
     settings.set_model_override("unsloth/B-GGUF:Q4_K_M", gpu_ids = [0, 1])
 
     resp = _put(
@@ -6960,7 +6958,6 @@ def test_a_pin_written_in_the_other_index_space_is_unusable(monkeypatch):
 
 
 def test_a_rocm_pin_survives_while_the_backend_is_still_rocm(monkeypatch):
-    # Negative control: rejecting a pin that never moved drops every pin on every host.
     from core.inference.llama_cpp import LlamaCppBackend
 
     _pin_resolves_on_a_host_with_device_0(monkeypatch)
