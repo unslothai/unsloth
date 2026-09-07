@@ -5065,16 +5065,25 @@ def _apply_current_date_prompt(
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
 
 
+# Servers that apply a prompt of their own and swap it for any request-level system turn.
+# Ollama's /v1/chat/completions uses the Modelfile SYSTEM only when the request sends none.
+_MODELFILE_SYSTEM_PROVIDERS = frozenset({"ollama"})
+
+
 def _prepend_current_date_to_messages(
     messages: list[dict],
     request: Any = None,
     *,
     include_api_key: bool = False,
+    provider_type: str | None = None,
 ) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
     The local path prefixes ``system_prompt`` before the messages exist; an external payload is
-    assembled first, so the date goes onto its leading system turn instead.
+    assembled first, so the date goes onto its leading system turn instead. When there is no
+    such turn one is synthesized, except for ``provider_type`` servers that keep a prompt of
+    their own (``_MODELFILE_SYSTEM_PROVIDERS``): there the caller's silence is what lets the
+    server's prompt apply, so the date is dropped rather than sent in its place.
     """
     if request is not None and not _wants_current_date(request):
         if not include_api_key or _request_is_internal_workflow(request):
@@ -5114,6 +5123,10 @@ def _prepend_current_date_to_messages(
                 return copied
             msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
             return copied
+    if provider_type in _MODELFILE_SYSTEM_PROVIDERS:
+        # Ollama serves the Modelfile SYSTEM only while the request carries no system turn;
+        # a date-only turn here would replace the user's prompt with a date (#10436).
+        return messages
     return [{"role": "system", "content": date_line}, *copied]
 
 
@@ -19892,6 +19905,7 @@ async def _proxy_to_external_provider(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
+        provider_type = provider_type,
     )
     if run_studio_tool_loop and payload.bypass_permissions:
         # Full access disables the sandbox at execution time, so the schemas must
