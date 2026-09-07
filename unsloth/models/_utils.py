@@ -2079,10 +2079,7 @@ elif DEVICE_TYPE == "xpu":
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 else:
-    # Every other runtime, which today means MLX: DEVICE_TYPE is "mlx" and
-    # DEVICE_TYPE_TORCH is "mps". Both names are in __all__, so leaving them
-    # unbound made `from ._utils import *` raise AttributeError and took
-    # unsloth.models, unsloth.save and unsloth.utils.attention_dispatch with it.
+    # Exhaustive because both names are in __all__: an unbound branch (mlx) breaks `import *`.
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = DEVICE_TYPE_TORCH)
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = DEVICE_TYPE_TORCH)
 

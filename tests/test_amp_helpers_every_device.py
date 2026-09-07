@@ -1,16 +1,5 @@
-"""`torch_amp_custom_fwd` and `torch_amp_custom_bwd` are exported from
-`unsloth.models._utils.__all__`, so `from ._utils import *` raises AttributeError
-on any device whose branch never binds them.
-
-The chain covered cuda, hip and xpu only. On the MLX runtime, where
-`DEVICE_TYPE` is `"mlx"` and `DEVICE_TYPE_TORCH` is `"mps"`, neither ran, so
-importing `unsloth.models`, `unsloth.save` or `unsloth.utils.attention_dispatch`
-died with `module 'unsloth.models._utils' has no attribute
-'torch_amp_custom_fwd'`.
-
-The block is sliced out with `ast` rather than imported: `unsloth.models._utils`
-pulls in the rest of the package, which needs a GPU toolchain, while this branch
-is a handful of assignments with no such requirement.
+"""Both amp helpers are in `_utils.__all__`, so a DEVICE_TYPE whose branch leaves them unbound
+makes `from ._utils import *` raise (mlx did). Sliced with `ast`: importing `_utils` needs a GPU.
 """
 
 import ast
@@ -23,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 UTILS_PATH = REPO_ROOT / "unsloth" / "models" / "_utils.py"
 AMP_NAMES = ("torch_amp_custom_fwd", "torch_amp_custom_bwd")
 
-# (DEVICE_TYPE, DEVICE_TYPE_TORCH), mirroring device_type.py's mapping.
+# (DEVICE_TYPE, DEVICE_TYPE_TORCH), per device_type.py.
 DEVICES = [("cuda", "cuda"), ("hip", "cuda"), ("xpu", "xpu"), ("mlx", "mps")]
 
 
