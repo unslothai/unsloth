@@ -140,32 +140,43 @@ class GenStreamError(str):
     starts with "Error:" by checking isinstance(chunk, GenStreamError).
     """
 
-    __slots__ = ("public",)
+    __slots__ = ("public", "openai_param")
 
     def __new__(
         cls,
         value,
         *,
         public: bool = False,
+        openai_param: Optional[str] = None,
     ):
         obj = str.__new__(cls, value)
         obj.public = bool(public)
+        # Set for a refusal about one request field, so the caller answers 400 not 500.
+        obj.openai_param = openai_param
         return obj
 
 
 class GenStreamErrorRaised(RuntimeError):
     """Internal exception form of ``GenStreamError`` for generator boundaries."""
 
-    __slots__ = ("public",)
+    __slots__ = ("public", "openai_param")
 
     def __init__(
         self,
         value,
         *,
         public: bool = False,
+        openai_param: Optional[str] = None,
     ):
         super().__init__(value)
         self.public = bool(public)
+        self.openai_param = openai_param
+
+    @classmethod
+    def from_chunk(cls, chunk: "GenStreamError") -> "GenStreamErrorRaised":
+        """Re-raise a streamed error at a generator boundary, classification intact: a refusal
+        arriving as a fault is answered 500 with a generic message."""
+        return cls(str(chunk), public = chunk.public, openai_param = chunk.openai_param)
 
 
 def _summed_tool_loop_stats(total, turn):
@@ -976,6 +987,8 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -998,6 +1011,10 @@ class InferenceOrchestrator:
             cmd["seed"] = seed
         if stop:
             cmd["stop"] = stop
+        if response_format is not None:
+            cmd["response_format"] = response_format
+            # Only alongside a contract, whose grammar leaves room for a block or not.
+            cmd["reasoning_is_extracted"] = bool(reasoning_is_extracted)
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
         if tools is not None:
@@ -1082,7 +1099,11 @@ class InferenceOrchestrator:
                     stats_holder["stats"] = resp.get("stats")
                 return
             elif rtype == "gen_error":
-                yield GenStreamError(f"Error: {resp.get('error', 'Unknown error')}")
+                yield GenStreamError(
+                    f"Error: {resp.get('error', 'Unknown error')}",
+                    public = bool(resp.get("public", False)),
+                    openai_param = resp.get("openai_param"),
+                )
                 return
 
     # ------------------------------------------------------------------ Dispatcher - per-request mailbox routing for
@@ -1213,6 +1234,8 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -1270,6 +1293,8 @@ class InferenceOrchestrator:
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
             stop = stop,
+            response_format = response_format,
+            reasoning_is_extracted = reasoning_is_extracted,
             use_adapter = use_adapter,
             tools = tools,
             enable_thinking = enable_thinking,
@@ -2041,6 +2066,8 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
@@ -2077,6 +2104,8 @@ class InferenceOrchestrator:
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
             stop = stop,
+            response_format = response_format,
+            reasoning_is_extracted = reasoning_is_extracted,
         )
 
     def generate_chat_completion_with_tools(
@@ -2175,7 +2204,7 @@ class InferenceOrchestrator:
                 for chunk in stream:
                     if isinstance(chunk, GenStreamError):
                         close_stream = True
-                        raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                        raise GenStreamErrorRaised.from_chunk(chunk)
                     yield chunk
             finally:
                 if close_stream:
@@ -2263,9 +2292,7 @@ class InferenceOrchestrator:
         try:
             for chunk in stream:
                 if isinstance(chunk, GenStreamError):
-                    # Preserve the public/operational flag so the route can surface the real message (e.g. "model is
-                    # being unloaded") instead of a generic error. Mirrors the safetensors tool loop's _single_turn.
-                    raise GenStreamErrorRaised(str(chunk), public = chunk.public)
+                    raise GenStreamErrorRaised.from_chunk(chunk)
                 yield chunk
         finally:
             close = getattr(stream, "close", None)
@@ -2296,6 +2323,8 @@ class InferenceOrchestrator:
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
         stop: Optional[list] = None,
+        response_format: Optional[dict] = None,
+        reasoning_is_extracted: bool = False,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -2338,6 +2367,8 @@ class InferenceOrchestrator:
                 frequency_penalty = frequency_penalty,
                 logit_bias = logit_bias,
                 stop = stop,
+                response_format = response_format,
+                reasoning_is_extracted = reasoning_is_extracted,
                 use_adapter = use_adapter,
                 tools = tools,
                 enable_thinking = enable_thinking,

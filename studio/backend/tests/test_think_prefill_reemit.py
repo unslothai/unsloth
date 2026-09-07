@@ -106,6 +106,16 @@ def test_guard_suppresses_when_close_tag_is_special():
     assert detect_think_prefill(QWEN_PROMPT + "<think>\n", specials) == ""
 
 
+def test_guard_follows_the_path_s_rendering_not_the_token_metadata():
+    """The suppression turns on skip_special_tokens stripping the close tag, so a path that
+    streams the detokenizer's text keeps it -- without this the VLM path emitted a stray one."""
+    specials = ["<|im_end|>", "<think>", "</think>"]
+    assert (
+        detect_think_prefill(QWEN_PROMPT + "<think>\n", specials, reply_keeps_special_tokens = True)
+        == "<think>\n"
+    )
+
+
 def test_guard_emits_when_think_not_special():
     specials = ["<|im_end|>", "<|endoftext|>"]
     assert detect_think_prefill(QWEN_PROMPT + "<think>\n", specials) == "<think>\n"
