@@ -120,9 +120,7 @@ class TestWaitForHealthResilience:
         assert b._health_wait_cancelled is True
         # Exactly what the caller does at the `if not healthy` branch.
         assert (
-            b._process is not None
-            and b._process.poll() is not None
-            and b._process.returncode != 0
+            b._process is not None and b._process.poll() is not None and b._process.returncode != 0
         ) is False
 
     def test_a_crash_leaves_the_wait_unmarked_so_the_retries_still_run(self, monkeypatch):
