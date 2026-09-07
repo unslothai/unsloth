@@ -715,6 +715,28 @@ _resolve_studio_destinations
 # for us; the pinned path does not.
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
+
+# Keep uv's cache on the same filesystem as the venv it fills.
+# uv hardlinks wheels across one filesystem and copies across a boundary, so a moved
+# STUDIO_HOME otherwise paid double the disk and stranded the cache. An explicit
+# UV_CACHE_DIR wins. Falling back on failure is required: uv aborts outright on a cache it
+# cannot create. mkdir -p is not the test (it exits 0 for an existing unwritable directory)
+# and -w reads the mode, not the filesystem, so probe with a real create.
+if [ -z "${UV_CACHE_DIR:-}" ]; then
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    export UV_CACHE_DIR
+    # mktemp, not a $$ name: a predictable path in another account's directory can be
+    # pre-created as a symlink, which `: >` would follow and truncate as root.
+    _uv_cache_probe=""
+    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
+       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+        echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
+        unset UV_CACHE_DIR
+    fi
+    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
+    unset _uv_cache_probe
+fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
@@ -3567,16 +3589,37 @@ _hsa_spoofed_physical_gfx() {
 # as the last command would trip set -e in callers' assignments). Shared by
 # get_torch_index_url's gfx gate and the runtime-less reroute gate so the two
 # can never disagree on what "readable" means.
+#   $1: unset    strip the visible-device masks only (#7314).
+#       physical also strip HSA_OVERRIDE_GFX_VERSION, which ROCr applies in userland so
+#                rocminfo reports the SPOOFED ISA while it is set (unslothai#7331).
+#                Mirrors _detect_amd_gfx_codes(ignore_hsa_override = True).
+#
+# Neither mode answers which device the runtime will SELECT, and nothing here can: no probe
+# applies both mask families. _runtime_gfx_target() in install_python_stack.py answers that.
+#
+# shellcheck disable=SC2086  # $_pg_strip is a LIST of names for unset; quoting it would
+# unset one variable whose name contains spaces.
 _probe_amd_gfx_arch() {
     _ensure_rocm_probe_env
-    _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    case "${1:-}" in
+        physical) _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION" ;;
+        *)        _pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" ;;
+    esac
+    # "physical" ignores the declared arch: a stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real
+    # Van Gogh would answer the miscomputing gate with a healthy arch. It stays
+    # authoritative for ordinary routing.
+    if [ "${1:-}" = "physical" ]; then
+        _pg=""
+    else
+        _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    fi
     if [ -z "$_pg" ] && command -v rocminfo >/dev/null 2>&1; then
-        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _pg=$( (unset $_pg_strip; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
     fi
     if [ -z "$_pg" ] && command -v amd-smi >/dev/null 2>&1; then
-        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _pg=$( (unset $_pg_strip; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         if [ -z "$_pg" ]; then
-            _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            _pg=$( (unset $_pg_strip; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
     fi
     printf '%s\n' "$_pg"
@@ -3872,7 +3915,40 @@ get_torch_index_url() {
             echo "[WARN] For GPU PyTorch, install or repair rocminfo/amd-smi (e.g. sudo pacman -S rocm-hip-sdk) and re-run this installer." >&2
             echo "$_base/cpu"; return
         fi
-        # AMD GPU confirmed -- detect ROCm version
+        # Archs measured to compute INCORRECTLY under ROCm route to CPU instead. Not
+        # "everything AMD does not list": unsloth serves gfx906 and gfx1031-gfx1036 on
+        # purpose (#7277). gfx1033 (Van Gogh) is different -- ROCm wheels install and then
+        # compute wrong answers (studio/ROCM_RDNA2_APU.md). PRESENCE, not selection: which
+        # GPU the runtime picks needs the mask layering _runtime_gfx_target() implements,
+        # so a mixed host takes the cpu index and keeps the UNSLOTH_TORCH_INDEX_URL escape
+        # hatch. Inline, not a helper: harnesses extract get_torch_index_url alone.
+        # "physical" mode so no override can hide the silicon; KFD before the plain probe,
+        # since amdkfd writes gfx_target_version from the kernel and ROCr never touches it.
+        _amd_gfx_gate_probe=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+        [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe=$(_kfd_gfx_targets 2>/dev/null || true)
+        if [ -z "$_amd_gfx_gate_probe" ] && [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]; then
+            # Nothing override-independent could name the silicon under a spoof, so the
+            # only value left is the spoofed name: absence of evidence, not evidence of a
+            # healthy arch. HSA_OVERRIDE_GFX_VERSION only, NOT UNSLOTH_ROCM_GFX_ARCH: the
+            # latter is a DECLARED arch for the runtime-less #7301 hosts.
+            echo "[WARN] HSA_OVERRIDE_GFX_VERSION is set and this host cannot confirm its real arch (no unspoofed rocminfo, amd-smi or KFD topology)." >&2
+            echo "[WARN] Installing CPU-only PyTorch rather than trusting the spoofed name: gfx1033 (Van Gogh) computes incorrect results under ROCm (studio/ROCM_RDNA2_APU.md)." >&2
+            echo "[WARN] Unset HSA_OVERRIDE_GFX_VERSION so the arch can be read, or pin UNSLOTH_TORCH_INDEX_URL to choose deliberately." >&2
+            echo "$_base/cpu"; return
+        fi
+        [ -n "$_amd_gfx_gate_probe" ] || _amd_gfx_gate_probe="$_amd_gfx_probe"
+        _amd_gfx_tokens=" $(printf '%s\n' "$_amd_gfx_gate_probe" | sed 's/:.*$//' \
+            | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')"
+        case "$_amd_gfx_tokens" in
+            *" gfx1033 "*)
+                echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- installing CPU-only PyTorch." >&2
+                echo "[WARN] ROCm wheels install on it but training diverges to NaN and gradcheck fails; forward math is fine." >&2
+                echo "[WARN] Details: studio/ROCM_RDNA2_APU.md. Override with UNSLOTH_TORCH_INDEX_URL if you want ROCm anyway." >&2
+                echo "$_base/cpu"; return ;;
+        esac
+        # end of the miscomputing-arch gate -- tests/sh/test_rocm_bad_arch_gate.sh lifts
+        # the block between the header comment above and this line, so keep both exact.
+        # detect ROCm version
         _rocm_tag=""
         _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
         # ^ || guard: belt and braces on the set -e contract the helpers hold, so a
@@ -4496,6 +4572,17 @@ case "$TORCH_INDEX_URL" in
                 || _amd_probed_family=""
             _amd_probed_gfx_first=$(_amd_sole_index_arch "$_amd_probe_out") \
                 || _amd_probed_gfx_first=""
+            # A measured-bad arch anywhere in the probed inventory disqualifies the whole
+            # family, at the source rather than at each consumer: gfx1033 shares
+            # gfx103X-all with gfx1030-gfx1036, so the shared-family arm below would
+            # otherwise rewrite the cpu index the gate just chose back to ROCm wheels.
+            case " $(printf '%s\n' "$_amd_probe_out" | sed 's/:.*$//' \
+                     | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')" in
+                *" gfx1033 "*)
+                    echo "[WARN] AMD gfx1033 (Van Gogh) is in the probed inventory -- not routing torch to the shared $_amd_probed_family index (studio/ROCM_RDNA2_APU.md)." >&2
+                    _amd_probed_family=""
+                    _amd_probed_gfx_first="" ;;
+            esac
             if [ -n "${_amd_probed_family:-}" ] && \
                [ -z "$(_detect_rocm_version_tag 2>/dev/null)" ]; then
                 _amd_no_rocm_version_reroute=true
@@ -4520,17 +4607,44 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
             # for, so the suffix silently cost the reroute. Normalise as the caller did.
             _linux_inferred_gfx=$(_amd_sole_index_arch "$_linux_inferred_gfx") \
                 || _linux_inferred_gfx=""
-            # Route on the arch the probe READ, not on lspci marketing-name inference:
+            # Route on the arch the probe read, not on lspci marketing-name inference:
             # the two disagree on a mixed APU + discrete host, and inference's answer
             # would install wheels for a GPU the reroute decision never looked at.
             if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
                 _linux_inferred_gfx="${_amd_probed_gfx_first:-}"
             fi
+            # The gfx1033 gate in get_torch_index_url is not enough on its own: this
+            # reroute can take an explicit override or a no-version probe family straight
+            # back to gfx103X-all. UNSLOTH_ROCM_GFX_ARCH is unset too, not just the local:
+            # setup.sh forwards it as --rocm-gfx and _apply_host_overrides reads any
+            # forwarded gfx as proof of ROCm, which would skip the Vulkan branch (112.8
+            # tok/s vs 49.8 CPU) and ask for a HIP build the host cannot run. Keyed on the
+            # PHYSICAL inventory, since a stale gfx1030 override makes the inferred value
+            # look healthy; the gate's own verdict cannot be reused because it runs in a
+            # command substitution, hence the re-probe.
+            _amd_reroute_physical=$(_probe_amd_gfx_arch physical 2>/dev/null || true)
+            [ -n "$_amd_reroute_physical" ] || _amd_reroute_physical=$(_kfd_gfx_targets 2>/dev/null || true)
+            case " $(printf '%s\n' "$_amd_reroute_physical" | sed 's/:.*$//' \
+                     | tr '[:upper:]' '[:lower:]' | tr '\n' ' ')" in
+                *" gfx1033 "*) _linux_inferred_gfx="gfx1033" ;;
+            esac
+            case "${_linux_inferred_gfx%%:*}" in
+                gfx1033)
+                    echo "[WARN] AMD gfx1033 (Van Gogh) computes incorrect results under ROCm -- keeping CPU-only PyTorch (studio/ROCM_RDNA2_APU.md)." >&2
+                    _linux_inferred_gfx=""
+                    unset UNSLOTH_ROCM_GFX_ARCH ;;
+            esac
             _amd_family=""
-            if [ "${_amd_no_rocm_version_reroute:-false}" = true ]; then
+            if [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+               [ -n "$_linux_inferred_gfx" ]; then
                 _amd_family="${_amd_probed_family:-}"
             elif [ -n "$_linux_inferred_gfx" ]; then
                 _amd_family=$(_amd_arch_index_family_for_gfx "$_linux_inferred_gfx") || _amd_family=""
+            elif [ "${_amd_no_rocm_version_reroute:-false}" = true ] && \
+                 [ -z "${_amd_probed_gfx_first:-}" ]; then
+                # Multiple healthy arches may share one wheel family. No single arch is
+                # forwarded to llama.cpp, but torch can still use the agreed family.
+                _amd_family="${_amd_probed_family:-}"
             fi
             if [ -n "$_amd_family" ]; then
                     _amd_mirror="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
@@ -5113,7 +5227,13 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         step "gpu" "AMD ROCm"
     fi
     _rocm_root="${ROCM_PATH:-${HIP_PATH:-/opt/rocm}}"
-    substep "ROCm: $_rocm_root"
+    # Only claim a path that is really there: /opt/rocm is a FALLBACK, not a detection,
+    # and a runtime-only ROCm (no SDK tree) reaches here with nothing at that path.
+    if [ -d "$_rocm_root" ]; then
+        substep "ROCm: $_rocm_root"
+    else
+        substep "ROCm: runtime detected (no SDK tree at $_rocm_root)"
+    fi
     [ -n "$_gpu_rocm_ver" ] && substep "hipconfig: $_gpu_rocm_ver"
     [ -n "$_gpu_disp_mkt" ] && [ -n "$_gpu_disp_gfx" ] && substep "GPU: $_gpu_disp_mkt"
 elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
@@ -5876,6 +5996,9 @@ _persist_fish_path_dir() {
     # The exact line we would write, not any occurrence of the directory: /opt/uv-old must not
     # pass for /opt/uv, and fish reads none of the POSIX files that would otherwise cover it.
     if ! grep -v '^[[:space:]]*#' "$_pfp_file" 2>/dev/null | grep -qxF "fish_add_path '$_pfp_quoted'"; then
+        # Same single-redirect, warning-not-failure contract as the POSIX arm.
+        # 2>/dev/null comes FIRST: redirections apply left to right, so the other order
+        # prints the shell's own "Permission denied" before the redirect can silence it.
         if {
             echo "# Added by Unsloth installer"
             echo "fish_add_path '$_pfp_quoted'"
@@ -5883,6 +6006,9 @@ _persist_fish_path_dir() {
             step "path" "added $_pfp_label to PATH in $_pfp_file"
         else
             step "path" "could not write $_pfp_file; add $_pfp_label to PATH yourself" "$C_WARN"
+            substep "Unsloth is installed and works; only the PATH line is missing."
+            substep "Add this to your fish config to get 'unsloth' in new shells:"
+            substep "  fish_add_path '$_pfp_quoted'"
         fi
     fi
 }
@@ -5927,8 +6053,12 @@ _persist_login_path_dir() {
     # shell with no uv at all.
     if ! grep -v '^[[:space:]]*#' "$_SHELL_PROFILE" 2>/dev/null \
         | grep -E "$_PATH_LINE_RE" | grep -qE "$_plp_pattern"; then
-        # One redirect, so an unwritable profile leaves no half-written entry; a warning rather
-        # than a failure, because under set -e an unguarded append would end the install.
+        # One redirect, not three: a write dying midway would leave a dangling
+        # "# Added by Unsloth installer" with no export under it. A failure here is a
+        # WARNING carrying the manual line, never a failed install -- set -e would
+        # otherwise abort after the venv, llama.cpp and the shim are all in place, and a
+        # read-only rc (NixOS, home-manager, chezmoi) is a supported setup.
+        # 2>/dev/null first, as in the fish arm.
         if {
             echo ''
             echo '# Added by Unsloth installer'
@@ -5937,6 +6067,9 @@ _persist_login_path_dir() {
             step "path" "added $_plp_label to PATH in $_SHELL_PROFILE"
         else
             step "path" "could not write $_SHELL_PROFILE; add $_plp_label to PATH yourself" "$C_WARN"
+            substep "Unsloth is installed and works; only the PATH line is missing."
+            substep "Add this to your shell config to get 'unsloth' in new shells:"
+            substep "  export PATH=\"$_plp_literal:\$PATH\""
         fi
     fi
 }

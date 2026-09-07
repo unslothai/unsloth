@@ -565,6 +565,10 @@ _GFX_TO_AMD_INDEX_ARCH: dict[str, str] = {
     "gfx908": "gfx908",  # MI200/MI100
 }
 
+# Archs that install ROCm wheels fine and then compute WRONG answers, so they stay on CPU
+# torch rather than route to their family index. See install.sh's matching gate.
+_ROCM_MISCOMPUTING_GFX: "frozenset[str]" = frozenset({"gfx1033"})  # Van Gogh (Steam Deck)
+
 # bitsandbytes continuous-release_main wheels with the ROCm 4-bit GEMV fix
 # (bnb #1887, post-0.49.2). bnb <= 0.49.2 NaNs at decode shape on every AMD GPU;
 # PyPI 0.50.0 is the first release with the fix, so the fallback below is safe.
@@ -1462,11 +1466,107 @@ def _amd_arch_index_url(gfx_arch: str | None) -> str | None:
     """
     if IS_WINDOWS:
         return _windows_rocm_index_url(gfx_arch)
+    # gfx1033 (Van Gogh) miscomputes under ROCm (studio/ROCM_RDNA2_APU.md). Without this,
+    # the inferred-gfx repair below would force-reinstall the very ROCm wheels install.sh's
+    # gate exists to avoid. Linux only, matching where it was measured.
+    if (gfx_arch or "").lower() in _ROCM_MISCOMPUTING_GFX:
+        return None
     arch_family = _GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "")
     if arch_family is None:
         return None
     base = os.environ.get("UNSLOTH_AMD_ROCM_MIRROR") or "https://repo.amd.com/rocm/whl"
     return _index_url_join(base, arch_family)
+
+
+def _physical_amd_gfx_archs() -> "list[str]":
+    """The AMD arches on this Linux host, read from sources an override cannot move.
+
+    Strongest first: the ROCm userland probes with HSA_OVERRIDE_GFX_VERSION and the
+    visible-device masks stripped, then KFD topology sysfs, then the product-name
+    inference, and only then the declared UNSLOTH_ROCM_GFX_ARCH.
+
+    The declared arch is LAST on purpose. It is a routing hint for a host whose probes
+    cannot answer, not a statement about silicon, and taking it first let a stale
+    gfx1030 on a real Van Gogh hide the arch from every check built on this. KFD sits
+    ahead of the inference for the same reason: _infer_linux_amd_gfx_arch() returns the
+    declared value before inferring anything, so behind it the kernel never answers.
+    """
+    _archs = [
+        _code.strip().lower().split(":")[0]
+        for _code in _detect_amd_gfx_codes(ignore_hsa_override = True, ignore_visible_masks = True)
+    ]
+    if not _archs:
+        _archs = [_code.strip().lower().split(":")[0] for _code in _kfd_gfx_targets()]
+    if not _archs:
+        _inferred = (_infer_linux_amd_gfx_arch() or "").strip().lower().split(":")[0]
+        _archs = [_inferred] if _inferred else []
+    if not _archs:
+        _env_gfx = (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip().lower().split(":")[0]
+        _archs = [_env_gfx] if _env_gfx else []
+    return _archs
+
+
+def _miscomputing_arch_host() -> bool:
+    """True when EVERY AMD arch this host physically has computes incorrectly under ROCm.
+
+    Every, not any, and it matters here rather than being a detail: gfx1033 is one of the
+    integrated parts _SHADOWING_INTEGRATED_GFX lists, so it can lead the enumeration on a
+    box whose real accelerator is a discrete Radeon (#7776). Declining ROCm on presence
+    alone would strand that card, which is the outcome that policy exists to prevent.
+    install.sh's gate is a presence test because it cannot resolve which device the
+    runtime picks; here the arch list IS the host, so the stronger rule is available and
+    is the one that keeps a mixed box working.
+
+    Shared with _rocm_miscomputing_host(), which adds only "and ROCm torch is already
+    installed" -- the two ask the same question about the hardware and differ in whether
+    they are deciding to withhold wheels or to replace them.
+    """
+    if IS_WINDOWS or IS_MACOS:
+        return False
+    _archs = _physical_amd_gfx_archs()
+    return bool(_archs) and all(_arch in _ROCM_MISCOMPUTING_GFX for _arch in _archs)
+
+
+def _rocm_miscomputing_host() -> bool:
+    """True when every AMD GPU on this Linux host is an arch measured to compute
+    incorrectly under ROCm, ROCm torch is already installed, and no explicit index pin
+    overrides that finding.
+
+    Returning None from _amd_arch_index_url() only stops such a host from being GIVEN
+    ROCm wheels. A venv that already HOLDS them -- installed before the gate existed, and
+    carried through the legacy-venv migration untouched because its forward-only
+    validation passes on this arch -- was never demoted: install.sh resolves
+    UNSLOTH_TORCH_BACKEND=cpu, which makes _ensure_rocm_torch() return at its first line,
+    _ensure_cpu_torch() only fires for an EXPLICIT pin, and the base update does not
+    reinstall an already-satisfied torch. So upgrading left in place exactly the build the
+    gate exists to remove, on the machines that most need it removed. Treat the arch
+    itself as CPU authority instead, and let _ensure_cpu_torch() do the demotion.
+
+    EVERY arch, not any: a healthy dGPU beside a miscomputing APU is still served by ROCm.
+    The disk label is read first so the ROCm probes cost nothing on the overwhelming
+    majority of hosts, which have no ROCm torch to demote. An explicit
+    UNSLOTH_TORCH_INDEX_URL / _FAMILY stays the documented escape hatch and wins.
+
+    KFD topology sysfs is consulted after the runtime probes, and BEFORE the product-name
+    inference and the declared arch, because a Van Gogh host can
+    reach here with neither answering: _detect_amd_gfx_codes() needs rocminfo or amd-smi,
+    and a Deck whose ROCm was uninstalled -- or whose user is not in the render group, so
+    rocminfo enumerates no GPU -- has neither, while _infer_linux_amd_gfx_arch() maps no
+    Van Gogh product name. _archs then came back empty and the host kept the very wheels
+    that produce the NaN, which is the failure this helper exists to end. amdkfd is in the
+    kernel driver, so it answers on exactly those hosts, and it is the same source
+    _hsa_probe_correction() already trusts over the runtime.
+    """
+    if IS_WINDOWS or IS_MACOS:
+        return False
+    if _explicit_torch_index_url() is not None:
+        return False
+    if "+rocm" not in _installed_torch_label_on_disk():
+        return False
+    # The declared arch is consulted LAST: this function asks what silicon is PRESENT, and
+    # a stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Van Gogh answered that with a healthy
+    # arch. It still answers when no probe can. install.sh's "physical" mode agrees.
+    return _miscomputing_arch_host()
 
 
 def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
@@ -3378,15 +3478,21 @@ def _is_gpu_torch_label(label: str) -> bool:
 
 
 def _ensure_cpu_torch() -> None:
-    """Reinstall CPU torch when an explicit CPU pin is set but the venv has a GPU build.
+    """Reinstall CPU torch when CPU is authoritative but the venv has a GPU build.
 
-    Counterpart to _ensure_cuda/rocm_torch for the explicit-CPU case (those treat a CPU
-    backend as a skip, so a standalone `studio update` would ignore the authoritative CPU
-    pin). Only fires for an EXPLICIT pin.
+    Counterpart to _ensure_cuda/rocm_torch for the CPU case (those treat a CPU backend as
+    a skip, so a standalone `studio update` would ignore the authoritative CPU choice).
+    Authority is an EXPLICIT pin, or an AMD arch measured to compute incorrectly under
+    ROCm -- see _rocm_miscomputing_host for why that one has to demote rather than merely
+    decline to install.
     """
     if NO_TORCH:
         return
     pin = _explicit_cpu_torch_index_url()
+    _reason = "an explicit CPU index is pinned"
+    if pin is None and _rocm_miscomputing_host():
+        pin = f"{_PYTORCH_WHL_BASE}/cpu"
+        _reason = "this AMD arch computes incorrectly under ROCm (studio/ROCM_RDNA2_APU.md)"
     if pin is None:
         return
 
@@ -3405,7 +3511,7 @@ def _ensure_cpu_torch() -> None:
         # reinstall from the pin (self-resolving, no loop).
         _torch_pkg, _vision_pkg, _audio_pkg = _CPU_TORCH_PKG_SPEC
         _safe_print(
-            f"   torch cannot import but an explicit CPU index is pinned -- reinstalling "
+            f"   torch cannot import and {_reason} -- reinstalling "
             f"CPU torch from {_strip_index_url_credentials(pin)}"
         )
         pip_install(
@@ -3441,7 +3547,7 @@ def _ensure_cpu_torch() -> None:
         return  # already a CPU build
 
     _safe_print(
-        "   torch is a GPU build but an explicit CPU index is pinned -- reinstalling "
+        f"   torch is a GPU build but {_reason} -- reinstalling "
         f"CPU torch from {_strip_index_url_credentials(pin)}"
     )
     _torch_pkg, _vision_pkg, _audio_pkg = _CPU_TORCH_PKG_SPEC
@@ -4382,6 +4488,17 @@ def _ensure_rocm_torch() -> None:
         return
     # An explicit ROCm pin commits to ROCm wheels whatever the visible GPU (headless / CI).
     _rocm_pin = _explicit_rocm_torch_index_url()
+    # Before ANY install path, including the inferred-arch one below: that path takes a
+    # declared UNSLOTH_ROCM_GFX_ARCH first, so a stale gfx1030 on a real Van Gogh
+    # force-installed the multi-GB gfx103X-all stack, skipped the runtime-target check,
+    # and then had _ensure_cpu_torch() undo it -- a ROCm-to-CPU cycle on every update.
+    # An explicit index pin still wins; it is the documented way to ask for ROCm anyway.
+    if _rocm_pin is None and not IS_WINDOWS and _miscomputing_arch_host():
+        _safe_print(
+            "   This host has an AMD arch measured to compute incorrectly under ROCm "
+            "(studio/ROCM_RDNA2_APU.md) -- keeping CPU torch.\n"
+        )
+        return
     _inferred_linux_gfx = (
         _infer_linux_amd_gfx_arch() if (_rocm_pin is None and not IS_WINDOWS) else None
     )
@@ -4518,6 +4635,22 @@ def _ensure_rocm_torch() -> None:
         _runtime_gfx, gfx_codes, _physical_gfx, _host_codes = _runtime_gfx_target(
             _inferred_linux_gfx
         )
+        # A miscomputing target has no ROCm route at all, so the rest of this function is
+        # skipped entirely: _amd_arch_index_url returns None for such an arch, and the
+        # reroute below would either raise on that None or fall through to generic
+        # pytorch.org wheels. A standalone `studio update` reads no backend and reaches
+        # here with nothing else to stop it. Keyed on the SELECTED target, which
+        # install.sh's presence gate cannot see; an index pin returns above this block.
+        if _runtime_gfx in _ROCM_MISCOMPUTING_GFX:
+            # This branch declines to INSTALL ROCm for this target; it cannot promise CPU
+            # torch, since removing an existing ROCm build is _ensure_cpu_torch's call and
+            # that asks about the whole host with masks stripped
+            # (test_a_mask_cannot_shrink_the_host_to_its_bad_gpu).
+            _safe_print(
+                f"   {_runtime_gfx} computes incorrect results under ROCm "
+                f"(studio/ROCM_RDNA2_APU.md) -- not installing ROCm torch for it.\n"
+            )
+            return
         _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
         # Only the Strix reroute has a ROCm-version floor.
         _detected_strix = (

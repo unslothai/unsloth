@@ -2872,10 +2872,13 @@ class TestInstallShStructure:
             "amd-smi list 2>/dev/null) | grep -oE 'gfx" in helper
         ), "probe must read gfx from amd-smi"
         # The probe clears ROCR/HIP_VISIBLE_DEVICES so a container mask
-        # (ROCR_VISIBLE_DEVICES=-1) can't blind the env-independent KFD detection.
+        # (ROCR_VISIBLE_DEVICES=-1) can't blind the env-independent KFD detection. Assert
+        # both halves: the names in the strip list, and the list reaching unset. The
+        # literal `unset ROCR... HIP...` went away when "physical" mode was added.
         assert (
-            "unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES" in helper
+            '_pg_strip="ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES"' in helper
         ), "the gfx probe must clear the visibility masks so a mask can't force CPU"
+        assert "unset $_pg_strip" in helper, "the strip list must reach unset"
         cpu_guard = body.find('if [ -z "$_amd_gfx_probe" ]')
         assert cpu_guard >= 0, "unreadable gfx must fall back to CPU"
         assert cpu_guard < body.find(
@@ -3402,6 +3405,11 @@ class TestInstallShStructure:
             assert (
                 "URL:https://repo.amd.com/rocm/whl/gfx1151/ GFX:gfx1151" in r.stdout
             ), f"the probed arch must win over lspci inference here: {r.stdout!r}"
+            r_bad = run("true", "gfx1033", probed_family = "gfx103X-all")
+            assert r_bad.returncode == 0, f"gfx1033 no-version reroute aborted: {r_bad.stderr}"
+            assert (
+                "URL:https://download.pytorch.org/whl/cpu GFX:\n" in r_bad.stdout
+            ), f"the no-version reroute must not bypass the gfx1033 gate: {r_bad.stdout!r}"
             # A same-family pair must export no arch: setup.sh prefers
             # UNSLOTH_ROCM_GFX_ARCH and would build llama.cpp for a guessed card.
             r_pair = run("true", "", probed_family = "gfx120X-all")
@@ -3409,6 +3417,11 @@ class TestInstallShStructure:
             assert (
                 "URL:https://repo.amd.com/rocm/whl/gfx120X-all/ GFX:\n" in r_pair.stdout
             ), f"a same-family pair routes but must not export a card: {r_pair.stdout!r}"
+            r_mixed = run("true", "", probed_family = "gfx103X-all")
+            assert r_mixed.returncode == 0, f"mixed gfx103X pair aborted: {r_mixed.stderr}"
+            assert (
+                "URL:https://repo.amd.com/rocm/whl/gfx103X-all/ GFX:\n" in r_mixed.stdout
+            ), f"a healthy same-family GPU beside gfx1033 must keep ROCm: {r_mixed.stdout!r}"
             r2 = run("false", "", probe_stub = "printf '\\n'")
             assert r2.returncode == 0, f"inferred-arch case aborted: {r2.stderr}"
             assert (
@@ -6154,6 +6167,22 @@ class TestStrixRocm71Override:
         with patch.object(m, "IS_WINDOWS", True):
             assert m._amd_arch_index_url("gfx1151") == m._windows_rocm_index_url("gfx1151")
 
+    def test_amd_arch_index_url_refuses_miscomputing_arch(self):
+        """gfx1033 (Van Gogh) installs ROCm wheels fine and then computes wrong answers
+        (studio/ROCM_RDNA2_APU.md), so install.sh routes it to the cpu index. The
+        inferred-gfx repair here is exempt from the runtime gate when
+        UNSLOTH_ROCM_GFX_ARCH is set, so without this it would force-reinstall the exact
+        ROCm wheels that gate avoids. Its family neighbours must keep working (#7277)."""
+        m = stack_mod
+        with (
+            patch.object(m, "IS_WINDOWS", False),
+            patch.dict(os.environ, {"UNSLOTH_AMD_ROCM_MIRROR": ""}),
+        ):
+            assert m._amd_arch_index_url("gfx1033") is None
+            assert m._amd_arch_index_url("GFX1033") is None
+            for _gfx in ("gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036"):
+                assert m._amd_arch_index_url(_gfx) == "https://repo.amd.com/rocm/whl/gfx103X-all/"
+
     def test_a_windows_mirror_token_ending_in_a_slash_survives_the_join(self):
         """_index_url_join trims the path head and leaves the query alone, which is the whole
         point of it: "/" is in the base64 alphabet, so a token may legitimately end with one.
@@ -7243,6 +7272,274 @@ class TestRocmWslSupplyChainPins:
         assert required.group(1) == declared.group(1)
         assert "git rev-parse HEAD" in helper
         assert "_co_failed=1" in helper
+
+
+class TestRocmMiscomputingArchDemotion:
+    """A gfx1033 venv that ALREADY holds ROCm torch must be demoted, not just declined.
+
+    _amd_arch_index_url() returning None only blocks a fresh ROCm install. On an upgrade
+    the existing build survived every gate: install.sh resolves UNSLOTH_TORCH_BACKEND=cpu,
+    which returns _ensure_rocm_torch at its first line; _ensure_cpu_torch fired only for an
+    explicit pin; and the base update does not reinstall an already-satisfied torch. The
+    host most in need of the gate therefore kept the wheels the gate exists to remove.
+    """
+
+    def _demotion_calls(
+        self,
+        monkeypatch,
+        label,
+        archs,
+        env = None,
+        codes_fn = None,
+        kfd = (),
+    ):
+        calls = []
+        monkeypatch.setattr(stack_mod, "_kfd_gfx_targets", lambda: list(kfd))
+        monkeypatch.setattr(stack_mod, "NO_TORCH", False)
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(stack_mod, "IS_MACOS", False)
+        monkeypatch.setattr(stack_mod, "_installed_torch_label_on_disk", lambda: label)
+        monkeypatch.setattr(
+            stack_mod, "_detect_amd_gfx_codes", codes_fn or (lambda **_kw: list(archs))
+        )
+        monkeypatch.setattr(stack_mod, "_infer_linux_amd_gfx_arch", lambda: None)
+        monkeypatch.setattr(
+            stack_mod,
+            "_probe_torch_runtime",
+            lambda: (True, True, label, "7.1" if "+rocm" in label else "", ""),
+        )
+        monkeypatch.setattr(stack_mod, "pip_install", lambda *a, **k: calls.append((a, k)))
+        for _var in (
+            "UNSLOTH_TORCH_INDEX_URL",
+            "UNSLOTH_TORCH_INDEX_FAMILY",
+            "UNSLOTH_ROCM_GFX_ARCH",
+        ):
+            monkeypatch.delenv(_var, raising = False)
+        for _var, _val in (env or {}).items():
+            monkeypatch.setenv(_var, _val)
+        stack_mod._ensure_cpu_torch()
+        return calls
+
+    def test_installed_rocm_torch_on_gfx1033_is_demoted(self, monkeypatch):
+        calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", ["gfx1033"])
+        assert len(calls) == 1, "gfx1033 kept its ROCm torch across the upgrade"
+        assert "--force-reinstall" in calls[0][0]
+        assert "download.pytorch.org/whl/cpu" in str(calls[0])
+
+    def test_hsa_spoofed_gfx1033_is_still_demoted(self, monkeypatch):
+        """HSA_OVERRIDE_GFX_VERSION=10.3.0 is the usual Van Gogh workaround and makes
+        rocminfo answer gfx1030, so the probe must ignore it or the arch hides itself."""
+        seen = {}
+
+        def _codes(**kw):
+            seen.update(kw)
+            return ["gfx1030"] if not kw.get("ignore_hsa_override") else ["gfx1033"]
+
+        calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", [], codes_fn = _codes)
+        assert seen.get("ignore_hsa_override") is True
+        assert len(calls) == 1
+
+    def test_a_mask_cannot_shrink_the_host_to_its_bad_gpu(self, monkeypatch):
+        """ "Every arch is bad" is a question about the host, so it must be asked of the
+        whole host. ROCR_VISIBLE_DEVICES hiding the healthy dGPU would otherwise leave
+        gfx1033 as the only arch and demote a working ROCm install to CPU. install.sh's
+        _probe_amd_gfx_arch unsets both masks for exactly this reason."""
+        seen = {}
+
+        def _codes(**kw):
+            seen.update(kw)
+            return ["gfx1033"] if not kw.get("ignore_visible_masks") else ["gfx1033", "gfx1100"]
+
+        calls = self._demotion_calls(
+            monkeypatch,
+            "2.10.0+rocm7.1",
+            [],
+            env = {"ROCR_VISIBLE_DEVICES": "0"},
+            codes_fn = _codes,
+        )
+        assert seen.get("ignore_visible_masks") is True
+        assert calls == [], "a mask shrank the host to its miscomputing GPU"
+
+    def test_kfd_topology_names_the_arch_when_no_runtime_does(self, monkeypatch):
+        """A Deck with ROCm torch but no working rocminfo is the host that most needs the
+        demotion, and it is the one where both runtime sources answer nothing:
+        _detect_amd_gfx_codes() has no probe to run and no Van Gogh product name maps
+        through _infer_linux_amd_gfx_arch(). amdkfd is in the kernel and still answers.
+        """
+        calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", [], kfd = ["gfx1033"])
+        assert len(calls) == 1, "gfx1033 kept its ROCm torch with only KFD to name it"
+        assert "--force-reinstall" in calls[0][0]
+        assert "download.pytorch.org/whl/cpu" in str(calls[0])
+
+    def test_kfd_reports_every_node_so_a_mixed_host_keeps_rocm(self, monkeypatch):
+        """_kfd_gfx_targets() returns one entry per GPU node, so the all-archs rule reads
+        the same mixed host through this source as through the runtime probes."""
+        assert (
+            self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", [], kfd = ["gfx1033", "gfx1100"])
+            == []
+        )
+
+    def test_the_runtime_probe_still_wins_over_kfd(self, monkeypatch):
+        """KFD is the last resort, not an override: a runtime that answered keeps its
+        answer, so HSA_OVERRIDE handling and the mask semantics above are untouched."""
+        assert (
+            self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", ["gfx1100"], kfd = ["gfx1033"]) == []
+        )
+
+    def test_a_declared_arch_does_not_outrank_the_silicon(self, monkeypatch):
+        """UNSLOTH_ROCM_GFX_ARCH is a routing hint, not an answer about the hardware.
+
+        A stale gfx1030 on a real Van Gogh -- the value HSA_OVERRIDE_GFX_VERSION=10.3.0
+        also spoofs to -- used to be taken first and skip the demotion outright, so a
+        standalone `studio update` left the miscomputing wheels in place. The probes are
+        asked first now, and the declared arch only answers when none of them can.
+        """
+        calls = self._demotion_calls(
+            monkeypatch,
+            "2.10.0+rocm7.1",
+            ["gfx1033"],
+            env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1030"},
+        )
+        assert len(calls) == 1, "a declared arch hid the silicon from the demotion"
+
+    def test_kfd_outranks_a_declared_arch(self, monkeypatch):
+        """_infer_linux_amd_gfx_arch() returns the declared arch first, so KFD has to be
+        consulted before it or the kernel never gets to answer."""
+        calls = self._demotion_calls(
+            monkeypatch,
+            "2.10.0+rocm7.1",
+            [],
+            kfd = ["gfx1033"],
+            env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1030"},
+        )
+        assert len(calls) == 1, "the declared arch outranked the kernel"
+
+    def test_env_override_names_the_arch(self, monkeypatch):
+        calls = self._demotion_calls(
+            monkeypatch, "2.10.0+rocm7.1", [], env = {"UNSLOTH_ROCM_GFX_ARCH": "GFX1033"}
+        )
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize(
+        "label, archs, env, why",
+        [
+            # A supported arch keeps its ROCm torch: the gate is scoped to what was measured.
+            ("2.10.0+rocm7.1", ["gfx1030"], None, "gfx1030 demoted"),
+            ("2.10.0+rocm7.1", ["gfx906"], None, "gfx906 demoted"),
+            # Mixed host: a healthy dGPU beside the APU is still served by ROCm.
+            ("2.10.0+rocm7.1", ["gfx1033", "gfx1100"], None, "mixed host demoted"),
+            # Nothing to demote -- and no ROCm probe should be paid for on these hosts.
+            ("2.10.0+cu128", ["gfx1033"], None, "CUDA torch demoted"),
+            ("2.10.0", ["gfx1033"], None, "CPU torch reinstalled for nothing"),
+            # The documented escape hatch stays authoritative.
+            (
+                "2.10.0+rocm7.1",
+                ["gfx1033"],
+                {"UNSLOTH_TORCH_INDEX_URL": "https://download.pytorch.org/whl/rocm7.2"},
+                "explicit ROCm pin overridden",
+            ),
+            (
+                "2.10.0+rocm7.1",
+                ["gfx1033"],
+                {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"},
+                "explicit family pin overridden",
+            ),
+        ],
+    )
+    def test_no_demotion_outside_the_measured_case(self, monkeypatch, label, archs, env, why):
+        assert self._demotion_calls(monkeypatch, label, archs, env) == [], why
+
+    @pytest.mark.parametrize(
+        "codes, expect_install",
+        [
+            (["gfx1033"], False),
+            # A mixed host whose selected target is the healthy card keeps its ROCm route.
+            (["gfx1100"], True),
+        ],
+    )
+    def test_ensure_rocm_torch_declines_a_miscomputing_target(
+        self, monkeypatch, codes, expect_install
+    ):
+        """`studio update` run standalone has no UNSLOTH_TORCH_BACKEND to read, so the
+        early `cpu` return in _ensure_rocm_torch does not fire and a gfx1033 host walks
+        into the missing-kernel reroute. gfx1033 is not in _GENERIC_ROCM_WHEEL_GFX but
+        does map to gfx103X-all, so `_leaf` is set while _amd_arch_index_url() returns
+        None by design: the reroute printed that None through
+        _strip_index_url_credentials (AttributeError), and merely guarding the print
+        would drop through to the generic pytorch.org wheels the gate exists to remove.
+        """
+        calls = []
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(stack_mod, "IS_MACOS", False)
+        monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", "")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: False)
+        monkeypatch.setattr(stack_mod, "_has_rocm_gpu", lambda: True)
+        monkeypatch.setattr(stack_mod, "_detect_amd_gfx_codes", lambda **_kw: list(codes))
+        monkeypatch.setattr(stack_mod, "_kfd_gfx_targets", lambda: [])
+        monkeypatch.setattr(stack_mod, "_infer_linux_amd_gfx_arch", lambda: None)
+        monkeypatch.setattr(stack_mod, "_detect_rocm_version", lambda: (7, 1))
+        monkeypatch.setattr(stack_mod, "pip_install_try", lambda *a, **k: True)
+        monkeypatch.setattr(stack_mod, "pip_install", lambda *a, **k: calls.append((a, k)))
+        for _var in (
+            "UNSLOTH_TORCH_INDEX_URL",
+            "UNSLOTH_TORCH_INDEX_FAMILY",
+            "UNSLOTH_ROCM_GFX_ARCH",
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+        ):
+            monkeypatch.delenv(_var, raising = False)
+        _probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+cpu||\n")
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = _probe):
+                stack_mod._ensure_rocm_torch()  # must not raise
+        assert bool(calls) is expect_install, calls
+
+    def test_a_stale_override_does_not_start_a_rocm_to_cpu_cycle(self, monkeypatch):
+        """The thrash this ordering caused: a real Deck exporting a stale
+        UNSLOTH_ROCM_GFX_ARCH=gfx1030 took the inferred-arch path, which resolves its
+        index from _infer_linux_amd_gfx_arch() and so believed the override, force-
+        installed the multi-GB gfx103X-all stack, and set _inferred_arch_installed --
+        which skips the runtime-target check below it. _ensure_cpu_torch() then saw the
+        real gfx1033 and force-reinstalled CPU torch, so every `studio update` paid for
+        both installs in turn instead of settling.
+        """
+        calls = []
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(stack_mod, "IS_MACOS", False)
+        monkeypatch.setattr(stack_mod, "NO_TORCH", False)
+        monkeypatch.setattr(stack_mod, "_TORCH_BACKEND", "")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: False)
+        monkeypatch.setattr(stack_mod, "_has_rocm_gpu", lambda: False)
+        # The real silicon, from a source the override cannot move.
+        monkeypatch.setattr(stack_mod, "_detect_amd_gfx_codes", lambda **_kw: ["gfx1033"])
+        monkeypatch.setattr(stack_mod, "_kfd_gfx_targets", lambda: [])
+        monkeypatch.setattr(stack_mod, "pip_install", lambda *a, **k: calls.append(a))
+        monkeypatch.setattr(stack_mod, "pip_install_try", lambda *a, **k: True)
+        monkeypatch.setenv("UNSLOTH_ROCM_GFX_ARCH", "gfx1030")
+        for _var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+            monkeypatch.delenv(_var, raising = False)
+        _probe = MagicMock(returncode = 0, stdout = _MARK + "2.10.0+cpu||\n")
+        with patch("os.path.isdir", return_value = True):
+            with patch("subprocess.run", return_value = _probe):
+                stack_mod._ensure_rocm_torch()
+        assert calls == [], f"a stale override still bought the ROCm stack: {calls}"
+
+    def test_probe_is_skipped_when_no_rocm_torch_is_installed(self, monkeypatch):
+        """The arch probes run subprocesses; they must not run on every ordinary install."""
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(stack_mod, "IS_MACOS", False)
+        monkeypatch.setattr(stack_mod, "_installed_torch_label_on_disk", lambda: "2.10.0+cu128")
+
+        def _boom(**_kw):
+            raise AssertionError("probed the AMD arch on a host with no ROCm torch")
+
+        monkeypatch.setattr(stack_mod, "_detect_amd_gfx_codes", _boom)
+        monkeypatch.setattr(stack_mod, "_infer_linux_amd_gfx_arch", _boom)
+        monkeypatch.setattr(stack_mod, "_kfd_gfx_targets", _boom)
+        for _var in ("UNSLOTH_TORCH_INDEX_URL", "UNSLOTH_TORCH_INDEX_FAMILY"):
+            monkeypatch.delenv(_var, raising = False)
+        assert stack_mod._rocm_miscomputing_host() is False
 
 
 if __name__ == "__main__":
