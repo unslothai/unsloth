@@ -7377,6 +7377,15 @@ def _preflight_speech_codec_for_switch(
                     local_files_only = offline,
                 )
             )
+            from utils.security import evaluate_file_security
+
+            security = evaluate_file_security(
+                staged,
+                hf_token = hub_token,
+                local_only_load = offline,
+            )
+            if security.blocked:
+                raise RuntimeError(security.reason)
             if not higgs_tts2_codec_local_complete(staged):
                 raise RuntimeError(f"Higgs TTS 2 companion '{companion}' is incomplete.")
         # The worker must read from the cache proven complete above. Settings can

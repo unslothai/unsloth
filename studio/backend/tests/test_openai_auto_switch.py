@@ -3992,6 +3992,59 @@ def test_higgs_preflight_cache_snapshot_survives_a_settings_change(tmp_path, mon
     assert result.cache_environment["HF_XET_CACHE"] == str(old_paths.xet_cache)
 
 
+def test_an_unsafe_higgs_companion_is_rejected_before_the_switch(tmp_path, monkeypatch):
+    import huggingface_hub
+    from core.inference import native_audio
+    from types import SimpleNamespace
+    from utils import hf_cache_settings, security, utils
+
+    real_preflight = inference_route._preflight_speech_codec_for_switch
+    codec = tmp_path / "codec"
+    codec.mkdir()
+    (codec / "config.json").write_text(
+        json.dumps({"model_type": "higgs_audio_v2_tokenizer"}), encoding = "utf-8"
+    )
+    (codec / "model.safetensors").write_bytes(_safetensors_bytes())
+    cache_paths = hf_cache_settings.HuggingFaceCachePaths(
+        tmp_path / "hf", tmp_path / "hf" / "hub", tmp_path / "hf" / "xet", "studio"
+    )
+    backend = _FakeBackend("org/A-GGUF")
+    recorder = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/local/higgs", None, "org/higgs"),
+        backend = backend,
+        recorder = recorder,
+    )
+    monkeypatch.setattr(inference_route, "_target_speech_audio_type", lambda *_a: "higgs_tts2")
+    monkeypatch.setattr(inference_route, "_preflight_speech_codec_for_switch", real_preflight)
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: cache_paths)
+    monkeypatch.setattr(
+        native_audio,
+        "native_audio_security_targets",
+        lambda path, audio_type, token: [path, "acme/higgs-codec"],
+    )
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda *_a, **_k: str(codec))
+    monkeypatch.setattr(
+        security,
+        "evaluate_file_security",
+        lambda *_a, **_k: SimpleNamespace(blocked = True, reason = "unsafe companion"),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/higgs", object(), "tester", require_speech = True
+            )
+        )
+
+    assert exc.value.status_code == 503
+    assert recorder.calls == []
+    assert backend.is_loaded is True
+
+
 def test_higgs_switch_passes_the_staged_cache_snapshot_to_the_loader(monkeypatch):
     backend = _FakeBackend("org/A-GGUF")
     recorder = _LoadRecorder(backend)
@@ -9928,6 +9981,41 @@ def _complete_minimax_pipeline(root):
             stem = "model" if component == "language_model" else "diffusion_pytorch_model"
             (directory / f"{stem}.safetensors").write_bytes(_safetensors_bytes())
     return pipeline
+
+
+def test_a_downloaded_spark_repository_resolves_to_its_llm_checkpoint(tmp_path):
+    from types import SimpleNamespace
+
+    snapshot = tmp_path / "models--unsloth--Spark-TTS-0.5B" / "snapshots" / "revision"
+    llm = snapshot / "LLM"
+    llm.mkdir(parents = True)
+    (llm / "config.json").write_text(
+        json.dumps({"architectures": ["Qwen2ForCausalLM"], "model_type": "qwen2"})
+    )
+    (llm / "model.safetensors").write_bytes(_safetensors_bytes())
+    (llm / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "added_tokens_decoder": {
+                    "1": {"content": "<|bicodec_semantic_0|>"},
+                    "2": {"content": "<|bicodec_global_0|>"},
+                }
+            }
+        )
+    )
+    info = SimpleNamespace(
+        id = "unsloth/Spark-TTS-0.5B",
+        model_id = "unsloth/Spark-TTS-0.5B",
+        path = str(snapshot),
+        partial = False,
+    )
+
+    entry = resolver._local_weights_entry("unsloth/Spark-TTS-0.5B", info)
+
+    assert entry is not None
+    assert entry.load_path == str(llm)
+    assert entry.is_gguf is False
+    assert inference_route._target_speech_audio_type(entry.load_path, False) == "bicodec"
 
 
 def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):

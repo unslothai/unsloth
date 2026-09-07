@@ -87,21 +87,31 @@ def _advertised_loader_id(info) -> Optional[str]:
     return public_model_id(raw_id) or raw_id
 
 
-def _resolve_load_dir(p):
-    """The concrete dir holding the GGUFs. For an HF cache repo (``models--*``
-    with ``snapshots/``) this is the latest snapshot dir, so /load takes the
-    local branch instead of the download-capable repo-id branch."""
+def _resolve_load_dir(p, loader_id: Optional[str] = None):
+    """The concrete directory the selected backend loads from disk."""
     from pathlib import Path
 
+    load_dir = p
     try:
         if (p / "snapshots").is_dir():
             from routes.models import _resolve_hf_cache_realpath
             real = _resolve_hf_cache_realpath(p)
             if real:
-                return Path(real)
+                load_dir = Path(real)
     except Exception:
         pass
-    return p
+    try:
+        from utils.models.model_config import load_model_defaults
+        llm_dir = load_dir / "LLM"
+        if (
+            loader_id
+            and (load_model_defaults(loader_id) or {}).get("audio_type") == "bicodec"
+            and llm_dir.is_dir()
+        ):
+            return llm_dir
+    except Exception:
+        pass
+    return load_dir
 
 
 def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
@@ -369,7 +379,7 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         p = Path(path)
         if not p.is_dir():
             return None
-        load_dir = _resolve_load_dir(p)
+        load_dir = _resolve_load_dir(p, loader_id)
         if _native_audio_pipeline_is_servable_here(load_dir):
             return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
         if not _weights_are_servable(load_dir):
