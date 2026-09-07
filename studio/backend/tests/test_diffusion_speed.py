@@ -71,10 +71,10 @@ def _compile_runtime_independent_of_the_host(monkeypatch):
     ``windows-latest`` runner, all green on Linux and macOS). Pin the non-Windows branch; the
     tests that are *about* Windows set ``sys.platform`` themselves and a later setattr wins.
     The lru_cache is dropped either side so one test's answer is never another test's."""
-    ds_mod.torch_compile_runtime_available.cache_clear()
+    ds_mod._compile_toolchain_available.cache_clear()
     monkeypatch.setattr(ds_mod.sys, "platform", "linux")
     yield
-    ds_mod.torch_compile_runtime_available.cache_clear()
+    ds_mod._compile_toolchain_available.cache_clear()
 
 
 def _stub_dynamo(monkeypatch):
@@ -750,8 +750,8 @@ def test_regional_compile_arms_cache_hook_inners(monkeypatch):
 
 
 def _clear_runtime_cache():
-    from core.inference.diffusion_speed import torch_compile_runtime_available
-    torch_compile_runtime_available.cache_clear()
+    from core.inference.diffusion_speed import _compile_toolchain_available
+    _compile_toolchain_available.cache_clear()
 
 
 def _set_crt_headers(monkeypatch, reachable: bool):
@@ -849,6 +849,17 @@ def test_windows_partially_initialized_dynamo_falls_back_to_eager(monkeypatch):
     assert ds_mod.torch_compile_runtime_available() is False
     assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
 
+    # The state an `import` cannot see: `torch._dynamo.utils` IS in sys.modules, so both import
+    # statements return it straight from there -- but the deadlock fallback never bound it on the
+    # parent, and `torch._dynamo.utils.<x>` is how the compile stack reads it. Only the attribute
+    # access catches this one.
+    orphaned_utils = types.ModuleType("torch._dynamo.utils")
+    monkeypatch.setitem(sys.modules, "torch._dynamo.utils", orphaned_utils)
+    assert not hasattr(partial_dynamo, "utils")
+    _clear_runtime_cache()
+    assert ds_mod.torch_compile_runtime_available() is False
+    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
+
     # And the gate recovers once dynamo is genuinely importable, same shape as the Triton/MSVC
     # positive controls above.
     _stub_dynamo(monkeypatch)
@@ -856,6 +867,29 @@ def test_windows_partially_initialized_dynamo_falls_back_to_eager(monkeypatch):
     assert ds_mod.torch_compile_runtime_available() is True
     assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is True
     _clear_runtime_cache()
+
+
+def test_dynamo_probe_is_not_cached_so_one_lost_race_is_not_permanent(monkeypatch):
+    """The dynamo probe answers a RACE, not a property of the install, so a load that loses it
+    must not run the rest of the process eager. Only the Triton/MSVC toolchain answer is cached."""
+    from core.inference import diffusion_speed as ds_mod
+
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.setattr(ds_mod.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+    _set_crt_headers(monkeypatch, True)
+
+    partial_dynamo = types.ModuleType("torch._dynamo")
+    monkeypatch.setattr(torch, "_dynamo", partial_dynamo)
+    monkeypatch.setitem(sys.modules, "torch._dynamo", partial_dynamo)
+    monkeypatch.delitem(sys.modules, "torch._dynamo.utils", raising = False)
+    _clear_runtime_cache()
+    assert ds_mod.torch_compile_runtime_available() is False
+
+    # The next load re-probes: no cache_clear, which a real process could not call either.
+    _stub_dynamo(monkeypatch)
+    assert ds_mod.torch_compile_runtime_available() is True
 
 
 def test_gguf_dequant_respects_the_runtime_gate(monkeypatch):

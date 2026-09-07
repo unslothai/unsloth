@@ -142,28 +142,13 @@ def resolve_speed_mode(
 
 
 @lru_cache(maxsize = 1)
-def torch_compile_runtime_available() -> bool:
-    """Whether THIS process can actually run an inductor compile.
-
-    Inductor needs Triton, and Windows is the one supported platform whose normal install has no
-    Triton wheel. The three Unsloth workers (inference / training / export) already gate on this
-    import and set ``TORCHDYNAMO_DISABLE=1`` when it fails, but the diffusion and video backends
-    run in the SERVER process, which those gates never reach, so ask it once here.
-
-    ``TORCHDYNAMO_DISABLE`` is honored on every platform: a compile under it is a silent no-op that
-    would otherwise be recorded as an engaged optimisation. Cached, since neither answer can change
-    inside a process and this runs on every load.
-
-    On Windows, the first real ``import torch._dynamo`` in the process can lose a race against
-    another in-flight ``torch`` import on a different thread (the SERVER process handles requests
-    on a pool, unlike the three single-purpose workers above) and come back partially initialized
-    (``partially initialized module 'torch._dynamo' has no attribute 'utils'``). Left alone, that
-    surfaces mid-generation on the first compiled forward instead of here. Probing it eagerly,
-    inside this already-cached gate, either finishes the import cleanly on whichever thread asks
-    first or fails the gate up front -- same "decide it here instead" contract as the Triton/MSVC
-    checks below."""
-    if os.environ.get("TORCHDYNAMO_DISABLE", "").strip() not in ("", "0"):
-        return False
+def _compile_toolchain_available() -> bool:
+    """Whether the INSTALL carries an inductor toolchain: Triton, plus reachable MSVC CRT headers
+    on Windows, the one supported platform whose normal install has no Triton wheel. The three
+    Unsloth workers (inference / training / export) already gate on this import and set
+    ``TORCHDYNAMO_DISABLE=1`` when it fails, but the diffusion and video backends run in the SERVER
+    process, which those gates never reach, so ask it once here. Cached: neither can change inside
+    a process and this runs on every load."""
     if sys.platform != "win32":
         return True
     try:
@@ -171,15 +156,47 @@ def torch_compile_runtime_available() -> bool:
     except Exception:  # noqa: BLE001 -- absent or broken Triton means eager, never a failed load
         return False
     try:
-        import torch._dynamo  # noqa: PLC0415
-        import torch._dynamo.utils  # noqa: F401, PLC0415
-    except Exception:  # noqa: BLE001 -- a partially-initialized dynamo means eager, never a crashed load
-        return False
-    try:
         from .._msvc_env import crt_headers_reachable  # noqa: PLC0415
         return crt_headers_reachable()
     except Exception:  # noqa: BLE001 -- this runs during load; never fail it over a probe
         return True
+
+
+def _dynamo_reachable() -> bool:
+    """Whether ``torch._dynamo.utils`` resolves BY ATTRIBUTE, which is how torch's own compile
+    stack reaches it (``_functorch/aot_autograd.py``, ``_inductor/pattern_matcher.py``, ...).
+
+    The SERVER process answers requests on a pool, unlike the three single-purpose workers, so two
+    threads can enter torch's dynamo/inductor import cycle at once; CPython breaks the resulting
+    deadlock by handing both a partially initialized module (``_lock_unlock_module``, CPython
+    importlib/_bootstrap.py). Left alone that surfaces as the reported ``partially initialized
+    module 'torch._dynamo' has no attribute 'utils'`` on the first compiled forward, mid-generation,
+    instead of here.
+
+    The import alone does not prove it: a submodule already in ``sys.modules`` is returned WITHOUT
+    being bound on its parent, and ``from torch._dynamo import utils`` falls back to ``sys.modules``
+    too, so both succeed in exactly the broken state. Only the attribute access sees it.
+
+    NOT cached, unlike the toolchain above: this answer is a race outcome, so one lost race must
+    not run the rest of the process eager. After the first success it is a ``sys.modules`` hit."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import torch._dynamo  # noqa: PLC0415
+        import torch._dynamo.utils  # noqa: F401, PLC0415
+        return torch._dynamo.utils is not None
+    except Exception:  # noqa: BLE001 -- a partially-initialized dynamo means eager, never a crashed load
+        return False
+
+
+def torch_compile_runtime_available() -> bool:
+    """Whether THIS process can actually run an inductor compile.
+
+    ``TORCHDYNAMO_DISABLE`` is honored on every platform: a compile under it is a silent no-op that
+    would otherwise be recorded as an engaged optimisation."""
+    if os.environ.get("TORCHDYNAMO_DISABLE", "").strip() not in ("", "0"):
+        return False
+    return _compile_toolchain_available() and _dynamo_reachable()
 
 
 def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
