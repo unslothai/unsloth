@@ -8771,9 +8771,7 @@ def test_launch_drops_provider_credentials(agent, unset, fake_studio, monkeypatc
 
 
 @pytest.mark.parametrize("enabled", ["1", "true", "yes", "on"])
-def test_openclaw_launch_disables_the_login_shell_key_fallback(
-    enabled, fake_studio, monkeypatch
-):
+def test_openclaw_launch_disables_the_login_shell_key_fallback(enabled, fake_studio, monkeypatch):
     # OPENCLAW_LOAD_SHELL_ENV makes OpenClaw run a login shell and import any
     # provider key it cannot see, so dropping the keys above is not enough on its
     # own: openclaw 2026.9.2 reads both of them straight back out of the user's
