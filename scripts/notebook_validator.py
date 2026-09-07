@@ -412,7 +412,8 @@ PIP_LINE_RE = re.compile(
     # `python -I -m pip install git+...` otherwise matched nothing at all, so every install
     # rule including the git+ ban was bypassed. Options only, never a bare word, or a script
     # path would be read as the module flag.
-    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip|" + _INTERPRETER_RE
+    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip|"
+    + _INTERPRETER_RE
     + r"(?:\s+-[A-Za-z]\w*)*\s+-m\s+(?:uv\s+)?pip)\s+"
     r"(?P<action>install|uninstall)\b(?P<rest>.*)$",
     re.IGNORECASE | re.VERBOSE,
