@@ -5,6 +5,7 @@
 
 import {
   ArtifactCard,
+  useChatProjects,
   useChatProjectScope,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -82,6 +83,7 @@ import { AudioPlayer } from "./audio-player";
 import {
   decodeSegment,
   markdownSandboxImageSrc,
+  sandboxFileForSrc,
 } from "./sandbox-files";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
@@ -160,18 +162,32 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const projectId = useChatProjectScope();
-  const file = src
-    ? markdownSandboxImageSrc(src, {
-        threadId: remoteId ?? activeThreadId ?? undefined,
-        projectId,
-      })
-    : null;
+  const { projects } = useChatProjects();
+  const project = projectId
+    ? projects.find((candidate) => candidate.id === projectId)
+    : undefined;
+  // Changing a project's working directory rotates its workspace session, so a bare `plot.png` in
+  // a project chat resolves against the row's current value. Until that row has loaded there is
+  // nothing to resolve against, and the src waits rather than guessing `project-<id>`: that is the
+  // folder from before the change, which the route answers with a 410.
+  const scopeReady = !projectId || project !== undefined;
+  const file =
+    src && scopeReady
+      ? markdownSandboxImageSrc(src, {
+          threadId: remoteId ?? activeThreadId ?? undefined,
+          projectId,
+          workspaceSessionId: project?.workspaceSessionId,
+        })
+      : null;
+  const waitingForScope =
+    src !== undefined && !scopeReady && sandboxFileForSrc(src) !== null;
   const sandbox = useSandboxImage(file);
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   // A sandbox src is renderable only once the authed fetch has produced a blob: until then it is
   // absent, never raw. `data:`/`blob:` keep going through exactly as they were.
-  const resolved =
-    file === null
+  const resolved = waitingForScope
+    ? undefined
+    : file === null
       ? src
       : sandbox.state.status === "loaded"
         ? sandbox.state.url
