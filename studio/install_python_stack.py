@@ -1812,6 +1812,9 @@ def _has_usable_nvidia_gpu() -> bool:
     timeout, driver initialisation race). If either probe confirms an
     NVIDIA GPU the function returns True so _has_rocm_gpu() is blocked.
 
+    On Windows nvidia-smi.exe is often off PATH, so also probe the fixed driver
+    locations install.ps1 / setup.ps1 use, else NVIDIA+AMD hosts get ROCm wheels.
+
     CUDA_VISIBLE_DEVICES set to "" or "-1" hides every NVIDIA device (mixed
     AMD+NVIDIA hosts steering work to the AMD card); neither probe honours
     that env var, so check it first and report the GPU as not usable. Unset
@@ -1820,8 +1823,8 @@ def _has_usable_nvidia_gpu() -> bool:
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
     if cvd is not None and cvd.strip() in ("", "-1"):
         return False
-    exe = shutil.which("nvidia-smi")
-    if exe:
+
+    def _lists_a_gpu(exe: str) -> bool:
         try:
             result = subprocess.run(
                 [exe, "-L"],
@@ -1832,10 +1835,38 @@ def _has_usable_nvidia_gpu() -> bool:
                 errors = "replace",
                 timeout = 10,
             )
-            if result.returncode == 0 and "GPU " in result.stdout:
-                return True
         except Exception:
-            pass
+            return False
+        return result.returncode == 0 and "GPU " in result.stdout
+
+    # A stale nvidia-smi on PATH exits non-zero listing nothing, so try every
+    # candidate: install.ps1 / setup.ps1 also gate the fixed-location fallback
+    # on the GPU check failing, not on the PATH lookup missing.
+    candidates = []
+    _path_exe = shutil.which("nvidia-smi")
+    if _path_exe:
+        candidates.append(_path_exe)
+    if IS_WINDOWS:
+        candidates.extend(
+            (
+                os.path.join(
+                    os.environ.get("ProgramFiles", r"C:\Program Files"),
+                    "NVIDIA Corporation",
+                    "NVSMI",
+                    "nvidia-smi.exe",
+                ),
+                os.path.join(
+                    os.environ.get("SystemRoot", r"C:\Windows"),
+                    "System32",
+                    "nvidia-smi.exe",
+                ),
+            )
+        )
+    for _candidate in candidates:
+        if _candidate != _path_exe and not os.path.isfile(_candidate):
+            continue
+        if _lists_a_gpu(_candidate):
+            return True
     # Fallback: /proc/driver/nvidia/gpus/ has one subdir per GPU whatever nvidia-smi does.
     if sys.platform != "win32":
         try:
@@ -6199,6 +6230,30 @@ def _shared_base_requirements() -> Path | None:
     return None
 
 
+_UNSLOTH_ZOO_GIT_URL = "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+
+
+def _unsloth_zoo_ref() -> str:
+    """The unsloth-zoo git ref the --local overlay installs.
+
+    UNSLOTH_ZOO_REF lets the Studio venv track the requested zoo instead of
+    always main, which is what the Docker build pins against and what
+    install.sh reads into _ZOO_REF. Unset means main.
+    """
+    return os.environ.get("UNSLOTH_ZOO_REF", "").strip() or "main"
+
+
+def _unsloth_zoo_git_spec() -> str:
+    """The pip requirement string for the unsloth-zoo overlay.
+
+    An unset UNSLOTH_ZOO_REF leaves the URL bare rather than appending @main: a
+    bare git URL already clones the default branch, so the default install is
+    byte for byte the one every caller and the staging path already expect.
+    """
+    ref = os.environ.get("UNSLOTH_ZOO_REF", "").strip()
+    return _UNSLOTH_ZOO_GIT_URL + ("@" + ref if ref else "")
+
+
 def _overlay_local_core_package(
     name: str,
     local_repo: str,
@@ -6217,9 +6272,10 @@ def _overlay_local_core_package(
         install_label = "Overlaying local repo (editable)"
         args = ("-e", local_repo)
     elif canonical == "unsloth-zoo":
-        step_label = "overlaying unsloth-zoo from git main"
-        install_label = "Overlaying unsloth-zoo from git main"
-        args = ("--force-reinstall", "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo")
+        zoo_ref = _unsloth_zoo_ref()
+        step_label = f"overlaying unsloth-zoo from git {zoo_ref}"
+        install_label = f"Overlaying unsloth-zoo from git {zoo_ref}"
+        args = ("--force-reinstall", _unsloth_zoo_git_spec())
     else:
         return False
     _step(_LABEL, step_label)
@@ -6265,7 +6321,7 @@ def _overlay_source_spec(name: str, local_repo: str) -> str:
     if canonical == "unsloth":
         return local_repo
     if canonical == "unsloth-zoo":
-        return "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+        return _unsloth_zoo_git_spec()
     return ""
 
 
@@ -6952,7 +7008,8 @@ _UV_INDEX_ENV_VARS = (
     "UV_FIND_LINKS",
     "PIP_EXTRA_INDEX_URL",
     "PIP_FIND_LINKS",
-    # PIP_NO_INDEX would defeat --index-url; PIP_INDEX_URL dropped so a mirror cannot outrank it.
+    # PIP_NO_INDEX=1 makes the pip fallback ignore ALL indexes, defeating --index-url; PIP_INDEX_URL is
+    # dropped too so a stale mirror env cannot outrank the pin.
     "PIP_NO_INDEX",
     "PIP_INDEX_URL",
 )
@@ -7597,6 +7654,8 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
+    # read where the overlay runs, so UNSLOTH_ZOO_REF reaches the metadata-repair
+    # reinstall path too, not just the two calls below
     # Clean-machine CI overlays only unsloth, not the full local source pair.
     ci_source_overlay = os.environ.get("UNSLOTH_CI_SOURCE_OVERLAY", "")
     # +1 for the anyio repair check (step 8b), +1 for the diffusers pin (step 11b, every platform)

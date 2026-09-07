@@ -237,6 +237,8 @@ package-lock.json
 !studio/backend/core/data_recipe/oxc-validator/package-lock.json
 !studio/package-lock.json
 llama.cpp/
+async_task_outputs/
+individual_reviews/
 # Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
 ~/
 
@@ -258,3 +260,6 @@ Speech_12dB_s16.flac
 # them in a finally, but a test that calls the helper directly, or an install killed
 # mid-run, leaves them behind. They are a snapshot of a file already in the tree.
 studio/backend/requirements/.*-filtered-*.txt
+
+# launch.py --outdir scratch from a local run
+/out/

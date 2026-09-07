@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure identity helpers for picker rows: id and quant comparison, and the
-// selected/loaded state of a row that stands for one exact quant. No
-// React/DOM deps so they stay easy to test.
+// Pure identity helpers for picker rows: id and quant comparison, and the selected/loaded state
+// of a row that stands for one exact quant. No React/DOM deps so they stay easy to test.
 
 export function normalizeModelIdForPicker(modelId: string): string {
   const trimmed = modelId.trim();
@@ -42,14 +41,11 @@ export function ggufVariantsMatchForPicker(
   );
 }
 
-/** Selected and loaded state for a row that names one quant, such as a pinned
- *  quant or an On Device repo holding a single quant.
- *
- *  Loaded is exact: only the running quant wears the badge. Selected follows
- *  the picker's value, minus the case where the repo is running a different
- *  quant, so the row cannot claim a pick that points elsewhere. Compare panes
- *  hold a staged value while another pane's model is resident, so a repo that
- *  is not the loaded one stays selected on its value alone. */
+/** Selected and loaded state for a row that names one quant, such as a pinned quant or an On
+ *  Device repo holding a single quant. Loaded is exact: only the running quant wears the badge.
+ *  Selected follows the picker's value, minus the case where the repo is running a different
+ *  quant. Compare panes hold a staged value while another pane's model is resident, so a repo
+ *  that is not the loaded one stays selected on its value alone. */
 export function soleQuantRowState({
   pickerValue,
   repoId,

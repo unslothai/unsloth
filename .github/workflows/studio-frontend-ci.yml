@@ -19,6 +19,7 @@ on:
       - 'tests/studio/test_frontend_dep_removal.py'
 
       - 'tests/studio/playwright_strip_ansi_smoke.py'
+      - 'tests/studio/playwright_composer_icons.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_heavy_thread.py'
@@ -392,6 +393,11 @@ jobs:
           PW_BROWSER: chromium
         run: python3 tests/studio/playwright_strip_ansi_smoke.py
 
+      - name: Composer icon alignment
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 3
+        run: python3 tests/studio/playwright_composer_icons.py chromium
+
       # Each harness owns its vite server: starting one here backgrounds npm, so $! is the
       # wrapper and killing it orphans the node child.
       - name: Browser smoke for chat autoscroll
@@ -535,14 +541,8 @@ jobs:
   # across three files: two shapes of path/URL confusion, one of them added by a
   # PR whose whole purpose was to fix a Windows bug.
   #
-  # Deliberately NOT a matrix over the job above. Measured on a staging replica
-  # of this workflow, `windows-latest` runs `npm test` in 49s against ubuntu's
-  # 47s, so the tests themselves are not the expensive part; typecheck (48s),
-  # build (33s), the Chromium install and the three browser smokes are, and none
-  # of them can fail on Windows for a reason they would not also fail on ubuntu.
-  # Repeating them would roughly triple the cost of this workflow to re-answer a
-  # question ubuntu already answered. Checkout, node, `npm ci` and `npm test` on
-  # Windows measured ~132s.
+  # Reuse this runner for composer geometry, which needs native Windows coverage.
+  # Typecheck, build and the remaining browser smokes stay on Linux.
   #
   # Line endings need no special handling here: .gitattributes pins
   # `studio/frontend/** text=auto eol=lf`, so the tree checks out LF whatever the
@@ -588,3 +588,24 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      - name: Install alignment test browsers
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: |
+          python -m pip install 'playwright>=1.45,<2'
+          python -m playwright install chromium firefox
+
+      - name: Composer icon alignment
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 3
+        run: python tests/studio/playwright_composer_icons.py chromium firefox
+
+      - name: Upload alignment failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-composer-icons
+          path: logs/playwright-composer-icons
+          retention-days: 1
+          if-no-files-found: ignore

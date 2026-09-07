@@ -227,8 +227,9 @@ def test_shot_index_reads_the_payload_rather_than_globbing(tmp_path):
 
 
 def test_a_one_repetition_flake_is_not_illustrated_at_the_verdicts_threshold(tmp_path, capsys):
-    # `settings` differs on both passes and fails the job; `thread_reopen` differs on one and is
-    # explicitly uncorroborated. Shipping both leaves the reader unable to tell which is which.
+    # `settings` differs on both passes and is what fails the job; `thread_reopen` differs on one and
+    # is explicitly uncorroborated. Shipping both leaves the reader unable to tell which is which,
+    # which buries the finding the artifact exists to show.
     shots = tmp_path / "shots"
     rows = [{"row_type": "run_meta", "tier": "fast"}]
     for rep in ("rep0", "rep1"):

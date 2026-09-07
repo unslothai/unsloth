@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * assistant-ui exposes no public `deleteMessage` in our version, but
- * `MessageRepository` already does branch-safe deletion. We import it from
- * `@assistant-ui/core/internal` (the exported internal surface); avoid the
- * deeper `runtime/utils/message-repository` path since newer releases no
- * longer export arbitrary deep paths.
- *
- * Keep this file the only importer of `MessageRepository`. When bumping
- * `@assistant-ui/react` / `core`, re-run chat delete + reload smoke tests;
- * the path or API may change without a semver signal.
- */
+/** assistant-ui exposes no public `deleteMessage` in our version, but `MessageRepository` already
+ *  does branch-safe deletion. Imported from `@assistant-ui/core/internal`, the exported internal
+ *  surface; avoid the deeper `runtime/utils/message-repository` path, which newer releases no
+ *  longer export. Keep this file the only importer, and re-run chat delete plus reload smoke
+ *  tests when bumping `@assistant-ui/react`: the API may change without a semver signal. */
 import { MessageRepository } from "@assistant-ui/core/internal";
 import type {
   CompleteAttachment,
@@ -29,10 +23,9 @@ import {
   reconcileServerManagedMessages,
 } from "./research-message-sync";
 
-// A copy of the list, not of what is in it. assistant-ui replaces parts and attachments
-// rather than mutating them, and the records built from these are serialized straight
-// into the PUT body, so a deep clone of the whole thread bought nothing and cost more
-// than the request that follows it.
+// A copy of the list, not of what is in it. assistant-ui replaces parts and attachments rather
+// than mutating them, and the records built from these are serialized straight into the PUT
+// body, so a deep clone of the whole thread bought nothing.
 function snapshotContent(
   content: ThreadMessage["content"],
 ): ThreadMessage["content"] {
@@ -112,16 +105,14 @@ async function withStoredResearchMessages(
   return reconcileServerManagedMessages(records, stored);
 }
 
-/**
- * Persist exported messages, pruning only for explicit delete flows.
- */
+/** Persist exported messages, pruning only for explicit delete flows. */
 export async function syncExportedRepositoryToBackend(
   remoteId: string,
   exp: ExportedMessageRepository,
   options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<void> {
-  // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and
-  // this used to make every save pay for the same GET /threads/{id} twice.
+  // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and this used
+  // to make every save pay for the same GET /threads/{id} twice.
   const records = exp.messages.map(({ message, parentId }) =>
     exportedItemToRecord(remoteId, parentId, message),
   );
@@ -140,9 +131,7 @@ type ThreadImportExport = {
   import: (data: ExportedMessageRepository) => void;
 };
 
-/**
- * Remove a message from the thread and mirror the result to backend storage.
- */
+/** Remove a message from the thread and mirror the result to backend storage. */
 export async function deleteThreadMessage(args: {
   thread: ThreadImportExport;
   messageId: string;
