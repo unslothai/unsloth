@@ -117,6 +117,4 @@ def test_text_only_empty_block_drops_the_whole_message(monkeypatch):
             {"role": "user", "content": "but THIS one is fine"},
         ],
     )
-    assert captured["body"]["messages"] == [
-        {"role": "user", "content": "but THIS one is fine"}
-    ]
+    assert captured["body"]["messages"] == [{"role": "user", "content": "but THIS one is fine"}]
