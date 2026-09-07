@@ -9,9 +9,9 @@
 # and nothing in the script consults it.
 #
 # A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH,
-# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME) because a bare `--no-torch` after
-# the pipe would be read as an option to sh itself; a local run takes the equivalent flags
-# (--no-torch, --python, --local).
+# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME)
+# because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local
+# run takes the equivalent flags (--no-torch, --isolated-uv-cache, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
 #
@@ -61,6 +61,7 @@ TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _SKIP_AUTOSTART=false
+_ISOLATE_UV_CACHE=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -89,6 +90,7 @@ for arg in "$@"; do
         --tauri) TAURI_MODE=true ;;
         --python) _next_is_python=true ;;
         --no-torch) _NO_TORCH_FLAG=true ;;
+        --isolated-uv-cache) _ISOLATE_UV_CACHE=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
@@ -98,6 +100,7 @@ done
 # Env-var equivalents for piped installs; an explicit flag still wins.
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
+case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -614,6 +617,95 @@ _resolve_studio_destinations() {
     DATA_DIR="$HOME/.local/share/unsloth"
     _LOCAL_BIN="$HOME/.local/bin"
     _STUDIO_HOME_REDIRECT=default
+}
+
+_configure_uv_cache() {
+    _uv_studio_cache="$STUDIO_HOME/cache/uv"
+    case "${UV_CACHE_DIR-}" in
+        *[![:space:]]*)
+            _UV_CACHE_MODE=custom
+            export UV_CACHE_DIR
+            step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
+            return 0
+            ;;
+    esac
+
+    if [ "$_ISOLATE_UV_CACHE" = true ]; then
+        UV_CACHE_DIR="$_uv_studio_cache"
+        _UV_CACHE_MODE=isolated
+        export UV_CACHE_DIR
+        step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
+        return 0
+    fi
+
+    # Ask uv so uv.toml / UV_CONFIG_FILE / platform defaults count; -u so a blank
+    # inherited value cannot override them; last line so a notice ahead of the path
+    # does not become the path.
+    _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null \
+        | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 1) || _uv_default_cache=""
+    if [ -z "$_uv_default_cache" ]; then
+        if [ -n "${XDG_CACHE_HOME:-}" ]; then
+            _uv_default_cache="${XDG_CACHE_HOME}/uv"
+        elif [ -n "${HOME:-}" ]; then
+            _uv_default_cache="${HOME}/.cache/uv"
+        fi
+    fi
+
+    _uv_default_populated=false
+    _uv_scan_blocked=false
+    if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
+        # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
+        # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
+        for _uv_bucket in \
+            "$_uv_default_cache"/archive-* \
+            "$_uv_default_cache"/builds-* \
+            "$_uv_default_cache"/built-wheels-* \
+            "$_uv_default_cache"/wheels-* \
+            "$_uv_default_cache"/sdists-*; do
+            [ -d "$_uv_bucket" ] || continue
+            # Unreadable is not empty; remembered so the message below says why.
+            if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
+                _uv_scan_blocked=true
+                continue
+            fi
+            _uv_artifact=$(find -L "$_uv_bucket" -type f \
+                ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+                ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+                -print 2>/dev/null | head -n 1) || _uv_artifact=""
+            if [ -n "$_uv_artifact" ]; then
+                _uv_default_populated=true
+                break
+            fi
+        done
+    fi
+
+    if [ "$_uv_default_populated" = true ]; then
+        UV_CACHE_DIR="$_uv_default_cache"
+        _UV_CACHE_MODE=shared
+    else
+        UV_CACHE_DIR="$_uv_studio_cache"
+        _UV_CACHE_MODE=studio
+    fi
+    export UV_CACHE_DIR
+
+    case "$_UV_CACHE_MODE" in
+        shared)
+            step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
+            ;;
+        studio)
+            if [ "$_uv_scan_blocked" = true ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
+            else
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
+            fi
+            ;;
+    esac
+}
+
+_prepare_studio_uv_cache_for_launch() {
+    [ "${_UV_CACHE_MODE:-}" = shared ] || return 0
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    export UV_CACHE_DIR
 }
 _resolve_studio_destinations
 # The PATH we inherited, before anything below prepends to it. The shim setup at the end asks
@@ -2126,6 +2218,17 @@ _maybe_reroute_strixhalo_to_2404() {
     fi
     _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
+
+    # An automatic path belongs to the origin distro; only an override is portable.
+    case "${UV_CACHE_DIR-}" in
+        *[![:space:]]*)
+            _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"
+            ;;
+        *)
+            _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
+            ;;
+    esac
+    [ "$_ISOLATE_UV_CACHE" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_ISOLATE_UV_CACHE=1"
     [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
     [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
     [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_URL=$(_rr_q "$UNSLOTH_TORCH_INDEX_URL")"
@@ -2719,6 +2822,8 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
         export PATH="$_UNSLOTH_UV_BIN_DIR:$PATH"
     fi
 fi
+
+_configure_uv_cache
 
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
 tauri_log "STEP" "Creating virtual environment"
@@ -5955,6 +6060,8 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
+
+            _prepare_studio_uv_cache_for_launch
             # Detach stdin from the piped web install's pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).

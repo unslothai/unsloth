@@ -122,9 +122,11 @@ if sys.platform != "win32":
     except ImportError:
         pass
 
-# Raster-image allowlist for sandbox file serving.
+# Raster-image allowlist for sandbox file serving; what a tool call reports inline (`__IMAGES__`)
+# and what the route serves inline (_SANDBOX_MEDIA_TYPES in routes/inference.py) are one set, pinned
+# equal by test_sandbox_files_and_storage_roots -- drift means a model's photo previews on one path only.
 # No .svg (XSS via embedded scripts), no .html, no .pdf.
-_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".avif"})
 
 
 def _env_int(name: str, default: int) -> int:

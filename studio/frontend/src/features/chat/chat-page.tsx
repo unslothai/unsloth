@@ -22,15 +22,13 @@ import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1722,61 +1720,60 @@ function ProjectLanding({
               <h1 className="min-w-0 flex-1 truncate font-sans text-ui-30 font-medium leading-tight tracking-normal text-foreground">
                 {projectName}
               </h1>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild={true}>
+              <NonModalDropdownMenu
+                side="bottom"
+                align="end"
+                sideOffset={6}
+                className="unsloth-plus-menu menu-flat-destructive w-52"
+                trigger={(triggerRef) => (
                   <button
+                    ref={triggerRef}
                     type="button"
                     aria-label="Project options"
                     className="inline-flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground"
                   >
                     <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
                   </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  side="bottom"
-                  align="end"
-                  sideOffset={6}
-                  className="unsloth-plus-menu menu-flat-destructive w-52"
+                )}
+              >
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setProjectNameDraft(projectName);
+                    setRenamingProject(true);
+                  }}
                 >
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      setProjectNameDraft(projectName);
-                      setRenamingProject(true);
-                    }}
-                  >
-                    <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Rename project</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
-                    <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>{projectPinned ? "Unpin project" : "Pin project"}</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
-                      <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>Export</span>
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="unsloth-plus-menu w-48">
-                      {PROJECT_CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
-                        <DropdownMenuItem
-                          key={format}
-                          onSelect={() => void handleProjectExport(format)}
-                        >
-                          {label}
-                        </DropdownMenuItem>
-                      ))}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    variant="destructive"
-                    onSelect={() => setDeletingProject(true)}
-                  >
-                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Delete project</span>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Rename project</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
+                  <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>{projectPinned ? "Unpin project" : "Pin project"}</span>
+                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+                    <span>Export</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="unsloth-plus-menu w-48">
+                    {PROJECT_CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
+                      <DropdownMenuItem
+                        key={format}
+                        onSelect={() => void handleProjectExport(format)}
+                      >
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => setDeletingProject(true)}
+                >
+                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Delete project</span>
+                </DropdownMenuItem>
+              </NonModalDropdownMenu>
             </div>
 
             <ProjectComposer
@@ -1897,9 +1894,14 @@ function ProjectLanding({
                             formatProjectChatDate(item.createdAt)}
                         </span>
                       </button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
+                      <NonModalDropdownMenu
+                        side="bottom"
+                        align="end"
+                        sideOffset={4}
+                        className="unsloth-plus-menu menu-flat-destructive w-56"
+                        trigger={(triggerRef) => (
                           <button
+                            ref={triggerRef}
                             type="button"
                             onClick={(event) => event.stopPropagation()}
                             aria-label="Chat options"
@@ -1911,133 +1913,127 @@ function ProjectLanding({
                               className="size-icon"
                             />
                           </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent
-                          side="bottom"
-                          align="end"
-                          sideOffset={4}
-                          className="unsloth-plus-menu menu-flat-destructive w-56"
+                        )}
+                      >
+                        <DropdownMenuItem onSelect={() => openRename(item)}>
+                          <HugeiconsIcon
+                            icon={Edit03Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>Rename</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => togglePinnedChat(item.id)}
                         >
-                          <DropdownMenuItem onSelect={() => openRename(item)}>
+                          <HugeiconsIcon
+                            icon={
+                              pinnedChatIdSet.has(item.id)
+                                ? PinOffIcon
+                                : PinIcon
+                            }
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>
+                            {pinnedChatIdSet.has(item.id)
+                              ? "Unpin chat"
+                              : "Pin chat"}
+                          </span>
+                        </DropdownMenuItem>
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>
                             <HugeiconsIcon
-                              icon={Edit03Icon}
+                              icon={FolderExportIcon}
                               strokeWidth={1.75}
                               className="size-icon"
                             />
-                            <span>Rename</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onSelect={() => togglePinnedChat(item.id)}
-                          >
-                            <HugeiconsIcon
-                              icon={
-                                pinnedChatIdSet.has(item.id)
-                                  ? PinOffIcon
-                                  : PinIcon
+                            <span>Move to project</span>
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent className="unsloth-plus-menu w-52">
+                            <DropdownMenuItem
+                              disabled={item.projectId !== projectId}
+                              onSelect={() =>
+                                void handleMoveToProject(item, null)
                               }
-                              strokeWidth={1.75}
-                              className="size-icon"
-                            />
-                            <span>
-                              {pinnedChatIdSet.has(item.id)
-                                ? "Unpin chat"
-                                : "Pin chat"}
-                            </span>
-                          </DropdownMenuItem>
-                          <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>
-                              <HugeiconsIcon
-                                icon={FolderExportIcon}
-                                strokeWidth={1.75}
-                                className="size-icon"
-                              />
-                              <span>Move to project</span>
-                            </DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent className="unsloth-plus-menu w-52">
+                            >
+                              <span>Recents</span>
+                            </DropdownMenuItem>
+                            {projects.map((p) => (
                               <DropdownMenuItem
-                                disabled={item.projectId !== projectId}
+                                key={p.id}
+                                disabled={item.projectId === p.id}
                                 onSelect={() =>
-                                  void handleMoveToProject(item, null)
+                                  void handleMoveToProject(item, p.id)
                                 }
                               >
-                                <span>Recents</span>
+                                <HugeiconsIcon
+                                  icon={Folder01Icon}
+                                  strokeWidth={1.75}
+                                  className="size-icon"
+                                />
+                                <span className="truncate">{p.name}</span>
                               </DropdownMenuItem>
-                              {projects.map((p) => (
+                            ))}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>
+                            <HugeiconsIcon
+                              icon={Download01Icon}
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                            <span>Export</span>
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent className="unsloth-plus-menu w-52">
+                            {PROJECT_CHAT_EXPORT_OPTIONS.map(
+                              ({ label, format }) => (
                                 <DropdownMenuItem
-                                  key={p.id}
-                                  disabled={item.projectId === p.id}
+                                  key={format}
                                   onSelect={() =>
-                                    void handleMoveToProject(item, p.id)
+                                    void handleExport(item, format)
                                   }
                                 >
-                                  <HugeiconsIcon
-                                    icon={Folder01Icon}
-                                    strokeWidth={1.75}
-                                    className="size-icon"
-                                  />
-                                  <span className="truncate">{p.name}</span>
+                                  {label}
                                 </DropdownMenuItem>
-                              ))}
-                            </DropdownMenuSubContent>
-                          </DropdownMenuSub>
-                          <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>
-                              <HugeiconsIcon
-                                icon={Download01Icon}
-                                strokeWidth={1.75}
-                                className="size-icon"
-                              />
-                              <span>Export</span>
-                            </DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent className="unsloth-plus-menu w-52">
-                              {PROJECT_CHAT_EXPORT_OPTIONS.map(
-                                ({ label, format }) => (
-                                  <DropdownMenuItem
-                                    key={format}
-                                    onSelect={() =>
-                                      void handleExport(item, format)
-                                    }
-                                  >
-                                    {label}
-                                  </DropdownMenuItem>
-                                ),
-                              )}
-                            </DropdownMenuSubContent>
-                          </DropdownMenuSub>
-                          <DropdownMenuItem
-                            onSelect={() => void handleSaveAsSource(item)}
-                          >
-                            <HugeiconsIcon
-                              icon={BookOpen01Icon}
-                              strokeWidth={1.75}
-                              className="size-icon"
-                            />
-                            <span>Save to project sources</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onSelect={() => void handleArchive(item)}
-                          >
-                            <HugeiconsIcon
-                              icon={Archive03Icon}
-                              strokeWidth={1.75}
-                              className="size-icon"
-                            />
-                            <span>Archive</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            variant="destructive"
-                            onSelect={() => handleDelete(item)}
-                          >
-                            <HugeiconsIcon
-                              icon={Delete02Icon}
-                              strokeWidth={1.75}
-                              className="size-icon"
-                            />
-                            <span>Delete</span>
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                              ),
+                            )}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                        <DropdownMenuItem
+                          onSelect={() => void handleSaveAsSource(item)}
+                        >
+                          <HugeiconsIcon
+                            icon={BookOpen01Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>Save to project sources</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onSelect={() => void handleArchive(item)}
+                        >
+                          <HugeiconsIcon
+                            icon={Archive03Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>Archive</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={() => handleDelete(item)}
+                        >
+                          <HugeiconsIcon
+                            icon={Delete02Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>Delete</span>
+                        </DropdownMenuItem>
+                      </NonModalDropdownMenu>
                     </div>
                   );
                 })}
