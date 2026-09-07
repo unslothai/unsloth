@@ -32,11 +32,7 @@ class _LocalGgufEntry:
     load_path: str
     variants: tuple[str, ...]  # local quant labels; () for a standalone .gguf
     is_gguf: bool = True  # False routes the load to the inference orchestrator
-    # Spellings this entry ACCEPTS but no longer advertises, as ``(legacy, current)``
-    # pairs. Only the loader's own older label for a file whose current label differs,
-    # so a client pinned to what /v1/models used to publish keeps resolving. Never
-    # published, so nothing new can be pinned to one. See _legacy_variant_aliases.
-    aliases: tuple[tuple[str, str], ...] = ()
+    aliases: tuple[tuple[str, str], ...] = ()  # see _legacy_variant_aliases
 
 
 _CACHE_TTL_S = 5.0
@@ -110,52 +106,24 @@ def _resolve_load_dir(p):
 
 
 def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
-    """``(legacy label, current label)`` for each id this module used to publish and no
-    longer does.
+    """``(legacy label, current label)`` for each id this module used to publish and no longer does.
 
-    Until this module moved onto the shared lister, /v1/models published the loader's
-    label, and an API client pins whatever it was shown. The two listers disagree about
-    two kinds of name, and a pin on either one breaks -- differently, and the quieter
-    failure is the worse one:
+    /v1/models published the loader's label before the swap to the shared lister, and a client
+    pins what it was shown. ``DeepSeek-R1-BF16-Q4_K_M.gguf`` was ``BF16``, is ``Q4_K_M``: quant
+    shaped, so _resolve_from_index refuses it and the pin 404s. ``Meta-Llama-3-8B.gguf`` was
+    ``8B``, is the whole stem: not quant shaped, so it falls through to the Ollama-tag branch and
+    quietly serves the preferred quant instead. The quiet one is why quantless labels alias too.
 
-    * A stem carrying a float type before a K-quant, where the loader took the first
-      token and the shared lister takes the K-quant (``DeepSeek-R1-BF16-Q4_K_M.gguf``
-      was ``BF16``, is ``Q4_K_M``). ``BF16`` looks like a quant, so
-      :func:`_resolve_from_index` refuses it outright: the pin starts 404ing.
-    * A stem with no quant token at all -- the loader took its last hyphen segment, the
-      shared lister takes the whole stem (``Meta-Llama-3-8B.gguf`` was ``8B``). ``8B``
-      does not look like a quant, so that request does not fail; it falls through to the
-      Ollama-tag branch and is answered with the PREFERRED quant. Before the swap ``8B``
-      was an exact variant key and served the unquantized file, so without an alias the
-      same pin silently starts serving different, smaller weights. Aliased for exactly
-      that reason: a quiet quality change on an id a user already pinned is worse than
-      the 404, not better.
-
-    Accept-only: these are never advertised, so no NEW pin can be made to one and the
-    identity the picker and every saved setting use stays the only published spelling.
-    A bare repo id is unaffected either way -- it never reaches this, so ``preferred_quant``
-    still decides what an unqualified request loads.
-
-    A legacy label that collides with a current one is dropped, since the current
-    spelling names a file that really is that quant. One naming two files is dropped
-    too: the old ordering that picked between them is not reconstructible from grouped
-    rows, and guessing would serve weights nobody asked for.
-
-    Read from grouped rows, so it sees one file per quant. A repo holding two
-    checkpoints where the divergent file is not the one its group is named after
-    (``alpha-Q4_K_M.gguf`` beside ``zeta-BF16-Q4_K_M.gguf``) keeps the 404; covering it
-    would mean re-walking the tree the lister just walked, for a layout the picker has
-    always shown as one row.
-
-    Never raises: this runs inside ``_local_gguf_entry``'s blanket handler, so anything
-    escaping here would drop the whole repo out of /v1/models and auto-switch. A
-    compatibility shim must fail to no aliases, not to no model.
+    Accept-only, so nothing new can pin a legacy spelling and a bare id never reaches here.
+    Dropped rather than guessed: a legacy label equal to a current one, and one naming two files.
+    Grouped rows give one file per quant, so ``alpha-Q4_K_M.gguf`` beside
+    ``zeta-BF16-Q4_K_M.gguf`` keeps the 404. Never raises: _local_gguf_entry answers None on an
+    escape, which would drop the whole repo.
     """
     try:
         from utils.models.model_config import _extract_quant_label, _qualified_variant_name
 
-        # .lower(), not .casefold(): _resolve_from_index folds the requested variant that
-        # way, and a key it cannot spell is a key it can never hit.
+        # .lower() matches how _resolve_from_index folds the request
         current = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
         seen: dict[str, Optional[str]] = {}
         for variant in variants:
@@ -167,7 +135,7 @@ def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
             key = str(legacy).lower()
             if not key or key in current:
                 continue
-            # None marks an ambiguous label: two files, so it can no longer name either.
+            # None = ambiguous: a second file claimed it, so it names neither.
             seen[key] = None if key in seen else str(quant)
         return tuple((legacy, quant) for legacy, quant in seen.items() if quant is not None)
     except Exception:
@@ -830,9 +798,8 @@ def _resolve_from_index(
         for v in entry.variants:
             if v.lower() == wanted:
                 return entry.load_path, v, entry.loader_id
-        # A spelling this entry no longer advertises but used to, answered with the label
-        # that names the same quant today. Ahead of both branches below, since one of them
-        # would refuse it and the other would quietly answer with a different quant.
+        # ahead of both branches below: one refuses a retired spelling, the other answers it
+        # with a different quant
         for legacy, current in entry.aliases:
             if legacy == wanted:
                 return entry.load_path, current, entry.loader_id
