@@ -761,14 +761,22 @@ def test_the_flush_triggers_scale_from_the_same_written_length():
     of the range this change unlocks leaves the row being rewritten four times a second for
     an entire 65_536-token report.
     """
-    knee = int(research_runs._PROGRESS_FLUSH_SECONDS * research_runs._PROGRESS_FLUSH_CHARS_PER_SECOND)
+    knee = int(
+        research_runs._PROGRESS_FLUSH_SECONDS * research_runs._PROGRESS_FLUSH_CHARS_PER_SECOND
+    )
     assert knee == research_runs._PROGRESS_FLUSH_CHARS * 64
     # A 65_536-token report is roughly 262_144 chars, and the time arm has to have started
     # scaling well before it, not at it.
     assert knee < 262_144 // 2
     # Short reports are untouched: both arms sit at the previous constants.
     assert max(research_runs._PROGRESS_FLUSH_CHARS, 1_000 // 64) == 512
-    assert max(research_runs._PROGRESS_FLUSH_SECONDS, 1_000 / research_runs._PROGRESS_FLUSH_CHARS_PER_SECOND) == 0.25
+    assert (
+        max(
+            research_runs._PROGRESS_FLUSH_SECONDS,
+            1_000 / research_runs._PROGRESS_FLUSH_CHARS_PER_SECOND,
+        )
+        == 0.25
+    )
 
 
 def test_an_explicit_zero_budget_is_never_put_on_the_wire(monkeypatch):
