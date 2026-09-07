@@ -9,9 +9,26 @@
  *  the bytes on disk behind it. */
 export interface SoleQuantTarget {
   repoId: string;
+  rowId?: string;
   localSource: string | null;
   fingerprint: string;
   key: string;
+}
+
+/** One on-device copy. Two folders may hold different quants of the same repo. */
+export function cachedGgufRowKey(repo: {
+  repo_id: string;
+  inventory_id?: string | null;
+  cache_path?: string | null;
+}): string {
+  return (
+    repo.inventory_id ||
+    (repo.cache_path ? `${repo.repo_id}::${repo.cache_path}` : repo.repo_id)
+  );
+}
+
+function targetId(target: SoleQuantTarget): string {
+  return target.rowId ?? target.repoId;
 }
 
 /** A probe result. A null quant means the repo has no single complete quant, including when the
@@ -61,13 +78,14 @@ export function partitionSoleQuants<T>(
   const stale: SoleQuantTarget[] = [];
   if (!enabled) return { quants, pending, stale };
   for (const target of targets) {
-    const entry = entries.get(target.repoId);
+    const id = targetId(target);
+    const entry = entries.get(id);
     if (!entry || entry.key !== target.key) {
-      pending.add(target.repoId);
+      pending.add(id);
       stale.push(target);
       continue;
     }
-    if (entry.quant) quants.set(target.repoId, entry.quant);
+    if (entry.quant) quants.set(id, entry.quant);
   }
   return { quants, pending, stale };
 }
@@ -89,7 +107,7 @@ export function createSoleQuantReader<T>({
   let active = 0;
 
   const owns = (target: SoleQuantTarget) =>
-    inFlight.get(target.repoId) === target.key;
+    inFlight.get(targetId(target)) === target.key;
 
   const drain = async () => {
     while (queue.length > 0) {
@@ -99,7 +117,7 @@ export function createSoleQuantReader<T>({
       const quant = await read(target).catch(() => null);
       // Superseded while reading: the newer read owns this repo now.
       if (!owns(target)) continue;
-      inFlight.delete(target.repoId);
+      inFlight.delete(targetId(target));
       commit(target, quant);
     }
     active -= 1;
@@ -109,7 +127,7 @@ export function createSoleQuantReader<T>({
     start(targets) {
       for (const target of targets) {
         if (owns(target)) continue;
-        inFlight.set(target.repoId, target.key);
+        inFlight.set(targetId(target), target.key);
         queue.push(target);
       }
       while (active < workers && queue.length > 0) {
@@ -130,8 +148,8 @@ export function takeDriftedRepos(
 ): string[] {
   const drifted: string[] = [];
   for (const target of targets) {
-    const previous = seen.get(target.repoId);
-    seen.set(target.repoId, target.fingerprint);
+    const previous = seen.get(targetId(target));
+    seen.set(targetId(target), target.fingerprint);
     // First sight records only: there is no earlier listing to drop.
     if (previous !== undefined && previous !== target.fingerprint) {
       drifted.push(target.repoId);

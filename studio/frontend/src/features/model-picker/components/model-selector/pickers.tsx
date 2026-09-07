@@ -198,6 +198,7 @@ import {
 import {
   type SoleQuantEntry,
   type SoleQuantTarget,
+  cachedGgufRowKey,
   createSoleQuantReader,
   partitionSoleQuants,
   soleQuantFingerprint,
@@ -1426,7 +1427,7 @@ const EMPTY_SOLE_QUANT_ENTRIES: ReadonlyMap<
 // pool, not fixed batches: one slow repo holds up only itself.
 const SOLE_QUANT_WORKERS = 6;
 
-/** On Device repos holding exactly one quant on disk, keyed by repo id: with "Show all
+/** On Device copies holding exactly one quant on disk, keyed by inventory row: with "Show all
  *  quantizations" off those collapse into one pinned-style row. Kept per repo, so one
  *  repo's download or delete leaves the others alone. */
 function useSoleDownloadedQuants(
@@ -1446,6 +1447,7 @@ function useSoleDownloadedQuants(
       const fingerprint = soleQuantFingerprint(repo);
       return {
         repoId: repo.repo_id,
+        rowId: cachedGgufRowKey(repo),
         localSource,
         fingerprint,
         key: soleQuantKey(versions[index], localSource, fingerprint),
@@ -1495,7 +1497,7 @@ function useSoleDownloadedQuants(
         if (!mountedRef.current) return;
         setEntries((prev) => {
           const next = new Map(prev);
-          next.set(target.repoId, { key: target.key, quant });
+          next.set(target.rowId ?? target.repoId, { key: target.key, quant });
           return next;
         });
       },
@@ -4579,7 +4581,7 @@ export function HubModelPicker({
     ) {
       keys.push(
         ...unslothCachedGguf.map((model) =>
-          makeModelOptionKey("downloaded-gguf", model.repo_id),
+          makeModelOptionKey("downloaded-gguf", cachedGgufRowKey(model)),
         ),
       );
       keys.push(
@@ -4618,7 +4620,7 @@ export function HubModelPicker({
     ) {
       keys.push(
         ...otherCachedGguf.map((model) =>
-          makeModelOptionKey("downloaded-gguf", model.repo_id),
+          makeModelOptionKey("downloaded-gguf", cachedGgufRowKey(model)),
         ),
       );
       keys.push(
@@ -5199,7 +5201,8 @@ export function HubModelPicker({
     sole: SoleDownloadedQuant,
   ) => {
     const variant = sole.variant;
-    const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
+    const rowKey = cachedGgufRowKey(c);
+    const optionKey = makeModelOptionKey("downloaded-gguf", rowKey);
     // The row names one quant, so the repo running a different one is not it.
     const rowState = soleQuantRowState({
       pickerValue: value,
@@ -5231,7 +5234,7 @@ export function HubModelPicker({
     };
     return (
       <div
-        key={c.repo_id}
+        key={rowKey}
         className={downloadedRowShellClassName(isSelected, true)}
       >
         <div className="min-w-0 flex-1">
@@ -5329,21 +5332,22 @@ export function HubModelPicker({
 
   // Shared row renderers so Downloaded (Unsloth) and Other models render alike.
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
-    const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
+    const rowKey = cachedGgufRowKey(c);
+    const optionKey = makeModelOptionKey("downloaded-gguf", rowKey);
     const isSelected = value === c.repo_id;
-    const soleQuant = soleQuants.quants.get(c.repo_id);
+    const soleQuant = soleQuants.quants.get(rowKey);
     if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
     // Auto-expansion waits for the probe: expanding every row first would mount an expander, and
     // its remote listing, for repos about to collapse.
     const expanderOpen = shouldMountVariantExpander({
-      expanded: isGgufExpanded(c.repo_id),
-      autoExpand: expandQuantizations && !reopenedGguf.has(c.repo_id),
-      soleQuantsPending: soleQuants.pending.has(c.repo_id),
+      expanded: isGgufExpanded(rowKey),
+      autoExpand: expandQuantizations && !reopenedGguf.has(rowKey),
+      soleQuantsPending: soleQuants.pending.has(rowKey),
     });
     // No quant of this repo is clean, so nothing inside the expander can carry the row's actions.
     const isPartialRepo = c.partial === true;
     return (
-      <div key={c.repo_id}>
+      <div key={rowKey}>
         <div className={downloadedRowShellClassName(isSelected)}>
           <div className="min-w-0 flex-1">
             <ModelRow
@@ -5362,7 +5366,7 @@ export function HubModelPicker({
                 "required",
               )}
               optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
-              onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
+              onClick={() => toggleGgufExpanded(rowKey, expanderOpen)}
               onArrowDownIntoChildren={
                 expanderOpen
                   ? () => focusFirstChildOption(optionKey)

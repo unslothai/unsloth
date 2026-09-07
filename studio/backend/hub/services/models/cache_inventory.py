@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import asyncio
 import threading
 import time
@@ -577,7 +578,7 @@ def _scan_cached_gguf(
         logger.warning("Could not build shared cached-GGUF state index: %s", e)
         variant_states = None
 
-    seen_lower: dict[str, dict] = {}
+    seen_lower: dict[tuple[str, str], dict] = {}
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -632,7 +633,10 @@ def _scan_cached_gguf(
                 )
                 if total_size == 0 and not partial:
                     continue
-                key = repo_id.lower()
+                # Quantizations of one repo can live in different download folders.
+                # Each row must retain the folder its variants load and delete from.
+                cache_root = os.path.normcase(str(repo_path.parent.resolve()))
+                key = (repo_id.lower(), cache_root)
                 existing = seen_lower.get(key)
                 last_modified = _repo_gguf_last_modified(repo_info)
                 row_task = _cached_row_task(
@@ -686,7 +690,10 @@ def _scan_cached_gguf(
                         tts_only = row_task == "text-to-speech",
                     )
                 )
-                # Only the winning cache root loads, so the loser's vision flag must not carry over.
+                row["inventory_id"] = _local_inventory_id(
+                    "cache", "gguf", repo_id.lower(), cache_root
+                )
+                # Coalesce repeated scans of one root without hiding other roots.
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
                 elif last_modified > existing.get("last_modified", 0.0):

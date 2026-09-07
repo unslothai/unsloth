@@ -36,6 +36,7 @@ function isListableCachedRow(row: CachedInventoryRow): boolean {
 function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
   return {
     repo_id: row.repoId,
+    inventory_id: row.id,
     // Listed by repo id, loaded by the pinned id: dropping it sends the picker back down the ref.
     load_id: row.loadId,
     size_bytes: row.bytes,

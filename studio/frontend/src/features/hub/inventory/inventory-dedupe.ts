@@ -63,6 +63,17 @@ function knownFamiliesMatchUnknownRow(
   return families.has(row.partialTransport ? "model" : "gguf");
 }
 
+function sameGgufCacheCopy(
+  cached: CachedInventoryRow,
+  local: LocalInventoryRow,
+): boolean {
+  if (cached.modelFormat !== "gguf") return true;
+  if (!cached.cachePath) return false;
+  const repoPath = cached.cachePath.replaceAll("\\", "/").replace(/\/+$/, "");
+  const localPath = local.path.replaceAll("\\", "/");
+  return localPath === repoPath || localPath.startsWith(`${repoPath}/`);
+}
+
 export function findCompleteHfCacheLocalRow(
   cachedRow: CachedInventoryRow,
   localRows: readonly LocalInventoryRow[],
@@ -76,7 +87,8 @@ export function findCompleteHfCacheLocalRow(
       (row) =>
         row.source === "hf_cache" &&
         !row.partial &&
-        repoFormatKey(row.repoId, row.modelFormat) === key,
+        repoFormatKey(row.repoId, row.modelFormat) === key &&
+        sameGgufCacheCopy(cachedRow, row),
     ) ?? null
   );
 }
@@ -122,7 +134,16 @@ function dedupeCachedRows(
   const selected = new Map<string, CachedInventoryRow>();
   const passthrough: CachedInventoryRow[] = [];
   for (const row of rows) {
-    const key = repoFormatKey(row.repoId, row.modelFormat);
+    const repoFormat = repoFormatKey(row.repoId, row.modelFormat);
+    // Live downloads belong to the active cache. Keep their existing coalescing,
+    // while preserving independently loadable GGUFs in previous cache folders.
+    const key =
+      repoFormat &&
+      row.modelFormat === "gguf" &&
+      row.activeCache === false &&
+      row.cachePath
+        ? `${repoFormat}\0${row.cachePath}`
+        : repoFormat;
     if (!key) {
       passthrough.push(row);
       continue;
@@ -199,7 +220,13 @@ export function dedupeSameSourceHubCacheRows({
       return false;
     }
     const key = repoFormatKey(row.repoId, row.modelFormat);
-    return !(row.partial && key && completeHfCacheLocalKeys.has(key));
+    return !(
+      row.partial &&
+      key &&
+      completeHfCacheLocalKeys.has(key) &&
+      (row.modelFormat !== "gguf" ||
+        findCompleteHfCacheLocalRow(row, localRows))
+    );
   });
   const retainedCachedKeys = new Set(
     filteredCachedRows.flatMap((row) => {

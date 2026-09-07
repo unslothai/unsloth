@@ -45,6 +45,7 @@ export interface BackendModelCapabilities {
 
 export interface CachedGgufRepo {
   repo_id: string;
+  active_cache?: boolean;
   inventory_id?: string | null;
   load_id?: string | null;
   model_format?: ModelInventoryFormat | null;
