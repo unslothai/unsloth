@@ -238,6 +238,51 @@ def test_applying_a_migration_re_applies_auto_and_stays_an_update(monkeypatch, t
     assert seen["cmd"][seen["cmd"].index("--published-release-tag") + 1] == "b9596-mix-abc"
 
 
+def test_a_migration_that_lands_back_on_the_old_backend_says_so(monkeypatch, tmp_path):
+    # The installer answers "auto" with whatever it can install, and the ROCm fallback
+    # behind the Vulkan preference can legitimately reinstall the backend already here.
+    # Reporting "now running on rocm" would read as the migration having been applied,
+    # while the next status check offers the very same one again.
+    install_dir = _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
+    _drifted(monkeypatch)
+
+    def _on_start(cmd, kwargs):
+        # The Vulkan attempt failed, so the plan fell back to this host's ROCm build.
+        _write_install(install_dir, backend = "rocm", backend_request = "auto")
+
+    _patch_installer(monkeypatch, on_start = _on_start)
+
+    assert upd.start_update()["started"] is True
+    job = _await_job()
+
+    assert job["state"] == "success", job
+    assert "could not be moved to vulkan" in job["message"]
+    assert "now running on rocm" not in job["message"]
+
+
+def test_a_migration_that_lands_on_its_target_reports_the_new_backend(monkeypatch, tmp_path):
+    # The control: without it a message that always reported a kept install would pass
+    # above, and every applied migration would read as a failure.
+    install_dir = _install(monkeypatch, tmp_path, backend = "rocm", backend_request = "auto")
+    _drifted(monkeypatch)
+    _patch_installer(
+        monkeypatch,
+        on_start = lambda cmd, kwargs: _write_install(
+            install_dir,
+            asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
+            install_kind = "linux-vulkan",
+            backend = "vulkan",
+            backend_request = "auto",
+        ),
+    )
+
+    assert upd.start_update()["started"] is True
+    job = _await_job()
+
+    assert job["state"] == "success", job
+    assert "now running on vulkan" in job["message"]
+
+
 def test_an_up_to_date_install_with_no_drift_still_refuses(monkeypatch, tmp_path):
     # The other half of the control: the migration must not turn every up-to-date
     # Update press into an install.

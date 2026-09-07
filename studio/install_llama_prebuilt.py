@@ -7694,6 +7694,12 @@ _VULKAN_ICD_REGISTRY_KEYS = (r"SOFTWARE\Khronos\Vulkan\Drivers",)
 # could never fire. Matched against the basename, never the whole path: a bare "amd"
 # anywhere in a directory name would otherwise answer for the driver.
 _AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "amd_vulkan")
+# The 32-bit halves of the same drivers, which a 64-bit llama-server cannot load: mesa
+# ships radeon_icd.i686.json beside the x86_64 one in a multilib install, and AMDVLK and
+# the Windows Adrenalin ICD name theirs with a trailing 32 (amd_icd32, amdvlk32,
+# amd-vulkan32). A host left with only those registered has no device for the Vulkan
+# bundle, so it must keep the ROCm build rather than be routed onto CPU.
+_AMD_VULKAN_ICD_32_BIT_NEEDLES = ("i686", "i386")
 
 
 # The loader's own search order, most specific first. Built per call rather than at
@@ -7828,12 +7834,14 @@ def _amd_vulkan_icd_present() -> bool:
     towards the status quo -- an unreadable registry or search path leaves the install on
     the backend it already had.
     """
+    def _is_amd_64_bit(name: str) -> bool:
+        stem = PurePath(name).stem.lower().replace("-", "_")
+        if stem.endswith("32") or any(n in stem for n in _AMD_VULKAN_ICD_32_BIT_NEEDLES):
+            return False
+        return any(needle in stem for needle in _AMD_VULKAN_ICD_NEEDLES)
+
     try:
-        return any(
-            needle in PurePath(path).name.lower().replace("-", "_")
-            for path in _amd_vulkan_icd_manifest_paths()
-            for needle in _AMD_VULKAN_ICD_NEEDLES
-        )
+        return any(_is_amd_64_bit(PurePath(path).name) for path in _amd_vulkan_icd_manifest_paths())
     except Exception:
         return False
 

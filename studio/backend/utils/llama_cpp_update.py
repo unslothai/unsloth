@@ -759,6 +759,7 @@ def _run_llama_phase(
     llama_backend: Optional[str] = None,
     rocm_gfx: Optional[str] = None,
     backend_request: Optional[str] = None,
+    migration_target: Optional[str] = None,
 ) -> dict:
     """The llama phase of a chained update: put the backend into a maintenance
     state, run the installer for the latest prebuilt, then refresh caches so the
@@ -878,14 +879,26 @@ def _run_llama_phase(
                 )
 
         kept_existing = backend_request is None and new_tag is not None and new_tag == prior_tag
+        # A migration asks for "auto", which the assertions above accept whatever it
+        # resolves to, and the install can legitimately end on the backend it started
+        # from -- the ROCm fallback behind the Vulkan preference is exactly that. Saying
+        # "now running on rocm" would read as the migration having been applied, and the
+        # next status check offers the same one again.
+        migration_kept = bool(migration_target) and new_backend != migration_target
         logger.info(
             "llama update: success",
             to_tag = new_tag,
             backend = new_backend,
             kept_existing = kept_existing,
+            migration_applied = None if not migration_target else not migration_kept,
         )
         reload_hint = " Reload your model to use it." if model_was_active else ""
-        if backend_request is not None:
+        if migration_kept:
+            message = (
+                f"llama.cpp could not be moved to {migration_target} right now, so the "
+                f"existing {new_backend or 'installed'} build was kept. Try again later."
+            )
+        elif backend_request is not None:
             message = f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
         elif kept_existing:
             # The phase only runs when a newer release was offered, so naming the kept
@@ -901,6 +914,7 @@ def _run_llama_phase(
             "backend": new_backend,
             "reload_required": model_was_active,
             "kept_existing": kept_existing,
+            "migration_applied": None if not migration_target else not migration_kept,
             "message": message,
         }
     except _flow.InstallerExit as exc:
@@ -1039,6 +1053,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         # check so a stale 24h cache can't wrongly block a real update either).
         # A switch replaces the backend at the same release.
         migration = False
+        migration_target = None
         status = (
             {}
             if backend_request is not None
@@ -1058,7 +1073,8 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             # Only needed when the release is current: an update at a NEWER release
             # already runs the installer with no --llama-backend, so it re-detects and
             # lands the same bundle this branch asks for.
-            if _pending_backend_migration(binary, marker) is None:
+            migration_target = _pending_backend_migration(binary, marker)
+            if migration_target is None:
                 return {
                     "skip_reason": "up_to_date",
                     "refusal": {
@@ -1145,6 +1161,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
         migration = False
+        migration_target = None
 
     if install_dir is None:
         return {
@@ -1170,6 +1187,11 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             # caller can keep presenting it as the update it is, rather than as the
             # backend switch its backend_request would otherwise make it look like.
             "migration": migration,
+            # The backend the offer named, so the phase can say whether it landed: an
+            # "auto" install accepts whatever detection produces, and a fallback that
+            # reinstalls the backend already there would otherwise report success while
+            # leaving the same migration on offer.
+            "migration_target": migration_target,
         }
     }
 
@@ -1441,6 +1463,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                             llama_backend = llama_spec.get("llama_backend"),
                             rocm_gfx = llama_spec.get("rocm_gfx"),
                             backend_request = llama_spec.get("backend_request"),
+                            migration_target = llama_spec.get("migration_target"),
                         )
                     )
                     if llama_spec

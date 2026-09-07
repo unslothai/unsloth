@@ -2037,6 +2037,27 @@ def test_an_override_naming_a_removed_amd_manifest_does_not_answer_for_the_drive
     assert ilp._amd_vulkan_icd_present() is True
 
 
+def test_a_32_bit_linux_manifest_does_not_answer_for_the_x64_bundle(monkeypatch, tmp_path):
+    # A multilib mesa install ships radeon_icd.i686.json beside the x86_64 one, and a
+    # host left with only the 32-bit half has no driver a 64-bit llama-server can load.
+    # Routing it onto Vulkan on that evidence takes a working ROCm install to CPU.
+    monkeypatch.setattr(ilp.sys, "platform", "linux")
+    monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
+    for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        monkeypatch.delenv(name, raising = False)
+    icd_dir = tmp_path / "usr/share/vulkan/icd.d"
+    monkeypatch.setattr(ilp, "_vulkan_icd_search_dirs", lambda: [icd_dir])
+
+    for name in ("radeon_icd.i686.json", "amd_icd32.json", "amd-vulkan32.json"):
+        _icd(icd_dir / name)
+    assert ilp._amd_vulkan_icd_present() is False
+
+    # The control: the 64-bit half beside them still answers, so this rejects the
+    # architecture rather than the driver.
+    _icd(icd_dir / "radeon_icd.x86_64.json")
+    assert ilp._amd_vulkan_icd_present() is True
+
+
 def test_an_override_of_only_stale_paths_answers_on_its_own(monkeypatch, tmp_path):
     # VK_DRIVER_FILES / VK_ICD_FILENAMES are FORCE lists: the loader uses the named
     # files and does not search the directories at all. So an override that names
