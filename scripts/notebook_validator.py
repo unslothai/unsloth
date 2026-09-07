@@ -412,7 +412,10 @@ PIP_LINE_RE = re.compile(
     # `python -I -m pip install git+...` otherwise matched nothing at all, so every install
     # rule including the git+ ban was bypassed. Options only, never a bare word, or a script
     # path would be read as the module flag.
-    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip|"
+    # `!\s*!` for bash's pipeline-negation reserved word and for IPython's `!!` capture
+    # form: `! ! pip install git+...` still runs pip and merely inverts its exit status, so
+    # requiring exactly one leading bang matched nothing and the git+ ban was bypassed.
+    r"^\s*!(?:\s*!)*\s*(?P<tool>(?:uv\s+)?pip|"
     + _INTERPRETER_RE
     + r"(?:\s+-[A-Za-z]\w*)*\s+-m\s+(?:uv\s+)?pip)\s+"
     r"(?P<action>install|uninstall)\b(?P<rest>.*)$",
@@ -515,6 +518,18 @@ _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
 # runs: in `env -u pip pip install ...` the first `pip` is the variable being unset.
 # env's split-string operand is the command it runs, not an option value to discard.
 _ENV_SPLIT_STRING_FLAGS = frozenset({"-S", "--split-string"})
+
+
+def _env_split_string(raw: str) -> str:
+    """One shell word off an `env -S` operand, with `\\_` restored to the separator it is.
+
+    GNU env splits the operand on whitespace and documents `\\_` as a space; verified with
+    coreutils 9.4, where `env -S 'printf [%s][%s] a\\_b'` prints `[a][b]` exactly as a plain
+    space does. bash keeps that backslash inside double quotes, so unescaping the operand as
+    an ordinary shell word rebuilt `pip install_git+...` and no invocation was seen at all.
+    """
+    return _split_first_word(raw.replace("\\_", " "))[0]
+
 
 _PREFIX_OPERAND_FLAGS: dict[str, frozenset[str]] = {
     "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
@@ -644,10 +659,12 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
                 # `-S, --split-string=S` takes a MANDATORY operand, so the attached spelling
                 # `env -S'pip install' pkg` is valid and runs pip. Exact membership missed it
                 # and R-INST-001 saw no invocation at all.
-                rest = f"{token[2:]} {tail}".strip()
+                raw = rest[: len(rest) - len(tail)].strip()
+                rest = f"{_env_split_string(raw[2:])} {tail}".strip()
                 break
             if token.startswith("--split-string=") and name == "env":
-                rest = f"{token.partition('=')[2]} {tail}".strip()
+                raw = rest[: len(rest) - len(tail)].strip()
+                rest = f"{_env_split_string(raw.partition('=')[2])} {tail}".strip()
                 break
             if "=" in token and token.startswith("--"):
                 rest = tail  # `--unset=NAME` carries its operand inline
@@ -660,8 +677,9 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
                 # `env -S'cmd args' [ARG]...` appends the following ARGs to what the split
                 # string produced -- that is how `#!/usr/bin/env -S perl -w` reaches
                 # `perl -w script.pl`. Dropping them left `pip install` with no packages.
-                operand, trailing = _split_first_word(tail)
-                rest = f"{operand} {trailing}".strip()
+                trailing = _split_first_word(tail)[1]
+                raw = tail[: len(tail) - len(trailing)]
+                rest = f"{_env_split_string(raw)} {trailing}".strip()
                 break
             if token in operand_flags:
                 _, rest = _split_first_word(tail)
@@ -1707,6 +1725,7 @@ def _effective_version(
         if exact is not None:
             current, exact_known = exact, True
         elif current is None or _forces_resolution(inv.flags):
+            forced_off = current is not None  # got here by --upgrade over an installed one
             # `--upgrade` upgrades every named package to the newest available version, so an
             # installed release that merely SATISFIES the range is not where it lands:
             # `pip install -U "torchcodec>=0.10,<0.12"` on 0.10 moves to 0.11. Reading the
@@ -1726,6 +1745,12 @@ def _effective_version(
                 current, exact_known = landing, True
             elif floor is not None and not exclusive_floor:
                 current, exact_known = floor, False
+            elif forced_off:
+                # `--upgrade` moves to the newest available release, so whatever is installed
+                # is not where it lands. With a ceiling and no floor nothing here names the
+                # landing either, and keeping the stale version raised a false R-INST-004
+                # about a release the cell replaces.
+                current, exact_known = None, True
         elif floor is not None and (
             cmp_versions(floor, current) > 0
             # `>V` is not satisfied by V itself, so equality still forces a move.
