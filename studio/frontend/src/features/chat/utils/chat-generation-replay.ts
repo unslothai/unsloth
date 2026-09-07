@@ -42,15 +42,15 @@ export type PositionedReplayPart = Omit<StreamedToolCallPart, "toolCallId"> & {
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
 
-export function seededReplayState(content: unknown): {
+/** The reply as storage holds it, back in the tagged-string form the parser reads: a stored part is
+ *  text with its kind erased, and the tags are what put the kind back. A block left open by the last
+ *  stored part stays open here, so the next frame continues it instead of opening a second one. */
+function seededReplayState(content: unknown): {
   raw: string;
-  reasoningOpen: boolean;
   parts: PositionedReplayPart[];
 } {
-  if (typeof content === "string") {
-    return { raw: content, reasoningOpen: false, parts: [] };
-  }
-  if (!Array.isArray(content)) return { raw: "", reasoningOpen: false, parts: [] };
+  if (typeof content === "string") return { raw: content, parts: [] };
+  if (!Array.isArray(content)) return { raw: "", parts: [] };
   let raw = "";
   let reasoningOpen = false;
   const parts: PositionedReplayPart[] = [];
@@ -64,10 +64,17 @@ export function seededReplayState(content: unknown): {
       raw += reasoningOpen ? `${THINK_CLOSE_TAG}${text}` : text;
       reasoningOpen = false;
     } else {
+      // A part that is neither prose nor thought (a call, an image) lands at a boundary, and the live
+      // stream had closed the block before it recorded that call. Closing here keeps the close tag at
+      // the end of the thought run, where it belongs, instead of at the head of whatever follows it.
+      if (reasoningOpen) {
+        raw += THINK_CLOSE_TAG;
+        reasoningOpen = false;
+      }
       parts.push({ ...part, textCursor: raw.length });
     }
   }
-  return { raw, reasoningOpen, parts };
+  return { raw, parts };
 }
 
 export type RecoveryReplay = {
@@ -108,18 +115,31 @@ export function createRecoveryReplay(seed: unknown): RecoveryReplay {
 
   const liveOutput = new Map<string, string>();
   let raw = seeded.raw;
-  let reasoningOpen = seeded.reasoningOpen;
 
-  /** The one place the reply grows, so a call's boundary is recorded at the character it happened at. */
+  /** The one place the reply grows, so a call's boundary is recorded at the character it happened at.
+   *  Which tag the next chunk owes is asked of the run being written rather than tracked across the
+   *  whole reply: a part landing in between starts a NEW run, which begins outside the block the run
+   *  before it ended inside, and a flag carried over from before that boundary keeps closing a block
+   *  that is already closed -- the stray `< /think>` then reads as literal text in the part after it.
+   *  The live stream cannot hit this (it appends tags into the same string it parses); a replay seeded
+   *  from parts can, because the seed has to re-create the tags the parts no longer carry. */
   const grow = (kind: "text" | "reasoning", text: string): boolean => {
     if (!text) return false;
+    const inside = segmented.insideThink();
     let chunk = text;
-    if (kind === "reasoning" && !reasoningOpen) chunk = `${THINK_OPEN_TAG}${text}`;
-    else if (kind === "text" && reasoningOpen) chunk = `${THINK_CLOSE_TAG}${text}`;
-    reasoningOpen = kind === "reasoning";
+    if (kind === "reasoning" && !inside) chunk = `${THINK_OPEN_TAG}${text}`;
+    else if (kind === "text" && inside) chunk = `${THINK_CLOSE_TAG}${text}`;
     raw += chunk;
     segmented.appendText(chunk);
     return true;
+  };
+
+  /** Close an open thought at a boundary, so the tag lands at the end of the thought run instead of at
+   *  the head of whatever part comes next. */
+  const closeThought = (): void => {
+    if (!segmented.insideThink()) return;
+    raw += THINK_CLOSE_TAG;
+    segmented.appendText(THINK_CLOSE_TAG);
   };
 
   /** The card a frame names. A backend id is only the SPELLING a frame carries; the card answers to
@@ -158,6 +178,9 @@ export function createRecoveryReplay(seed: unknown): RecoveryReplay {
   ): boolean => {
     const at = findStreamedToolCallPartIndex(slots, id || undefined, deltaIndex);
     if (at === -1) {
+      // The live stream closes an open thought before it records a call, so the boundary sits AFTER
+      // the close tag, not inside the block.
+      closeThought();
       parts.push({
         type: "tool-call",
         toolCallId: id,

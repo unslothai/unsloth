@@ -15,7 +15,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { createRecoveryReplay, seededReplayState } = await import(
+const { createRecoveryReplay } = await import(
   "../src/features/chat/utils/chat-generation-replay.ts"
 );
 
@@ -155,4 +155,65 @@ test("a reasoning_summary frame is not content, and does not extend the reply", 
   const replay = createRecoveryReplay("answer");
   assert.equal(replay.applyChunk({ _reasoningDurationMs: 1200 }), false);
   assert.equal(replay.rawText(), "answer");
+});
+
+// The live stream closes an open thought before it records a call, so the block's close tag sits at the
+// END of the thought run. A replay seeded from parts re-creates those tags from what storage holds, and
+// a flag carried across the whole reply keeps closing a block a boundary already closed -- the stray
+// `< /think>` then survives as literal text in the part after it. What the reader saw was an answer
+// whose first word was a tag, doubled on every reopen.
+test("a call landing mid-thought closes the block where the live stream closed it", () => {
+  const replay = createRecoveryReplay([reasoning("the thought")]);
+  replay.applyChunk({
+    choices: [
+      { delta: { tool_calls: [{ index: 0, function: { name: "bash", arguments: "{}" } }] } },
+    ],
+  });
+  replay.applyChunk({ choices: [{ delta: { content: "the answer" } }] });
+  const parts = replay.content() as Array<Record<string, unknown>>;
+  assert.deepEqual(
+    parts.map((part) => part.type),
+    ["reasoning", "tool-call", "text"],
+    "the call sits between the thought and the answer it produced",
+  );
+  assert.equal(
+    (parts[0] as { text: string }).text,
+    "the thought",
+    "the close belongs to the end of the thought, never to the start of the answer",
+  );
+  assert.equal((parts[2] as { text: string }).text, "the answer");
+});
+
+test("reopening at any point of a run shows what a stream that never left shows", () => {
+  // The reader must not be able to tell the tab was shut: replaying from what storage holds has to
+  // yield exactly what the same frames would have produced had they arrived in one sitting.
+  const frames = [
+    { choices: [{ delta: { reasoning_content: "think A" } }] },
+    {
+      choices: [
+        { delta: { tool_calls: [{ index: 0, function: { name: "read_file", arguments: "{}" } }] } },
+      ],
+    },
+    { choices: [{ delta: { content: "the answer" } }] },
+    { choices: [{ delta: { reasoning_content: "a second thought" } }] },
+    { choices: [{ delta: { content: " and its tail" } }] },
+  ];
+  const neverLeft = createRecoveryReplay("");
+  for (const frame of frames) neverLeft.applyChunk(frame);
+  const expected = neverLeft.content() as Array<Record<string, unknown>>;
+  assert.deepEqual(
+    expected.map((part) => part.type),
+    ["reasoning", "tool-call", "text", "reasoning", "text"],
+  );
+  for (let cut = 1; cut <= frames.length; cut++) {
+    const seed = createRecoveryReplay("");
+    for (const frame of frames.slice(0, cut)) seed.applyChunk(frame);
+    const reopened = createRecoveryReplay(seed.content());
+    for (const frame of frames.slice(cut)) reopened.applyChunk(frame);
+    assert.deepEqual(
+      reopened.content() as Array<Record<string, unknown>>,
+      expected,
+      `reopening after ${cut} of ${frames.length} frames must show the same reply`,
+    );
+  }
 });
