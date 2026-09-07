@@ -1476,11 +1476,11 @@ async def stream_with_studio_tools(
         if policy.on_provider_turn_end is not None:
             policy.on_provider_turn_end()
 
-        # Both mean the turn ended before the model finished saying what it wanted: "length" hit the token ceiling,
-        # "content_filter" had the output cut by the provider. Either way a call collected so far may be half-written,
-        # so it is described rather than run. "stop" is not in this set: llama.cpp and vLLM routinely finish a perfectly
-        # good tool call with it, and refusing those would disable tool calling on the self-hosted servers this path
-        # exists for.
+        # Both mean the turn ended before the model finished Both of these mean the turn ended before the model finished
+        # saying what it wanted: "length" hit the token ceiling, "content_filter" had the output cut by the provider's
+        # own filter. Either way a call collected so far may be half-written, so it is described rather than run. "stop"
+        # is not in this set: llama.cpp and vLLM routinely finish a perfectly good tool call with it, and refusing those
+        # would disable tool calling on exactly the self-hosted servers this path exists for.
         truncated = turn.finish_reason in ("length", "content_filter")
         if truncated and healer is not None and turn.healed:
             # A call cut off at the token limit must not run: its arguments can be half-written and the model never
