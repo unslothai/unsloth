@@ -2987,7 +2987,9 @@ def test_the_backfill_fills_in_fields_rather_than_skipping_known_keys():
 
     # The merge is the server's, in the write's transaction: a client-side one reopens the race.
     db = _read_backend("storage/studio_db.py")
-    assert "merged = {**entry_value, **stored}" in db
+    # `incoming` is entry_value minus any coupled group the stored row already states,
+    # so a field-by-field backfill cannot pair one half of a pin with the other's.
+    assert "merged = {**incoming, **stored}" in db
     assert "BEGIN IMMEDIATE" in db
 
 
@@ -3272,13 +3274,19 @@ def test_detail_settings_defers_a_derived_quant_to_a_fresh_status_read():
     assert "onOpenSettings(selectedQuant ?? null, quantIsUserPicked)" in card
 
 
-def test_only_a_physical_gpu_pin_is_mirrored_to_the_server():
-    """The same integers are Vulkan ordinals under Vulkan and device indices elsewhere,
-    and the server override carries no namespace, so a backend change would pin the model
-    to a different device with ids that validate."""
+def test_a_gpu_pin_is_mirrored_to_the_server_with_its_index_space():
+    """The same integers are Vulkan ordinals under Vulkan and device indices elsewhere, so
+    a pin mirrored without its namespace would, after a backend change, address a different
+    device with ids that validate. The namespace travels with it and the server drops the
+    pin on a mismatch instead."""
     mirror = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
     assert 'const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";' in mirror
-    assert 'gpuIndexKind === "physical"' in mirror
+    assert "payload.gpu_ids = config.selectedGpuIds;" in mirror
+    # Omitted at the legacy default, so a physical pin's payload is what it always was and
+    # a row written before this field still reads as physical.
+    assert (
+        'if (gpuIndexKind !== "physical") { payload.gpu_index_kind = gpuIndexKind; }' in mirror
+    )
 
 
 def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():

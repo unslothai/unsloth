@@ -6921,12 +6921,30 @@ def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
     assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "vulkan")) is True
 
 
+def _pin_resolves_on_a_host_with_device_0(monkeypatch):
+    """Make device 0 exist, so the index-kind check is the only thing under test.
+
+    Without this the whole helper falls to its `except: return False` on a CPU-only
+    runner, which is how the mismatch cases below would pass for the wrong reason and
+    how the matching case failed on CI while passing on a GPU box.
+    """
+    import utils.hardware as hardware_pkg
+    from utils.hardware import DeviceType
+    from utils.hardware import hardware as hardware_mod
+
+    monkeypatch.setattr(hardware_pkg, "get_device", lambda: DeviceType.CUDA)
+    monkeypatch.setattr(
+        hardware_mod, "resolve_requested_gpu_ids", lambda ids, is_vulkan = False: list(ids)
+    )
+
+
 def test_a_pin_written_in_the_other_index_space_is_unusable(monkeypatch):
     # The failure the availability checks cannot see: ordinal 0 exists on a Vulkan build and
     # physical device 0 exists on a ROCm one, so a pin carried across a backend change passes
     # every presence test while addressing a different card.
     from core.inference.llama_cpp import LlamaCppBackend
 
+    _pin_resolves_on_a_host_with_device_0(monkeypatch)
     monkeypatch.setattr(
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/llama-server")
     )
@@ -6949,6 +6967,8 @@ def test_a_rocm_pin_survives_while_the_backend_is_still_rocm(monkeypatch):
     # Negative control for the test above: the mismatch check must not reject a pin that
     # never moved, or the flip would drop every stored pin on every host.
     from core.inference.llama_cpp import LlamaCppBackend
+
+    _pin_resolves_on_a_host_with_device_0(monkeypatch)
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
     assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "physical")) is True
 
