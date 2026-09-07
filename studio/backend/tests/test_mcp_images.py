@@ -1718,7 +1718,13 @@ def test_a_local_placeholder_turn_carries_one_picture():
     assert len(payloads) == mcp_images.LOCAL_MAX_IMAGES_PER_TURN == 1
 
     out, replay = promote_history_local_for_test(
-        [{"role": "tool", "name": "mcp__s__shot", "content": _envelope("[4 images returned]", *results[0])}]
+        [
+            {
+                "role": "tool",
+                "name": "mcp__s__shot",
+                "content": _envelope("[4 images returned]", *results[0]),
+            }
+        ]
     )
     assert len(replay) == 1
     turn = next(m for m in out if isinstance(m.get("content"), list))
