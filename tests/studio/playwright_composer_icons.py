@@ -27,8 +27,21 @@ MEASURE = """() => [...document.querySelectorAll('button[data-case]')].map(butto
     const buttonBox = button.getBoundingClientRect();
     const svgBox = svg.getBoundingClientRect();
     const glyph = svg.getBBox();
-    const glyphCenter = new DOMPoint(glyph.x + glyph.width / 2, glyph.y + glyph.height / 2)
-        .matrixTransform(svg.getScreenCTM());
+    // Map the glyph bbox through the viewBox rather than through getScreenCTM.
+    // Firefox's getScreenCTM leaves CSS `zoom` out of the matrix while its
+    // getBoundingClientRect includes it, so at zoom != 1 the two disagree and a
+    // perfectly centred glyph measures off by (1 / zoom - 1) times its offset
+    // from the SVG origin. Chromium folds zoom in and agrees either way, so the
+    // old form reported a Firefox-only failure for geometry that is correct in
+    // both. getBBox already accounts for transforms on the glyph itself, so this
+    // still measures where the glyph actually sits inside the SVG.
+    const viewBox = (svg.getAttribute('viewBox') || '').trim().split(/[ ,]+/).map(Number);
+    const [viewX, viewY, viewW, viewH] = viewBox.length === 4 ? viewBox
+        : [0, 0, svgBox.width, svgBox.height];
+    const glyphCenter = {
+        x: svgBox.x + (glyph.x + glyph.width / 2 - viewX) / viewW * svgBox.width,
+        y: svgBox.y + (glyph.y + glyph.height / 2 - viewY) / viewH * svgBox.height,
+    };
     const centerX = buttonBox.x + buttonBox.width / 2;
     const centerY = buttonBox.y + buttonBox.height / 2;
     return {
