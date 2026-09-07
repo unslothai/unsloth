@@ -126,6 +126,14 @@ MIN_FREE_GB = 25.0
 # once per session before anything needs it. Generous, because the cost of
 # being too tight is a red that reads like a selection bug.
 LLAMA_CPP_INSTALL_TIMEOUT_S = 900.0
+# Backstop for a chat-UI driver whose own watchdog never fired, and nothing tighter.
+# It cannot be derived from STUDIO_UI_WALL_TIMEOUT_S: that budget now measures silence
+# between progress reports, so the driver's exit lands one budget after its LAST step, at
+# a wall-clock time this side cannot predict. Winning the race costs the traceback and
+# thread dump the driver exits with, because SIGKILL leaves TimeoutExpired holding no
+# stderr to report. The enclosing job's timeout-minutes is the real bound; this only keeps
+# a hung driver from eating all of it. A healthy pass is ~10 min, so 90 is nine times over.
+UI_DRIVER_PROC_TIMEOUT_S = 5400.0
 # How long to let VRAM fall after an unload before calling it the baseline.
 # 12 x 2.5s bounds the wait at 30s, which is well past the ~3s a llama-server
 # takes to exit on the models this harness loads, without stalling the run if
@@ -2537,14 +2545,7 @@ class Payload:
                 env = env,
                 capture_output = True,
                 text = True,
-                # Only a backstop for a watchdog that did not fire, so it has to outlast
-                # one that did. STUDIO_UI_WALL_TIMEOUT_S is now the budget between two
-                # progress reports rather than the whole run, so the driver's own exit
-                # lands one budget after its last step, not one budget after it started:
-                # allow a budget for the work and a budget for the silence. Killing it
-                # first costs exactly the traceback and thread dump this exists to read,
-                # because SIGKILL leaves TimeoutExpired with no stderr to report.
-                timeout = self.args.ui_wall_timeout * 2 + 300,
+                timeout = UI_DRIVER_PROC_TIMEOUT_S,
             )
             rc, out, err = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:
