@@ -477,3 +477,38 @@ def test_link_exchange_route_rejects_oversized_token():
         json = {"link_token": "x" * (LINK_TOKEN_MAX_LENGTH + 1)},
     )
     assert resp.status_code == 422, resp.text
+
+
+def test_outstanding_tokens_are_bounded_per_user():
+    """The mint site is an UNAUTHENTICATED page load, so expiry is not a bound.
+
+    Anyone who can reach the first-boot page can mint one row per request and
+    hold it for the whole TTL, contending for the single SQLite writer lock that
+    /login needs. Keeping the newest N per user bounds the table at a size no
+    honest first boot approaches (one row per open setup tab or reload).
+    """
+    admin = _seed_admin()
+    cap = storage.MAX_OUTSTANDING_LINK_TOKENS_PER_USER
+    for _ in range(cap * 4):
+        authentication.create_link_token(admin)
+
+    conn = storage.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM link_tokens WHERE username = ?", (admin,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert rows == cap, f"link_tokens grew to {rows} rows for one user"
+
+
+def test_the_newest_token_survives_the_bound():
+    """Eviction takes the oldest, so the token just handed to a browser works."""
+    admin = _seed_admin()
+    oldest = authentication.create_link_token(admin)
+    for _ in range(storage.MAX_OUTSTANDING_LINK_TOKENS_PER_USER * 2):
+        authentication.create_link_token(admin)
+    newest = authentication.create_link_token(admin)
+    assert authentication.exchange_link_token(newest) == admin
+    # And the one evicted long ago is genuinely unusable rather than merely old.
+    assert authentication.exchange_link_token(oldest) is None
