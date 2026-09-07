@@ -4974,6 +4974,10 @@ def _report_live_llama_timings(callback, chunk) -> None:
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
 _HOST_RAM_HEADROOM_MIB = 2048
+# The planner's own default per-device reserve, 1536 MiB, is the intercept every #67
+# calibration cell was validated against (bench harness, A100-40). Kept as a module constant
+# so the seam's floor and the planner's default cannot drift apart silently.
+_VALIDATED_DEVICE_RESERVE_BYTES = (3 * 1024**3) // 2
 # Appended to whichever shortfall warning an oversized non-pageable launch produced,
 # after _page_an_oversized_unmapped_load rewrote the mode. One string, so the three
 # call sites cannot describe the same override differently.
@@ -25463,6 +25467,25 @@ class LlamaCppBackend:
             )
             return None
         extra_gpu_bytes += sidecar_bytes
+
+        # The reserve the planner charges was validated on hardware against its own
+        # 1536 MiB default. Production hands it USABLE VRAM, which already withholds
+        # max(3% of the card, 512 MiB), and then charges only the CUDA context plus the
+        # context-linear compute buffer on top. On a 40 GiB card the withheld share alone
+        # reaches the validated intercept; on anything smaller it does not, and a 12 GiB
+        # card at n_ctx 66560 was left ~1835 MiB where the measured requirement reached
+        # 2263. Charge whichever is larger, so the TOTAL per-device reserve (withheld +
+        # this) is never below the curve #67 was calibrated on. One scalar is charged on
+        # every device, so the safe anchor is the device that had the LEAST withheld.
+        # Raw free comes from ``kept``, not ``split_weights``, which -ts may have replaced.
+        withheld_per_device = [
+            max(0, int(free_mib * 1024 * 1024) - usable)
+            for (_idx, free_mib), usable in zip(kept, vram_per_device)
+        ]
+        min_withheld = min(withheld_per_device) if withheld_per_device else 0
+        overhead_per_device = max(
+            overhead_per_device, _VALIDATED_DEVICE_RESERVE_BYTES - min_withheld
+        )
 
         return plan_placement(
             layout,

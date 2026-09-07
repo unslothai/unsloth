@@ -1987,3 +1987,44 @@ def test_the_cache_ram_clamp(avail, footprint, expected):
     """Kept at the default whenever it fits, shrunk to what is left otherwise,
     down to disabled; unreadable RAM keeps llama.cpp's own default."""
     assert LlamaCppBackend._clamped_cache_ram_mib(avail, footprint) == expected
+
+
+def test_the_planner_reserve_is_never_below_the_validated_curve(monkeypatch):
+    """The 1536 MiB intercept was validated on an A100-40, where the 3% the seam
+    withholds before the planner sees the card already reaches it. On a 12 GiB card
+    the withheld share is 369 MiB and production then charged only the CUDA context
+    plus the compute term, so the planner saw about 700 MiB of reserve at short
+    context where 1536 was measured to be needed. The TOTAL (withheld + charged)
+    must never fall below the curve; on the 40 GiB card nothing changes.
+    """
+    from core.inference import offload_planner
+
+    captured = {}
+
+    def capture(layout, vram, host, ctx, **kw):
+        captured["opts"] = kw["opts"]
+        return Plan(reason = "captured")
+
+    monkeypatch.setattr(offload_planner, "plan_placement", capture)
+    withheld_12 = 369 * MIB
+    _plan(
+        _Stub(),
+        free_mib = 12 * 1024,
+        usable_mib = 12 * 1024 - 369,
+        compute_flat = 320 * MIB,
+        ctx_compute = 14 * MIB,
+    )
+    assert captured["opts"].overhead_bytes_per_device + withheld_12 >= 1536 * MIB
+    assert captured["opts"].overhead_bytes_per_device == 1536 * MIB - withheld_12
+    # Where the withheld share already covers the intercept the seam's own terms stand
+    # (the fixture's soft_overhead is 0, so that is the context term alone).
+    withheld_40 = 1600 * MIB
+    _plan(
+        _Stub(),
+        free_mib = 40 * 1024,
+        usable_mib = 40 * 1024 - 1600,
+        compute_flat = 320 * MIB,
+        ctx_compute = 14 * MIB,
+    )
+    assert captured["opts"].overhead_bytes_per_device == 14 * MIB
+    assert captured["opts"].overhead_bytes_per_device + withheld_40 >= 1536 * MIB
