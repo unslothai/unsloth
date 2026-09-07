@@ -83,16 +83,26 @@ export function resolveReasoningGroupDuration(
   return asDuration(custom?.reasoningDuration);
 }
 
+/** `seed` is what a reader that arrives mid-run already holds: the durations the tab that started
+ *  the run measured for the groups that closed before this one attached, and therefore how many
+ *  groups already exist. A replay cannot re-measure those -- the frames before its cursor were never
+ *  folded -- so it inherits them, and a group that opens after it attaches takes the NEXT index
+ *  instead of overwriting a finished group's slot. */
 export function createReasoningDurationTracker(
   now: () => number = Date.now,
+  seed?: { durations?: readonly number[] },
 ) {
-  let durations: number[] = [];
+  let durations: number[] = (seed?.durations ?? []).map(
+    (duration) => asDuration(duration) ?? 0,
+  );
   // First time each group index became visible. A group can be closed and reopened -- several
   // complete <think>...</think> blocks in a row are coalesced into one rendered group -- so the
   // duration is always measured from the first sighting, not the last.
   const startedAt: number[] = [];
   let activeIndex: number | null = null;
-  let groupCount = 0;
+  // Seeded from what the closing tab already measured, so a replay counts the groups it inherited and
+  // opens the NEXT one; the ones it never saw a frame of keep the value they arrived with.
+  let groupCount = durations.length;
   // Reasoning text seen so far per group, used to decide whether a closed group is still growing and should reopen.
   const reasoningLength: number[] = [];
   // The group a server summary would land on. The backend emits one summary at the end of each

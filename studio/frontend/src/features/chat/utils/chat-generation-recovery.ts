@@ -55,30 +55,9 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
   return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
 }
 
-export function recoveredReasoningSummaryMetadata(
-  current: Record<string, unknown>,
-  reasoningMs: unknown,
-): Record<string, unknown> {
-  if (
-    typeof reasoningMs !== "number" ||
-    !Number.isFinite(reasoningMs) ||
-    reasoningMs < 0
-  ) {
-    return current;
-  }
-  const durations = Array.isArray(current.reasoningDurations)
-    ? current.reasoningDurations.filter(
-        (duration): duration is number =>
-          typeof duration === "number" && Number.isFinite(duration),
-      )
-    : [];
-  const duration = Math.max(0, Math.round(reasoningMs / 1000));
-  return {
-    ...current,
-    reasoningDuration: duration,
-    reasoningDurations: [...durations, duration],
-  };
-}
+// A server-measured summary no longer lands here: it goes through the replay's own duration tracker,
+// which overwrites the slot of the group that opened most recently instead of appending and shifting
+// every later group along by one. See `createReasoningDurationTracker`'s `seed`.
 
 export function generationIsSettled(
   status: StoredGenerationStatus | null,

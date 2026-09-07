@@ -120,7 +120,6 @@ import {
   forgetServerActiveGenerationRun,
   syncServerActiveGenerationRuns,
   recoveredContentToImport,
-  recoveredReasoningSummaryMetadata,
   recoveredGenerationFinalMetadata,
   generationRecoveryMetadata,
   shouldPreserveGenerationMetadata,
@@ -866,7 +865,16 @@ function scheduleGenerationRecovery(
     // The follower's own accumulator: the same PARTS the live stream built, extended one event at a
     // time instead of re-parsed from character zero on every publish, and a tool call lands ON its
     // card at the offset it ran at instead of being flattened out of the reply.
-    let replay = createRecoveryReplay(storedMessage.content);
+    // The durations the tab that started the run already measured ride along: the frames before this
+    // cursor were never folded here, so what the closing tab timed is all anyone will ever know about
+    // those groups, and a group this reader DOES watch has to land in the next slot instead of
+    // overwriting one it inherited.
+    let replay = createRecoveryReplay(
+      storedMessage.content,
+      Array.isArray(metadata.reasoningDurations)
+        ? (metadata.reasoningDurations as number[])
+        : undefined,
+    );
     let completionTokens: number | undefined;
     let recoveryUsage:
       | {
@@ -970,8 +978,11 @@ function scheduleGenerationRecovery(
           maxTokens: run.requestPayload.max_tokens,
           completionTokens,
         });
+      // Measured on the frames' own timestamps (see `createRecoveryReplay`) and published with every
+      // write: without it `resolveReasoningGroupDuration` has nothing to read and a restored card shows
+      // the renderer's `?? 0` fallback -- "Thought for 0 seconds" for a five second thought.
       let nextMetadata = generationRecoveryMetadata({
-        current: currentMetadata,
+        current: { ...currentMetadata, ...replay.durations() },
         runId,
         status,
         cursor,
@@ -1057,10 +1068,9 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
               };
               if ("_reasoningDurationMs" in chunk) {
-                currentMetadata = recoveredReasoningSummaryMetadata(
-                  currentMetadata,
-                  chunk._reasoningDurationMs,
-                );
+                // Authoritative for the group that most recently opened, and it lands in THAT group's
+                // slot: appending would shift every group after it along by one.
+                replay.recordServerDuration(chunk._reasoningDurationMs);
                 if (
                   catchUp.shouldPublish(
                     {
@@ -1097,7 +1107,11 @@ function scheduleGenerationRecovery(
               }
               // Fold the frame exactly as the live stream built it: text and reasoning runs extend in
               // place, and a tool frame lands on the card its id names instead of being dropped.
-              replayChanged = replay.applyChunk(update.event.payload) || replayChanged;
+              replayChanged =
+                replay.applyChunk(
+                  update.event.payload,
+                  update.event.createdAt,
+                ) || replayChanged;
             }
           }
           if (

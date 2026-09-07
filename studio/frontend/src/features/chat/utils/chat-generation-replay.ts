@@ -11,6 +11,11 @@
 
 import { createSegmentedAssistantText } from "./incremental-assistant-content";
 import { extractDeltaText } from "./parse-assistant-content";
+import {
+  countReasoningGroups,
+  createReasoningDurationTracker,
+  lastReasoningGroupTextLength,
+} from "./reasoning-duration";
 import { preferFullToolOutput } from "./tool-output-preference";
 import {
   findStreamedToolCallPartIndex,
@@ -78,18 +83,32 @@ function seededReplayState(content: unknown): {
 }
 
 export type RecoveryReplay = {
-  /** Fold one replayed chunk event. Returns whether it changed the reply, which is what decides
-   *  whether there is anything worth publishing. */
-  applyChunk(chunk: unknown): boolean;
+  /** Fold one replayed chunk event. `at` is the instant the run WROTE that event, and it is what every
+   *  reasoning group on this path is timed against: a follower folds frames written minutes before it
+   *  attached, so its own clock would measure the replay, not the thinking. Returns whether it changed
+   *  the reply, which is what decides whether there is anything worth publishing. */
+  applyChunk(chunk: unknown, at?: number): boolean;
   /** The reply as parts: text and reasoning runs cut at the tool-call offsets, tools interleaved. */
   content(): ContentPart[];
   /** The tagged string, for the prefix comparison a recovery publish makes against the view. */
   rawText(): string;
+  /** What each reasoning group has cost so far, in the shape `resolveReasoningGroupDuration` reads.
+   *  Empty while nothing has been measured, so a publish cannot overwrite a stored value with nothing. */
+  durations(): Record<string, unknown>;
+  /** A server-measured summary for the group that most recently opened. Authoritative: it overwrites
+   *  that group's slot instead of shifting the groups after it along by one. */
+  recordServerDuration(reasoningMs: unknown): boolean;
 };
 
 /** Build the follower's copy of a run's reply: `seed` is what storage already holds (the partial a
- *  reload restored, or the request's assistant prefill) and the events replay on top of it. */
-export function createRecoveryReplay(seed: unknown): RecoveryReplay {
+ *  reload restored, or the request's assistant prefill) and the events replay on top of it.
+ *  `seedDurations` is the same message's already-measured group durations: the frames before this
+ *  follower's cursor were never folded, so what a previous tab timed is all anyone will ever know about
+ *  those groups, and a group this reader does watch has to land in the NEXT slot. */
+export function createRecoveryReplay(
+  seed: unknown,
+  seedDurations?: readonly number[],
+): RecoveryReplay {
   const seeded = seededReplayState(seed);
   // The parse of everything replayed so far, extended by each delta rather than redone from
   // character zero: a publish costs one event, not the whole reply.
@@ -115,6 +134,17 @@ export function createRecoveryReplay(seed: unknown): RecoveryReplay {
 
   const liveOutput = new Map<string, string>();
   let raw = seeded.raw;
+  // The live stream times a thought against `Date.now()` between two chunks. A replay has no such clock:
+  // every frame it folds arrived before this tab existed, so timing them against now collapses every
+  // group to "0 seconds". The clock is therefore the frames themselves -- `applyChunk` sets it to each
+  // event's own `createdAt` before folding it -- and the groups are counted on the SAME parts array the
+  // renderer indexes its `reasoningDurations` by, which is what keeps index N of one the same thought as
+  // index N of the other.
+  let clockAt = 0;
+  const groupTiming = createReasoningDurationTracker(
+    () => clockAt,
+    seedDurations ? { durations: seedDurations } : undefined,
+  );
 
   /** The one place the reply grows, so a call's boundary is recorded at the character it happened at.
    *  Which tag the next chunk owes is asked of the run being written rather than tracked across the
@@ -337,8 +367,65 @@ export function createRecoveryReplay(seed: unknown): RecoveryReplay {
     return changed;
   };
 
+  /** The reply as parts: the same assembly the live stream publishes with, cut at each call's offset, so
+   *  a pill sits where it was called and only the last run is still growing. */
+  const assembledParts = (): ContentPart[] => {
+    const positioned = parts.map((part, index) => ({
+      part,
+      index,
+      cursor: Math.min(
+        Math.max(Number(part.textCursor ?? 0), 0),
+        raw.length,
+      ),
+    }));
+    const boundaries: number[] = [];
+    for (const item of positioned) {
+      if (boundaries[boundaries.length - 1] !== item.cursor) {
+        boundaries.push(item.cursor);
+      }
+    }
+    // Rebuilt from the whole reply whenever a call moved a boundary, which happens once per call.
+    const runs = segmented.runs(raw, boundaries) as ContentPart[][];
+    const assembled: ContentPart[] = [];
+    let next = 0;
+    for (let index = 0; index < boundaries.length; index += 1) {
+      assembled.push(...runs[index]);
+      while (
+        next < 
+positioned.length &&
+        positioned[next].cursor === boundaries[index]
+      ) {
+        assembled.push(positioned[next].part);
+        next += 1;
+      }
+    }
+    assembled.push(...(runs[boundaries.length] ?? []));
+    return assembled;
+  };
+
+  /** The group bookkeeping the live adapter does per chunk, run on the frame's own timestamp. The same
+   *  three calls in the same order, and the same rule that the timer stops the moment the block the
+   *  chunk left is closed -- which is why a call landing on the reply closes the thought that ran before
+   *  it, exactly as `closeReasoningContent` does on the wire. */
+  const timeGroups = (): void => {
+    const built = assembledParts();
+    const groups = countReasoningGroups(built);
+    if (groups > groupTiming.groupCount) {
+      groupTiming.startGroup(groups - 1);
+    }
+    if (groups > 0) {
+      groupTiming.resumeGroup(groups - 1, lastReasoningGroupTextLength(built));
+    }
+    if (groupTiming.hasActiveGroup && !segmented.insideThink()) {
+      groupTiming.finishGroup();
+    }
+  };
+
   return {
-    applyChunk(chunk: unknown): boolean {
+    applyChunk(chunk: unknown, at?: number): boolean {
+      // Set before the fold, so a group opens at the instant its first frame arrived and not at the
+      // instant this tab got round to reading it.
+      if (typeof at === "number" && Number.isFinite(at)) clockAt = at;
       const payload = chunk as
         | {
             _toolEvent?: Record<string, unknown>;
@@ -354,7 +441,13 @@ export function createRecoveryReplay(seed: unknown): RecoveryReplay {
         | null
         | undefined;
       const toolEvent = payload?._toolEvent;
-      if (toolEvent) return applyToolEvent(toolEvent);
+      if (toolEvent) {
+        const changed = applyToolEvent(toolEvent);
+        // A call landing on the reply is a boundary: it closed the thought before it, and that thought's
+        // duration ends at this frame, not at the next one.
+        if (changed) timeGroups();
+        return changed;
+      }
       const delta = payload?.choices?.[0]?.delta;
       const details = Array.isArray(delta?.reasoning_details)
         ? delta.reasoning_details
@@ -374,43 +467,14 @@ export function createRecoveryReplay(seed: unknown): RecoveryReplay {
       // the answer, which is exactly what `grow` does with the tag state it carries.
       let changed = grow("reasoning", reasoning);
       changed = grow("text", text) || changed;
-      return applyToolCallDeltas(delta?.tool_calls) || changed;
+      changed = applyToolCallDeltas(delta?.tool_calls) || changed;
+      if (changed) timeGroups();
+      return changed;
     },
-    content(): ContentPart[] {
-      // The same assembly the live stream publishes with: cut the reply at each call's offset, so
-      // a pill sits where it was called and only the last run is still growing.
-      const positioned = parts.map((part, index) => ({
-        part,
-        index,
-        cursor: Math.min(
-          Math.max(Number(part.textCursor ?? 0), 0),
-          raw.length,
-        ),
-      }));
-      const boundaries: number[] = [];
-      for (const item of positioned) {
-        if (boundaries[boundaries.length - 1] !== item.cursor) {
-          boundaries.push(item.cursor);
-        }
-      }
-      // Rebuilt from the whole reply whenever a call moved a boundary, which happens once per call.
-      const runs = segmented.runs(raw, boundaries) as ContentPart[][];
-      const assembled: ContentPart[] = [];
-      let next = 0;
-      for (let index = 0; index < boundaries.length; index += 1) {
-        assembled.push(...runs[index]);
-        while (
-          next < 
-positioned.length &&
-          positioned[next].cursor === boundaries[index]
-        ) {
-          assembled.push(positioned[next].part);
-          next += 1;
-        }
-      }
-      assembled.push(...(runs[boundaries.length] ?? []));
-      return assembled;
-    },
+    content: assembledParts,
+    durations: () => groupTiming.metadata(),
+    recordServerDuration: (reasoningMs: unknown) =>
+      groupTiming.recordServerDuration(reasoningMs),
     rawText(): string {
       return raw;
     },
