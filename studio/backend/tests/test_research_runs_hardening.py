@@ -519,7 +519,6 @@ def test_a_client_ceiling_below_the_default_still_lowers_the_budget(monkeypatch)
 
 
 def test_an_unreadable_cap_does_not_let_a_stale_client_ceiling_through(monkeypatch):
-
     def explode(_id):
         raise sqlite3.OperationalError("database is locked")
 
@@ -530,7 +529,6 @@ def test_an_unreadable_cap_does_not_let_a_stale_client_ceiling_through(monkeypat
 
 
 def test_an_unreadable_cap_still_honours_a_lower_client_ceiling(monkeypatch):
-
     def explode(_id):
         raise sqlite3.OperationalError("database is locked")
 
