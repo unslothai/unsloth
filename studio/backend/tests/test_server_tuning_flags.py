@@ -303,9 +303,7 @@ def test_the_checkpoint_flag_falls_back_to_the_legacy_spelling():
     # The Windows tuning's 0 goes through the list the arch-crash respawn takes its
     # own flags back off, so the sink is that list rather than cmd directly. What
     # this pins is unchanged: the recorded name, never a hard-coded one.
-    assert (
-        '_cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])' in load
-    )
+    assert '_cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])' in load
     assert "cmd.extend(_cache_flags_emitted)" in load
 
 

@@ -239,9 +239,7 @@ def test_a_trailing_flag_without_its_value_is_left_alone():
 
 
 def test_a_user_device_flag_makes_the_target_unknown():
-    assert LlamaCppBackend._cache_tuning_target_unknown(
-        ["--device", "ROCm1"], None, {}
-    )
+    assert LlamaCppBackend._cache_tuning_target_unknown(["--device", "ROCm1"], None, {})
 
 
 def test_an_inherited_device_env_makes_the_target_unknown():
@@ -249,13 +247,9 @@ def test_an_inherited_device_env_makes_the_target_unknown():
     # clears it -- and llama.cpp reads it before argv, so the generated pin is not
     # what the child places against. Reading argv alone emitted --cache-ram 0 at an
     # APU the picker had paired with a discrete card.
-    assert LlamaCppBackend._cache_tuning_target_unknown(
-        None, None, {"LLAMA_ARG_DEVICE": "ROCm0"}
-    )
+    assert LlamaCppBackend._cache_tuning_target_unknown(None, None, {"LLAMA_ARG_DEVICE": "ROCm0"})
     # Set but empty is not a selection.
-    assert not LlamaCppBackend._cache_tuning_target_unknown(
-        None, None, {"LLAMA_ARG_DEVICE": "  "}
-    )
+    assert not LlamaCppBackend._cache_tuning_target_unknown(None, None, {"LLAMA_ARG_DEVICE": "  "})
 
 
 def test_an_explicit_pin_owns_the_placement_so_the_target_is_known():
@@ -292,12 +286,15 @@ def test_the_retry_does_not_overrule_a_cache_flag_the_command_already_states():
     assert flags == ["--ctx-checkpoints", "0"]
 
     # The attached spelling is the same setting.
-    assert LlamaCppBackend._retry_cache_tuning_flags(
-        ["llama-server", "--cache-ram=8192", "--ctx-checkpoints=4"],
-        cache_ram = None,
-        ctx_checkpoints = None,
-        server_caps = _CAPS,
-    ) == []
+    assert (
+        LlamaCppBackend._retry_cache_tuning_flags(
+            ["llama-server", "--cache-ram=8192", "--ctx-checkpoints=4"],
+            cache_ram = None,
+            ctx_checkpoints = None,
+            server_caps = _CAPS,
+        )
+        == []
+    )
 
 
 def test_the_retry_reads_the_other_checkpoint_alias_as_the_same_setting():
@@ -312,12 +309,18 @@ def test_the_retry_reads_the_other_checkpoint_alias_as_the_same_setting():
 
 def test_the_retry_skips_what_the_build_and_the_fields_already_own():
     # An explicit field, as at launch, and a build without the capability.
-    assert LlamaCppBackend._retry_cache_tuning_flags(
-        ["llama-server"], cache_ram = 4096, ctx_checkpoints = 8, server_caps = _CAPS
-    ) == []
-    assert LlamaCppBackend._retry_cache_tuning_flags(
-        ["llama-server"],
-        cache_ram = None,
-        ctx_checkpoints = None,
-        server_caps = {"supports_cache_ram": False, "ctx_checkpoints_flag": None},
-    ) == []
+    assert (
+        LlamaCppBackend._retry_cache_tuning_flags(
+            ["llama-server"], cache_ram = 4096, ctx_checkpoints = 8, server_caps = _CAPS
+        )
+        == []
+    )
+    assert (
+        LlamaCppBackend._retry_cache_tuning_flags(
+            ["llama-server"],
+            cache_ram = None,
+            ctx_checkpoints = None,
+            server_caps = {"supports_cache_ram": False, "ctx_checkpoints_flag": None},
+        )
+        == []
+    )
