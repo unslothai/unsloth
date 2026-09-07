@@ -460,8 +460,6 @@ export async function resolveToolConfirmation(
 
 export interface CachedGgufRepo {
   repo_id: string;
-  active_cache?: boolean | null;
-  inventory_id?: string | null;
   load_id?: string | null;
   size_bytes: number;
   cache_path: string;
@@ -654,11 +652,9 @@ export interface CachedModelPath {
 export async function getCachedModelPath(
   repoId: string,
   variant?: string,
-  cachePath?: string | null,
 ): Promise<CachedModelPath> {
   const params = new URLSearchParams({ repo_id: repoId });
   if (variant) params.set("variant", variant);
-  if (cachePath) params.set("cache_path", cachePath);
   const response = await authFetch(
     `/api/models/cached-model-path?${params.toString()}`,
   );
@@ -669,11 +665,9 @@ export async function getCachedModelPath(
 export async function revealCachedModel(
   repoId: string,
   variant?: string,
-  cachePath?: string | null,
 ): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
-  if (cachePath) payload.cache_path = cachePath;
   const response = await authFetch("/api/models/reveal-cached-model", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

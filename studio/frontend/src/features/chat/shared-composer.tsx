@@ -495,7 +495,6 @@ function PendingImageThumb({
 
 type CompareModelSelection = {
   id: string;
-  loadId?: string;
   isLora: boolean;
   ggufVariant?: string;
   isDiffusion?: boolean;
@@ -1268,10 +1267,7 @@ export function SharedComposer({
       const compareSelectionNeedsLoad = (sel: CompareModelSelection) => {
         const currentStore = useChatRuntimeStore.getState();
         const isAlreadyActive =
-          modelIdsMatch(
-            currentStore.activeLoadId || currentStore.params.checkpoint,
-            sel.loadId || sel.id,
-          ) &&
+          currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
         return !isAlreadyActive || sel.config != null || loadedFromConfig;
@@ -1295,10 +1291,7 @@ export function SharedComposer({
         const ownConfig = resolved.config;
         const ownRemembered = resolved.remembered;
         const isAlreadyActive =
-          modelIdsMatch(
-            currentStore.activeLoadId || currentStore.params.checkpoint,
-            sel.loadId || sel.id,
-          ) &&
+          currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
         if (isAlreadyActive && !config && !loadedFromConfig) {
@@ -1321,7 +1314,7 @@ export function SharedComposer({
             throw new Error("Model load cancelled.");
           }
           const staged = await fetchGgufStagedMetadata({
-            model_path: sel.loadId || sel.id,
+            model_path: sel.id,
             gguf_variant: sel.ggufVariant ?? null,
             hf_token: preparedToken.token,
           });
@@ -1356,7 +1349,7 @@ export function SharedComposer({
             if (local === undefined) {
               const resolvedArgs = await fetchLoadExtraArgs(
                 sel.id,
-                sel.loadId || sel.id,
+                sel.id,
                 sel.ggufVariant ?? null,
               );
               const cleaned = clean(resolvedArgs.tokens);
@@ -1469,7 +1462,7 @@ export function SharedComposer({
           effectiveMaxSeqLength,
         );
         const validation = await validateModel({
-          model_path: sel.loadId || sel.id,
+          model_path: sel.id,
           hf_token: currentStore.hfToken || null,
           max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
@@ -1555,7 +1548,7 @@ export function SharedComposer({
         }
         applyCompareStopDecision();
         const resp = await loadModel({
-          model_path: sel.loadId || sel.id,
+          model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
@@ -1705,7 +1698,6 @@ export function SharedComposer({
           loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
           mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
-          activeLoadId: resp.cache_load_id ?? sel.loadId ?? null,
           // Same value as the baseline above, so when this pane becomes the active model the UI and a later
           // reload use the context it actually loaded with.
           customContextLength: keepCustomCtx,

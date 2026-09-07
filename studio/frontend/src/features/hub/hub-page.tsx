@@ -416,7 +416,6 @@ export function ModelsPage() {
   const { selectModel, loadingModel, loadProgress, ejectModel } =
     useChatModelRuntime();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const activeLoadId = useChatRuntimeStore((s) => s.activeLoadId);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
   // Resident, not merely picked. An image or video load evicts the chat model
   // and leaves the pick alone, so the cards kept saying "Loaded" for weights the
@@ -424,7 +423,7 @@ export function ModelsPage() {
   // stays as it was rather than flashing "On device" on every launch.
   const activeCheckpoint =
     checkpoint && !isExternalModelId(checkpoint) && residentCheckpoint !== null
-      ? activeLoadId || checkpoint
+      ? checkpoint
       : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeLoadedContextLength = useChatRuntimeStore(
@@ -1341,7 +1340,7 @@ export function ModelsPage() {
 
   const isLoadingThisModel = useMemo(() => {
     if (!loadingModel || !selectedModel) return false;
-    return modelIdsMatch(loadingModel.loadId || loadingModel.id, selectedModel.resource.runId);
+    return modelIdsMatch(loadingModel.id, selectedModel.resource.runId);
   }, [loadingModel, selectedModel]);
 
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
@@ -1377,7 +1376,12 @@ export function ModelsPage() {
       const mediaPage = studioPageForTask(
         taskForMediaPick(selectedModel.pipelineTag, selectedModel.task) ?? undefined,
       );
-      // Keep the catalog identity and the selected cache target through media routing.
+      // The target pages read a routed `model` as a Hub id, so a runId that is a PATH would
+      // arrive as a repo that does not exist -- prefer the Hub id, which loads the same copy
+      // since the loader reuses whichever cache root holds it. That covers a filesystem row
+      // (left on today's route, and the backend preflight now refuses it by name) and a
+      // cached repo the inventory pinned to its snapshot directory, whose symlinked entries
+      // the pages' containment check rejects anyway.
       const routeId = runId && !looksLikeLocalPath(runId) ? runId : selectedModel.hubRepoId;
       if (
         mediaPage &&
@@ -1388,7 +1392,6 @@ export function ModelsPage() {
           to: `/${mediaPage}`,
           // `quant` is consumed verbatim as a gguf filename, so a label rides `ggufQuant`.
           search: diffusionRouteSearch(routeId, {
-            loadId: runId,
             ggufVariant: opts.ggufVariant ?? null,
           }),
         });

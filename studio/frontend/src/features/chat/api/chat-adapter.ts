@@ -2554,53 +2554,6 @@ function orderAutoLoadSources(
   return [...sources].sort((a, b) => rank(a) - rank(b) || size(a) - size(b));
 }
 
-async function prioritizeRememberedQuantSources(
-  sources: AutoLoadSource[],
-  remembered: {
-    id: string;
-    kind: LastLocalModelKind;
-    ggufVariant?: string | null;
-    loadId?: string | null;
-  } | null,
-): Promise<AutoLoadSource[]> {
-  const wanted = remembered?.ggufVariant?.trim().toLowerCase();
-  if (!remembered || !wanted) return sources;
-  const matches = sources.filter((source) =>
-    isRememberedSource(source, remembered),
-  );
-  if (matches.length < 2) return sources;
-  const exact = new Set<AutoLoadSource>();
-  await Promise.all(
-    matches.map(async (source) => {
-      if (!source.listVariants) return;
-      const listing = source.listVariants();
-      source.listVariants = () => listing;
-      try {
-        if (
-          (await listing).some(
-            (variant) =>
-              variant.downloaded &&
-              !variant.partial &&
-              isAutoLoadableGgufVariant(variant) &&
-              variant.quant.toLowerCase() === wanted,
-          )
-        )
-          exact.add(source);
-      } catch {
-        /* The load loop handles unavailable sources. */
-      }
-    }),
-  );
-  return [...sources].sort(
-    (a, b) =>
-      Number(exact.has(b)) - Number(exact.has(a)) ||
-      (exact.has(a) && exact.has(b) && remembered.loadId
-        ? Number(normalizeTarget(b.loadId) === normalizeTarget(remembered.loadId)) -
-          Number(normalizeTarget(a.loadId) === normalizeTarget(remembered.loadId))
-        : 0),
-  );
-}
-
 /** The candidate to attempt: remembered quant first, then smallest, skipping quants already
  *  tried. null when nothing here is loadable. */
 async function resolveAutoLoadCandidate(
@@ -3342,7 +3295,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       const loadedModelId = loadResp.model || modelPath;
       // The identity stays the backend's; the pin is recorded alongside it so a later reload finds the same directory.
       useChatRuntimeStore.setState({
-        activeLoadId: loadResp.cache_load_id ?? (modelPath === candidate.id ? null : modelPath),
+        activeLoadId: modelPath === candidate.id ? null : modelPath,
       });
       useChatRuntimeStore
         .getState()
@@ -3507,7 +3460,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       if (!(loadResp.is_lora ?? false)) {
         recordLastLocalModelLoad({
           id: candidate.id,
-          loadId: loadResp.cache_load_id ?? candidate.loadId,
           kind: candidate.kind,
           ggufVariant: candidate.ggufVariant,
         });
@@ -3548,20 +3500,17 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
 
     // Managed cache plus everything the picker indexes on disk; reading only the cache lists made
     // a local model invisible.
-    const sources = await prioritizeRememberedQuantSources(
-      orderAutoLoadSources(
-        buildAutoLoadSources(
-          allGgufRepos.filter(isChattableCachedRepo),
-          cachedModelsRunOnThisPlatform()
-            ? allModelRepos.filter(isChattableCachedRepo)
-            : [],
-          localRows.filter((row) =>
-            isAutoLoadableLocalRow(row, cachedInventoryFailed),
-          ),
-          store.params.maxSeqLength,
-          options?.abortSignal,
+    const sources = orderAutoLoadSources(
+      buildAutoLoadSources(
+        allGgufRepos.filter(isChattableCachedRepo),
+        cachedModelsRunOnThisPlatform()
+          ? allModelRepos.filter(isChattableCachedRepo)
+          : [],
+        localRows.filter((row) =>
+          isAutoLoadableLocalRow(row, cachedInventoryFailed),
         ),
-        lastLoaded,
+        store.params.maxSeqLength,
+        options?.abortSignal,
       ),
       lastLoaded,
     );
@@ -3818,12 +3767,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: loadResp.is_local_model ?? false,
-          activeLoadId: loadResp.cache_load_id ?? null,
           ...resolveLoadedSpeculativeSettings(loadResp),
         });
         recordLastLocalModelLoad({
           id: DEFAULT_CHAT_MODEL_REPO,
-          loadId: loadResp.cache_load_id,
           kind: "gguf",
           ggufVariant: DEFAULT_CHAT_MODEL_VARIANT,
         });

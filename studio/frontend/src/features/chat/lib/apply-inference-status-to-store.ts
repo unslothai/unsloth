@@ -9,7 +9,7 @@ import {
   savedContextPin,
 } from "@/features/model-picker";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { hfCacheRepoId, modelDisplayName } from "@/features/hub/lib/model-identity";
+import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
 import {
@@ -90,8 +90,7 @@ export function resolveInferenceCheckpointId(
   status: InferenceStatusResponse,
 ): string | null {
   if (!status.active_model) return null;
-  const identifier = status.model_identifier ?? status.active_model;
-  return hfCacheRepoId(identifier) ?? identifier;
+  return status.model_identifier ?? status.active_model;
 }
 
 function ensureActiveModelInStoreList(
@@ -153,11 +152,7 @@ export function applyActiveModelStatusToStore(
 
   // Only reached with a model active, so this is the one place both the status poll and the
   // readopt path can publish residency from. Without it a load looks unloaded for up to 10s.
-  useChatRuntimeStore.setState({
-    residentCheckpoint: checkpointId,
-    activeLoadId: status.cache_load_id ?? (status.model_identifier && status.model_identifier !== checkpointId
-      ? status.model_identifier : null),
-  });
+  useChatRuntimeStore.setState({ residentCheckpoint: checkpointId });
 
   const store = useChatRuntimeStore.getState();
   const previousCheckpoint =

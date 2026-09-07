@@ -48,7 +48,6 @@ export interface CachedInventoryRow {
   capabilities: ModelInventoryCapabilities;
   bytes: number;
   cachePath?: string | null;
-  activeCache?: boolean;
   loadCachePath?: string | null;
   /** last changed time as epoch milliseconds. */
   lastModified?: number | null;

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { normalizeModelIdForPicker } from "@/features/model-picker/components/model-selector/row-identity";
 import {
   findCompleteHfCacheLocalRow,
   provenUnknownPartialFamily,
@@ -72,7 +71,6 @@ type CacheSelectionIdentity = {
   source: "cache" | "download" | "hf_cache";
   modelFormat: CachedInventoryRow["modelFormat"];
   repoKey: string;
-  cacheRoot?: string;
 };
 
 const MODEL_FORMATS = new Set<CachedInventoryRow["modelFormat"]>([
@@ -93,16 +91,12 @@ function parseCacheSelectionIdentity(
   }
   const source = id.slice(0, firstSeparator);
   const modelFormat = id.slice(firstSeparator + 1, secondSeparator);
-  const [encodedRepoId, encodedRoot, ...extra] = id
-    .slice(secondSeparator + 1)
-    .split(":");
+  const encodedRepoId = id.slice(secondSeparator + 1);
   if (
     (source !== "cache" && source !== "download" && source !== "hf_cache") ||
     !MODEL_FORMATS.has(modelFormat as CachedInventoryRow["modelFormat"]) ||
     !encodedRepoId ||
-    extra.length > 0 ||
-    (encodedRoot !== undefined &&
-      (source !== "cache" || modelFormat !== "gguf" || !encodedRoot))
+    encodedRepoId.includes(":")
   ) {
     return null;
   }
@@ -113,7 +107,6 @@ function parseCacheSelectionIdentity(
           source,
           modelFormat: modelFormat as CachedInventoryRow["modelFormat"],
           repoKey,
-          cacheRoot: encodedRoot ? decodeURIComponent(encodedRoot) : undefined,
         }
       : null;
   } catch {
@@ -288,19 +281,11 @@ function resolveFormatTransition(
     return null;
   }
   const matchingCached = cachedRows.filter(
-    (row) =>
-      inventoryRepoKey(row) === identity.repoKey &&
-      (!identity.cacheRoot ||
-        parseCacheSelectionIdentity(row.id)?.cacheRoot === identity.cacheRoot),
+    (row) => inventoryRepoKey(row) === identity.repoKey,
   );
   const matchingLocal = localRows.filter(
     (row) =>
-      row.source === "hf_cache" &&
-      inventoryRepoKey(row) === identity.repoKey &&
-      (!identity.cacheRoot ||
-        normalizeModelIdForPicker(row.path).startsWith(
-          `${normalizeModelIdForPicker(identity.cacheRoot)}/models--`,
-        )),
+      row.source === "hf_cache" && inventoryRepoKey(row) === identity.repoKey,
   );
   if (identity.source === "download") {
     return resolveCurrentSelection(

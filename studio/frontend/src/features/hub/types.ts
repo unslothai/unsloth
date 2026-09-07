@@ -79,7 +79,6 @@ export interface SelectedModelView {
   adapterType?: string | null;
   trainingMethod?: string | null;
   isDownloaded: boolean;
-  activeCache?: boolean | null;
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { modelIdsMatchForPicker } from "@/features/model-picker/components/model-selector/row-identity";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import {
   type ServerTuningValues,
@@ -666,13 +665,11 @@ export async function resyncInferenceStatusAfterServerModelChange(): Promise<voi
 
 function pickOf(info: {
   id: string;
-  loadId?: string;
   ggufVariant?: string | null;
   nativePathToken?: string | null;
 }): LoadingModelPick {
   return {
     id: info.id,
-    ...(info.loadId ? { loadId: info.loadId } : {}),
     ggufVariant: info.ggufVariant ?? null,
     nativePathToken: info.nativePathToken ?? null,
   };
@@ -692,7 +689,6 @@ export function useChatModelRuntime() {
   const [loadingModel, setLoadingModel] = useState<{
     id: string;
     displayName: string;
-    loadId?: string;
     isDownloaded?: boolean;
     isCachedLora?: boolean;
     ggufVariant?: string | null;
@@ -872,9 +868,7 @@ export function useChatModelRuntime() {
       const keepSpeculative =
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
-      if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null) &&
-        (typeof selection === "string" || !selection.loadId ||
-          modelIdsMatchForPicker(loadPath, useChatRuntimeStore.getState().activeLoadId || params.checkpoint))))) {
+      if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         restorePreviousConfig();
         return;
       }
@@ -896,7 +890,6 @@ export function useChatModelRuntime() {
         restorePreviousConfig();
         const loadingSamePick =
           inFlightLoad.id === modelId &&
-          modelIdsMatchForPicker(inFlightLoad.loadId || inFlightLoad.id, loadPath) &&
           (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
           (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
         if (loadingSamePick) return true;
@@ -1077,7 +1070,7 @@ export function useChatModelRuntime() {
             // while an external pick is active, so a pin taken for an earlier resident would survive and
             // Apply would reload that old model.
             useChatRuntimeStore.setState({
-              activeLoadId: confirmedStatus.cache_load_id ?? (loadPath === modelId ? null : loadPath),
+              activeLoadId: loadPath === modelId ? null : loadPath,
             });
             useChatRuntimeStore
               .getState()
@@ -1217,7 +1210,6 @@ export function useChatModelRuntime() {
       setLoadToastDismissedState(false);
       const loadInfo = {
         id: modelId,
-        loadId: loadPath,
         displayName,
         isDownloaded,
         isCachedLora,
@@ -2037,7 +2029,7 @@ export function useChatModelRuntime() {
               mmprojFallbackReason: loadResponse.mmproj_fallback_reason ?? null,
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeModelIsLocal: loadResponse.is_local_model ?? false,
-              activeLoadId: loadResponse.cache_load_id ?? (loadPath === modelId ? null : loadPath),
+              activeLoadId: loadPath === modelId ? null : loadPath,
               activeNativePathToken: nativePathToken ?? null,
               activeNativePathExpiresAtMs: nativePathToken
                 ? nativePathExpiresAtMs
@@ -2084,7 +2076,6 @@ export function useChatModelRuntime() {
             ) {
               recordLastLocalModelLoad({
                 id: modelId,
-                loadId: loadResponse.cache_load_id ?? loadPath,
                 kind:
                   loadResponse.is_gguf || isGguf || ggufVariant
                     ? "gguf"

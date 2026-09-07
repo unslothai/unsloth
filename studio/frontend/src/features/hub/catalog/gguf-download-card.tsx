@@ -281,7 +281,6 @@ function createGgufVariantMenuItems(
 // identifier uses llama.cpp's repo:quant syntax so it pastes into `-hf`.
 export function QuantOptionsMenu({
   repoId,
-  cachePath,
   quant,
   label,
   downloaded,
@@ -292,7 +291,6 @@ export function QuantOptionsMenu({
   iconClassName,
 }: {
   repoId: string;
-  cachePath?: string | null;
   quant?: string;
   label: string;
   downloaded: boolean;
@@ -311,7 +309,7 @@ export function QuantOptionsMenu({
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
   const handleCopyPath = useCallback(async () => {
     try {
-      const { path } = await getCachedModelPath(repoId, quant, cachePath);
+      const { path } = await getCachedModelPath(repoId, quant);
       if (await copyToClipboard(path)) {
         toast.success("Copied path");
       } else {
@@ -322,7 +320,7 @@ export function QuantOptionsMenu({
         err instanceof Error ? err.message : "Failed to resolve model path",
       );
     }
-  }, [repoId, quant, cachePath]);
+  }, [repoId, quant]);
   const handleCopyId = useCallback(async () => {
     const id = quant ? `${repoId}:${quant}` : repoId;
     if (await copyToClipboard(id)) {
@@ -378,7 +376,7 @@ export function QuantOptionsMenu({
           <DropdownMenuItem
             onSelect={(e) => {
               e.stopPropagation();
-              revealCachedModel(repoId, quant, cachePath).catch((err) => {
+              revealCachedModel(repoId, quant).catch((err) => {
                 toast.error(
                   err instanceof Error
                     ? err.message
@@ -449,7 +447,6 @@ export function QuantOptionsMenu({
 
 const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   repoId,
-  cachePath,
   item,
   selected,
   loaded,
@@ -459,7 +456,6 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   onDelete,
 }: {
   repoId: string;
-  cachePath?: string | null;
   item: GgufVariantMenuItem;
   selected: boolean;
   loaded: boolean;
@@ -542,7 +538,6 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
             chips column-aligned across rows. */}
         {item.downloaded || item.partial ? (
           <QuantOptionsMenu
-            cachePath={cachePath}
             repoId={repoId}
             quant={item.quant}
             label={item.label}
@@ -570,8 +565,6 @@ export function GgufDownloadCard({
   gpuCount,
   systemRamGb,
   cachePath,
-  activeCache,
-  loadId,
   preferLocalCache = false,
   isPartial = false,
   onLoad,
@@ -592,8 +585,6 @@ export function GgufDownloadCard({
   gpuCount?: number;
   systemRamGb?: number;
   cachePath?: string | null;
-  activeCache?: boolean | null;
-  loadId?: string | null;
   preferLocalCache?: boolean;
   isPartial?: boolean;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
@@ -617,14 +608,14 @@ export function GgufDownloadCard({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const partialsResumable = useHttpPartialsResumable();
-  const localVariantPath =
-    (loadId !== repoId ? loadId?.trim() : null) || cachePath?.trim() || null;
+  const localVariantPath = showMemoryBar ? null : cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
       repoId,
       hfToken,
       preferLocalCache,
       localPath: localVariantPath,
+      includeCacheLocations: showMemoryBar,
     });
   const [selectedQuantState, setSelectedQuantState] = useState<{
     repoId: string;
@@ -805,7 +796,6 @@ export function GgufDownloadCard({
     ? ggufVariantTransferLabel(selected)
     : null;
   const updateAvailable =
-    activeCache !== false &&
     selected?.downloaded === true && selected.update_available === true;
   const selectedVariantKey = selectedQuant
     ? normalizeGgufVariantIdentity(selectedQuant)
@@ -854,12 +844,7 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
-  const deleteImpact = useDeleteImpact(
-    deleteTarget !== null,
-    repoId,
-    deleteTarget,
-    cachePath,
-  );
+  const deleteImpact = useDeleteImpact(deleteTarget !== null, repoId, deleteTarget);
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
@@ -867,7 +852,7 @@ export function GgufDownloadCard({
         repoId,
         deleteTarget,
         hfToken || undefined,
-        cachePath ?? undefined,
+        deleteTargetVariant?.cache_path ?? cachePath ?? undefined,
       );
     },
     successMessage: () =>
@@ -897,7 +882,7 @@ export function GgufDownloadCard({
   // new revision lands. Completion refreshes the variant list, whose metadata
   // carries the "Update available" cue.
   const handleConfirmUpdate = useCallback(() => {
-    if (!updateTarget || activeCache === false) return;
+    if (!updateTarget) return;
     const variant = updateTarget;
     const expectedBytes =
       updateTargetVariant?.download_size_bytes ??
@@ -910,7 +895,7 @@ export function GgufDownloadCard({
       variant,
       expectedBytes,
     });
-  }, [updateTarget, updateTargetVariant, repoId, activeCache]);
+  }, [updateTarget, updateTargetVariant, repoId]);
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
   const showVariantLoadingState = loading && variantListUnavailable;
 
@@ -1087,7 +1072,6 @@ export function GgufDownloadCard({
                 const liveActive = activeDownloadState(liveState?.state);
                 return (
                   <GgufVariantMenuRow
-                    cachePath={cachePath}
                     key={item.filename}
                     repoId={repoId}
                     item={item}
@@ -1111,7 +1095,6 @@ export function GgufDownloadCard({
           Boolean(selected.downloaded || selected.partial) &&
           !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
             <QuantOptionsMenu
-              cachePath={cachePath}
               repoId={repoId}
               quant={selected.quant}
               label={`${repoId} ${selectedLabel}`}

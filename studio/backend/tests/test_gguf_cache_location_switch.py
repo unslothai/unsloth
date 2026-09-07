@@ -67,232 +67,171 @@ def cache_client():
         yield client
 
 
-def test_cached_gguf_keeps_quants_in_previous_download_folders(cache_locations, cache_client):
+@pytest.mark.parametrize("endpoint", ["/api/models/gguf-variants", "/api/hub/gguf-variants"])
+def test_folder_switch_preserves_logical_row_and_both_quants(
+    cache_locations, cache_client, endpoint
+):
+    from core.inference.llama_cpp import cached_gguf_for_load
+
     repo_id, expected = cache_locations
-    scans = inventory_scan.all_hf_cache_scans()
-    assert sum(repo.repo_id == repo_id for scan in scans for repo in scan.repos) == 2
-    rows = [row for row in cache_inventory._scan_cached_gguf() if row["repo_id"] == repo_id]
-    repeated = cache_inventory._scan_cached_gguf(cache_scans = scans + scans)
-    assert [row for row in repeated if row["repo_id"] == repo_id] == rows
-    response = cache_client.get("/api/hub/cached-gguf")
-    assert response.status_code == 200
-    rows = [row for row in response.json()["cached"] if row["repo_id"] == repo_id]
-    found = {}
-    for row in rows:
-        response = asyncio.run(
-            gguf_variants.get_gguf_variants_response(
-                repo_id, prefer_local_cache = True, local_path = row["load_id"]
-            )
-        )
-        for variant in response.variants:
-            if variant.downloaded:
-                found[variant.quant] = row
-
-    assert set(found) == set(expected), "A quant in the inactive cache disappeared"
-    assert len({row["inventory_id"] for row in rows}) == 2
-    for quant, (repo, file_path) in expected.items():
-        assert found[quant]["cache_path"] == str(repo)
-        assert found[quant]["load_id"] == str(file_path.parent)
-        assert file_path.is_file()
-        assert found[quant]["active_cache"] == (
-            repo.parent == hf_cache_settings.get_hf_cache_paths().hub_cache
-        )
-    # Use the exact management path returned by the inventory, even when that
-    # folder is inactive. Deleting Q8 must leave the other cache's Q6 intact.
-    deletion._delete_cached_model_blocking(repo_id, "Q8_0", None, found["Q8_0"]["cache_path"])
-    assert not expected["Q8_0"][1].exists()
-    assert expected["Q6_K"][1].is_file()
-
-
-def test_cache_rows_preserve_quants_in_older_revisions(cache_locations, cache_client):
-    repo_id, expected = cache_locations
-    repo, current_file = expected["Q6_K"]
-    older = repo / "snapshots" / ("a" * 40)
-    older.mkdir()
-    (older / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
-    os.utime(older, (1, 1))
-    inventory_scan.invalidate_hf_cache_scans()
-    rows = [row for row in cache_inventory._scan_cached_gguf() if row["repo_id"] == repo_id]
-    found = {}
-    for row in rows:
-        response = asyncio.run(
-            gguf_variants.get_gguf_variants_response(
-                repo_id, prefer_local_cache = True, local_path = row["load_id"]
-            )
-        )
-        for variant in response.variants:
-            if variant.downloaded:
-                found[variant.quant] = row["load_id"]
-    assert set(found) == {"Q4_K_M", "Q6_K", "Q8_0"}
-    assert found["Q4_K_M"] == str(older)
-    assert found["Q6_K"] == str(current_file.parent)
-    assert len({row["inventory_id"] for row in rows}) == 3
-    assert sum(row["size_bytes"] for row in rows) == 768
-    scans = inventory_scan.all_hf_cache_scans()
-    repeated = cache_inventory._scan_cached_gguf(cache_scans = scans + scans)
-    assert [row for row in repeated if row["repo_id"] == repo_id] == rows
-    assert any(len(item.revisions) == 2 for scan in scans for item in scan.repos)
-    # Once the primary snapshot also has Q4, its older revision needs no extra row.
-    (current_file.parent / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
-    inventory_scan.invalidate_hf_cache_scans()
-    rows = [row for row in cache_inventory._scan_cached_gguf() if row["repo_id"] == repo_id]
-    assert len(rows) == 2
-
-
-@pytest.mark.parametrize("action", ["impact", "reveal", "copy"])
-def test_cache_actions_target_selected_copy(cache_locations, cache_client, monkeypatch, action):
-    repo_id, expected = cache_locations
-    default_q8 = expected["Q6_K"][1].with_name("Model-Q8_0.gguf")
-    default_q8.write_bytes(b"\0" * 128)
-    expected["Q8_0"][1].write_bytes(b"\0" * 512)
-    inventory_scan.invalidate_hf_cache_scans()
-    selected_path = str(expected["Q6_K"][0])
-    payload = {"repo_id": repo_id, "variant": "Q8_0", "cache_path": selected_path}
-    if action == "impact":
-        response = cache_client.post("/api/hub/delete-impact", json = payload)
-        assert response.status_code == 200, response.text
-        assert response.json()["reclaimed_bytes"] == 128
-    elif action == "reveal":
-        revealed = []
-        monkeypatch.setattr("utils.paths.path_utils.reveal_in_file_manager", revealed.append)
-        response = cache_client.post("/api/models/reveal-cached-model", json = payload)
-        assert response.status_code == 200, response.text
-        assert revealed == [default_q8]
-    else:
-        response = cache_client.get("/api/models/cached-model-path", params = payload)
-        assert response.status_code == 200, response.text
-        assert response.json()["path"] == str(default_q8)
-    deletion._delete_cached_model_blocking(repo_id, "Q8_0", None, selected_path)
-    assert not default_q8.exists()
-    assert expected["Q8_0"][1].is_file()
-
-
-@pytest.mark.parametrize("logical_id", [False, True])
-def test_delete_other_copy_of_loaded_quant(cache_locations, cache_client, monkeypatch, logical_id):
-    repo_id, expected = cache_locations
-    default_repo, q6 = expected["Q6_K"]
-    custom_repo, loaded_file = expected["Q8_0"]
-    default_q8 = q6.with_name("Model-Q8_0.gguf")
-    default_q8.write_bytes(b"\0" * 128)
-    inventory_scan.invalidate_hf_cache_scans()
-    backend = SimpleNamespace(
-        is_active = True,
-        is_loaded = True,
-        model_identifier = repo_id if logical_id else str(loaded_file.parent),
-        hf_variant = "Q8_0",
-        gguf_path = str(loaded_file),
-    )
-    monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(deletion, "_inference_backend_blocks_delete", lambda *args: False)
-    monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *args: None)
-    monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *args: None)
-    payload = {"repo_id": repo_id, "variant": "Q8_0", "cache_path": str(default_repo)}
-    response = cache_client.request("DELETE", "/api/hub/delete-cached", json = payload)
-    assert response.status_code == 200, response.text
-    assert not default_q8.exists()
-    assert loaded_file.is_file()
-    payload["cache_path"] = str(custom_repo)
-    response = cache_client.request("DELETE", "/api/hub/delete-cached", json = payload)
-    assert response.status_code == 400, response.text
-    assert "Unload" in response.json()["detail"]
-    assert loaded_file.is_file()
-
-
-def test_unknown_loaded_copy_keeps_delete_guard(cache_locations, monkeypatch):
-    repo_id, expected = cache_locations
-    backend = SimpleNamespace(
-        is_active = True,
-        is_loaded = True,
-        model_identifier = repo_id,
-        hf_variant = "Q8_0",
-        gguf_path = None,
-    )
-    monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
-    assert deletion._llama_cpp_blocks_delete(repo_id, "Q8_0", str(expected["Q6_K"][0]))
-
-
-@pytest.mark.parametrize("media", ["images", "video"])
-def test_delete_other_copy_of_loaded_media(cache_locations, cache_client, monkeypatch, media):
-    repo_id, expected = cache_locations
-    unused_repo, unused_file = expected["Q6_K"]
-    loaded_repo, loaded_file = expected["Q8_0"]
-    backend = SimpleNamespace(
-        status = lambda: {"loaded": True, "repo_id": str(loaded_file.parent)},
-        loaded_repo_ids = lambda: [str(loaded_file.parent)],
-        loading_repo_ids = lambda: [],
-    )
-    monkeypatch.setattr(deletion, "_llama_cpp_blocks_delete", lambda *args: False)
-    monkeypatch.setattr(deletion, "_inference_backend_blocks_delete", lambda *args: False)
-    if media == "images":
-        monkeypatch.setattr(
-            "core.inference.diffusion_engine_router.get_active_diffusion_engine", lambda: backend
-        )
-        monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *args: None)
-    else:
-        monkeypatch.setattr("core.inference.video.get_video_backend", lambda: backend)
-        monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *args: None)
-    response = cache_client.request(
-        "DELETE",
-        "/api/hub/delete-cached",
-        json = {"repo_id": repo_id, "cache_path": str(unused_repo)},
+    rows = [r for r in cache_inventory._scan_cached_gguf() if r["repo_id"] == repo_id]
+    assert len(rows) == 1
+    assert rows[0]["load_id"] == repo_id
+    response = cache_client.get(
+        endpoint,
+        params = {
+            "repo_id": repo_id,
+            "prefer_local_cache": True,
+            "offline": True,
+            "include_cache_locations": True,
+            "local_path": rows[0]["load_id"],
+        },
     )
     assert response.status_code == 200, response.text
-    assert not unused_file.exists()
-    assert loaded_file.is_file()
-    response = cache_client.request(
-        "DELETE",
-        "/api/hub/delete-cached",
-        json = {"repo_id": repo_id, "cache_path": str(loaded_repo)},
+    variants = {v["quant"]: v for v in response.json()["variants"] if v["downloaded"]}
+    assert set(variants) == set(expected)
+    for quant, (repo, path) in expected.items():
+        assert variants[quant]["cache_path"] == str(repo)
+        assert cached_gguf_for_load(repo_id, quant) == str(path)
+
+
+def test_logical_quant_actions_choose_the_same_cache(cache_locations, cache_client):
+    repo_id, expected = cache_locations
+    inactive_quant = next(
+        q
+        for q, (repo, _) in expected.items()
+        if repo.parent != hf_cache_settings.get_hf_cache_paths().hub_cache
     )
-    assert response.status_code == 400
-    assert loaded_file.is_file()
+    repo, path = expected[inactive_quant]
+    payload = {"repo_id": repo_id, "variant": inactive_quant}
+    copied = cache_client.get("/api/models/cached-model-path", params = payload)
+    assert copied.status_code == 200, copied.text
+    assert copied.json()["path"] == str(path)
+    preview = cache_client.post("/api/hub/delete-impact", json = payload)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["reclaimed_bytes"] == 256
+    assert preview.json()["cache_path"] == str(repo)
+    deletion._delete_cached_model_blocking(repo_id, inactive_quant, None)
+    assert not path.exists()
+    assert all(p.exists() for q, (_, p) in expected.items() if q != inactive_quant)
 
 
-def test_companion_duplicate_survives_selected_delete(cache_locations, cache_client, monkeypatch):
-    from hub.services.models import companion_cleanup
-    from hub.utils import companion_assets
+def test_complete_inactive_copy_beats_torn_active_copy(cache_locations, cache_client):
+    from core.inference.llama_cpp import cached_gguf_for_load
 
     repo_id, expected = cache_locations
-    unused_repo, unused_file = expected["Q6_K"]
-    surviving_repo, surviving_file = expected["Q8_0"]
-    # Both copies hold the same required asset; a different quant is not a substitute.
-    duplicate = surviving_file.with_name(unused_file.name)
-    duplicate.write_bytes(unused_file.read_bytes())
+    inactive_quant = next(
+        q
+        for q, (repo, _) in expected.items()
+        if repo.parent != hf_cache_settings.get_hf_cache_paths().hub_cache
+    )
+    active_repo = next(
+        repo
+        for repo, _ in expected.values()
+        if repo.parent == hf_cache_settings.get_hf_cache_paths().hub_cache
+    )
+    active_snap = active_repo / "snapshots" / ("d" * 40)
+    (active_snap / f"Model-{inactive_quant}-00001-of-00002.gguf").write_bytes(b"0" * 256)
     inventory_scan.invalidate_hf_cache_scans()
-    monkeypatch.setattr(companion_assets, "is_companion_base", lambda _repo: True)
+    response = asyncio.run(
+        gguf_variants.get_gguf_variants_response(
+            repo_id, prefer_local_cache = True, include_cache_locations = True
+        )
+    )
+    found = next(v for v in response.variants if v.quant == inactive_quant)
+    assert found.downloaded and not found.partial
+    assert cached_gguf_for_load(repo_id, inactive_quant) == str(expected[inactive_quant][1])
+
+
+def test_duplicate_quant_prefers_active_cache_and_deletes_only_that_copy(
+    cache_locations, cache_client
+):
+    from core.inference.llama_cpp import cached_gguf_for_load
+
+    repo_id, expected = cache_locations
+    for repo, path in expected.values():
+        (path.parent / "Model-Q4_K_M.gguf").write_bytes(b"0" * 256)
+    inventory_scan.invalidate_hf_cache_scans()
+    active_repo = next(
+        repo
+        for repo, _ in expected.values()
+        if repo.parent == hf_cache_settings.get_hf_cache_paths().hub_cache
+    )
+    active_path = active_repo / "snapshots" / ("d" * 40) / "Model-Q4_K_M.gguf"
+    assert cached_gguf_for_load(repo_id, "Q4_K_M") == str(active_path)
+    deletion._delete_cached_model_blocking(repo_id, "Q4_K_M", None)
+    assert not active_path.exists()
+    surviving = [
+        path.parent / "Model-Q4_K_M.gguf" for repo, path in expected.values() if repo != active_repo
+    ]
+    assert all(path.exists() for path in surviving)
+    assert cached_gguf_for_load(repo_id, "Q4_K_M") == str(surviving[0])
+
+
+def test_explicit_snapshot_remains_scoped(cache_locations):
+    repo_id, expected = cache_locations
+    for quant, (repo, path) in expected.items():
+        response = asyncio.run(
+            gguf_variants.get_gguf_variants_response(
+                repo_id,
+                prefer_local_cache = True,
+                local_path = str(path.parent),
+                include_cache_locations = True,
+            )
+        )
+        assert {v.quant for v in response.variants if v.downloaded} == {quant}
+
+
+def test_download_worker_reuses_inactive_quant_without_network(cache_locations, monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    repo_id, expected = cache_locations
+    quant = next(
+        q
+        for q, (repo, _) in expected.items()
+        if repo.parent != hf_cache_settings.get_hf_cache_paths().hub_cache
+    )
+
+    def offline(*args, **kwargs):
+        raise ConnectionError("offline test")
+
+    def no_download(*args, **kwargs):
+        pytest.fail("The downloaded variant must be reused without moving or fetching weights")
+
+    monkeypatch.setattr("huggingface_hub.list_repo_files", offline)
+    monkeypatch.setattr("huggingface_hub.get_paths_info", offline)
+    monkeypatch.setattr("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", no_download)
+    resolved = LlamaCppBackend()._download_gguf(hf_repo = repo_id, hf_variant = quant)
+    assert resolved == str(expected[quant][1])
+
+
+def test_listing_requires_opt_in(cache_locations, cache_client):
+    repo_id, expected = cache_locations
+    response = cache_client.get(
+        "/api/hub/gguf-variants",
+        params = {
+            "repo_id": repo_id,
+            "prefer_local_cache": True,
+            "offline": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    active = {
+        quant
+        for quant, (repo, _) in expected.items()
+        if repo.parent == hf_cache_settings.get_hf_cache_paths().hub_cache
+    }
+    assert {v["quant"] for v in response.json()["variants"] if v["downloaded"]} == active
+
+
+def test_media_sources_do_not_enter_chat_resolution(cache_locations, monkeypatch):
+    from hub.utils.gguf_sources import cached_gguf_action_path, cached_gguf_sources
+
+    repo_id, expected = cache_locations
     monkeypatch.setattr(
-        companion_assets,
-        "required_companion_bases",
-        lambda *a, **k: {repo_id.lower(): {"Org/Image-GGUF"}},
+        "hub.services.models.catalog_classification._gguf_path_task", lambda *args: "text-to-image"
     )
-    monkeypatch.setattr(companion_assets, "known_companion_base_ids", lambda: {repo_id.lower()})
-    monkeypatch.setattr(deletion, "_llama_cpp_blocks_delete", lambda *args: False)
-    monkeypatch.setattr(deletion, "_inference_backend_blocks_delete", lambda *args: False)
-    monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *args: None)
-    monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *args: None)
-    duplicate.write_bytes(b"")
-    inventory_scan.invalidate_hf_cache_scans()
-    assert companion_cleanup._delete_impact_blocking(repo_id, None, str(unused_repo))[
-        "blocked_by"
-    ] == ["Org/Image-GGUF"]
-    duplicate.write_bytes(unused_file.read_bytes())
-    inventory_scan.invalidate_hf_cache_scans()
-    impact = companion_cleanup._delete_impact_blocking(repo_id, None, str(unused_repo))
-    assert impact["blocked_by"] == []
-    response = cache_client.request(
-        "DELETE",
-        "/api/hub/delete-cached",
-        json = {"repo_id": repo_id, "cache_path": str(unused_repo)},
-    )
-    assert response.status_code == 200, response.text
-    assert duplicate.is_file()
-    assert companion_cleanup._delete_impact_blocking(repo_id, None, str(surviving_repo))[
-        "blocked_by"
-    ] == ["Org/Image-GGUF"]
-    response = cache_client.request(
-        "DELETE",
-        "/api/hub/delete-cached",
-        json = {"repo_id": repo_id, "cache_path": str(surviving_repo)},
-    )
-    assert response.status_code == 400
-    assert duplicate.is_file()
+    assert cached_gguf_sources(repo_id) == {}
+    assert cached_gguf_action_path(repo_id, "Q6_K") is None
+    explicit = str(expected["Q6_K"][0])
+    assert cached_gguf_action_path(repo_id, "Q6_K", explicit) == explicit

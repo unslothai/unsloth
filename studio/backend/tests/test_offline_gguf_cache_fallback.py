@@ -146,6 +146,7 @@ def _symlink_or_skip(link: Path, target: Path) -> None:
 
 @pytest.fixture
 def hf_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [tmp_path])
     """Point ``huggingface_hub.constants.HF_HUB_CACHE`` at a temp dir."""
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path))
     monkeypatch.setattr(

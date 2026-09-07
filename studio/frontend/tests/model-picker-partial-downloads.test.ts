@@ -198,11 +198,7 @@ test("a partial GGUF repo carries its own menu, not an empty gutter", () => {
     "and a complete repo still only reserves the gutter",
   );
   // Reveal and delete are the two the row owes; resume stays per-quant in the expander.
-  assert.match(
-    row,
-    /cachePath=\{\{\s*repoId: c\.repo_id,\s*cachePath: c\.cache_path\s*\}\}/,
-    "reveal targets the partial row's cache copy",
-  );
+  assert.ok(row.includes("cachePath={{ repoId: c.repo_id }}"), "reveal");
   assert.ok(row.includes('title: "Delete cached model?"'), "delete");
 });
 

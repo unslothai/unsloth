@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { hfCacheRepoId } from "@/features/hub/lib/model-identity";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Cancel01Icon,
@@ -766,7 +765,6 @@ type H3Task = NonNullable<VideoLoadRequest["h3_task"]>;
 type VideoLoadOptions = {
   kind: "gguf" | "single_file" | "pipeline";
   filename?: string;
-  localPath?: string | null;
   h3Task?: H3Task;
 };
 /** A pick held back while the user chooses the H3 partition. It carries what the deferred
@@ -2389,7 +2387,7 @@ function VideoGenerator({
       if (!meta.ggufFilename) return null;
       const advanced = currentLoadAdvanced("gguf");
       const plan = await getVideoDownloadPlan({
-        model_path: meta.loadId || repoId,
+        model_path: repoId,
         gguf_filename: meta.ggufFilename,
         model_kind: "gguf",
         hf_token: hfApiToken(getHfToken()),
@@ -2449,7 +2447,7 @@ function VideoGenerator({
       try {
         // Returns immediately; the load runs in the background and we poll.
         const startRequest = loadVideoModel({
-          model_path: opts.localPath || repoId,
+          model_path: repoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
@@ -2601,7 +2599,7 @@ function VideoGenerator({
       let incompatible: string | null = null;
       try {
         const plan = await getVideoDownloadPlan({
-          model_path: opts.localPath || repoId,
+          model_path: repoId,
           gguf_filename: opts.filename,
           model_kind: opts.kind,
           // Same token handleLoad sends: without it the metadata lookup fails on a gated base and the
@@ -2703,7 +2701,7 @@ function VideoGenerator({
           }
         },
         load: (filename) =>
-          loadOrStage(repoId, { kind: "gguf", filename, localPath }, source, token),
+          loadOrStage(repoId, { kind: "gguf", filename }, source, token),
       });
     },
     [applyVideoModelDefaults, loadOrStage, pickGuard, quant, revertPick],
@@ -2753,10 +2751,7 @@ function VideoGenerator({
     const routed = { quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
     const routedFilename = routedGgufFilename(routed);
     const routedLabel = routedGgufLabel(routed);
-    const localPath = routeSearch?.loadId;
-    const key = JSON.stringify([
-      wanted, routeSearch?.quant, routeSearch?.ggufQuant, localPath,
-    ]);
+    const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
@@ -2767,7 +2762,7 @@ function VideoGenerator({
     if (routedLabel) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
-        loadGgufRepoPick(wanted, routedLabel, "hub", localPath),
+        loadGgufRepoPick(wanted, routedLabel, "hub"),
       );
       return;
     }
@@ -2777,13 +2772,10 @@ function VideoGenerator({
       wanted,
       routedFilename ?? undefined,
       loadSpecFor(wanted, VIDEO_CATALOG),
-      localPath,
     );
     // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.
     if (pick.opts.kind === "gguf" && !pick.opts.filename) {
-      void Promise.resolve().then(() =>
-        loadGgufRepoPick(pick.repoId, null, "hub", localPath),
-      );
+      void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
       return;
     }
     // Match every direct picker branch: the routed intent owns both the visible build label and
@@ -2816,7 +2808,6 @@ function VideoGenerator({
     routeSearch?.model,
     routeSearch?.quant,
     routeSearch?.ggufQuant,
-    routeSearch?.loadId,
     loadOrStage,
     loadGgufRepoPick,
     navigateSelf,
@@ -2858,9 +2849,6 @@ function VideoGenerator({
     pickGuard.cancel();
   }, [abandonPick, pickGuard]);
 
-  const residentLoadId = status?.loaded ? status.repo_id ?? "" : "";
-  const residentModelId = hfCacheRepoId(residentLoadId) ?? residentLoadId;
-
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     // Status is authoritative when another client replaced the resident model; the ref remains the
@@ -2870,7 +2858,6 @@ function VideoGenerator({
       void handleLoad(l.repoId, {
         kind: l.kind,
         filename: l.filename,
-        localPath: l.localPath,
         h3Task: l.h3Task,
       });
     }
@@ -2939,7 +2926,7 @@ function VideoGenerator({
         applyVideoModelDefaults(`${id}/${meta.ggufFilename}`);
         void loadOrStage(
           id,
-          { kind: "gguf", filename: meta.ggufFilename, localPath: meta.loadId },
+          { kind: "gguf", filename: meta.ggufFilename },
           meta.source,
           token,
         ).then((started) => {
@@ -2964,7 +2951,7 @@ function VideoGenerator({
             id,
             meta.ggufVariant ?? null,
             meta.source,
-            meta.loadId ?? (meta.source === "local" ? id : null),
+            meta.source === "local" ? id : null,
           );
           return;
         }
@@ -3007,7 +2994,7 @@ function VideoGenerator({
           id,
           spec?.filename ?? meta.ggufVariant ?? null,
           meta.source,
-          meta.loadId ?? (meta.source === "local" ? id : null),
+          meta.source === "local" ? id : null,
         );
         return;
       }
@@ -3460,13 +3447,8 @@ function VideoGenerator({
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
             models={videoModels}
-            value={residentModelId || undefined}
-            selectedLoadId={residentLoadId}
-            selectedGgufVariant={status?.gguf_variant ?? null}
-            loadedModelIdOverride={residentModelId}
-            loadedLoadIdOverride={residentLoadId}
-            loadedGgufVariantOverride={status?.gguf_variant ?? null}
-            activeGgufVariant={status?.gguf_variant ?? quant}
+            value={status?.loaded ? status.repo_id ?? undefined : undefined}
+            activeGgufVariant={quant}
             onValueChange={handleModelSelect}
             resolveDownloadFootprint={resolveDownloadFootprint}
             onEject={status?.loaded ? handleUnload : undefined}

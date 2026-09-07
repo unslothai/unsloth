@@ -717,10 +717,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert "activeLoadId: string | null;" in _read("features/chat/stores/chat-runtime-store.ts")
 
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    assert (
-        "activeLoadId: loadResponse.cache_load_id ?? (loadPath === modelId ? null : loadPath),"
-        in _code_only(runtime)
-    )
+    assert "activeLoadId: loadPath === modelId ? null : loadPath," in runtime
     # A failed swap already unloaded the pinned model: reload it from the same place, pin and all.
     assert "model_path: previousActiveLoadId || previousCheckpoint," in runtime
     assert "activeLoadId: previousActiveLoadId ?? null," in runtime
@@ -729,10 +726,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
 
     # Auto-load keys identity off the backend, so the pin is recorded beside it, not in place of it.
     adapter = _read("features/chat/api/chat-adapter.ts")
-    assert (
-        "activeLoadId: loadResp.cache_load_id ?? (modelPath === candidate.id ? null : modelPath),"
-        in _code_only(adapter)
-    )
+    assert "activeLoadId: modelPath === candidate.id ? null : modelPath," in adapter
     assert (
         '(typeof selection === "string" ? null : selection.loadId) || modelId' in runtime
     ), "loadPath must fall back to the id, so an unpinned pick is unchanged"
@@ -1439,8 +1433,8 @@ def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
     helper = _read("lib/diffusion-route-pick.ts")
     assert re.search(r"spec\?:\s*\{\s*kind:", helper), "the helper takes no catalog spec"
     assert (
-        "if (spec) return { repoId: model, opts: { ...target, kind: spec.kind, filename: spec.filename }, };"
-        in _code_only(helper)
+        "if (spec) return { repoId: model, opts: { kind: spec.kind, filename: spec.filename } };"
+        in helper
     )
     for rel, catalog in (
         ("features/images/images-page.tsx", "IMAGE_CATALOG"),
@@ -2648,17 +2642,17 @@ def test_adoption_takes_its_own_pin_before_moving_the_checkpoint():
     adoption branch can adopt a resident the pin was never taken for and Apply would reload the
     old model. The branch has to write the pin itself.
 
-    Adopt the server's physical cache identity, falling back to this pick's path for
-    older servers. The pin must still be written before the checkpoint moves.
+    It used to clear the pin to null. #8943 replaced that with adopting THIS pick's pin by
+    the rule a completed load writes it -- the load path, or null where that is just the id
+    -- which drops a stale pin the same way and additionally keeps a pinned cached row
+    loadable. The ordering requirement is unchanged and is what this still pins.
     """
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
     branch = src[src.index("const confirmedStatus = await getInferenceStatus()") :]
     branch = branch[: branch.index("void refreshContextUsage(")]
-    pin = "activeLoadId: confirmedStatus.cache_load_id ?? (loadPath === modelId ? null : loadPath),"
-    branch = _code_only(branch)
-    assert pin in branch
+    assert "activeLoadId: loadPath === modelId ? null : loadPath," in branch
     # Landing before the checkpoint moves, so nothing reads the pair half updated.
-    assert branch.index(pin) < branch.index(
+    assert branch.index("activeLoadId: loadPath === modelId ? null : loadPath,") < branch.index(
         ".setCheckpoint(modelId, confirmedStatus.gguf_variant)"
     ), "the pin must be written before the checkpoint is adopted"
 
@@ -3024,9 +3018,7 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
     )
     assert "setCheckpoint(status.active_model" not in hub
     chat = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
-    assert "const identifier = status.model_identifier ?? status.active_model;" in chat
-    assert "return hfCacheRepoId(identifier) ?? identifier;" in chat, "the logical checkpoint rule"
-    assert "activeLoadId: status.cache_load_id ??" in chat, "physical residency stays separate"
+    assert "return status.model_identifier ?? status.active_model;" in chat, "the rule this mirrors"
     # The alias is the backend's own public id rule, not a private heuristic.
     identity = _read("features/hub/lib/model-identity.ts")
     assert "export function publicModelId(" in identity
@@ -3712,8 +3704,7 @@ def test_variant_scans_take_the_run_signal():
     build = src.split("function buildAutoLoadSources", 1)[1]
     build = build.split("function isRememberedSource", 1)[0]
     assert build.count("signal,") == 2
-    calls = _call_arguments(src, "buildAutoLoadSources")
-    assert any(_split_args(call)[4].strip() == "options?.abortSignal" for call in calls)
+    assert "options?.abortSignal,\n      )," in src
 
 
 def test_cached_rows_classify_chat_capability_too():
@@ -3853,10 +3844,7 @@ def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function cachedModelsRunOnThisPlatform", 1)[1].split("\n}", 1)[0]
     assert "return !platform.fetched || !platform.isChatOnly();" in gate
-    assert (
-        "cachedModelsRunOnThisPlatform() ? allModelRepos.filter(isChattableCachedRepo) : []"
-        in _code_only(src)
-    )
+    assert "cachedModelsRunOnThisPlatform()\n          ? allModelRepos.filter(" in src
     # GGUF runs everywhere, so those rows stay ungated.
     assert "allGgufRepos.filter(isChattableCachedRepo)," in src
 

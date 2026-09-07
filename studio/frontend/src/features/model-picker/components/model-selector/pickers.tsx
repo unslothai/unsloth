@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { reconcileGgufPinsAfterDelete } from "./reconcile-gguf-pins";
+
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -199,17 +200,12 @@ import {
 import {
   type SoleQuantEntry,
   type SoleQuantTarget,
-  cachedGgufRowKey,
   createSoleQuantReader,
   partitionSoleQuants,
   soleQuantFingerprint,
   soleQuantKey,
   takeDriftedRepos,
 } from "./sole-quant-cache";
-import {
-  resolvePinnedQuantSources,
-  type ResolvedPinnedQuant,
-} from "./pinned-quant-sources";
 import type {
   DeletedModelRef,
   ExternalModelOption,
@@ -1413,6 +1409,7 @@ async function readSoleQuant(
     const res = await listGgufVariantsCached(target.repoId, hfToken, {
       preferLocalCache: true,
       localPath: target.localSource,
+      includeCacheLocations: target.includeCacheLocations,
     });
     const normalized = normalizeGgufVariantsResponse(res);
     const local = normalized.variants;
@@ -1432,7 +1429,7 @@ const EMPTY_SOLE_QUANT_ENTRIES: ReadonlyMap<
 // pool, not fixed batches: one slow repo holds up only itself.
 const SOLE_QUANT_WORKERS = 6;
 
-/** On Device copies holding exactly one quant on disk, keyed by inventory row: with "Show all
+/** On Device repos holding exactly one quant on disk, keyed by repo id: with "Show all
  *  quantizations" off those collapse into one pinned-style row. Kept per repo, so one
  *  repo's download or delete leaves the others alone. */
 function useSoleDownloadedQuants(
@@ -1452,8 +1449,8 @@ function useSoleDownloadedQuants(
       const fingerprint = soleQuantFingerprint(repo);
       return {
         repoId: repo.repo_id,
-        rowId: cachedGgufRowKey(repo),
         localSource,
+        includeCacheLocations: !mediaPageForTask(repo.task),
         fingerprint,
         key: soleQuantKey(versions[index], localSource, fingerprint),
       };
@@ -1502,7 +1499,7 @@ function useSoleDownloadedQuants(
         if (!mountedRef.current) return;
         setEntries((prev) => {
           const next = new Map(prev);
-          next.set(target.rowId ?? target.repoId, { key: target.key, quant });
+          next.set(target.repoId, { key: target.key, quant });
           return next;
         });
       },
@@ -1630,10 +1627,10 @@ function GgufVariantExpander({
       setResolvedLocally(false);
     });
 
-    // The row's own directory, so disk contents count against that cache, not the active one. No
-    // preferLocalCache: it answers from disk alone.
+    // Chat rows name the repository; media and explicit local rows retain their folder scope.
     listGgufVariants(repoId, hfToken, {
       ...(localSource ? { localPath: localSource } : {}),
+      includeCacheLocations: !mediaPageForTask(pipelineTag),
       signal: controller.signal,
     })
       .then((res) => {
@@ -1658,7 +1655,7 @@ function GgufVariantExpander({
       canceled = true;
       controller.abort();
     };
-  }, [repoId, localSource, refreshKey, hfToken]);
+  }, [repoId, localSource, refreshKey, hfToken, pipelineTag]);
 
   // Covers Unix absolute, Windows drive, UNC, relative and tilde paths.
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
@@ -2173,9 +2170,7 @@ function GgufVariantExpander({
                   ariaLabel={`More options for ${repoId} ${v.quant}`}
                   iconClassName="size-3"
                   cachePath={
-                    isLocalPath
-                      ? undefined
-                      : { repoId, variant: v.quant, cachePath }
+                    isLocalPath ? undefined : { repoId, variant: v.quant }
                   }
                   pin={
                     allowPin && v.downloaded
@@ -2215,7 +2210,7 @@ function GgufVariantExpander({
                     onDeleteVariant
                       ? {
                           title: deleteVariantTitle,
-                          impact: { repoId, variant: v.quant, cachePath },
+                          impact: { repoId, variant: v.quant },
                           description: renderDeleteVariantDescription?.(
                             v.quant,
                           ) ?? (
@@ -2233,7 +2228,7 @@ function GgufVariantExpander({
                           disabled: deleteDisabled,
                           onConfirm: async () => {
                             await onDeleteVariant(v.quant);
-                            await reconcileGgufPinsAfterDelete(repoId, v.quant, hfToken);
+                            await reconcileGgufPinsAfterDelete(repoId, hfToken);
                             // Re-fetch this expander's variants so the deleted quant stops showing as
                             // downloaded while other cached quants remain.
                             // repo still has other cached quants.
@@ -2534,9 +2529,7 @@ function localPathTooltip(
   return (
     <>
       <span className="block break-words">{name}</span>
-      {detail ? (
-        <span className="mt-0.5 block break-words">{detail}</span>
-      ) : null}
+      {detail ? <span className="mt-0.5 block break-words">{detail}</span> : null}
       <span className="block mt-1 text-ui-10 text-muted-foreground break-all">
         {path}
       </span>
@@ -2594,14 +2587,10 @@ export function HubModelPicker({
   models,
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
-  loadedLoadIdOverride,
-  loadedGgufVariantOverride,
   loraModels = [],
   externalModels = [],
   value,
   onSelect: onSelectProp,
-  selectedLoadId: selectedLoadIdOverride,
-  selectedGgufVariant,
   resolveDownloadFootprint,
   onFoldersChange,
   onBrowseHub,
@@ -2620,16 +2609,12 @@ export function HubModelPicker({
    *  example the two-file STT sidecars). */
   additionalOnDeviceModels?: ModelOption[];
   loadedModelIdOverride?: string;
-  loadedLoadIdOverride?: string;
-  loadedGgufVariantOverride?: string | null;
   /** Fine-tuned models, shown as a section in the On Device view. */
   loraModels?: LoraModelOption[];
   /** Connected provider models, shown in the Connected section. */
   externalModels?: ExternalModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
-  selectedLoadId?: string | null;
-  selectedGgufVariant?: string | null;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
   /** Open the full Hub page to browse more models. */
@@ -2674,27 +2659,8 @@ export function HubModelPicker({
     ? selectedCheckpoint
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
-  const chatActiveLoadId = useChatRuntimeStore((s) => s.activeLoadId);
-  const activeLoadId = loadedLoadIdOverride ?? chatActiveLoadId;
-  const loadingPick = useChatRuntimeStore((s) => s.loadingModelPick);
-  const selectedLoadId = selectedLoadIdOverride ?? (
-    modelIdsMatchForPicker(loadingPick?.id, value)
-      ? loadingPick?.loadId || loadingPick?.id
-      : modelIdsMatchForPicker(selectedCheckpoint, value)
-        ? activeLoadId || selectedCheckpoint
-        : value
-  );
-  const matchesSelectedCacheCopy = (repoId: string, loadId?: string | null) =>
-    modelIdsMatchForPicker(loadId || repoId, selectedLoadId);
-  const matchesLoadedCacheCopy = (repoId: string, loadId?: string | null) =>
-    (loadedModelIdOverride !== undefined && loadedLoadIdOverride === undefined) ||
-    !modelIdsMatchForPicker(loadedModelId, repoId) ||
-    modelIdsMatchForPicker(loadId || repoId, activeLoadId || loadedModelId);
-
   // Loaded GGUF quant of the active model; marks the matching pinned row.
-  const chatActiveGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const activeGgufVariant = loadedModelIdOverride !== undefined
-    ? loadedGgufVariantOverride ?? null : chatActiveGgufVariant;
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
   // Fade the list's top edge once scrolled, and its bottom edge while more rows sit below the fold.
@@ -3773,12 +3739,6 @@ export function HubModelPicker({
       sortCachedRepos(
         cachedGguf.filter(
           (c) =>
-            // STT sidecars accept curated keys, not an arbitrary cached snapshot.
-            !(
-              c.active_cache === false &&
-              (c.task === "automatic-speech-recognition" ||
-                (typeof task === "string" ? [task] : task ?? []).includes("automatic-speech-recognition"))
-            ) &&
             passesTaskGate(
               c.task,
               c.repo_id,
@@ -4287,54 +4247,80 @@ export function HubModelPicker({
       cached.has(entry.repoId),
     );
   }, [pinnedIds, sortedCachedGguf, formatFilter]);
-  const [pinnedQuantValidation, setPinnedQuantValidation] = useState<
-    ResolvedPinnedQuant[]
-  >([]);
+  const [pinnedQuantValidation, setPinnedQuantValidation] = useState<{
+    validated: boolean;
+    downloaded: ReadonlySet<string>;
+  }>({ validated: false, downloaded: new Set() });
   const prunePinnedQuantValidation = useCallback(
     (repoId: string, quant: string) => {
-      setPinnedQuantValidation((prev) =>
-        prev.filter(
-          (entry) => entry.repoId !== repoId || entry.quant !== quant,
-        ),
-      );
+      const key = pinKey(repoId, quant);
+      setPinnedQuantValidation((prev) => {
+        if (!prev.downloaded.has(key)) return prev;
+        const downloaded = new Set(prev.downloaded);
+        downloaded.delete(key);
+        return { ...prev, downloaded };
+      });
     },
     [],
   );
 
   useEffect(() => {
     let cancelled = false;
-    setPinnedQuantValidation([]);
-    void resolvePinnedQuantSources(
-      pinnedQuantCandidates,
-      sortedCachedGguf,
-      async (copy) => {
-        const response = await listGgufVariantsCached(
-          copy.repo_id,
-          hfToken || undefined,
-          {
-            preferLocalCache: true,
-            localPath: copy.load_id || copy.cache_path || undefined,
-          },
-        );
-        return normalizeGgufVariantsResponse(response).variants;
-      },
-    ).then((entries) => {
-      if (!cancelled) setPinnedQuantValidation(entries);
+    const repoIds = Array.from(
+      new Set(pinnedQuantCandidates.map((entry) => entry.repoId)),
+    );
+    if (repoIds.length === 0) return;
+
+    void Promise.all(
+      repoIds.map(async (repoId) => {
+        try {
+          const response = await listGgufVariantsCached(
+            repoId,
+            hfToken || undefined,
+            { preferLocalCache: true, includeCacheLocations: !mediaPageForTask(
+              sortedCachedGguf.find((row) => row.repo_id === repoId)?.task,
+            ) },
+          );
+          return normalizeGgufVariantsResponse(response)
+            .variants.filter((variant) => variant.downloaded === true)
+            .map((variant) => pinKey(repoId, variant.quant));
+        } catch {
+          // If the backend cannot verify a quant, hiding the direct-load row is safer than claiming a
+          // missing file is downloaded.
+          return [];
+        }
+      }),
+    ).then((groups) => {
+      if (!cancelled) {
+        setPinnedQuantValidation({
+          validated: true,
+          downloaded: new Set(groups.flat()),
+        });
+      }
     });
 
     return () => {
       cancelled = true;
     };
-  }, [hfToken, pinnedQuantCandidates, sortedCachedGguf]);
+  }, [hfToken, pinnedQuantCandidates]);
+  const downloadedPinnedQuantKeys = useMemo<ReadonlySet<string>>(
+    () =>
+      pinnedQuantValidation.validated
+        ? pinnedQuantValidation.downloaded
+        : new Set(),
+    [pinnedQuantValidation],
+  );
 
   // Verified downloaded quants, in pin order and filtered by repo id or quant.
   const pinnedQuants = useMemo(() => {
     const q = normalizeForSearch(debouncedQuery.trim());
-    return pinnedQuantValidation.filter(
+    return pinnedQuantCandidates.filter(
       (entry) =>
-        !q || normalizeForSearch(`${entry.repoId} ${entry.quant}`).includes(q),
+        downloadedPinnedQuantKeys.has(pinKey(entry.repoId, entry.quant)) &&
+        (!q ||
+          normalizeForSearch(`${entry.repoId} ${entry.quant}`).includes(q)),
     );
-  }, [debouncedQuery, pinnedQuantValidation]);
+  }, [debouncedQuery, downloadedPinnedQuantKeys, pinnedQuantCandidates]);
 
   const pinnedCachedModelRows = useMemo(
     () =>
@@ -4596,7 +4582,7 @@ export function HubModelPicker({
     ) {
       keys.push(
         ...unslothCachedGguf.map((model) =>
-          makeModelOptionKey("downloaded-gguf", cachedGgufRowKey(model)),
+          makeModelOptionKey("downloaded-gguf", model.repo_id),
         ),
       );
       keys.push(
@@ -4635,7 +4621,7 @@ export function HubModelPicker({
     ) {
       keys.push(
         ...otherCachedGguf.map((model) =>
-          makeModelOptionKey("downloaded-gguf", cachedGgufRowKey(model)),
+          makeModelOptionKey("downloaded-gguf", model.repo_id),
         ),
       );
       keys.push(
@@ -4715,40 +4701,13 @@ export function HubModelPicker({
     otherModelsCollapsed,
   ]);
 
-  const selectedHubOptionKey = useMemo(() => {
-    if (!value) return undefined;
-    const selectedKeys = new Set(
-      visibleCachedGguf
-        .filter((row) =>
-          row.repo_id === value &&
-          modelIdsMatchForPicker(row.load_id || row.repo_id, selectedLoadId),
-        )
-        .map((row) =>
-          makeModelOptionKey("downloaded-gguf", cachedGgufRowKey(row)),
-        ),
-    );
-    for (const row of pinnedRows) {
-      const entry = row.entry;
-      if (
-        entry?.repoId === value &&
-        entry.quant === (selectedGgufVariant ?? activeGgufVariant) &&
-        modelIdsMatchForPicker(entry.loadId || entry.repoId, selectedLoadId)
-      ) {
-        selectedKeys.add(makeModelOptionKey("pinned-quant", row.key));
-      }
-    }
-    return hubOptionKeys.find((key) =>
-      selectedKeys.has(key) || key.endsWith(`::${value}`),
-    );
-  }, [
-    hubOptionKeys,
-    value,
-    visibleCachedGguf,
-    pinnedRows,
-    selectedLoadId,
-    selectedGgufVariant,
-    activeGgufVariant,
-  ]);
+  const selectedHubOptionKey = useMemo(
+    () =>
+      value
+        ? hubOptionKeys.find((optionKey) => optionKey.endsWith(`::${value}`))
+        : undefined,
+    [hubOptionKeys, value],
+  );
   const hubModelList = useRovingModelList({
     label: "Hub models",
     optionKeys: hubOptionKeys,
@@ -5120,19 +5079,17 @@ export function HubModelPicker({
     );
 
   // A pinned quant: repo name with the quant as a grey chip, loaded in one click.
-  const renderPinnedQuantRow = (entry: ResolvedPinnedQuant) => {
+  const renderPinnedQuantRow = (entry: { repoId: string; quant: string }) => {
     const optionKey = makeModelOptionKey(
       "pinned-quant",
       pinKey(entry.repoId, entry.quant),
     );
     const isSelected =
-      value === entry.repoId && (selectedGgufVariant ?? activeGgufVariant) === entry.quant &&
-      matchesSelectedCacheCopy(entry.repoId, entry.loadId);
+      value === entry.repoId && activeGgufVariant === entry.quant;
     const isLoaded =
       modelIdsMatchForPicker(loadedModelId, entry.repoId) &&
       !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
-      ggufVariantsMatchForPicker(activeGgufVariant, entry.quant) &&
-      matchesLoadedCacheCopy(entry.repoId, entry.loadId);
+      ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
     return (
       <div
         key={optionKey}
@@ -5167,8 +5124,6 @@ export function HubModelPicker({
                 source: "hub",
                 isLora: false,
                 ggufVariant: entry.quant,
-                loadId: entry.loadId,
-                ggufFilename: entry.filename,
                 isDownloaded: true,
                 // The row loads one quant, so it is a GGUF pick like the expander's; without this the pages
                 // asked for a pipeline, which a GGUF repo rejects. No filename: the pin stores a label.
@@ -5190,8 +5145,6 @@ export function HubModelPicker({
                   source: "hub",
                   isLora: false,
                   ggufVariant: entry.quant,
-                  loadId: entry.loadId,
-                  ggufFilename: entry.filename,
                   isDownloaded: true,
                   isGguf: true,
                   pipelineTag:
@@ -5202,11 +5155,7 @@ export function HubModelPicker({
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${entry.repoId} ${entry.quant}`}
-            cachePath={{
-              repoId: entry.repoId,
-              variant: entry.quant,
-              cachePath: entry.cachePath,
-            }}
+            cachePath={{ repoId: entry.repoId, variant: entry.quant }}
             pin={{
               pinned: true,
               pinLabel: "Pin to top",
@@ -5217,11 +5166,7 @@ export function HubModelPicker({
               title: "Delete cached model?",
               // Same preview the Hub On Device row asks for, so a companion base an installed image model
               // still needs shows the reason and a disabled Delete.
-              impact: {
-                repoId: entry.repoId,
-                variant: entry.quant,
-                cachePath: entry.cachePath,
-              },
+              impact: { repoId: entry.repoId, variant: entry.quant },
               description: (
                 <>
                   This will remove{" "}
@@ -5238,10 +5183,9 @@ export function HubModelPicker({
                   entry.repoId,
                   entry.quant,
                   hfToken || undefined,
-                  entry.cachePath,
                 );
                 refreshCachedLists();
-                await reconcileGgufPinsAfterDelete(entry.repoId, entry.quant, hfToken || undefined);
+                await reconcileGgufPinsAfterDelete(entry.repoId, hfToken || undefined);
               },
             }}
           />
@@ -5257,8 +5201,7 @@ export function HubModelPicker({
     sole: SoleDownloadedQuant,
   ) => {
     const variant = sole.variant;
-    const rowKey = cachedGgufRowKey(c);
-    const optionKey = makeModelOptionKey("downloaded-gguf", rowKey);
+    const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
     // The row names one quant, so the repo running a different one is not it.
     const rowState = soleQuantRowState({
       pickerValue: value,
@@ -5266,11 +5209,6 @@ export function HubModelPicker({
       quant: variant.quant,
       loadedModelId,
       activeGgufVariant,
-      loadId: loadedModelIdOverride === undefined || loadedLoadIdOverride !== undefined
-        ? c.load_id : undefined,
-      activeLoadId,
-      selectedLoadId,
-      selectedGgufVariant,
     });
     const isSelected = rowState.selected;
     const expectedBytes = ggufVariantExpectedBytes(variant);
@@ -5295,7 +5233,7 @@ export function HubModelPicker({
     };
     return (
       <div
-        key={rowKey}
+        key={c.repo_id}
         className={downloadedRowShellClassName(isSelected, true)}
       >
         <div className="min-w-0 flex-1">
@@ -5351,11 +5289,7 @@ export function HubModelPicker({
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
-            cachePath={{
-              repoId: c.repo_id,
-              variant: variant.quant,
-              cachePath: c.cache_path,
-            }}
+            cachePath={{ repoId: c.repo_id, variant: variant.quant }}
             pin={{
               pinned: isPinned,
               pinLabel: "Pin to top",
@@ -5364,11 +5298,7 @@ export function HubModelPicker({
             }}
             del={{
               title: "Delete cached model?",
-              impact: {
-                repoId: c.repo_id,
-                variant: variant.quant,
-                cachePath: c.cache_path,
-              },
+              impact: { repoId: c.repo_id, variant: variant.quant },
               description: (
                 <>
                   This will remove{" "}
@@ -5385,9 +5315,9 @@ export function HubModelPicker({
                   c.repo_id,
                   variant.quant,
                   hfToken || undefined,
-                  c.cache_path || undefined,
+                  variant.cache_path || (mediaPageForTask(c.task) ? c.cache_path : undefined) || undefined,
                 );
-                await reconcileGgufPinsAfterDelete(c.repo_id, variant.quant, hfToken || undefined);
+                await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
                 prunePinnedQuantValidation(c.repo_id, variant.quant);
                 refreshCachedLists();
               },
@@ -5400,23 +5330,21 @@ export function HubModelPicker({
 
   // Shared row renderers so Downloaded (Unsloth) and Other models render alike.
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
-    const rowKey = cachedGgufRowKey(c);
-    const optionKey = makeModelOptionKey("downloaded-gguf", rowKey);
-    const copyMatches = matchesLoadedCacheCopy(c.repo_id, c.load_id);
-    const isSelected = value === c.repo_id && matchesSelectedCacheCopy(c.repo_id, c.load_id);
-    const soleQuant = soleQuants.quants.get(rowKey);
+    const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
+    const isSelected = value === c.repo_id;
+    const soleQuant = soleQuants.quants.get(c.repo_id);
     if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
     // Auto-expansion waits for the probe: expanding every row first would mount an expander, and
     // its remote listing, for repos about to collapse.
     const expanderOpen = shouldMountVariantExpander({
-      expanded: isGgufExpanded(rowKey),
-      autoExpand: expandQuantizations && !reopenedGguf.has(rowKey),
-      soleQuantsPending: soleQuants.pending.has(rowKey),
+      expanded: isGgufExpanded(c.repo_id),
+      autoExpand: expandQuantizations && !reopenedGguf.has(c.repo_id),
+      soleQuantsPending: soleQuants.pending.has(c.repo_id),
     });
     // No quant of this repo is clean, so nothing inside the expander can carry the row's actions.
     const isPartialRepo = c.partial === true;
     return (
-      <div key={rowKey}>
+      <div key={c.repo_id}>
         <div className={downloadedRowShellClassName(isSelected)}>
           <div className="min-w-0 flex-1">
             <ModelRow
@@ -5428,14 +5356,14 @@ export function HubModelPicker({
               partial={isPartialRepo}
               partialResumable={c.partial_resumable}
               selected={isSelected}
-              loaded={copyMatches && isRuntimeLoadedModel(
+              loaded={isRuntimeLoadedModel(
                 loadedModelId,
                 activeGgufVariant,
                 c.repo_id,
                 "required",
               )}
               optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
-              onClick={() => toggleGgufExpanded(rowKey, expanderOpen)}
+              onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
               onArrowDownIntoChildren={
                 expanderOpen
                   ? () => focusFirstChildOption(optionKey)
@@ -5454,10 +5382,10 @@ export function HubModelPicker({
             <span className={ROW_ACTIONS_PINNED_CLASS}>
               <ModelRowMenu
                 ariaLabel={`More options for ${c.repo_id}`}
-                cachePath={{ repoId: c.repo_id, cachePath: c.cache_path }}
+                cachePath={{ repoId: c.repo_id }}
                 del={{
                   title: "Delete cached model?",
-                  impact: { repoId: c.repo_id, cachePath: c.cache_path },
+                  impact: { repoId: c.repo_id },
                   // Repo-wide, like every other repo-level delete: no variant is passed, and
                   // one repo id can also hold a complete copy in another format. Saying
                   // "the partial download" would name a smaller scope than the one that runs.
@@ -5480,7 +5408,8 @@ export function HubModelPicker({
                       hfToken || undefined,
                       c.cache_path || undefined,
                     );
-                    await reconcileGgufPinsAfterDelete(c.repo_id, undefined, hfToken || undefined);
+                    // Another remembered folder may still hold a pinned quant.
+                    await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
                   },
                   onDeleted: refreshCachedLists,
                 }}
@@ -5513,17 +5442,15 @@ export function HubModelPicker({
             systemRamGb={expanderRamGb || undefined}
             budgetKnown={expanderBudgetGpu.budgetKnown}
             variantActions={{
-              onUpdate: c.active_cache === false
-                ? undefined
-                : (quant, expectedBytes) =>
-                    updateGgufVariant(c.repo_id, quant, expectedBytes),
-              updateDisabled: copyMatches && loadedModelId === c.repo_id,
+              onUpdate: (quant, expectedBytes) =>
+                updateGgufVariant(c.repo_id, quant, expectedBytes),
+              updateDisabled: loadedModelId === c.repo_id,
               onDelete: async (quant) => {
                 await deleteCachedModel(
                   c.repo_id,
                   quant,
                   hfToken || undefined,
-                  c.cache_path || undefined,
+                  mediaPageForTask(c.task) ? c.cache_path || undefined : undefined,
                 );
                 prunePinnedQuantValidation(c.repo_id, quant);
                 refreshCachedLists();
@@ -5604,7 +5531,7 @@ export function HubModelPicker({
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id}`}
-            cachePath={{ repoId: c.repo_id, cachePath: c.cache_path }}
+            cachePath={{ repoId: c.repo_id }}
             pin={{
               pinned: pinnedSet.has(pinKey(c.repo_id)),
               pinLabel: "Pin to top",
@@ -5613,7 +5540,7 @@ export function HubModelPicker({
             }}
             del={{
               title: "Delete cached model?",
-              impact: { repoId: c.repo_id, cachePath: c.cache_path },
+              impact: { repoId: c.repo_id },
               description: (
                 <>
                   This will remove{" "}

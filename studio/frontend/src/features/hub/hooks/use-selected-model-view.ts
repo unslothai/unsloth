@@ -120,7 +120,6 @@ export function useSelectedModelView({
             : selectedDiscoverRow.summary,
           sourceLabel: selectedLocalRow.sourceLabel,
           path: selectedLocalRow.path,
-          activeCache: selectedLocalRow.activeCache,
           localSource: selectedLocalRow.source,
           isLocal: true,
           isGguf: selectedLocalRow.isGguf || selectedDiscoverRow.result.isGguf,
@@ -193,7 +192,6 @@ export function useSelectedModelView({
             ? "Partial on device"
             : "Hugging Face",
         path: onDevicePath,
-        activeCache: selectedCachedRow?.activeCache ?? selectedLocalRow?.activeCache,
         isLocal: false,
         isGguf:
           selectedCachedRow?.isGguf ??
@@ -276,7 +274,6 @@ export function useSelectedModelView({
           : cachedSummary,
         sourceLabel: "Hub cache",
         path: selectedCachedRow.cachePath ?? null,
-        activeCache: selectedCachedRow.activeCache,
         isLocal: false,
         isGguf: selectedCachedRow.isGguf,
         requiresVariant: selectedCachedRow.capabilities.requiresVariant,
@@ -357,7 +354,6 @@ export function useSelectedModelView({
             : "Partial download. Finish it from the card below, or delete it to free space.",
           sourceLabel: "Hub cache",
           path: selectedLocalRow.path,
-          activeCache: selectedLocalRow.activeCache,
           isLocal: false,
           isGguf: selectedLocalRow.isGguf,
           requiresVariant: selectedLocalRow.capabilities.requiresVariant,
@@ -407,7 +403,6 @@ export function useSelectedModelView({
         )}`,
         sourceLabel: selectedLocalRow.sourceLabel,
         path: selectedLocalRow.path,
-        activeCache: selectedLocalRow.activeCache,
         localSource: selectedLocalRow.source,
         isLocal: true,
         isGguf: selectedLocalRow.isGguf,

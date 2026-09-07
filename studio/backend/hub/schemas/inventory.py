@@ -19,6 +19,9 @@ class GgufVariantDetail(BaseModel):
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
+    cache_path: Optional[str] = Field(
+        None, description = "Owning cache repository for this complete variant"
+    )
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
@@ -226,7 +229,6 @@ class LocalModelListResponse(BaseModel):
 
 
 class CachedRepoBase(BaseModel):
-    active_cache: Optional[bool] = None
     """Shared shape for a cached HF repo row surfaced under On Device."""
 
     repo_id: str
@@ -343,6 +345,10 @@ class CompanionAssetInfo(BaseModel):
 
 class DeleteImpactResponse(BaseModel):
     """What a pending delete would actually do, so the confirm dialog can say it."""
+
+    cache_path: Optional[str] = Field(
+        None, description = "Cache repository folder targeted by this delete"
+    )
 
     repo_id: str
     variant: Optional[str] = None

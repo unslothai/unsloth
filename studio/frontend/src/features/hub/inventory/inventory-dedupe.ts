@@ -53,10 +53,7 @@ function addPartialFormatFamily(
 }
 
 function knownFamiliesMatchUnknownRow(
-  row: Pick<
-    CachedInventoryRow | LocalInventoryRow,
-    "partialTransport" | "partial"
-  >,
+  row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport" | "partial">,
   families: ReadonlySet<PartialFormatFamily> | undefined,
 ): boolean {
   if (!families?.size) return false;
@@ -64,20 +61,6 @@ function knownFamiliesMatchUnknownRow(
   // A complete row has no transport, so the test below would always say "gguf" and keep it beside a safetensors row; any known family shadows it instead.
   if (!row.partial) return true;
   return families.has(row.partialTransport ? "model" : "gguf");
-}
-
-function sameGgufCacheCopy(
-  cached: CachedInventoryRow,
-  local: LocalInventoryRow,
-): boolean {
-  if (cached.modelFormat !== "gguf") return true;
-  if (!cached.cachePath)
-    return Boolean(
-      cached.liveDownload && local.partial && local.activeCache !== false,
-    );
-  const repoPath = cached.cachePath.replaceAll("\\", "/").replace(/\/+$/, "");
-  const localPath = local.path.replaceAll("\\", "/");
-  return localPath === repoPath || localPath.startsWith(`${repoPath}/`);
 }
 
 export function findCompleteHfCacheLocalRow(
@@ -93,8 +76,7 @@ export function findCompleteHfCacheLocalRow(
       (row) =>
         row.source === "hf_cache" &&
         !row.partial &&
-        repoFormatKey(row.repoId, row.modelFormat) === key &&
-        sameGgufCacheCopy(cachedRow, row),
+        repoFormatKey(row.repoId, row.modelFormat) === key,
     ) ?? null
   );
 }
@@ -139,57 +121,15 @@ function dedupeCachedRows(
 ): CachedInventoryRow[] {
   const selected = new Map<string, CachedInventoryRow>();
   const passthrough: CachedInventoryRow[] = [];
-  const activeGgufCopies = new Map<string, CachedInventoryRow>();
   for (const row of rows) {
-    const repoFormat = repoFormatKey(row.repoId, row.modelFormat);
-    if (
-      repoFormat &&
-      row.modelFormat === "gguf" &&
-      row.cachePath &&
-      row.activeCache !== false &&
-      !row.liveDownload
-    ) {
-      const existing = activeGgufCopies.get(repoFormat);
-      if (!existing || (row.partial && !existing.partial)) {
-        activeGgufCopies.set(repoFormat, row);
-      }
-    }
-  }
-  for (const row of rows) {
-    const repoFormat = repoFormatKey(row.repoId, row.modelFormat);
-    // Coalesce a live download with one active copy, without merging sibling snapshots.
-    const copy =
-      row.liveDownload && repoFormat
-        ? (activeGgufCopies.get(repoFormat) ?? row)
-        : row;
-    const key =
-      repoFormat && row.modelFormat === "gguf" && copy.cachePath
-        ? `${repoFormat}\0${copy.cachePath}\0${copy.loadId || ""}`
-        : repoFormat;
+    const key = repoFormatKey(row.repoId, row.modelFormat);
     if (!key) {
       passthrough.push(row);
       continue;
     }
     const existing = selected.get(key);
     if (preferCachedRow(row, existing)) {
-      selected.set(
-        key,
-        row.liveDownload && existing?.cachePath
-          ? {
-              ...row,
-              id: existing.id,
-              cachePath: existing.cachePath,
-              activeCache: existing.activeCache,
-            }
-          : row,
-      );
-    } else if (existing?.liveDownload && row.cachePath) {
-      selected.set(key, {
-        ...existing,
-        id: row.id,
-        cachePath: row.cachePath,
-        activeCache: row.activeCache,
-      });
+      selected.set(key, row);
     }
   }
   return [...selected.values(), ...passthrough];
@@ -259,13 +199,7 @@ export function dedupeSameSourceHubCacheRows({
       return false;
     }
     const key = repoFormatKey(row.repoId, row.modelFormat);
-    return !(
-      row.partial &&
-      key &&
-      completeHfCacheLocalKeys.has(key) &&
-      (row.modelFormat !== "gguf" ||
-        findCompleteHfCacheLocalRow(row, localRows))
-    );
+    return !(row.partial && key && completeHfCacheLocalKeys.has(key));
   });
   const retainedCachedKeys = new Set(
     filteredCachedRows.flatMap((row) => {
@@ -281,16 +215,7 @@ export function dedupeSameSourceHubCacheRows({
         return true;
       }
       const key = repoFormatKey(row.repoId, row.modelFormat);
-      if (
-        key &&
-        retainedCachedKeys.has(key) &&
-        (row.modelFormat !== "gguf" ||
-          filteredCachedRows.some(
-            (cached) =>
-              repoFormatKey(cached.repoId, cached.modelFormat) === key &&
-              sameGgufCacheCopy(cached, row),
-          ))
-      ) {
+      if (key && retainedCachedKeys.has(key)) {
         return false;
       }
       const repo = repoKey(row.repoId);

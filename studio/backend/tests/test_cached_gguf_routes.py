@@ -2269,6 +2269,7 @@ def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, t
                 "prefer_local_cache": True,
                 "offline": False,
                 "local_path": str(snapshot),
+                "include_cache_locations": False,
                 "hf_token": None,
             },
         )
@@ -2361,7 +2362,13 @@ def test_gguf_variants_route_forwards_offline(monkeypatch):
     )
 
     assert calls == [
-        {"prefer_local_cache": False, "offline": True, "local_path": None, "hf_token": None}
+        {
+            "prefer_local_cache": False,
+            "offline": True,
+            "local_path": None,
+            "include_cache_locations": False,
+            "hf_token": None,
+        }
     ]
 
 

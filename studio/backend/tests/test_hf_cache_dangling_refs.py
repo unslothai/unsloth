@@ -1508,7 +1508,8 @@ def test_the_row_and_the_picker_agree_on_equal_mtime_snapshots(tmp_path, monkeyp
 
 
 def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
-    """Each cache copy keeps the vision capability of its own snapshot."""
+    """The same repo can sit in the active hub cache and in a previous one. One row survives the
+    merge and only its directory loads, so the loser's projector flag must not carry over."""
     from types import SimpleNamespace
 
     from hub.services.models import cache_inventory
@@ -1537,11 +1538,11 @@ def test_vision_does_not_travel_between_two_cache_roots(tmp_path, monkeypatch):
     finally:
         inventory_scan.invalidate_hf_cache_scans()
 
-    assert [row["repo_id"] for row in rows] == ["Org/Model", "Org/Model"]
-    by_active = {row["active_cache"]: row for row in rows}
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    assert rows[0]["active_cache"] is True
+    # The row the picker shows loads out of the active root, which holds no projector.
     assert not (active / "models--Org--Model" / "snapshots" / SNAPSHOT / "mmproj-F16.gguf").exists()
-    assert by_active[True]["capabilities"].get("supports_vision") is False
-    assert by_active[False]["capabilities"].get("supports_vision") is True
+    assert rows[0]["capabilities"].get("supports_vision") is False
 
 
 # --- the chokepoints, so a new signal cannot pick its own snapshot ------------

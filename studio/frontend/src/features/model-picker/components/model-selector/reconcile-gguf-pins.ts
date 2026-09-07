@@ -7,39 +7,35 @@ import {
   pinnedQuantEntries,
   usePinnedModelsStore,
 } from "./pinned-models";
-import { missingPinnedQuants } from "./pinned-quant-sources";
 
 export async function reconcileGgufPinsAfterDelete(
   repoId: string,
-  quant?: string,
   hfToken?: string,
 ): Promise<void> {
-  const pinned = usePinnedModelsStore.getState().pinned;
-  const barePinned = pinned.includes(pinKey(repoId));
-  const pins = pinnedQuantEntries(pinned).filter(
-    (pin) => pin.repoId === repoId && (!quant || pin.quant === quant),
-  );
-  if (!pins.length && !barePinned) return;
   try {
     const copies = await listCachedGguf();
-    const missing = await missingPinnedQuants(pins, copies, async (copy) => {
-      const response = await listGgufVariants(copy.repo_id, hfToken, {
-        preferLocalCache: true,
-        localPath: copy.cache_path || copy.load_id || undefined,
-      });
-      return response.variants;
-    });
-    if (barePinned && !copies.some((copy) => copy.repo_id === repoId)) {
-      const state = usePinnedModelsStore.getState();
-      if (state.pinned.includes(pinKey(repoId))) state.togglePinned(repoId);
-    }
-    for (const pin of missing) {
-      const state = usePinnedModelsStore.getState();
-      if (state.pinned.includes(pinKey(pin.repoId, pin.quant))) {
-        state.togglePinned(pin.repoId, pin.quant);
+    const present = copies.some((copy) => copy.repo_id === repoId);
+    const variants = present
+      ? (
+          await listGgufVariants(repoId, hfToken, {
+            preferLocalCache: true,
+          })
+        ).variants
+      : [];
+    const state = usePinnedModelsStore.getState();
+    if (!present && state.pinned.includes(pinKey(repoId)))
+      state.togglePinned(repoId);
+    for (const pin of pinnedQuantEntries(state.pinned)) {
+      if (
+        pin.repoId === repoId &&
+        !variants.some(
+          (v) => v.quant === pin.quant && v.downloaded && !v.partial,
+        )
+      ) {
+        state.togglePinned(repoId, pin.quant);
       }
     }
   } catch {
-    // Preserve the user's pins until all remaining copies can be checked.
+    // An unavailable scan is not evidence that the last downloaded copy is gone.
   }
 }

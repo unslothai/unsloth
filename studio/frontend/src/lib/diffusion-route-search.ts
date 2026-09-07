@@ -6,7 +6,6 @@ import { isGgufName } from "./gguf-filename-pick.ts";
 /** What the chat picker puts in the URL when a diffusion pick routes to /images or /video. */
 export interface DiffusionRouteSearch {
   model: string;
-  loadId?: string;
   /** An exact repo filename, never a label: the target page uses it verbatim as the gguf filename. */
   quant?: string;
   /** A quant label (`Q4_K_S`) for a pick that has no filename, e.g. a pinned row. The page resolves it against the listing. */
@@ -20,18 +19,12 @@ const trimmed = (value: string | null | undefined): string | null =>
  *  consumed as a filename; forwarding the filename alone left a pinned row as a bare repo id that read as a pipeline. */
 export function diffusionRouteSearch(
   model: string,
-  meta: {
-    ggufFilename?: string | null;
-    ggufVariant?: string | null;
-    loadId?: string | null;
-  },
+  meta: { ggufFilename?: string | null; ggufVariant?: string | null },
 ): DiffusionRouteSearch {
-  const loadId = trimmed(meta.loadId);
-  const target = { model, ...(loadId && loadId !== model ? { loadId } : {}) };
   const filename = trimmed(meta.ggufFilename);
-  if (filename) return { ...target, quant: filename };
+  if (filename) return { model, quant: filename };
   const label = trimmed(meta.ggufVariant);
-  return label ? { ...target, ggufQuant: label } : target;
+  return label ? { model, ggufQuant: label } : { model };
 }
 
 /** The exact .gguf a routed pick names, if it names one. */

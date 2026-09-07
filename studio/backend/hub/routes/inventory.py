@@ -93,6 +93,7 @@ async def get_gguf_variants(
     prefer_local_cache: bool = Query(False),
     offline: bool = Query(False),
     local_path: Optional[str] = Query(None),
+    include_cache_locations: bool = False,
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
@@ -101,6 +102,7 @@ async def get_gguf_variants(
         prefer_local_cache = prefer_local_cache,
         offline = offline,
         local_path = local_path,
+        include_cache_locations = include_cache_locations,
         hf_token = hf_token,
     )
 
@@ -221,7 +223,6 @@ async def list_hidden_models(current_subject: str = Depends(get_current_subject)
 async def delete_impact(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
-    cache_path: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """Preview a delete: bytes reclaimed, shared assets retained, and anything blocking it.
@@ -229,7 +230,7 @@ async def delete_impact(
     POST rather than GET because a repo id is a path-shaped value and this reads no cache of its
     own; it is a pure query and mutates nothing.
     """
-    return await companion_cleanup.delete_impact_response(repo_id, variant, cache_path)
+    return await companion_cleanup.delete_impact_response(repo_id, variant)
 
 
 @router.get("/orphan-companions", response_model = OrphanCompanionsResponse)

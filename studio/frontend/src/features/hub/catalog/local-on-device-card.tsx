@@ -82,7 +82,6 @@ interface LocalOnDeviceCardProps {
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
-  activeCache?: boolean | null;
   /** False for a local diffusion / audio / video GGUF: it runs through the media
    *  planner rather than llama.cpp, so the KV estimator describes the wrong
    *  runtime -- and it still falls back to the file size, so it draws a
@@ -222,7 +221,6 @@ export function LocalOnDeviceCard({
   sourceLabel,
   source,
   path,
-  activeCache,
   showMemoryBar = true,
   isGguf,
   requiresVariant = false,
@@ -280,12 +278,7 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
-  const deleteImpact = useDeleteImpact(
-    deleteOpen && Boolean(repoId),
-    repoId ?? "",
-    undefined,
-    path,
-  );
+  const deleteImpact = useDeleteImpact(deleteOpen && Boolean(repoId), repoId ?? "");
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
@@ -444,7 +437,6 @@ export function LocalOnDeviceCard({
     selectedVariant?.downloaded === true &&
     selectedVariant.update_available === true;
   const canUpdate =
-    activeCache !== false &&
     online &&
     source === "hf_cache" &&
     !!repoId &&
@@ -457,7 +449,7 @@ export function LocalOnDeviceCard({
   // Cancel. The worker re-resolves `main` and pulls changed blobs while the old
   // cached copy stays runnable until the new revision verifies.
   const handleConfirmUpdate = () => {
-    if (!repoId || !updateTargetVariant || activeCache === false) return;
+    if (!repoId || !updateTargetVariant) return;
     setUpdateOpen(false);
     void downloadManager
       .requestStart({

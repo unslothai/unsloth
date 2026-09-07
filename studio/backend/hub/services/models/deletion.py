@@ -586,12 +586,8 @@ def reclaim_replaced_gguf_variant(
     }
 
 
-def _loaded_id_matches_repo(
-    loaded_id: str,
-    repo_id: str,
-    cache_path: Optional[str] = None,
-) -> bool:
-    """Match a resident path in the targeted copy; an unresolved repo ID blocks all copies."""
+def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
+    """Match a loaded repo ID or an on-disk path inside any copy of the repo."""
     rid = repo_id.lower()
     lid = loaded_id.lower()
     if lid == rid or lid.startswith(f"{rid}/"):
@@ -601,19 +597,9 @@ def _loaded_id_matches_repo(
         loaded_path = Path(loaded_id).expanduser().resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
         return False
-    repo_dirs = list(iter_repo_cache_dirs("model", repo_id))
-    target_root = (
-        resolve_delete_target_root("model", repo_id, cache_path, [p.parent for p in repo_dirs])
-        if cache_path
-        else None
-    )
-    for repo_dir in repo_dirs:
+    for repo_dir in iter_repo_cache_dirs("model", repo_id):
         try:
             resolved_repo = repo_dir.resolve(strict = False)
-            if target_root is not None and resolved_repo.parent != target_root.resolve(
-                strict = False
-            ):
-                continue
             if loaded_path == resolved_repo or loaded_path.is_relative_to(resolved_repo):
                 return True
         except (OSError, RuntimeError, ValueError):
@@ -622,13 +608,9 @@ def _loaded_id_matches_repo(
 
 
 def _loaded_repo_variant_blocks_delete(
-    loaded_id: str,
-    repo_id: str,
-    delete_variant: Optional[str],
-    loaded_variant: Optional[str],
-    cache_path: Optional[str] = None,
+    loaded_id: str, repo_id: str, delete_variant: Optional[str], loaded_variant: Optional[str]
 ) -> bool:
-    if not _loaded_id_matches_repo(loaded_id, repo_id, cache_path):
+    if not _loaded_id_matches_repo(loaded_id, repo_id):
         return False
     if not delete_variant:
         return True
@@ -643,11 +625,7 @@ _LOAD_STATE_UNVERIFIABLE_DETAIL = (
 )
 
 
-def _llama_cpp_blocks_delete(
-    repo_id: str,
-    variant: Optional[str],
-    cache_path: Optional[str] = None,
-) -> bool:
+def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
         from routes.inference import get_llama_cpp_backend
@@ -663,15 +641,13 @@ def _llama_cpp_blocks_delete(
             repo_id,
             variant,
             loaded_variant,
-            cache_path,
         )
     if backend.is_loaded and loaded_id:
         return _loaded_repo_variant_blocks_delete(
-            getattr(backend, "gguf_path", None) or loaded_id,
+            loaded_id,
             repo_id,
             variant,
             loaded_variant,
-            cache_path,
         )
     return False
 
@@ -692,7 +668,7 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
 
 
-def _diffusion_blocks_delete(repo_id: str, cache_path: Optional[str] = None) -> Optional[str]:
+def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     """The 400 detail if the Images backend holds *repo_id*, else None.
 
     Queries the ACTIVE engine: on a native selection the diffusers singleton reports
@@ -707,21 +683,21 @@ def _diffusion_blocks_delete(repo_id: str, cache_path: Optional[str] = None) -> 
         return None
     status = engine.status()
     if status.get("loaded") and status.get("repo_id"):
-        if _loaded_id_matches_repo(str(status["repo_id"]), repo_id, cache_path):
+        if _loaded_id_matches_repo(str(status["repo_id"]), repo_id):
             return "Unload the model before deleting"
     # sd.cpp re-reads companion VAE / text-encoder files every generation and status().repo_id covers
     # only the main GGUF, so refuse the companions too.
     for lid in getattr(engine, "loaded_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id, cache_path):
+        if _loaded_id_matches_repo(str(lid), repo_id):
             return "Unload the model before deleting"
     # A downloading repo still reports loaded=False, but deleting would pull blobs from under the in-flight fetch.
     for lid in getattr(engine, "loading_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id, cache_path):
+        if _loaded_id_matches_repo(str(lid), repo_id):
             return "An Images model load is using this repo; wait for it to finish"
     return None
 
 
-def _video_blocks_delete(repo_id: str, cache_path: Optional[str] = None) -> Optional[str]:
+def _video_blocks_delete(repo_id: str) -> Optional[str]:
     """The 400 detail if the Video backend holds or is fetching *repo_id*, else None.
 
     Video repos share the On Device delete action, so a live Wan / LTX / Hunyuan
@@ -739,15 +715,15 @@ def _video_blocks_delete(repo_id: str, cache_path: Optional[str] = None) -> Opti
         # and text encoders, so refuse it too.
         for key in ("repo_id", "base_repo"):
             held = status.get(key)
-            if held and _loaded_id_matches_repo(str(held), repo_id, cache_path):
+            if held and _loaded_id_matches_repo(str(held), repo_id):
                 return "Unload the model before deleting"
     # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are
     # neither of the two ids above, so refuse those as well.
     for lid in getattr(backend, "loaded_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id, cache_path):
+        if _loaded_id_matches_repo(str(lid), repo_id):
             return "Unload the model before deleting"
     for lid in getattr(backend, "loading_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id, cache_path):
+        if _loaded_id_matches_repo(str(lid), repo_id):
             return "A Video model load is using this repo; wait for it to finish"
     return None
 
@@ -785,15 +761,11 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
         return True
 
 
-def _companion_share_blocks_delete(
-    repo_id: str,
-    variant: Optional[str] = None,
-    cache_path: Optional[str] = None,
-) -> Optional[str]:
+def _companion_share_blocks_delete(repo_id: str) -> Optional[str]:
     """The 400 detail when installed models still need *repo_id*'s shared assets, else None."""
     from hub.services.models import companion_cleanup
 
-    holders = companion_cleanup.companion_delete_dependents(repo_id, variant, cache_path)
+    holders = companion_cleanup.companion_dependents(repo_id, ignore_repo_ids = [repo_id])
     if not holders:
         return None
     shown = ", ".join(holders[:3])
@@ -833,14 +805,12 @@ async def delete_cached_model_response(
 
     # Fail closed with 503 rather than unlink weights under a running process.
     def _load_state_blocks_delete() -> Optional[str]:
-        if _llama_cpp_blocks_delete(repo_id, variant, cache_path) or (
+        if _llama_cpp_blocks_delete(repo_id, variant) or (
             _inference_backend_blocks_delete(repo_id)
         ):
             return "Unload the model before deleting"
         # The guards above are chat-only; Images / Video hold their own pipelines.
-        return _diffusion_blocks_delete(repo_id, cache_path) or _video_blocks_delete(
-            repo_id, cache_path
-        )
+        return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
 
     try:
         blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
@@ -902,6 +872,9 @@ def _delete_cached_model_blocking(
     *,
     only_if_orphan: bool = False,
 ) -> dict:
+    from hub.utils.gguf_sources import cached_gguf_action_path
+
+    cache_path = cached_gguf_action_path(repo_id, variant, cache_path)
     # Free up space's list can be minutes old, and a background download finishing turns that orphan
     # into an installed checkpoint neither guard below catches.
     if only_if_orphan:
@@ -959,7 +932,7 @@ def _delete_cached_model_blocking(
         # Fails CLOSED, and only here: the lookup above already established this repo IS a companion base,
         # so an unreadable cache means the dependants cannot be enumerated, not that there are none.
         try:
-            shared_detail = _companion_share_blocks_delete(repo_id, variant, cache_path)
+            shared_detail = _companion_share_blocks_delete(repo_id)
         except Exception as e:
             logger.warning(f"Companion dependency check failed for {repo_id}; refusing delete: {e}")
             raise HTTPException(

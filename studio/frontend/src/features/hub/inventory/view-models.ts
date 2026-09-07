@@ -172,7 +172,6 @@ export function buildCachedInventoryRow(
     repo_id: string;
     size_bytes: number;
     cache_path?: string;
-    active_cache?: boolean;
     load_cache_path?: string;
     partial?: boolean;
     partial_transport?: string | null;
@@ -234,7 +233,6 @@ export function buildCachedInventoryRow(
     capabilities,
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
-    activeCache: row.active_cache,
     loadCachePath: row.load_cache_path ?? null,
     lastModified: normalizeTimestamp(row.last_modified),
     partial: row.partial ?? false,

@@ -153,6 +153,7 @@ export interface ValidateModelResponse {
 }
 
 export interface GgufVariantDetail {
+  cache_path?: string | null;
   filename: string;
   /** Selection identity. Path-qualified when a repo holds several checkpoints at one quant. */
   quant: string;
@@ -200,7 +201,6 @@ export function isMultimodalResponse(
 }
 
 export interface LoadModelResponse {
-  cache_load_id?: string | null;
   is_mlx?: boolean;
   status: string;
   model: string;
@@ -304,7 +304,6 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
-  cache_load_id?: string | null;
   is_mlx?: boolean;
   active_model: string | null;
   model_identifier?: string | null;
