@@ -4894,6 +4894,9 @@ export function createOpenAIStreamAdapter(
       // media cannot mis-ride a later one. Media turns are durable candidates too: replay is faithful now, and once
       // generation starts the client contributes nothing; a backend toggle-off degrades to legacy silently via
       // isLegacyFallbackChatGenerationAdmissionError, exactly like a policy-refused tool turn.
+      const currentTurnMessages = [generationUserMessage] as unknown as Parameters<
+        typeof findLatestUserImageBase64
+      >[0];
       // The whole gate is `isDurableRunCandidate` (api/durable-gate.ts), over the plain values resolved above, so it
       // reads as a truth table and tests as one: external provider, audio model, diffusion, a continuation
       // (its seeded partial is autosaved before the request starts, and admission 409s a placeholder that already

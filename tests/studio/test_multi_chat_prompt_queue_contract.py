@@ -845,11 +845,12 @@ def test_base64_media_turns_are_durable_and_their_attachments_stay_turn_scoped()
         "const generationCandidate = isDurableRunCandidate({",
         "});",
     )
-    # What reaches the gate is the turn-scoped scan, never a raw blob pulled off history: if a base64 field shows up
-    # in the gate again, a media turn is back on the subscriber-owned stream and closing the tab kills it mid-turn.
-    assert "turnCarriesMedia: currentTurnCarriesMedia," in candidate
-    # The rule itself lives in the pure module, where a truth table can pin it case by case.
-    assert "input.turnCarriesMedia !== true" in DURABLE_GATE
+    # Media left the gate entirely: replay is faithful now, so a media turn is durable like any other, and the
+    # refusal lives behind UNSLOTH_STUDIO_DURABLE_MEDIA_TURNS in studio/backend/routes/chat_generation_runs.py.
+    # What stays pinned here is the other half: what reaches the payload is THIS turn's scan, never a raw blob
+    # pulled off post-prune history, so an old screenshot can no longer mis-ride a later text-only turn.
+    assert "turnCarriesMedia" not in candidate
+    assert "input.turnCarriesMedia !== true" not in DURABLE_GATE
     for token in ("imageBase64", "audioBase64", "videoBase64"):
         assert token not in candidate, (
             f"the durability gate reads {token} again, so a media turn is back on the subscriber-owned stream "
