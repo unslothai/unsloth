@@ -63,6 +63,13 @@ export function installLocalStorageFake(): {
         listeners.get(type)?.delete(fn);
       },
     },
+    // A window implies a document: code guarded on `typeof window` reaches for
+    // one, and a fake without it is a browser no browser ever is.
+    document: {
+      visibilityState: "visible",
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    },
     localStorage: storage,
   });
   return {

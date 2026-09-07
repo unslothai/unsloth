@@ -10,11 +10,15 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from hub.utils.hf_tokens import is_anonymous
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
 )
-from hub.utils.gguf import extract_quant_label, iter_snapshots_preferring_whole
+from hub.utils.gguf import (
+    extract_quant_label,
+    iter_snapshots_preferring_whole,
+)
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -23,6 +27,7 @@ from utils.models.model_config import (
     _is_mtp_drafter,
 )
 from utils.hf_cache_settings import active_hf_hub_cache
+from utils.utils import hf_env_offline
 from utils.paths.path_utils import (
     is_local_path,
     normalize_path,
@@ -30,6 +35,7 @@ from utils.paths.path_utils import (
 )
 
 from .schemas import MAX_CHAT_TEMPLATE_BYTES, ValidateChatTemplateResponse
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +238,8 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
             if not name.lower().endswith(".gguf") or _is_mmproj(name):
                 continue
             path = Path(current) / name
+            if is_appledouble_metadata(path):
+                continue
             try:
                 rel = path.relative_to(dir_path).as_posix()
             except ValueError:
@@ -357,41 +365,46 @@ def read_default_chat_template(
 
     resolved = resolve_cached_repo_id_case(name)
 
-    try:
-        # Resolve within each cached revision, newest first. A revision's sidecar
-        # supersedes its own embedded GGUF copy, but must not override a newer
-        # revision, so precedence stays per-snapshot rather than global.
-        for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
-            template = _chat_template_from_dir(snapshot, gguf_variant)
-            if template:
-                return template
-    except Exception as exc:
-        logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+    # The walk returns a private repo's raw template without asking the Hub, so a denied
+    # caller goes to the Hub and is refused there. A UI session keeps the cache.
+    if not is_anonymous(hf_token):
+        try:
+            # Resolve within each cached revision, newest first. A revision's sidecar
+            # supersedes its own embedded GGUF copy, but must not override a newer
+            # revision, so precedence stays per-snapshot rather than global.
+            for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
+                template = _chat_template_from_dir(snapshot, gguf_variant)
+                if template:
+                    return template
+        except Exception as exc:
+            logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+
+    if is_anonymous(hf_token) and hf_env_offline():
+        # Offline, hf_hub_download serves the cached copy without checking the credential,
+        # so the fallback would hand back the template the walk just refused. The route
+        # forces offline whenever the Hub looks unreachable.
+        return None
 
     try:
         from huggingface_hub import HfApi, hf_hub_download
 
-        _api = HfApi()
+        _api = HfApi(token = hf_token)
 
-        def _remote_exceeds_cap(rel: str) -> bool:
-            # Best-effort: skip the download when the remote's advertised size
-            # exceeds the cap, so a maliciously large sidecar is never fetched.
+        def _remote_worth_downloading(rel: str) -> bool:
+            # Reuse the size lookup to skip absent or oversized files.
             try:
                 infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
+                # An inconclusive lookup preserves the existing download behavior.
+                return True
+            matched = [info for info in infos if getattr(info, "path", None) == rel]
+            if not matched:
                 return False
-            for info in infos:
-                size = getattr(info, "size", None)
-                if (
-                    getattr(info, "path", None) == rel
-                    and isinstance(size, int)
-                    and size > MAX_TEMPLATE_METADATA_BYTES
-                ):
-                    return True
-            return False
+            size = getattr(matched[0], "size", None)
+            return not (isinstance(size, int) and size > MAX_TEMPLATE_METADATA_BYTES)
 
         def _download_text(rel: str) -> Optional[str]:
-            if _remote_exceeds_cap(rel):
+            if not _remote_worth_downloading(rel):
                 return None
             try:
                 path = hf_hub_download(

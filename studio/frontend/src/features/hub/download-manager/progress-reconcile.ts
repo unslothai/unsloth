@@ -31,6 +31,18 @@ function finiteReading(value: number | null | undefined): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+// Xet commits bytes in batches, so a small transfer can sit at 0 B for its
+// whole life; show activity, not a dead 0%. Cancelling is not activity.
+export function isIndeterminateProgress(
+  progress: {
+    downloadedBytes: number;
+    fraction: number;
+  },
+  cancelling = false,
+): boolean {
+  return !cancelling && progress.downloadedBytes <= 0 && progress.fraction <= 0;
+}
+
 export function resolveProgressUpdate(
   job: ManagedDownload,
   progressResp: ProgressLike,
@@ -38,6 +50,7 @@ export function resolveProgressUpdate(
 ): {
   expected: number;
   downloadedBytes: number;
+  measuredTransfer: boolean;
   completedBytes: number;
   completeOnDisk: boolean;
   fraction: number;
@@ -76,11 +89,16 @@ export function resolveProgressUpdate(
   // the movement it needs to publish a speed or an ETA. Only a zero is ignored,
   // so every real change -- up or down -- still lands on the next poll.
   const reportedDownloaded = finiteReading(progressResp.downloaded_bytes);
-  const downloadedBytes = resetMonotonic
+  // Whether this poll MEASURED the transfer counter or merely held the last
+  // one. A held figure is fine to draw a bar with, but it is priced against the
+  // PREVIOUS total, so a caller subtracting it from the current expectedBytes
+  // gets a remainder for a plan that no longer exists. The XET fallback reclaim
+  // is exactly that pairing: the retry's first reading is a legitimate 0 against
+  // a shrunken total, and the 3 GB held behind it wipe out a 0.5 GB remainder.
+  const measuredTransfer = resetMonotonic || reportedDownloaded > 0;
+  const downloadedBytes = measuredTransfer
     ? Math.max(0, reportedDownloaded)
-    : reportedDownloaded > 0
-      ? reportedDownloaded
-      : Math.max(previousDownloadedBytes, 0);
+    : Math.max(previousDownloadedBytes, 0);
   // Same rule for the finalized counter.
   const measuredCompleted = resetMonotonic || reportedCompleted > 0;
   const completedBytes = resetMonotonic
@@ -131,6 +149,7 @@ export function resolveProgressUpdate(
   return {
     expected,
     downloadedBytes,
+    measuredTransfer,
     completedBytes,
     completeOnDisk,
     fraction,

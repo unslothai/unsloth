@@ -22,11 +22,14 @@ from pathlib import Path
 from typing import Any, Optional
 
 from utils.paths.storage_roots import studio_root
+from utils.paths.path_utils import is_appledouble_metadata
 
+# "passthrough": the supplied image IS the control map; "canny": derive an edge map here
 # Control map types. "passthrough": the supplied image IS the control map. "canny": derive an edge map here.
 CONTROL_TYPES = ("passthrough", "canny")
 
-# Diffusers quant schemes that cannot host ControlNet cleanly (torchao tensor subclasses); gated off like LoRA, along with GGUF-via-diffusers.
+# Diffusers quant schemes that cannot host ControlNet cleanly (torchao tensor subclasses); gated off like LoRA, along
+# with GGUF-via-diffusers.
 _DIFFUSERS_BLOCKED_QUANT = ("int8", "fp8", "nvfp4", "mxfp8")
 
 
@@ -36,12 +39,12 @@ class ControlNetCatalogEntry:
 
     id: str
     display_name: str
-    source: str  # "local" | "hub"
-    families: tuple[str, ...] = ()  # compatible families (empty = shown, not gated)
-    repo_id: Optional[str] = None  # source == "hub"
-    local_path: Optional[str] = None  # source == "local"
+    source: str
+    families: tuple[str, ...] = ()
+    repo_id: Optional[str] = None
+    local_path: Optional[str] = None
     control_types: tuple[str, ...] = ("passthrough",)
-    is_union: bool = False  # one model covering many control modes
+    is_union: bool = False
 
 
 @dataclass(frozen = True)
@@ -49,11 +52,12 @@ class ResolvedControlNet:
     """A ControlNet resolved to something ``from_pretrained`` can load."""
 
     id: str
-    path: str  # repo id (hub) or local directory
+    path: str
     is_local: bool
 
 
-# Curated, family-tagged catalog. Union models (one model, many modes) are the default picks; local dirs and a bare ``owner/name`` repo id also work.
+# Curated, family-tagged catalog. Union models (one model, many modes) are the default picks; local dirs and a bare
+# ``owner/name`` repo id also work.
 _CURATED: tuple[ControlNetCatalogEntry, ...] = (
     ControlNetCatalogEntry(
         id = "flux-union-pro",
@@ -77,7 +81,7 @@ _CURATED: tuple[ControlNetCatalogEntry, ...] = (
 
 
 def controlnets_dir() -> Path:
-    """Local directory Studio scans for user-provided ControlNet model folders."""
+    """Local directory Unsloth scans for user-provided ControlNet model folders."""
     d = studio_root() / "controlnets" / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     return d
@@ -104,8 +108,12 @@ def _has_controlnet_weights(p: Path) -> bool:
     )
     if any((p / n).exists() for n in names):
         return True
+
     try:
-        return any(child.suffix == ".safetensors" for child in p.iterdir())
+        return any(
+            child.suffix == ".safetensors" and not is_appledouble_metadata(child)
+            for child in p.iterdir()
+        )
     except OSError:
         return False
 
@@ -162,7 +170,6 @@ def resolve_controlnet(spec_id: str, *, family: Optional[str] = None) -> Resolve
     """
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
-        # A curated entry named by its full repo id must still hit the family gate below, not slip through the bare-repo fallback.
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
     if entry is not None:
         # A direct API call could send an entry for another family; reject it before any download.
@@ -210,7 +217,7 @@ def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
     returns a 400 instead of running the wrong head. A non-union entry returns None."""
     entry = _catalog_by_id().get(spec_id)
     if entry is None:
-        # A union model may be named by its bare repo id, so match on repo_id too (the catalog is keyed by short id), else the union runs the wrong head.
+        # match on repo_id too (the catalog is keyed by short id), else the union runs the wrong head
         entry = next((e for e in _CURATED if e.repo_id and e.repo_id == spec_id), None)
     if entry is None or not entry.is_union:
         return None
@@ -218,7 +225,7 @@ def union_control_mode(spec_id: str, control_type: str) -> Optional[int]:
     if ct in _UNION_CONTROL_MODES:
         return _UNION_CONTROL_MODES[ct]
     if ct in ("", "passthrough"):
-        return 0  # preprocessed map, no intrinsic mode; canny is the default head
+        return 0  # canny is the default head
     raise ValueError(
         f"Unknown control type {control_type!r} for a union ControlNet. Use one of: "
         f"{', '.join(sorted(_UNION_CONTROL_MODES))}, or passthrough."
@@ -242,7 +249,8 @@ def preprocess_control(image: Any, control_type: str) -> Any:
     mag = np.hypot(gx, gy)
     peak = float(mag.max())
     if peak <= 1e-6:
-        # A flat image has no edges, so the map is all black; returning the source would condition the ControlNet on raw luminance.
+        # A flat image has no edges, so the map is all black; returning the source would condition the ControlNet on raw
+        # luminance.
         return Image.new("RGB", image.size, (0, 0, 0))
     mag = mag / peak * 255.0
     edges = (mag > 40.0).astype(np.uint8) * 255  # white edges on black (ControlNet convention)

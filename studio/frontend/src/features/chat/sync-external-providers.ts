@@ -26,14 +26,16 @@ import {
 
   PROVIDER_CAPABILITY_WILDCARD,
   pruneProviderModelCapabilities,
+  getProviderModelCapabilities,
   setProviderModelCapabilities,
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
 } from "./external-providers";
 
-const ANTHROPIC_DATED_SNAPSHOT_SUFFIX = /-\d{8}$/;
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
+// Rejected for every ChatGPT account, so drop it from selections saved earlier.
+const OPENAI_CODEX_UNSUPPORTED_MODELS = new Set(["gpt-5.3-codex-spark"]);
 const OPENROUTER_EXCLUDED_MODELS = new Set([
   "google/chirp-3",
   "kwaivgi/kling-v3.0-pro",
@@ -84,21 +86,67 @@ export function resolveUiProviderTypeFromConfig(
   return configProviderType;
 }
 
+export function mergeLearnedModelCapabilities(
+  stored: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+  registryCapabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+  supportsStudioTools: boolean | undefined,
+): Record<string, { vision?: boolean; studio_tools?: boolean }> {
+  const fromRegistry = registryCapabilities ?? {};
+  // A plan-listed slug is learned at runtime and the registry cannot describe it, so rewriting this
+  // map from the registry alone would drop it and leave the composer reading "unknown" as allowed
+  // again on the next start.
+  const capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> = {};
+  for (const [modelId, capability] of Object.entries(stored ?? {})) {
+    if (modelId !== PROVIDER_CAPABILITY_WILDCARD && !(modelId in fromRegistry)) {
+      capabilities[modelId] = capability;
+    }
+  }
+  Object.assign(capabilities, fromRegistry);
+  if (typeof supportsStudioTools === "boolean") {
+    capabilities[PROVIDER_CAPABILITY_WILDCARD] = {
+      ...capabilities[PROVIDER_CAPABILITY_WILDCARD],
+      studio_tools: supportsStudioTools,
+    };
+  }
+  return capabilities;
+}
+
+
 export function pruneProviderModelIds(
   providerType: string,
   modelIds: string[],
 ): string[] {
-  if (providerType === "anthropic") {
-    return modelIds.filter((id) => !ANTHROPIC_DATED_SNAPSHOT_SUFFIX.test(id));
-  }
+  // Anthropic has no entry: a `-YYYYMMDD` id is the canonical name for the
+  // whole pre-4.6 generation, not a snapshot. This mirrored the backend
+  // denylist and outlived it, stripping those ids from the server catalog,
+  // the seeds and saved selections alike.
   if (providerType === "openai") {
     return modelIds.filter((id) => !OPENAI_DEPRECATED_MODELS.has(id));
   }
   if (providerType === "openrouter") {
     return modelIds.filter((id) => !OPENROUTER_EXCLUDED_MODELS.has(id));
   }
+  if (providerType === "openai_codex") {
+    return modelIds.filter((id) => !OPENAI_CODEX_UNSUPPORTED_MODELS.has(id));
+  }
   return modelIds;
 }
+
+/** Which model ids a synced connection ends up with: server, else browser-saved, else seed. The
+ *  saved list is pruned BEFORE the emptiness test: a browser selection made up entirely of
+ *  retired slugs is no selection at all, and resolving to it empties the picker and sends that
+ *  empty list to a backend that rejects it. `serverModels` and `defaultModels` arrive pruned. */
+export function resolveSyncedModelIds(
+  providerType: string,
+  serverModels: string[],
+  savedModels: string[],
+  defaultModels: string[],
+): string[] {
+  if (serverModels.length > 0) return serverModels;
+  const prunedSaved = pruneProviderModelIds(providerType, savedModels);
+  return prunedSaved.length > 0 ? prunedSaved : defaultModels;
+}
+
 
 /** Carry browser-local provider knobs through a backend sync rebuild. */
 export function mergeLocalProviderOptions(
@@ -144,22 +192,19 @@ export async function syncExternalProvidersFromBackend(
   ]);
 
   for (const entry of registryRows) {
-    // Self-hosted model ids are user-supplied, so there is no per-model entry to
-    // key off. The registry declares studio_tools once per provider type; park
-    // it under the wildcard so the per-model lookup can fall back to it.
-    const capabilities = { ...(entry.model_capabilities ?? {}) };
-    if (typeof entry.supports_studio_tools === "boolean") {
-      capabilities[PROVIDER_CAPABILITY_WILDCARD] = {
-        ...capabilities[PROVIDER_CAPABILITY_WILDCARD],
-        studio_tools: entry.supports_studio_tools,
-      };
-    }
+    // Self-hosted model ids are user-supplied, so there is no per-model entry to key off. The
+    // registry declares studio_tools once per provider type; park it under the wildcard so the
+    // per-model lookup can fall back to it.
+    const capabilities = mergeLearnedModelCapabilities(
+      getProviderModelCapabilities(entry.provider_type),
+      entry.model_capabilities,
+      entry.supports_studio_tools,
+    );
     setProviderModelCapabilities(entry.provider_type, capabilities);
   }
-  // Writing per returned entry can only correct what came back. Capabilities are
-  // persisted in localStorage and outlive the backend that wrote them, so a
-  // provider the registry has stopped listing (hidden, or unknown to a rolled
-  // back backend) would otherwise keep its last `studio_tools: true` forever.
+  // Writing per returned entry can only correct what came back. Capabilities are persisted in
+  // localStorage and outlive the backend that wrote them, so a provider the registry has stopped
+  // listing would otherwise keep its last `studio_tools: true` forever.
   pruneProviderModelCapabilities(registryRows.map((entry) => entry.provider_type));
   const configRows = await reconcileLegacyProviderKeys(loadedConfigRows, {
     getLegacyKey: getExternalProviderApiKey,
@@ -212,21 +257,17 @@ export async function syncExternalProvidersFromBackend(
       );
       const savedModels = existing?.models ?? [];
       const savedAvailableModels = existing?.availableModels ?? [];
-      const resolvedModels = pruneProviderModelIds(
+      const resolvedModels = resolveSyncedModelIds(
         uiProviderType,
-        serverModels.length > 0
-          ? serverModels
-          : savedModels.length > 0
-            ? savedModels
-            : defaultModels,
+        serverModels,
+        savedModels,
+        defaultModels,
       );
-      const resolvedAvailableModels = pruneProviderModelIds(
+      const resolvedAvailableModels = resolveSyncedModelIds(
         uiProviderType,
-        serverAvailableModels.length > 0
-          ? serverAvailableModels
-          : savedAvailableModels.length > 0
-            ? savedAvailableModels
-            : defaultModels,
+        serverAvailableModels,
+        savedAvailableModels,
+        defaultModels,
       );
       const needsModelBackfill =
         serverModels.length === 0 && savedModels.length > 0;
@@ -243,8 +284,8 @@ export async function syncExternalProvidersFromBackend(
       const synced: ExternalProviderConfig = {
         id: config.id,
         providerType: uiProviderType,
-        // Beside the UI type, which disagrees for a legacy row saved as `openai`:
-        // only the stored type decides what the backend accepts.
+        // Beside the UI type, which disagrees for a legacy row saved as `openai`: only the stored type
+        // decides what the backend accepts.
         backendProviderType: config.provider_type,
         name: config.display_name,
         baseUrl: config.base_url ?? "",

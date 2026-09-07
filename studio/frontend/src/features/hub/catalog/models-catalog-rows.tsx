@@ -387,7 +387,7 @@ export function buildRowStatusTooltip({
     lines.push(
       <TooltipLegendRow key="partial" toneClass="bg-status-warning">
         Partial download of <span className="font-medium">{partialRepoId}</span>
-        . Click Resume to continue.
+        . Open it to finish the download.
       </TooltipLegendRow>,
     );
   } else if (isAvailableOnDevice) {
@@ -796,21 +796,7 @@ export const InventoryRow = memo(function InventoryRow({
               );
               // Deleted repos can't stay pinned: drop the repo pin and any of
               // its per-quant pins so stale rows don't linger up top.
-              const { pinned, togglePinned: toggle } =
-                usePinnedModelsStore.getState();
-              for (const key of pinned) {
-                if (
-                  key === pinKey(deletableRepoId) ||
-                  key.startsWith(`${deletableRepoId}::`)
-                ) {
-                  toggle(
-                    deletableRepoId,
-                    key.includes("::")
-                      ? key.slice(key.indexOf("::") + 2)
-                      : undefined,
-                  );
-                }
-              }
+              usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
             }
           },
           onDeleted: onChange,

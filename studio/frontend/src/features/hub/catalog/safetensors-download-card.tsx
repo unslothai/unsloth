@@ -16,7 +16,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { TrainIcon } from "../components/train-icon";
-import { useRepoDownload } from "../download-manager";
+import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { deleteCachedModel } from "../inventory";
 import type { ModelInventoryFormat } from "../inventory";
@@ -58,6 +58,7 @@ export function SafetensorsDownloadCard({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   modelFormat,
   canRun = true,
   isActive,
@@ -73,6 +74,7 @@ export function SafetensorsDownloadCard({
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   modelFormat?: ModelInventoryFormat | null;
   canRun?: boolean;
   isActive: boolean;
@@ -153,6 +155,7 @@ export function SafetensorsDownloadCard({
   }, [repoId, hfToken, sizeKey, setJobExpectedBytes, knownBytes, online]);
 
   const downloading = progress !== null && progress.variant === null;
+  const partialsResumable = useHttpPartialsResumable();
   const downloadAction = useDownloadCardState({
     job,
     variant: null,
@@ -161,6 +164,8 @@ export function SafetensorsDownloadCard({
     disabled: isLoadingThisModel || cancelling || repoPeerActive,
     isPartial,
     partialTransport,
+    partialResumable,
+    partialsResumable,
   });
   const showActionPair = isDownloaded && !downloading && (canRun || !!onTrain);
   const showUnavailableAction =
@@ -227,7 +232,8 @@ export function SafetensorsDownloadCard({
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top" sideOffset={4}>
-                  Partial download. Click to continue.
+                  {/* The badge is a status dot, not a control. */}
+                  {downloadAction.partialHint}
                 </TooltipContent>
               </Tooltip>
             )}
@@ -336,7 +342,7 @@ export function SafetensorsDownloadCard({
             cancelling={downloadAction.cancelling}
             loading={isLoadingThisModel || downloadAction.starting}
             isPartial={downloadAction.isPartial}
-            partialTransport={downloadAction.partialTransport}
+            partialResumable={downloadAction.partialResumable}
             stopMode={downloadAction.stopMode}
             progressPercent={downloadAction.progressPercent}
             disabled={downloadAction.disabled}

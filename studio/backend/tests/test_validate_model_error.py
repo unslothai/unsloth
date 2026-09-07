@@ -47,7 +47,7 @@ def _provoke(
     monkeypatch.setattr(
         inf,
         "_resolve_model_identifier_for_request",
-        lambda request, operation: ("org/repo", "org/repo", native),
+        lambda request, operation, **_kwargs: ("org/repo", "org/repo", native),
     )
 
     def _raise(*_args, **_kwargs):
@@ -104,7 +104,7 @@ def _drive_validate(monkeypatch, *, is_gguf: bool):
     monkeypatch.setattr(
         inf,
         "_resolve_model_identifier_for_request",
-        lambda request, operation: ("org/mixed-repo", "org/mixed-repo", False),
+        lambda request, operation, **_kwargs: ("org/mixed-repo", "org/mixed-repo", False),
     )
     config = SimpleNamespace(
         identifier = "org/mixed-repo",
@@ -220,7 +220,7 @@ def _drive_validate_lora(monkeypatch, *, adapter_needs_trc, base_needs_trc):
     monkeypatch.setattr(
         inf,
         "_resolve_model_identifier_for_request",
-        lambda request, operation: (adapter, adapter, False),
+        lambda request, operation, **_kwargs: (adapter, adapter, False),
     )
     config = SimpleNamespace(
         identifier = adapter,

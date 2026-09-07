@@ -17,7 +17,7 @@ TLS connection; the ``python -c`` probes and the standalone prebuilt installers
 carry an inline copy of the gating because they cannot import backend modules.
 
 truststore is vendored at ``backend/vendor/`` rather than depended on, so no
-Studio user gains a package for a proxy they do not have; see the README there.
+Unsloth user gains a package for a proxy they do not have; see the README there.
 Every consumer appends that directory to ``sys.path`` and imports the top-level
 name, which keeps a truststore the user installed themselves in front of ours.
 
@@ -29,7 +29,7 @@ OS anchors alongside them; ``0`` is the way back to a bundle being the only
 trust root.
 
 Client side only: the injected class verifies a peer chain on every handshake,
-so an ``SSLContext`` built after activation cannot serve TLS. Studio serves
+so an ``SSLContext`` built after activation cannot serve TLS. Unsloth serves
 plain HTTP on loopback and ``test_native_tls_entrypoints.py`` keeps it that way;
 a future in-process HTTPS listener needs ``truststore.SSLContext`` for outbound
 connections instead of this process-wide injection.
@@ -47,8 +47,8 @@ _DEFAULT_ON_PLATFORMS = ("darwin", "win32")
 _TRUTHY = ("1", "true", "yes")
 _FALSEY = ("0", "false", "no")
 
-# Resolved from this file so it is right in a checkout and an installed wheel
-# alike. Never build it from the cwd or a hardcoded "studio/backend".
+# Resolved from this file so it is right in a checkout and an installed wheel alike; never built
+# from the cwd or a hardcoded "studio/backend".
 _VENDOR_DIR = str(Path(__file__).resolve().parent.parent / "vendor")
 
 _logger = logging.getLogger(__name__)
@@ -65,11 +65,10 @@ def native_tls_enabled() -> bool:
     return sys.platform in _DEFAULT_ON_PLATFORMS
 
 
-# Children that cannot import this module (the `python -c` probes,
-# prebuilt_core.py) carry the gate as source; generating it from the same
-# constants stops it drifting from native_tls_enabled(). The child supplies os,
-# sys and _TRUSTSTORE_VENDOR itself, which is what keeps the gate identical
-# everywhere despite each child locating the vendor directory differently.
+# Children that cannot import this module carry the gate as source, generated from the same constants so it cannot drift
+# from native_tls_enabled().
+# The children that cannot import it are the `python -c` probes and prebuilt_core.py, and each supplies os, sys and
+# _TRUSTSTORE_VENDOR itself.
 _INLINE_GATE = """\
 _flag = os.environ.get({env!r}, '').strip().lower()
 if _flag in {truthy!r} or (_flag not in {falsey!r} and sys.platform in {platforms!r}):
@@ -113,9 +112,8 @@ def activate_native_tls() -> bool:
         return True
     if not native_tls_enabled():
         return False
-    # uv's rustls ignores in-process injection (uv >= 0.11 reads UV_SYSTEM_CERTS,
-    # older reads UV_NATIVE_TLS). Mirror one value across both: uv takes either as
-    # an opt-in, so an opt-out in one spelling must carry to the other.
+    # uv's rustls ignores in-process injection (uv >= 0.11 reads UV_SYSTEM_CERTS, older reads UV_NATIVE_TLS). Mirror one
+    # value across both: uv takes either as an opt-in, so an opt-out in one spelling must carry to the other.
     os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
     os.environ.setdefault("UV_NATIVE_TLS", os.environ["UV_SYSTEM_CERTS"])
     # append, not insert(0): a user-installed truststore must win over the vendored copy.

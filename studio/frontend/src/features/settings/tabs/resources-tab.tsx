@@ -11,6 +11,7 @@ import {
   pickHuggingFaceCacheDir,
 } from "@/features/native-intents";
 import {
+  gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
   resolveGpuVramUsedGb,
 } from "@/hooks/gpu-vram";
@@ -18,6 +19,7 @@ import {
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
   type GpuDevice,
+  type SystemGpuInfo,
 } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -142,11 +144,15 @@ function MetricTile({
           {percentKnown ? formatPercent(safePercent) : "--"}
         </span>
       </div>
+      {/* Both lines truncate, so carry the full text: the GPU states are sentences. */}
       <div className="min-w-0">
-        <div className="truncate font-mono text-sm tabular-nums text-foreground">
+        <div
+          title={value}
+          className="truncate font-mono text-sm tabular-nums text-foreground"
+        >
           {value}
         </div>
-        <div className="mt-0.5 truncate text-xs text-muted-foreground">
+        <div title={detail} className="mt-0.5 truncate text-xs text-muted-foreground">
           {detail}
         </div>
       </div>
@@ -187,6 +193,33 @@ function InfoRow({
 function deviceOrdinal(device: GpuDevice): number | undefined {
   return device.visible_ordinal ?? device.index;
 }
+
+/** A GPU the OS enumerates that this PyTorch cannot open, from /api/system's
+ * `gpu.physical_devices`. `index` is the probe's own row number, vendor-local and
+ * NOT a pin. Declared here instead of widened onto SystemGpuInfo on purpose: these
+ * are display-only, and that shared type is what model fit budgets against and what
+ * the training device picker pins from, where an unusable card must never appear. */
+interface PhysicalGpuDevice {
+  vendor?: string;
+  index?: number;
+  name?: string | null;
+  memory_total_gb?: number | null;
+  source?: string;
+}
+
+/** Why the devices above are unusable, from /api/system's `gpu.mismatch`. Absent on
+ * a healthy host and on one that genuinely has no GPU, so its presence is the whole
+ * signal. `reason` is "torch_cpu_build" or "torch_cuda_unavailable". */
+interface GpuTorchMismatch {
+  reason?: string;
+  torch_version?: string | null;
+  physical_count?: number;
+}
+
+type GpuPhysicalInventory = SystemGpuInfo & {
+  physical_devices?: PhysicalGpuDevice[];
+  mismatch?: GpuTorchMismatch | null;
+};
 
 export function ResourcesTab() {
   const t = useT();
@@ -242,7 +275,9 @@ export function ResourcesTab() {
     const diskTotal = systemInfo.disk?.total_gb ?? 0;
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
-    const vramTotal = aggregateGpuMemoryTotalGb(devices);
+    const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
+    const gpuMemoryTotals = gpuMemoryTotalsGb(devices);
+    const vramTotal = gpuMemoryTotals.total;
     // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
     // total, so the device's own row stays unknown. The host figure can still be
     // known when no device's is (#7452).
@@ -275,7 +310,10 @@ export function ResourcesTab() {
       diskTotal,
       diskFree,
       diskUsed,
+      diskPercent,
       vramTotal,
+      vramDedicated: gpuMemoryTotals.dedicated,
+      vramShared: gpuMemoryTotals.shared,
       vramUsed,
       vramFree,
       vramPercent,
@@ -342,6 +380,19 @@ export function ResourcesTab() {
   const cpuFrequencyLabel = formatFrequency(systemInfo.cpu?.frequency_mhz);
   const hasGpu =
     (displayedGpu?.available ?? false) && metrics.devices.length > 0;
+  // The placeholder reads as a CPU-only host, so rendering it tells an AMD/ROCm user their
+  // card is unused. Until the host is read, say which non-answer it is: checking, or empty.
+  const hostUnread = systemInfo.status !== "ready";
+  const gpuUnknown = hostUnread && !hasGpu;
+  const gpuUnknownLabel =
+    systemInfo.status === "unavailable"
+      ? t("settings.resources.gpu.unreadable")
+      : t("settings.resources.gpu.detecting");
+  // "Checking for GPUs" is the wrong sentence beside a RAM tile; the failure wording fits.
+  const hostUnreadDetail =
+    systemInfo.status === "unavailable"
+      ? t("settings.resources.gpu.unreadable")
+      : t("common.loading");
   const backendLabel = (
     displayedGpu?.backend ??
     systemInfo.device_backend ??
@@ -369,6 +420,34 @@ export function ResourcesTab() {
           .join(" · ")
     : null;
   const unknownLabel = t("settings.resources.environment.unknown");
+  const vramCapacityLabel =
+    metrics.vramShared > 0
+      ? t("settings.resources.environment.vramWithShared", {
+          vram: formatGiB(metrics.vramDedicated),
+          shared: formatGiB(metrics.vramShared),
+        })
+      : formatGiB(metrics.vramTotal);
+  // The placeholder's cpu backend and empty package list are not facts about the host either.
+  const hostReading = (value: string) => (hostUnread ? unknownLabel : value);
+  // systemInfo.gpu rather than displayedGpu: this describes the TRAINING view of the host,
+  // and a Vulkan llama.cpp makes displayedGpu fall back to the inference inventory, which is
+  // precisely the host that must be told. Gated on the read having settled.
+  const gpuInventory = hostUnread
+    ? null
+    : ((systemInfo.gpu ?? null) as GpuPhysicalInventory | null);
+  const gpuMismatch = gpuInventory?.mismatch ?? null;
+  const physicalDevices = gpuMismatch
+    ? (gpuInventory?.physical_devices ?? [])
+    : [];
+  // A CPU-only wheel is fixed by reinstalling torch, a dead runtime by the driver.
+  const gpuMismatchMessage = gpuMismatch
+    ? t(
+        gpuMismatch.reason === "torch_cpu_build"
+          ? "settings.resources.gpu.mismatchCpuBuild"
+          : "settings.resources.gpu.mismatchUnavailable",
+        { version: gpuMismatch.torch_version ?? unknownLabel },
+      )
+    : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -407,49 +486,72 @@ export function ResourcesTab() {
 
       <SettingsSection title={t("settings.resources.liveMonitor.title")}>
         <div className="grid gap-2 py-3 sm:grid-cols-2">
+          {/* An unread host is not an idle one: percent null is MetricTile's "unknown". */}
           <MetricTile
             label={t("settings.resources.liveMonitor.cpu")}
-            value={cpuFrequencyLabel ?? cpuCoresLabel}
+            value={hostReading(cpuFrequencyLabel ?? cpuCoresLabel)}
             detail={
-              cpuFrequencyLabel
-                ? cpuCoresLabel
-                : t("settings.resources.liveMonitor.currentLoad")
+              hostUnread
+                ? hostUnreadDetail
+                : cpuFrequencyLabel
+                  ? cpuCoresLabel
+                  : t("settings.resources.liveMonitor.currentLoad")
             }
-            percent={systemInfo.cpu?.usage_percent ?? 0}
+            percent={hostUnread ? null : (systemInfo.cpu?.usage_percent ?? 0)}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
-            value={`${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`}
-            detail={t("settings.resources.liveMonitor.free", {
-              value: formatGiB(systemInfo.memory?.available_gb),
-            })}
-            percent={systemInfo.memory?.percent_used ?? 0}
+            value={hostReading(
+              `${formatGiB(metrics.ramUsed)} / ${formatGiB(metrics.ramTotal)}`,
+            )}
+            detail={
+              hostUnread
+                ? hostUnreadDetail
+                : t("settings.resources.liveMonitor.free", {
+                    value: formatGiB(systemInfo.memory?.available_gb),
+                  })
+            }
+            percent={hostUnread ? null : (systemInfo.memory?.percent_used ?? 0)}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.disk")}
-            value={`${formatGb(metrics.diskUsed)} / ${formatGb(metrics.diskTotal)}`}
-            detail={t("settings.resources.liveMonitor.free", {
-              value: formatGb(metrics.diskFree),
-            })}
-            percent={systemInfo.disk?.percent_used ?? 0}
+            value={hostReading(
+              `${formatGb(metrics.diskUsed)} / ${formatGb(metrics.diskTotal)}`,
+            )}
+            detail={
+              hostUnread
+                ? hostUnreadDetail
+                : t("settings.resources.liveMonitor.free", {
+                    value: formatGb(metrics.diskFree),
+                  })
+            }
+            percent={hostUnread ? null : metrics.diskPercent}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.vram")}
             value={
-              hasGpu
-                ? metrics.vramUsageKnown
-                  ? `${formatGiB(metrics.vramUsed)} / ${formatGiB(metrics.vramTotal)}`
-                  : `${unknownLabel} / ${formatGiB(metrics.vramTotal)}`
-                : t("settings.resources.liveMonitor.noGpu")
+              gpuUnknown
+                ? unknownLabel
+                : hasGpu
+                  ? metrics.vramUsageKnown
+                    ? `${formatGiB(metrics.vramUsed)} / ${vramCapacityLabel}`
+                    : `${unknownLabel} / ${vramCapacityLabel}`
+                  : gpuMismatch
+                    ? t("settings.resources.liveMonitor.gpuUnusable")
+                    : t("settings.resources.liveMonitor.noGpu")
             }
             detail={
-              hasGpu
-                ? metrics.vramUsageKnown
-                  ? t("settings.resources.liveMonitor.free", {
-                      value: formatGiB(metrics.vramFree),
-                    })
-                  : unknownLabel
-                : backendLabel
+              gpuUnknown
+                ? gpuUnknownLabel
+                : hasGpu
+                  ? metrics.vramUsageKnown
+                    ? t("settings.resources.liveMonitor.free", {
+                        value: formatGiB(metrics.vramFree),
+                      })
+                    : unknownLabel
+                  : gpuMismatch
+                    ? t("settings.resources.liveMonitor.gpuUnusableDetail")
+                    : backendLabel
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
@@ -457,6 +559,33 @@ export function ResourcesTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
+        {/* Physically present, torch-unusable cards. Their own block, above the
+            device rows and visually separate from them, because nothing here is
+            selectable: the rows below are what a model can be loaded onto. */}
+        {gpuMismatch ? (
+          <div className="flex flex-col gap-2 border-b border-border/60 py-3">
+            <p className="text-sm text-amber-600 dark:text-amber-400">
+              {gpuMismatchMessage}
+            </p>
+            {physicalDevices.map((device, index) => (
+              <div
+                key={`${device.vendor ?? "gpu"}-${device.index ?? index}-${device.name ?? ""}`}
+                className="flex min-w-0 items-center justify-between gap-4 text-xs text-muted-foreground opacity-70"
+              >
+                <span className="min-w-0 truncate">
+                  {device.name ?? t("settings.resources.gpu.unknownDevice")}
+                </span>
+                <span className="shrink-0 font-mono tabular-nums">
+                  {`${
+                    isFiniteNumber(device.memory_total_gb)
+                      ? formatGiB(device.memory_total_gb)
+                      : unknownLabel
+                  } · ${t("settings.resources.gpu.unusableDevice")}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {separateInferenceGpu && (
           <div className="flex items-center justify-between gap-4 border-b border-border/60 py-3 text-sm">
             <span className="text-muted-foreground">
@@ -566,9 +695,15 @@ export function ResourcesTab() {
               </div>
             );
           })
+        ) : gpuMismatch ? (
+          // Not "no visible GPU": the cards are listed directly above. Its own branch, so the
+          // CPU-only host's line below stays exactly as it was.
+          <div className="py-3 text-sm text-muted-foreground">
+            {t("settings.resources.gpu.noUsableGpu")}
+          </div>
         ) : (
           <div className="py-3 text-sm text-muted-foreground">
-            {t("settings.resources.gpu.noGpu")}
+            {gpuUnknown ? gpuUnknownLabel : t("settings.resources.gpu.noGpu")}
           </div>
         )}
       </SettingsSection>
@@ -677,7 +812,7 @@ export function ResourcesTab() {
       <SettingsSection title={t("settings.resources.environment.title")}>
         <InfoRow
           label={t("settings.resources.environment.backend")}
-          value={backendLabel}
+          value={hostReading(backendLabel)}
         />
         <InfoRow
           label={t("settings.resources.environment.python")}
@@ -685,25 +820,25 @@ export function ResourcesTab() {
         />
         <InfoRow
           label={t("settings.resources.environment.torch")}
-          value={
+          value={hostReading(
             systemInfo.ml_packages.torch ??
-            t("settings.resources.environment.notInstalled")
-          }
+              t("settings.resources.environment.notInstalled"),
+          )}
         />
         <InfoRow
           label={t("settings.resources.environment.transformers")}
-          value={
+          value={hostReading(
             systemInfo.ml_packages.transformers ??
-            t("settings.resources.environment.notInstalled")
-          }
+              t("settings.resources.environment.notInstalled"),
+          )}
         />
         <InfoRow
           label={t("settings.resources.environment.uptime")}
-          value={formatUptime(systemInfo.uptime_seconds)}
+          value={hostReading(formatUptime(systemInfo.uptime_seconds))}
         />
         <InfoRow
           label={t("settings.resources.environment.processMemory")}
-          value={formatMb(systemInfo.memory?.process_used_mb)}
+          value={hostReading(formatMb(systemInfo.memory?.process_used_mb))}
         />
       </SettingsSection>
     </div>

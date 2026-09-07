@@ -46,6 +46,7 @@ on:
       - '.github/scripts/interrupt-install.ps1'
       - '.github/scripts/interrupted_install_probe.py'
       - '.github/workflows/interrupted-install-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   workflow_dispatch:
 
 concurrency:
@@ -117,9 +118,22 @@ jobs:
 
       - name: Linux system deps
         if: runner.os == 'Linux'
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev || { apt-get update -qq && apt-get install -y -qq --no-install-recommends cmake git build-essential libcurl4-openssl-dev; }'
 
       - name: Install, interrupted at "${{ matrix.label }}"
         env:

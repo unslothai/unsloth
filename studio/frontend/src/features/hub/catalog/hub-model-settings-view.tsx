@@ -11,7 +11,12 @@ import {
 } from "@/features/model-picker";
 import type { PerModelConfig } from "@/features/model-picker";
 import { cn } from "@/lib/utils";
-import { ArrowLeft01Icon, Globe02Icon } from "@hugeicons/core-free-icons";
+import {
+  Globe02Icon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 
@@ -78,8 +83,7 @@ export function HubModelSettingsView({
               onClick={onBack}
               className="-ml-1.5 inline-flex h-8 cursor-pointer select-none items-center gap-1.5 rounded-full pl-1.5 pr-2.5 text-ui-12p5 font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground dark:hover:bg-white/[0.06]"
             >
-              <HugeiconsIcon
-                icon={ArrowLeft01Icon}
+              <ChevronLeftIcon
                 strokeWidth={1.75}
                 className="size-3.5"
               />
@@ -111,7 +115,7 @@ export function HubModelSettingsView({
               {/* Only what auto-switch reaches: it indexes GGUFs and skips Ollama. */}
               {(target.apiLoadable ?? target.isGguf)
                 ? "Saved settings apply everywhere this model loads, including when an OpenAI-compatible API request asks for it."
-                : "Saved settings apply everywhere Studio loads this model."}{" "}
+                : "Saved settings apply everywhere Unsloth loads this model."}{" "}
               Turn on{" "}
               <span className="font-medium text-foreground">
                 Remember for this model

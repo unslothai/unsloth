@@ -6,6 +6,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import re
 import struct
 
 import pytest
@@ -111,9 +112,8 @@ def test_dmg_install_window_matches_its_background_art() -> None:
     dmg = json.loads(read(TAURI / "tauri.macos.conf.json"))["bundle"]["macOS"]["dmg"]
     assert dmg["background"] == "./dmg/background.tiff"
 
-    # Finder lays the background out from the same origin it uses for icon
-    # coordinates, so the base page has to match the configured window size or
-    # the artwork drifts out from under the app and Applications icons.
+    # Finder lays the background out from the same origin it uses for icon coordinates, so the base page has to match
+    # the configured window size or the artwork drifts out from under the app and Applications icons.
     window = (dmg["windowSize"]["width"], dmg["windowSize"]["height"])
     assert window == (660, 400)
     assert tiff_first_image_size(TAURI / "dmg/background.tiff") == window
@@ -175,9 +175,7 @@ def test_dmg_icon_label_stays_legible_over_the_halo() -> None:
 
 def test_desktop_release_asset_names_are_human_readable() -> None:
     workflow = read(REPO / ".github/workflows/release-desktop.yml")
-    assert "re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')" in workflow
-
-    assert "base_name = f'Unsloth-Desktop-{os.environ[\"ASSET_VERSION\"]}'" in workflow
+    assert "base_name = 'Unsloth-Desktop'" in workflow
     expected_suffixes = {
         "MacOS.dmg",
         "ARM64.app.tar.gz",
@@ -191,8 +189,69 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
     for suffix in expected_suffixes:
         assert f"f'{{base_name}}-{suffix}'" in workflow
 
+    for name in (
+        "Unsloth-Desktop-MacOS.dmg",
+        "Unsloth-Desktop-Linux.AppImage",
+        "Unsloth-Desktop-Ubuntu.deb",
+        "Unsloth-Desktop-Windows.exe",
+    ):
+        assert name in workflow
+
+
+LOCALES = FRONTEND / "src/i18n/locales"
+
+# The only locale entries allowed to say "Unsloth Studio": prose that names the *remote server* a user points this app
+# at, which genuinely is an Unsloth Studio.
+# modelAutoSwitch.apiOnlyDescription does NOT belong here. It renders as a settings-row description and describes a
+# model you loaded from this UI, not from a remote server, so exempting it would let the display name back in on a
+# rendered surface.
+LOCALE_REMOTE_SERVER_KEYS = frozenset(
+    {
+        "settings.agents.remote.title",
+        "settings.agents.remote.description",
+    }
+)
+
+LOCALE_KEY = re.compile(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:")
+
+
+def locale_entries(text: str) -> list[tuple[str, str]]:
+    """Every leaf entry of a locale module as (dotted key path, value text).
+
+    The catalogs are plain nested object literals, and values routinely wrap onto their
+    own line, so an entry runs from its key to the next key or closing brace.
+    """
+    stack: list[tuple[int, str]] = []
+    out: list[tuple[str, str]] = []
+    path: str | None = None
+    buf = ""
+    for line in text.splitlines():
+        match = LOCALE_KEY.match(line)
+        if match:
+            if path is not None:
+                out.append((path, buf))
+            indent, name = len(match.group(1)), match.group(2)
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            path = ".".join([held for _, held in stack] + [name])
+            buf = line[match.end() :]
+            if line.rstrip().endswith(("{", "[")):
+                stack.append((indent, name))
+                path, buf = None, ""
+        elif path is not None:
+            buf += "\n" + line
+            if re.match(r"^\s*[}\]]", line):
+                out.append((path, buf))
+                path, buf = None, ""
+    if path is not None:
+        out.append((path, buf))
+    return out
+
 
 def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
+    # The desktop app displays itself as "Unsloth", never "Unsloth Studio". The i18n catalogs are swept by key rather
+    # than by file: a handful of entries have to name the *remote server* a user points the app at, which genuinely is
+    # an Unsloth Studio and is not this app's display name, so those keys are spared and every other entry is not.
     display_sources = [
         TAURI / "Info.plist",
         TAURI / "capabilities/default.json",
@@ -203,14 +262,67 @@ def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
         TAURI / "windows/sign-with-trusted-signing.ps1",
         REPO / ".github/workflows/release-desktop.yml",
         FRONTEND / "index.html",
-        *sorted((FRONTEND / "src").rglob("*.ts")),
-        *sorted((FRONTEND / "src").rglob("*.tsx")),
+        *sorted(
+            path
+            for suffix in ("*.ts", "*.tsx")
+            for path in (FRONTEND / "src").rglob(suffix)
+            if LOCALES not in path.parents
+        ),
     ]
     offenders = [
         str(path.relative_to(REPO)) for path in display_sources if "Unsloth Studio" in read(path)
+    ]
+
+    # The locale catalogs are swept too, just at key granularity rather than file granularity, so only the remote-server
+    # prose is spared.
+    offenders += [
+        f"{path.relative_to(REPO)}::{key}"
+        for path in sorted(LOCALES.rglob("*.ts"))
+        for key, value in locale_entries(read(path))
+        if "Unsloth Studio" in value and key not in LOCALE_REMOTE_SERVER_KEYS
     ]
     assert offenders == []
 
     workflow = read(REPO / ".github/workflows/release-desktop.yml")
     assert "Desktop app for Unsloth." in workflow
     assert '--title "Unsloth Desktop updater channel"' not in workflow
+
+
+def test_the_branding_sweep_still_covers_the_frontend() -> None:
+    """The locale exemption must stay narrow.
+
+    A sweep that matches nothing passes this contract while proving nothing. Both halves
+    can fail that way: move src and the rglob goes empty, or reformat the catalogs and the
+    key parser yields nothing, either one leaving the test green over an unchecked tree.
+    """
+    swept = [
+        path
+        for suffix in ("*.ts", "*.tsx")
+        for path in (FRONTEND / "src").rglob(suffix)
+        if LOCALES not in path.parents
+    ]
+    locales = sorted(LOCALES.rglob("*.ts"))
+
+    assert LOCALES.is_dir(), f"the exempt directory moved: {LOCALES}"
+    assert len(locales) >= 10, f"locales look wrong, found {len(locales)}"
+    assert len(swept) > 20 * len(locales), f"sweep collapsed to {len(swept)} files"
+
+    # The catalogs are swept by key, so the parser has to actually resolve keys.
+    for path in locales:
+        entries = dict(locale_entries(read(path)))
+        assert len(entries) > 500, f"{path.name} parsed to {len(entries)} entries"
+        for key in (
+            "shell.product",
+            "settings.about.shutDownStudio",
+            "settings.about.studioVersion",
+            "settings.about.license.studioLabel",
+        ):
+            assert key in entries, f"{path.name} lost {key}, so the sweep no longer sees it"
+
+    # The allowlist is prose-level, not a blanket: it spares three of the ~1,500 entries a catalog holds, and every
+    # exempt key has to be one the catalogs actually define.
+    english = dict(locale_entries(read(LOCALES / "en.ts")))
+    assert LOCALE_REMOTE_SERVER_KEYS <= set(
+        english
+    ), f"exempt keys missing from en.ts: {sorted(LOCALE_REMOTE_SERVER_KEYS - set(english))}"
+    assert len(LOCALE_REMOTE_SERVER_KEYS) < len(english) / 100

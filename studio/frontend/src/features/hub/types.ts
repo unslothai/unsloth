@@ -81,6 +81,7 @@ export interface SelectedModelView {
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   runtimeCapabilities?: ModelInventoryCapabilities;
   capabilities: Capability[];
   license: string | null;

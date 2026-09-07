@@ -5,7 +5,7 @@
 snapshot_download pulls it into the shared HF cache.
 
 Regression for a Codex finding: the Transformers engine accepts arbitrary
-`owner/model` repos, so an authenticated caller could make Studio download a
+`owner/model` repos, so an authenticated caller could make Unsloth download a
 large non-STT repository before load-time validation ever ran. Whisper-
 compatibility is now enforced (metadata-only, no weights) before the background
 download starts. The GGUF engine only accepts curated ids, so it is not gated.

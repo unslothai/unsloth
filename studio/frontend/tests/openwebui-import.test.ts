@@ -993,7 +993,7 @@ test("a disconnected cycle does not displace the branch the user had open", () =
   const conversation = openWebUIRecordToConversation(record, "fallback");
   assert.ok(conversation);
   assert.equal(conversation.messages.length, 4);
-  // Studio reopens on the last message, so it has to be the selected branch.
+  // Unsloth reopens on the last message, so it has to be the selected branch.
   assert.equal(text(conversation, conversation.messages.length - 1), "the answer");
 });
 

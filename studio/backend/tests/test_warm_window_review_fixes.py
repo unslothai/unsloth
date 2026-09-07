@@ -655,10 +655,26 @@ def test_health_snapshot_returns_a_settled_verdict(monkeypatch):
     monkeypatch.setattr(hw_mod, "DEVICE", hw_mod.DeviceType.CPU, raising = False)
     monkeypatch.setattr(hw_mod, "CHAT_ONLY", True, raising = False)
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", "mlx_unavailable", raising = False)
+    # The detail too. _hardware_snapshot reads three fields and this pinned all
+    # three while stubbing only two, so the assertion held on whatever the real
+    # module happened to be carrying. It stopped holding on 2026-08-19 when an
+    # mlx-vlm bump left a live "(needs >=0.4.4)" detail behind, and the failure
+    # read as a snapshot bug rather than as an unstubbed field.
+    monkeypatch.setattr(hw_mod, "CHAT_ONLY_DETAIL", None, raising = False)
     hw_mod.DETECTION_COMPLETE.set()
     # Three items: the detail travels with the reason it explains, out of the same
     # guarded read, so the two can never be paired across different detection passes.
     assert main_mod._hardware_snapshot() == (True, "mlx_unavailable", None)
+
+    # And the detail is genuinely read rather than hardcoded to None: pairing it
+    # with its reason out of one guarded read is the property this test is named
+    # for, and stubbing it to None above would hide a snapshot that dropped it.
+    monkeypatch.setattr(hw_mod, "CHAT_ONLY_DETAIL", "mlx-vlm 0.4.3 (needs >=0.4.4)", raising = False)
+    assert main_mod._hardware_snapshot() == (
+        True,
+        "mlx_unavailable",
+        "mlx-vlm 0.4.3 (needs >=0.4.4)",
+    )
 
 
 def test_health_rereads_the_verdict_after_authentication():

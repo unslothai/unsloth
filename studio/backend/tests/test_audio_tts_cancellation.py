@@ -3,17 +3,72 @@
 
 import asyncio
 import base64
+import importlib
 import queue
+import sys
 import threading
 import time
+import types
+from unittest.mock import MagicMock
 
 import pytest
 
-import routes.inference as inference_route
-from core.inference import orchestrator as orchestrator_module
-from core.inference.orchestrator import InferenceOrchestrator
-from core.inference.worker import _handle_generate_audio, _prepare_generate_audio
-from models.inference import ChatCompletionRequest
+_STUBBED: list[str] = []
+
+
+def _stub_if_missing(name, attrs):
+    """Register a stub for a dep the backend pytest job does not install.
+
+    Same helper and reason as test_safetensors_reasoning_stream.py and
+    test_audio_type_inconclusive.py: the peft-gated test below imports
+    ``core.inference.inference``, which imports ``unsloth`` at module scope, and this
+    job installs peft but not unsloth. That import used to be unreachable here because
+    the peft gate skipped; now that peft IS installed the gate opens, and the import
+    only worked because collection of test_safetensors_reasoning_stream.py had already
+    cached the module. Running this file on its own failed. A real install is left alone.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - unusable here either way, so stub it
+        pass
+    _STUBBED.append(name)
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
+# Build it while the stubs are live, then drop them, as the sibling files do: a stub
+# left in sys.modules is a cross-file leak that
+# test_audio_type_inconclusive.py::test_the_stubs_do_not_outlive_this_module asserts
+# against. The peft gate below still decides whether the test runs.
+try:
+    import core.inference.inference  # noqa: E402,F401
+except ImportError:  # pragma: no cover - the real dep set imports fine
+    pass
+
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
+
+import routes.inference as inference_route  # noqa: E402
+from core.inference import orchestrator as orchestrator_module  # noqa: E402
+from core.inference.orchestrator import InferenceOrchestrator  # noqa: E402
+from core.inference.worker import (  # noqa: E402
+    _handle_generate_audio,
+    _prepare_generate_audio,
+)
+from models.inference import ChatCompletionRequest  # noqa: E402
 
 
 def _bare_orchestrator():
@@ -75,6 +130,44 @@ def test_route_passes_request_cancel_event_to_transformers_backend(monkeypatch):
 
     assert "cancel_event" in captured
     assert captured["cancel_event"].is_set() is False
+
+
+def test_minimax_prompt_encoder_overflow_is_a_client_error(monkeypatch):
+    class _Llama:
+        is_loaded = False
+        _is_audio = False
+
+    class _Backend:
+        active_model_name = "MiniMaxAI/MiniMax-Music3"
+        models = {
+            "MiniMaxAI/MiniMax-Music3": {
+                "is_audio": True,
+                "audio_type": "minimax_music3",
+            }
+        }
+
+        def generate_audio_response(self, **_kwargs):
+            raise RuntimeError("The assembled prompt has 5001 tokens; the maximum is 5000")
+
+    async def _noop_switch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    payload = ChatCompletionRequest(
+        model = "MiniMaxAI/MiniMax-Music3",
+        messages = [{"role": "user", "content": "lyrics"}],
+        audio_instructions = "long music description",
+    )
+
+    with pytest.raises(inference_route.HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._generate_tts_wav("lyrics", payload, request = None, current_subject = "t")
+        )
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == "The assembled prompt has 5001 tokens; the maximum is 5000"
 
 
 def test_audio_response_stopped_while_queued_is_never_sent(monkeypatch):
@@ -257,8 +350,24 @@ def test_tts_route_bounds_public_token_budget():
     assert inference_route._tts_max_new_tokens(payload) == 8192
 
 
-def test_audio_worker_command_uses_the_bounded_token_budget(monkeypatch):
+def test_minimax_music_route_allows_its_official_frame_budget():
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        max_tokens = 10**310,
+    )
+
+    assert inference_route._tts_max_new_tokens(payload, audio_type = "minimax_music3") == 9000
+
+
+@pytest.mark.parametrize(
+    ("audio_type", "expected_max_tokens"),
+    ((None, 8192), ("minimax_music3", 9000)),
+)
+def test_audio_worker_command_uses_the_model_token_budget(
+    monkeypatch, audio_type, expected_max_tokens
+):
     orchestrator = _bare_orchestrator()
+    orchestrator.models["model"]["audio_type"] = audio_type
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
     sent = []
     monkeypatch.setattr(orchestrator, "_send_cmd", lambda cmd: sent.append(cmd))
@@ -285,7 +394,7 @@ def test_audio_worker_command_uses_the_bounded_token_budget(monkeypatch):
         b"RIFFfake",
         24000,
     )
-    assert sent[0]["max_new_tokens"] == 8192
+    assert sent[0]["max_new_tokens"] == expected_max_tokens
 
 
 def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch):

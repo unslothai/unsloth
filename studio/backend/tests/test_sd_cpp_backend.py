@@ -625,7 +625,7 @@ def test_asset_specs_flux2_klein_selects_encoder_by_variant():
 
 
 # A rename or takedown in a community repack breaks every no-GPU load needing the file, so each
-# one Studio depended on now has a byte-identical unsloth mirror.
+# one Unsloth depended on now has a byte-identical unsloth mirror.
 _REPACKER_ORGS = frozenset(
     {"comfy-org", "comfyanonymous", "quantstack", "city96", "calcuis", "orabazes"}
 )
@@ -750,6 +750,23 @@ def test_generate_qwen_passes_sampling_args():
     _, params, _, kw = eng.calls[0]
     assert params.sampling_method == "euler"  # Qwen's supported sd.cpp sampler
     assert "--flow-shift" in (kw.get("extra_args") or [])
+
+
+def test_generate_refuses_a_snapshot_naming_another_model():
+    # Parity with the diffusers engine (#9448): on a no-GPU host the OpenAI images route runs here.
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    st = b.status()
+    loaded = bk.load_identity(st["repo_id"], st["base_repo"], st["family"])
+    with pytest.raises(bk.DiffusionModelReplacedError) as replaced:
+        stale = bk.load_identity("other/model", st["base_repo"], st["family"])
+        b.generate(prompt = "stale", expected_load = stale)
+    assert replaced.value.expected.repo_id == "other/model"
+    assert replaced.value.actual == loaded
+    assert eng.calls == []  # refused before any sd-cli run
+    # A matching snapshot, and an absent one (the pre-#9448 caller), both still generate.
+    assert b.generate(prompt = "x", steps = 4, expected_load = loaded)
+    assert b.generate(prompt = "x", steps = 4)
 
 
 def test_generate_raises_when_not_loaded():
@@ -979,7 +996,7 @@ _H3_HELP = _PRE_H3_HELP + (
 
 
 def test_h3_binary_gate_replaces_a_stale_managed_install(monkeypatch, tmp_path):
-    # An upgraded Studio still carrying an older managed sd-cli got that binary handed straight
+    # An upgraded Unsloth still carrying an older managed sd-cli got that binary handed straight
     # back: only runnability was probed, so the H3 load reported ready on a build with no H3
     # support and the first generation failed, after the whole bundle had already downloaded.
     stale = tmp_path / "stale" / "sd-cli"
@@ -1041,7 +1058,7 @@ def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp
     with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
         bk.ensure_h3_sd_cpp_binary()
     assert own.exists()
-    # Not Studio's to delete, so the refusal must not ask for anything to be removed. The old
+    # Not Unsloth's to delete, so the refusal must not ask for anything to be removed. The old
     # wording said "remove that directory" whatever the binary was, and PATH discovery hands this
     # branch /usr/bin/sd, i.e. it read as "remove /usr/bin".
     assert "remove" not in str(excinfo.value)
@@ -2085,7 +2102,7 @@ def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirro
 def test_a_repack_left_in_the_pre_change_cache_root_still_wins_over_the_mirror(
     monkeypatch, tmp_path
 ):
-    """Changing Studio's cache folder must not cost the user the repack they already hold.
+    """Changing Unsloth's cache folder must not cost the user the repack they already hold.
 
     The fetch passes reuse_other_cache_root, so a file cached only under huggingface_hub's
     import-time root resolves through that root -- but only under the repo id it was filed as.
@@ -2415,3 +2432,44 @@ def test_an_unresolvable_device_pin_says_so_and_still_loads(tmp_path, capsys):
     # No selection is not an unresolved one, so it says nothing.
     assert bk.sd_cpp_device_name_for_ordinal(str(binary), None) is None
     assert "device_pin_unresolved" not in capsys.readouterr().out
+
+
+def test_generation_in_flight_tracks_a_generation(monkeypatch):
+    from core.inference import diffusion_lora
+
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", b)
+    monkeypatch.setattr(diffusion_lora, "supports_lora", lambda **_k: True)
+
+    seen: dict = {}
+
+    def _resolve(
+        active,
+        *,
+        family = None,
+        hf_token = None,
+        cancel_event = None,
+    ):
+        # Check the marker during pre-generate setup.
+        seen["in_flight"] = bk.generation_in_flight()
+        return []
+
+    monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
+
+    assert bk.generation_in_flight() is False
+    b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    assert (
+        seen["in_flight"] is True
+    ), "liveness cannot tell this backend from a dead one while the native engine renders"
+    assert bk.generation_in_flight() is False
+
+
+def test_generation_in_flight_never_builds_a_backend(monkeypatch):
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    monkeypatch.setattr(
+        bk,
+        "SdCppDiffusionBackend",
+        lambda *a, **k: pytest.fail("liveness constructed a native diffusion backend"),
+    )
+    assert bk.generation_in_flight() is False

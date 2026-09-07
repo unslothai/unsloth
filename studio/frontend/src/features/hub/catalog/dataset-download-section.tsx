@@ -6,7 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useRepoDownload } from "../download-manager";
+import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { deleteCachedDataset } from "../inventory";
 import { cn } from "@/lib/utils";
 import { TrainIcon } from "../components/train-icon";
@@ -33,6 +33,7 @@ export function DatasetDownloadSection({
   isDownloaded,
   isPartial = false,
   partialTransport = null,
+  partialResumable = false,
   cachePath,
   knownBytes,
   onTrain,
@@ -42,6 +43,7 @@ export function DatasetDownloadSection({
   isDownloaded: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  partialResumable?: boolean;
   cachePath?: string | null;
   knownBytes?: number | null;
   onTrain?: () => void;
@@ -86,6 +88,7 @@ export function DatasetDownloadSection({
   const downloading = progress !== null;
   const canDelete =
     (isDownloaded || isPartial) && !downloading && !cancelling && !deleting;
+  const partialsResumable = useHttpPartialsResumable();
   const downloadAction = useDownloadCardState({
     job,
     variant: null,
@@ -96,6 +99,8 @@ export function DatasetDownloadSection({
     disabled: cancelling || deleting,
     isPartial,
     partialTransport,
+    partialResumable,
+    partialsResumable,
   });
 
   return (
@@ -136,7 +141,8 @@ export function DatasetDownloadSection({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top" sideOffset={4}>
-                Partial download. Click to continue.
+                {/* The badge is a status dot, not a control. */}
+                {downloadAction.partialHint}
               </TooltipContent>
             </Tooltip>
           )}
@@ -178,7 +184,7 @@ export function DatasetDownloadSection({
           cancelling={downloadAction.cancelling}
           loading={downloadAction.starting}
           isPartial={downloadAction.isPartial}
-          partialTransport={downloadAction.partialTransport}
+          partialResumable={downloadAction.partialResumable}
           stopMode={downloadAction.stopMode}
           progressPercent={downloadAction.progressPercent}
           disabled={downloadAction.disabled}

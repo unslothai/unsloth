@@ -40,7 +40,7 @@ on:
   # other ten workflows in that change it had no main-ref trigger at all, so
   # main's copy of the 4.6GB GGUF could only ever be written by the Monday
   # cron. That is a poor match for a 7-day unused-cache retention on a repo
-  # that is over the 10GB budget: once LRU evicts main's copy, every PR
+  # sitting at 99.3% of its 50 GiB budget: once LRU evicts main's copy, every PR
   # re-downloads until the next cron repairs it. Seed it on merge instead,
   # behind the same paths filter as the pull_request trigger below so this
   # only runs when the guarded sources actually change.
@@ -54,9 +54,15 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
       - '.github/scripts/serve-unsloth-run.sh'
       - '.github/scripts/assert-prompt-cache.sh'
       - '.github/scripts/agent-guides-install.sh'
@@ -75,7 +81,13 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
       - '.github/scripts/serve-unsloth-run.sh'
       - '.github/scripts/assert-prompt-cache.sh'
       - '.github/scripts/agent-guides-install.sh'
@@ -88,11 +100,11 @@ concurrency:
   # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
   # only one pending run, so without this a merge burst silently drops the nightly:
   # cancel-in-progress protects the running run, never the pending one.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -111,7 +123,16 @@ env:
   # prefill-shrinking flags (minimal system prompt + restricted tools) a turn on
   # a 4B model finishes in a couple of minutes on CPU; this also caps how long a
   # still-large-prompt agent burns before failing. Well under the 6h job cap.
-  AGENT_INVOKE_TIMEOUT: '600'
+  #
+  # Raised from 600. Those flags shrink what the SERVER puts in front of the model;
+  # they do not touch a preamble the client assembles for itself, and Codex's is
+  # several thousand tokens before the prompt is appended. Measured on this image at
+  # 16.1 tok/s, that is ~460s of prompt processing to answer "pong" -- inside 600s on
+  # paper, but only just, and the leg that has to survive it is the one that was
+  # failing 88% of the time. The cap exists to stop a hang, not to enforce a
+  # performance budget, so it is sized off the slowest legitimate turn rather than
+  # the fastest. It only ever costs wall-clock on a run that was going to fail.
+  AGENT_INVOKE_TIMEOUT: '1200'
 
 jobs:
   # ═════════════════════════════════════════════════════════════════════
@@ -123,17 +144,21 @@ jobs:
   #   it serves exactly one model on its own port.
   # ═════════════════════════════════════════════════════════════════════
   connection:
-    name: connection (${{ matrix.agent }})
+    name: connection (${{ matrix.agent }}, ${{ matrix.opencode_channel }})
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex, hermes, openclaw, opencode, pi]
+        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh]
+        opencode_channel: [stable]
         include:
           # OpenClaw needs Node 24; everything else is happy on 22.
           - agent: openclaw
             node: '24'
+          # V2 uses beta until @opencode-ai/cli@latest publishes opencode2.
+          - agent: opencode
+            opencode_channel: v2
     env:
       # gemma-4-E4B (128K context, capable enough to drive every agent for a
       # trivial reply; the 270m model produced empty/failed responses for
@@ -150,10 +175,22 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -162,7 +199,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - name: Restore GGUF model file
         id: cache-gguf
@@ -188,12 +224,15 @@ jobs:
         # merge ref -- per GitHub's docs they "can only be restored by re-runs
         # of the pull request" -- while every PR *can* restore from the default
         # branch. So a PR-scoped save helps almost nothing and competes for the
-        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # per-repo cache budget, and when that budget is exceeded GitHub evicts
         # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
-        # same 4.6GB model held four times on four different PR refs and no copy
-        # on main at all. That is the thrash loop: PR misses -> downloads ->
-        # saves its own copy -> evicts main's -> next PR misses.
+        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
+        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
+        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
+        # refs, and every one of those keys already has a copy on main, so the
+        # PR-scoped duplicates are redundant by construction. That is the thrash
+        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
+        # next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -270,6 +309,7 @@ jobs:
       - name: Install agent CLI (class-b isolation)
         env:
           AGENT: ${{ matrix.agent }}
+          OPENCODE_CHANNEL: ${{ matrix.opencode_channel }}
         run: bash .github/scripts/agent-guides-install.sh "$AGENT"
 
       # ── (c) drive the agent via start.py and assert a reply ──────────
@@ -317,7 +357,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: connection-${{ matrix.agent }}-log
+          name: connection-${{ matrix.agent }}-${{ matrix.opencode_channel }}-log
           path: |
             logs/
             redacted-configs/
@@ -352,12 +392,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex, hermes, openclaw, opencode, pi]
+        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh]
         include:
           - agent: openclaw
             node: '24'
             best_effort: true
           - agent: hermes
+            best_effort: true
+          # dsh has no resume: turn 2 is a fresh session that re-reads hello.py.
+          - agent: dsh
             best_effort: true
     env:
       # gemma-4-E4B served as a flat GGUF file (cache size tracks the .gguf 1:1,
@@ -371,10 +414,22 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -383,7 +438,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - name: Restore GGUF model file
         id: cache-gguf
@@ -553,10 +607,22 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -565,7 +631,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - name: Restore GGUF model file
         id: cache-gguf
@@ -712,10 +777,22 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
@@ -724,7 +801,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
       # Linux, macOS and Windows, so the key carries no `runner.os`, and

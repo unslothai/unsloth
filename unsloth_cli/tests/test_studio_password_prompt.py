@@ -47,6 +47,11 @@ _NEW_PW = "brand-new-password"
         # --cloudflare tunnels only non-api-only wildcard binds.
         (True, "0.0.0.0", False, False, True),
         (True, "::", False, False, True),
+        (True, "::0", False, False, True),
+        (True, "0:0:0:0:0:0:0:0", False, False, True),
+        (True, "0", False, False, True),
+        (True, "::ffff:0.0.0.0", False, False, True),
+        (True, "", False, False, False),
         (True, "127.0.0.1", False, False, False),
         (True, "0.0.0.0", False, True, False),
         # Off/unset never prompts without --secure.
@@ -222,6 +227,259 @@ def _invoke_run(monkeypatch, events, args):
         context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
     return CliRunner().invoke(app, args, catch_exceptions = True)
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
+def test_an_empty_bind_is_rejected_before_password_or_launch(monkeypatch, command):
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(
+        studio_mod,
+        "_enforce_password_change_before_exposure",
+        lambda **_kwargs: events.append(("password", None)),
+    )
+    if command == "default":
+        result = _invoke_studio_default(monkeypatch, events, ["--host", "", "--cloudflare"])
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "", "--cloudflare"],
+        )
+
+    assert result.exit_code == 2, result.output
+    assert "--host cannot be empty" in result.output
+    assert events == []
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
+def test_a_mixed_family_wildcard_is_rejected_before_password_or_launch(monkeypatch, command):
+    import socket
+
+    from unsloth_cli import _tool_policy
+
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(
+        studio_mod,
+        "_enforce_password_change_before_exposure",
+        lambda **_kwargs: events.append(("password", None)),
+    )
+    monkeypatch.setattr(
+        _tool_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fd00::24", 0, 0, 0)),
+        ],
+    )
+    if command == "default":
+        result = _invoke_studio_default(
+            monkeypatch,
+            events,
+            ["--host", "mixed-wildcard.test", "--cloudflare"],
+        )
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "mixed-wildcard.test", "--cloudflare"],
+        )
+
+    assert result.exit_code == 2, result.output
+    assert "mixes wildcard and specific address families" in result.output
+    assert events == []
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
+def test_a_mapped_wildcard_is_canonicalized_before_reexec(monkeypatch, command):
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
+    if command == "default":
+        result = _invoke_studio_default(
+            monkeypatch,
+            events,
+            ["--host", "::ffff:0.0.0.0", "--api-only"],
+        )
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "::ffff:0.0.0.0", "--api-only"],
+        )
+
+    assert result.exit_code == 0, result.output
+    argv = next(payload for kind, payload in events if kind == "exec")
+    assert argv[argv.index("--host") + 1] == "0.0.0.0"
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
+def test_a_mapped_specific_bind_is_canonicalized_before_reexec(monkeypatch, command):
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
+    if command == "default":
+        result = _invoke_studio_default(
+            monkeypatch,
+            events,
+            ["--host", "::ffff:127.0.0.1", "--api-only"],
+        )
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "::ffff:127.0.0.1", "--api-only"],
+        )
+
+    assert result.exit_code == 0, result.output
+    argv = next(payload for kind, payload in events if kind == "exec")
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
+def test_a_resolved_mapped_bind_is_canonicalized_before_reexec(monkeypatch, command):
+    import socket
+
+    from unsloth_cli import _tool_policy
+
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
+    monkeypatch.setattr(
+        _tool_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:127.0.0.1", 0, 0, 0))
+        ],
+    )
+    if command == "default":
+        result = _invoke_studio_default(
+            monkeypatch,
+            events,
+            ["--host", "mapped.test", "--api-only"],
+        )
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "mapped.test", "--api-only"],
+        )
+
+    assert result.exit_code == 0, result.output
+    argv = next(payload for kind, payload in events if kind == "exec")
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
+def test_ambiguous_resolved_mapped_binds_are_rejected_before_launch(monkeypatch, command):
+    import socket
+
+    from unsloth_cli import _tool_policy
+
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
+    monkeypatch.setattr(
+        _tool_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:127.0.0.1", 0, 0, 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:192.168.1.24", 0, 0, 0)),
+        ],
+    )
+    if command == "default":
+        result = _invoke_studio_default(
+            monkeypatch,
+            events,
+            ["--host", "ambiguous-mapped.test", "--api-only"],
+        )
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "ambiguous-mapped.test", "--api-only"],
+        )
+
+    assert result.exit_code == 2, result.output
+    assert "resolves to ambiguous IPv4-mapped addresses" in result.output
+    assert events == []
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
+def test_a_dual_stack_wildcard_hostname_is_preserved_for_reexec(monkeypatch, command):
+    import socket
+
+    from unsloth_cli import _tool_policy
+
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(studio_mod, "_enforce_password_change_before_exposure", lambda **_kw: None)
+    monkeypatch.setattr(
+        _tool_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 0)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 0, 0, 0)),
+        ],
+    )
+    if command == "default":
+        result = _invoke_studio_default(
+            monkeypatch,
+            events,
+            ["--host", "dual-wildcard.test", "--api-only"],
+        )
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "dual-wildcard.test", "--api-only"],
+        )
+
+    assert result.exit_code == 0, result.output
+    argv = next(payload for kind, payload in events if kind == "exec")
+    assert argv[argv.index("--host") + 1] == "dual-wildcard.test"
+
+
+@pytest.mark.parametrize("command", ["default", "run"])
+def test_an_ephemeral_multi_address_bind_is_rejected_before_password_or_launch(
+    monkeypatch, command
+):
+    import socket
+
+    from unsloth_cli import _tool_policy
+
+    studio_mod = _studio()
+    events = []
+    monkeypatch.setattr(
+        studio_mod,
+        "_enforce_password_change_before_exposure",
+        lambda **_kwargs: events.append(("password", None)),
+    )
+    monkeypatch.setattr(
+        _tool_policy.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", 0, 0, 2)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", 0, 0, 3)),
+        ],
+    )
+    if command == "default":
+        result = _invoke_studio_default(
+            monkeypatch,
+            events,
+            ["--host", "scoped.test", "--port", "0", "--cloudflare"],
+        )
+    else:
+        result = _invoke_run(
+            monkeypatch,
+            events,
+            _BASE + ["--host", "scoped.test", "--port", "0", "--cloudflare"],
+        )
+
+    assert result.exit_code == 2, result.output
+    assert "--port 0 cannot be used" in result.output
+    assert events == []
 
 
 # ── plain `unsloth studio` ───────────────────────────────────────────

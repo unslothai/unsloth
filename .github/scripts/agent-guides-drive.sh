@@ -8,8 +8,8 @@
 # already installed, so a failure here means the documented recipe in
 # unsloth_cli/commands/start.py no longer produces a working flow.
 #
-# Self-updating: for all six agents (claude, codex, hermes, openclaw,
-# opencode, pi) we obtain the exact env + command from
+# Self-updating: for all seven agents (claude, codex, hermes, openclaw,
+# opencode, pi, dsh) we obtain the exact env + command from
 # `unsloth start <agent> --no-launch` and run THAT, so a recipe change is
 # exercised automatically.
 #
@@ -167,9 +167,54 @@ assert_reply() {
 run_timed() {  # $1=outfile, rest=command
   local out="$1"; shift
   TIMED_OUT=0
+  TURN_DONE=0
   local t0=$SECONDS
-  timeout --kill-after=30 "$TIMEOUT" "$@" > "$out" 2>&1
-  local rc=$?
+  local rc
+  if [ -z "${TURN_DONE_RE:-}" ]; then
+    timeout --kill-after=30 "$TIMEOUT" "$@" > "$out" 2>&1
+    rc=$?
+  else
+    # An agent that prints an end-of-run marker does not have to exit before its
+    # turn can be judged. openclaw finishes and then holds its session write lock
+    # for the rest of the cap: on 2026-09-06 it answered `pong` and logged
+    # `ended with stopReason=stop` 39ms after the model replied, then sat there
+    # for the remaining 1200s, costing a 20 minute job and a "never completed a
+    # turn" verdict its own transcript contradicted. Give the CLI EXIT_GRACE
+    # seconds to leave on its own once the marker lands, then take it down, so
+    # the caller judges a finished turn instead of a cap. Only agents with such a
+    # marker opt in; for everyone else this is the same blocking call as before.
+    : > "$out"
+    timeout --kill-after=30 "$TIMEOUT" "$@" > "$out" 2>&1 &
+    local tpid=$! seen=""
+    while kill -0 "$tpid" 2>/dev/null; do
+      if [ -z "$seen" ]; then
+        grep -qF -- "$TURN_DONE_RE" "$out" 2>/dev/null && seen=$SECONDS
+      elif [ $(( SECONDS - seen )) -ge "${EXIT_GRACE:-30}" ]; then
+        TURN_DONE=1
+        # The whole group, not timeout(1) and not its direct child. The command
+        # is a bash wrapper that runs the agent, so signalling either one leaves
+        # the CLI orphaned and unbounded -- the state this is here to end.
+        # timeout(1) gives its child a group of its own, so that group is exactly
+        # the invocation; refuse to fire if it ever resolves to ours.
+        local kid pg
+        kid="$(pgrep -P "$tpid" 2>/dev/null | head -1)"
+        pg="$(ps -o pgid= -p "${kid:-0}" 2>/dev/null | tr -d ' ')"
+        if [ -n "$pg" ] && [ "$pg" != "$(ps -o pgid= -p $$ | tr -d ' ')" ]; then
+          kill -TERM "-$pg" 2>/dev/null || true
+          sleep 10
+          kill -KILL "-$pg" 2>/dev/null || true
+        else
+          pkill -TERM -P "$tpid" 2>/dev/null || true
+          sleep 10
+          pkill -KILL -P "$tpid" 2>/dev/null || true
+        fi
+        break
+      fi
+      sleep 2
+    done
+    wait "$tpid"
+    rc=$?
+  fi
   local elapsed=$(( SECONDS - t0 ))
   # Neither status proves expiry on its own. 137 is also an unrelated SIGKILL,
   # and 124 is also whatever the CLI itself chose to exit with -- timeout(1)
@@ -194,7 +239,23 @@ run_timed() {  # $1=outfile, rest=command
     echo "[$AGENT] last 40 lines before timeout:"; tail -40 "$out" 2>/dev/null || true
     [ -s "$out" ] || guide_fail "invoke timed out after ${TIMEOUT}s having printed nothing (headless-TTY hang -- the recipe likely needs a non-interactive/print flag)"
     TIMED_OUT=1
-    echo "::warning::[$AGENT] the CLI printed a transcript but did not exit within ${TIMEOUT}s; judging the turn on its assertions instead of calling it guide drift."
+    # State the fact, not the verdict. Three callers (connection, resume,
+    # attribution-ab) have no assertion that can rescue a partial turn and treat
+    # a cap as fatal on purpose, so promising that the turn will be judged on its
+    # assertions was wrong for exactly the cases most likely to hit it -- and it
+    # is what a reader sees immediately above the error that contradicts it.
+    echo "::warning::[$AGENT] the CLI printed a transcript but did not exit within ${TIMEOUT}s; whether that is fatal is the caller's call."
+    # The marker can land inside the last poll interval, or after a cap reached
+    # without the watcher. Either way the turn is over, and the caller may say so.
+    if [ -n "${TURN_DONE_RE:-}" ] && grep -qF -- "$TURN_DONE_RE" "$out" 2>/dev/null; then
+      TURN_DONE=1
+    fi
+  fi
+  if [ "${TURN_DONE:-0}" = 1 ]; then
+    # The fact, not the verdict, for the same reason the cap warning states one:
+    # what a finished-but-hung run means is the caller's to say, and a promise
+    # made here is read directly above whatever the caller decides.
+    echo "::warning::[$AGENT] the CLI logged the end of its run (${TURN_DONE_RE}) and then would not exit."
   fi
   return "$rc"
 }
@@ -220,7 +281,11 @@ parse_connect() {
   # here, the same intent as claude/codex's per-call bypass flags.
   local yolo=()
   [ -n "${CONNECT_YOLO:-}" ] && yolo=(--yolo)
-  if ! unsloth start "$AGENT" --no-launch "${yolo[@]}" --api-key "$UNSLOTH_API_KEY" > "$raw" 2>&1; then
+  # dsh's `--profile headless`: its default recipe opens the browser UI instead.
+  # shellcheck disable=SC2206
+  local passthrough=(${CONNECT_START_ARGS:-})
+  if ! unsloth start "$AGENT" --no-launch "${yolo[@]}" --api-key "$UNSLOTH_API_KEY" \
+      "${passthrough[@]}" > "$raw" 2>&1; then
     cat_redacted "$raw"
     guide_fail "'unsloth start ${AGENT} --no-launch' exited non-zero"
   fi
@@ -290,6 +355,18 @@ crosscheck_contract() {
         grep -q '"openai-completions"' "$cfg" \
           || echo "::warning::Pi provider api is no longer 'openai-completions' (write_pi_config)"
         cp "$cfg" "$REDACTED_DIR/pi-models.json"
+      fi
+      ;;
+    dsh)
+      grep -q 'UNSLOTH_API_KEY' "$raw" \
+        || guide_fail "dsh env key is no longer UNSLOTH_API_KEY (start.py _DSH_ENV_KEY)"
+      home="$(raw_env DSH_HOME)"
+      [ -n "$home" ] || guide_fail "DSH_HOME missing from connect output (start.py dsh())"
+      cfg="$home/settings.yaml"
+      if [ -f "$cfg" ]; then
+        grep -q 'openai-completions' "$cfg" \
+          || echo "::warning::dsh provider api is no longer 'openai-completions' (write_dsh_config)"
+        cp "$cfg" "$REDACTED_DIR/dsh-settings.yaml"
       fi
       ;;
   esac
@@ -391,6 +468,12 @@ invoke_via_connect() {  # $1=outfile, rest=extra args appended to the command
   # CONNECT_ENV_EXTRA / CONNECT_CMD_OVERRIDE let a caller (attribution-ab) flip a
   # session knob without editing the user's config; empty -> use what start.py emitted.
   local cmd="${CONNECT_CMD_OVERRIDE:-$CONNECT_CMD}"
+  # A bare V2 recipe ends in --standalone for the TUI. Once this driver adds the
+  # run subcommand, V2 requires that option after run instead of before it.
+  if [ "$AGENT" = opencode ] && [[ "$cmd" == *" --standalone" ]] && [ "${1:-}" = run ]; then
+    cmd="${cmd% --standalone}"
+    set -- run --standalone "${@:2}"
+  fi
   {
     echo "set -uo pipefail"
     echo "$CONNECT_ENV"
@@ -424,6 +507,7 @@ case "$MODE" in
   connection)
     PROMPT='Reply with exactly the single word: pong'
     OUT="$LOGS_DIR/${AGENT}-connection.txt"
+    case "$AGENT" in dsh) CONNECT_START_ARGS='--profile headless' ;; esac
     parse_connect
     crosscheck_contract
     # claude/codex run in print mode via the flags start.py emits
@@ -437,6 +521,11 @@ case "$MODE" in
       hermes)   patch_hermes_tools none
                 invoke_via_connect "$OUT" -z "$PROMPT" ;;
       openclaw) patch_openclaw_agent notools
+                # openclaw logs this once per run, and only when the run is over
+                # ("run <uuid> ended with stopReason=stop"). It is the one signal
+                # here that a banner cannot forge, so it is what lets a hung exit
+                # be told apart from a turn that never came back.
+                TURN_DONE_RE='ended with stopReason='
                 CONNECT_CMD_OVERRIDE=openclaw invoke_via_connect "$OUT" agent --local --agent ci \
                   --model "unsloth/${UNSLOTH_MODEL_ID}" --message "$PROMPT" ;;
       *)        invoke_via_connect "$OUT" "$PROMPT" ;;
@@ -450,7 +539,27 @@ case "$MODE" in
     # report "connection OK" for a recipe that printed a banner and then blocked
     # on a headless prompt -- the exact failure this job exists to catch.
     rc=$?
-    [ "$rc" -eq 0 ] || guide_fail "the documented launch command exited non-zero (rc=$rc) -- see the transcript above"
+    # Two different failures, and pointing both at start.py costs an
+    # investigation. A cap means the launch command was fine and the turn never
+    # came back: on 2026-08-19 codex printed a correct banner (right provider,
+    # right model) and then sat on `ERROR: Reconnecting... 1/5` for the whole
+    # 600s. Nothing about the documented flow had drifted, and guide_fail said it
+    # had. It is still fatal -- see the note above on why a cap cannot be waived
+    # here -- but it is reported as what it is.
+    if [ "${TIMED_OUT:-0}" = 1 ] && [ "${TURN_DONE:-0}" != 1 ]; then
+      echo "::error::[$AGENT] the documented launch command started but never completed a turn within ${TIMEOUT}s. The recipe in ${CONNECT_REF} is not implicated: the transcript above shows what the CLI was doing when the cap hit. A connection or model-server failure looks like this; so does a headless prompt, which prints nothing at all." >&2
+      exit 1
+    fi
+    # TURN_DONE is not a waiver of the cap, it is the assertion the cap was
+    # missing. The reason connection could never rescue a hang is that
+    # assert_reply cannot tell a completed reply from a startup banner; an
+    # end-of-run line the agent prints only when a run terminates can. A banner
+    # still carries no marker and still fails above. The rc check is skipped only
+    # here, because the non-zero status is the one run_timed produced itself when
+    # it stopped a CLI that had already finished.
+    if [ "${TURN_DONE:-0}" != 1 ]; then
+      [ "$rc" -eq 0 ] || guide_fail "the documented launch command exited non-zero (rc=$rc) -- see the transcript above"
+    fi
     assert_reply "$OUT"
     echo "[$AGENT] connection OK"
     ;;
@@ -471,7 +580,11 @@ case "$MODE" in
     # from the repo root BEFORE cd-ing into the scratch work dir. opencode/openclaw
     # gate tool approval through their config (prompting by default), so file-edit
     # opts them into auto-approval to run edits/commands headlessly.
-    case "$AGENT" in opencode|openclaw) CONNECT_YOLO=1 ;; esac
+    case "$AGENT" in
+      opencode|openclaw) CONNECT_YOLO=1 ;;
+      # A headless run has nobody to answer dsh's approval asks.
+      dsh) CONNECT_YOLO=1; CONNECT_START_ARGS='--profile headless' ;;
+    esac
     parse_connect
     crosscheck_contract
     # File-edit needs real tools, so we cannot zero them as in connection.
@@ -582,8 +695,10 @@ case "$MODE" in
     # hang guard. Nothing here can adjudicate a partial turn either -- the
     # verdict is a llama-server log slice -- so a cap stays fatal, as it does
     # for connection and resume.
+    # --tools "" and nothing else: gemma-3-270m declares no tools, so /v1/messages now 400s
+    # the default 25 schemas. The system prompt stays -- the attribution line lives in it.
     ab_invoke() {
-      invoke_via_connect "$@"
+      invoke_via_connect "$1" --tools "" "${@:2}"
       [ "${TIMED_OUT:-0}" = 1 ] && guide_fail "attribution-ab invoke timed out after ${TIMEOUT}s; the A/B cannot be judged from a partial turn"
       return 0
     }

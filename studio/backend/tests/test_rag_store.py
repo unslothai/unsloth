@@ -324,3 +324,140 @@ def test_gate_counts_a_folder_document_that_outlived_its_folder(rag_conn):
     rag_conn.commit()
     assert store.linked_folder_rows_exist(rag_conn) is True
     assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
+
+
+def _pasted_prose(words: int) -> str:
+    """Distinct ordinary words, as a pasted log or source file supplies them.
+
+    Purely alphabetic on purpose: a token mixing letters and digits short-circuits the
+    identifier test on its first clause and never reaches the scan being measured, so a
+    synthetic `tok1 tok2 ...` paste hides the cost that real prose pays.
+    """
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    return " ".join(
+        letters[index % 26]
+        + letters[(index // 26) % 26]
+        + letters[(index // 676) % 26]
+        + letters[(index // 17576) % 26]
+        + "qz"
+        for index in range(words)
+    )
+
+
+def test_a_pasted_log_does_not_make_the_archive_query_quadratic(monkeypatch):
+    """Shaping the archive query must not re-tokenize the question once per token.
+
+    `conversation_match_queries` runs on the LATEST USER MESSAGE, and the message that
+    forces a compaction is very often a pasted log or source file. Re-scanning the whole
+    question inside the per-token identifier test made the shaping cost grow with the
+    square of the question's length: 48 KB of pasted prose measured at 4.6s and 96 KB at
+    17.7s of pure CPU, against 2.3ms for the same text through `_match_query`. The recall
+    path can run the shaping several times per request -- once per widening iteration in
+    `conversation_archive.recall`, and again for each rung of the over-budget top_k
+    backoff -- so the multiplier lands on the one turn that compacts the thread.
+
+    Counted rather than timed, so the guard is deterministic: the number of full scans of
+    the question is what has to stay bounded, not the wall clock on one machine.
+    """
+    scans = {"n": 0}
+    real = store._TOKEN
+
+    class CountingToken:
+        def findall(self, text):
+            scans["n"] += 1
+            return real.findall(text)
+
+    monkeypatch.setattr(store, "_TOKEN", CountingToken())
+
+    question = f"what is the current value of ZQXVARA123 {_pasted_prose(2000)}"
+    expressions = store.conversation_match_queries(question)
+
+    assert expressions and expressions[0].startswith('"zqxvara123"')
+    # Once for the lower-cased tokens, once for the raw ones. Anything that grows with the
+    # token count is the quadratic coming back.
+    assert scans["n"] <= 2, f"tokenized the question {scans['n']} times"
+
+
+def test_query_shaping_stays_cheap_on_a_pasted_log():
+    """The wall-clock companion to the scan count, with a wide margin.
+
+    6000 pasted words is roughly a 48 KB paste, which is one source file. Unfixed this
+    takes about 4.6s of CPU; linear it takes about 6ms. A 1.0s ceiling is unreachable by
+    a linear implementation on any machine that can run this suite at all.
+    """
+    import time
+
+    question = f"what is the current value of ZQXVARA123\n{_pasted_prose(6000)}"
+    started = time.perf_counter()
+    expressions = store.conversation_match_queries(question)
+    elapsed = time.perf_counter() - started
+    assert expressions and expressions[0] == '"zqxvara123"'
+    assert elapsed < 1.0, f"shaping a 6000-word paste took {elapsed:.2f}s"
+
+
+def test_a_quoted_function_word_survives_the_stopword_filter():
+    """Quotes are how a user names a word instead of using it.
+
+    `What did I say about "this"?` reduced to '"say"' once the stopword list had it, and
+    an archived `Use this endpoint` was then unreachable: it never contains "say", and if
+    unrelated chunks fill the fetch window `_candidates` never reaches its hybrid
+    fallback. Unquoted, the same word stays a stopword.
+    """
+    quoted = store.conversation_match_queries('What did I say about "this"?')
+    plain = store.conversation_match_queries("What did I say about this?")
+
+    assert quoted == ['"say" OR "this"']
+    assert plain == ['"say"']
+    # A quoted function word is not an identifier, so only the permissive pass widens.
+    assert len(quoted) == 1
+
+
+def test_a_legacy_archive_still_gets_two_different_ends(rag_home, rag_conn):
+    """Every ordinal NULL made both halves of the two-ended fetch the same query.
+
+    FTS5 floors the IDF of a term the whole index shares, so a per-thread archive's own
+    subject scores identically on every hit, and on an archive written before
+    `archive_ordinal` existed every later ordering term was constant too. Both windows
+    then returned the same arbitrary rows, `_both_ends` deduplicated them, and the later
+    legacy revisions were unreachable at any candidate count.
+    """
+    import types
+
+    from core.rag import store
+
+    conn = rag_conn
+    scope = "convarchive_legacy"
+    for index in range(8):
+        document = store.create_document(
+            conn,
+            scope = scope,
+            thread_id = "t",
+            filename = f"earlier turn {index}",
+            sha256 = f"h{index}",
+            status = "completed",
+            embedding_model = "m",
+            archive_messages = 2,
+            archive_ordinal = None,
+            commit = False,
+        )
+        chunk = types.SimpleNamespace(
+            chunk_index = 0,
+            text = f"ZQXLEGACY token number {index}",
+            page_number = None,
+            source_page_index = None,
+            token_count = 5,
+            char_count = 20,
+        )
+        store.add_chunks(conn, scope, document, [chunk], [[0.0, 0.0, 0.0, 0.0]])
+    conn.commit()
+
+    oldest = [
+        chunk for chunk, _ in store.search_lexical(conn, scope, "ZQXLEGACY", 3, oldest_first = True)
+    ]
+    newest = [
+        chunk for chunk, _ in store.search_lexical(conn, scope, "ZQXLEGACY", 3, newest_first = True)
+    ]
+
+    assert oldest and newest
+    assert oldest != newest, "both ends of the fetch returned the same rows"
+    assert not set(oldest) & set(newest), (oldest, newest)

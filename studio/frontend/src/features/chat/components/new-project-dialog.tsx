@@ -30,9 +30,8 @@ function currentRoute(): string {
   return window.location.pathname + window.location.search;
 }
 
-// Create-project dialog for the composer, sidebar, and projects page. Creating
-// opens the new project; `onCreated` overrides that for callers with their own
-// follow-up (the sidebar's "move this chat to a new project").
+// Create-project dialog for the composer, sidebar and projects page. Creating opens the new
+// project; `onCreated` overrides that for callers with their own follow-up.
 export function NewProjectDialog({
   open,
   onOpenChange,
@@ -53,15 +52,15 @@ export function NewProjectDialog({
   const [name, setName] = useState("");
   const [staged, setStaged] = useState<StagedSource[]>([]);
   const [busy, setBusy] = useState(false);
-  // A desktop drop reaches `staged` only once its native registration settles.
-  // Creating before then would upload without the files the user just dropped.
+  // A desktop drop reaches `staged` only once its native registration settles. Creating before
+  // then would upload without the files the user just dropped.
   const [stagingDrop, setStagingDrop] = useState(false);
-  // Uploads outlive this component, so a slow one must not yank the user to the
-  // new project after they have navigated away.
+  // Uploads outlive this component, so a slow one must not yank the user to the new project after
+  // they have navigated away.
   const mounted = useRef(true);
   useEffect(() => {
-    // Set on setup, not just cleared on cleanup: StrictMode replays
-    // setup/cleanup/setup, which would otherwise leave this false forever.
+    // Set on setup, not just cleared on cleanup: StrictMode replays setup/cleanup/setup, which would
+    // otherwise leave this false forever.
     mounted.current = true;
     return () => {
       mounted.current = false;
@@ -74,8 +73,8 @@ export function NewProjectDialog({
     setStagingDrop(false);
   }
 
-  // Every close path routes through here: callers keep this mounted, so a draft
-  // left behind would resurface (and upload) on the next project.
+  // Every close path routes through here: callers keep this mounted, so a draft left behind would
+  // resurface, and upload, on the next project.
   function close() {
     if (busy) return;
     reset();
@@ -86,8 +85,8 @@ export function NewProjectDialog({
     const trimmed = name.trim();
     if (!trimmed || busy || stagingDrop) return;
     setBusy(true);
-    // Sidebar callers keep this mounted across routes, so unmounting alone
-    // cannot tell whether the user has moved on during a slow upload.
+    // Sidebar callers keep this mounted across routes, so unmounting alone cannot tell whether the
+    // user has moved on during a slow upload.
     const origin = currentRoute();
     try {
       const project = await createChatProject(trimmed);

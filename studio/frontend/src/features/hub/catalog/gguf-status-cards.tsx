@@ -3,7 +3,11 @@
 
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
-import type { DownloadJob, DownloadJobProgress } from "../download-manager";
+import {
+  type DownloadJob,
+  type DownloadJobProgress,
+  useHttpPartialsResumable,
+} from "../download-manager";
 import { DotTag } from "./dot-tag";
 import {
   CardDivider,
@@ -88,6 +92,7 @@ export function GgufDownloadingFallbackCard({
   progress: DownloadJobProgress;
   cancelling: boolean;
 }) {
+  const partialsResumable = useHttpPartialsResumable();
   return (
     <div className="flex w-full flex-col gap-2">
       <DownloadCard job={job} progress={progress}>
@@ -102,7 +107,12 @@ export function GgufDownloadingFallbackCard({
           downloading
           cancelling={cancelling}
           progressPercent={Math.round(Math.min(progress.fraction, 1) * 100)}
-          stopMode={downloadStopMode(job.transport, null, job.cancelTransport)}
+          stopMode={downloadStopMode(
+            job.transport,
+            null,
+            job.cancelTransport,
+            partialsResumable,
+          )}
           disabled={cancelling}
           onClick={() => void job.cancelDownload(progress.variant)}
         />

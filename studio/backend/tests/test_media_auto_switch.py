@@ -35,6 +35,43 @@ from core.inference.openai_auto_download import preferred_quant
 from utils.api_errors import install_api_error_handlers
 
 
+def _a_real_video_family(name = "wan2.2-ti2v-5b"):
+    """A real ``VideoFamily``, for tests that just need the route to carry one.
+
+    A bare ``object()`` stands in for a forty-field frozen dataclass, so the first field
+    nobody hand-copied fails the test on an AttributeError about nothing it asserts.
+    """
+    from core.inference.video_families import detect_video_family
+
+    # By name, not repo id: which tokens a repo id matches is its own rule, tested elsewhere.
+    fam = detect_video_family("", override = name)
+    assert fam is not None, f"the video family registry no longer has {name!r}"
+    return fam
+
+
+def _video_load_backend(**overrides):
+    """A real ``VideoBackend`` with only the asserted methods replaced.
+
+    Every other call the route makes runs the real implementation, which for the load
+    route's preflight and reservation helpers is pure registry resolution: no hub, no GPU,
+    no weights, and ``__init__`` only allocates locks. A hand-rolled stub instead needs
+    extending every time the route grows a call, and until it is, unrelated tests fail on a
+    missing attribute rather than on what they assert.
+
+    ``overrides`` are checked against the class, so a stub for a method that does not exist
+    fails loudly instead of quietly never being called.
+    """
+    from core.inference.video import VideoBackend
+
+    unknown = sorted(name for name in overrides if not hasattr(VideoBackend, name))
+    assert not unknown, f"not part of the video backend's surface: {unknown}"
+
+    backend = VideoBackend()
+    for name, impl in overrides.items():
+        setattr(backend, name, impl)
+    return backend
+
+
 def _info(
     model_id,
     path,
@@ -557,7 +594,7 @@ def test_the_video_route_switches_before_it_touches_the_backend(monkeypatch):
     )
 
     assert resp.status_code == 200
-    # Not the OpenAI envelope: this route is a Studio surface and its errors are plain details.
+    # Not the OpenAI envelope: this route is an Unsloth surface and its errors are plain details.
     assert calls == [("unsloth/Wan2.2", arb.VIDEO, False, "hf_abc")]
 
 
@@ -714,20 +751,22 @@ def test_a_replacement_load_is_not_reported_as_the_requested_model(
 
 
 def test_the_download_plan_asks_the_engine_that_will_load_the_pick(cached_gguf, monkeypatch):
-    # The resident engine can be native sd.cpp while the target loads through diffusers; its
-    # planner refuses the pick, and that refusal would read as nothing missing.
     pick = mas.resolve_local_media_model("city96/FLUX.1-dev-gguf", task = mas.IMAGE_TASK)
     asked: list = []
 
     class _Planner:
         def download_plan(self, model_path, **kwargs):
-            asked.append(model_path)
+            asked.append((model_path, kwargs))
             return {"total_bytes": 7}
 
     monkeypatch.setattr(locality, "planners_for", lambda owner, p: [_Planner()])
 
     assert mas.missing_download_bytes(arb.DIFFUSION, pick) == 7
-    assert asked == [pick.model_path]
+    assert [model_path for model_path, _kwargs in asked] == [pick.model_path]
+    # Only the oversized-memory verdict is suppressed. The probe stays on, because the
+    # byte count has to be taken over the same file list the load will fetch.
+    assert asked[0][1]["memory_verdict"] is False
+    assert "allow_device_probe" not in asked[0][1]
 
 
 def test_two_bpw_builds_of_one_quant_are_not_confused(two_bpw, enabled, backend, loads):
@@ -1010,7 +1049,6 @@ def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
     # begin_load, so a newly admitted generation could be cut short by the orphaned switch.
     import core.inference.media_keepwarm as keepwarm
 
-    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1023,9 +1061,43 @@ def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
         started.set()
         await release.wait()
 
-    monkeypatch.setattr(mas, "_start_load", _slow_setup)
-
     async def _drive():
+        # One warm pass over the same path, at the production budget, with a setup that
+        # returns instead of blocking. Reaching _start_load the FIRST time measured 1.98s
+        # here, and media_auto_switch counts that against the switch budget on purpose
+        # ("the cold scan is part of the wait the caller experiences"). At the production
+        # 90s that is nothing. This test shrinks the budget to 0.3s because a large one
+        # has to be waited out -- at 30s the test took 31.8s -- and a cold path then blows
+        # 0.3s before setup is entered: the 503 comes from the scan rather than from the
+        # block under test, the status-code assertion still passes, and the failure lands
+        # further down on `started.is_set()` explaining nothing. That is how it failed on
+        # the 3.13 leg while 3.10 passed the same commit. Warming is what makes the small
+        # budget measure the block and only the block.
+        warmed = asyncio.Event()
+
+        async def _quick_setup(
+            owner,
+            pick,
+            current_subject,
+            hf_token = None,
+        ):
+            warmed.set()
+
+        monkeypatch.setattr(mas, "_start_load", _quick_setup)
+        with contextlib.suppress(HTTPException):
+            await mas.maybe_auto_switch_media_model(
+                "black-forest-labs/FLUX.1-dev",
+                owner = arb.DIFFUSION,
+                current_subject = "test-user",
+                openai_errors = True,
+            )
+        assert warmed.is_set(), (
+            "the warm pass never reached _start_load at the production budget, so the "
+            "timed run below cannot be measuring what this test is about"
+        )
+
+        monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
+        monkeypatch.setattr(mas, "_start_load", _slow_setup)
         task = asyncio.ensure_future(
             mas.maybe_auto_switch_media_model(
                 "black-forest-labs/FLUX.1-dev",
@@ -1101,20 +1173,45 @@ def test_a_local_video_pipeline_is_still_planned(h3_modular, enabled, backend, l
     assert loads == []
 
 
+def test_every_backend_call_the_video_route_makes_exists_on_the_backend():
+    """``backend.<name>`` in routes/video.py must name something ``VideoBackend`` has.
+
+    ``get_video_backend()`` is untyped at the call site, so a method renamed on the class or
+    misspelled in the route is no syntax error, no lint finding, and invisible to any double
+    stubbing the old name. It is an AttributeError on a real load, and the route's own tests
+    mock the backend out. Read off the parse tree, not the text.
+    """
+    import ast
+    import inspect
+
+    import routes.video as video_route
+    from core.inference.video import VideoBackend
+
+    tree = ast.parse(inspect.getsource(video_route))
+    asked = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "backend"
+        and isinstance(node.ctx, ast.Load)
+    }
+    assert asked, "no backend calls found -- the route was restructured, so this guard is blind"
+    missing = sorted(name for name in asked if not hasattr(VideoBackend, name))
+    assert not missing, f"routes/video.py calls backend methods that do not exist: {missing}"
+
+
 def test_the_video_load_route_records_provenance_without_raising(monkeypatch):
     # The provenance call is made positionally from both load routes, so a signature that drifts
     # from them 500s every load after the background work has already been accepted.
     import core.inference.video as video_module
     from routes.video import router as video_router
 
-    class _Backend:
-        def validate_load_request(self, *a, **k):
-            return object()
-
-        def begin_load(self, *a, **k):
-            return {"loaded": False, "repo_id": None}
-
-    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+    backend = _video_load_backend(
+        validate_load_request = lambda *a, **k: _a_real_video_family(),
+        begin_load = lambda *a, **k: {"loaded": False, "repo_id": None},
+    )
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
     monkeypatch.setattr(video_module, "resolve_video_model_kind", lambda *a, **k: "gguf")
     monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
     monkeypatch.setattr("routes.video._guard_video_load_against_training", lambda: None)
@@ -2403,22 +2500,29 @@ def _capture_begin_load(monkeypatch, route):
     """Record the local_files_only begin_load is called with, for either media route."""
     seen: list = []
 
-    class _Backend:
-        def validate_load_request(self, *a, **k):
-            return types.SimpleNamespace(name = "z-image", base_repo = None)
-
-        def begin_load(self, *a, **k):
-            seen.append(k.get("local_files_only"))
-            return {"loaded": False, "repo_id": None}
+    def _begin_load(*a, **k):
+        seen.append(k.get("local_files_only"))
+        return {"loaded": False, "repo_id": None}
 
     if route == "images":
         import core.inference.diffusion_engine_router as router_module
+
+        class _Backend:
+            def validate_load_request(self, *a, **k):
+                return types.SimpleNamespace(name = "z-image", base_repo = None)
+
+            begin_load = staticmethod(_begin_load)
+
         monkeypatch.setattr(router_module, "select_and_activate_engine", lambda *a, **k: _Backend())
         monkeypatch.setattr(router_module, "get_active_diffusion_engine", lambda: _Backend())
     else:
         import core.inference.video as video_module
 
-        monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+        backend = _video_load_backend(
+            validate_load_request = lambda *a, **k: _a_real_video_family(),
+            begin_load = _begin_load,
+        )
+        monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
         monkeypatch.setattr(video_module, "resolve_video_model_kind", lambda *a, **k: "gguf")
         monkeypatch.setattr(video_module, "assert_video_precision_available", lambda *a, **k: None)
         monkeypatch.setattr("routes.video._guard_video_load_against_training", lambda: None)

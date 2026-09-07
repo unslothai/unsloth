@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 _BACKEND = Path(__file__).resolve().parents[1]
@@ -24,6 +26,7 @@ from routes.chat_history import (  # noqa: E402
     ChatThreadPatch,
     ChatThreadSettings,
     _settings_write_from_patch,
+    readable_thread_settings,
     thread_from_row,
 )
 from storage import studio_db  # noqa: E402
@@ -202,7 +205,7 @@ def test_settings_column_is_added_to_an_existing_database(tmp_path, monkeypatch)
     assert studio_db.get_chat_thread("thread-1")["settings"] == SETTINGS
 
 
-# A snapshot on disk outlives the build that wrote it. A newer Studio adding a
+# A snapshot on disk outlives the build that wrote it. A newer Unsloth adding a
 # setting, widening an enum or raising a bound writes a blob this build has never
 # seen, and it reaches the response model rather than the request one, so refusing
 # it 500s the chat on open and takes the whole history export with it. The wire
@@ -597,3 +600,134 @@ def test_the_newest_writer_is_not_the_first_evicted(tmp_path, monkeypatch):
 
     got = thread_from_row(studio_db.get_chat_thread("thread-1")).settings
     assert got.toolsEnabled is False
+
+
+def test_sampling_params_are_part_of_the_snapshot():
+    """The reported gap: a chat's system prompt and sampling did not travel with it."""
+    settings = ChatThreadSettings.model_validate(
+        {
+            "temperature": 0.2,
+            "topP": 0.85,
+            "topK": 40,
+            "minP": 0.02,
+            "repetitionPenalty": 1.1,
+            "presencePenalty": 0.5,
+            "systemPrompt": "You are a terse reviewer.",
+            "systemVariables": "name=Ada",
+        }
+    )
+    assert settings.temperature == 0.2
+    assert settings.systemPrompt == "You are a terse reviewer."
+    assert settings.systemVariables == "name=Ada"
+
+
+@pytest.mark.parametrize(
+    "field, inside, outside",
+    [
+        ("temperature", 2, 2.5),
+        ("temperature", 0, -0.1),
+        ("topP", 1, 1.5),
+        ("topK", 100, 101),
+        # -1 disables top-k; the floor is below it, not at zero.
+        ("topK", -1, -2),
+        ("minP", 0, -1),
+        ("repetitionPenalty", 1, 0.5),
+        ("presencePenalty", 2, 3),
+    ],
+)
+def test_sampling_params_take_the_slider_range_and_no_more(field, inside, outside):
+    """Both halves: extra="forbid" alone would refuse the out-of-range value too."""
+    assert getattr(ChatThreadSettings.model_validate({field: inside}), field) == inside
+    with pytest.raises(ValidationError):
+        ChatThreadSettings.model_validate({field: outside})
+
+
+def test_the_disabled_top_k_value_round_trips():
+    """ChatCompletionRequest allows -1 and default.yaml falls back to it, so a chat
+    running with top-k off has to be able to store that."""
+    assert ChatThreadSettings.model_validate({"topK": -1}).topK == -1
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_sampling_params_refuse_nan_and_infinity(bad):
+    """Stored bare, these parse back in Python but are not valid JSON for anything else."""
+    assert ChatThreadSettings.model_validate({"temperature": 0.5}).temperature == 0.5
+    with pytest.raises(ValidationError):
+        ChatThreadSettings.model_validate({"temperature": bad})
+
+
+def test_a_long_system_prompt_is_stored_whole():
+    """Truncating would silently change what the chat runs with."""
+    prompt = "x" * 20_000
+    settings = ChatThreadSettings.model_validate({"systemPrompt": prompt})
+    assert settings.systemPrompt == prompt
+
+
+def test_an_older_build_drops_only_the_sampling_it_cannot_read():
+    """readable_thread_settings keeps the rest of a snapshot a newer build wrote."""
+    from routes.chat_history import readable_thread_settings
+
+    kept = readable_thread_settings(
+        {"toolsEnabled": True, "temperature": 0.3, "somethingNewer": "?"}
+    )
+    assert kept == {"toolsEnabled": True, "temperature": 0.3}
+
+
+def test_a_chat_carries_its_own_sampling_seed():
+    """The seed sits with the sliders the snapshot already carries, so without it a pin
+    taken in one chat fixes the draw for every other chat on the same model."""
+    assert ChatThreadSettings.model_validate({"seed": 3407}).seed == 3407
+    assert ChatThreadSettings.model_validate({"seed": 0}).seed == 0
+    assert ChatThreadSettings.model_validate({"seed": 2**32 - 2}).seed == 2**32 - 2
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        # bool subclasses int, so lax mode would store either as a pin the user never set.
+        True,
+        False,
+        -1,
+        2**32 - 1,  # llama.cpp's "draw one" sentinel, not a value a pin can name.
+        2**32,
+        1.5,
+    ],
+)
+def test_a_thread_seed_takes_the_same_range_as_the_installation_copy(seed):
+    with pytest.raises(ValidationError):
+        ChatThreadSettings.model_validate({"seed": seed})
+
+
+def test_a_cleared_seed_stays_in_the_stored_snapshot():
+    """null is the clear, not an absence: dropping the key would let the installation pin
+    come back for the one chat the user deliberately unpinned."""
+    assert readable_thread_settings({"seed": None}) == {"seed": None}
+    assert ChatThreadSettings.model_validate({"seed": None}).seed is None
+
+
+def _thread_row(settings):
+    row = {"id": "thread-1", "modelType": "base", "createdAt": 0}
+    return row if settings is None else {**row, "settings": settings}
+
+
+@pytest.mark.parametrize(
+    "stored, expected",
+    [
+        # Written before the seed existed. Absent, so the chat takes the pin it inherits.
+        ({"temperature": 0.3}, {"temperature": 0.3}),
+        # Written by a build that has it, with the pin cleared. null is the chat's choice.
+        ({"temperature": 0.3, "seed": None}, {"temperature": 0.3, "seed": None}),
+        ({"temperature": 0.3, "seed": 3407}, {"temperature": 0.3, "seed": 3407}),
+    ],
+)
+def test_the_response_says_absent_for_a_key_the_snapshot_never_held(stored, expected):
+    """The default dump spells every unset field as null, and the client drops those, so
+    a pre-seed snapshot would read as a chat that had cleared the pin."""
+    app = FastAPI()
+
+    @app.get("/thread", response_model = ChatThread)
+    def _read():
+        return thread_from_row(_thread_row(stored))
+
+    with TestClient(app) as client:
+        assert client.get("/thread").json()["settings"] == expected

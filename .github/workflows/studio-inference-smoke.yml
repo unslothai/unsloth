@@ -1,31 +1,34 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Three end-to-end smoke jobs that boot a freshly-installed Unsloth and
+# Three end-to-end smoke phases that boot a freshly-installed Unsloth and
 # exercise the surfaces real users hit through the OpenAI / Anthropic
-# SDKs and curl. Each job picks the smallest model that exercises the
-# behaviour under test, primes HF_HOME via actions/cache, and shares
-# the install.sh --local --no-torch bootstrap.
+# SDKs and curl. Each phase picks the smallest model that exercises the
+# behaviour under test and primes its own model cache via actions/cache.
+# All three run sequentially on ONE runner and share a single
+# install.sh --local --no-torch bootstrap, matching what
+# studio-windows-inference-smoke.yml already does.
 #
-#   1. OpenAI, Anthropic API tests
+#   1. OpenAI, Anthropic API tests            port 18888
 #        gemma-3-270m-it UD-Q4_K_XL (~254 MiB).
 #        Password rotation via /api/auth/change-password (old fails,
 #        new works), then OpenAI + Anthropic Python SDKs against /v1/*
 #        with temperature=0 and a fixed seed. Asserts the four-turn
 #        conversation is deterministic across two runs.
 #
-#   2. Tool calling Tests
-#        Qwen3.5-2B UD-IQ3_XXS (~890 MiB). OpenAI function calling,
+#   2. Tool calling Tests                     port 18889
+#        Qwen3.5-2B UD-Q4_K_XL (~1.28 GiB). OpenAI function calling,
 #        server-side tools (python, terminal, web_search) via
 #        enable_tools / enabled_tools, and enable_thinking on/off.
 #
-#   3. JSON, images
+#   3. JSON, images                           port 18890
 #        Qwen3-VL-2B-Instruct UD-Q4_K_XL (~1.1 GiB) + mmproj-F16 (~780 MiB).
 #        response_format JSON-schema decoding and OpenAI image_url
 #        (data URI) plus Anthropic source/base64 image inputs.
 #
-# All three jobs run in parallel. Total wall time is dominated by job 3
-# on a cold cache; warm cache cuts that to ~3 min.
+# Each phase gates on the shared install rather than on the phase before it,
+# so a phase-1 failure still lets phases 2 and 3 report. That is what the three
+# separate jobs gave for free and what the bundle has to reproduce by hand.
 
 name: Unsloth GGUF CI
 
@@ -38,6 +41,7 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/workflows/studio-inference-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
@@ -46,6 +50,11 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
   push:
     branches: [main]
   # Manual trigger for pre-warming HF_HOME caches on main, or re-running
@@ -53,54 +62,164 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────
-  # Job 1: OpenAI, Anthropic API tests
-  # ─────────────────────────────────────────────────────────────────────
-  openai-anthropic:
-    name: OpenAI, Anthropic API tests
+  # One job, three phases -- the Linux port of the layout Windows and macOS
+  # already use (studio-windows-inference-smoke.yml, studio-mac-inference-smoke.yml).
+  # These were three ubuntu-latest jobs differing only in model, port and test
+  # body; checkout, apt, setup-node, setup-python and `install.sh --local
+  # --no-torch` were identical in all three.
+  #
+  # This reverses the note in studio-windows-inference-smoke.yml that said the
+  # trade was not worth making on ubuntu because "setup is ~1.9 min against ~3.0
+  # min of tests" and the added sequential wall time would cost more feedback
+  # latency than the slots are worth. The arithmetic was right; its premise --
+  # that the three jobs start together -- is not what the runners actually do.
+  #
+  # Measured on main. Run 32089506294 started two jobs at 02:40:11 and the third
+  # at 02:46:52, a 6m41s wait for the third slot, and finished at 02:52:57: a
+  # 12m46s wall for ~6 min of work. Run 32089558062 staggered all three
+  # (02:47:32 / 02:50:01 / 02:54:06). Across 18 recent multi-job runs on main the
+  # median gap between a run's first and last job start was 175s, and 13 of the
+  # 18 exceeded 60s. The sequential wall time the note was trying to avoid is
+  # already being paid, in the queue, plus two extra setups.
+  #
+  # Measured bundled, on a staging repo with an EMPTY actions cache, so every
+  # model downloaded cold: 6m03s for all three phases. 105s of that is the now-
+  # shared setup (checkout 4s, apt 9s, node 1s, python 2s, install.sh 88s, SDKs
+  # 6s), which the three jobs each paid separately; the phases themselves are
+  # 26s / 179s / 36s. That is at or under the 6m05 the longest of the three jobs
+  # took on its own, on a third of the runners -- so this is not the "slower but
+  # cheaper" trade it looked like before it was measured. It also gives back 2 of
+  # the 60 concurrent slots, which is what makes the contended case rarer for
+  # every other workflow.
+  #
+  # Each phase keeps its own model cache directory, HF_HOME, port, server log,
+  # uploaded artifact and step timeouts, and each is gated on the SHARED preamble
+  # rather than on the phase before it, so a failure still points at one phase,
+  # earlier phases' logs survive it, and later phases still run -- the same
+  # independence the three jobs had.
+  inference-smoke:
+    name: GGUF inference smoke (API, tools, vision)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # Was 25 + 25 + 30 across three runners. Sequentially they share one
+    # install, so the sum is well under 60, but a cold model cache on the
+    # vision phase is the slow case. Every step that can block also carries
+    # its own `timeout-minutes`: the job cap alone is not a substitute,
+    # because hf-download-with-retry.sh retries forever by design and named
+    # the enclosing step's timeout as its bound.
+    timeout-minutes: 60
     env:
-      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
-      GGUF_VARIANT: UD-Q4_K_XL
-      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
-      STUDIO_PORT: '18888'
-      HF_HOME: ${{ github.workspace }}/hf-cache
+      # Only what every phase shares. Model, GGUF file, port and HF_HOME are
+      # set per phase via $GITHUB_ENV instead of here: if a phase-specific key
+      # were also declared at job level, whether the later $GITHUB_ENV write
+      # wins is not something the Actions docs pin down, and a phase quietly
+      # talking to the previous phase's port would be a nasty way to find out.
+      #
+      # Unbuffered stdio so a phase that dies mid-step leaves its output in the
+      # log rather than in a lost 8KB pipe buffer. Three phases share one log
+      # now, so "which phase was running" has to be readable from the tail.
+      PYTHONUNBUFFERED: '1'
+      # hf-xet's chunk directory defaults to a path under HF_HOME, which is what
+      # the phase-1 and phase-3 cache entries save. Those chunks are scratch --
+      # re-derivable from the blobs sitting next to them -- so pinning them
+      # outside the workspace keeps each hf-cache* tree closer to 1:1 with the
+      # model files it holds. hf-download-with-retry.sh already sets
+      # HF_XET_CHUNK_CACHE_SIZE_BYTES=0, so this mainly covers the downloads
+      # Unsloth itself makes at load time, which do not go through that script.
+      HF_XET_CACHE: ${{ github.workspace }}/xet-scratch
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
+
       - name: Linux deps for llama.cpp prebuilt
+        # Bounded and retried through the shared helper: an unbounded apt step does
+        # not fail, it spends the job's whole budget and is reported as "cancelled"
+        # with no reason and every later step skipped. update and install go as one
+        # unit, since retrying the install after a stalled update re-reads the same
+        # broken package list.
+        # Two long attempts, not three short ones. 150s killed apt mid-`update`
+        # against a mirror that was degraded rather than dead, and every attempt
+        # then hit the same wall -- three kills and no result. The bound exists to
+        # stop an infinite hang, not to race a slow mirror.
+        timeout-minutes: 15
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '360'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
+
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
+
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
       # Linux, macOS and Windows, so the key carries no `runner.os`, and
       # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
+
+      # Deliberately NO `if:`, so this rides the implicit success() and a failed
+      # preamble still stops the job here, exactly as it did when this was three
+      # jobs. Every phase below gates on this step's outcome.
+      - name: Install Unsloth (--local, --no-torch)
+        id: install
+        timeout-minutes: 25
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      # Needed by phases 1 and 3 only; the tool-calling phase drives the API
+      # with curl and never imports them, which is why phase 2 does not gate
+      # on this.
+      - name: Install OpenAI + Anthropic Python SDKs
+        id: sdks
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 10
+        # anthropic is held below 1.0: v1 removed temperature, top_p and top_k as
+        # accepted arguments on messages.create(), so the probes below, which pin
+        # temperature = 0.0 for determinism, raise TypeError against it. The v1 route
+        # is extra_body; moving to it is a deliberate change to what the probes send,
+        # not something a CI install should decide by resolving a new major.
+        run: pip install 'openai>=1.50,<4' 'anthropic>=0.40,<1'
+
+      # Phase 1's environment and model cache sit HERE, after the shared
+      # preamble, not before it. They used to run before the installer, which is
+      # where they sat when phase 1 was its own job -- harmless then, because a
+      # priming failure only killed that one job. Once the installer is shared,
+      # the same failure would skip it under the implicit success() and every
+      # later phase's gate would evaluate false. Ordering the shared setup first
+      # keeps a phase-1 resource failure phase-local.
+      - name: Phase 1 environment (OpenAI, Anthropic API)
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' }}
+        run: |
+          echo "GGUF_REPO=unsloth/gemma-3-270m-it-GGUF" >> "$GITHUB_ENV"
+          echo "GGUF_VARIANT=UD-Q4_K_XL" >> "$GITHUB_ENV"
+          echo "GGUF_FILE=gemma-3-270m-it-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
+          echo "STUDIO_PORT=18888" >> "$GITHUB_ENV"
+          echo "STUDIO_LOG=logs/studio.log" >> "$GITHUB_ENV"
+          echo "HF_HOME=${{ github.workspace }}/hf-cache" >> "$GITHUB_ENV"
+
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' }}
         id: cache-hf
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
@@ -111,7 +230,8 @@ jobs:
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
-        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        timeout-minutes: 15
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' && (steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success') }}
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
@@ -126,12 +246,15 @@ jobs:
         # merge ref -- per GitHub's docs they "can only be restored by re-runs
         # of the pull request" -- while every PR *can* restore from the default
         # branch. So a PR-scoped save helps almost nothing and competes for the
-        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # per-repo cache budget, and when that budget is exceeded GitHub evicts
         # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
-        # same 4.6GB model held four times on four different PR refs and no copy
-        # on main at all. That is the thrash loop: PR misses -> downloads ->
-        # saves its own copy -> evicts main's -> next PR misses.
+        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
+        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
+        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
+        # refs, and every one of those keys already has a copy on main, so the
+        # PR-scoped duplicates are redundant by construction. That is the thrash
+        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
+        # next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -139,26 +262,26 @@ jobs:
           key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
           enableCrossOsArchive: true
 
-      - name: Install Unsloth (--local, --no-torch)
-        uses: ./.github/actions/install-unsloth-local
-        with:
-          gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-
-      - name: Install OpenAI + Anthropic Python SDKs
-        run: pip install 'openai>=1.50' 'anthropic>=0.40'
 
       - name: Reset auth + boot Unsloth (API-only)
+        id: boot-api
+        timeout-minutes: 5
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.prime-hf.outcome != 'failure' }}
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT" --log "$STUDIO_LOG"
 
       - name: Wait for /api/health
+        id: ready-api
+        timeout-minutes: 10
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.boot-api.outcome == 'success' }}
         run: |
           bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Password rotation (old must fail, new must work)
+        id: rotate-api
+        timeout-minutes: 5
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.ready-api.outcome == 'success' }}
         run: |
           OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
           NEW="CIRotated-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
@@ -191,116 +314,37 @@ jobs:
           echo "password rotation OK (old=401, new=200)"
 
       - name: Load the GGUF (HF repo + variant, served from HF_HOME cache)
+        id: load-api
+        timeout-minutes: 10
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.rotate-api.outcome == 'success' }}
         run: |
+          # speculative_type=off and n_parallel=1 are what make the determinism
+          # assertion in the next step answerable. llama-server's README: "the
+          # logits are not guaranteed to be bit-for-bit identical for different
+          # batch" sizes. A non-MTP GGUF otherwise takes the --spec-default branch,
+          # which is live n-gram drafting, not the absence of a drafter: the server
+          # logs "draft acceptance = 0.46875 (30 accepted / 64 generated)". Its
+          # draft pool is built from text the server has already seen, so the FIRST
+          # turn-1 request after a load drafts nothing and decodes one token at a
+          # time while every later one verifies a ~32-token draft in one batch, and
+          # check(runner(), runner()) always compares the cold replay against a warm
+          # one. n_parallel=1 also drops --kv-unified, whose shared-pool occupancy is
+          # a second input to the batch. The other phases of this workflow keep both
+          # defaults, so the shipped path stays covered.
           curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
             -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
             --max-time 600 \
-            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048}" \
+            -d "{\"model_path\":\"$GGUF_REPO\",\"gguf_variant\":\"$GGUF_VARIANT\",\"is_lora\":false,\"max_seq_length\":2048,\"speculative_type\":\"off\",\"n_parallel\":1}" \
             | jq '{status, display_name, is_gguf, context_length}'
 
       - name: Multi-turn determinism via OpenAI + Anthropic SDKs
+        id: chat-api
+        timeout-minutes: 10
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.load-api.outcome == 'success' }}
         env:
           BASE_URL: http://127.0.0.1:18888
         run: |
-          python - <<'PY'
-          import json
-          import os
-          from openai import OpenAI
-          from anthropic import Anthropic
-
-          BASE = os.environ["BASE_URL"]
-          KEY  = os.environ["TOKEN"]      # JWT also accepted as Bearer on /v1/*
-          SEED = 3407
-
-          # Four-turn conversation: the second and fourth turns can only be
-          # answered correctly if the model sees the prior turns, so this
-          # also exercises the conversation-history wiring.
-          PROMPTS = [
-              "What is 1+1?",
-              "What did I ask before?",
-              "What is the capital of France?",
-              "Repeat the city name",
-          ]
-
-          def run_openai():
-              client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
-              history, replies = [], []
-              for prompt in PROMPTS:
-                  history.append({"role": "user", "content": prompt})
-                  resp = client.chat.completions.create(
-                      model       = "default",
-                      messages    = history,
-                      temperature = 0.0,
-                      max_tokens  = 80,
-                      seed        = SEED,
-                      extra_body  = {"enable_thinking": False},
-                  )
-                  text = resp.choices[0].message.content or ""
-                  replies.append(text)
-                  history.append({"role": "assistant", "content": text})
-              return replies
-
-          def run_anthropic():
-              # Two SDK quirks vs. Unsloth:
-              #   1. base_url must NOT include /v1 -- the SDK appends
-              #      /v1/messages itself; otherwise the request hits
-              #      /v1/v1/messages and 405s.
-              #   2. The SDK sends `x-api-key` by default, but Unsloth's
-              #      auth layer is HTTPBearer-only. Override via
-              #      default_headers so Authorization: Bearer ... is
-              #      sent instead.
-              client = Anthropic(
-                  base_url        = BASE,
-                  api_key         = "unused",
-                  default_headers = {"Authorization": f"Bearer {KEY}"},
-              )
-              history, replies = [], []
-              for prompt in PROMPTS:
-                  history.append({"role": "user", "content": prompt})
-                  msg = client.messages.create(
-                      model       = "default",
-                      max_tokens  = 80,
-                      messages    = history,
-                      temperature = 0.0,
-                      extra_body  = {"seed": SEED, "enable_thinking": False},
-                  )
-                  text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
-                  replies.append(text)
-                  history.append({"role": "assistant", "content": text})
-              return replies
-
-          for label, runner in (("openai", run_openai), ("anthropic", run_anthropic)):
-              first  = runner()
-              second = runner()
-              determinism_failures = []
-              for i, (a, b) in enumerate(zip(first, second), start = 1):
-                  print(f"[{label} turn {i}] {a!r}")
-                  # Both runs must be non-empty; small-quant drift
-                  # across runs is WARN-only (grounding asserts below
-                  # are the stronger signal).
-                  assert a, f"{label}: empty turn {i} response in first run"
-                  assert b, f"{label}: empty turn {i} response in second run"
-                  if a.strip() != b.strip():
-                      determinism_failures.append(
-                          f"turn {i}: run1={a!r} run2={b!r}"
-                      )
-              if determinism_failures:
-                  print(
-                      f"[{label}] WARN non-determinism at temperature=0.0 across "
-                      f"{len(determinism_failures)} of {len(first)} turn(s); "
-                      f"small-quant model drift, not an Unsloth regression. "
-                      f"Details: " + " | ".join(determinism_failures)
-                  )
-              # Sanity: turn-2 reply should mention the earlier question, and
-              # turn-4 reply should mention Paris (model echoes the city it
-              # produced for turn 3). Lower-cased substring checks keep the
-              # assertion robust to formatting jitter.
-              joined = " ".join(first).lower()
-              assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
-              assert "paris" in joined, f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
-              status_word = "PASS" if not determinism_failures else "PASS (with drift)"
-              print(f"[{label}] {status_word} -- 4 turns, history grounded ('paris' present)")
-          PY
+          python3 .github/scripts/studio_smoke/multi_turn_chat.py
 
       - name: Stop Unsloth
         if: always()
@@ -325,55 +369,20 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # Job 2: Tool calling Tests
   # ─────────────────────────────────────────────────────────────────────
-  tool-calling:
-    name: Tool calling Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      # Tool calling is the highest-volume GGUF in this workflow
-      # (Qwen3.5-2B at Q4_K_XL = ~1.28 GiB). Caching HF_HOME would
-      # store xet chunks + blobs + snapshots = ~4 GiB compressed --
-      # 4-5x file-size inflation, dominated by xet chunks. Use main's
-      # `--local-dir` pattern to cache the flat .gguf only.
-      # Unsloth's /api/inference/load accepts either a HF repo (which
-      # uses HF_HOME) or an absolute file path; passing the absolute
-      # path keeps the test off HF_HOME entirely so the cache size
-      # tracks the GGUF file 1:1. The OpenAI/Anth and JSON+images
-      # jobs still cover the gguf_variant resolution path.
-      # Q4_K_XL, not IQ3_XXS: at IQ3_XXS this model emits malformed
-      # tool calls that llama-server's peg-native parser rejects with a
-      # 500. Mac/Windows already use Q4_K_XL for the same reason.
-      GGUF_REPO: unsloth/Qwen3.5-2B-GGUF
-      GGUF_FILE: Qwen3.5-2B-UD-Q4_K_XL.gguf
-      STUDIO_PORT: '18889'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
 
-      - name: Linux deps for llama.cpp prebuilt
+      - name: Phase 2 environment (tool calling)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
+          echo "GGUF_REPO=unsloth/Qwen3.5-2B-GGUF" >> "$GITHUB_ENV"
+          echo "GGUF_FILE=Qwen3.5-2B-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
+          echo "STUDIO_PORT=18889" >> "$GITHUB_ENV"
+          echo "STUDIO_LOG=logs/studio_tools.log" >> "$GITHUB_ENV"
+          # Phase 2 passes an absolute .gguf path to /api/inference/load and
+          # never touches HF_HOME, but it must not inherit phase 1's either.
+          echo "HF_HOME=${{ github.workspace }}/hf-cache-tools" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
-        with:
-          node-version: '22'
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-          cache: 'pip'
-
-      # Cross-OS shared entry with the mac and Windows tool-calling phases:
-      # same repo, same file, same flat --local-dir payload, byte-identical on
-      # all three runners. The directory is renamed gguf-cache -> gguf-cache-tools
-      # to match them, and the key version is bumped in the SAME commit because
-      # actions/cache identifies an entry by key AND a hash of `path` -- moving
-      # the path without bumping the key gives a permanent restore miss plus a
-      # refused save ("Unable to reserve cache with key ...").
       - name: Restore GGUF model file
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         id: cache-gguf
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
@@ -384,7 +393,8 @@ jobs:
 
       - name: Download GGUF if cache miss
         id: download-gguf
-        if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
+        timeout-minutes: 15
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && (steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success') }}
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
@@ -401,14 +411,11 @@ jobs:
           key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
           enableCrossOsArchive: true
 
-      - name: Install Unsloth (--local, --no-torch)
-        uses: ./.github/actions/install-unsloth-local
-        with:
-          gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Reset auth + boot Unsloth (API-only, default tool policy)
+        id: boot-tools
+        timeout-minutes: 5
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.download-gguf.outcome != 'failure' }}
         # We deliberately use the API-only mode rather than
         # `unsloth studio run` because the latter calls
         # `set_tool_policy(...)` with a resolved bool: on loopback the
@@ -418,9 +425,12 @@ jobs:
         # tool_policy=None so each request's `enable_tools` field is
         # honoured.
         run: |
-          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT" --log "$STUDIO_LOG"
 
       - name: Wait for /api/health, log in, change password, load model
+        id: ready-tools
+        timeout-minutes: 15
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.boot-tools.outcome == 'success' }}
         run: |
           for i in $(seq 1 180); do
             if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
@@ -452,6 +462,9 @@ jobs:
             | jq '{status, display_name}'
 
       - name: Tool calling, server-side tools, thinking on/off
+        id: test-tools
+        timeout-minutes: 20
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.ready-tools.outcome == 'success' }}
         env:
           BASE_URL: http://127.0.0.1:18889
         run: |
@@ -491,7 +504,19 @@ jobs:
                       t = timeout if attempt == 0 else min(timeout, 300)
                       with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       if attempt == attempts - 1:
@@ -566,7 +591,19 @@ jobs:
                                   if delta.get("content"):
                                       parts.append(delta["content"])
                       return "".join(parts), events
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       # A stall after the tool already produced its result is
@@ -901,7 +938,7 @@ jobs:
         with:
           name: tool-calling-log
           path: |
-            logs/studio.log
+            logs/studio_tools.log
             logs/install.log
             logs/server-logs/
           retention-days: 7
@@ -909,89 +946,67 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # Job 3: JSON, images
   # ─────────────────────────────────────────────────────────────────────
-  json-images:
-    name: JSON, images
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      GGUF_REPO: unsloth/Qwen3-VL-2B-Instruct-GGUF
-      # UD-Q4_K_XL, not UD-IQ2_XXS: at 2-bit the temp-0 answer to the JSON
-      # step's capital-of-France probe flips with the host's SIMD kernels
-      # (GitHub runners deterministically answered France while other CPUs
-      # answer Paris; seeds do not rescue it, 1/5 Paris at temp 0.7). The
-      # Q4 quant answered Paris 13/13 across temps and seeds on the same
-      # runners, so the hard Paris assertion below stays reliable.
-      GGUF_VARIANT: UD-Q4_K_XL
-      GGUF_FILE: Qwen3-VL-2B-Instruct-UD-Q4_K_XL.gguf
-      MMPROJ_FILE: mmproj-F16.gguf
-      STUDIO_PORT: '18890'
-      HF_HOME: ${{ github.workspace }}/hf-cache
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
 
-      - name: Linux deps for llama.cpp prebuilt
+      - name: Phase 3 environment (JSON, images)
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libcurl4-openssl-dev libssl-dev jq
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
-        with:
-          node-version: '22'
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-          cache: 'pip'
+          echo "GGUF_REPO=unsloth/Qwen3-VL-2B-Instruct-GGUF" >> "$GITHUB_ENV"
+          echo "GGUF_VARIANT=UD-Q4_K_XL" >> "$GITHUB_ENV"
+          echo "GGUF_FILE=Qwen3-VL-2B-Instruct-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
+          echo "MMPROJ_FILE=mmproj-F16.gguf" >> "$GITHUB_ENV"
+          echo "STUDIO_PORT=18890" >> "$GITHUB_ENV"
+          echo "STUDIO_LOG=logs/studio_vision.log" >> "$GITHUB_ENV"
+          # Its own directory, not phase 1's `hf-cache`. Phase 1's entry is
+          # byte-shared with the macOS and Windows gemma phases under a key with
+          # no `runner.os`, and actions/cache identifies an entry by key AND a
+          # hash of `path`, so phase 1 keeps `hf-cache` untouched and the vision
+          # phase (whose key is already Linux-scoped) is the one that moves.
+          echo "HF_HOME=${{ github.workspace }}/hf-cache-vision" >> "$GITHUB_ENV"
 
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
-        id: cache-hf
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' }}
+        id: cache-hf-vision
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
-          path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
+          path: hf-cache-vision
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v3
 
       - name: Prime HF_HOME with the GGUF + mmproj
-        id: prime-hf
-        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        id: prime-hf-vision
+        timeout-minutes: 20
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' && (steps.cache-hf-vision.outputs.cache-hit != 'true' || steps.cache-hf-vision.outcome != 'success') }}
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
-          mkdir -p hf-cache
+          mkdir -p hf-cache-vision
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE"
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
-        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf-vision.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
-          path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
-
-      - name: Install Unsloth (--local, --no-torch)
-        uses: ./.github/actions/install-unsloth-local
-        with:
-          gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-
-      - name: Install OpenAI + Anthropic Python SDKs
-        run: pip install 'openai>=1.50' 'anthropic>=0.40'
+          path: hf-cache-vision
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v3
 
       - name: Reset auth + boot Unsloth (API-only)
-        # See Job 2's comment: API-only mode keeps tool_policy=None so
+        id: boot-vision
+        timeout-minutes: 5
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.prime-hf-vision.outcome != 'failure' }}
+        # See phase 2's comment: API-only mode keeps tool_policy=None so
         # response_format requests aren't routed through the agentic
         # tool loop.
         run: |
-          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT" --log "$STUDIO_LOG"
 
       - name: Wait for /api/health, log in, change password, load model
+        id: ready-vision
+        timeout-minutes: 15
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.prime-hf-vision.outcome != 'failure' }}
         run: |
           for i in $(seq 1 180); do
             if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
@@ -1033,6 +1048,9 @@ jobs:
           jq '{status, display_name, is_vision}' /tmp/load.json
 
       - name: JSON schema decoding + image input
+        id: test-vision
+        timeout-minutes: 20
+        if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.ready-vision.outcome == 'success' }}
         env:
           BASE_URL: http://127.0.0.1:18890
         run: |
@@ -1071,7 +1089,19 @@ jobs:
                       t = timeout if attempt == 0 else min(timeout, 300)
                       with urllib.request.urlopen(req, timeout = t) as resp:
                           return resp.status, json.loads(resp.read().decode())
-                  except urllib.error.HTTPError:
+                  except urllib.error.HTTPError as exc:
+                      # Say what the server said before the body is discarded. A
+                      # bare HTTPError prints only "HTTP Error 400: Bad Request",
+                      # which is what turned the #8883 Mac GGUF outage into three
+                      # red main runs whose cause had to be found by hand.
+                      try:
+                          detail = exc.read().decode("utf-8", "replace")
+                      except Exception as read_exc:
+                          detail = f"<body unreadable: {read_exc!r}>"
+                      print(
+                          f"[http] {path} -> {exc.code} {exc.reason}: {detail[:4000]}",
+                          flush = True,
+                      )
                       raise
                   except (TimeoutError, ConnectionError, urllib.error.URLError) as exc:
                       if attempt == attempts - 1:
@@ -1207,6 +1237,6 @@ jobs:
         with:
           name: json-images-log
           path: |
-            logs/studio.log
+            logs/studio_vision.log
             logs/install.log
           retention-days: 7

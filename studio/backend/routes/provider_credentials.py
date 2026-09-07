@@ -5,9 +5,11 @@
 
 from __future__ import annotations
 
-
+import asyncio
 from contextlib import contextmanager
+from functools import wraps
 from typing import Iterator
+from weakref import WeakKeyDictionary
 
 from auth import storage as auth_storage
 
@@ -18,6 +20,29 @@ from fastapi import HTTPException
 from storage import credential_secrets
 
 logger = structlog.get_logger(__name__)
+
+_provider_config_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = (
+    WeakKeyDictionary()
+)
+
+
+def provider_config_guard(provider_id: str) -> asyncio.Lock:
+    """Serialize one provider's routing metadata and installation credential."""
+    loop = asyncio.get_running_loop()
+    locks = _provider_config_locks.setdefault(loop, {})
+    return locks.setdefault(provider_id, asyncio.Lock())
+
+
+def serialize_provider_config(handler):
+    """Keep provider mutations atomic with saved routing/credential snapshots."""
+
+    @wraps(handler)
+    async def _serialized(provider_id: str, *args, **kwargs):
+        async with provider_config_guard(provider_id):
+            return await handler(provider_id, *args, **kwargs)
+
+    _serialized._provider_config_serialized = True
+    return _serialized
 
 
 @contextmanager
@@ -42,11 +67,16 @@ def resolve_provider_api_key_or_400(
     encrypted_api_key: str | None,
     *,
     allow_saved_key: bool = True,
+    prefer_saved_key: bool = False,
 ) -> str:
     """Resolve an explicit key, or a saved key only for an interactive UI session."""
 
     try:
         saved_provider_id = provider_id if allow_saved_key else None
+        if prefer_saved_key and saved_provider_id:
+            saved_key = credential_secrets.get_provider_api_key(saved_provider_id)
+            if saved_key is not None:
+                return saved_key
         return credential_secrets.resolve_provider_api_key(saved_provider_id, encrypted_api_key)
     except Exception as exc:
         logger.warning(
