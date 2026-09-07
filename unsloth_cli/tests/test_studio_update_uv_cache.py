@@ -355,10 +355,35 @@ def test_the_probe_is_hidden_like_every_other_spawn(monkeypatch):
 def test_the_probe_absolutises_a_relative_answer(monkeypatch, tmp_path):
     """uv answers `cache-dir = "relcache"` with "relcache" verbatim, and setup.sh runs uv
     from a different directory, so a relative answer names a different, cold cache there."""
+    monkeypatch.delenv("UV_WORKING_DIR", raising = False)
     monkeypatch.chdir(tmp_path)
     seen = _probe_kwargs(monkeypatch, stdout = "relcache\n")
 
     assert seen["result"] == tmp_path / "relcache", seen["result"]
+
+
+def test_the_probe_resolves_against_uvs_working_directory(monkeypatch, tmp_path):
+    """--directory, whose env alias is UV_WORKING_DIR, moves uv out from under us before
+    it resolves a relative cache-dir. Measured on uv 0.10.7: with UV_WORKING_DIR set, the
+    cache lands under that directory and not under ours."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setenv("UV_WORKING_DIR", str(elsewhere))
+    monkeypatch.chdir(tmp_path)
+    seen = _probe_kwargs(monkeypatch, stdout = "relcache\n")
+
+    assert seen["result"] == elsewhere / "relcache", seen["result"]
+
+
+def test_the_probe_leaves_uvs_tilde_alone(monkeypatch, tmp_path):
+    """uv prints `cache-dir = "~/.myuv"` verbatim and treats the tilde as an ordinary
+    relative segment: measured on uv 0.10.7 it creates a literal "~" directory in its
+    working directory. Expanding it here would probe a path uv never writes to."""
+    monkeypatch.delenv("UV_WORKING_DIR", raising = False)
+    monkeypatch.chdir(tmp_path)
+    seen = _probe_kwargs(monkeypatch, stdout = "~/.myuv\n")
+
+    assert seen["result"] == tmp_path / "~" / ".myuv", seen["result"]
 
 
 def test_a_probe_that_blows_up_costs_a_preference_not_the_update(monkeypatch):

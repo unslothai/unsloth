@@ -3720,8 +3720,12 @@ def _uv_default_cache_dir() -> Optional[Path]:
         return None
     # Absolute, because uv answers `cache-dir = "relcache"` with "relcache" and setup.sh
     # changes directory before it runs uv: a relative path we verified here would name a
-    # different, cold directory there.
-    return Path(os.path.abspath(os.path.expanduser(lines[-1])))
+    # different, cold directory there. Resolved against uv's working directory, which
+    # --directory / UV_WORKING_DIR moves out from under ours, and WITHOUT expanduser,
+    # because uv prints a configured `~/...` verbatim and then treats the tilde as an
+    # ordinary path segment, creating a literal "~" directory rather than one in $HOME.
+    base = os.environ.get("UV_WORKING_DIR") or os.getcwd()
+    return Path(os.path.abspath(os.path.join(base, lines[-1])))
 
 
 def _with_studio_uv_cache(env: Optional[dict]) -> Optional[dict]:
