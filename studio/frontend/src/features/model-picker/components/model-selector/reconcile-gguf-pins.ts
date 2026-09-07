@@ -2,11 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { listCachedGguf, listGgufVariants } from "@/features/chat/api/chat-api";
-import {
-  pinKey,
-  pinnedQuantEntries,
-  usePinnedModelsStore,
-} from "./pinned-models";
+import { pinnedQuantEntries, usePinnedModelsStore } from "./pinned-models";
+import { modelIdsMatchForPicker } from "./row-identity";
 
 export async function reconcileGgufPinsAfterDelete(
   repoId: string,
@@ -14,7 +11,9 @@ export async function reconcileGgufPinsAfterDelete(
 ): Promise<void> {
   try {
     const copies = await listCachedGguf();
-    const present = copies.some((copy) => copy.repo_id === repoId);
+    const present = copies.some((copy) =>
+      modelIdsMatchForPicker(copy.repo_id, repoId),
+    );
     const variants = present
       ? (
           await listGgufVariants(repoId, hfToken, {
@@ -23,19 +22,19 @@ export async function reconcileGgufPinsAfterDelete(
         ).variants
       : [];
     const state = usePinnedModelsStore.getState();
-    if (
-      !variants.some((v) => v.downloaded && !v.partial) &&
-      state.pinned.includes(pinKey(repoId))
-    )
-      state.togglePinned(repoId);
+    if (!variants.some((v) => v.downloaded && !v.partial)) {
+      for (const pin of state.pinned) {
+        if (modelIdsMatchForPicker(pin, repoId)) state.togglePinned(pin);
+      }
+    }
     for (const pin of pinnedQuantEntries(state.pinned)) {
       if (
-        pin.repoId === repoId &&
+        modelIdsMatchForPicker(pin.repoId, repoId) &&
         !variants.some(
           (v) => v.quant === pin.quant && v.downloaded && !v.partial,
         )
       ) {
-        state.togglePinned(repoId, pin.quant);
+        state.togglePinned(pin.repoId, pin.quant);
       }
     }
   } catch {

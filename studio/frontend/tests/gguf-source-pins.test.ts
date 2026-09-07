@@ -9,6 +9,7 @@ import {
   pinKey,
   pinnedQuantEntries,
 } from "../src/features/model-picker/components/model-selector/pinned-models.ts";
+import { modelIdsMatchForPicker } from "../src/features/model-picker/components/model-selector/row-identity.ts";
 
 test("GGUF pins survive deleting a duplicate and disappear with the last copy", async () => {
   const source = readFileSync(
@@ -27,39 +28,43 @@ test("GGUF pins survive deleting a duplicate and disappear with the last copy", 
     "pinKey",
     "pinnedQuantEntries",
     "usePinnedModelsStore",
+    "modelIdsMatchForPicker",
     ts.transpileModule(declaration, {
       compilerOptions: { target: ts.ScriptTarget.ES2020 },
     }).outputText + "; return reconcileGgufPinsAfterDelete;",
   );
-  for (const remaining of [true, false, "partial", "unavailable"]) {
-    let pinned = ["Org/Model", pinKey("Org/Model", "Q8_0")];
-    const run = compile(
-      async () => {
-        if (remaining === "unavailable") throw new Error("scan unavailable");
-        return remaining ? [{ repo_id: "Org/Model" }] : [];
-      },
-      async () => ({
-        variants: [{
-          quant: "Q8_0",
-          downloaded: remaining !== "partial",
-          partial: remaining === "partial",
-        }],
-      }),
-      pinKey,
-      pinnedQuantEntries,
-      {
-        getState: () => ({
-          pinned,
-          togglePinned: (repo: string, quant?: string) => {
-            pinned = pinned.filter((p) => p !== pinKey(repo, quant));
-          },
+  for (const requested of ["Org/Model", "org/model"]) {
+    for (const remaining of [true, false, "partial", "unavailable"]) {
+      let pinned = ["Org/Model", pinKey("Org/Model", "Q8_0")];
+      const run = compile(
+        async () => {
+          if (remaining === "unavailable") throw new Error("scan unavailable");
+          return remaining ? [{ repo_id: "org/model" }] : [];
+        },
+        async () => ({
+          variants: [{
+            quant: "Q8_0",
+            downloaded: remaining !== "partial",
+            partial: remaining === "partial",
+          }],
         }),
-      },
-    );
-    await run("Org/Model");
-    assert.equal(
-      pinned.length,
-      remaining === true || remaining === "unavailable" ? 2 : 0,
-    );
+        pinKey,
+        pinnedQuantEntries,
+        {
+          getState: () => ({
+            pinned,
+            togglePinned: (repo: string, quant?: string) => {
+              pinned = pinned.filter((p) => p !== pinKey(repo, quant));
+            },
+          }),
+        },
+        modelIdsMatchForPicker,
+      );
+      await run(requested);
+      assert.equal(
+        pinned.length,
+        remaining === true || remaining === "unavailable" ? 2 : 0,
+      );
+    }
   }
 });
