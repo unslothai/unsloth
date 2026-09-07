@@ -1668,10 +1668,20 @@ def test_notebook_validator_reads_a_range_as_one_window():
     matching = '!pip install "torchcodec>=0.11,<0.12.0"'
     assert nv.rule_inst_004_torchcodec_torch(matching, COLAB_TORCH211, "nb.ipynb", 0) == []
 
-    # Open below: the release pip picks is unnamed, so no stale baseline is kept either.
+    # A ceiling on a minor boundary DOES name the landing, whatever the major: `<2.11` drops
+    # the installed 2.11 to the 2.10 line, which the image's codec 0.11 does not pair with.
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch<2.11"', COLAB_TORCH211, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]
+    # A ceiling on a MAJOR boundary names nothing: which 1.x minor sits below `<2.0` is only
+    # in the index, so no stale baseline is kept either.
+    assert nv._highest_minor_below("2.0") == ""
     assert (
         nv.rule_inst_004_torchcodec_torch(
-            '!pip install "torch<2.11"', COLAB_TORCH211, "nb.ipynb", 0
+            '!pip install "torch<2.0"', COLAB_TORCH211, "nb.ipynb", 0
         )
         == []
     )
@@ -4579,3 +4589,109 @@ def test_a_called_function_body_is_replayed():
         inv.packages
         for inv in nv.unconditional_pip_invocations("!setup() { pip install a; }; setup --force")
     ] == [["a"]]
+
+
+def test_a_compound_inside_a_function_keeps_every_stack_aligned():
+    """`f() { if true; then pip install x; fi; }; f` must not crash the lint run.
+
+    The body keyword fell through to the no-compound fallback, which grew four of the seven
+    parallel stacks, and the matching `fi` then popped one that was never pushed: an
+    IndexError that aborted the whole notebook lint instead of producing findings.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!f() { if true; then pip install x; fi; }; f") == [
+        ("!true", False),
+        ("!pip install x", False),
+        ("!f", False),
+    ]
+    # A stray body word with nothing open is still handled rather than raising.
+    assert nv._split_chained("!then pip install a; fi; pip install b") == [
+        ("!pip install a", True),
+        ("!pip install b", False),
+    ]
+
+
+def test_calling_a_function_enters_its_body_without_clearing_its_guards():
+    """A call makes the body reachable; it does not make a guarded command unguarded.
+
+    `setup() { false && pip install x; }; setup` runs no pip in bash, and flipping every
+    recorded body command to unconditional emitted a spurious R-INST-004.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!setup() { false && pip install torchcodec==0.10.0; }; setup") == [
+        ("!false", False),
+        ("!pip install torchcodec==0.10.0", True),
+        ("!setup", False),
+    ]
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            "!setup() { false && pip install torchcodec==0.10.0; }; setup",
+            COLAB_TORCH211,
+            "nb.ipynb",
+            0,
+        )
+        == []
+    )
+    # An internal compound keeps deciding for itself: known-taken replays, unknown does not.
+    assert nv._split_chained("!setup() { if true; then pip install a; fi; }; setup") == [
+        ("!true", False),
+        ("!pip install a", False),
+        ("!setup", False),
+    ]
+    assert nv._split_chained("!setup() { if maybe; then pip install a; fi; }; setup") == [
+        ("!maybe", False),
+        ("!pip install a", True),
+        ("!setup", False),
+    ]
+
+
+def test_a_call_made_inside_a_called_function_is_followed():
+    """`inner() {...}; outer() { inner; }; outer` performs the install.
+
+    `inner` is conditional while it is only a definition, so a single intersection of names
+    against bodies never reached it and the compatibility rules omitted the install.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!inner() { pip install torchcodec==0.10.0; }; outer() { inner; }; outer"
+        )
+    ] == [("install", ["torchcodec==0.10.0"])]
+    # The chain has to actually run: an uncalled `outer`, or one that calls `inner` on a
+    # branch, leaves the inner body conditional.
+    for cell in (
+        "!inner() { pip install a; }; outer() { inner; }",
+        "!inner() { pip install a; }; outer() { maybe || inner; }; outer",
+    ):
+        assert list(nv.unconditional_pip_invocations(cell)) == [], cell
+
+
+def test_a_break_ends_the_loop_body_it_sits_in():
+    """`while true; do break; pip install x; done` installs nothing.
+
+    Verified against bash: `while true; do break; echo AFTER; done; echo DONE` prints only
+    DONE. `break` is loop-local, unlike `exit`, so the line continues after `done`.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!while true; do break; pip install torchcodec==0.10.0; done") == [
+        ("!true", False),
+        ("!break", False),
+    ]
+    # The rest of the LINE still runs, which is what distinguishes it from `exit`.
+    assert nv._split_chained("!while true; do break; pip install a; done; pip install b") == [
+        ("!true", False),
+        ("!break", False),
+        ("!pip install b", False),
+    ]
+    # A conditional break does not cut the body, and commands BEFORE one still run.
+    assert ("!pip install a", False) in nv._split_chained(
+        "!while true; do maybe && break; pip install a; done"
+    )
+    assert ("!pip install a", False) in nv._split_chained(
+        "!while true; do pip install a; break; done"
+    )

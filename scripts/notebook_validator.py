@@ -1371,6 +1371,12 @@ def _leading_shell_keywords(piece: str) -> list[str]:
     if text.startswith("!"):
         text = text[1:].lstrip()
     text = text.lstrip("({").lstrip()
+    # `setup() { if true; then ...` opens a compound INSIDE a definition. Reading the header
+    # as the first word hid the `if`, so the `then` later fell through to the no-compound
+    # fallback and the body's known outcome was lost.
+    definition = _FUNCTION_DEF_RE.match(text)
+    if definition is not None:
+        text = text[definition.end() :].lstrip().lstrip("({").lstrip()
     words: list[str] = []
     while True:
         parts = text.split(maxsplit = 1)
@@ -1415,6 +1421,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # the same line, so which body a command belongs to has to survive to the second pass.
     def_names: list[str | None] = [None]
     owners: list[str | None] = []
+    nodef: list[bool] = []
     # Per level: whether the last command flushed there is modelled as succeeding. A group
     # exits with that status, which is what the enclosing `&&` reads.
     last_ok: list[bool | None] = [None]
@@ -1457,6 +1464,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         out.append((text, buf_conditional))
         seps.append(separator)
         owners.append(next((name for name in reversed(def_names) if name), None))
+        # The same flag WITHOUT the definition. Calling a function makes its body reachable,
+        # not unguarded: `setup() { false && pip install x; }; setup` still runs no pip.
+        nodef.append(any(tails))
         buf = []
 
     while i < len(line):
@@ -1623,9 +1633,14 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # later pair by one and cut the tail, leaving a `case`'s last arms unscanned. Filtered
     # after the pairing instead.
     commands = [(head_text, head_conditional or head_keyword)]
+    # The keyword alone, without the piece's own flag folded in. Entering a called function
+    # removes the definition from that flag, and reading the combined one back double-counted
+    # it, so every command past the header stayed conditional.
+    kw_flags = [head_keyword]
     for piece, flag in rest:
         text, keyword = _unwrap_shell_group(piece.strip())
         commands.append((f"!{text}" if text else "", flag or keyword))
+        kw_flags.append(keyword)
     # `echo $(pip install x)` runs the install, and the outer command is not pip, so the
     # inner one is a command of its own. Read off the raw pieces, since the unwrap above
     # strips an assignment prefix like ``X=`pip install y` ``.
@@ -1654,8 +1669,15 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     arm_reached: list[bool] = []
     cond_assumed: list[bool] = []
     # Where each function's body landed in `ordered`, and the names invoked unconditionally.
-    body_entries: dict[str, list[int]] = {}
+    body_entries: dict[str, list[tuple[int, bool]]] = {}
+    # Per function body, the names it invokes unconditionally WITHIN that body. Reached only
+    # once the body itself is, which is what makes the call graph transitive.
+    body_invokes: dict[str, set[str]] = {}
     called: set[str] = set()
+    # Depth of open compounds at an unconditional `break`/`continue`. Bash jumps past `done`,
+    # so the rest of that loop body never runs -- loop-local, unlike `exit`, which ends the
+    # shell: `while true; do break; pip install x; done` installs nothing.
+    broke_at: int | None = None
     for index, ((piece, flag), (text, command_flag), separator) in enumerate(
         zip(out, commands, seps)
     ):
@@ -1717,10 +1739,16 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                         cond_assumed[-1] = False
                         test_models[-1] = True if arms_failed[-1] else None
                 else:
+                    # A body word with no open compound above it: every stack has to grow
+                    # together, or the matching `fi` pops one that was never pushed and the
+                    # whole lint run dies on an IndexError instead of reporting findings.
                     body_levels.append(True)
                     test_models.append(None)
                     arms_failed.append(False)
                     arms_known.append(False)
+                    openers.append("")
+                    arm_reached.append(False)
+                    cond_assumed.append(False)
             elif body_levels:
                 body_levels.pop()  # fi / done / esac
                 test_models.pop()
@@ -1739,6 +1767,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         active = [model for level, model in zip(body_levels, test_models) if level]
         if any(model is False for model in active):
             continue  # this branch can never be taken, so nothing in it runs
+        if broke_at is not None:
+            if len(body_levels) < broke_at:
+                broke_at = None  # the loop closed; what follows `done` runs again
+            else:
+                continue  # still inside the body the `break` jumped out of
         # `command_flag` is the `then`/`else`/arm-label the piece carries. That word means
         # "conditional" only because the branch usually is; when the branch is KNOWN to be
         # taken it says nothing, and letting it speak kept `if true; then pip install ...`
@@ -1788,14 +1821,28 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     else _fold_status(test_models[-1], joiner, model)
                 )
                 cond_assumed[-1] = cond_assumed[-1] or _piece_assumes_pip(text)
+            # A bare `setup` invokes it. Only the FIRST word: `setup --dry-run` still calls
+            # it, while `echo setup` does not.
+            invoked = _split_first_word(
+                _strip_exec_prefixes(text.lstrip("!").strip())[0].strip()
+            )[0]
+            # What this command's flag would be with the definition entered -- every other
+            # reason it is conditional still stands.
+            # `command_flag` on the HEADER piece is the definition itself, which is exactly
+            # what entering the function removes; on any other piece it is a real `then` or
+            # arm label and still stands.
+            header_piece = _FUNCTION_DEF_RE.match(piece.lstrip("!").strip()) is not None
+            entered = bool(
+                nodef[index]
+                or (kw_flags[index] and not certain_branch and not header_piece)
+                or any(model is not True for model in active)
+            )
             if owners[index] is not None:
-                body_entries.setdefault(owners[index], []).append(len(ordered))
+                body_entries.setdefault(owners[index], []).append((len(ordered), entered))
+                if not entered:
+                    body_invokes.setdefault(owners[index], set()).add(invoked)
             elif not piece_conditional:
-                # A bare `setup` at this level calls it. Only the FIRST word: `setup --dry-run`
-                # still calls it, while `echo setup` does not.
-                called.add(
-                    _split_first_word(_strip_exec_prefixes(text.lstrip("!").strip())[0].strip())[0]
-                )
+                called.add(invoked)
             ordered.append((text, piece_conditional))
             # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`
             # along with every other transparent prefix. An `exec` bash may never reach hands
@@ -1805,12 +1852,27 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 and separator not in ("|", "&")  # a subshell; the parent shell carries on
                 and _command_ends_shell(piece)
             )
+            if (
+                not piece_conditional
+                and body_levels
+                and _split_first_word(_strip_exec_prefixes(text.lstrip("!").strip())[0].strip())[0]
+                in ("break", "continue")
+            ):
+                broke_at = len(body_levels)
     # A defined body is conditional until something calls it. `setup() { pip install x; };
     # setup` definitely installs, and leaving the body conditional dropped it from the replay
     # so the whole-notebook gate skipped R-INST-003/004/005 on a pairing bash performs.
-    for name in called & body_entries.keys():
-        for position in body_entries[name]:
-            ordered[position] = (ordered[position][0], False)
+    # `outer() { inner; }; outer` reaches `inner` only after `outer` is replayed, so the call
+    # graph is walked to a fixed point rather than intersected once.
+    reached, pending_calls = set(called), list(called)
+    while pending_calls:
+        for callee in body_invokes.get(pending_calls.pop(), ()):
+            if callee not in reached:
+                reached.add(callee)
+                pending_calls.append(callee)
+    for name in reached & body_entries.keys():
+        for position, entered in body_entries[name]:
+            ordered[position] = (ordered[position][0], entered)
     return ordered
 
 
@@ -2392,16 +2454,22 @@ def _highest_minor_below(ceiling: str) -> str:
     (https://pip.pypa.io/en/stable/topics/dependency-resolution/). Which patch inside that
     minor is not derivable offline, and the rules only compare minors. Only a ceiling ON a
     minor boundary excludes that whole minor: `<0.10.5` still admits 0.10.0 through 0.10.4,
-    so it lands on 0.10. Only 0.N ceilings are modelled, which is every window these tables
-    describe.
+    so it lands on 0.10.
+
+    The major is carried rather than assumed to be 0: torch's windows are `2.N`, and pinning
+    this to `0.N` left `pip install -U "torch>=2.10,<2.12"` on an inexact 2.10 floor when pip
+    takes 2.11, so the mismatch that upgrade creates went unreported.
     """
     parts = [p for p in re.split(r"[.]", ceiling.strip()) if p.isdigit()]
-    if len(parts) < 2 or parts[0] != "0":
+    if len(parts) < 2:
         return ""
-    minor = int(parts[1])
+    major, minor = int(parts[0]), int(parts[1])
     if any(int(p) for p in parts[2:]):
-        return f"0.{minor}"
-    return f"0.{minor - 1}" if minor >= 1 else ""
+        return f"{major}.{minor}"
+    if minor >= 1:
+        return f"{major}.{minor - 1}"
+    # `<2.0` lands somewhere in the 1.x line, and which minor that is only the index knows.
+    return ""
 
 
 def _effective_version(
