@@ -745,16 +745,8 @@ def evaluate_fetch(
 
 
 class _WallClockWatchdog:
-    """A `deadline_s` budget that `kick()` can push forward, hard-exiting on expiry.
-
-    A caller that never kicks gets exactly the absolute wall a `threading.Timer` gave it.
-    A caller that kicks on each step converts it to an inactivity deadline, which is the
-    only shape that can outlast EVERY bounded wait in a script: an absolute wall has to
-    cover the sum of them, and a script whose waits sum past the runner's job cap can
-    then never let a late one reach its own timeout and name itself.
-
-    `threading.Timer` has no reschedule (only `cancel()`, and only before it fires), so
-    the deadline lives in an attribute and a daemon thread re-reads it after each wait.
+    """A `deadline_s` budget that `kick()` restarts; never kicking is the absolute wall
+    a `threading.Timer` gave. Timer has no reschedule, hence a thread over a live deadline.
     """
 
     def __init__(
@@ -774,7 +766,7 @@ class _WallClockWatchdog:
         return self
 
     def kick(self) -> None:
-        """Report progress: restart the budget from now."""
+        """Progress was made: restart the budget."""
         with self._lock:
             self._deadline = time.monotonic() + self._budget_s
 
@@ -789,26 +781,20 @@ class _WallClockWatchdog:
                 if not self._cancelled.is_set():
                     self._on_expiry()
                 return
-            # Cap the wait so a kick that arrives mid-sleep is picked up promptly; the
-            # loop re-reads the deadline rather than trusting the wait it just made.
+            # Capped so a mid-sleep kick is seen; the deadline is re-read, not trusted.
             if self._cancelled.wait(min(remaining, 1.0)):
                 return
 
 
-# Wall-clock watchdog.
-# A browser wedge (CPU-pinned JS, silent renderer crash, asyncio deadlock) can still hang the script. A daemon thread
-# calls os._exit(2) after deadline_s of no `kick()`; exit code 2 lets the workflow's `set -e` propagate. Pick
-# deadline_s above the longest single wait the script can legitimately make, so that wait always reaches its own
-# timeout and names itself.
+# For a wedge no per-action timeout can bound. Exit 2 propagates through the workflow's `set -e`. Keep deadline_s
+# above the longest single wait, or that wait is cut off before it can name itself.
 def install_wall_clock_watchdog(
     deadline_s: float,
     *,
     label: str = "playwright",
     info: Callable[[str], None] | None = None,
 ) -> _WallClockWatchdog:
-    """Start a daemon watchdog that hard-exits the process `deadline_s` after the last
-    `kick()` (or after arming, if never kicked); returned so the caller can `.cancel()`
-    on clean exit (daemonised, dies with process)."""
+    """Hard-exit `deadline_s` after the last `kick()`; returned so the caller can `.cancel()`."""
 
     def _kaboom() -> None:
         msg = (
@@ -822,16 +808,8 @@ def install_wall_clock_watchdog(
             sys.stderr.flush()
         except Exception:
             pass
-        # Dump every thread's stack on the way out. Without it the only evidence is
-        # the last step printed, which is where the script ENTERED, not where it
-        # blocked, and a call with no timeout of its own (page.evaluate takes no
-        # `timeout`) reads exactly like one that was merely slow. os._exit skips
-        # atexit and every finally, so this is the last chance to say anything.
-        #
-        # Under Playwright's sync API the script runs inside a greenlet, so the
-        # frames shown for the main thread stop at the driver's event loop. That
-        # still separates "blocked in the driver" from "blocked in our own code",
-        # which the message alone did not.
+        # The last step printed is where the script ENTERED, not where it blocked. Under the
+        # sync API the main thread stops at the driver loop: driver vs our code, no finer.
         try:
             import faulthandler
             faulthandler.dump_traceback(file = sys.stderr, all_threads = True)

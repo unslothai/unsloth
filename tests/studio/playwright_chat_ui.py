@@ -54,26 +54,11 @@ TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 # cannot close the gap, and paid once per run.
 RAPID_FIRST_TURN_HOLD_S = 3.0
 
-# Watchdog budget, measured from the last progress report (healthy run is 5-9 min).
-#
-# Derived from TURN_TIMEOUT_MS rather than pinned, because the watchdog has to
-# outlast the longest single wait in the script or it fires first: the process is
-# hard-exited mid-wait, so the wait never raises, the step that would have named
-# itself never does, and the failure screenshot below it is never taken. The run
-# then reports only "wedged somewhere", which is unlocalisable.
-#
-# The longest single wait is the rapid-submit completion check at 2x the turn
-# timeout. studio-mac-ui-smoke.yml sets STUDIO_UI_TURN_TIMEOUT_MS to 540000 for its
-# slower CPU inference, which makes that wait 1080s on its own, while nothing set
-# STUDIO_UI_WALL_TIMEOUT_S anywhere, so it stayed at 720s. On that runner the wait
-# provably could not reach its own timeout. The Linux default is unaffected: 2 x 180s
-# + margin is 480s, under the 720s floor, so that path keeps the budget it already had.
-#
-# This covers ONE wait, not their sum, so `wall_kick()` restarts it whenever a wait
-# returns. An absolute wall cannot be made to work at any number: `send_and_wait`
-# alone budgets up to 4x the turn timeout per turn and the script drives seven of them,
-# which is hours at the mac setting, so a late wait would still be cut off mid-wait --
-# the exact failure this constant exists to prevent.
+# Budget for ONE wait, restarted by `wall_kick()`. It must outlast the longest single wait
+# -- the rapid-submit settle at 2x the turn timeout, so 1080s where studio-mac-ui-smoke.yml
+# sets STUDIO_UI_TURN_TIMEOUT_MS=540000, against the 720s this was pinned at -- or it
+# hard-exits mid-wait and the run says only "wedged somewhere". Not a total: `send_and_wait`
+# budgets 4x the turn timeout across seven turns. Linux keeps its 720s floor.
 _WALL_FLOOR_S = 720.0
 _LONGEST_WAIT_S = (TURN_TIMEOUT_MS / 1000) * 2
 WALL_TIMEOUT_S = float(
@@ -100,17 +85,11 @@ LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"
 
 _n = [0]
 
-# Set once the watchdog is armed, below. Everything above it runs before there is one.
-_watchdog = None
+_watchdog = None  # armed below; everything above it runs before there is one
 
 
 def wall_kick():
-    """Report progress to the watchdog: restart its budget from now.
-
-    Call it after a bounded wait returns. WALL_TIMEOUT_S is sized for a single wait, so
-    two consecutive ones have to be separated by a kick or the second inherits whatever
-    the first left over.
-    """
+    """Restart the budget. Call after a bounded wait, or the next inherits its leftover."""
     if _watchdog is not None:
         _watchdog.kick()
 

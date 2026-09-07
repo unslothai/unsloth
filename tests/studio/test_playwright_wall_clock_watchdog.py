@@ -1,15 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The chat UI watchdog must never hard-exit while a bounded wait is still inside its
-own timeout: `os._exit(2)` from the timer thread means the wait never raises, the step
-never names itself, and the failure screenshot is never taken, so the run reports only
-"wedged somewhere".
-
-The budget covers one wait, not their sum, so two things have to hold: the watchdog
-restarts on `wall_kick()`, and no two turn-scaled waits in `playwright_chat_ui.py` run
-without a kick between them. The script drives Playwright at import, so that second
-check reads its source; the watchdog itself is exercised for real.
+"""The watchdog may not hard-exit a wait still inside its own timeout, or the run reports
+only "wedged somewhere". So the budget must restart on `wall_kick()`, and no two
+turn-scaled waits may run without a kick between them. `playwright_chat_ui.py` drives
+Playwright at import, so its half is read from source; the watchdog is run for real.
 """
 
 from __future__ import annotations
@@ -48,8 +43,7 @@ def _fired(budget_s, *, kicks = (), cancel_after = None, run_for = None):
     return fired.is_set()
 
 
-# Every offset below leaves at least 0.6s of slack against its deadline, so a loaded
-# runner oversleeping a `time.sleep` does not decide the result.
+# Every offset leaves 0.6s of slack, so an oversleeping runner cannot decide the result.
 def test_an_unkicked_watchdog_still_fires_at_its_budget():
     assert _fired(0.4, run_for = 1.6)
 
@@ -80,8 +74,7 @@ def _chat_ui_wall_timeout_s(turn_timeout_ms):
 
 
 def test_the_wall_budget_outlasts_the_longest_single_wait():
-    # 540000 is what studio-mac-ui-smoke.yml sets; 180000 is the default every other
-    # runner takes. Both must leave room for the wait to raise and be screenshotted.
+    # 540000 is studio-mac-ui-smoke.yml's; 180000 is every other runner's default.
     for turn_timeout_ms in (180_000, 540_000):
         wall, longest_wait = _chat_ui_wall_timeout_s(turn_timeout_ms)
         assert wall >= longest_wait + 120, (turn_timeout_ms, wall, longest_wait)
@@ -92,7 +85,7 @@ def test_the_linux_default_keeps_the_budget_it_had():
 
 
 def _turn_scaled_wait_lines():
-    """Lines of the calls whose timeout is TURN_TIMEOUT_MS or a multiple of it."""
+    """Lines of the waits whose timeout is TURN_TIMEOUT_MS or a multiple of it."""
     lines = []
     for node in ast.walk(CHAT_UI_TREE):
         if not isinstance(node, ast.Call):
