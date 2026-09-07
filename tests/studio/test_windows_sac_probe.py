@@ -734,25 +734,39 @@ def test_prepare_restarts_a_running_studio_and_only_prepare_may():
     assert "function Stop-Studio" in ps1
     init = ps1[ps1.index("function Initialize-Studio") : ps1.index("function Save-Baseline")]
     answering = init.index("if (Test-StudioResponding $Port) {")
-    assert init.index("if (-not $allowInstall) {", answering) < init.index("Stop-Studio $Port", answering)
+    assert init.index("if (-not $allowInstall) {", answering) < init.index(
+        "Stop-Studio $Port", answering
+    )
     stop = ps1[ps1.index("function Stop-Studio") : ps1.index("function Initialize-Studio")]
     assert "ParentProcessId = $owner" in stop, "children (llama-server, workers) are stopped first"
 
 
 def test_redirected_studio_output_and_the_scenario_console_are_redacted_too():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    assert "Start-Studio $python $Port (Join-Path (Join-Path $dir 'raw-logs') 'studio-start.log')" in ps1
+    assert (
+        "Start-Studio $python $Port (Join-Path (Join-Path $dir 'raw-logs') 'studio-start.log')"
+        in ps1
+    )
     assert "$log = Join-Path (Join-Path $dir 'raw-logs') 'studio-scenario.log'" in ps1
     assert "if ($rel -like 'rollback\\*' -or $rel -like 'raw-logs\\*') { continue }" in ps1
     collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
-    assert "$rawLogs = Join-Path $dir 'raw-logs'" in collect and "foreach ($source in $sources)" in collect
+    assert (
+        "$rawLogs = Join-Path $dir 'raw-logs'" in collect
+        and "foreach ($source in $sources)" in collect
+    )
 
 
 def test_sample_submission_is_opt_in():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     assert "[switch] $SendSamples" in ps1
-    raise_block = ps1[ps1.index("Write-Section 'Raise security settings'") : ps1.index("Write-Section 'CodeIntegrity log'")]
-    assert raise_block.index("if ($SendSamples) {") < raise_block.index("Set-MpPreference -SubmitSamplesConsent SendAllSamples")
+    raise_block = ps1[
+        ps1.index("Write-Section 'Raise security settings'") : ps1.index(
+            "Write-Section 'CodeIntegrity log'"
+        )
+    ]
+    assert raise_block.index("if ($SendSamples) {") < raise_block.index(
+        "Set-MpPreference -SubmitSamplesConsent SendAllSamples"
+    )
     assert raise_block.count("SubmitSamplesConsent") == 1
 
 
