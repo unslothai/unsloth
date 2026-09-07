@@ -225,9 +225,7 @@ class TestExternalProviderMessages:
         assert self._prepend_ollama(messages) is messages
 
     def test_ollama_fallback_prepends_structured_user_content(self):
-        out = self._prepend_ollama(
-            [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
-        )
+        out = self._prepend_ollama([{"role": "user", "content": [{"type": "text", "text": "hi"}]}])
         assert out[0]["content"] == [
             {"type": "text", "text": "The current date is 2026-08-15."},
             {"type": "text", "text": "hi"},

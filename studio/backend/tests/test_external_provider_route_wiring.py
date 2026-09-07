@@ -104,4 +104,4 @@ def test_the_date_user_turn_fallback_is_wired_to_ollama_only():
             and value.left.id == "provider_type"
             and isinstance(value.comparators[0], ast.Constant)
             and value.comparators[0].value == "ollama"
-        ), "user_turn_fallback must be `provider_type == \"ollama\"`"
+        ), 'user_turn_fallback must be `provider_type == "ollama"`'
