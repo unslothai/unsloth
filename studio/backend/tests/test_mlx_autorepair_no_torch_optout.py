@@ -138,10 +138,10 @@ def _real_install_manifest(monkeypatch, venv_root: Path):
     [
         ({"no_torch": True}, True),
         ({"no_torch": False}, False),
-        ({"no_torch": "1"}, True),          # tolerated hand edit
+        ({"no_torch": "1"}, True),  # tolerated hand edit
         ({"no_torch": "no"}, False),
-        ({"steps_total": 12}, False),       # an install predating the key
-        (None, False),                      # no manifest at all
+        ({"steps_total": 12}, False),  # an install predating the key
+        (None, False),  # no manifest at all
     ],
 )
 def test_against_a_real_manifest_on_disk(monkeypatch, tmp_path, manifest, expected):
