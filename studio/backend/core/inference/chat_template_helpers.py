@@ -2975,23 +2975,34 @@ def last_user_text(messages: list) -> str:
     return ""
 
 
-def count_structured_images(content) -> int:
-    """Number of structured image parts in a message *content* (or a bare part)."""
+_STRUCTURED_IMAGE_TYPES = ("image", "image_url", "input_image")
+_STRUCTURED_VIDEO_TYPES = ("video", "video_url", "input_video")
+
+
+def _count_structured_parts(content, types) -> int:
     if isinstance(content, list):
-        return sum(count_structured_images(item) for item in content)
+        return sum(_count_structured_parts(item, types) for item in content)
     if not isinstance(content, dict):
         return 0
-    if str(content.get("type", "")).lower() in ("image", "image_url", "input_image"):
+    if str(content.get("type", "")).lower() in types:
         return 1
-    return count_structured_images(content.get("content"))
+    return _count_structured_parts(content.get("content"), types)
+
+
+def count_structured_images(content) -> int:
+    return _count_structured_parts(content, _STRUCTURED_IMAGE_TYPES)
+
+
+def count_structured_videos(content) -> int:
+    return _count_structured_parts(content, _STRUCTURED_VIDEO_TYPES)
 
 
 def structured_media_reprs(content) -> set:
-    """Every spelling a template could print a structured image part as."""
+    media_types = _STRUCTURED_IMAGE_TYPES + _STRUCTURED_VIDEO_TYPES
     if isinstance(content, list):
         values = (
             {str(content), json.dumps(content, ensure_ascii = False)}
-            if count_structured_images(content)
+            if _count_structured_parts(content, media_types)
             else set()
         )
         for item in content:
@@ -2999,7 +3010,7 @@ def structured_media_reprs(content) -> set:
         return values
     if not isinstance(content, dict):
         return set()
-    if str(content.get("type", "")).lower() in ("image", "image_url", "input_image"):
+    if str(content.get("type", "")).lower() in media_types:
         return {str(content), json.dumps(content, ensure_ascii = False)}
     return structured_media_reprs(content.get("content"))
 
@@ -3051,14 +3062,12 @@ def messages_with_attached_image(
     system_prompt: str = "",
     fallback_user_text: str = "",
     structured_content: bool = False,
+    image: bool = True,
+    video: bool = False,
 ) -> list:
-    """The conversation to render for a turn that carries an attached image.
-
-    Prepends *system_prompt* as a leading system turn, then injects an ``{"type": "image"}``
-    part into the LAST user turn and leaves every other turn -- assistant ``tool_calls``
-    and ``role="tool"`` results included -- exactly as the caller sent it. Rebuilding from
-    the newest user TEXT instead dropped the folded system instruction and the tool history
-    an OpenAI tool loop replays (#10092).
+    """Place ``{"type": "image"}`` / ``{"type": "video"}`` parts on the LAST user turn, leaving
+    every other turn as sent; rebuilding from the newest user text dropped the folded
+    system instruction and the tool history an OpenAI tool loop replays (#10092).
 
     Nothing the caller owns is mutated: callers still read those dicts after generation,
     and a retry re-renders the same list.
@@ -3097,13 +3106,20 @@ def messages_with_attached_image(
                 ),
             },
         )
-    # Once: a reverse scan would mark a nudge retry's correction, not the question.
-    if any(
-        isinstance(m, dict)
-        and isinstance(m.get("content"), list)
-        and count_structured_images(m["content"])
-        for m in conversation
-    ):
+    # Once per medium: a reverse scan would mark a nudge retry's correction, not the question.
+    parts = [
+        {"type": part_type}
+        for part_type, wanted, counter in (
+            ("image", image, count_structured_images),
+            ("video", video, count_structured_videos),
+        )
+        if wanted
+        and not any(
+            isinstance(m, dict) and isinstance(m.get("content"), list) and counter(m["content"])
+            for m in conversation
+        )
+    ]
+    if not parts:
         return conversation
     for index in range(len(conversation) - 1, -1, -1):
         message = conversation[index]
@@ -3111,21 +3127,14 @@ def messages_with_attached_image(
             continue
         content = message.get("content", "")
         if isinstance(content, str):
-            parts = [{"type": "image"}, {"type": "text", "text": content or fallback_user_text}]
-        elif isinstance(content, list):
-            parts = list(content)
-            if not count_structured_images(parts):
-                parts.insert(0, {"type": "image"})
-        else:
+            content = [{"type": "text", "text": content or fallback_user_text}]
+        elif not isinstance(content, list):
             break
-        conversation[index] = {**message, "content": parts}
+        conversation[index] = {**message, "content": parts + list(content)}
         return conversation
     if fallback_user_text:
         conversation.append(
-            {
-                "role": "user",
-                "content": [{"type": "image"}, {"type": "text", "text": fallback_user_text}],
-            }
+            {"role": "user", "content": parts + [{"type": "text", "text": fallback_user_text}]}
         )
     return conversation
 

@@ -4136,3 +4136,224 @@ def test_vlm_add_special_tokens_falls_back_to_the_inline_rule(monkeypatch):
     assert rule("qwen2_vl", template) is True
     sys.modules["mlx_vlm.utils"].should_add_special_tokens = lambda *_: "mlx-vlm's answer"
     assert rule("gemma4", template) == "mlx-vlm's answer"
+
+
+_CLIP_B64 = "AAAAGGZ0eXBtcDQy"  # a bare mp4 box header, decoded byte-for-byte by the backend
+
+
+def _video_vlm_backend(monkeypatch, streams):
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(MODEL_CONFIG = {})
+
+    def _vlm_stream(*args, **kwargs):
+        paths = kwargs.get("video")
+        streams.append((args, kwargs, [Path(p).read_bytes() for p in paths] if paths else None))
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<video> marked",
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "qwen3_5"})
+    backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
+    backend._is_vlm = True
+    return backend
+
+
+def test_mlx_vlm_a_video_turn_never_resumes_a_prompt_cache_snapshot(monkeypatch):
+    """A snapshot spans the video rows but is keyed by token ids the clip does not vary, so a
+    later clip would resume the earlier one's vision rows and its mRoPE grid."""
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    backend._vlm_is_diffusion_model = lambda _model: False
+    monkeypatch.setattr(type(backend), "_vlm_prompt_cache_store", lambda self: object())
+    monkeypatch.setattr(type(backend), "_vlm_media_token_ids", lambda self, _config: (7,))
+    monkeypatch.setattr(type(backend), "_vlm_media_block", lambda self, *_a: None)
+    cache_module = types.ModuleType("mlx_vlm.models.cache")
+    cache_module.make_prompt_cache = lambda _model, max_kv_size = None: []
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models", types.ModuleType("mlx_vlm.models"))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.models.cache", cache_module)
+
+    # The control: without a clip this same call builds a session, so the None below is the
+    # video rule rather than a store the fake backend could never reach.
+    assert backend._vlm_prompt_cache_session(False, None, "prompt") is not None
+    assert backend._vlm_prompt_cache_session(False, None, "prompt", has_video = True) is None
+
+    # And the stream says so: a clip reaches mlx-vlm with no cache to resume from.
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    ((_, stream_kwargs, _),) = streams
+    assert "prompt_cache" not in stream_kwargs
+    assert "prompt_cache_state" not in stream_kwargs
+
+
+def test_mlx_vlm_a_video_turn_releases_retained_snapshots(monkeypatch):
+    """A video turn resumes nothing, so retained snapshots are pure occupancy against the
+    frame budget it is about to allocate."""
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    released = []
+    monkeypatch.setattr(type(backend), "_release_vlm_snapshots", lambda self: released.append(True))
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    assert released == [True]
+
+
+def test_mlx_vlm_video_clip_lives_on_disk_only_for_the_stream(monkeypatch):
+    """The clip lives on disk only for the stream, including when the caller closes it early."""
+    import base64
+
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+    args = (turn, None, 0, 1, 0, 0, 1, 1, None)
+
+    assert list(backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)) == ["ok"]
+    ((stream_args, stream_kwargs, contents),) = streams
+    assert stream_args[3] is None, "no image was attached"
+    assert contents == [base64.b64decode(_CLIP_B64)]
+    assert not any(Path(p).exists() for p in stream_kwargs["video"])
+
+    gen = backend._generate_vlm(*args, _adapter_state = False, video = _CLIP_B64)
+    assert next(gen) == "ok"
+    (path,) = streams[-1][1]["video"]
+    assert Path(path).exists()
+    gen.close()
+    assert not Path(path).exists()
+
+
+def test_mlx_vlm_a_video_turn_whose_render_is_unusable_is_refused_not_recovered(monkeypatch):
+    """Registered renderers take image and audio counts only, so recovery would drop the clip."""
+    backend = _video_vlm_backend(monkeypatch, [])
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, messages, **_k: f"{messages[0]['content'][0]} serialized",
+    )
+    turn = [{"role": "user", "content": [{"type": "image"}, {"type": "video"}]}]
+    with pytest.raises(RuntimeError, match = "for a video turn"):
+        list(
+            backend._generate_vlm(
+                turn, object(), 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = _CLIP_B64
+            )
+        )
+
+
+def test_mlx_vlm_an_undecodable_clip_leaves_no_file_behind(monkeypatch, tmp_path):
+    import binascii
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    backend = _video_vlm_backend(monkeypatch, [])
+    turn = [{"role": "user", "content": [{"type": "video"}]}]
+    with pytest.raises(binascii.Error):
+        list(
+            backend._generate_vlm(
+                turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = "A"
+            )
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_mlx_vlm_structured_video_items_must_match_attached_clips(monkeypatch):
+    backend = _video_vlm_backend(monkeypatch, [])
+    args = (None, 0, 1, 0, 0, 1, 1, None)
+    without_part = [{"role": "user", "content": [{"type": "text", "text": "what moves"}]}]
+    with pytest.raises(RuntimeError, match = "0 structured video item.*1 attached video"):
+        list(backend._generate_vlm(without_part, *args, _adapter_state = False, video = _CLIP_B64))
+    with_part = [{"role": "user", "content": [{"type": "video"}]}]
+    with pytest.raises(RuntimeError, match = "1 structured video item.*0 attached video"):
+        list(backend._generate_vlm(with_part, *args, _adapter_state = False))
+
+
+def test_mlx_generate_chat_response_attaches_the_video_part_and_forwards_the_clip(monkeypatch):
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    pytest.importorskip("mlx_vlm")
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, *_args, **kwargs: (
+        captured.append((messages, kwargs)) or iter(())
+    )
+    list(
+        backend.generate_chat_response([{"role": "user", "content": "what moves"}], video = _CLIP_B64)
+    )
+    messages, kwargs = captured[0]
+    assert messages[-1]["content"] == [{"type": "video"}, {"type": "text", "text": "what moves"}]
+    assert kwargs["video"] == _CLIP_B64
+
+    backend._is_vlm = False
+    with pytest.raises(RuntimeError, match = "loaded model does not read video"):
+        list(backend.generate_chat_response([{"role": "user", "content": "hi"}], video = _CLIP_B64))
+
+    backend._is_vlm = True
+    monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: False)
+    with pytest.raises(RuntimeError, match = "installed mlx-vlm does not read video"):
+        list(backend.generate_chat_response([{"role": "user", "content": "hi"}], video = _CLIP_B64))
+
+
+def test_mlx_vlm_decodes_video_only_with_its_clip_decoder(monkeypatch):
+    """The declared mlx-vlm range starts before load_video existed."""
+    from core.inference import mlx_inference
+
+    mlx_vlm = pytest.importorskip("mlx_vlm")
+
+    assert mlx_inference._mlx_vlm_decodes_video() is True
+    monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(prepare_inputs = object()))
+    assert mlx_inference._mlx_vlm_decodes_video() is False
+
+
+def test_mlx_reads_video_asks_the_processor_and_the_template(monkeypatch):
+    """The processor must carry a video component and the template must place a marker."""
+    from core.inference import mlx_inference
+    from core.inference.mlx_inference import _VIDEO_PROBE_MESSAGES, _mlx_reads_video
+
+    pytest.importorskip("mlx_vlm")
+    renders = {}
+
+    def _render(_target, messages, **_kwargs):
+        if messages is _VIDEO_PROBE_MESSAGES:
+            outcome = renders["video"]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return "hi"
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation", _render
+    )
+    with_video = SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace())
+    renders["video"] = "<|video_pad|> hi"
+    assert _mlx_reads_video(with_video) is True
+    assert _mlx_reads_video(SimpleNamespace(tokenizer = SimpleNamespace())) is False
+    assert _mlx_reads_video(None) is False
+    renders["video"] = "hi"
+    assert _mlx_reads_video(with_video) is False
+    renders["video"] = f"{_VIDEO_PROBE_MESSAGES[0]['content'][0]} hi"
+    assert _mlx_reads_video(with_video) is False
+    renders["video"] = ValueError("no video in this template")
+    assert _mlx_reads_video(with_video) is False
+    renders["video"] = "<|video_pad|> hi"
+    monkeypatch.setattr(mlx_inference, "_mlx_vlm_decodes_video", lambda: False)
+    assert _mlx_reads_video(with_video) is False, "a release without the decoder"

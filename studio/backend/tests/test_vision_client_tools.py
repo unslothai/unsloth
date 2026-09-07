@@ -573,6 +573,36 @@ def test_a_nudge_retry_keeps_the_image_on_the_question_turn():
     )
 
 
+def test_a_video_is_attached_the_way_an_image_is():
+    """Every attached medium lands on the newest user turn, media before text, never doubled."""
+    from core.inference.chat_template_helpers import messages_with_attached_image
+
+    alone = messages_with_attached_image(
+        [{"role": "user", "content": "what moves"}], image = False, video = True
+    )
+    assert alone[-1]["content"] == [{"type": "video"}, {"type": "text", "text": "what moves"}]
+
+    both = messages_with_attached_image(
+        [{"role": "user", "content": [{"type": "text", "text": "compare"}]}], video = True
+    )
+    assert both[-1]["content"] == [
+        {"type": "image"},
+        {"type": "video"},
+        {"type": "text", "text": "compare"},
+    ]
+
+    placed = messages_with_attached_image(
+        [
+            {"role": "user", "content": [{"type": "video_url", "video_url": {"url": "x"}}]},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "and now?"},
+        ],
+        video = True,
+    )
+    assert [p["type"] for p in placed[-1]["content"]] == ["image", "text"]
+    assert [p["type"] for p in placed[0]["content"]] == ["video_url"]
+
+
 def test_an_mlx_processor_without_apply_chat_template_is_not_mirrored():
     """A processor template alone does not mean the render selects it; mirroring it anyway
     profiles an unused body with processor semantics (#10092)."""
