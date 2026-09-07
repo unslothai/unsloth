@@ -10,10 +10,9 @@ from hub.utils import inventory_scan
 from utils import hf_cache_settings
 
 
-@pytest.mark.parametrize("active_custom", [False, True])
-def test_cached_gguf_keeps_quants_in_previous_download_folders(
-    monkeypatch, tmp_path, active_custom
-):
+@pytest.fixture(params = [False, True])
+def cache_locations(monkeypatch, tmp_path, request):
+    active_custom = request.param
     store = {}
     monkeypatch.setattr(hf_cache_settings, "_EXPLICIT_CACHE_ENV", {})
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
@@ -47,11 +46,35 @@ def test_cached_gguf_keeps_quants_in_previous_download_folders(
         hf_cache_settings.set_hf_cache_home(str(custom_home))
 
     assert custom_home / "hub" in hf_cache_settings.known_hf_hub_caches()
+    return repo_id, expected
+
+
+@pytest.fixture
+def cache_client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from hub.routes import inventory
+    from routes import models
+
+    app = FastAPI()
+    app.include_router(inventory.router, prefix = "/api/hub")
+    app.include_router(models.router, prefix = "/api/models")
+    app.dependency_overrides[inventory.get_current_subject] = lambda: "test"
+    app.dependency_overrides[inventory.get_request_hf_token] = lambda: None
+    with TestClient(app) as client:
+        yield client
+
+
+def test_cached_gguf_keeps_quants_in_previous_download_folders(cache_locations, cache_client):
+    repo_id, expected = cache_locations
     scans = inventory_scan.all_hf_cache_scans()
     assert sum(repo.repo_id == repo_id for scan in scans for repo in scan.repos) == 2
     rows = [row for row in cache_inventory._scan_cached_gguf() if row["repo_id"] == repo_id]
     repeated = cache_inventory._scan_cached_gguf(cache_scans = scans + scans)
     assert [row for row in repeated if row["repo_id"] == repo_id] == rows
+    response = cache_client.get("/api/hub/cached-gguf")
+    assert response.status_code == 200
+    rows = [row for row in response.json()["cached"] if row["repo_id"] == repo_id]
     found = {}
     for row in rows:
         response = asyncio.run(
@@ -76,3 +99,31 @@ def test_cached_gguf_keeps_quants_in_previous_download_folders(
     deletion._delete_cached_model_blocking(repo_id, "Q8_0", None, found["Q8_0"]["cache_path"])
     assert not expected["Q8_0"][1].exists()
     assert expected["Q6_K"][1].is_file()
+
+
+@pytest.mark.parametrize("action", ["impact", "reveal", "copy"])
+def test_cache_actions_target_selected_copy(cache_locations, cache_client, monkeypatch, action):
+    repo_id, expected = cache_locations
+    default_q8 = expected["Q6_K"][1].with_name("Model-Q8_0.gguf")
+    default_q8.write_bytes(b"\0" * 128)
+    expected["Q8_0"][1].write_bytes(b"\0" * 512)
+    inventory_scan.invalidate_hf_cache_scans()
+    selected_path = str(expected["Q6_K"][0])
+    payload = {"repo_id": repo_id, "variant": "Q8_0", "cache_path": selected_path}
+    if action == "impact":
+        response = cache_client.post("/api/hub/delete-impact", json = payload)
+        assert response.status_code == 200, response.text
+        assert response.json()["reclaimed_bytes"] == 128
+    elif action == "reveal":
+        revealed = []
+        monkeypatch.setattr("utils.paths.path_utils.reveal_in_file_manager", revealed.append)
+        response = cache_client.post("/api/models/reveal-cached-model", json = payload)
+        assert response.status_code == 200, response.text
+        assert revealed == [default_q8]
+    else:
+        response = cache_client.get("/api/models/cached-model-path", params = payload)
+        assert response.status_code == 200, response.text
+        assert response.json()["path"] == str(default_q8)
+    deletion._delete_cached_model_blocking(repo_id, "Q8_0", None, selected_path)
+    assert not default_q8.exists()
+    assert expected["Q8_0"][1].is_file()

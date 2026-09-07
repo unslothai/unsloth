@@ -5410,7 +5410,11 @@ async def delete_cached_model(
     return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
 
 
-def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
+def _resolve_cached_model_path(
+    repo_id: str,
+    variant: Optional[str],
+    cache_path: Optional[str] = None,
+) -> Path:
     """Absolute path of a cached repo (newest snapshot dir) or, with *variant*,
     that quant's main GGUF file (first split of a sharded quant). Paths come
     from the HF cache scan only, so callers can't probe arbitrary paths."""
@@ -5424,6 +5428,15 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
                 continue
             if repo_info.repo_id.lower() == repo_id.lower():
                 matching_repos.append(repo_info)
+    if cache_path:
+        from hub.utils.hf_cache_state import scoped_delete_root
+
+        root = scoped_delete_root("model", repo_id, cache_path)
+        if root is None:
+            raise HTTPException(status_code = 400, detail = "Invalid cache_path")
+        matching_repos = [
+            repo for repo in matching_repos if Path(repo.repo_path).parent.resolve() == root
+        ]
     if not matching_repos:
         raise HTTPException(status_code = 404, detail = "Model not found in cache")
 
@@ -5509,12 +5522,15 @@ class CachedModelPathResponse(BaseModel):
 async def get_cached_model_path(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
     variant: str = Query("", description = "Quantization variant (empty for whole repo)"),
+    cache_path: Optional[str] = Query(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """Absolute on-disk path of a cached repo or one of its GGUF variants."""
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
-    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant.strip() or None)
+    path = await asyncio.to_thread(
+        _resolve_cached_model_path, repo_id, variant.strip() or None, cache_path
+    )
     return {"path": str(path), "is_dir": path.is_dir()}
 
 
@@ -5522,6 +5538,7 @@ async def get_cached_model_path(
 async def reveal_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
+    cache_path: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
     """Reveal a cached repo (or one GGUF variant's file) in the OS file manager."""
@@ -5530,7 +5547,7 @@ async def reveal_cached_model(
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
-    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant)
+    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant, cache_path)
     try:
         await asyncio.to_thread(reveal_in_file_manager, path)
     except Exception as e:

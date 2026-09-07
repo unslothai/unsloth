@@ -184,6 +184,8 @@ export function SafetensorsDownloadCard({
   const deleteImpact = useDeleteImpact(
     deleteRepoOpen && Boolean(repoId),
     repoId ?? "",
+    undefined,
+    cachePath,
   );
 
   return (
@@ -253,17 +255,18 @@ export function SafetensorsDownloadCard({
                 omitted in the run bar. Managed HF-cache repos only. */}
             {(isDownloaded || (isPartial && !downloading)) &&
               !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
-              <QuantOptionsMenu
-                repoId={repoId}
-                label={repoId}
-                downloaded={isDownloaded}
-                canDelete={canDelete}
-                onDelete={() => setDeleteRepoOpen(true)}
-                showPin={false}
-                buttonClassName="ml-0.5 size-7"
-                iconClassName="size-4"
-              />
-            )}
+                <QuantOptionsMenu
+                  cachePath={cachePath}
+                  repoId={repoId}
+                  label={repoId}
+                  downloaded={isDownloaded}
+                  canDelete={canDelete}
+                  onDelete={() => setDeleteRepoOpen(true)}
+                  showPin={false}
+                  buttonClassName="ml-0.5 size-7"
+                  iconClassName="size-4"
+                />
+              )}
           </div>
         </div>
         {/* Info/actions hairline; dropped for the run action row (no divider before

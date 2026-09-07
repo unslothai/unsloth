@@ -226,6 +226,7 @@ class LocalModelListResponse(BaseModel):
 
 
 class CachedRepoBase(BaseModel):
+    active_cache: Optional[bool] = None
     """Shared shape for a cached HF repo row surfaced under On Device."""
 
     repo_id: str

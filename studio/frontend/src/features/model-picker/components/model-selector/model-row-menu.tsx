@@ -66,7 +66,11 @@ interface ModelRowMenuDelete {
   description: ReactNode;
   /** Repo (and quant) to preview the delete for, so the dialog can state what it actually reclaims
    *  and what shared assets it leaves behind. Omit to keep the plain wording. */
-  impact?: { repoId: string; variant?: string | null };
+  impact?: {
+    repoId: string;
+    variant?: string | null;
+    cachePath?: string | null;
+  };
   successMessage: string;
   disabled?: boolean;
   onConfirm: () => Promise<void> | void;
@@ -76,6 +80,7 @@ interface ModelRowMenuDelete {
 /** Managed-cache location for "Reveal in Finder" (resolved server-side). */
 interface ModelRowMenuCachePath {
   repoId: string;
+  cachePath?: string | null;
   variant?: string;
 }
 
@@ -113,6 +118,7 @@ export function ModelRowMenu({
     deleteOpen && Boolean(del?.impact),
     del?.impact?.repoId ?? "",
     del?.impact?.variant,
+    del?.impact?.cachePath,
   );
   const [updateOpen, setUpdateOpen] = useState(false);
 
@@ -171,14 +177,19 @@ export function ModelRowMenu({
 
   const cachePathRepoId = cachePath?.repoId;
   const cachePathVariant = cachePath?.variant;
+  const cachePathLocation = cachePath?.cachePath;
   const handleReveal = useCallback(() => {
     if (!cachePathRepoId) return;
-    revealCachedModel(cachePathRepoId, cachePathVariant).catch((err) => {
+    revealCachedModel(
+      cachePathRepoId,
+      cachePathVariant,
+      cachePathLocation,
+    ).catch((err) => {
       toast.error(
         err instanceof Error ? err.message : "Failed to open file manager",
       );
     });
-  }, [cachePathRepoId, cachePathVariant]);
+  }, [cachePathRepoId, cachePathVariant, cachePathLocation]);
 
   if (!pin && !update && !del && !cachePath && !settings) return null;
 

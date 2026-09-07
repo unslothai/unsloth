@@ -2554,6 +2554,47 @@ function orderAutoLoadSources(
   return [...sources].sort((a, b) => rank(a) - rank(b) || size(a) - size(b));
 }
 
+async function prioritizeRememberedQuantSources(
+  sources: AutoLoadSource[],
+  remembered: {
+    id: string;
+    kind: LastLocalModelKind;
+    ggufVariant?: string | null;
+  } | null,
+): Promise<AutoLoadSource[]> {
+  const wanted = remembered?.ggufVariant?.trim().toLowerCase();
+  if (!remembered || !wanted) return sources;
+  const matches = sources.filter((source) =>
+    isRememberedSource(source, remembered),
+  );
+  if (matches.length < 2) return sources;
+  const exact = new Set<AutoLoadSource>();
+  await Promise.all(
+    matches.map(async (source) => {
+      if (!source.listVariants) return;
+      const listing = source.listVariants();
+      source.listVariants = () => listing;
+      try {
+        if (
+          (await listing).some(
+            (variant) =>
+              variant.downloaded &&
+              !variant.partial &&
+              isAutoLoadableGgufVariant(variant) &&
+              variant.quant.toLowerCase() === wanted,
+          )
+        )
+          exact.add(source);
+      } catch {
+        /* The load loop handles unavailable sources. */
+      }
+    }),
+  );
+  return [...sources].sort(
+    (a, b) => Number(exact.has(b)) - Number(exact.has(a)),
+  );
+}
+
 /** The candidate to attempt: remembered quant first, then smallest, skipping quants already
  *  tried. null when nothing here is loadable. */
 async function resolveAutoLoadCandidate(
@@ -3500,17 +3541,20 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
 
     // Managed cache plus everything the picker indexes on disk; reading only the cache lists made
     // a local model invisible.
-    const sources = orderAutoLoadSources(
-      buildAutoLoadSources(
-        allGgufRepos.filter(isChattableCachedRepo),
-        cachedModelsRunOnThisPlatform()
-          ? allModelRepos.filter(isChattableCachedRepo)
-          : [],
-        localRows.filter((row) =>
-          isAutoLoadableLocalRow(row, cachedInventoryFailed),
+    const sources = await prioritizeRememberedQuantSources(
+      orderAutoLoadSources(
+        buildAutoLoadSources(
+          allGgufRepos.filter(isChattableCachedRepo),
+          cachedModelsRunOnThisPlatform()
+            ? allModelRepos.filter(isChattableCachedRepo)
+            : [],
+          localRows.filter((row) =>
+            isAutoLoadableLocalRow(row, cachedInventoryFailed),
+          ),
+          store.params.maxSeqLength,
+          options?.abortSignal,
         ),
-        store.params.maxSeqLength,
-        options?.abortSignal,
+        lastLoaded,
       ),
       lastLoaded,
     );

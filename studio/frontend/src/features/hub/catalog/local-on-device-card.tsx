@@ -278,7 +278,12 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
-  const deleteImpact = useDeleteImpact(deleteOpen && Boolean(repoId), repoId ?? "");
+  const deleteImpact = useDeleteImpact(
+    deleteOpen && Boolean(repoId),
+    repoId ?? "",
+    undefined,
+    path,
+  );
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;

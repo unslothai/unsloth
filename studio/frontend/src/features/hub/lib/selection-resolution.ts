@@ -71,6 +71,7 @@ type CacheSelectionIdentity = {
   source: "cache" | "download" | "hf_cache";
   modelFormat: CachedInventoryRow["modelFormat"];
   repoKey: string;
+  cacheRoot?: string;
 };
 
 const MODEL_FORMATS = new Set<CachedInventoryRow["modelFormat"]>([
@@ -91,12 +92,16 @@ function parseCacheSelectionIdentity(
   }
   const source = id.slice(0, firstSeparator);
   const modelFormat = id.slice(firstSeparator + 1, secondSeparator);
-  const encodedRepoId = id.slice(secondSeparator + 1);
+  const [encodedRepoId, encodedRoot, ...extra] = id
+    .slice(secondSeparator + 1)
+    .split(":");
   if (
     (source !== "cache" && source !== "download" && source !== "hf_cache") ||
     !MODEL_FORMATS.has(modelFormat as CachedInventoryRow["modelFormat"]) ||
     !encodedRepoId ||
-    encodedRepoId.includes(":")
+    extra.length > 0 ||
+    (encodedRoot !== undefined &&
+      (source !== "cache" || modelFormat !== "gguf" || !encodedRoot))
   ) {
     return null;
   }
@@ -107,6 +112,7 @@ function parseCacheSelectionIdentity(
           source,
           modelFormat: modelFormat as CachedInventoryRow["modelFormat"],
           repoKey,
+          cacheRoot: encodedRoot ? decodeURIComponent(encodedRoot) : undefined,
         }
       : null;
   } catch {
@@ -281,11 +287,21 @@ function resolveFormatTransition(
     return null;
   }
   const matchingCached = cachedRows.filter(
-    (row) => inventoryRepoKey(row) === identity.repoKey,
+    (row) =>
+      inventoryRepoKey(row) === identity.repoKey &&
+      (!identity.cacheRoot ||
+        parseCacheSelectionIdentity(row.id)?.cacheRoot === identity.cacheRoot),
   );
   const matchingLocal = localRows.filter(
     (row) =>
-      row.source === "hf_cache" && inventoryRepoKey(row) === identity.repoKey,
+      row.source === "hf_cache" &&
+      inventoryRepoKey(row) === identity.repoKey &&
+      (!identity.cacheRoot ||
+        row.path
+          .replaceAll("\\", "/")
+          .startsWith(
+            `${identity.cacheRoot.replaceAll("\\", "/").replace(/\/+$/, "")}/models--`,
+          )),
   );
   if (identity.source === "download") {
     return resolveCurrentSelection(

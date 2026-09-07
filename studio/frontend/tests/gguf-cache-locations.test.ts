@@ -88,12 +88,14 @@ test("a complete local copy in another folder does not hide a partial GGUF", () 
       source: "hf_cache",
     },
   ]);
-  const { cachedRows } = dedupeSameSourceHubCacheRows({
-    cachedRows: [partial],
-    localRows,
-  });
+  const { cachedRows, localRows: retainedLocalRows } =
+    dedupeSameSourceHubCacheRows({
+      cachedRows: [partial],
+      localRows,
+    });
   assert.equal(cachedRows.length, 1);
   assert.equal(cachedRows[0].partial, true);
+  assert.deepEqual(retainedLocalRows, localRows);
 });
 
 test("concurrent sole-quant probes for one repo retain both folder results without repeated invalidation", async () => {

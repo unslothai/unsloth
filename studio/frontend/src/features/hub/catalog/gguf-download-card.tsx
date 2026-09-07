@@ -281,6 +281,7 @@ function createGgufVariantMenuItems(
 // identifier uses llama.cpp's repo:quant syntax so it pastes into `-hf`.
 export function QuantOptionsMenu({
   repoId,
+  cachePath,
   quant,
   label,
   downloaded,
@@ -291,6 +292,7 @@ export function QuantOptionsMenu({
   iconClassName,
 }: {
   repoId: string;
+  cachePath?: string | null;
   quant?: string;
   label: string;
   downloaded: boolean;
@@ -309,7 +311,7 @@ export function QuantOptionsMenu({
     deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
   const handleCopyPath = useCallback(async () => {
     try {
-      const { path } = await getCachedModelPath(repoId, quant);
+      const { path } = await getCachedModelPath(repoId, quant, cachePath);
       if (await copyToClipboard(path)) {
         toast.success("Copied path");
       } else {
@@ -320,7 +322,7 @@ export function QuantOptionsMenu({
         err instanceof Error ? err.message : "Failed to resolve model path",
       );
     }
-  }, [repoId, quant]);
+  }, [repoId, quant, cachePath]);
   const handleCopyId = useCallback(async () => {
     const id = quant ? `${repoId}:${quant}` : repoId;
     if (await copyToClipboard(id)) {
@@ -376,7 +378,7 @@ export function QuantOptionsMenu({
           <DropdownMenuItem
             onSelect={(e) => {
               e.stopPropagation();
-              revealCachedModel(repoId, quant).catch((err) => {
+              revealCachedModel(repoId, quant, cachePath).catch((err) => {
                 toast.error(
                   err instanceof Error
                     ? err.message
@@ -447,6 +449,7 @@ export function QuantOptionsMenu({
 
 const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   repoId,
+  cachePath,
   item,
   selected,
   loaded,
@@ -456,6 +459,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   onDelete,
 }: {
   repoId: string;
+  cachePath?: string | null;
   item: GgufVariantMenuItem;
   selected: boolean;
   loaded: boolean;
@@ -538,6 +542,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
             chips column-aligned across rows. */}
         {item.downloaded || item.partial ? (
           <QuantOptionsMenu
+            cachePath={cachePath}
             repoId={repoId}
             quant={item.quant}
             label={item.label}
@@ -843,7 +848,12 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
-  const deleteImpact = useDeleteImpact(deleteTarget !== null, repoId, deleteTarget);
+  const deleteImpact = useDeleteImpact(
+    deleteTarget !== null,
+    repoId,
+    deleteTarget,
+    cachePath,
+  );
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
@@ -1071,6 +1081,7 @@ export function GgufDownloadCard({
                 const liveActive = activeDownloadState(liveState?.state);
                 return (
                   <GgufVariantMenuRow
+                    cachePath={cachePath}
                     key={item.filename}
                     repoId={repoId}
                     item={item}
@@ -1094,6 +1105,7 @@ export function GgufDownloadCard({
           Boolean(selected.downloaded || selected.partial) &&
           !/^([/\\~.]|[A-Za-z]:)/.test(repoId) && (
             <QuantOptionsMenu
+              cachePath={cachePath}
               repoId={repoId}
               quant={selected.quant}
               label={`${repoId} ${selectedLabel}`}

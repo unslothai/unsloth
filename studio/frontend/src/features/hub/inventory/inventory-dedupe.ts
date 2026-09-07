@@ -68,7 +68,10 @@ function sameGgufCacheCopy(
   local: LocalInventoryRow,
 ): boolean {
   if (cached.modelFormat !== "gguf") return true;
-  if (!cached.cachePath) return false;
+  if (!cached.cachePath)
+    return Boolean(
+      cached.liveDownload && local.partial && local.activeCache !== false,
+    );
   const repoPath = cached.cachePath.replaceAll("\\", "/").replace(/\/+$/, "");
   const localPath = local.path.replaceAll("\\", "/");
   return localPath === repoPath || localPath.startsWith(`${repoPath}/`);
@@ -150,7 +153,24 @@ function dedupeCachedRows(
     }
     const existing = selected.get(key);
     if (preferCachedRow(row, existing)) {
-      selected.set(key, row);
+      selected.set(
+        key,
+        row.liveDownload && existing?.cachePath
+          ? {
+              ...row,
+              id: existing.id,
+              cachePath: existing.cachePath,
+              activeCache: existing.activeCache,
+            }
+          : row,
+      );
+    } else if (existing?.liveDownload && row.cachePath) {
+      selected.set(key, {
+        ...existing,
+        id: row.id,
+        cachePath: row.cachePath,
+        activeCache: row.activeCache,
+      });
     }
   }
   return [...selected.values(), ...passthrough];
@@ -242,7 +262,16 @@ export function dedupeSameSourceHubCacheRows({
         return true;
       }
       const key = repoFormatKey(row.repoId, row.modelFormat);
-      if (key && retainedCachedKeys.has(key)) {
+      if (
+        key &&
+        retainedCachedKeys.has(key) &&
+        (row.modelFormat !== "gguf" ||
+          filteredCachedRows.some(
+            (cached) =>
+              repoFormatKey(cached.repoId, cached.modelFormat) === key &&
+              sameGgufCacheCopy(cached, row),
+          ))
+      ) {
         return false;
       }
       const repo = repoKey(row.repoId);

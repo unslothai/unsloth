@@ -17,6 +17,7 @@ export function useDeleteImpact(
   open: boolean,
   repoId: string,
   variant?: string | null,
+  cachePath?: string | null,
 ): DeleteImpact | null {
   const [impact, setImpact] = useState<DeleteImpact | null>(null);
   useEffect(() => {
@@ -25,13 +26,15 @@ export function useDeleteImpact(
       return;
     }
     let cancelled = false;
-    void fetchDeleteImpact(repoId, variant ?? undefined).then((result) => {
-      if (!cancelled) setImpact(result);
-    });
+    void fetchDeleteImpact(repoId, variant ?? undefined, cachePath).then(
+      (result) => {
+        if (!cancelled) setImpact(result);
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [open, repoId, variant]);
+  }, [open, repoId, variant, cachePath]);
   return impact;
 }
 
