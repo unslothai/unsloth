@@ -187,3 +187,73 @@ test("archived video rows reuse still posters", () => {
   assert.ok(row.includes("src={thumbs[row.id]}"));
   assert.ok(!row.includes("<video"));
 });
+
+test("a poster the renderer cannot decode falls back to the slate", () => {
+  const page = source("../src/features/video/video-page.tsx");
+  // A 200 carrying bytes no decoder accepts still populates the cache, and the cache hit at the top
+  // of ensureThumbnail short-circuits every later attempt, so an unhandled decode failure is a
+  // broken tile for the rest of the session. onError has to drop the blob AND mark the clip.
+  const strip = between(
+    page,
+    "{/* In-progress generation: a placeholder tile",
+    "{/* Tail spinner while older pages stream in on scroll.",
+  );
+  assert.ok(strip.includes("onError={() => handlePosterError(video.id)}"));
+  const handler = between(page, "const handlePosterError", "}, []);");
+  assert.ok(handler.includes("galleryCache.thumbnailById.delete(id)"));
+  assert.ok(handler.includes("galleryCache.thumbnailFailed.add(id)"));
+});
+
+test("an empty thumbnail response is a failed attempt, not a blank poster", () => {
+  const helper = between(
+    source("../src/features/video/api.ts"),
+    "export async function fetchGalleryVideoThumbnail",
+    "/** Server-side transcode",
+  );
+  // Minting an object URL for a zero-byte body caches a tile that can never render and never
+  // pressures the LRU, because its accounted size is 0.
+  assert.ok(helper.includes("blob.size === 0"));
+  assert.ok(helper.indexOf("blob.size === 0") < helper.indexOf("URL.createObjectURL(blob)"));
+});
+
+test("the poster budget still binds after cards leave the strip", () => {
+  const page = source("../src/features/video/video-page.tsx");
+  // prune() only ever ran on the success path, so a strip whose visible cards are all cached
+  // issues no further fetches and an over-budget cache is never brought back down.
+  const observer = between(page, "const stripRef = useRef", "// The preview player is what");
+  assert.ok(observer.includes("if (left) pruneThumbnails();"));
+  // A card dropped by a wholesale list replacement unmounts without an observer entry, and
+  // disconnect() delivers none, so its id would protect its blob from eviction forever.
+  assert.ok(observer.includes("const listed = new Set(videos.map((v) => v.id));"));
+  assert.ok(observer.includes("visibleThumbnailIds.current.delete(id)"));
+  assert.ok(observer.includes("if (stranded) pruneThumbnails();"));
+});
+
+test("eviction spares the selected clip and the poster it just fetched", () => {
+  const page = source("../src/features/video/video-page.tsx");
+  const keep = between(page, "const protectedThumbnailIds", "}, []);");
+  // The selected clip's card can be scrolled far off the strip while it plays, which makes its
+  // poster the coldest entry and therefore the first evicted.
+  assert.ok(keep.includes("if (galleryCache.selectedId) keep.add(galleryCache.selectedId);"));
+  assert.ok(keep.includes("if (extra) keep.add(extra);"));
+  // A poster larger than the whole budget would otherwise evict every neighbour on its way to
+  // evicting itself, leaving the card on a spinner and re-downloading the strip on each retrigger.
+  assert.ok(page.includes("prune(protectedThumbnailIds(video.id))"));
+  assert.ok(!page.includes("prune(visibleThumbnailIds.current)"));
+});
+
+test("clearing the gallery drops poster requests still in flight", () => {
+  const page = source("../src/features/video/video-page.tsx");
+  const clear = between(page, "const handleClearAll", "setClearingGallery(false)");
+  // A regenerated id joining a promise fenced by the old epoch resolves false without caching and
+  // without a marker, which strands the card on a spinner with nothing left to retrigger it.
+  assert.ok(clear.includes("galleryCache.thumbnailInflight.clear();"));
+});
+
+test("an explicit gallery load gives the slate another chance", () => {
+  const page = source("../src/features/video/video-page.tsx");
+  const load = between(page, "const loadGallery = useCallback", "setHasMore(page.has_more);");
+  // The marker is permanent for the session, so one backend restart during a single gallery open
+  // would brick every card in the window until the clips were deleted or the gallery cleared.
+  assert.ok(load.includes("galleryCache.thumbnailFailed.clear();"));
+});

@@ -1510,6 +1510,30 @@ function VideoGenerator({
     }
   }, []);
 
+  // What eviction may not touch: the cards on screen, plus the selected clip, whose card can be
+  // scrolled far off the strip while the user watches it. Without the selection the poster of the
+  // one clip being viewed is the FIRST thing evicted, since it is the coldest by definition.
+  // `extra` protects a poster that was just fetched from being evicted by its own prune.
+  const protectedThumbnailIds = useCallback((extra?: string) => {
+    const keep = new Set(visibleThumbnailIds.current);
+    if (galleryCache.selectedId) keep.add(galleryCache.selectedId);
+    if (extra) keep.add(extra);
+    return keep;
+  }, []);
+
+  // Evict the coldest posters back within budget. Called on VISIBILITY as well as after a fetch: a
+  // card leaving the strip is what makes its blob evictable, and once every visible card is cached
+  // nothing fetches again, so a prune that only ran on the success path stopped binding.
+  const pruneThumbnails = useCallback(() => {
+    const evicted = galleryCache.thumbnailById.prune(protectedThumbnailIds());
+    if (evicted.length === 0 || !isMounted.current) return;
+    setThumbnailById((prev) => {
+      const next = { ...prev };
+      for (const id of evicted) delete next[id];
+      return next;
+    });
+  }, [protectedThumbnailIds]);
+
   const ensureThumbnail = useCallback((video: GalleryVideo): Promise<boolean> => {
     const cached = galleryCache.thumbnailById.get(video.id);
     if (cached) {
@@ -1538,7 +1562,10 @@ function VideoGenerator({
           return false;
         }
         galleryCache.thumbnailById.set(video.id, fetched.url, fetched.bytes);
-        const evicted = galleryCache.thumbnailById.prune(visibleThumbnailIds.current);
+        // Protect what was just fetched: a poster bigger than the whole budget would otherwise walk
+        // the cache evicting every neighbour on its way to evicting itself, leaving the card on a
+        // spinner and re-downloading the strip on every re-trigger.
+        const evicted = galleryCache.thumbnailById.prune(protectedThumbnailIds(video.id));
         if (isMounted.current) {
           setThumbnailById((prev) => {
             const next = { ...prev, [video.id]: fetched.url };
@@ -1559,6 +1586,22 @@ function VideoGenerator({
     })();
     galleryCache.thumbnailInflight.set(video.id, request);
     return request;
+  }, [protectedThumbnailIds]);
+
+  // A poster the backend served with a 200 that the renderer cannot decode. The cache hit at the
+  // top of ensureThumbnail short-circuits every later attempt, so without this the card holds a
+  // broken img for the rest of the session. Drop the blob and fall through to the slate, which is
+  // terminal on purpose: re-fetching bytes the decoder just rejected would only spin.
+  const handlePosterError = useCallback((id: string) => {
+    galleryCache.thumbnailById.delete(id);
+    galleryCache.thumbnailFailed.add(id);
+    if (!isMounted.current) return;
+    setThumbnailById((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setThumbnailFailedIds(new Set(galleryCache.thumbnailFailed));
   }, []);
 
   // A media error on a playing clip means its link died early (the server restarted, changing
@@ -1579,13 +1622,26 @@ function VideoGenerator({
   useEffect(() => {
     const root = stripRef.current;
     if (!root || typeof IntersectionObserver === "undefined") return;
+    // A card that leaves the list wholesale (a resync, or a reload cutting the window back to page
+    // one) unmounts without the observer reporting it, and disconnect() delivers no final entry. Its
+    // id would sit in `visibleThumbnailIds` forever and permanently protect its blob from eviction,
+    // walking the cache past its budget one resync at a time. Reconcile against the live list first.
+    const listed = new Set(videos.map((v) => v.id));
+    let stranded = false;
+    for (const id of visibleThumbnailIds.current) {
+      if (listed.has(id)) continue;
+      visibleThumbnailIds.current.delete(id);
+      stranded = true;
+    }
+    if (stranded) pruneThumbnails();
     const io = new IntersectionObserver(
       (entries) => {
+        let left = false;
         for (const entry of entries) {
           const id = (entry.target as HTMLElement).dataset.clipId;
           if (!id) continue;
           if (!entry.isIntersecting) {
-            visibleThumbnailIds.current.delete(id);
+            if (visibleThumbnailIds.current.delete(id)) left = true;
             continue;
           }
           visibleThumbnailIds.current.add(id);
@@ -1593,6 +1649,7 @@ function VideoGenerator({
           const clip = videos.find((v) => v.id === id);
           if (clip) void ensureThumbnail(clip);
         }
+        if (left) pruneThumbnails();
       },
       // rootMargin is added to the ROOT box only, so the root has to be the strip itself: a card
       // past its right edge is clipped. The strip scrolls horizontally, so sideways is what counts.
@@ -1600,7 +1657,7 @@ function VideoGenerator({
     );
     for (const card of root.querySelectorAll("[data-clip-id]")) io.observe(card);
     return () => io.disconnect();
-  }, [videos, ensureThumbnail]);
+  }, [videos, ensureThumbnail, pruneThumbnails]);
 
   // The preview player is what the user watches, so the selected clip is fetched whether or not its card is on screen.
   useEffect(() => {
@@ -1632,6 +1689,13 @@ function VideoGenerator({
       );
       if (!page) return;
       pageEpoch.current += 1;
+      // An explicit gallery load is a fresh chance for the clips the slate is stuck on. The marker
+      // is otherwise permanent for the session, so one backend restart during a single open would
+      // brick every card in the window until the user deleted the clips or cleared the gallery.
+      if (galleryCache.thumbnailFailed.size > 0) {
+        galleryCache.thumbnailFailed.clear();
+        setThumbnailFailedIds(new Set());
+      }
       galleryCache.videos = page.videos;
       galleryCache.hasMore = page.has_more;
       setVideos(page.videos);
@@ -1915,6 +1979,10 @@ function VideoGenerator({
       galleryCache.srcById.clear();
       galleryCache.thumbnailById.clear();
       galleryCache.thumbnailFailed.clear();
+      // A poster request still running belongs to the cleared gallery. Leaving it here lets a
+      // regenerated id join a promise that is already fenced by the epoch below, so it would
+      // resolve false without caching and without a marker, stranding the card on a spinner.
+      galleryCache.thumbnailInflight.clear();
       visibleThumbnailIds.current.clear();
       galleryCache.refreshed.clear();
       // Every mint in flight now belongs to a cleared gallery, so their links are discarded on
@@ -4151,6 +4219,7 @@ function VideoGenerator({
                     <img
                       src={thumbnailById[video.id]}
                       alt=""
+                      onError={() => handlePosterError(video.id)}
                       className="absolute inset-0 size-full object-cover"
                     />
                   ) : thumbnailFailedIds.has(video.id) ? (
