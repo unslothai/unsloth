@@ -173,12 +173,14 @@ def test_built_wheel_has_no_frontend_source():
 
 
 def test_manifest_prunes_match_exclude_package_data():
-    """MANIFEST.in is the veto that survives the sdist -> wheel rebuild.
+    """The two vetoes have to name the same paths, for different artifacts.
 
-    `python -m build` builds the wheel from the sdist, where exclude-package-data
-    no longer bites because there is no .git tree for the setuptools-scm file
-    finder. Anything vetoed in pyproject.toml has to be pruned here too or it
-    comes straight back.
+    exclude-package-data is what keeps these out of the WHEEL, and it keeps
+    working in the sdist -> wheel rebuild `python -m build` performs: restoring
+    the excluded files into an extracted sdist and listing them in its MANIFEST
+    still produces a wheel without them, which is setuptools' documented
+    exclusion precedence. These prunes are what keep them out of the SDIST
+    itself, so neither artifact carries a tree nothing installs.
     """
     manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding = "utf-8")
     for path in (
