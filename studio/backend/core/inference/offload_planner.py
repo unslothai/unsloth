@@ -1142,42 +1142,68 @@ def max_context_for(
     spill_lm_head: bool = False,
     kv_quantised: bool = False,
     opts: Optional[PlanOptions] = None,
+    kv_bytes_floor: int = 0,
+    floor_ctx: int = 0,
+    n_seq: int = 1,
 ) -> int:
-    """Largest context whose cache fits, rounded down to 256 as CUDA wants."""
+    """Largest context whose cache fits, rounded down to 256 as CUDA wants.
+
+    ``kv_bytes_floor`` is the caller's measured cache at ``floor_ctx``; without it
+    the layout's f16 product sizes the cache, which is the product the rest of
+    this module refuses to trust on a sliding-window or MLA model. With it, a
+    non-SWA floor scales linearly in context and an SWA floor is flat, and the
+    larger of floor and product is charged, exactly as ``cache_bytes`` does.
+
+    The reserve is a function of the context and the context is what is being
+    solved for, so this is a search rather than a division: the predicate
+    "fixed bytes plus the cache at ctx fit under the reserve at ctx" is monotone
+    in ctx, and a binary search over 256-multiples finds its largest true value.
+    """
     opts = opts or PlanOptions()
     if not layout.complete or layout.kv_bytes_per_token_f16 <= 0:
         return 0
     fixed = (
         layout.block_resident_bytes
         + layout.other_resident_bytes
-        + layout.recurrent_bytes
+        + layout.recurrent_bytes * max(1, n_seq)
         + (0 if spill_lm_head else layout.lm_head_bytes)
         + (0 if spill_all_ffn else layout.spillable_bytes)
     )
     per_token = layout.kv_bytes_per_token_f16 * _kv_elem_bytes(kv_quantised) // 2
     if per_token <= 0:
         return 0
+    floor = max(0, kv_bytes_floor)
+    floor_at = max(0, floor_ctx)
 
-    def _solve(at_ctx: int) -> int:
-        free = _usable_vram(vram_bytes_per_device, opts, at_ctx) - fixed
-        if free <= 0:
-            return 0
-        ctx = (free // per_token) // 256 * 256
-        if layout.n_ctx_train:
-            ctx = min(ctx, layout.n_ctx_train)
-        return max(0, ctx)
+    def cache_at(ctx: int) -> int:
+        naive = per_token * ctx
+        if floor <= 0:
+            return naive
+        if layout.has_swa:
+            return floor
+        scaled = floor * ctx // floor_at if floor_at > 0 else floor
+        return max(naive, scaled)
 
-    # The reserve is a function of the context and the context is what is being solved for, so
-    # one pass answers with the reserve for some other context. _solve is non-increasing in its
-    # argument, so starting at the largest answer the reserve can permit converges monotonically
-    # DOWN and every intermediate value is an over-estimate rather than an under-estimate.
-    ctx = _solve(opts.overhead_free_ctx)
-    for _ in range(8):
-        nxt = _solve(ctx)
-        if nxt >= ctx:
-            break
-        ctx = nxt
-    return ctx
+    def fits(ctx: int) -> bool:
+        return fixed + cache_at(ctx) <= _usable_vram(vram_bytes_per_device, opts, ctx)
+
+    # Upper bound: the answer with no reserve growth at all, which nothing can exceed.
+    top = _usable_vram(vram_bytes_per_device, opts, 0) - fixed
+    if top <= 0:
+        return 0
+    hi = (top // per_token) // 256 * 256
+    if layout.n_ctx_train:
+        hi = min(hi, layout.n_ctx_train // 256 * 256)
+    if hi <= 0 or not fits(256):
+        return 0
+    lo = 256
+    while lo < hi:
+        mid = ((lo + hi + 256) // 512) * 256  # upper median, so lo always advances
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid - 256
+    return lo
 
 
 def plan_placement(
@@ -1279,7 +1305,14 @@ def plan_placement(
         )
         > budget
     ):
-        shrunk = max_context_for(layout, vram_bytes_per_device, opts = opts)
+        shrunk = max_context_for(
+            layout,
+            vram_bytes_per_device,
+            opts = opts,
+            kv_bytes_floor = kv_bytes_floor,
+            floor_ctx = n_ctx,
+            n_seq = max(1, opts.n_parallel),
+        )
         if shrunk >= opts.min_ctx:
             return _finish(
                 layout,
@@ -1294,6 +1327,8 @@ def plan_placement(
                 ),
             )
 
+    may_shrink = opts.context_policy in (ContextPolicy.FIT_ONLY, ContextPolicy.PREFER_RESIDENT)
+    declined: Optional[Plan] = None
     for quantised in _kv_modes(opts):
         plan = _plan_at(
             layout,
@@ -1307,26 +1342,44 @@ def plan_placement(
             kv_layer_weights,
             requested_ctx = n_ctx,
         )
-        if plan is not None:
+        if plan is None:
+            continue
+        if not (plan.declined_by_gate and may_shrink):
             return plan
+        # The gate refused a FEASIBLE plan. Context is the last thing to give up,
+        # but it is the only lever left, so keep the refusal and try below.
+        declined = declined or plan
 
-    # Nothing fit at the requested context. Only now may FIT_ONLY shrink it.
-    if opts.context_policy in (ContextPolicy.FIT_ONLY, ContextPolicy.PREFER_RESIDENT):
+    # Nothing fit at the requested context, or the gate refused it. Only now may
+    # FIT_ONLY shrink, and it walks DOWN from the largest feasible context in
+    # ctx_step increments so the first context the gate accepts is the largest
+    # one: feasibility is monotone in context, acceptance is not (a smaller
+    # deficit changes the spill set on both arms), so a binary search on the
+    # gate could land on a smaller accepted context than exists.
+    if may_shrink:
+        step = max(256, opts.ctx_step // 256 * 256)
         for quantised in _kv_modes(opts):
-            shrunk = max_context_for(
+            hi = max_context_for(
                 layout,
                 vram_bytes_per_device,
                 spill_all_ffn = True,
                 spill_lm_head = opts.allow_lm_head_spill,
                 kv_quantised = quantised,
                 opts = opts,
+                kv_bytes_floor = kv_bytes_floor,
+                floor_ctx = n_ctx,
+                n_seq = max(1, opts.n_parallel),
             )
-            shrunk = min(shrunk, n_ctx)
-            if shrunk >= opts.min_ctx:
+            hi = min(hi, n_ctx) // 256 * 256
+            if declined is not None and hi >= n_ctx:
+                # The requested context was feasible and refused; start below it.
+                hi = (n_ctx - step) // 256 * 256
+            ctx = hi
+            while ctx >= opts.min_ctx:
                 plan = _plan_at(
                     layout,
                     opts,
-                    shrunk,
+                    ctx,
                     host_ram_bytes,
                     quantised,
                     kv_bytes_floor,
@@ -1335,8 +1388,12 @@ def plan_placement(
                     kv_layer_weights,
                     requested_ctx = n_ctx,
                 )
-                if plan is not None:
+                if plan is not None and not plan.declined_by_gate:
                     return plan
+                ctx -= step
+
+    if declined is not None:
+        return declined
 
     floor = resident_floor_bytes(
         layout, n_ctx, kv_bytes_floor = kv_bytes_floor, kv_on_host = opts.kv_on_host
