@@ -1087,6 +1087,60 @@ def test_applying_a_migration_replays_the_arch_the_offer_was_made_with(monkeypat
     assert seen["cmd"][seen["cmd"].index("--llama-backend") + 1] == "auto"
 
 
+def test_applying_a_migration_replays_an_arch_only_the_bundle_names(monkeypatch, tmp_path):
+    """The offer is made through the recovered arch, so the apply has to use the same one.
+
+    Reading the marker field alone leaves this second resolve without an arch on exactly
+    the host the recovery exists for, and it then resolves "auto" back onto ROCm, reads as
+    already applied, and refuses the migration the banner is still showing."""
+    install_dir = _install(
+        monkeypatch,
+        tmp_path,
+        backend = "rocm",
+        backend_request = "auto",
+        install_kind = "linux-rocm",
+        asset = "app-b9596-mix-abc-linux-x64-rocm-gfx1151.tar.gz",
+    )
+    assert upd.read_install_marker(upd._find_binary()).get("rocm_gfx") is None
+
+    def _resolver(**kwargs):
+        gfx = (kwargs.get("extra_env") or {}).get("UNSLOTH_ROCM_GFX_REMEMBERED")
+        auto = "vulkan" if gfx else "rocm"
+        return {
+            "backends": [
+                {
+                    "backend": backend,
+                    "available": True,
+                    "resolved_backend": (auto if backend == "auto" else backend),
+                    "asset": f"app-b9596-mix-abc-linux-x64-{backend}.tar.gz",
+                }
+                for backend in ("auto", "cpu", "rocm", "vulkan")
+            ]
+        }
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve_backends_for_host)
+    monkeypatch.setattr(upd._flow, "resolve_prebuilt_for_host", _resolver)
+    upd._backends_memo.clear()
+
+    assert upd.get_update_status()["backend_migration_available"] is True
+
+    def _on_start(cmd, kwargs):
+        _write_install(
+            install_dir,
+            asset = "app-b9596-mix-abc-linux-x64-vulkan.tar.gz",
+            install_kind = "linux-vulkan",
+            backend = "vulkan",
+            backend_request = "auto",
+        )
+
+    _patch_installer(monkeypatch, on_start = _on_start)
+
+    result = upd.start_update()
+    assert result["started"] is True, result
+    job = _await_job()
+    assert job["state"] == "success", job
+
+
 def test_an_apply_that_no_longer_drifts_still_refuses(monkeypatch, tmp_path):
     _install(
         monkeypatch,

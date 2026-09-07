@@ -1079,7 +1079,11 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         asset = marker.get("asset")
         # Updates let the installer preserve the marker's recorded choice.
         llama_backend = marker.get("llama_backend")
-        rocm_gfx = marker.get("rocm_gfx")
+        # Recovered, not read: the status path offers the migration through
+        # _remembered_rocm_gfx, so an apply reading the bare field would re-resolve
+        # without the arch on exactly the host the recovery exists for, and refuse
+        # the offer it just made as already_selected.
+        rocm_gfx = _remembered_rocm_gfx(marker)
         # Install exactly the release the banner offered: the installer's own
         # "latest" is commit-date ordered and can lag the published_at pick
         # above, reinstalling the current build in a loop (the #6219 class).
