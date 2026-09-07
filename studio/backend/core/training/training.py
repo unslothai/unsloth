@@ -70,10 +70,8 @@ XPU_DEVICE_BACKEND = "xpu"
 PAGED_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_8bit"
 ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER = "adamw_bnb_8bit"
 PAGED_32BIT_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_32bit"
-# Bit width is not the dividing line: bitsandbytes routes BOTH optimizer_update_8bit_blockwise
-# and optimizer_update_32bit to its Triton kernels on XPU (backends/xpu/ops.py), and the Intel
-# Triton backend asserts on a missing SYCL toolchain the installer does not ship. So the paged
-# 32-bit AdamW crashes at the first step exactly like the 8-bit ones.
+# Not a bit-width question: XPU routes optimizer_update_32bit to Triton too
+# (bitsandbytes backends/xpu/ops.py), which asserts on a SYCL toolchain we do not ship.
 XPU_UNSUPPORTED_BITSANDBYTES_OPTIMIZERS = frozenset(
     (
         DEFAULT_TRAINING_OPTIMIZER,
