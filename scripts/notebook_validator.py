@@ -2027,11 +2027,15 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     body_invokes.setdefault(owner, set()).add((invoked, index))
                     if invoked == "return":
                         returned.add(owner)
-                    elif not assumed[index] and separator not in ("|", "&") and _command_ends_shell(
-                        # The header shares this piece, so it has to come off before the
-                        # terminator behind it is visible. Still the RAW body, since the
-                        # unwrap that produced `text` strips `exec` along with it.
-                        piece[header_span:] if header_piece else piece
+                    elif (
+                        not assumed[index]
+                        and separator not in ("|", "&")
+                        and _command_ends_shell(
+                            # The header shares this piece, so it has to come off before the
+                            # terminator behind it is visible. Still the RAW body, since the
+                            # unwrap that produced `text` strips `exec` along with it.
+                            piece[header_span:] if header_piece else piece
+                        )
                     ):
                         ends_shell.add(owner)
             elif not piece_conditional:
