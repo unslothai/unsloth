@@ -251,6 +251,50 @@ class TestWaitForHealthResilience:
         assert b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None) is False
         assert spawned == [], "started a server after shutdown had begun"
 
+    def test_a_teardown_with_no_process_still_marks_shutdown(self):
+        """Quitting during a download or staging has nothing to kill, so
+        _kill_process returns early. Marking teardown only on the path that has a
+        process let the load spawn a server after the shutdown sweep finished."""
+        b = _make_backend()
+        b._process = None
+        b._stop_mtp_crash_watchdog = lambda *a, **kw: None
+        b._reset_effective_parallel_slots = lambda *a, **kw: None
+        b._kill_process(teardown = True)
+        assert b._shutting_down is True
+
+    def test_the_published_child_survives_post_spawn_setup(self, monkeypatch):
+        """Shutdown can take the spawn lock the instant it is released and clear
+        the reference, so post-spawn setup reads the Popen it just made rather than
+        self._process. Otherwise recording the pid raises the same AttributeError
+        this PR exists to remove."""
+        import subprocess
+
+        b = _make_backend()
+        b._shutting_down = False
+        recorded = []
+        b._record_server_pid = lambda pid: recorded.append(pid)
+        b._drain_stdout = lambda *a, **kw: None
+        b._llama_log_fh = None
+        b._process = None
+        proc = mock.Mock()
+        proc.pid = 4242
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: proc)
+
+        class _TeardownWinsTheLock:
+            """Shutdown taking the lock the instant the spawn releases it, which is
+            the whole window: it clears the reference before the pid is read."""
+
+            def __enter__(self):
+                return None
+
+            def __exit__(self, *_exc):
+                b._process = None
+                return False
+
+        b._spawn_lock = _TeardownWinsTheLock()
+        assert b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None) is True
+        assert recorded == [4242]
+
     def test_a_new_server_lifecycle_clears_the_shutdown_state(self):
         """The backend is a module singleton and an embedded host may call
         run_server() again in the same process, so this state is scoped to a

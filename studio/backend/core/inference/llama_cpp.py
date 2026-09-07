@@ -14149,7 +14149,7 @@ class LlamaCppBackend:
                 logger.info("app is shutting down; not starting the diffusion runner")
                 self._health_wait_cancelled = True
                 return False
-            self._process = subprocess.Popen(
+            _spawned = subprocess.Popen(
                 cmd,
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
@@ -14165,11 +14165,14 @@ class LlamaCppBackend:
                 **_windows_hidden_subprocess_kwargs(),
                 **_child_popen_kwargs(),
             )
+            self._process = _spawned
         # macOS has no parent-death signal, so the kwargs above are empty there and
         # only this record lets the next startup reap a runner holding the GPU.
+        # Read off the local: shutdown can take the lock the moment it is released
+        # and clear the reference before this runs.
         try:
             from utils.process_lifetime import adopt_pid
-            adopt_pid(self._process.pid)
+            adopt_pid(_spawned.pid)
         except Exception as e:
             logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
         self._stdout_thread = threading.Thread(
@@ -18339,7 +18342,7 @@ class LlamaCppBackend:
                 logger.info("app is shutting down; not starting llama-server")
                 self._health_wait_cancelled = True
                 return False
-            self._process = subprocess.Popen(
+            _spawned = subprocess.Popen(
                 cmd,
                 stdout = subprocess.PIPE,
                 stderr = subprocess.STDOUT,
@@ -18350,9 +18353,10 @@ class LlamaCppBackend:
                 **_windows_hidden_subprocess_kwargs(),
                 **_child_popen_kwargs(),
             )
+            self._process = _spawned
         # Cross-session backstop: record the PID so a later startup can reap this
         # server if parent-death cleanup did not run (macOS / best-effort failure).
-        self._record_server_pid(self._process.pid)
+        self._record_server_pid(_spawned.pid)  # local: see _spawn_and_wait
 
         # Start background thread to drain stdout and prevent pipe deadlock
         self._stdout_thread = threading.Thread(
@@ -23758,7 +23762,7 @@ class LlamaCppBackend:
                                 logger.info("app is shutting down; not starting llama-server")
                                 self._health_wait_cancelled = True
                                 return False
-                            self._process = subprocess.Popen(
+                            _spawned = subprocess.Popen(
                                 run_cmd,
                                 stdout = subprocess.PIPE,
                                 stderr = subprocess.STDOUT,
@@ -23770,7 +23774,10 @@ class LlamaCppBackend:
                                 **_windows_hidden_subprocess_kwargs(),
                                 **_child_popen_kwargs(),
                             )
-                        self._record_server_pid(self._process.pid)
+                            self._process = _spawned
+                        # Off the local, not self._process: shutdown can take the
+                        # lock the moment it is released and clear the reference.
+                        self._record_server_pid(_spawned.pid)
                         # is_active covers it from here, so drop the pre-spawn flag.
                         self._memory_launch_pending = False
 
@@ -26359,6 +26366,12 @@ class LlamaCppBackend:
         # outlives its runner even when there was no process to kill.
         self._diffusion_requested_ngl = None
         self._child_gpu_physical_ids = None
+        if teardown:
+            # Above the early return: a quit during a download or staging has no
+            # process to kill, and marking teardown only on the path that has one
+            # let the load spawn a server after the shutdown sweep had finished.
+            with self._spawn_lock:
+                self._shutting_down = True
         if self._process is None:
             return
         # Not every _process is a Popen: tests stand one in to mean "a server is
@@ -26377,12 +26390,6 @@ class LlamaCppBackend:
         _pgid = self._leading_process_group(_pid)
         _descendants = self._collect_descendants(_pid)
         if teardown:
-            # Set under the spawn lock so it cannot land inside a spawn's
-            # check-through-publish window: a spawn either publishes before this
-            # and gets killed below, or sees the flag and never starts. Held for
-            # the flag alone, so shutdown does not wait on a running load.
-            with self._spawn_lock:
-                self._shutting_down = True
             # Before the signal, not in the finally: the reference stays set across
             # the waits below, so a racing _wait_for_health would read this
             # deliberate exit as a startup crash and respawn during shutdown.

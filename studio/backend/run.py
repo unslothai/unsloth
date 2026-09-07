@@ -2431,17 +2431,6 @@ def run_server(
     """
     global _server, _server_thread, _shutdown_event
 
-    # A new server lifecycle. The llama-server backend is a module singleton, so an
-    # embedded host that stops and calls this again reuses the instance that
-    # _graceful_shutdown marked as shutting down; without this every launch in the
-    # second session would be refused.
-    try:
-        from routes.inference import _llama_cpp_backend
-        if _llama_cpp_backend is not None:
-            _llama_cpp_backend._begin_server_lifecycle()
-    except Exception as e:
-        logger.warning("Could not reset llama-server shutdown state: %s", e)
-
     if not isinstance(host, str) or not host.strip():
         raise SystemExit("--host cannot be empty; use 0.0.0.0 to bind every IPv4 interface.")
 
@@ -2465,6 +2454,19 @@ def run_server(
                 "--port 0 cannot be used when --host resolves to multiple bind addresses; "
                 "choose an explicit port."
             )
+
+    # A new server lifecycle. The backend is a module singleton, so an embedded
+    # host that stops and calls this again reuses the instance _graceful_shutdown
+    # marked as shutting down, and without this every launch of the second session
+    # would be refused. Below the argument checks on purpose: importing the route
+    # module builds that singleton, which sweeps orphan llama-servers and registers
+    # an atexit handler, and an invocation about to be rejected must not do that.
+    try:
+        from routes.inference import _llama_cpp_backend
+        if _llama_cpp_backend is not None:
+            _llama_cpp_backend._begin_server_lifecycle()
+    except Exception as e:
+        logger.warning("Could not reset llama-server shutdown state: %s", e)
 
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8. Before the tee, so
     # it reaches the console stream rather than the wrapper.
