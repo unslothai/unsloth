@@ -26315,10 +26315,13 @@ class LlamaCppBackend:
         _pgid = self._leading_process_group(_pid)
         _descendants = self._collect_descendants(_pid)
         if teardown:
-            # Before the signal, not in the finally: the reference stays set
-            # across the waits below, so a racing _wait_for_health would read this
+            # Before the signal, not in the finally: the reference stays set across
+            # the waits below, so a racing _wait_for_health would read this
             # deliberate exit as a startup crash and respawn during shutdown.
-            self._health_wait_torn_down = True
+            # Recorded as the process itself, not a flag: a teardown landing
+            # between a spawn and its health wait must survive until that wait
+            # reads it, and only identity can say which child it referred to.
+            self._torn_down_process = self._process
         try:
             if terminable:
                 self._process.terminate()
@@ -27866,9 +27869,9 @@ class LlamaCppBackend:
         # Why this wait ended, for callers that must tell a cancel apart from a crash:
         # a cancel landing during CPU-fallback staging is not a cancelled wait.
         self._health_wait_cancelled = False
-        # Per-wait, like the flag above: a teardown that reaped an earlier child
-        # must not end the wait belonging to the load that replaced it.
-        self._health_wait_torn_down = False
+        # No teardown reset here on purpose: it would erase a teardown that landed
+        # between this load's spawn and this line. _torn_down_process is compared
+        # by identity instead, so an earlier child's teardown cannot match.
 
         while time.monotonic() < deadline:
             # unload_model() blocks on self._lock, which the load holds across this wait.
@@ -27890,8 +27893,8 @@ class LlamaCppBackend:
             # Process crashed?
             if process.poll() is not None:
                 # A teardown publishes before it signals and holds the reference
-                # across its waits, so an exit under that flag is deliberate.
-                if getattr(self, "_health_wait_torn_down", False):
+                # across its waits, so THIS child exiting under it is deliberate.
+                if getattr(self, "_torn_down_process", None) is process:
                     logger.info("llama-server was torn down while waiting for it to become healthy")
                     self._health_wait_cancelled = True
                     return False

@@ -178,7 +178,7 @@ class TestWaitForHealthResilience:
             # The shutdown thread mid-wait: publish, then signal, reference still
             # set. Here rather than before the call because the wait resets on
             # entry, so only a teardown landing DURING a wait is this case.
-            b._health_wait_torn_down = True
+            b._torn_down_process = b._process
             b._process.poll.return_value = -15
             b._process.returncode = -15
             return mock.Mock(status_code = 503)
@@ -189,6 +189,35 @@ class TestWaitForHealthResilience:
         assert b._health_wait_cancelled is True
         assert not any("exited with code" in str(c) for c in log.error.call_args_list)
 
+    def test_a_teardown_between_the_spawn_and_the_wait_still_counts(self, monkeypatch):
+        """Shutdown can land after Popen publishes the child but before the wait
+        starts. A marker reset on wait entry would erase it, and the loop would
+        then read the signalled exit as a startup crash and let the fallbacks
+        respawn during shutdown, which is the race this whole change is about.
+        Keyed to the process, so it survives until the wait that owns it reads it."""
+        b = _make_backend()
+        b._torn_down_process = b._process  # teardown, before the wait is entered
+        b._process.poll.return_value = -15
+        b._process.returncode = -15
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        with mock.patch("core.inference.llama_cpp.logger") as log:
+            assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
+        assert not any("exited with code" in str(c) for c in log.error.call_args_list)
+
+    def test_an_earlier_childs_teardown_does_not_end_a_later_wait(self, monkeypatch):
+        """The other half of keying on identity: the marker names one child, so a
+        load that replaced a torn-down one is not aborted by its predecessor."""
+        b = _make_backend()
+        b._torn_down_process = mock.Mock()  # the previous child, already reaped
+        b._process.poll.return_value = 1  # this one really did crash
+        b._process.returncode = 1
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        with mock.patch("core.inference.llama_cpp.logger") as log:
+            assert b._wait_for_health(timeout = 1.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is False, "a stale teardown aborted a live load"
+        assert any("exited with code 1" in str(c) for c in log.error.call_args_list)
+
     @pytest.mark.parametrize("teardown", [True, False])
     def test_kill_process_publishes_a_teardown_before_it_signals(self, teardown):
         """The ordering the test above depends on: published before terminate(),
@@ -198,7 +227,7 @@ class TestWaitForHealthResilience:
         same method between attempts, and marking that terminal would abort loads
         the --fit off and CPU fallbacks currently recover."""
         b = _make_backend()
-        b._health_wait_torn_down = False
+        b._torn_down_process = None
         b._stop_mtp_crash_watchdog = lambda *a, **kw: None
         b._reset_effective_parallel_slots = lambda *a, **kw: None
         b._leading_process_group = lambda *a, **kw: None
@@ -209,7 +238,7 @@ class TestWaitForHealthResilience:
 
         def _terminate():
             # What a racing _wait_for_health would observe at this instant.
-            seen["flag_at_signal"] = b._health_wait_torn_down
+            seen["flag_at_signal"] = getattr(b, "_torn_down_process", None) is b._process
             seen["process_still_set"] = b._process is not None
 
         b._process.terminate = _terminate
