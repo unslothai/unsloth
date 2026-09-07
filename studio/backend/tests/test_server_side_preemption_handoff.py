@@ -390,7 +390,7 @@ def _install_wrapper(response, clock, silent_stream, grace):
 
 
 class TestAParkIsNotAStall:
-    """The stall lives in the read wrapper (`_install_cancel_aware_read`), below the httpx"""
+    """The stall lives in the read wrapper, below the httpx iterator that cannot resume."""
 
     _STALL = 120.0
 

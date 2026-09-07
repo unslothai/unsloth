@@ -88,7 +88,7 @@ class TestTheUnsafeWindow:
 
 
 class TestCancelAndPauseTogether:
-    """The stream plumbing takes one event; these two have to share it without"""
+    """The stream plumbing takes one event, so cancel and pause share it."""
 
     def test_either_one_interrupts(self):
         cancel = threading.Event()

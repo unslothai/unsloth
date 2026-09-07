@@ -186,7 +186,7 @@ class TestTheRoundLoopHandsTheDecisionBack:
 
 
 class TestTheFinalPassHandsTheDecisionBack:
-    """The same branch at the end of the turn. Nothing decodes after it, but teardown is"""
+    """The same branch at the end of the turn, where teardown still has to find it clean."""
 
     def test_nothing_is_left_preempting(self, monkeypatch):
         _capped(monkeypatch)

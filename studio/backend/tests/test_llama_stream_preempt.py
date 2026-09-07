@@ -119,7 +119,7 @@ class TestTheCombinedWaitable:
 
 
 class TestTheSignaturesStayBackwardsCompatible:
-    """Overrides and test doubles written against the old signatures still work,"""
+    """Overrides and test doubles written against the old signatures still work."""
 
     def test_every_funnel_defaults_the_new_argument(self):
         import inspect

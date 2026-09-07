@@ -52,9 +52,9 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
  *  to `error` paints a red box and a Retry button over a turn that already offers the Continue
  *  bar. `interrupted` keeps `error` on purpose, since a cut stream must be told about.
  *
- *  `paused` is a turn the backend put on hold so another chat could finish. assistant-ui has
- *  only three values and none for it, so it takes `cancelled`: neither an error box over a
- *  healthy turn nor a false claim that Max Tokens was reached. */
+ *  `paused` is a turn the backend put on hold so another chat could finish. assistant-ui has no
+ *  value for it, so it takes `cancelled`: neither an error box over a healthy turn nor a false
+ *  claim that Max Tokens was reached. */
 const STATUS_REASON: Record<
   IncompleteReason,
   "cancelled" | "length" | "error"
@@ -181,9 +181,9 @@ export function budgetImpliesTruncation({
  *  continuation runs as a sibling, so the call and its result are absent from the outbound
  *  history. Matches the backend guard.
  *
- *  `allowEmpty` drops the requirement that there BE text, and nothing else. One caller passes
- *  it, the Continue bar on a turn the backend gave up on: a chat evicted while still prefilling
- *  never produced a token, and that must not render as a blank bubble with nothing to do. */
+ *  `allowEmpty` drops the requirement that there BE text, and nothing else. Its one caller is the
+ *  Continue bar on a turn the backend gave up on: a chat evicted while still prefilling never
+ *  produced a token, and that must not render as a blank bubble with nothing to do. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
   { allowEmpty = false }: { allowEmpty?: boolean } = {},
@@ -209,7 +209,7 @@ export function isContinuableContent(
 
 /** The `reason` the backend stamps on a `context_truncated` event when it stopped waiting for
  *  room in the shared KV cache. Not a truncation: that event carries it because it is the one
- *  event that reaches this client on every surface. See `_preempt_gave_up_event`. */
+ *  event that reaches this client on every surface. */
 export const PREEMPT_GAVE_UP_REASON = "preempt_gave_up";
 
 /** Whether a `context_truncated` payload is that signal rather than a fit. */
@@ -220,9 +220,8 @@ export function isPreemptGaveUp(
 }
 
 /** Whether a terminal `finish_reason` says the answer FINISHED, so an earlier give-up no longer
- *  describes how this turn ended. A tool run that gave up breaks into the final answering pass,
- *  which usually still writes the reply, and the latch relabelled that completed answer as
- *  paused. `length` is excluded, being exactly the shape a give-up ends on. */
+ *  describes how this turn ended: a tool run that gave up breaks into the final answering pass,
+ *  which usually still writes the reply. `length` is excluded, being the shape a give-up ends on. */
 export function completedAfterGivingUp(
   finishReason: string | null | undefined,
 ): boolean {
@@ -333,12 +332,9 @@ export function readContinuationRequest(
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.
  *  Every other reason is left alone, since `cancelled` would restart what the user just
  *  stopped and `interrupted` can hide a broken link. Bounded, because a model that will not
- *  stop would loop forever and each round drives compaction harder.
- *
- *  `paused` is refused, pinned by a test: a pause is the backend rationing one KV cache and it
- *  resumes in place on its own, so a client-side continuation asks for a SECOND slot for a turn
- *  already queued for one.
- *  exists to relieve. */
+ *  stop would loop forever. `paused` is refused, pinned by a test: a pause is the backend
+ *  rationing one KV cache and it resumes in place, so a client-side continuation asks for a
+ *  SECOND slot for a turn already queued for one. */
 export const AUTO_CONTINUE_LIMIT = 3;
 
 /** Rounds already spent per logical turn, keyed by the parent the continuation hangs off: a

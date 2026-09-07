@@ -30,15 +30,11 @@ def fetch_llama_slots(
     """One ``GET /slots`` read as a list, or None if it could not be read.
 
     ``headers`` carries the backend's ``Authorization`` when the load was launched with
-    ``--api-key``. llama.cpp exempts only ``/health`` from the key check, so an unauthenticated
-    read answers 401 and the ``except`` below turns that into None, silently switching the
-    residency probe off.
-
-    /metrics cannot replace this: it reports nothing about cells still held by IDLE slots, and
-    llama.cpp keeps a slot's prompt cache after its request finishes. One idle slot held 16383
-    of a 16384 cache while the scheduler believed it nearly empty.
-
-    None means "cannot tell" and must never be read as "the cache is empty".
+    ``--api-key``, llama.cpp exempting only ``/health`` from the key check: unauthenticated, the
+    read answers 401 and the ``except`` below turns that into None, switching the residency probe
+    off. /metrics cannot replace this, reporting nothing about cells still held by IDLE slots:
+    one held 16383 of a 16384 cache while the scheduler believed it nearly empty. None means
+    "cannot tell" and must never be read as "the cache is empty".
     """
     url = f"{str(base_url).rstrip('/')}/slots"
     try:
@@ -60,12 +56,11 @@ def erase_llama_slot(
     headers = None,
 ) -> int:
     """Drop one idle slot's cached prompt. Returns tokens erased, 0 on any failure. Cheaper than
-    preempting: the cache belongs to a finished request, so this costs a future prefix-cache hit
-    rather than a running conversation's progress."""
+    preempting: the cache belongs to a finished request, so this costs a future prefix hit."""
     url = f"{str(base_url).rstrip('/')}/slots/{int(slot_id)}?action=erase"
     try:
-        # Authorized for the same reason the read above is: a 401 here returns 0 tokens erased,
-        # so a paused slot's cells are never released and its waiter waits out its deadline.
+        # Authorized for the same reason the read above is: a 401 returns 0 tokens erased, so a
+        # paused slot's cells are never released.
         request = urllib.request.Request(url, method = "POST", data = b"", headers = dict(headers or {}))
         with urllib.request.urlopen(request, timeout = timeout_s) as r:
             if r.status != 200:
@@ -81,8 +76,8 @@ def erase_llama_slot(
 
 def scrape_llama_metrics(base_url, timeout_s = 3.0):
     """One /metrics read as a {name: float} dict, or None if it could not be read. Split out of
-    the daemon's own scrape so a caller needing a single sample reuses this parser. None covers
-    every reason the read did not happen and must be treated as "cannot tell"."""
+    the daemon's own scrape so a single-sample caller reuses this parser. None means "cannot
+    tell", covering every reason the read did not happen."""
     url = f"{str(base_url).rstrip('/')}/metrics"
     try:
         with urllib.request.urlopen(url, timeout = timeout_s) as r:

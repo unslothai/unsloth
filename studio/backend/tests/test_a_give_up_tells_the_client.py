@@ -211,7 +211,7 @@ async def _follower_stream(after = 0) -> str:
 
 
 class TestTheDurableRunPath:
-    """The GUI streams plain chats through a durable run, and its worker reads the"""
+    """The GUI streams plain chats through a durable run, whose worker reads the events."""
 
     @pytest.mark.asyncio
     async def test_the_notice_reaches_a_follower(self, durable_run, monkeypatch):  # noqa: F811

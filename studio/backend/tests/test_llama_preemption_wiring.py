@@ -80,7 +80,7 @@ class TestTheLeaseReportsWhatItHolds:
 
 
 class TestAFinishedChatStopsCounting:
-    """A missed unregister would preempt everyone forever, so it cannot depend on the"""
+    """A missed unregister would preempt everyone forever."""
 
     @pytest.mark.asyncio
     async def test_a_released_participant_is_pruned_without_unregister(self):
@@ -99,7 +99,6 @@ class TestAFinishedChatStopsCounting:
             leases.append(lease)
             controller.register(f"gen{index}", lease = lease, tokens = 4096)
         assert controller.committed_tokens() == 8192
-        # The route never says a word; the lease ending is enough.
         leases[0].release()
         assert (
             controller.committed_tokens() == 4096
@@ -123,13 +122,12 @@ class TestAFinishedChatStopsCounting:
 
 
 class TestTheDeferredHandoff:
-    """The generator is BUILT before admission returns and ITERATED after, so the policy"""
+    """The generator is BUILT before admission returns and ITERATED after."""
 
     def test_unbound_is_inert_rather_than_crashing(self):
         policy = DeferredPreemptionPolicy()
         assert policy.bound is False
         assert policy.should_preempt() is False
-        # False means "finish the turn", the behaviour that predates preemption.
         assert policy.await_resume(timeout = 0.01) is False
         policy.on_resumed()
 
@@ -173,9 +171,8 @@ class TestTheRouteActuallyArmsIt:
         controller = get_preemption_controller("http://127.0.0.1:1/")
         snapshot = controller.snapshot()
         assert snapshot.committed == 4096, "the real charge did not reach the controller"
-        # The budget is the cache llama-server was launched with. It was briefly reduced
-        # here to reserve the speculative drafts, which double-counted them: the drafts
-        # are held back by the watermark buffer, which the snapshot reports separately.
+        # The budget is the cache llama-server was launched with. Reducing it here to reserve
+        # the drafts double-counted them: the watermark buffer holds them back separately.
         assert snapshot.budget == inference._openai_llama_admission_budget(_backend())
         assert snapshot.budget == 16384
         assert (
@@ -230,12 +227,10 @@ class TestTheRouteActuallyArmsIt:
             "preempt_policy = _gguf_preempt_policy_hold," in source
         ), "the tool loop is not handed the policy"
         assert "_openai_llama_preemption_arm(" in source
-        # Three binds: one beside the reservation for a chat granted at once, and one
-        # after the admission wait in EACH branch -- streaming and non-streaming -- for a
-        # chat that queued, which the first bind left as None.
-        # Measured before the streaming one existed: four simultaneous tool-enabled chats
-        # at -c 8192, two armed, three dead of `Context size has been exceeded`. The
-        # non-streaming branch had the identical hole and no second bind at all.
+        # Three binds: one beside the reservation for a chat granted at once, and one after
+        # the admission wait in EACH branch for a chat that queued, which the first bind left
+        # as None. Before the streaming one existed, four tool chats at -c 8192 armed two and
+        # lost three to `Context size has been exceeded`.
         assert (
             source.count("_gguf_preempt_policy_hold.bind(") == 3
         ), "the policy must be bound beside the reservation and again after each wait"
@@ -250,9 +245,8 @@ class TestSpeculativeDraftsAreReserved:
     def test_drafts_are_added_on_top_of_the_ratio(self):
         from core.inference.llama_preemption import preemption_buffer_tokens
 
-        # Same slot count on both sides. The reaction term is per-slot now, so
-        # comparing a four-slot reserve against a one-slot one measured that change
-        # rather than the drafts.
+        # Same slot count on both sides: the reaction term is per-slot, so comparing a
+        # four-slot reserve against a one-slot one measured that change rather than the drafts.
         plain = preemption_buffer_tokens(16384, slots = 4)
         drafted = preemption_buffer_tokens(16384, draft_tokens = 2, slots = 4)
         assert drafted == plain + 8, "every slot may hold n_draft unaccounted tokens"
@@ -275,8 +269,7 @@ class TestSpeculativeDraftsAreReserved:
         controller.configure(budget = 16384, kv_unified = True, draft_tokens = 2, slots = 4)
         from core.inference.llama_preemption import preemption_buffer_tokens
 
-        # Derived, not a constant: the ratio is tunable and was raised after measurement,
-        # and an earlier revision pinned 828 here twice over.
+        # Derived, not a constant: the ratio is tunable and was raised after measurement.
         assert controller.snapshot().buffer == preemption_buffer_tokens(
             16384, draft_tokens = 2, slots = 4
         )
@@ -304,13 +297,9 @@ class TestSpeculativeDraftsAreReserved:
         snapshot = get_preemption_controller("http://127.0.0.1:9/").snapshot()
         from core.inference.llama_preemption import preemption_buffer_tokens
 
-        # batch_tokens is the launch's --batch-size, unstated here so it defaults to
-        # llama.cpp's 2048; the drafter's cells are added ON TOP of it.
-        #
-        # `pending_prefill` is the 4096 this generation was just charged: arming
-        # registers a prompt that llama-server has not prefilled yet, which is one of the
-        # three moments the batch term applies. It used to apply permanently and this
-        # assertion did not have to say so.
+        # batch_tokens defaults to llama.cpp's 2048 here; the drafter's cells are added ON
+        # TOP of it. `pending_prefill` is the 4096 this generation was just charged, arming
+        # registering a prompt llama-server has not prefilled yet.
         assert snapshot.buffer == preemption_buffer_tokens(
             snapshot.budget,
             draft_tokens = 2,
@@ -331,10 +320,8 @@ class TestSpeculativeDraftsAreReserved:
             capacity = 4, config = LlamaAdmissionConfig(), budget = 16384, tokens = 4096
         )
         backend = _backend(url = "http://127.0.0.1:10/")
-        # Both cleared together, which is the only way the backend leaves them: a stated
-        # depth is set at the same point a drafter is configured, so "depth 2 but nothing
-        # drafting" is a state that cannot occur. An earlier revision of this test
-        # asserted against exactly that impossible shape.
+        # Both cleared together, which is the only way the backend leaves them: "depth 2 but
+        # nothing drafting" is a state that cannot occur.
         backend.speculative_type = None
         backend.spec_drafter_kind = None
         backend.requested_spec_mode = None
@@ -352,7 +339,6 @@ class TestSpeculativeDraftsAreReserved:
         from core.inference.llama_preemption import preemption_buffer_tokens
 
         snapshot = get_preemption_controller("http://127.0.0.1:10/").snapshot()
-        # Same 4096 charge, so the same pending prefill; see the sibling test above.
         assert snapshot.buffer == preemption_buffer_tokens(
             snapshot.budget,
             slots = snapshot.slots,
@@ -482,7 +468,6 @@ class TestTheLiveCrashOf20260901:
         victims = controller.plan_preemptions(needed = 4096)
         assert victims
         assert controller.committed_tokens() == 16384
-        # What ControllerPreemptionPolicy.on_preempted does once the stream really stopped.
         controller.set_state(victims[0].gen_id, ParticipantState.PAUSED)
         assert controller.committed_tokens() == 16384 - 4096
 
@@ -497,7 +482,7 @@ class TestTheLiveCrashOf20260901:
 
 
 class TestTheDraftReserveActuallyApplied:
-    """Defect three. The live buffer read 820 where 828 was expected, so the reserve"""
+    """The live buffer read 820 where 828 was expected: the reserve never applied."""
 
     def test_a_load_whose_spec_block_came_from_extra_args(self):
         import routes.inference as inference
@@ -659,7 +644,6 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
         stop = threading.Event()
 
         def drain():
-            # Room appearing, a little at a time, for well longer than `timeout`.
             held = 14000
             while not stop.is_set() and held > 1000:
                 time.sleep(0.05)
@@ -701,10 +685,8 @@ class TestAPauseCannotOutliveTheRoomItWaitsFor:
 
         controller = PreemptionController("growing-blocker")
         controller.configure(budget = 16384, kv_unified = True)
-        # Sized so the waiter genuinely CANNOT fit: the default buffer here leaves a
-        # ceiling near 16128, so 13000 + 4000 is over it and stays over it. An earlier
-        # version of this test used 6000 + 4000, which fits, so the waiter was granted
-        # room on its first look and the test measured nothing at all.
+        # Sized so the waiter genuinely CANNOT fit. 6000 + 4000 fits, so the waiter was
+        # granted room on its first look and the test measured nothing.
         controller.register("holder", tokens = 13000, signal = PreemptSignal())
         controller.note_tokens("holder", 13000)
 
@@ -753,7 +735,6 @@ class TestTheCacheIsNeverHandedOutToTheLastToken:
         return preemption_buffer_tokens(budget, draft_tokens = drafts, slots = slots)
 
     def test_the_headroom_covers_the_drafts(self):
-        # The measured case: 16384 over four slots, two draft tokens each.
         assert self._buffer(16384, 2, 4) >= 2 * 4
 
     def test_the_ceiling_is_below_the_cache(self):
@@ -934,10 +915,8 @@ class TestTheStreamActuallyReportsGrowth:
         from core.inference.llama_preemption import preemption_buffer_tokens
 
         assert 0 < _TOKEN_REPORT_EVERY <= 64
-        # This is the whole reason the buffer is per-slot. Worst case every slot
-        # overshoots by a full batch between reports, so the lag scales with the slot
-        # count and the headroom has to scale with it too. Computing the buffer for one
-        # slot while computing the lag for eight compared two different systems.
+        # Worst case every slot overshoots by a full batch between reports, so the lag scales
+        # with the slot count and the headroom has to scale with it too.
         for slots in (1, 2, 4, 8, 16):
             worst = _TOKEN_REPORT_EVERY * slots
             buffer = preemption_buffer_tokens(16384, slots = slots)
@@ -1012,11 +991,8 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
             {"id": 2, "is_processing": False, "n_prompt_tokens_cache": 9209},
         ]
         occupancy = read_slot_occupancy(lambda: slots)
-        # `resident` is LIVE pressure: the decoding slot only. The idle slots' caches are
-        # cells llama.cpp recycles by itself the moment it needs them, so they are
-        # reported separately rather than counted as occupancy -- summing both produced
-        # figures larger than the physical cache (27115 and 28745 in a 16384 cache) and
-        # evicted live chats to reclaim room that was already free.
+        # `resident` is LIVE pressure, the decoding slot only. Summing both produced figures
+        # larger than the physical cache and evicted live chats for room already free.
         assert occupancy["resident"] == 27592, (
             "idle caches are only recycled by llama.cpp from the KV-full retry, i.e. "
             "after a decode has already failed, so they are occupancy to us"
@@ -1027,11 +1003,9 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
     def test_generated_tokens_count_as_residency(self):
         from core.inference.llama_preemption import read_slot_occupancy
 
-        # `n_prompt_tokens` ALREADY includes them, so this asserts no addition. Measured
-        # over 128 processing samples of the live server (outputs/slot_probe.jsonl):
-        # `n_prompt_tokens - n_decoded` is constant within a request to within 3 tokens,
-        # e.g. slot 0 went n_prompt 3886 -> 16321 while decoded went 0 -> 11917. Adding
-        # them again scored 28238 residency in a 16384-cell cache.
+        # `n_prompt_tokens` ALREADY includes them, so this asserts no addition: measured
+        # over 128 samples, `n_prompt_tokens - n_decoded` is constant within a request to
+        # within 3 tokens, and adding them again scored 28238 in a 16384-cell cache.
         slots = [
             {
                 "id": 0,
@@ -1046,9 +1020,7 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
             "charges every generated token twice"
         )
 
-        # But they DO have to be added to the cache field, which does not track
-        # generation. This is the case the test was written for, on a build that reports
-        # it; the build measured above returns 0 for it in every sample.
+        # But they DO have to be added to the cache field, which does not track generation.
         slots = [
             {
                 "id": 0,
@@ -1082,9 +1054,8 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
     def test_the_decoded_count_is_read_from_either_shape(self):
         from core.inference.llama_preemption import read_slot_occupancy
 
-        # Against the CACHE field, because that is the only path that still adds the
-        # decoded count. Against `n_prompt_tokens` the answer is 1000 whatever shape the
-        # field takes, which would not test the reader at all.
+        # Against the CACHE field, the only path that still adds the decoded count.
+        # Against `n_prompt_tokens` the answer is 1000 whatever shape the field takes.
         for shape in ([{"n_decoded": 500}], {"n_decoded": 500}):
             slots = [
                 {
@@ -1115,8 +1086,8 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         controller.register("a", tokens = 2000, signal = PreemptSignal())
         assert controller.committed_tokens() == 2000
         controller.note_resident(16383)
-        # "a" has not decoded a token, so its 2000 are NOT among the 16383 the cache is
-        # already holding: they are a prefill still to come, and both have to fit.
+        # "a" has not decoded a token, so its 2000 are NOT among the 16383 already held:
+        # they are a prefill still to come, and both have to fit.
         assert (
             controller.committed_tokens() == 18383
         ), "the cache is full and the ledger does not know it"
@@ -1127,14 +1098,11 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         controller = PreemptionController("resident-measured")
         controller.configure(budget = 16384, kv_unified = True)
         controller.register("a", tokens = 4096, signal = PreemptSignal())
-        # One token comes back: whatever "a" really holds, the cache has now reported it.
         controller.observe("a", 1)
         controller.note_resident(1400)
         assert (
             controller.committed_tokens() == 4097
         ), "the ledger is the larger of the two opinions about the same cells"
-        # And once the round boundary restates the conversation honestly, the reservation
-        # stops inflating the total at all.
         controller.note_tokens("a", 1400)
         assert (
             controller.committed_tokens() == 1400
@@ -1153,7 +1121,6 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         controller.configure(budget = 16384, kv_unified = True, slots = 4)
         controller.register("waiter", tokens = 5000, signal = PreemptSignal())
         controller.set_state("waiter", ParticipantState.PAUSED)
-        # Everything resident is idle residue, exactly the live reading.
         controller.note_resident(21304, 21304)
         assert (
             controller.room_for("waiter", 5000) is True
@@ -1164,9 +1131,8 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
         controller.configure(budget = 16384, kv_unified = True, slots = 4)
         controller.register("waiter", tokens = 5000, signal = PreemptSignal())
         controller.set_state("waiter", ParticipantState.PAUSED)
-        # 16000 live cells, minus this waiter's own 5000, still leaves 11000 that a
-        # 5000 token resume cannot fit beside under the ceiling. 14000 was the first
-        # figure tried and it fits comfortably, so it asserted nothing.
+        # 16000 live cells, minus this waiter's own 5000, still leaves 11000 that a 5000
+        # token resume cannot fit beside. 14000 fits comfortably and asserted nothing.
         controller.note_resident(16000, 0)
         assert controller.room_for("waiter", 5000) is False
 
@@ -1343,9 +1309,8 @@ class TestAFailureInTheResumeCannotKillTheChat:
     def test_a_raising_assembly_degrades_to_re_issuing_whole(self):
         from core.inference.llama_preemption import StreamCheckpoint
 
-        # The behaviour the guard buys: a broken assembly leaves the conversation
-        # untouched and the turn continues, rather than propagating out of the
-        # generator as an api_error.
+        # A broken assembly leaves the conversation untouched and the turn continues,
+        # rather than propagating out of the generator as an api_error.
         convo = [{"role": "user", "content": "hi"}]
 
         class Boom:
@@ -1413,7 +1378,6 @@ class TestAFailureInTheResumeCannotKillTheChat:
             "",
             "second half",
         )
-        # The accumulators reset each round, so replacing would lose the first pause.
         assert convo[-1]["reasoning_content"] == "first half second half"
         assert len(convo) == 2
 
@@ -1469,10 +1433,9 @@ class TestAFinishedGenerationGivesItsChargeBack:
 
         source = Path(inference.__file__).read_text()
         call_at = source.index("                    _openai_llama_preemption_disarm(")
-        # The nearest preceding block opener must be a `finally:`, or the paths that
-        # matter most here (gave-up, stream error, disconnect) would skip it.
+        # The nearest preceding block opener must be a `finally:`, or the gave-up, stream
+        # error and disconnect paths would skip it.
         preceding = source[:call_at]
-        # The nearest block opener before the call, ignoring comments and blank lines.
         openers = [
             line.strip()
             for line in preceding.splitlines()
@@ -1715,8 +1678,8 @@ class TestTheSweepIsNotBlindDuringPrefill:
         controller.observe("a", 500)
         assert controller.participant("a").tokens == 1500
 
-        controller.note_tokens("a", 9000)  # a round restated the conversation
-        controller.observe("a", 0)  # the sweep that follows it
+        controller.note_tokens("a", 9000)
+        controller.observe("a", 0)
         assert (
             controller.participant("a").tokens == 9000
         ), "growth must be measured from the new round, not added to the old total"

@@ -136,7 +136,7 @@ class TestTheFinalPassResumes:
 
 
 class TestTheWiringIsThere:
-    """Structural, because the absence is what breaks: both calls behaved correctly on"""
+    """Structural, because the absence is what breaks: nothing connected the two halves."""
 
     @staticmethod
     def _final_pass_source() -> str:

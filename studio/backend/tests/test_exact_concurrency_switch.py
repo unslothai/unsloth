@@ -26,8 +26,8 @@ def _clean(monkeypatch):
     reset_preemption_controllers()
 
 
-# A launch line of the shape Studio actually emits, taken from the swap-C runs: four slots,
-# a unified cache, flash attention on, no context shift.
+# A launch line of the shape Studio actually emits: four slots, a unified cache, flash attention
+# on, no context shift.
 _STUDIO_ARGV = [
     "llama-server",
     "-m",
@@ -50,8 +50,8 @@ _STUDIO_ARGV = [
     "--jinja",
 ]
 
-# What the server prints on its way out when it will not run the mode. Both spellings from
-# unslothai/llama.cpp#194: the thrown message and the log line that precedes it.
+# What the server prints on its way out when it will not run the mode: both spellings from
+# unslothai/llama.cpp#194.
 _REFUSAL_THROWN = (
     "llama_kv_cache: LLAMA_EXACT_CONCURRENCY is set but it needs a unified KV cache "
     "(pass --kv-unified)\n"
@@ -73,7 +73,6 @@ _UNRELATED_CRASH = (
 )
 
 
-# ------------------------------------------------------------------ resolving the setting
 
 
 class TestSetting:
@@ -154,7 +153,6 @@ class TestSetting:
         )
 
 
-# ------------------------------------------------------------------- the child environment
 
 
 class TestChildEnvironment:
@@ -181,7 +179,6 @@ class TestChildEnvironment:
         assert exact.apply_child_env(env, on = False) is False
 
 
-# ------------------------------------------------------------------------- the launch line
 
 
 class TestLaunchArgs:
@@ -265,7 +262,6 @@ class TestLaunchArgs:
         )
 
 
-# --------------------------------------------------------------- recognising the refusal
 
 
 class TestRefusalDetection:
@@ -341,7 +337,6 @@ class TestAutoFallback:
         assert "exact concurrency" in message.lower()
         assert "'on'" in message and "'auto'" in message
         assert "unified KV cache" in message
-        # The server's own line survives into what the user is shown.
         assert "pass --kv-unified" in message
 
     def test_an_ordinary_crash_keeps_its_own_message(self):
@@ -351,7 +346,6 @@ class TestAutoFallback:
         assert "exact concurrency is set to" not in message.lower()
 
 
-# --------------------------------------------------------------------- what the load reports
 
 
 class TestReportedState:
@@ -361,7 +355,7 @@ class TestReportedState:
             == exact.EXACT_STATE_OFF
         )
         # Even with the variable still on the environment: the load resolved to off, so
-        # apply_child_env removed it, and a state derived from anything else would lie.
+        # apply_child_env removed it.
         assert (
             LlamaCppBackend._exact_state_after_launch(
                 setting = "off", env = {exact.CHILD_ENV: "1"}, args = _STUDIO_ARGV
@@ -471,7 +465,6 @@ class TestDuplicateLoad:
         assert backend.requested_exact_concurrency != exact.resolve_exact_setting("on")
 
 
-# ------------------------------------------------------------------------- what it reports
 
 
 class TestPreemptionSnapshot:
@@ -544,7 +537,6 @@ class TestArmedLine:
         assert f"exact={state}" in self._armed(monkeypatch, gen_id = "g", exact = state)
 
 
-# ------------------------------------------------------------------------ the stored setting
 
 
 class TestStoredSetting:

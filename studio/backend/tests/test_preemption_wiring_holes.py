@@ -47,9 +47,8 @@ class TestTheNonStreamingToolBranch:
         armed = _calls(handler, "_openai_llama_preemption_arm")
         disarmed = _calls(handler, "_openai_llama_preemption_disarm")
         assert disarmed >= armed, f"{armed} arm site(s), {disarmed} disarm site(s)"
-        # Two non-streaming finallys close a GGUF chat -- the plain one and the tool one
-        # -- and both have to drop the charge before returning the tokens. Only the plain
-        # one did.
+        # Two non-streaming finallys close a GGUF chat, the plain one and the tool one, and both
+        # have to drop the charge before returning the tokens. Only the plain one did.
         assert (
             _routes_source().count(
                 """                _openai_llama_preemption_disarm(
@@ -161,7 +160,6 @@ class TestTheParallelToolClosureBindsItsOwnCall:
             "_compacted_tokens = _compacted_turn_tokens,",
         ):
             assert bound in body, f"{bound} is not bound at closure definition"
-        # And nothing in the body still reads the loop variables it shadows.
         for leaked in ("decision.tool_name", "decision.tool_call_id", "[_call_index + 1 :]"):
             assert f" {leaked}" not in body.replace(
                 f"_{leaked}", ""

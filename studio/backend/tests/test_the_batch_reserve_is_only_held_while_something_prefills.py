@@ -16,15 +16,13 @@ from core.inference.llama_preemption import (
     preemption_buffer_tokens,
 )
 
-# The shipped shape, and the one every figure in the docstring above is quoted at.
 BUDGET = 8192
 SLOTS = 4
 N_BATCH = 2048
 DRAFTS = 2
 # 192 * 4 reaction headroom, drafts on top. The buffer with nothing prefilling.
 IDLE_BUFFER = 192 * SLOTS + DRAFTS * SLOTS
-# max(768, 2048) + 8. The buffer while a chunk is in flight, and what used to be held
-# back permanently.
+# max(768, 2048) + 8. The buffer while a chunk is in flight, and what used to be permanent.
 PREFILL_BUFFER = N_BATCH + DRAFTS * SLOTS
 
 
@@ -91,8 +89,7 @@ class TestOnePendingSmallPrompt:
         c = _controller()
         c.register("chat", tokens = 1000, signal = PreemptSignal())
         c.observe("chat", 40)
-        # It holds 1040 (its prompt and what it generated), so a 2500 token round
-        # submits the 1460 that are new.
+        # It holds 1040, so a 2500 token round submits the 1460 that are new.
         c.note_tokens("chat", 2500)
         assert c.snapshot().prefilling == 1460
         c.observe("chat", 0)
@@ -166,8 +163,8 @@ class TestTheRace:
         c.observe("incumbent", 0)
         # 5800 alone is under the idle ceiling of 7416, so nothing is chosen yet.
         assert c.observe("incumbent", 100) == []
-        # A second chat arrives with a 2000 token prompt. Its own prefill raises the
-        # buffer to a full chunk, which is what makes 5900 + 2000 too much.
+        # A second chat's own prefill raises the buffer to a full chunk, which is what makes
+        # 5900 + 2000 too much.
         c.register("arriving", tokens = 2000, signal = PreemptSignal())
         victims = c.plan_preemptions(needed = 0)
         assert victims, "the arriving chat's chunk was not reserved before the sweep"
@@ -178,7 +175,6 @@ class TestTheRace:
         c.observe("decoder", 100)
         c.register("prefiller", tokens = 2000, signal = PreemptSignal())
         assert c.snapshot().prefilling == 2000
-        # `decoder`'s own token report is the call that must notice.
         assert c.observe("decoder", 120), "a sweep on another chat missed the reserve"
 
     def test_room_for_charges_the_asker_for_the_batch_it_is_about_to_submit(self):
@@ -188,18 +184,16 @@ class TestTheRace:
         c.register("waiter", tokens = 10, signal = PreemptSignal())
         c.observe("waiter", 1)
         c.set_state("waiter", ParticipantState.PAUSED)
-        # 4310 + 2500 = 6810: inside the idle ceiling of 7416, outside the 6136 that
-        # granting a replay bigger than one chunk would itself create.
+        # 4310 + 2500 = 6810: inside the idle ceiling of 7416, outside the 6136 that granting a
+        # replay bigger than one chunk would itself create.
         assert c.room_for("waiter", 2500) is False
-        # And a replay small enough to leave the ceiling alone is still granted.
         assert c.room_for("waiter", 600) is True
 
     def test_the_asker_is_not_charged_twice_for_its_own_announcement(self):
         c = _controller()
         c.register("solo", tokens = 3000, signal = PreemptSignal())
         assert c.snapshot().prefilling == 3000
-        # Its own 3000 is excluded and replaced by the 3000 it is asking about, so the
-        # answer is the same as it would be with no announcement outstanding.
+        # Its own 3000 is excluded and replaced by the 3000 it is asking about.
         assert c.room_for("solo", 3000) is True
 
 
@@ -247,11 +241,9 @@ class TestPlanPreemptionsAtTheLowerCeiling:
         c = _controller()
         for i in range(SLOTS):
             c.register(f"chat{i}", tokens = 1700, signal = PreemptSignal())
-            # A token each, so every prompt is in the cache and nothing is outstanding.
             c.observe(f"chat{i}", 0)
             c.observe(f"chat{i}", 1)
-        # 6804: over the old 6136 ceiling, under the 7416 that stands with nothing
-        # prefilling. Nobody should be paused for a batch nobody is submitting.
+        # 6804: over the old 6136 ceiling, under the 7416 that stands with nothing prefilling.
         assert c.committed_tokens() == 6804
         assert c.snapshot().prefilling == 0
         assert c.plan_preemptions(needed = 0) == []

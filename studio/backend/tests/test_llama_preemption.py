@@ -191,17 +191,15 @@ class TestResumeDoesNotChargeTwice:
         queue = LlamaAdmissionQueue("k")
         blocker = await _lease(queue, tokens = 15000, capacity = 2)
         victim = await _lease(queue, tokens = 1000, capacity = 2)
-        # Parked, so the resume takes the commitment-only path: that is the loop the
-        # live give-up came out of, and it has its own deadline.
+        # Parked, so the resume takes the commitment-only path, which is the loop the live
+        # give-up came out of.
         assert victim.park() is True
         victim.preempt()
         assert blocker is not None
 
-        # Budget 16384, blocker holding 15000. The victim wants 5000, so it can only be
-        # served once the blocker is down to 11384. Draining 1000 every 20ms reaches that
-        # at ~80ms, well past the 50ms flat deadline, while never pausing longer than
-        # 50ms between drains. That gap is the whole test: a flat deadline fires at 50ms,
-        # a stall deadline never expires because progress keeps arriving.
+        # Budget 16384, blocker holding 15000, victim wanting 5000. Draining 1000 every 20ms
+        # reaches the point it fits at ~80ms, past the 50ms flat deadline, while never pausing
+        # longer than 50ms: a flat deadline fires, a stall deadline never expires.
         async def drain_slowly():
             for _ in range(6):
                 await _asyncio.sleep(0.02)
@@ -251,9 +249,8 @@ class TestResumeDoesNotChargeTwice:
 
 class TestTheBufferArithmetic:
     def test_the_buffer_is_per_slot_with_a_floor(self):
-        # Per SLOT, not per cache. The reaction headroom the buffer buys is what can be
-        # generated between a sweep and a victim's stream actually stopping, which scales
-        # with how many chats decode at once and not with the size of the cache.
+        # Per SLOT, not per cache: the reaction headroom scales with how many chats decode at
+        # once and not with the size of the cache.
         four = preemption_buffer_tokens(16384, slots = 4)
         eight = preemption_buffer_tokens(16384, slots = 8)
         assert eight > four, "twice the slots generate twice as much during an eviction"
@@ -261,11 +258,10 @@ class TestTheBufferArithmetic:
             65536, slots = 4
         ), "a bigger cache does not make an eviction slower"
         assert preemption_buffer_tokens(2048) >= DEFAULT_PREEMPT_BUFFER_MIN_TOKENS
-        # And it must be a small share of a normal cache, or it serialises: at 15% of
-        # 16384 the simulated makespan was 26890 steps against 239 at this size.
+        # And a small share of a normal cache, or it serialises: at 15% of 16384 the simulated
+        # makespan was 26890 steps against 239 at this size.
         assert four < 16384 * 0.08
         assert preemption_buffer_tokens(0) == 0
-        # Still never the whole cache, whatever the ratio is set to.
         assert preemption_buffer_tokens(16384) < 16384 // 2 + 1
 
     def test_nothing_is_preempted_while_it_fits(self):
@@ -285,8 +281,8 @@ class TestTheBufferArithmetic:
     def test_room_asked_for_in_advance_counts(self):
         controller = _controller(budget = 16384)
         ceiling = 16384 - preemption_buffer_tokens(16384)
-        # Sized from the ceiling rather than from the 15564 it happened to be at five
-        # per cent, so raising the margin does not break the property being tested.
+        # Sized from the ceiling rather than the figure it happened to have, so raising the
+        # margin does not break the property being tested.
         _register(controller, "winner", ceiling - 2000)
         _register(controller, "other", 1500)
         assert controller.plan_preemptions() == [], "it fits under the ceiling"
@@ -338,7 +334,6 @@ class TestWhoStops:
         victims = [p.gen_id for p in controller.plan_preemptions()]
         assert victims, "something had to stop"
         assert "first" not in victims, "the oldest chat should be the last to go"
-        # Newest first: fourth, then third, then second. It stops once it fits.
         assert victims == ["fourth"], f"one victim was enough, got {victims}"
 
     def test_a_victim_is_marked_and_signalled_together(self):
@@ -366,9 +361,8 @@ class TestNobodyIsExemptFromEviction:
 
     def test_the_biggest_chat_is_still_preemptable(self):
         controller = _controller(budget = 16384)
-        # Registration order matters now, so the huge chat is deliberately NOT the oldest:
-        # as the oldest it would be taken last and then spared by the last-holder rule,
-        # which would make this assertion unreachable rather than true.
+        # The huge chat is deliberately NOT the oldest: as the oldest it would be taken last and
+        # then spared by the last-holder rule, making this assertion unreachable.
         _fill(controller, "oldest", 0.14)
         _fill(controller, "huge", 0.72)
         _fill(controller, "newest", 0.14)
@@ -604,8 +598,8 @@ class TestTheWireCarriesAThoughtPartial:
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "", "reasoning_content": "half a thought"},
         ]
-        # The exact trap: "" is falsy, so every `and trailing_assistant_text(...)` gate
-        # dropped the continuation flag for a turn that had real work to continue.
+        # The exact trap: "" is falsy, so every `and trailing_assistant_text(...)` gate dropped
+        # the continuation flag for a turn that had real work to continue.
         assert trailing_assistant_text(convo) == ""
         assert not trailing_assistant_text(convo)
         assert trailing_assistant_reasoning(convo) == "half a thought"
@@ -656,7 +650,6 @@ class TestReplayedWorkIsStillCharged:
         assert controller.participant("a").tokens == 1500
 
         controller.note_replayed("a", 500)
-        # Those 500 are now prompt, and the next attempt's counter starts at zero.
         controller.observe("a", 0)
         assert (
             controller.participant("a").tokens == 1500
@@ -679,7 +672,7 @@ class TestReplayedWorkIsStillCharged:
 
     def test_an_unknown_generation_is_ignored(self):
         controller = self._controller()
-        controller.note_replayed("gone", 500)  # must not raise
+        controller.note_replayed("gone", 500)
 
     def test_the_adapter_charges_only_what_was_actually_kept(self):
         from core.inference.llama_preemption import (
@@ -692,7 +685,6 @@ class TestReplayedWorkIsStillCharged:
         controller.register("a", tokens = 1000)
         policy = ControllerPreemptionPolicy(controller, "a", PreemptSignal())
 
-        # Decoded tokens but nothing carried: re-issued whole, so nothing is replayed.
         policy.on_preempted(StreamCheckpoint(charged_tokens = 700))
         controller.observe("a", 0)
         assert controller.participant("a").tokens == 1000
@@ -729,8 +721,7 @@ class TestAChatThatOutgrewTheSharedCeiling:
         snapshot = controller.snapshot()
         ceiling = snapshot.budget - snapshot.buffer
         want = ceiling + 500
-        # Alone, it fits: the reaction buffer protects concurrent growers, and there are
-        # none. This is the assertion whose absence was the hang.
+        # Alone, it fits. This is the assertion whose absence was the hang.
         assert controller.room_for("solo", want)
 
     def test_it_may_not_resume_beside_anyone(self):
@@ -749,13 +740,11 @@ class TestAChatThatOutgrewTheSharedCeiling:
         controller = self._controller_with_drafts()
         snapshot = controller.snapshot()
         shared = snapshot.budget - snapshot.buffer
-        # Probe the solo ceiling through the public question rather than the private one.
         solo = next(
             w for w in range(snapshot.budget, shared, -1) if not controller.cannot_ever_fit(w)
         )
-        # Most of the reaction headroom comes back, since a lone chat has nobody to
-        # react to. Expressed against the buffer rather than as a literal: this said
-        # "> 1000" while the buffer was 2458 tokens, and the buffer is 776 now.
+        # Most of the reaction headroom comes back, a lone chat having nobody to react to.
+        # Expressed against the buffer rather than a literal, which went stale twice.
         assert solo - shared >= snapshot.buffer // 2, (
             f"solo ceiling {solo} barely clears the shared {shared} against a buffer of "
             f"{snapshot.buffer}; the reaction headroom is still being charged to a chat "

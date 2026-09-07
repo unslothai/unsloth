@@ -22,9 +22,8 @@ from core.inference import studio_tool_loop as loop_mod  # noqa: E402
 
 from .preempt_fakes import rendezvous  # noqa: E402, F401
 
-# The scripted transport and the SSE readers, rather than a second copy of them: a fake
-# that drifts from the one the rest of the loop is tested against would be testing a
-# different loop. Same sys.path dance as test_memory_contract.py.
+# The scripted transport and the SSE readers, rather than a second copy: a fake that drifts
+# from the one the rest of the loop is tested against would be testing a different loop.
 from test_studio_tool_loop import (  # noqa: E402
     WEB,
     PY,
@@ -246,8 +245,8 @@ class TestCancellation:
                     cancel_event.set()
             return out
 
-        # The assertion is that this returns at all. A leaked pump or a generator closed
-        # while its worker was still running shows up here as the timeout.
+        # The assertion is that this returns at all: a leaked pump, or a generator closed while
+        # its worker was still running, shows up here as the timeout.
         async def _bounded():
             return await asyncio.wait_for(_collect(), timeout = 30)
 
@@ -255,17 +254,12 @@ class TestCancellation:
         assert lines, "the round produced nothing before it was cancelled"
 
 
-# ── The local GGUF loop ───────────────────────────────────────────────────────────
+# ── The local GGUF loop ──
 #
-# A separate implementation with the same requirement. It matters more for this work than
-# the provider loop does, because it is the path that decodes into the shared KV cache the
-# preemptor manages: a chat parked on three serial searches holds its cells for the sum of
-# the three.
-#
-# Its overlap comes from a different mechanism. `stream_tool_execution` spawns the tool's
-# worker inside its GENERATOR BODY, so building the generator starts nothing and the first
-# next() is what puts the tool in flight. The round primes every call, which starts them
-# all, and then reads their events back in order.
+# A separate implementation with the same requirement, and the one that decodes into the shared
+# KV cache the preemptor manages. Its overlap comes from a different mechanism:
+# `stream_tool_execution` spawns the tool's worker inside its GENERATOR BODY, so the first
+# next() is what puts the tool in flight.
 
 
 from test_llama_cpp_tool_loop import _done as _gguf_done  # noqa: E402
@@ -399,7 +393,6 @@ class TestTheLocalGgufLoopOverlapsToo:
             _execute,
         )
         assert ran == ["same"], "the duplicate ran, so the round was overlapped"
-        # One card, not two: the suppressed call is an internal no-op and never opens one.
         assert [e.get("type") for e in events].count("tool_end") == 1
 
     def test_the_result_budget_is_divided_by_the_whole_batch(self, monkeypatch):
@@ -421,16 +414,11 @@ class TestTheLocalGgufLoopOverlapsToo:
         given = [b for b in budgets if isinstance(b, int)]
         if not given:
             pytest.skip("this build does not pass result_budget_tokens")
-        # Not identical: each call still subtracts the ARGUMENTS of the calls after it,
-        # which is a real cost and differs per position. What must not differ is the
-        # divisor, and a wrong one shows up as a spread far larger than that: with three
-        # calls, B/3 against B/1 is a factor of three, where the argument term moves the
-        # figure by a few per cent.
+        # Not identical: each call still subtracts the ARGUMENTS of the calls after it. What
+        # must not differ is the divisor, and a wrong one shows up as B/3 against B/1.
         assert (
             max(given) <= min(given) * 1.2
         ), f"the calls were priced against different batch sizes: {given}"
-        # And the batch as a whole must not be handed more than one call's worth of the
-        # window three times over.
         assert sum(given) <= max(given) * 3.3
 
 
@@ -487,9 +475,7 @@ class TestNothingNewSlipsIntoTheSameHazard:
         assert names == {
             # counted at LAUNCH for an overlapped round; the write here is the sequential path
             "_kb_search_count",
-            # spent at launch too, for the same reason
             "_forced_tool_call_pending",
-            # read only after the round, so settling order is enough
             "_last_reprompt_text",
             "_turn_executed_real_tool",
             "_forced_choice_resolved",
@@ -506,7 +492,6 @@ class TestNothingNewSlipsIntoTheSameHazard:
         assert names == {
             # the launch site subtracts len(pending_calls) so the budget counts launches
             "remaining",
-            # read only after the round
             "turn_executed_real_tool",
             "executed_any",
             "last_reprompt_text",

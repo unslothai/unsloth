@@ -31,8 +31,8 @@ def _backend(
     slots,
     unified = True,
 ):
-    # ``_kv_cache_unified`` as the real backend sets it under --kv-unified: the window is
-    # offered only while preemption can reclaim, and that needs one shared pool.
+    # ``_kv_cache_unified`` as the real backend sets it: the window is offered only while
+    # preemption can reclaim, and that needs one shared pool.
     return SimpleNamespace(
         context_length = window,
         _kv_cache_context_total = total,
@@ -211,17 +211,14 @@ class TestChargedAndPermittedCannotDrift:
             if len(admitted) < slots and used + charged <= budget:
                 used += charged
                 admitted.append(prompt)
-        # Against what the wire ACTUALLY permits, which is the window, not the share.
-        # Computing `share - prompt` here was the test agreeing with an older design; the
-        # clamp says "THE WINDOW, not a share of it" and the permitted total therefore
-        # exceeds the cache by construction. That is the vLLM shape the goal asks for:
-        # overcommit deliberately, then preempt at a watermark.
+        # Against what the wire ACTUALLY permits, which is the window, not the share. Computing
+        # `share - prompt` here was the test agreeing with an older design; the permitted total
+        # now exceeds the cache by construction, which is the vLLM shape the goal asks for.
         permitted = sum(prompt + max(1, budget - prompt) for prompt in admitted)
         assert permitted > budget, (
             "the cache is meant to be overcommitted now; if this ever holds, admission has "
             "gone back to dividing the window and preemption has nothing left to do"
         )
-        # What still has to hold is the thing that actually bounds concurrency.
         assert used <= budget, f"admitted {admitted} charged {used} of {budget}"
         assert len(admitted) <= slots
 
@@ -232,12 +229,11 @@ class TestChargedAndPermittedCannotDrift:
                 if prompt < 1:
                     continue
                 charged = self._charged(budget, share, prompt)
-                # It must still be cheap enough that a full capacity fits, which is the
-                # property that actually bounds how many chats are admitted at once.
+                # It must still be cheap enough that a full capacity fits, which is what bounds
+                # how many chats are admitted at once.
                 assert (
                     charged * slots <= budget or charged <= share
                 ), f"budget={budget} slots={slots} prompt={prompt}: charged {charged}"
-                # And it must not silently become the permission again.
                 assert charged < prompt + max(1, budget - prompt)
 
     def test_a_full_capacity_of_unstated_requests_still_fits(self):

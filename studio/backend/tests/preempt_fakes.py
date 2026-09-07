@@ -16,7 +16,6 @@ from core.inference import llama_preemption as preemption
 from core.inference.llama_cpp import LlamaCppBackend
 
 
-# ---------------------------------------------------------------- SSE builders
 
 def delta(content: str, *, terminator: str = "\n", **extra) -> str:
     chunk = {"choices": [{"index": 0, "delta": {"content": content}}], **extra}
@@ -93,7 +92,6 @@ def web_search_tool(*, required: bool = False) -> dict:
     }
 
 
-# -------------------------------------------------------------------- responses
 
 class FakeResponse:
     """Enough of httpx.Response for _iter_text_cancellable."""
@@ -119,7 +117,6 @@ class FakeResponse:
             self._on_close()
 
 
-# --------------------------------------------------------------------- policies
 
 class RecordingPolicy:
     """Stands in for the admission side. Records the handshake order."""
@@ -161,7 +158,6 @@ class ServerHookPolicy(RecordingPolicy):
         self.events.append("server-resumed")
 
 
-# ---------------------------------------------------------------------- backend
 
 def bare_backend(
     *,
@@ -255,7 +251,6 @@ class PreemptRecorder:
                     continue
                 served += 1
                 if budget is not None and served >= budget:
-                    # Pressure noticed mid-stream, which is when it really is.
                     if request_pressure and recorder.signal is not None:
                         recorder.signal.request("kv_pressure")
                     raise preemption.LlamaStreamPreempted
@@ -271,7 +266,6 @@ class PreemptRecorder:
             )
 
 
-# ----------------------------------------------------------------------- drivers
 
 def run_plain(backend, *, signal, policy, prompt: str = "write me a poem", **kwargs):
     return list(
@@ -306,7 +300,6 @@ def run_tool_loop(
     )
 
 
-# ------------------------------------------------------------- tool loop fixtures
 
 def _patch_tool_loop(monkeypatch, execute, *, high_risk) -> None:
     from core.inference import studio_tool_loop as loop_mod
@@ -330,8 +323,8 @@ def executed(monkeypatch):
 
 @pytest.fixture
 def rendezvous(monkeypatch):
-    # Long enough that a loaded runner still meets it, short enough that the serialised
-    # cases (where it can never be met) do not dominate the suite.
+    # Long enough that a loaded runner meets it, short enough that the serialised cases do not
+    # dominate the suite.
     barrier = threading.Barrier(2, timeout = 4)
     order: list[str] = []
     lock = threading.Lock()
@@ -350,7 +343,6 @@ def rendezvous(monkeypatch):
     return order
 
 
-# ------------------------------------------------------------- registry fixtures
 
 @pytest.fixture(autouse = True)
 def clean_preemption_registry():

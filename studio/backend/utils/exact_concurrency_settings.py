@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The persisted half of the exact-concurrency switch. ``core.inference.llama_exact`` owns
-what ``auto | off | on`` MEAN and the order they are read in; this file only stores one.
-
-Stored ``off`` and nothing stored are deliberately different: nothing stored falls through to
-an inherited ``LLAMA_EXACT_CONCURRENCY``, and a stored ``off`` turns the mode off even there,
-so the setter never normalises ``off`` away to "unset".
+"""The persisted half of the exact-concurrency switch. ``core.inference.llama_exact`` owns what
+``auto | off | on`` MEAN; this file only stores one. Stored ``off`` and nothing stored are
+deliberately different: nothing stored falls through to an inherited
+``LLAMA_EXACT_CONCURRENCY``, so the setter never normalises ``off`` away to "unset".
 """
 
 from __future__ import annotations

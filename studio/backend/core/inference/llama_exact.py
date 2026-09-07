@@ -3,19 +3,15 @@
 
 """Ask llama-server for output that does not depend on the neighbours it decodes beside.
 
-A llama-server built with unslothai/llama.cpp#194 reads ``LLAMA_EXACT_CONCURRENCY`` from its
-OWN environment, and a sequence's generated tokens are then byte-identical however many chats
-share its cache. There is no flag, nothing in ``--help`` and nothing in ``/props``, so the
-launch is the only probe there is: a child started with the variable that comes up healthy has
-it, and one that dies naming the mode does not.
+A llama-server built with unslothai/llama.cpp#194 reads ``LLAMA_EXACT_CONCURRENCY`` from its OWN
+environment, and a sequence's generated tokens are then byte-identical however many chats share
+its cache. There is no flag, nothing in ``--help`` and nothing in ``/props``, so the launch is
+the only probe there is.
 
-Three values, because two cannot express "I would like this" against "I require this":
-``off`` (the default; the mode costs about 9 per cent of solo decode and buys nothing for a
-chat that never shares its cache), ``auto`` (set it, relaunch once without it if the load
-fails naming the mode, and report ``unavailable``), and ``on`` (a refusal is a failed load,
-since a caller that asked for byte-identical output cannot notice a quiet downgrade).
-
-``UNSLOTH_LLAMA_EXACT_CONCURRENCY`` overrides the persisted setting and the load request.
+Three values, because two cannot express "I would like this" against "I require this": ``off``
+(the default, the mode costing about 9 per cent of solo decode), ``auto`` (relaunch once without
+it and report ``unavailable``), and ``on`` (a refusal is a failed load, a caller that asked for
+byte-identical output being unable to notice a downgrade).
 """
 
 from __future__ import annotations
@@ -24,8 +20,7 @@ import os
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 
-# Studio's own switch. Overrides the request field and the stored setting, so an operator
-# can pin a machine without going through the GUI.
+# Studio's own switch, overriding the request field and the stored setting.
 EXACT_ENV = "UNSLOTH_LLAMA_EXACT_CONCURRENCY"
 EXACT_AUTO = "auto"
 EXACT_OFF = "off"
@@ -33,13 +28,12 @@ EXACT_ON = "on"
 EXACT_SETTINGS = (EXACT_AUTO, EXACT_OFF, EXACT_ON)
 DEFAULT_EXACT_SETTING = EXACT_OFF
 
-# What the CHILD reads (unslothai/llama.cpp#194). Set on the llama-server environment, not
-# on Studio's: setting it on Studio is the workaround this module replaces.
+# What the CHILD reads (unslothai/llama.cpp#194). Setting it on Studio is the workaround this
+# module replaces.
 CHILD_ENV = "LLAMA_EXACT_CONCURRENCY"
 
-# What the finished load reports. `unavailable` is the one that carries information a
-# boolean cannot: exact mode was asked for, the server would not give it, and the chat is
-# running anyway.
+# What the finished load reports. `unavailable` carries what a boolean cannot: the mode was
+# asked for, the server would not give it, and the chat is running anyway.
 EXACT_STATE_ON = "on"
 EXACT_STATE_OFF = "off"
 EXACT_STATE_UNAVAILABLE = "unavailable"
@@ -72,10 +66,9 @@ def child_flag_set(environ: Mapping[str, str]) -> bool:
 
 
 def child_flag_inherited(environ: Optional[Mapping[str, str]] = None) -> bool:
-    """Whether the Studio process itself was started with ``LLAMA_EXACT_CONCURRENCY``. This is
-    today's workaround, inherited by every child, so it is read as the DEFAULT setting rather
-    than ignored: a default of ``off`` would otherwise silently turn the mode off for exactly
-    the people who had gone to the trouble of turning it on. An explicit ``off`` still wins."""
+    """Whether the Studio process itself was started with ``LLAMA_EXACT_CONCURRENCY``. Read as
+    the DEFAULT setting rather than ignored: a default of ``off`` would silently turn the mode
+    off for exactly the people who had gone to the trouble of turning it on."""
     return child_flag_set(os.environ if environ is None else environ)
 
 
@@ -90,8 +83,7 @@ _MISSING = object()
 
 def stored_exact_setting() -> Optional[str]:
     """The persisted setting, or None when nothing is stored or the store is unreadable.
-    Imported inside the function: this module is imported by the backend, which unit tests
-    construct without a database, and a load must never fail on an unreadable settings row."""
+    Imported inside the function: a load must never fail on an unreadable settings row."""
     try:
         from utils.exact_concurrency_settings import get_exact_concurrency
     except Exception:
@@ -110,9 +102,7 @@ def resolve_exact_setting(
 ) -> str:
     """Which of auto/off/on this load runs under. Precedence, highest first:
     ``UNSLOTH_LLAMA_EXACT_CONCURRENCY``, the load request's field, the persisted setting, an
-    inherited ``LLAMA_EXACT_CONCURRENCY`` (read as ``on``), then ``off``. The environment is
-    the override rather than the fallback because it is how an operator pins a machine that
-    the GUI can also write to. ``stored`` is injectable so a test needs no database."""
+    inherited ``LLAMA_EXACT_CONCURRENCY`` (read as ``on``), then ``off``."""
     from_env = exact_setting_env(environ)
     if from_env is not None:
         return from_env
@@ -130,30 +120,28 @@ def wants_exact(setting: Any) -> bool:
 
 
 # The refusals the server names, each printed on the way to exiting non-zero. Matching on the
-# mode's own name rather than on each refusal keeps a build that adds a new refusal covered.
+# mode's own name keeps a build that adds a new refusal covered.
 _REFUSAL_MARKERS = (
     # `throw std::runtime_error("exact concurrency: ...")`, from the KV cache and the graph.
     "exact concurrency:",
-    # `LLAMA_EXACT_CONCURRENCY is set but ...` / `is set, so ...`, and the column-bound
-    # refusal in common_exact_concurrency_init.
+    # `LLAMA_EXACT_CONCURRENCY is set but ...`, and the column-bound refusal in
+    # common_exact_concurrency_init.
     "llama_exact_concurrency",
 )
 
 
 def is_exact_refusal(text: Optional[str]) -> bool:
     """Whether this child output says the mode itself is why the server did not start. A build
-    that predates #194 ignores the variable and starts normally, so this never fires there:
-    absence of the feature reads as ``on``, the honest answer with no way to ask the server."""
+    that predates #194 ignores the variable and starts normally, so this never fires there."""
     if not text:
         return False
     return any(marker in text.lower() for marker in _REFUSAL_MARKERS)
 
 
-# What the mode cannot live beside, each checked in llama.cpp itself. Naming them here lets
-# Studio warn about its own launch line rather than hand the user a child's error.
-# `--cache-reuse` and `--context-shift` both move a sequence's positions, and a cell's offset
-# inside its 256-cell page IS its position modulo 256. `--no-kv-offload` leaves a layer's cache
-# off the CUDA backend, which has no paged attention. No flash attention leaves V transposed.
+# What the mode cannot live beside, each checked in llama.cpp itself, so Studio can warn about
+# its own launch line. `--cache-reuse` and `--context-shift` move a sequence's positions and a
+# cell's offset inside its 256-cell page IS its position modulo 256; `--no-kv-offload` leaves a
+# layer off the CUDA backend, and no flash attention leaves V transposed.
 _CACHE_TYPE_FLAGS = ("--cache-type-k", "--cache-type-v", "-ctk", "-ctv")
 _BARE_CONTRADICTIONS = (
     "--context-shift",
@@ -175,8 +163,8 @@ def _flag_value(token: str, following: Optional[str]) -> Optional[str]:
 
 def contradicting_args(args: Optional[Sequence[str]]) -> list[str]:
     """The tokens in ``args`` that exact mode cannot run with, in the order they appear. Flag
-    names, not values, because that is what a warning has to name. A zero ``--cache-reuse 0``
-    and an ``f16`` cache type are the flag spelled as the default, not contradictions."""
+    names, not values. A zero ``--cache-reuse 0`` and an ``f16`` cache type are the flag spelled
+    as the default, not contradictions."""
     tokens = [str(a) for a in (args or ())]
     found: list[str] = []
     for index, token in enumerate(tokens):

@@ -6,10 +6,8 @@
  *
  * N chats share one `--kv-unified` cache while each is told it has all of it, so a chat spends
  * real time waiting for room and can be paused mid-answer. Both are invisible on the wire: a
- * 200 that produces nothing for a while, indistinguishable from a wedged backend.
- *
- * Sent as SSE *comments*, so every reader that predates them ignores them for free. Split into
- * a plain `.ts` because the test runner strips types but does NOT transform JSX.
+ * 200 that produces nothing for a while, indistinguishable from a wedged backend. Sent as SSE
+ * *comments*, so every reader that predates them ignores them for free.
  */
 
 /** Queued: the request is admitted to the queue but holds no slot yet. */
@@ -37,8 +35,8 @@ const BY_COMMENT: Record<string, AdmissionStatus> = {
 };
 
 /** Read one raw SSE line as an admission signal, or null for anything else. Matched on the
- *  payload after an optional single space: the SSE grammar allows `:comment` and `: comment` to
- *  mean the same thing, and an intermediary is free to rewrite that space. */
+ *  payload after an optional single space, the SSE grammar allowing `:comment` and `: comment`
+ *  to mean the same thing. */
 export function readAdmissionComment(line: string): AdmissionStatus | null {
   if (!line.startsWith(":")) {
     return null;
