@@ -128,7 +128,23 @@ _SHARED_PAYLOAD = {
         "libggml-cpu.so",
         "libmtmd.so",
     ],
-    "windows": ["llama.dll"],
+    # A published or upstream Windows bundle is built with BUILD_SHARED_LIBS on,
+    # so it ships llama-common.dll and the thin llama-server.exe beside
+    # llama-server-impl.dll. runtime_payload_health_groups requires those for
+    # the prebuilt sources, matching what the Linux kinds have always required;
+    # a fixture that wrote only llama.dll described a tree no release produces.
+    # Writing them unconditionally is still right for the source-build cells:
+    # the check is "has", not "has only", and those cells simply do not require
+    # them.
+    "windows": [
+        "llama.dll",
+        "llama-common.dll",
+        "llama-server-impl.dll",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll",
+        "mtmd.dll",
+    ],
     "macos": ["libllama.dylib", "libggml.dylib", "libmtmd.dylib"],
 }
 _BACKEND_PAYLOAD = {

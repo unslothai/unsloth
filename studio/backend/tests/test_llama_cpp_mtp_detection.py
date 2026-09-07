@@ -3155,9 +3155,17 @@ def test_inconclusive_probe_retries_after_a_bounded_cache_window(tmp_path, monke
     assert LlamaCppBackend.probe_server_capabilities(str(fake)) is retried
     assert len(calls) == 2
 
-    # Once a later retry succeeds, the result returns to the normal long-lived
-    # cache.
+    # The window DOUBLES after each failure, so the wait that was long enough a
+    # moment ago is not any more. A binary the OS refuses to run at all is
+    # permanent until the file or the policy changes, and re-probing it every
+    # 30s costs a 10s subprocess timeout forever.
     now[0] += LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
+    assert LlamaCppBackend.probe_server_capabilities(str(fake)) is retried
+    assert len(calls) == 2
+
+    # Once a later retry succeeds, the result returns to the normal long-lived
+    # cache. Past the doubled window this time.
+    now[0] += 2 * LlamaCppBackend._CAPABILITY_PROBE_RETRY_SECONDS + 1
     recovered = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert recovered["mtp_probe_inconclusive"] is False
     assert recovered["supports_mtp"] is True
