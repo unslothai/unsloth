@@ -432,6 +432,7 @@ def test_health_settles_the_verdict_at_once_on_a_no_torch_install(apple_silicon,
     assert body["chat_only"] is True
     assert body["chat_only_reason"] == "mlx_unavailable"
 
+
 def test_an_unaskable_self_heal_settles_the_verdict(apple_silicon, monkeypatch):
     """If mlx_repair cannot even be consulted, settle rather than spin forever."""
 
