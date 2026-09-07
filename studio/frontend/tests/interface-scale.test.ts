@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
+import { setImmediate } from "node:timers/promises";
 
 register("./helpers/tauri-webview-resolver.mjs", import.meta.url);
 
@@ -186,27 +187,38 @@ test(
 );
 
 test(
-  "a late wedged call cannot report its stale zoom as the live one",
+  "a late wedged call restores the requested native zoom",
   { timeout: 5_000 },
   async () => {
-    const { mod, control } = await load(true);
+    const { mod, control, styles } = await load(true);
+    let nativeZoom = 1;
     let releaseWedged: () => void = () => undefined;
     control.setZoom = (zoom) => {
       control.zooms.push(zoom);
       if (zoom === 0.75) {
         return new Promise<void>((resolve) => {
-          releaseWedged = resolve;
+          releaseWedged = () => {
+            nativeZoom = zoom;
+            resolve();
+          };
         });
       }
+      nativeZoom = zoom;
       return Promise.resolve();
     };
 
     await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
     await mod.applyInterfaceScale(125);
     releaseWedged();
-    await Promise.resolve();
+    await setImmediate();
 
+    assert.equal(nativeZoom, 1.25);
+    assert.deepEqual(control.zooms, [0.75, 1.25, 1.25]);
     assert.equal(mod.getAppliedInterfaceZoom(), 1.25);
+    assert.equal(
+      styles.get("--studio-native-titlebar-height"),
+      `${NATIVE_MAC_TITLEBAR_HEIGHT_PX / 1.25}px`,
+    );
   },
 );
 

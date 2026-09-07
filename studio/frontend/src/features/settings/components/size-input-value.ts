@@ -9,10 +9,10 @@ export function normalizeSizeInputDraft(
   if (trimmed === "") {
     return { draft: "", value: null };
   }
-  const parsed = Number.parseInt(trimmed, 10);
-  if (Number.isNaN(parsed)) {
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
     return null;
   }
-  const value = Math.min(range.max, Math.max(range.min, parsed));
+  const value = Math.min(range.max, Math.max(range.min, Math.round(parsed)));
   return { draft: String(value), value };
 }

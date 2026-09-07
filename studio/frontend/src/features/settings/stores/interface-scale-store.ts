@@ -107,10 +107,10 @@ export function applyInterfaceScale(scale: number): Promise<void> {
     const { getCurrentWebview } = await import("@tauri-apps/api/webview");
     const zoom = interfaceScaleToZoom(nextScale);
     await getCurrentWebview().setZoom(zoom);
-    // A call abandoned at the first-paint deadline can still settle later, after a newer
-    // scale has been asked for and applied. Committing then would report the stale zoom
-    // as the live one.
     if (nextScale !== requestedInterfaceScale) {
+      // a timed-out command can overwrite a newer native zoom when it finishes.
+      appliedInterfaceScale = null;
+      void applyInterfaceScale(requestedInterfaceScale).catch(() => undefined);
       return;
     }
     appliedInterfaceScale = nextScale;
