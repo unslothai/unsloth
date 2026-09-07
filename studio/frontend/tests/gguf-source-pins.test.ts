@@ -9,46 +9,78 @@ import {
   pinKey,
   pinnedQuantEntries,
 } from "../src/features/model-picker/components/model-selector/pinned-models.ts";
-import { modelIdsMatchForPicker } from "../src/features/model-picker/components/model-selector/row-identity.ts";
+import {
+  ggufVariantsMatchForPicker,
+  modelIdsMatchForPicker,
+} from "../src/features/model-picker/components/model-selector/row-identity.ts";
 
-test("GGUF pins survive deleting a duplicate and disappear with the last copy", async () => {
-  const source = readFileSync(
-    new URL(
-      "../src/features/model-picker/components/model-selector/reconcile-gguf-pins.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const declaration = source
-    .slice(source.indexOf("export async function"))
-    .replace("export ", "");
-  const compile = new Function(
-    "listCachedGguf",
-    "listGgufVariants",
-    "pinKey",
-    "pinnedQuantEntries",
-    "usePinnedModelsStore",
-    "modelIdsMatchForPicker",
-    ts.transpileModule(declaration, {
-      compilerOptions: { target: ts.ScriptTarget.ES2020 },
-    }).outputText + "; return reconcileGgufPinsAfterDelete;",
-  );
-  for (const requested of ["Org/Model", "org/model"]) {
-    for (const remaining of [true, false, "partial", "unavailable"]) {
-      let pinned = ["Org/Model", pinKey("Org/Model", "Q8_0")];
+const source = readFileSync(
+  new URL(
+    "../src/features/model-picker/components/model-selector/reconcile-gguf-pins.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const declaration = source
+  .slice(source.indexOf("export async function"))
+  .replace("export ", "");
+const compile = new Function(
+  "listCachedGguf",
+  "fetchCachedGgufInventory",
+  "listGgufVariants",
+  "pinnedQuantEntries",
+  "usePinnedModelsStore",
+  "modelIdsMatchForPicker",
+  "ggufVariantsMatchForPicker",
+  ts.transpileModule(declaration, {
+    compilerOptions: { target: ts.ScriptTarget.ES2020 },
+  }).outputText + "; return reconcileGgufPinsAfterDelete;",
+);
+
+for (const requested of ["Org/Model", "org/model"]) {
+  for (const remaining of [
+    "duplicate",
+    "absent",
+    "partial",
+    "unavailable",
+    "unconfirmed-absent",
+    "unconfirmed-partial",
+    "lowercase-quant",
+    "other-quant",
+    "legacy-confirmation",
+  ]) {
+    test(`GGUF pins after deleting ${requested}: ${remaining}`, async () => {
+      const original = ["Org/Model", pinKey("Org/Model", "Q8_0")];
+      let pinned = [...original];
+      let variantCalls = 0;
+      const inventory = async () => {
+        if (remaining === "unavailable") throw new Error("scan unavailable");
+        return {
+          cached: remaining.endsWith("absent") ? [] : [{ repo_id: "org/model" }],
+          scan_confirmed:
+            remaining === "legacy-confirmation"
+              ? undefined
+              : !remaining.startsWith("unconfirmed"),
+        };
+      };
       const run = compile(
+        async () => (await inventory()).cached,
+        inventory,
         async () => {
-          if (remaining === "unavailable") throw new Error("scan unavailable");
-          return remaining ? [{ repo_id: "org/model" }] : [];
+          variantCalls += 1;
+          return {
+            variants: [
+              {
+                quant:
+                  remaining === "lowercase-quant"
+                    ? "q8_0"
+                    : remaining === "other-quant" ? "Q6_K" : "Q8_0",
+                downloaded: !remaining.endsWith("partial"),
+                partial: remaining.endsWith("partial"),
+              },
+            ],
+          };
         },
-        async () => ({
-          variants: [{
-            quant: "Q8_0",
-            downloaded: remaining !== "partial",
-            partial: remaining === "partial",
-          }],
-        }),
-        pinKey,
         pinnedQuantEntries,
         {
           getState: () => ({
@@ -59,12 +91,15 @@ test("GGUF pins survive deleting a duplicate and disappear with the last copy", 
           }),
         },
         modelIdsMatchForPicker,
+        ggufVariantsMatchForPicker,
       );
       await run(requested);
-      assert.equal(
-        pinned.length,
-        remaining === true || remaining === "unavailable" ? 2 : 0,
-      );
-    }
+      const expected =
+        remaining === "absent" || remaining === "partial"
+          ? []
+          : remaining === "other-quant" ? ["Org/Model"] : original;
+      assert.deepEqual(pinned, expected);
+      if (remaining.startsWith("unconfirmed")) assert.equal(variantCalls, 0);
+    });
   }
-});
+}
