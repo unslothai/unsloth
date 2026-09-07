@@ -1999,11 +1999,11 @@ def test_the_preference_plan_tries_rocm_before_the_cpu_fallback(monkeypatch, amd
     assert [a.install_kind for a in named.release_plans[0].attempts] == ["windows-vulkan"]
 
 
-def _one_plan(*kinds):
+def _one_plan(*kinds, release_tag = "b1"):
     return ilp.InstallReleasePlan(
         requested_tag = "b1",
         llama_tag = "b1",
-        release_tag = "b1",
+        release_tag = release_tag,
         attempts = [
             ilp.AssetChoice(
                 repo = FORK,
@@ -2042,6 +2042,63 @@ def test_no_rocm_attempt_means_no_cpu_tail_either(monkeypatch, amd_vulkan_icd, r
         host = host,
     )
     assert [a.install_kind for a in selection.release_plans[0].attempts] == ["windows-vulkan"]
+
+
+@pytest.mark.parametrize("rocm_plans", ["raises", "empty"])
+def test_a_release_that_is_nothing_but_cpu_fails_rather_than_installing_it(
+    monkeypatch, amd_vulkan_icd, rocm_plans
+):
+    # Filtering the tail off a plan that IS the tail leaves nothing, and keeping it whole
+    # is the same silent CPU install by another route. A source build is slow and visible;
+    # this host has a working HIP bundle either way.
+    def _plans(_tag, plan_host, _repo, _release, **_kw):
+        if not plan_host.has_rocm:
+            return "b1", [_one_plan("windows-cpu")]
+        if rocm_plans == "raises":
+            raise RuntimeError("no ROCm asset for this release")
+        return "b1", []
+
+    monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _plans)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    with pytest.raises(ilp.PrebuiltFallback):
+        ilp.select_backend_install(
+            backend = None,
+            llama_tag = "b1",
+            published_repo = FORK,
+            published_release_tag = "pin",
+            host = host,
+        )
+
+
+def test_release_order_survives_narrowing(monkeypatch, amd_vulkan_icd):
+    # Release order is preference order. Narrowing one release must not move it behind a
+    # later one, which is how an older build would end up installed.
+    def _plans(_tag, plan_host, _repo, _release, **_kw):
+        if not plan_host.has_rocm:
+            return "b2", [
+                _one_plan("windows-vulkan", "windows-cpu", release_tag = "b2"),
+                _one_plan("windows-vulkan", "windows-cpu", release_tag = "b1"),
+            ]
+        # Only the older release publishes this host's ROCm bundle.
+        return "b2", [_one_plan("windows-hip", release_tag = "b1")]
+
+    monkeypatch.setattr(ilp, "resolve_simple_install_release_plans", _plans)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    selection = ilp.select_backend_install(
+        backend = None,
+        llama_tag = "b2",
+        published_repo = FORK,
+        published_release_tag = "pin",
+        host = host,
+    )
+    assert [p.release_tag for p in selection.release_plans] == ["b2", "b1"]
+    assert [a.install_kind for a in selection.release_plans[0].attempts] == ["windows-vulkan"]
+    # b1 publishes the ROCm bundle, so its CPU tail keeps something in front of it.
+    assert [a.install_kind for a in selection.release_plans[1].attempts] == [
+        "windows-vulkan",
+        "windows-hip",
+        "windows-cpu",
+    ]
 
 
 def test_a_plan_that_already_carries_rocm_keeps_its_cpu_tail(monkeypatch, amd_vulkan_icd):

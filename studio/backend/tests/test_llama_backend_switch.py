@@ -1203,6 +1203,40 @@ def test_a_migration_keeps_a_pending_whisper_update(monkeypatch):
     assert repair_calls == [], "a migration must not take the repair-only branch"
 
 
+def test_a_plain_update_that_can_move_the_backend_still_re_pairs_whisper(monkeypatch, tmp_path):
+    # An update passes no --llama-backend, so the installer re-runs detection and a default
+    # can move underneath it. With whisper already current there is no phase to carry the
+    # re-pair, and a slim install would keep hardlinking a runtime that is no longer there.
+    _install(monkeypatch, tmp_path)  # backend_request "auto"
+    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: {"skip_reason": "up_to_date"})
+    repair = {"update_available": True, "phase": {"repair": True}}
+    monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: repair)
+
+    assert _whisper_phase_plan(None, llama_will_run = True) is repair
+    # No llama phase means llama's ggml stays put, so there is nothing to re-pair against.
+    assert _whisper_phase_plan(None, llama_will_run = False)["skip_reason"] == "up_to_date"
+
+
+def test_a_recorded_backend_choice_does_not_schedule_a_re_pair(monkeypatch, tmp_path):
+    # The control: the installer preserves a recorded choice, so an update cannot move that
+    # install's backend and its pairing cannot go stale. Whisper stays up_to_date.
+    _install(monkeypatch, tmp_path, backend_request = "cuda")
+    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: {"skip_reason": "up_to_date"})
+    monkeypatch.setattr(whisper_upd, "repair_pairing_plan", lambda: {"phase": {"repair": True}})
+    assert _whisper_phase_plan(None, llama_will_run = True)["skip_reason"] == "up_to_date"
+
+
+def test_a_self_contained_whisper_keeps_its_up_to_date_reason(monkeypatch, tmp_path):
+    # A re-pair only exists for a slim install. Reporting "self_contained" where whisper
+    # genuinely has nothing to catch up on would rename a reason the UI already shows.
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: {"skip_reason": "up_to_date"})
+    monkeypatch.setattr(
+        whisper_upd, "repair_pairing_plan", lambda: {"skip_reason": "self_contained", "phase": None}
+    )
+    assert _whisper_phase_plan(None, llama_will_run = True)["skip_reason"] == "up_to_date"
+
+
 def test_a_deliberate_switch_still_takes_the_repair_branch(monkeypatch):
     # Negative control, and a real switch keeps the release, so whisper only re-pairs.
     monkeypatch.setattr(upd, "_whisper_chain_status", lambda **kw: {"phase": {"kind": "whisper"}})

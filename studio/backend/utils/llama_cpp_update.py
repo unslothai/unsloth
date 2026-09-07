@@ -1245,6 +1245,38 @@ def start_backend_switch(backend: str) -> dict:
     return _start_llama_job(backend_request = normalized)
 
 
+def _update_can_move_the_backend(llama_will_run: bool) -> bool:
+    """Whether an update that names no backend could still land on a different one.
+
+    An update passes no --llama-backend, so the installer re-runs detection, and a
+    default can move underneath it -- an AMD integrated GPU is now routed to the Vulkan
+    prebuilt. Only an automatic install is exposed: a recorded choice is preserved, so
+    its backend cannot change and its pairing cannot go stale.
+
+    Read from the marker rather than resolved, because this runs at planning time and
+    resolving costs a subprocess. Over-answering is cheap: the repair phase reads the
+    backend llama actually landed on and does nothing when it did not move.
+    """
+    if not llama_will_run:
+        return False
+    return marker_backend_request(read_install_marker(_find_binary())) == "auto"
+
+
+def _repair_pairing_plan_or_empty(llama_will_run: bool, llama_skip_reason: Optional[str]) -> dict:
+    """The slim re-pair plan, or {} when there is nothing to re-pair against."""
+    try:
+        from utils import whisper_cpp_update
+        if not llama_will_run:
+            if llama_skip_reason != "already_selected":
+                return {}
+            if not whisper_cpp_update.slim_pairing_is_stale():
+                return {}
+        return whisper_cpp_update.repair_pairing_plan()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("llama switch: whisper repair probe failed", error = str(exc))
+        return {}
+
+
 def _whisper_phase_plan(
     backend_request: Optional[str],
     *,
@@ -1274,19 +1306,16 @@ def _whisper_phase_plan(
         chained = (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
         )
-        if backend_request is None or chained.get("phase") is not None:
+        if chained.get("phase") is not None:
             return chained
-    try:
-        from utils import whisper_cpp_update
-        if not llama_will_run:
-            if llama_skip_reason != "already_selected":
-                return {}
-            if not whisper_cpp_update.slim_pairing_is_stale():
-                return {}
-        return whisper_cpp_update.repair_pairing_plan()
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("llama switch: whisper repair probe failed", error = str(exc))
-        return {}
+        if backend_request is None:
+            if not _update_can_move_the_backend(llama_will_run):
+                return chained
+            # No refusal of its own to report here: whisper genuinely has nothing to catch
+            # up on, so the chained answer stands unless a re-pair is actually owed.
+            repair = _repair_pairing_plan_or_empty(llama_will_run, llama_skip_reason)
+            return repair if repair.get("phase") is not None else chained
+    return _repair_pairing_plan_or_empty(llama_will_run, llama_skip_reason)
 
 
 def _claim_operation(backend_request: Optional[str]) -> bool:

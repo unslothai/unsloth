@@ -8331,20 +8331,35 @@ def _with_rocm_behind_vulkan(
     A named backend request is filtered afterwards, so this cannot smuggle ROCm into
     an explicit --llama-backend vulkan.
     """
+    # A source build is slow and a CPU prebuilt is silent, and this host has a working
+    # HIP bundle either way, so an empty plan fails towards the one the user can see.
+    _NO_GPU_BUNDLE = (
+        "no published release carries a Vulkan or matching ROCm bundle for this host, "
+        "and a CPU prebuilt would replace a working ROCm install"
+    )
     cpu_kinds = install_kinds_for_backend("cpu")
 
-    def _without_cpu(plan: InstallReleasePlan) -> InstallReleasePlan:
+    def _without_cpu(plan: InstallReleasePlan) -> InstallReleasePlan | None:
         """Drop the CPU tail from a plan that ends up with no ROCm attempt behind Vulkan.
 
         Returning the plan unchanged would leave exactly the outcome this helper exists to
         prevent: a Vulkan asset that cannot be installed falling through to CPU inference
         on a host whose ROCm install works. A failed Vulkan install is recoverable; a
-        silent CPU one is the thing the user reports as "it got slow".
+        silent CPU one is the thing the user reports as "it got slow". A release that
+        published neither bundle is nothing but its CPU fallback, so it drops out whole
+        (None) rather than being kept as the one plan the filter cannot narrow.
         """
         attempts = [attempt for attempt in plan.attempts if attempt.install_kind not in cpu_kinds]
-        if not attempts or len(attempts) == len(plan.attempts):
+        if len(attempts) == len(plan.attempts):
             return plan
-        return dataclasses_replace(plan, attempts = attempts)
+        return dataclasses_replace(plan, attempts = attempts) if attempts else None
+
+    def _drop_cpu_only(candidates: list[InstallReleasePlan]) -> list[InstallReleasePlan]:
+        """Apply _without_cpu across releases, or fail rather than install CPU."""
+        kept = [narrowed for plan in candidates if (narrowed := _without_cpu(plan)) is not None]
+        if candidates and not kept:
+            raise PrebuiltFallback(_NO_GPU_BUNDLE)
+        return kept
 
     try:
         _tag, rocm_plans = resolve_simple_install_release_plans(
@@ -8353,8 +8368,9 @@ def _with_rocm_behind_vulkan(
     except Exception:
         # A ROCm plan that will not resolve is not a reason to fail the Vulkan install --
         # but it is a reason not to keep a CPU fallback nothing now sits in front of.
-        return [_without_cpu(plan) for plan in plans]
+        return _drop_cpu_only(plans)
     rocm_attempts = {plan.release_tag: plan.attempts for plan in rocm_plans}
+    # Release order is preference order, so a plan is rewritten or dropped in place.
     out: list[InstallReleasePlan] = []
     for plan in plans:
         present = {attempt.install_kind for attempt in plan.attempts}
@@ -8368,8 +8384,12 @@ def _with_rocm_behind_vulkan(
             # Nothing to insert either because the plan already carries this host's ROCm
             # attempt, or because none resolved for this release. Only the second is the
             # hazard above, so tell them apart rather than stripping both.
-            keeps_rocm = any(attempt.install_kind in present for attempt in candidates)
-            out.append(plan if keeps_rocm else _without_cpu(plan))
+            if any(attempt.install_kind in present for attempt in candidates):
+                out.append(plan)
+            else:
+                narrowed = _without_cpu(plan)
+                if narrowed is not None:
+                    out.append(narrowed)
             continue
         at = next(
             (i for i, a in enumerate(plan.attempts) if a.install_kind in cpu_kinds),
@@ -8378,6 +8398,8 @@ def _with_rocm_behind_vulkan(
         out.append(
             dataclasses_replace(plan, attempts = [*plan.attempts[:at], *extra, *plan.attempts[at:]])
         )
+    if plans and not out:
+        raise PrebuiltFallback(_NO_GPU_BUNDLE)
     return out
 
 
