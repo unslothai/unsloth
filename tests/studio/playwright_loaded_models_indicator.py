@@ -241,7 +241,11 @@ def card_text(page) -> str:
         return ""
 
 
-def why_no_card(page, state: Runtime, waited: str = "") -> str:
+def why_no_card(
+    page,
+    state: Runtime,
+    waited: str = "",
+) -> str:
     """What the page actually looked like when a presence check went the wrong way.
 
     "FAILED: card survives /hub" reports only that the assertion failed, which is the one thing already known. These
@@ -450,8 +454,12 @@ def run(page, state: Runtime) -> None:
         # failure -- the card is there -- but a card that is present and never became visible is a position or
         # stacking bug wearing a pass, and it would otherwise leave no trace at all.
         if waited and present:
-            info(f"NOTE card survives {route}: attached but not visible in {SETTLE_MS}ms ({waited})")
-        check(f"card survives {route}", present, "" if present else why_no_card(page, state, waited))
+            info(
+                f"NOTE card survives {route}: attached but not visible in {SETTLE_MS}ms ({waited})"
+            )
+        check(
+            f"card survives {route}", present, "" if present else why_no_card(page, state, waited)
+        )
 
     # ── Hardware shapes a CUDA runner never produces ────────────────────
     matrix = [
