@@ -6,6 +6,14 @@ or a pull request.
 
 ## What we are trying to settle
 
+**Start with an AMD machine if you have one.** Every Smart App Control report so
+far has been AMD, not NVIDIA: unslothai/unsloth#6588 (unsigned ROCm libraries),
+unslothai/unsloth#6648 (`rocfft.dll`, with the verdict changing on a byte
+identical file), and the report that prompted this. The ROCm bundle also has by
+far the largest unsigned surface, 75 PE files against 47 for CUDA, because it
+carries AMD's own TheRock runtime DLLs (`amdhip64_*.dll`, `rocblas.dll`,
+`hipblas.dll`, `amd_comgr.dll`, `origami.dll` and more) which ship unsigned.
+
 Users report Studio installing and launching, then failing to load a model, with
 the failure clearing when Smart App Control is turned off and returning after a
 reboot. The dialog is:
@@ -43,6 +51,27 @@ The NoISG policy is the useful one. It checks signatures and skips the cloud
 reputation lookup, which means it works **even with Smart App Control off**, so
 any machine can produce evidence. It logs event 3076 for every file it would
 have refused. That is exactly the half of the verdict that signing changes.
+
+## Getting it onto the machine
+
+```powershell
+git clone --branch windows-sac-probe --depth 1 https://github.com/unslothai/unsloth C:\unsloth-probe
+cd C:\unsloth-probe\scripts\windows_sac_probe
+```
+
+These scripts are not Authenticode signed, so if you download them individually
+rather than cloning, Windows marks them with Mark-of-the-Web and PowerShell
+refuses to run them under the default `RemoteSigned` policy. Either unblock them
+or relax the policy for this session only:
+
+```powershell
+Get-ChildItem . -Recurse | Unblock-File
+# or, for this process only, reverted when the window closes:
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+```
+
+Do not change the machine-wide execution policy. It is part of what we are
+measuring.
 
 ## Running it
 
