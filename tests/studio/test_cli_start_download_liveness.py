@@ -21,6 +21,34 @@ STEP_S = 120.0
 MAX_ITERATIONS = 5000
 
 
+def health_poll_line(n):
+    """What `LoggingMiddleware` logs for the `/api/health` GET this loop just made."""
+    return (
+        f"2026-09-08 03:{n // 60:02d}:{n % 60:02d} [info     ] request_completed"
+        "              method=GET path=/api/health process_time_ms=0.4 status_code=200\n"
+    )
+
+
+def failed_health_poll_record(n):
+    """A health probe that raises: the JSON record, then the traceback `with_readable_traceback`
+    echoes on the lines after it, each carrying `loggers.config._TRACEBACK_ECHO_PREFIX`."""
+    return (
+        f'{{"event": "request_failed", "path": "/api/health", "status_code": 500, "n": {n}}}\n'
+        "| Traceback (most recent call last):\n"
+        '|   File "/opt/unsloth/studio/backend/main.py", line 1796, in health\n'
+        "|     return await _hardware_snapshot()\n"
+        "| RuntimeError: hardware probe timed out\n"
+    )
+
+
+def load_watchdog_heartbeat(n):
+    """`start_watchdog`'s on_heartbeat -> `{"type": "status"}` -> the orchestrator's
+    `Subprocess status` INFO line. Timer driven, so it keeps coming while a load is wedged."""
+    return (
+        f"2026-09-08 03:{n // 60:02d}:{n % 60:02d} [info     ] Subprocess status: still loading\n"
+    )
+
+
 class FakeClock:
     """monotonic() only moves when the readiness loop sleeps, so runs are deterministic."""
 
@@ -52,15 +80,16 @@ class Harness:
         *,
         downloaded_bytes = 0,
         chunk_bytes = 0,
-        log_chunk = 0,
-        poll_log = False,
+        chatter = None,
+        fail_every = 0,
         ready_at = None,
         tail = KEY_LINE,
     ):
         self.clock = FakeClock(STEP_S)
         self.log_path = None
-        self.log_chunk = log_chunk
-        self.poll_log = poll_log
+        self.chatter = chatter
+        self.fail_every = fail_every
+        self.failures = 0
         self.downloaded_bytes = downloaded_bytes
         self.chunk_bytes = chunk_bytes
         self.ready_at = ready_at
@@ -94,6 +123,9 @@ class Harness:
             }
         if "download-progress" in url:
             self.polls += 1
+            if self.fail_every and self.polls % self.fail_every == 0:
+                self.failures += 1
+                raise TimeoutError("the server took too long to answer")
             self.downloaded_bytes += self.chunk_bytes
             return {
                 "downloaded_bytes": self.downloaded_bytes,
@@ -121,18 +153,9 @@ class Harness:
             f"readiness loop still running after {self.iterations} passes "
             f"({self.clock.elapsed:.0f}s of fake clock); its deadline never expires"
         )
-        if self.log_chunk and self.log_path is not None:
+        if self.chatter and self.log_path is not None:
             with open(self.log_path, "ab") as handle:
-                handle.write(b"." * self.log_chunk + b"\n")
-        if self.poll_log and self.log_path is not None:
-            # Byte-for-byte the line `LoggingMiddleware` writes for the `/api/health`
-            # GET this loop just made, timestamp included so every line is new bytes.
-            with open(self.log_path, "ab") as handle:
-                handle.write(
-                    f"2026-09-08 03:{self.iterations // 60:02d}:{self.iterations % 60:02d}"
-                    " [info     ] request_completed              method=GET"
-                    " path=/api/health process_time_ms=0.4 status_code=200\n".encode()
-                )
+                handle.write(self.chatter(self.iterations).encode())
         if self.ready_at is not None and self.iterations >= self.ready_at:
             self.tail = f"{KEY_LINE}Model loaded: {MODEL}\n"
             return True
@@ -186,30 +209,22 @@ def test_a_server_that_never_downloads_still_times_out(monkeypatch, capsys):
     assert harness.clock.elapsed < 2 * start_cli._SERVER_START_TIMEOUT_S
 
 
-def test_a_load_that_keeps_logging_survives_past_the_idle_cap(monkeypatch):
+@pytest.mark.parametrize(
+    "chatter",
+    [
+        pytest.param(health_poll_line, id = "the loop's own health poll"),
+        pytest.param(failed_health_poll_record, id = "traceback echo lines"),
+        pytest.param(load_watchdog_heartbeat, id = "load watchdog heartbeat"),
+    ],
+)
+def test_a_wedged_server_that_keeps_writing_still_times_out(monkeypatch, capsys, chatter):
+    # Every one of these keeps the log growing on a timer while nothing loads, so log
+    # growth cannot stand in for progress: only fresh download bytes may move the deadline.
     harness = Harness(
         monkeypatch,
         downloaded_bytes = EXPECTED_BYTES,
         chunk_bytes = 0,
-        log_chunk = 4096,
-        ready_at = 40,
-    )
-
-    server = harness.start()
-
-    assert server is harness.server
-    assert harness.shutdowns == []
-    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
-
-
-def test_the_cli_s_own_health_poll_does_not_keep_a_wedged_server_alive(monkeypatch, capsys):
-    # The loop calls `_studio_healthy` every pass and the server logs that request, so
-    # the log grows on its own. Counting that as progress would make the cap unreachable.
-    harness = Harness(
-        monkeypatch,
-        downloaded_bytes = EXPECTED_BYTES,
-        chunk_bytes = 0,
-        poll_log = True,
+        chatter = chatter,
     )
 
     with pytest.raises(typer.Exit):
@@ -218,3 +233,21 @@ def test_the_cli_s_own_health_poll_does_not_keep_a_wedged_server_alive(monkeypat
     assert harness.shutdowns == [harness.server]
     assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
     assert harness.clock.elapsed < 2 * start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_a_transient_progress_error_does_not_blind_the_loop(monkeypatch):
+    # One slow reading used to disable the reader for good, which would now leave a live
+    # download with no signal at all and kill it at the cap.
+    harness = Harness(
+        monkeypatch,
+        chunk_bytes = 1024**3,
+        fail_every = 3,
+        ready_at = 40,
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.shutdowns == []
+    assert harness.failures >= 10
+    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
