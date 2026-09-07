@@ -1004,6 +1004,36 @@ def _rewrite_content(payload: dict[str, Any], choice: dict[str, Any], text: str)
     return _sse(new_payload)
 
 
+def _split_turn_end(
+    payload: dict[str, Any],
+    choice: dict[str, Any],
+    delta: dict[str, Any],
+) -> tuple[str | None, str]:
+    """Separate a turn-ending chunk into what can be sent now and the reason to hold.
+
+    Only the finish_reason has to wait for the healer to resolve; the content on that same
+    chunk does not, and holding it too would let residue flushed by ``finalize`` overtake
+    it and reverse the text on the wire. So the content goes out in place and a bare
+    finish-only chunk is what gets parked.
+    """
+    now_choice = {key: value for key, value in choice.items() if key != "finish_reason"}
+    now_choice["delta"] = delta
+    now_payload = {key: value for key, value in payload.items() if key != "choices"}
+    now_payload["choices"] = [now_choice] + list(payload.get("choices", [])[1:])
+    # Nothing worth sending when the chunk carried the reason and nothing else.
+    now = _sse(now_payload) if (delta or len(now_payload["choices"]) > 1) else None
+
+    held_payload = {key: value for key, value in payload.items() if key != "choices"}
+    held_payload["choices"] = [
+        {
+            "index": choice.get("index", 0),
+            "delta": {},
+            "finish_reason": choice.get("finish_reason"),
+        }
+    ]
+    return now, _sse(held_payload)
+
+
 def _unrun_provenance(tool_name: str, round_id: int) -> dict[str, Any]:
     """Provenance for a hand-built unrun card; carries the MCP display name so a
     budget-exhausted or truncated MCP call never shows the internal server id."""
@@ -1364,7 +1394,9 @@ async def stream_with_studio_tools(
                     if plain:
                         turn.text.append(plain)
                     if hold_final:
-                        held_final = line
+                        now, held_final = _split_turn_end(payload, choice, delta)
+                        if now is not None:
+                            yield now
                     else:
                         yield line
                     continue
@@ -1382,7 +1414,9 @@ async def stream_with_studio_tools(
                 if visible == content:
                     # Nothing was held back, the case for almost every chunk of ordinary prose
                     if hold_final:
-                        held_final = line
+                        now, held_final = _split_turn_end(payload, choice, delta)
+                        if now is not None:
+                            yield now
                     else:
                         yield line
                     continue
@@ -1390,7 +1424,14 @@ async def stream_with_studio_tools(
                 # relaying.
                 if visible or turn.finish_reason is not None or len(delta) > 1:
                     if hold_final:
-                        held_final = _rewrite_content(payload, choice, visible)
+                        healed_delta = {
+                            key: value for key, value in delta.items() if key != "content"
+                        }
+                        if visible:
+                            healed_delta["content"] = visible
+                        now, held_final = _split_turn_end(payload, choice, healed_delta)
+                        if now is not None:
+                            yield now
                     else:
                         yield _rewrite_content(payload, choice, visible)
 

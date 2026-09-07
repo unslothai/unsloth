@@ -271,6 +271,41 @@ def test_a_healed_call_owes_a_terminal_even_with_no_finish_chunk(loop_env):
     assert _finish_reasons(lines) == ["stop"], "a terminal must be minted"
 
 
+def test_holding_the_turn_end_does_not_reorder_the_text(loop_env):
+    """Only the finish_reason waits for healing; the content on that chunk goes out in place.
+
+    The healer withholds any trailing run that could still become a tool marker, so a final
+    delta ending in "<to" releases its prose and buffers the rest. Parking that whole chunk
+    let the residue flushed by finalize() overtake the prose and reverse it on the wire --
+    "Comparing: <tothe value " -- even though the conversation replay stayed correct. No
+    tool call is involved: any healing turn whose last delta ends in "<" hits this.
+    """
+    trailing_marker = [
+        _sse({"content": "Comparing: "}),
+        _sse({"content": "the value <to"}, finish = "stop"),
+        _DONE,
+    ]
+    lines = _relay([trailing_marker], ui_events = False)
+
+    assert loop_env == [], "no tool call in this stream"
+    assert _text(lines) == "Comparing: the value <to"
+    assert _finish_reasons(lines) == ["stop"]
+    # The reason is last, so a client reading in order sees the whole turn before it ends.
+    assert _finish_reasons(lines[:-1]) == []
+
+
+def test_the_opt_in_stream_keeps_that_order_too(loop_env):
+    """The reordering happened inside the loop, upstream of the stripper, so it hit both."""
+    trailing_marker = [
+        _sse({"content": "Comparing: "}),
+        _sse({"content": "the value <to"}, finish = "stop"),
+        _DONE,
+    ]
+    lines = _relay([trailing_marker], ui_events = True)
+
+    assert _text(lines) == "Comparing: the value <to"
+
+
 def test_a_truncated_turn_keeps_its_reason(loop_env):
     """ "length" cut the call off half-written, so the loop refuses to run it.
 

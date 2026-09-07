@@ -173,8 +173,10 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
     and vLLM routinely end a perfectly good tool call on "stop" and the loop deliberately
     runs those (see studio_tool_loop's ``truncated`` rule), so the turn has not finished
     either. Callers that track the turn use ``ServerToolCallStripper`` rather than passing
-    this by hand. "length" and "content_filter" are left alone on purpose: those are the
-    two the loop refuses to run, so that turn really is the last one.
+    this by hand. It also covers the legacy "function_call", which a gateway may still use
+    to close a turn it streamed modern ``delta.tool_calls`` for. "length" and
+    "content_filter" are left alone on purpose: those are the two the loop refuses to run,
+    so that turn really is the last one.
 
     Only for the Unsloth-tool-loop path. On a plain proxy the calls are the caller's own
     and must pass through untouched.
@@ -184,7 +186,9 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
     if not isinstance(choices, list) or not choices:
         return line
 
-    not_really_final = ("tool_calls", "stop") if pending_call else ("tool_calls",)
+    not_really_final = (
+        ("tool_calls", "stop", "function_call") if pending_call else ("tool_calls",)
+    )
     changed = False
     kept_choices = []
     for choice in choices:
@@ -204,8 +208,13 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
         if choice.get("finish_reason") in not_really_final:
             # The arguments arrive in earlier chunks and this one usually carries an empty
             # delta, so it cannot be keyed on a call withheld here. Not a rename either:
-            # the turn has not finished, the loop answers in the next one. A legacy call
-            # ends on "function_call", a different value, and is left alone with its delta.
+            # the turn has not finished, the loop answers in the next one.
+            #
+            # "function_call" joins the list only once a call is pending, for the gateway
+            # that streams modern delta.tool_calls and then closes the turn on the legacy
+            # reason (LocalAI picks it whenever the client sent no tools). A genuine legacy
+            # call never sets pending -- _line_offers_tool_call keys on "tool_calls" alone,
+            # so a delta.function_call leaves it clear -- and keeps its reason and delta.
             choice["finish_reason"] = None
             withheld = True
         changed = changed or withheld

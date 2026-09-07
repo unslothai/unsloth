@@ -646,6 +646,38 @@ def test_a_removed_reason_owes_a_terminal_even_with_no_call_to_latch_onto():
         assert kept.owed_terminal_chunk() is None, reason
 
 
+def test_a_legacy_finish_after_a_structured_call_is_withheld_too():
+    # A gateway may stream modern delta.tool_calls and still close the turn on the legacy
+    # "function_call"; LocalAI picks that value whenever the client sent no tools, and
+    # litellm relays it verbatim. The loop runs such a call (only "length" and
+    # "content_filter" stop it), so relaying the reason ends the caller's turn early.
+    stripper = ServerToolCallStripper()
+    call = (
+        'data: {"id": "c", "choices": [{"index": 0, "delta": {"tool_calls":'
+        ' [{"id": "x"}]}}]}'
+    )
+    assert stripper.strip(call) is None
+    out = stripper.strip(
+        'data: {"id": "c", "choices": [{"index": 0, "delta": {},'
+        ' "finish_reason": "function_call"}]}'
+    )
+    assert out is None or '"function_call"' not in out
+
+    # A genuine legacy call is the caller's own to run, and keeps both its delta and its
+    # reason: pending is keyed on "tool_calls", which a function_call delta never sets.
+    legacy = ServerToolCallStripper()
+    passed = legacy.strip(
+        'data: {"id": "c", "choices": [{"index": 0, "delta": {"function_call":'
+        ' {"name": "f", "arguments": "{}"}}}]}'
+    )
+    assert passed is not None and "function_call" in passed
+    ended = legacy.strip(
+        'data: {"id": "c", "choices": [{"index": 0, "delta": {},'
+        ' "finish_reason": "function_call"}]}'
+    )
+    assert ended is not None and '"function_call"' in ended
+
+
 def test_a_stream_that_kept_its_own_terminal_is_owed_nothing():
     # No spurious extra chunk when the caller already has a real finish_reason, whether or
     # not a call was withheld earlier in the stream.
