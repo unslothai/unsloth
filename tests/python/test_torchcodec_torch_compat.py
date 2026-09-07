@@ -1221,3 +1221,38 @@ def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():
 
     # And the call site reads the tag rather than re-matching the URL.
     assert "_cuda_major_for_npp(_codec_torch_ver, _codec_index)" in source
+
+
+def test_the_provenance_hint_reads_a_codec_it_cannot_import(monkeypatch):
+    """An unloadable wheel usually raises while `torchcodec/__init__` imports its decoders, and
+    Python drops a module whose initialisation raised, so importing it again just repeats the
+    exception. Reading the version back that way left the accelerator mismatch undiagnosed in
+    exactly the case the hint exists to name; the installer's metadata needs no native library."""
+    import importlib.metadata
+    import sys
+
+    fixes = _load_import_fixes_module()
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
+    _stub_torch(monkeypatch, "2.11.0+cu128")
+    # No importable torchcodec at all, which is what a failed initialisation leaves behind.
+    monkeypatch.delitem(sys.modules, "torchcodec", raising = False)
+
+    def _version(name):
+        if name == "torchcodec":
+            return "0.11.0"  # untagged: PyPI's default build
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _version)
+    hint = fixes._torchcodec_provenance_hint()
+    assert hint is not None
+    assert "torchcodec 0.11.0 came from the default index" in hint
+    assert "https://download.pytorch.org/whl/cu128" in hint
+
+    # Nothing installed at all still says nothing.
+    def _absent(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _absent)
+    assert fixes._torchcodec_provenance_hint() is None

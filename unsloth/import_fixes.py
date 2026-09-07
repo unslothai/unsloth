@@ -2581,6 +2581,27 @@ def _torchcodec_version_mismatch_hint() -> str | None:
     )
 
 
+def _installed_torchcodec_version() -> "str | None":
+    """The installed codec's version WITHOUT importing it, or None when nothing is installed.
+
+    This is only ever asked once the codec has FAILED to load, and an unloadable wheel usually
+    raises while `torchcodec/__init__` imports its decoders. Python drops a module whose
+    initialisation raised, so importing it again just repeats the exception and the accelerator
+    mismatch went undiagnosed in exactly the case this exists to name. The metadata is written
+    by the installer and needs no native library.
+    """
+    try:
+        from importlib.metadata import version
+        return str(version("torchcodec"))
+    except Exception:
+        pass
+    try:
+        import torchcodec  # a layout the metadata cannot describe, e.g. a source checkout
+        return str(getattr(torchcodec, "__version__", "") or "")
+    except Exception:
+        return None
+
+
 def _torchcodec_provenance_hint() -> "str | None":
     """A remedy for a codec whose ACCELERATOR build does not match torch's, or None.
 
@@ -2594,11 +2615,13 @@ def _torchcodec_provenance_hint() -> "str | None":
     """
     try:
         import torch
-        import torchcodec
     except Exception:
         return None
+    codec_version = _installed_torchcodec_version()
+    if codec_version is None:
+        return None
     torch_local = str(getattr(torch, "__version__", "")).partition("+")[2].strip().lower()
-    codec_local = str(getattr(torchcodec, "__version__", "")).partition("+")[2].strip().lower()
+    codec_local = codec_version.partition("+")[2].strip().lower()
     if torch_local == codec_local:
         return None  # same provenance, so the failure is something this cannot name
     if not (torch_local == "cpu" or re.fullmatch(r"cu\d+", torch_local or "")):
@@ -2627,7 +2650,7 @@ def _torchcodec_provenance_hint() -> "str | None":
     # per accelerator on every line, 0.12+ included, so a mismatch stays possible -- but the
     # load can equally have failed on a missing libavutil, which no reinstall fixes. Name both.
     return (
-        f"torchcodec {getattr(torchcodec, '__version__', '?')} came from {codec_from} while "
+        f"torchcodec {codec_version or '?'} came from {codec_from} while "
         f"torch {getattr(torch, '__version__', '?')} is a {torch_local} build, so the codec "
         f"may be built for a different accelerator; audio is disabled. Try "
         f"`pip install --force-reinstall --no-deps --index-url {index} {want}`. "
