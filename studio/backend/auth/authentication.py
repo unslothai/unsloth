@@ -368,7 +368,7 @@ def reload_secret() -> None:
 
 
 # ---------------------------------------------------------------------------
-# One-time link tokens (opt-in Colab same-tab handoff)
+# One-time link tokens (the first-boot setup token in the served page)
 # ---------------------------------------------------------------------------
 
 

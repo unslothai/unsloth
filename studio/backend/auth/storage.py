@@ -328,7 +328,7 @@ def get_connection() -> sqlite3.Connection:
         );
         """
     )
-    # One-time, short-TTL link tokens (opt-in Colab same-tab handoff). The row is
+    # One-time, short-TTL link tokens (the first-boot setup token). The row is
     # the single-use nonce: a token is exchangeable only while its jti is present,
     # and consuming it deletes the row so a replay finds nothing.
     conn.execute(
@@ -958,11 +958,14 @@ def revoke_user_refresh_tokens(username: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# One-time link tokens (opt-in Colab same-tab handoff)
+# One-time link tokens (the first-boot setup token)
 # ---------------------------------------------------------------------------
 
 # Short window: the token only has to survive the same-tab redirect into the UI.
 LINK_TOKEN_EXPIRE_SECONDS = 600  # 10 minutes
+
+
+MAX_OUTSTANDING_LINK_TOKENS_PER_USER = 32
 
 
 def save_link_token(jti: str, username: str, expires_at: str) -> None:
@@ -971,10 +974,18 @@ def save_link_token(jti: str, username: str, expires_at: str) -> None:
     Only the opaque jti (a random id) is stored; the token signature never
     touches disk.
 
-    Purges expired rows in the same transaction as the insert. The frontend is
-    not yet wired to exchange these tokens, so consume_link_token (the other purge
-    site) may never run; without a purge on mint the table would grow without
-    bound across reruns. Reclaiming stale rows here keeps it bounded regardless.
+    Two purges in the same transaction as the insert, because expiry alone is
+    not enough of a bound. The setup page mints one of these per page load and
+    that load is UNAUTHENTICATED, so an expiry-only purge lets anyone who can
+    reach the first-boot page hold a row per request for the whole TTL (measured
+    at ~480 loads/s, so ~1.7M rows an hour) while contending for the single
+    SQLite writer lock that /login also needs.
+
+    Keeping the newest N per user bounds it at a size no honest first boot comes
+    near: one row per open setup tab or reload, and reloads replace rather than
+    accumulate. Eviction is recoverable in the one case it can bite -- an
+    operator whose token is evicted by a flood reloads and is newest again --
+    whereas unbounded growth is not.
     """
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
@@ -983,6 +994,20 @@ def save_link_token(jti: str, username: str, expires_at: str) -> None:
         conn.execute(
             "INSERT INTO link_tokens (jti, username, expires_at) VALUES (?, ?, ?)",
             (jti, username, expires_at),
+        )
+        # rowid, not expires_at: a burst mints tokens with near-identical
+        # expiries, so insertion order is the only thing that actually orders
+        # them.
+        conn.execute(
+            """
+            DELETE FROM link_tokens
+            WHERE username = ?
+              AND rowid NOT IN (
+                SELECT rowid FROM link_tokens WHERE username = ?
+                ORDER BY rowid DESC LIMIT ?
+              )
+            """,
+            (username, username, MAX_OUTSTANDING_LINK_TOKENS_PER_USER),
         )
         conn.commit()
     finally:

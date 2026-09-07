@@ -39,7 +39,7 @@ class RefreshTokenRequest(BaseModel):
 
 
 class LinkTokenRequest(BaseModel):
-    """One-time link-token exchange payload (opt-in Colab same-tab handoff)."""
+    """One-time link-token exchange payload (the first-boot setup token)."""
 
     link_token: str = Field(
         ...,
