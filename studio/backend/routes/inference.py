@@ -33597,33 +33597,17 @@ def _named_anthropic_tool_results(messages: list[dict]) -> list[dict]:
 
     anthropic_messages_to_openai renders a tool_result block as tool_call_id plus
     content and no ``name``, and _promote reads an absent name as legacy MCP history
-    it may trust. Without this, an ordinary Anthropic client tool whose output merely
-    ends in a valid __MCP_IMAGES__ suffix is promoted as IMAGE input on the strength
-    of nothing -- the provenance gate this feature rests on cannot run at all.
+    it may trust. Delegates to the positional resolver rather than a conversation-wide
+    id map: the backend restarts ids like call_0 every response, and a last-wins map
+    renamed every earlier result with that id after the newest call.
     """
-    names: dict = {}
-    for message in messages:
-        for call in message.get("tool_calls") or ():
-            if not isinstance(call, dict):
-                continue
-            function = call.get("function")
-            call_id = call.get("id")
-            if isinstance(function, dict) and isinstance(call_id, str):
-                name = function.get("name")
-                if isinstance(name, str) and name:
-                    names[call_id] = name
-    out = []
-    for message in messages:
-        call_id = message.get("tool_call_id")
-        if (
-            message.get("role") == "tool"
-            and not message.get("name")
-            and isinstance(call_id, str)
-            and call_id in names
-        ):
-            message = {**message, "name": names[call_id]}
-        out.append(message)
-    return out
+    names = _mcp_resolve_tool_names(messages)
+    return [
+        {**message, "name": names[index]}
+        if message.get("role") == "tool" and not message.get("name") and index in names
+        else message
+        for index, message in enumerate(messages)
+    ]
 
 
 def _sanitize_anthropic_openai_messages(messages: list[dict], backend) -> list[dict]:

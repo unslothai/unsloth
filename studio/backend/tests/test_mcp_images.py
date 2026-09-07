@@ -1643,3 +1643,40 @@ def test_the_monitor_prompt_never_retains_envelope_bytes():
     assert payload not in text
     assert mcp_images.SENTINEL not in text
     assert "[1 image returned]" in text
+
+
+def test_eligibility_is_not_spent_on_results_a_non_mcp_call_produced():
+    """The preselection read only the explicit name, so two newer unnamed results
+    correlated to non-MCP calls took the allowance and a genuine older MCP result was
+    left an eligibility of zero -- nothing useful replayed with capacity to spare."""
+    history = [
+        _call("call_0", "mcp__shot__capture"),
+        {"role": "tool", "tool_call_id": "call_0", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+        _call("call_1", "read_file"),
+        {"role": "tool", "tool_call_id": "call_1", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+        _call("call_2", "read_file"),
+        {"role": "tool", "tool_call_id": "call_2", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+    ]
+
+    eligible = mcp_images.eligible_replay_images(history)
+
+    assert 3 not in eligible and 5 not in eligible, eligible
+    assert eligible.get(1) == 4, eligible
+
+
+def test_a_detached_image_turn_is_synthetic_too():
+    """Counting the detached block as a real user turn put the attachment's marker on
+    it instead of on the question that supplied the picture."""
+    detached = mcp_images.placeholder_turn(1, 1, mcp_images.DETACHED_IMAGE_TURN_TEXT)
+    assert mcp_images.is_synthetic_image_turn(detached)
+
+    conversation = [
+        {"role": "user", "content": "first question"},
+        detached,
+        {"role": "user", "content": "the question with the picture"},
+    ]
+    topped = mcp_images.top_up_image_markers(conversation, 2, ordinal = 1)
+
+    assert isinstance(topped[2]["content"], list), topped
+    assert any(part.get("type") == "image" for part in topped[2]["content"])
+    assert isinstance(topped[0]["content"], str), "the first question gained no marker"

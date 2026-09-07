@@ -183,6 +183,10 @@ def eligible_replay_images(messages: Sequence[dict]) -> dict:
     eligible: dict = {}
     budget = MAX_TOTAL_MODEL_IMAGES
     spare = DECODE_FAILURE_ALLOWANCE
+    # Same provenance _promote applies. Reading only the explicit name let unnamed
+    # results correlated to non-MCP calls spend the allowance first, so a genuine
+    # older MCP result was left an eligibility of zero and nothing useful replayed.
+    call_names = resolve_tool_names(messages)
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
         if not isinstance(message, dict) or message.get("role") != "tool":
@@ -190,7 +194,7 @@ def eligible_replay_images(messages: Sequence[dict]) -> dict:
         content = message.get("content")
         if not isinstance(content, str):
             continue
-        name = message.get("name")
+        name = message.get("name") or call_names.get(index)
         if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
             continue
         _text, images = split_images(content)
@@ -796,10 +800,12 @@ def is_synthetic_image_turn(message) -> bool:
     content = message.get("content")
     if not isinstance(content, list):
         return False
+    # Both leads: a detached block is promotion's turn just as much, and counting it
+    # as a real user turn put the attachment's marker on it instead of the question.
     return any(
         isinstance(part, dict)
         and part.get("type") == "text"
-        and str(part.get("text", "")).startswith(IMAGE_TURN_TEXT)
+        and _is_image_turn_note(part.get("text"))
         for part in content
     )
 

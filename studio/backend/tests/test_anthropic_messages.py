@@ -5303,3 +5303,30 @@ def test_a_real_mcp_tool_still_promotes_through_the_anthropic_naming():
         )
         == 1
     )
+
+
+def test_repeated_anthropic_call_ids_are_paired_positionally():
+    """A conversation-wide id map renamed every earlier result with that id after the
+    newest call, suppressing an earlier MCP picture or trusting an earlier non-MCP one."""
+    from routes.inference import _named_anthropic_tool_results
+
+    def _call(name):
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_0", "type": "function", "function": {"name": name, "arguments": "{}"}}],
+        }
+
+    named = _named_anthropic_tool_results(
+        [
+            _call("mcp__shot__capture"),
+            {"role": "tool", "tool_call_id": "call_0", "content": "first"},
+            _call("read_file"),
+            {"role": "tool", "tool_call_id": "call_0", "content": "second"},
+        ]
+    )
+
+    assert [m.get("name") for m in named if m["role"] == "tool"] == [
+        "mcp__shot__capture",
+        "read_file",
+    ]
