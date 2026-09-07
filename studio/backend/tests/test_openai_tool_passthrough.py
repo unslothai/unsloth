@@ -2390,6 +2390,86 @@ class TestChatCompletionRequestToolFields:
         assert any(m.get("role") == "tool" for m in captured["messages"])
         assert monitor.active_count() == 0
 
+    def test_studio_tool_history_streams_without_a_tool_template(self, monkeypatch):
+        """The composer sends stream=true, and the fold rewrites payload.messages before the
+        generator runs, so the streamed turn needs its own guard: the non-streaming pass
+        cannot show that the folded list is what the stream generates from."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **kwargs):
+                captured["messages"] = kwargs["messages"]
+                yield "plain response"
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+                "stream": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        streamed = "".join(
+            (choice.get("delta") or {}).get("content") or ""
+            for line in resp.text.splitlines()
+            if line.startswith("data: ") and line.removeprefix("data: ") != "[DONE]"
+            for choice in (json.loads(line.removeprefix("data: ")).get("choices") or [])
+        )
+        assert streamed == "plain response"
+        assert not any(m.get("role") == "tool" for m in captured["messages"])
+
+    def test_studio_tool_history_answers_with_studio_tools_left_on(self, monkeypatch):
+        """Switching to a toolless GGUF does not switch Studio's tool toggle off, so the
+        thread's next turn still carries enable_tools. A backend that cannot run the loop
+        must answer in prose rather than reject the turn the toggle cannot undo."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **kwargs):
+                captured["messages"] = kwargs["messages"]
+                yield "plain response"
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+                "enable_tools": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "plain response"
+        assert not any(m.get("role") == "tool" for m in captured["messages"])
+        assert monitor.active_count() == 0
+
     def test_tool_call_history_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
         import routes.inference as inference_route
 
