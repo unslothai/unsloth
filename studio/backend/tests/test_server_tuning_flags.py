@@ -300,7 +300,11 @@ def test_the_checkpoint_flag_falls_back_to_the_legacy_spelling():
     # and the emission uses the recorded name, not a hard-coded one
     load = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
     assert "cmd.extend([str(_ctxcp_flag), str(int(ctx_checkpoints))])" in load
-    assert 'cmd.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])' in load
+    # The Windows tuning's 0 goes through the list the arch-crash respawn takes its
+    # own flags back off, so the sink is that list rather than cmd directly. What
+    # this pins is unchanged: the recorded name, never a hard-coded one.
+    assert '_cache_flags_emitted.extend([str(server_caps["ctx_checkpoints_flag"]), "0"])' in load
+    assert "cmd.extend(_cache_flags_emitted)" in load
 
 
 def test_an_unsupported_draft_cache_dtype_is_dropped_not_launched():
