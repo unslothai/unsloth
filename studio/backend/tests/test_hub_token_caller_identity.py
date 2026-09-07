@@ -142,6 +142,28 @@ def test_the_access_probe_calls_auth_check_not_repo_info():
     source = inspect.getsource(hf_tokens._probe_repo_access)
     assert "auth_check(" in source
     assert "repo_info(" not in source
+    assert "_REPO_ACCESS_PROBE_TIMEOUT_S" in source
+
+
+def test_a_hanging_auth_check_probe_times_out(monkeypatch):
+    """A stalled Hub auth_check must fail closed instead of blocking Studio."""
+    import threading
+    import time
+
+    reset_repo_access_cache()
+    monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
+    release = threading.Event()
+
+    def _hang(*_a, **_k):
+        release.wait(30)
+
+    monkeypatch.setattr("huggingface_hub.auth_check", _hang)
+    monkeypatch.setattr("hub.utils.hf_tokens._REPO_ACCESS_PROBE_TIMEOUT_S", 0.2)
+
+    started = time.monotonic()
+    assert cache_reads_authorized("hf_real", repo_id = "org/private") is False
+    assert time.monotonic() - started < 5
+    release.set()
 
 
 @pytest.mark.parametrize("repo_type", ["model", "dataset"])

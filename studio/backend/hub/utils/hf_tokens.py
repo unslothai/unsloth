@@ -34,6 +34,10 @@ _HF_TOKEN_ENV_KEYS = (
     "HUGGINGFACEHUB_API_TOKEN",
 )
 
+# auth_check has no timeout in the pinned Hub client; a stalled connection must not
+# hang Studio while cache_reads_authorized probes a gated repo.
+_REPO_ACCESS_PROBE_TIMEOUT_S = 10.0
+
 
 def apply_token_to_child_env(env: MutableMapping[str, str], hf_token: HfTokenArg) -> None:
     """Grant a spawned probe exactly its caller's credential.
@@ -144,11 +148,20 @@ def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bo
 
 
 def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
-    try:
-        # Access-specific: /auth-check 401s a gated repo with a bad token.
-        # repo_info still returns public metadata in that case.
-        from huggingface_hub import auth_check
-        auth_check(repo_id, repo_type = repo_type, token = token)
-        return True
-    except Exception:
+    probe_result: list[bool] = []
+
+    def _run() -> None:
+        try:
+            from huggingface_hub import auth_check
+
+            auth_check(repo_id, repo_type = repo_type, token = token)
+            probe_result.append(True)
+        except Exception:
+            probe_result.append(False)
+
+    thread = threading.Thread(target = _run, daemon = True)
+    thread.start()
+    thread.join(_REPO_ACCESS_PROBE_TIMEOUT_S)
+    if thread.is_alive():
         return False
+    return bool(probe_result and probe_result[0])
