@@ -662,5 +662,16 @@ test("created files stay outside the collapsible on Python and Terminal cards", 
       0,
       `${file} hid SandboxFiles inside ToolFallbackContent`,
     );
+    const wrap = files[0].parent;
+    assert.ok(
+      wrap && ts.isJsxElement(wrap),
+      `${file} did not wrap SandboxFiles`,
+    );
+    const cls = jsxAttribute(wrap, "className");
+    assert.match(
+      cls?.initializer?.getText() ?? "",
+      /pl-5/,
+      `${file} wrapper is missing pl-5, so the file row sits flush with the trigger`,
+    );
   }
 });

@@ -197,7 +197,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
           )}
         </div>
       </ToolFallbackContent>
-      <SandboxFiles sessionId={sessionId} files={files} />
+      <div className="pl-5">
+        <SandboxFiles sessionId={sessionId} files={files} />
+      </div>
     </ToolFallbackRoot>
   );
 };
