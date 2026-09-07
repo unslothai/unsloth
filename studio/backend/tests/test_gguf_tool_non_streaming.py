@@ -92,8 +92,13 @@ def test_non_streaming_tool_call_returns_single_json(monkeypatch):
 
 
 def test_streaming_tool_call_still_streams(monkeypatch):
-    # The parallel path is untouched: stream:true keeps returning SSE.
-    response = _client(monkeypatch).post("/chat/completions", json = _payload(stream = True))
+    # The parallel path is untouched: stream:true keeps returning SSE. An unrestricted
+    # enable_tools arms the confirm gate, which asks over the control frames.
+    response = _client(monkeypatch).post(
+        "/chat/completions",
+        json = _payload(stream = True),
+        headers = {"X-Unsloth-Events": "1"},
+    )
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")

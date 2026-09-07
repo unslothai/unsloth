@@ -68,7 +68,8 @@ def _request():
         return False
 
     return SimpleNamespace(
-        headers = {},
+        # These cases drive the tool loop, whose confirm gate asks over these frames.
+        headers = {"X-Unsloth-Events": "1"},
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
     )
@@ -331,6 +332,95 @@ def test_a_codex_declares_no_hosted_tools():
 
 
 # ── Task 1: what an omitted permission_mode means ────────────────────
+
+
+def test_mcp_intent_with_no_tools_is_not_refused_for_a_prompt_it_can_never_show(monkeypatch):
+    """mcp_enabled arms the confirm gate on intent, but with no MCP tool enabled the
+    selection is empty and the loop is skipped, so a headerless stream has no prompt to
+    find a channel for. Refusing on intent would 400 a request that proxies straight
+    through, so the check waits for the selected catalog."""
+    monkeypatch.setattr(
+        "core.inference.tools.get_enabled_mcp_tools",
+        lambda: _noop_mcp(),
+    )
+    inf = _install(monkeypatch, "openai")
+    payload = _payload(mcp_enabled = True)
+
+    async def is_disconnected():
+        return False
+
+    headerless = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(skip_api_monitor = True),
+        is_disconnected = is_disconnected,
+    )
+
+    async def go():
+        resp = await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
+        return [chunk async for chunk in resp.body_iterator]
+
+    # No LoopEntered and no HTTPException: the request proxies through.
+    assert _drive(go())
+
+
+def test_tool_choice_none_is_not_refused_for_a_prompt_it_can_never_show(monkeypatch):
+    """The catalogue is non-empty here, but stream_with_studio_tools withdraws it every
+    turn under tool_choice "none", so no call and no approval prompt can happen. A
+    headerless stream must still get its clean text answer."""
+    inf = _install(monkeypatch, "openai")
+    payload = _payload(enable_tools = True, enabled_tools = ["python"], tool_choice = "none")
+
+    async def is_disconnected():
+        return False
+
+    headerless = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(skip_api_monitor = True),
+        is_disconnected = is_disconnected,
+    )
+
+    async def go():
+        resp = await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
+        return [chunk async for chunk in resp.body_iterator]
+
+    # Reaches the loop rather than being refused; the loop then withdraws the catalogue
+    # per turn (tools_available), so the request answers as plain text.
+    with pytest.raises(LoopEntered):
+        _drive(go())
+
+
+def test_a_refused_request_does_not_strand_a_running_monitor_entry(monkeypatch):
+    """The refusal lands after api_monitor.start and before the stream generator that
+    would finish it, and a running entry is exempt from trimming, so leaving it open
+    strands /api/inference/monitor in `generating` for good."""
+    from core.inference.api_monitor import ApiMonitor
+    from fastapi import HTTPException
+
+    inf = _install(monkeypatch, "openai")
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+    payload = _payload(enable_tools = True, enabled_tools = ["python"])
+
+    async def is_disconnected():
+        return False
+
+    headerless = SimpleNamespace(
+        headers = {},
+        state = SimpleNamespace(),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+        method = "POST",
+        is_disconnected = is_disconnected,
+    )
+
+    async def go():
+        return await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
+
+    with pytest.raises(HTTPException) as exc:
+        _drive(go())
+    assert exc.value.status_code == 400
+    assert monitor.active_count() == 0
+    [entry] = monitor.snapshot()
+    assert entry["status"] == "error"
 
 
 def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):

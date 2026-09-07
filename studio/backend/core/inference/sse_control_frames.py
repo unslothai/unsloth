@@ -120,3 +120,105 @@ def sanitize_provider_sse_line(line: str) -> str | None:
         # client parse nothing.
         return None
     return "data: " + json.dumps(cleaned, separators = (",", ":"))
+
+
+def _sse_payload(line: str) -> dict[str, Any] | None:
+    """The JSON object a ``data:`` line carries, or None if it carries none."""
+    if not line.startswith("data:"):
+        return None
+    raw = line[5:].strip()
+    if not raw or raw == "[DONE]":
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def is_ui_control_sse_line(line: str) -> bool:
+    """Whether ``line`` is a frame no OpenAI client can route, rather than a chunk.
+
+    Read by the OpenAI-compatible route to hold these back from a caller that did not opt
+    in: with no ``choices`` they fail schema validation mid-stream. Structural rather than
+    a name list, because ``_CONTROL_TYPES`` answers a different question -- what a
+    PROVIDER must not forge -- and the tool loop also writes bare ``status`` frames around
+    a RAG autoinjection, which are just as unroutable without being forgeable. ``usage``
+    and ``error`` keep a frame: those are the provider's own vocabulary and a client reads
+    them. A chunk that merely carries a ``_toolEvent``-style key has ``choices`` and stays.
+    """
+    payload = _sse_payload(line)
+    if payload is None:
+        return False
+    # isinstance first: the sanitizer passes a non-string `type` through, and an unhashable
+    # one (a provider putting structured metadata there) raises on a membership test.
+    if not isinstance(payload.get("type"), str):
+        return False
+    return not any(key in payload for key in _SUBSTANTIVE_KEYS)
+
+
+def strip_server_executed_tool_call(line: str) -> str | None:
+    """Hold a call the server runs itself back from a caller that did not opt in.
+
+    ``stream_with_studio_tools`` relays the provider's own ``delta.tool_calls`` and the
+    ``finish_reason: "tool_calls"`` that ends that turn, for a call Unsloth then executes
+    and answers in a later turn. Its catalogue is Unsloth's own, never the caller's, so a
+    client reading those chunks is told to run a tool that is already running here: an
+    agent may run it a second time, or stop at the finish_reason and never read the real
+    answer. Returns the line with the call and that finish_reason removed, or None when
+    nothing worth relaying was left.
+
+    Only for the Unsloth-tool-loop path. On a plain proxy the calls are the caller's own
+    and must pass through untouched.
+    """
+    payload = _sse_payload(line)
+    choices = payload.get("choices") if payload else None
+    if not isinstance(choices, list) or not choices:
+        return line
+
+    changed = False
+    kept_choices = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            kept_choices.append(choice)
+            continue
+        choice = dict(choice)
+        withheld = False
+        for src_key in ("delta", "message"):
+            src = choice.get(src_key)
+            # tool_calls only. The loop reads no other form, so the legacy function_call
+            # is a call it never executes and the caller is the one meant to run it.
+            if isinstance(src, dict) and "tool_calls" in src:
+                src = {k: v for k, v in src.items() if k != "tool_calls"}
+                choice[src_key] = src
+                withheld = True
+        if choice.get("finish_reason") == "tool_calls":
+            # The arguments arrive in earlier chunks and this one usually carries an empty
+            # delta, so it cannot be keyed on a call withheld here. Not a rename either:
+            # the turn has not finished, the loop answers in the next one. A legacy call
+            # ends on "function_call", a different value, and is left alone with its delta.
+            choice["finish_reason"] = None
+            withheld = True
+        changed = changed or withheld
+        kept_choices.append(choice)
+
+    if not changed:
+        return line
+    payload = {**payload, "choices": kept_choices}
+    if not _choices_say_anything(kept_choices) and "usage" not in payload:
+        return None
+    return "data: " + json.dumps(payload, separators = (",", ":"))
+
+
+def _choices_say_anything(choices: list[Any]) -> bool:
+    """Whether anything survived the strip that a client would act on."""
+    for choice in choices:
+        if not isinstance(choice, dict):
+            return True
+        if choice.get("finish_reason") is not None:
+            return True
+        for src_key in ("delta", "message"):
+            src = choice.get(src_key)
+            if isinstance(src, dict) and any(value for value in src.values()):
+                return True
+    return False

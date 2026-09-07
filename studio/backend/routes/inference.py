@@ -3213,6 +3213,10 @@ from core.inference.providers import (
 )
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.external_tool_transport import OAICompatTransport
+from core.inference.sse_control_frames import (
+    is_ui_control_sse_line,
+    strip_server_executed_tool_call,
+)
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
     ToolLoopRun,
@@ -3893,7 +3897,18 @@ def _permission_mode_confirm(payload) -> bool:
     return bool(getattr(payload, "stream", False))
 
 
-def _confirm_gate_needs_stream(payload) -> bool:
+def _catalog_names(tools) -> list[str]:
+    """Tool names out of a resolved catalogue, for the confirm-gate classifier."""
+    names = []
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
+def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
     """Whether Unsloth's local tool-loop confirm gate still requires stream=true.
 
     The gate can only prompt while streaming, so a non-streaming request that will
@@ -3903,6 +3918,12 @@ def _confirm_gate_needs_stream(payload) -> bool:
     always-safe (web_search / RAG) never prompts and needs no stream. ask,
     an explicit confirm flag, MCP tools, and an unrestricted or unsafe selection
     still require streaming.
+
+    ``selected_names`` is the RESOLVED catalogue, for the callers that have one. It
+    answers the selection and mcp_enabled together, and more accurately: an MCP ask that
+    discovery filtered down to nothing leaves only always-safe built-ins, which cannot
+    prompt. Without it the request's own fields are read, which is all the pre-switch and
+    non-streaming callers have.
     """
     if not _permission_mode_confirm(payload):
         return False
@@ -3910,9 +3931,12 @@ def _confirm_gate_needs_stream(payload) -> bool:
         return True
     if payload.confirm_tool_calls is True:
         return True
-    if getattr(payload, "mcp_enabled", False):
+    if selected_names is not None:
+        enabled = list(selected_names)
+    elif getattr(payload, "mcp_enabled", False):
         return True
-    enabled = getattr(payload, "enabled_tools", None)
+    else:
+        enabled = getattr(payload, "enabled_tools", None)
     if enabled is None:
         return True  # omitted enabled_tools resolves to ALL tools (incl. terminal/python)
     if not enabled:
@@ -3925,6 +3949,124 @@ def _confirm_gate_needs_stream(payload) -> bool:
     # gate can only prompt while streaming. Without this a non-streaming auto request is
     # admitted, then blocks in wait_tool_decision on an approval the client never reads.
     return not all(is_always_safe_tool(t) and t != "web_search" for t in enabled)
+
+
+class _AutoPermissionMode:
+    """``payload`` with its unset permission_mode read as "auto", the loop's own default.
+
+    Applied only when the mode really is unset: an explicit ask must never be softened
+    into auto's leniency.
+    """
+
+    permission_mode = "auto"
+
+    def __init__(self, payload) -> None:
+        self._payload = payload
+
+    def __getattr__(self, name):
+        return getattr(self._payload, name)
+
+
+def _tool_calls_are_disabled(payload) -> bool:
+    """True when no tool call can happen, so no confirm prompt can either.
+
+    stream_with_studio_tools withdraws the catalogue for a turn unless tool_choice is not
+    "none" and the per-message budget is unspent, and discards a call a provider emits
+    under "none" anyway. The selector does not read either field, so a catalogue can be
+    non-empty while nothing in it is reachable.
+    """
+    if getattr(payload, "tool_choice", None) == "none":
+        return True
+    return getattr(payload, "max_tool_calls_per_message", None) == 0
+
+
+def _confirm_gate_has_no_channel(
+    payload,
+    ui_events: bool,
+    selected_names = None,
+) -> bool:
+    """Whether a confirm gate that will prompt has no way to ask this caller.
+
+    Two ways to have nowhere to ask. The gate writes its prompt to the stream, so a
+    non-streaming request cannot be asked (the case _confirm_gate_needs_stream was
+    written for). And the approval_id only ever reaches the caller inside the tool_start
+    control frame (see state.tool_approvals), so a stream that opted out of those frames
+    cannot be asked either: it would park in wait_tool_decision for the full decision
+    timeout on a prompt nobody was shown, holding the decode slot the whole hour.
+
+    A streaming request is only ever refused over a prompt that can actually fire: tool
+    calls must be reachable at all, and an unset permission_mode is read as "auto", the
+    way the loop itself defaults it, so an always-safe selection (deep research sends
+    enabled_tools: []) passes. Non-streaming keeps the reading it has always had.
+    """
+    if getattr(payload, "bypass_permissions", False):
+        return False
+    if not getattr(payload, "stream", False):
+        return _confirm_gate_needs_stream(payload)
+    if ui_events:
+        return False
+    if _tool_calls_are_disabled(payload):
+        return False
+    if _tools_on_by_launcher_default_only(payload):
+        # The request never asked for tools, so it cannot be asked to know about the
+        # header either. `unsloth studio run` installs a tools-on default, and refusing
+        # here would 400 every ordinary OpenAI request on that launcher. The default is
+        # withdrawn for this caller instead (see _launcher_tool_default_applies), so the
+        # loop it could not be prompted for never opens.
+        return False
+    if getattr(payload, "permission_mode", None) is None:
+        payload = _AutoPermissionMode(payload)
+    return _confirm_gate_needs_stream(payload, selected_names)
+
+
+def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
+    """Whether the launcher's tools-on default still answers for this request.
+
+    It answers a request that said nothing about tools. A request that stated its own
+    intent has already answered (the sibling rule at the safetensors and GGUF branches),
+    and so, now, has a stream that cannot be prompted: the confirm gate asks over the
+    control frames, so running a default nobody asked for behind a gate nobody can
+    answer would park the caller in wait_tool_decision on the first high-risk call.
+    Plain chat is what such a request asked for and what it gets.
+    """
+    if not _tools_on_by_launcher_default_only(payload):
+        return True
+    if _request_states_tool_intent(payload):
+        return False
+    return not (getattr(payload, "stream", False) and not ui_events)
+
+
+def _reject_confirm_gate_without_channel(
+    payload,
+    ui_events: bool,
+    monitor_id = None,
+    selected_names = None,
+) -> None:
+    """Refuse a request whose confirm gate would have nowhere to ask.
+
+    Called with the SELECTED catalog in hand, never on intent: mcp_enabled with no MCP
+    tools enabled, or a selection filtered down to nothing, leaves the loop skipped, and
+    refusing there would 400 a request that proxies straight through.
+
+    ``monitor_id`` closes an entry the caller already opened. The stream generator that
+    would otherwise finish it is never reached from here, and a running entry is exempt
+    from trimming, so leaving it open strands /api/inference/monitor in `generating`.
+    """
+    if not _confirm_gate_has_no_channel(payload, ui_events, selected_names):
+        return
+    if monitor_id is not None:
+        api_monitor.fail(monitor_id, "confirm_tool_calls requires an event channel")
+    raise HTTPException(
+        status_code = 400,
+        detail = openai_error_body(
+            "confirm_tool_calls requires stream=true and the X-Unsloth-Events: 1 "
+            'header for local tool execution; set permission_mode to "off" to '
+            "run tools without confirmation.",
+            status = 400,
+            code = "invalid_request_error",
+            param = "confirm_tool_calls",
+        ),
+    )
 
 
 def _anthropic_reasoning_args(payload) -> dict:
@@ -19304,6 +19446,10 @@ async def _proxy_to_external_provider(
         and not _selects_only_provider_hosted_tools(payload, provider_type)
     )
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
+    # The loop relays the same control frames the local routes gate, so this path needs
+    # the same per-request answer (see UI_STREAM_EVENTS_HEADER).
+    _ui_events = _ui_stream_events_enabled(request)
+    _drop_keepalive = _DroppedFrameKeepalive()
     # Unsloth's UI asks for the gate by permission_mode, not by confirm_tool_calls,
     # so reading the raw flag admits the exact request the local routes reject: a
     # non-streaming permission_mode="ask" with the flag omitted proxies through
@@ -19537,6 +19683,12 @@ async def _proxy_to_external_provider(
                 tools_on = _effective_enable_tools(payload) is True,
                 mcp_allowed = bool(payload.mcp_enabled),
             )
+            if studio_tool_payloads:
+                # The loop runs iff the catalog is non-empty (policy below), and its
+                # approval handshake rides the control frames.
+                _reject_confirm_gate_without_channel(
+                    payload, _ui_events, selected_names = _catalog_names(studio_tool_payloads)
+                )
             # The Unsloth loop owns its schemas. Do not also expose a caller-supplied
             # catalog: Codex would return calls that this server is not authorized to run.
             tool_payloads = studio_tool_payloads
@@ -19676,6 +19828,20 @@ async def _proxy_to_external_provider(
                     if cancel_event.is_set() or await request.is_disconnected():
                         await generator.aclose()
                         break
+                    if not _ui_events and is_ui_control_sse_line(line):
+                        if _drop_keepalive.due():
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
+                    if not _ui_events and policy is not None:
+                        # policy is set only when the loop owns the catalogue, so a call
+                        # here is one this server runs, not one to hand to the caller.
+                        line = strip_server_executed_tool_call(line)
+                        if line is None:
+                            # A long argument stream drops every fragment here and, like a
+                            # gated frame, keeps the loop's stall timer from firing.
+                            if _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            continue
                     yield f"{line}\n\n"
                 yield "data: [DONE]\n\n"
             except asyncio.CancelledError:
@@ -19853,6 +20019,12 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
+    if run_studio_tool_loop:
+        # Only once the catalog is known: mcp_enabled with no MCP tools enabled leaves
+        # this empty and skips the loop, so there is no prompt to find a channel for.
+        _reject_confirm_gate_without_channel(
+            payload, _ui_events, monitor_id, _catalog_names(external_studio_tools)
+        )
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
@@ -19985,6 +20157,18 @@ async def _proxy_to_external_provider(
                 # choices: [] chunk. Same rule _cmpl_stream_event_out applies locally.
                 if not _wants_stream_usage(payload) and _is_openai_usage_only_sse(line):
                     continue
+                if not _ui_events and is_ui_control_sse_line(line):
+                    if _drop_keepalive.due():
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    continue
+                if not _ui_events and run_studio_tool_loop:
+                    # Only inside the loop: on a plain proxy the calls are the caller's
+                    # own and must pass through untouched.
+                    line = strip_server_executed_tool_call(line)
+                    if line is None:
+                        if _drop_keepalive.due():
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
                 yield f"{line}\n\n"
                 # Parsed from the line itself, not from monitor_event: with the
                 # monitor disabled the helper returns None for every line, and
@@ -20327,6 +20511,52 @@ def _chat_cancel_event(request: Request) -> threading.Event:
     return event if event is not None else threading.Event()
 
 
+# Unsloth multiplexes its own UI control frames (tool_start / tool_end / tool_output /
+# tool_args / tool_status / reasoning_summary / diffusion_frame) onto the SSE stream of
+# /v1/chat/completions. Those frames carry no `choices`, so strict OpenAI clients --
+# openai-python, the Vercel AI SDK, opencode -- fail schema validation mid-stream and
+# drop the response (their Anthropic route already drops these events for the same
+# reason). Default is therefore a clean OpenAI stream; the Studio UI opts back in with
+# an explicit header. See core.inference.sse_control_frames for the client-side parser.
+UI_STREAM_EVENTS_HEADER = "X-Unsloth-Events"
+
+
+def _ui_stream_events_enabled(request: Optional[Request]) -> bool:
+    """Whether this request opted into Unsloth's UI control frames on an OpenAI stream."""
+    if request is None:
+        return False
+    headers = getattr(request, "headers", None)
+    if headers is None:
+        return False
+    try:
+        value = headers.get(UI_STREAM_EVENTS_HEADER)
+    except Exception:
+        return False
+    return (value or "").strip() == "1"
+
+
+class _DroppedFrameKeepalive:
+    """Paces an SSE keepalive comment in place of dropped UI control frames.
+
+    A stall keepalive is only written while the generator is silent, and a control frame
+    is not silence: it restarts that wait but, once gated off, puts nothing on the wire.
+    A tool streaming stdout emits `tool_output` continuously, which also resets
+    tool_stream_exec's own heartbeat, so a non-opt-in caller would see no bytes for the
+    whole tool run and a Cloudflare quick tunnel drops the stream at ~100s idle. The
+    Anthropic route pays the same cost on the same events; this is its `_last_drop_keepalive`.
+    """
+
+    def __init__(self, now: Optional[float] = None) -> None:
+        self._last = time.monotonic() if now is None else now
+
+    def due(self, now: Optional[float] = None) -> bool:
+        current = time.monotonic() if now is None else now
+        if current - self._last < _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S:
+            return False
+        self._last = current
+        return True
+
+
 @router.post("/chat/completions")
 async def openai_chat_completions(
     payload: ChatCompletionRequest,
@@ -20376,6 +20606,11 @@ async def produce_openai_chat_completions(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
     )
+    # Control frames are opt-in per request (see UI_STREAM_EVENTS_HEADER); captured once
+    # here so every stream generator below shares one answer.
+    _ui_events = _ui_stream_events_enabled(request)
+    # Seeded at stream start, so a tool already chatty past the window still gets one.
+    _drop_keepalive = _DroppedFrameKeepalive()
 
     # OpenAI's newer "developer" role is equivalent to "system". Normalize it
     # before provider routing so external providers (which may not accept the
@@ -20513,6 +20748,11 @@ async def produce_openai_chat_completions(
         _studio_local_tool_loop = bool(_use_tools_intent) and (
             _explicit_studio_tool_loop_requested(payload) or not _client_tool_passthrough
         )
+        # Non-streaming only: this runs before the model switch, so it only has the
+        # request's intent, and mcp_enabled with no MCP tools enabled selects an empty
+        # catalogue and skips the loop. The per-backend guards below refuse a stream that
+        # hid the frames, with the selection in hand. A switch before that refusal is
+        # cheaper than 400ing a request that would have run.
         if (
             not payload.bypass_permissions
             and not payload.stream
@@ -20524,7 +20764,9 @@ async def produce_openai_chat_completions(
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
-                    "confirm_tool_calls requires stream=true for local tool execution.",
+                    "confirm_tool_calls requires stream=true and the X-Unsloth-Events: 1 "
+                    'header for local tool execution; set permission_mode to "off" to '
+                    "run tools without confirmation.",
                     status = 400,
                     code = "invalid_request_error",
                     param = "confirm_tool_calls",
@@ -21133,6 +21375,9 @@ async def produce_openai_chat_completions(
         # the epoch is replayed from the boundary, so the thread never recovers on its
         # own. Measured on a non-streaming request with permission_mode ask, and equally
         # on auto and on a bare confirm_tool_calls, which the validator folds to ask.
+        # Non-streaming only, deliberately: a stream that merely hid the control frames is
+        # refused by the tool branch alone, and widening the window to it would change what
+        # a plain request is handed (tools_withheld).
         or (
             _confirm_gate_needs_stream(payload)
             and not payload.bypass_permissions
@@ -21346,6 +21591,8 @@ async def produce_openai_chat_completions(
 
         _cli_policy = _get_tool_policy_g()
         _tools_on = False if _client_disabled_tool_calls else _effective_enable_tools(payload)
+        if _tools_on and not _launcher_tool_default_applies(payload, _ui_events):
+            _tools_on = False
         _mcp_allowed = (
             not _client_disabled_tool_calls
             and bool(payload.mcp_enabled)
@@ -21418,15 +21665,13 @@ async def produce_openai_chat_completions(
             # (the gate needs streaming to prompt) no longer applies. auto with an
             # always-safe-only selection never prompts, so it needs no stream even
             # though _effective_confirm stays true for the loop's per-call gate.
-            if (
-                _confirm_gate_needs_stream(payload)
-                and not payload.bypass_permissions
-                and not payload.stream
-            ):
+            if _confirm_gate_has_no_channel(payload, _ui_events, _catalog_names(tools_to_use)):
                 raise _reject(
                     400,
                     openai_error_body(
-                        "confirm_tool_calls requires stream=true for local tool execution.",
+                        "confirm_tool_calls requires stream=true and the X-Unsloth-Events: 1 "
+                        'header for local tool execution; set permission_mode to "off" to '
+                        "run tools without confirmation.",
                         status = 400,
                         code = "invalid_request_error",
                         param = "confirm_tool_calls",
@@ -21729,7 +21974,10 @@ async def produce_openai_chat_completions(
                         if event["type"] in ("tool_output", "tool_args"):
                             # Live stdout/stderr or tool-call arguments, forwarded
                             # verbatim for the UI. Final result still arrives in tool_end.
-                            yield f"data: {json.dumps(event)}\n\n"
+                            if _ui_events:
+                                yield f"data: {json.dumps(event)}\n\n"
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             continue
 
                         if event["type"] == "status":
@@ -21744,21 +21992,27 @@ async def produce_openai_chat_completions(
                                 reasoning_extractor = _new_chat_reasoning_extractor()
                             # Emit tool status as a custom SSE event (including
                             # empty ones to clear UI badges)
-                            status_data = json.dumps(
-                                {
-                                    "type": "tool_status",
-                                    "content": event["text"],
-                                }
-                            )
-                            yield f"data: {status_data}\n\n"
+                            if _ui_events:
+                                status_data = json.dumps(
+                                    {
+                                        "type": "tool_status",
+                                        "content": event["text"],
+                                    }
+                                )
+                                yield f"data: {status_data}\n\n"
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             continue
 
                         if event["type"] in ("tool_start", "tool_end"):
                             if event["type"] == "tool_start":
                                 # Tool card is client-visible output; stamp the turn here.
                                 # Not decoded output: the tool run (or a human confirming
-                                # it) before the next turn is not decoding time.
-                                api_monitor.mark_first_token(monitor_id, decoded = False)
+                                # it) before the next turn is not decoding time. Gated with
+                                # the card: the stamp is set once, so a caller that cannot
+                                # see it would report the tool run as its TTFT.
+                                if _ui_events:
+                                    api_monitor.mark_first_token(monitor_id, decoded = False)
                                 for chunk in _flush_reasoning_extractor():
                                     yield chunk
                                 prev_text = ""
@@ -21766,7 +22020,10 @@ async def produce_openai_chat_completions(
                                 # Yielded just before the loop blocks on the user.
                                 await _park_admission(bool(event.get("awaiting_confirmation")))
                                 approval_flush_pending = bool(event.get("awaiting_confirmation"))
-                            yield f"data: {json.dumps(event)}\n\n"
+                            if _ui_events:
+                                yield f"data: {json.dumps(event)}\n\n"
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             continue
 
                         if event["type"] == "metadata":
@@ -21777,7 +22034,10 @@ async def produce_openai_chat_completions(
 
                         if event["type"] == "reasoning_summary":
                             # Forward server-side reasoning timing to the UI.
-                            yield f"data: {json.dumps(event)}\n\n"
+                            if _ui_events:
+                                yield f"data: {json.dumps(event)}\n\n"
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             continue
 
                         if event["type"] == "context_truncated":
@@ -22387,7 +22647,10 @@ async def produce_openai_chat_completions(
                             elif cumulative.get("type") == "diffusion_frame":
                                 # Diffusion frame (per-step canvas): pass through as a raw SSE line on the
                                 # tool_status channel. No assistant text, so it never enters the cumulative diff.
-                                yield f"data: {json.dumps(cumulative)}\n\n"
+                                if _ui_events:
+                                    yield f"data: {json.dumps(cumulative)}\n\n"
+                                elif _drop_keepalive.due():
+                                    yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             elif cumulative.get("type") == "context_truncated":
                                 yield _context_truncated_sse_chunk(
                                     completion_id,
@@ -23008,11 +23271,7 @@ async def produce_openai_chat_completions(
     # _client_disabled_tool_calls and _takes_tool_passthrough; an explicit
     # enable_tools/mcp_enabled ask, or a CLI --enable-tools, still claims the
     # request as before.
-    if (
-        _sf_tools_on
-        and _tools_on_by_launcher_default_only(payload)
-        and _request_states_tool_intent(payload)
-    ):
+    if _sf_tools_on and not _launcher_tool_default_applies(payload, _ui_events):
         _sf_tools_on = False
     _sf_mcp_allowed = bool(payload.mcp_enabled) and _sf_cli_policy is not False
 
@@ -23158,15 +23417,13 @@ async def produce_openai_chat_completions(
         # (the gate needs streaming to prompt) no longer applies. auto with an
         # always-safe-only selection never prompts, so it needs no stream even
         # though _sf_effective_confirm stays true for the loop's per-call gate.
-        if (
-            _confirm_gate_needs_stream(payload)
-            and not payload.bypass_permissions
-            and not payload.stream
-        ):
+        if _confirm_gate_has_no_channel(payload, _ui_events, _catalog_names(_sf_tools_to_use)):
             raise _reject(
                 400,
                 openai_error_body(
-                    "confirm_tool_calls requires stream=true for local tool execution.",
+                    "confirm_tool_calls requires stream=true and the X-Unsloth-Events: 1 "
+                    'header for local tool execution; set permission_mode to "off" to '
+                    "run tools without confirmation.",
                     status = 400,
                     code = "invalid_request_error",
                     param = "confirm_tool_calls",
@@ -23360,7 +23617,10 @@ async def produce_openai_chat_completions(
 
                     if event["type"] in ("tool_output", "tool_args"):
                         # Live stdout/stderr, or tool-call arguments as the model writes them.
-                        yield f"data: {json.dumps(event)}\n\n"
+                        if _ui_events:
+                            yield f"data: {json.dumps(event)}\n\n"
+                        elif _drop_keepalive.due():
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
 
                     if event["type"] == "status":
@@ -23370,26 +23630,34 @@ async def produce_openai_chat_completions(
                                 yield _c
                             prev_text = ""
                             reasoning_extractor = _new_sf_reasoning_extractor()
-                        status_data = json.dumps(
-                            {
-                                "type": "tool_status",
-                                "content": event["text"],
-                            }
-                        )
-                        yield f"data: {status_data}\n\n"
+                        if _ui_events:
+                            status_data = json.dumps(
+                                {
+                                    "type": "tool_status",
+                                    "content": event["text"],
+                                }
+                            )
+                            yield f"data: {status_data}\n\n"
+                        elif _drop_keepalive.due():
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
 
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
-                            # Same as the GGUF loop: visible output, but not decoded.
-                            api_monitor.mark_first_token(monitor_id, decoded = False)
+                            # Same as the GGUF loop, and gated with the card for the same
+                            # reason: the stamp is set once.
+                            if _ui_events:
+                                api_monitor.mark_first_token(monitor_id, decoded = False)
                             # Flush reasoning before tool_start so the thinking block closes ahead of the card.
                             for _c in _sf_flush_reasoning():
                                 yield _c
                             prev_text = ""
                             reasoning_extractor = _new_sf_reasoning_extractor()
                             approval_flush_pending = bool(event.get("awaiting_confirmation"))
-                        yield f"data: {json.dumps(event)}\n\n"
+                        if _ui_events:
+                            yield f"data: {json.dumps(event)}\n\n"
+                        elif _drop_keepalive.due():
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
 
                     # Diff cumulative cleaned text against last snapshot.
