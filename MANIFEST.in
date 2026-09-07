@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# The only veto that travels inside the sdist, so it holds for the wheel too:
-# `python -m build` rebuilds the wheel from the sdist, where exclude-package-data
-# and packages.find no longer bite (no .git tree for the file finder).
+# Kept as defence in depth rather than as the load-bearing veto it once was.
+# The release now builds `python -m build --wheel`, straight from the checkout,
+# where the packages.find and exclude-package-data vetoes in pyproject.toml are
+# what exclude the test suites (verified: that build produces a wheel with zero
+# test paths). These prunes matter only for a bare `python -m build`, which
+# writes an sdist and then builds the wheel FROM it, and there neither pyproject
+# veto bites because the file finder has no .git tree. Anyone doing that locally
+# still gets a clean artifact.
 prune tests
 prune studio/backend/tests
 prune studio/backend/hub/tests
