@@ -596,7 +596,9 @@ def test_the_gate_job_deadline_exceeds_the_gates_own_bound():
     # the gate asks (two surveys back to back would be the bug), and the call
     # still in flight when it expires.
     accounts = len(gate.DEFAULT_ACCOUNT_ENVS)
-    worst = accounts * 3 * gate.SOCKET_TIMEOUT_SEC + gate.SURVEY_BUDGET_SEC + gate.SOCKET_TIMEOUT_SEC
+    worst = (
+        accounts * 3 * gate.SOCKET_TIMEOUT_SEC + gate.SURVEY_BUDGET_SEC + gate.SOCKET_TIMEOUT_SEC
+    )
     before_the_gate = 120
     for path in (WORKFLOW, WORKFLOW.parent / "kaggle-t4-studio-gpu-ci.yml"):
         workflow = pytest.importorskip("yaml").safe_load(path.read_text(encoding = "utf-8"))

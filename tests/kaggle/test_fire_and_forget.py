@@ -1534,8 +1534,20 @@ def test_two_commits_that_share_eight_characters_resolve_apart_and_post_twice(mo
     monkeypatch.setattr(post_statuses, "_gh", _gh)
     statuses = collect.statuses_from(
         [
-            {"slug": "me/unsloth-t4-ci-nabcdef01-1111", "sha": "abcdef01", "kind": "notebook", "verdict": "pass", "reason": "ok"},
-            {"slug": "me/unsloth-t4-ci-nabcdef01ffff-2222", "sha": "abcdef01ffff", "kind": "notebook", "verdict": "fail", "reason": "red"},
+            {
+                "slug": "me/unsloth-t4-ci-nabcdef01-1111",
+                "sha": "abcdef01",
+                "kind": "notebook",
+                "verdict": "pass",
+                "reason": "ok",
+            },
+            {
+                "slug": "me/unsloth-t4-ci-nabcdef01ffff-2222",
+                "sha": "abcdef01ffff",
+                "kind": "notebook",
+                "verdict": "fail",
+                "reason": "red",
+            },
         ]
     )
     outcome = post_statuses.post_all(statuses, "unslothai/unsloth")
@@ -1563,7 +1575,9 @@ def test_a_notebook_kernel_without_its_expected_count_is_never_a_pass(tmp_path, 
     monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
     studio = dict(_ENTRY, kind = "studio", slug = "me/unsloth-t4-ci-sabcdef01-1111")
     api = _StubApi([], {studio["slug"]: "COMPLETE"})
-    assert collect.collect_one(api, studio, tmp_path, expect = 1, max_age_hours = 3.0)["verdict"] == "pass"
+    assert (
+        collect.collect_one(api, studio, tmp_path, expect = 1, max_age_hours = 3.0)["verdict"] == "pass"
+    )
 
 
 def test_every_gate_budget_covers_the_reaper_window():
@@ -1587,10 +1601,9 @@ def test_every_gate_budget_covers_the_reaper_window():
     window = max_age + (interval_min + job["timeout-minutes"]) / 60
     for path in (NOTEBOOK_WF, STUDIO_WF):
         budgets = {
-            int(b)
-            for b in re.findall(r"--budget-hours (\d+)", path.read_text(encoding = "utf-8"))
+            int(b) for b in re.findall(r"--budget-hours (\d+)", path.read_text(encoding = "utf-8"))
         }
         assert len(budgets) == 1, (path.name, budgets)
-        assert budgets.pop() >= window, (
-            f"{path.name}: a wedged kernel can bill {window:.2f}h before it is reaped"
-        )
+        assert (
+            budgets.pop() >= window
+        ), f"{path.name}: a wedged kernel can bill {window:.2f}h before it is reaped"
