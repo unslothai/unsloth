@@ -1283,9 +1283,7 @@ def test_a_repo_that_publishes_no_config_is_settled_by_the_document(tmp_path, mo
     made a cached GGUF-only repo cost this caller two reads where main costs it one."""
     repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", {"model-Q4_K_M.gguf": "x"})
 
-    result, reads = _probe_against_cache(
-        monkeypatch, repo_dir, listed = ("model-Q4_K_M.gguf",)
-    )
+    result, reads = _probe_against_cache(monkeypatch, repo_dir, listed = ("model-Q4_K_M.gguf",))
 
     assert result is None
     assert reads == []

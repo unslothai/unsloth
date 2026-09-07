@@ -600,7 +600,9 @@ def test_a_marker_written_as_an_escape_is_still_found(monkeypatch, tmp_path):
     the miss becomes a definitive negative cached for the life of the process."""
     from utils.models.model_config import _may_hold_audio_tokens
 
-    escaped = _tokenizer("<|audio|>").replace("<", chr(92) + "u003c").replace(">", chr(92) + "u003e")
+    escaped = (
+        _tokenizer("<|audio|>").replace("<", chr(92) + "u003c").replace(">", chr(92) + "u003e")
+    )
     assert "<|audio|>" not in escaped and json.loads(escaped)
     assert not _may_hold_audio_tokens(escaped), "the raw scan is what misses it"
 
