@@ -11,7 +11,17 @@ export type UserPromptQueueStopPlan = {
   pause: boolean;
 };
 
-/** Stop generation without discarding prompts that have not been sent yet. */
+export type PromptQueueTargetCancelMode = "none" | "activeRun" | "permanent";
+
+export function userStopTargetCancelMode(
+  plan: UserPromptQueueStopPlan,
+): PromptQueueTargetCancelMode {
+  if (!plan.cancelActiveItem) {
+    return "none";
+  }
+  return plan.pause ? "activeRun" : "permanent";
+}
+
 export function planUserPromptQueueStop(
   items: readonly PromptQueueUserStopItem[],
   runIndex: number,

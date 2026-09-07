@@ -186,6 +186,7 @@ import {
   notifyPromptQueueRunFailed,
   planLocalPromptQueueStop,
   planUserPromptQueueStop,
+  userStopTargetCancelMode,
   registerQueuedChatRunSettings,
   releasePreStreamRunReservation,
   reservePreStreamRun,
@@ -358,6 +359,7 @@ type PromptQueueTarget = {
   append: (prompt: string) => void | Promise<void>;
   complete: () => void;
   cancel: () => void;
+  cancelActiveRun: () => void;
   isIndexing: () => boolean;
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
@@ -873,6 +875,9 @@ function getPromptQueueItemStatus(
   index: number,
   activeItemIndex: number,
 ): PromptQueueUIItemStatus {
+  if (run.paused && run.index >= 0 && index === activeItemIndex) {
+    return "paused";
+  }
   if (run.index >= 0 && index === activeItemIndex) {
     return run.waitingForTargetIdle ? "waiting" : "next";
   }
@@ -936,6 +941,7 @@ function syncPromptQueueUI() {
       local: promptQueueRunUsesLocalModel(run),
       temporary: promptQueueRunIsTemporary(run),
       dispatched: Boolean(getActivePromptQueueItem(run)?.dispatched),
+      paused: run.paused,
     };
     for (const id of ids) {
       byThreadId[id] = entry;
@@ -1222,16 +1228,11 @@ function startPromptQueue(
   waitForCurrentRun = false,
 ) {
   const filtered = items.map((item) => item.trim()).filter(Boolean);
-  const existingRun = findPromptQueueRunByTarget(target);
   if (filtered.length === 0) {
-    if (existingRun?.paused) {
-      existingRun.paused = false;
-      syncPromptQueueUI();
-      requestPromptQueuePump();
-    }
     return;
   }
 
+  const existingRun = findPromptQueueRunByTarget(target);
   if (existingRun) {
     if (existingRun.deepResearchConsumed) {
       target.consumeDeepResearch();
@@ -1290,13 +1291,14 @@ function getPromptQueueRunsForThreadIds(threadIds?: string[]) {
   return Array.from(runs);
 }
 
-function stopPromptQueueRun(threadIds?: string[]) {
+function pausePromptQueueRun(threadIds?: string[]) {
   for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
     const activeItem = getActivePromptQueueItem(run);
     const plan = planUserPromptQueueStop(
       run.items.map((item) => ({ dispatched: item.dispatched })),
       run.index,
     );
+    const cancelMode = userStopTargetCancelMode(plan);
     if (plan.retainedItemIndexes.length === 0) {
       deletePromptQueueRun(run);
     } else {
@@ -1316,11 +1318,44 @@ function stopPromptQueueRun(threadIds?: string[]) {
         syncPromptQueueUI();
       }
     }
-    if (!plan.cancelActiveItem) {
+    if (cancelMode === "none") {
       continue;
     }
     try {
-      activeItem?.target.cancel();
+      if (cancelMode === "permanent") {
+        activeItem?.target.cancel();
+      } else {
+        activeItem?.target.cancelActiveRun();
+      }
+    } catch {
+      // The active run may have already ended.
+    }
+  }
+  requestPromptQueuePumpIfReady();
+}
+
+function resumePromptQueueRun(threadIds?: string[]) {
+  for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
+    if (!run.paused) {
+      continue;
+    }
+    run.paused = false;
+    syncPromptQueueUI();
+  }
+  requestPromptQueuePumpIfReady();
+}
+
+function stopPromptQueueRun(threadIds?: string[]) {
+  for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
+    const activeItem = getActivePromptQueueItem(run);
+    const activeTarget = activeItem?.target;
+    const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
+    deletePromptQueueRun(run);
+    if (!shouldCancelActiveRun) {
+      continue;
+    }
+    try {
+      activeTarget?.cancel();
     } catch {
       // The active run may have already ended.
     }
@@ -1527,13 +1562,17 @@ interface PromptQueueCallbacks {
     onAborted?: () => void,
   ) => boolean;
   stopQueue: () => void;
+  resumeQueue: () => void;
 }
 const noopStartPromptQueue: PromptQueueCallbacks["startQueue"] = () =>
   false;
 const noopStopPromptQueue: PromptQueueCallbacks["stopQueue"] = () => undefined;
+const noopResumePromptQueue: PromptQueueCallbacks["resumeQueue"] = () =>
+  undefined;
 const PromptQueueContext = createContext<PromptQueueCallbacks>({
   startQueue: noopStartPromptQueue,
   stopQueue: noopStopPromptQueue,
+  resumeQueue: noopResumePromptQueue,
 });
 
 // Gap (px) between last message and floating composer; bottom spacer tracks
@@ -3551,6 +3590,7 @@ const Composer: FC<{
     };
     const pendingSettingsIds = new Set<number>();
     let cancelled = false;
+    let appendEpoch = 0;
     let shouldCorrectPersistedModel: boolean | null = null;
     let initializedFreshThreadId: string | null = null;
     let freshThreadAppendAccepted = false;
@@ -3599,6 +3639,7 @@ const Composer: FC<{
         hasPreStreamRunReservation(getQueueThreadIds()) ||
         Boolean(getThreadRuntime()?.getState().isRunning),
       append: async (prompt) => {
+        const epoch = appendEpoch;
         const thread = getThreadRuntime();
         if (!thread) {
           throw new Error("Prompt queue thread runtime is unavailable");
@@ -3652,6 +3693,7 @@ const Composer: FC<{
           if (
             removeFreshThreadPersistedAfterAbort() ||
             cancelled ||
+            epoch !== appendEpoch ||
             !pendingSettingsIds.has(settingsId)
           ) {
             return;
@@ -3672,6 +3714,7 @@ const Composer: FC<{
             if (
               removeFreshThreadPersistedAfterAbort() ||
               cancelled ||
+              epoch !== appendEpoch ||
               !pendingSettingsIds.has(settingsId)
             ) {
               return;
@@ -3711,6 +3754,11 @@ const Composer: FC<{
           discardQueuedChatRunSettings(settingsId);
         }
         pendingSettingsIds.clear();
+        getThreadRuntime()?.cancelRun();
+      },
+      cancelActiveRun: () => {
+        appendEpoch += 1;
+        discardOldestPendingSettings();
         getThreadRuntime()?.cancelRun();
       },
       isIndexing: () =>
@@ -4706,7 +4754,11 @@ const Composer: FC<{
   );
 
   const stopQueue = useCallback(() => {
-    stopPromptQueueRunForThreadIds(promptQueueThreadIds);
+    pausePromptQueueRun(promptQueueThreadIds);
+  }, [promptQueueThreadIds]);
+
+  const resumeQueue = useCallback(() => {
+    resumePromptQueueRun(promptQueueThreadIds);
   }, [promptQueueThreadIds]);
 
   const startQueue = useCallback(
@@ -4729,7 +4781,11 @@ const Composer: FC<{
     [aui, startHydratedPromptQueue, threadIsRunning, disableQueue],
   );
 
-  const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
+  const queueContextValue: PromptQueueCallbacks = {
+    startQueue,
+    stopQueue,
+    resumeQueue,
+  };
 
   const composerContent = (
     <>
@@ -4867,6 +4923,7 @@ const Composer: FC<{
               // submitting the form, so run the complete queue/capacity path.
               onSendClick={handleSubmit}
               onStopClick={stopQueue}
+              onResumeClick={resumeQueue}
               onDictateClick={startDictation}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
@@ -6327,6 +6384,8 @@ function promptQueueStatusLabel(status: PromptQueueUIItemStatus) {
       return "Waiting";
     case "next":
       return "Next";
+    case "paused":
+      return "Paused";
     case "queued":
       return "Queued";
     default: {
@@ -6574,6 +6633,7 @@ const ComposerRightControls: FC<{
   onQueueClick?: () => void;
   onSendClick?: (event: { preventDefault: () => void }) => void;
   onStopClick?: () => void;
+  onResumeClick?: () => void;
   onDictateClick?: () => void;
   pendingSend?: boolean;
   menuSide?: "top" | "bottom";
@@ -6584,6 +6644,7 @@ const ComposerRightControls: FC<{
   onQueueClick,
   onSendClick,
   onStopClick,
+  onResumeClick,
   onDictateClick,
   pendingSend,
   menuSide,
@@ -6699,7 +6760,20 @@ const ComposerRightControls: FC<{
       </AuiIf>
       {isQueueRunning && !isResearchActive ? (
         <AuiIf condition={({ thread }) => !thread.isRunning}>
-          {queueEntry?.dispatched ? (
+          {queueEntry?.paused ? (
+            <TooltipIconButton
+              tooltip="Resume queue"
+              side="bottom"
+              type="button"
+              variant="default"
+              size="icon"
+              onClick={onResumeClick}
+              className="aui-composer-send ml-1.5 size-9 rounded-full"
+              aria-label="Resume queue"
+            >
+              <FastForwardIcon className="size-[18px] stroke-2" />
+            </TooltipIconButton>
+          ) : queueEntry?.dispatched ? (
             <Button
               type="button"
               variant="default"
