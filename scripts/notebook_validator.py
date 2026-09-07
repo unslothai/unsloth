@@ -1594,9 +1594,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         )
         # A `case` selector sits in the same piece as the first arm, so the arm body keeps the
         # level this piece opened while the substitutions ahead of it do not.
-        selector = zip(body_levels[:-1], test_models[:-1]) if opens_case else zip(body_levels, test_models)
-        sub_conditional = flag or command_flag or any(
-            model is not True for level, model in selector if level
+        selector = (
+            zip(body_levels[:-1], test_models[:-1]) if opens_case else zip(body_levels, test_models)
+        )
+        sub_conditional = (
+            flag or command_flag or any(model is not True for level, model in selector if level)
         )
         for inner in _substitution_bodies(piece):
             ordered.extend(

@@ -4157,7 +4157,9 @@ def test_a_known_branch_outcome_decides_which_body_is_replayed():
         ("!pip install a", True),
         ("!pip install b", True),
     ]
-    assert nv._split_chained("!if false; then pip install a; elif maybe; then pip install b; fi") == [
+    assert nv._split_chained(
+        "!if false; then pip install a; elif maybe; then pip install b; fi"
+    ) == [
         ("!false", False),
         ("!maybe", True),
         ("!pip install b", True),
