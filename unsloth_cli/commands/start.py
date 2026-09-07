@@ -4717,6 +4717,10 @@ def write_openclaw_config(
         search.update({"provider": "none", "fallback": "none"})
         search.pop("model", None)
         search.pop("remote", None)
+    # OpenClaw ORs this flag with OPENCLAW_LOAD_SHELL_ENV, so a persisted true here would
+    # re-enable the login-shell import that hands the session back the provider keys the
+    # launcher drops. The env guard alone cannot reach a config that already says true.
+    _subdict(_subdict(config, "env"), "shellEnv")["enabled"] = False
     # Pin a default model, else OpenClaw drops into its setup agent ("no models available").
     agents = _subdict(config, "agents")
     defaults = _subdict(agents, "defaults")

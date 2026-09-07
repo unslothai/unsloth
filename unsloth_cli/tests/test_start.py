@@ -8796,6 +8796,19 @@ def test_openclaw_state_dir_is_a_real_path_not_a_blank(fake_studio, monkeypatch)
     assert captured["env"]["OPENCLAW_STATE_DIR"].strip()
 
 
+def test_openclaw_config_pins_the_shell_env_fallback_off(fake_studio, tmp_path, monkeypatch):
+    # OpenClaw ORs env.shellEnv.enabled with OPENCLAW_LOAD_SHELL_ENV, so a persisted
+    # true survives the env guard and imports the dropped keys back from a login shell.
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config_path.parent.mkdir(parents = True)
+    config_path.write_text(json.dumps({"env": {"shellEnv": {"enabled": True}}}))
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = json.loads(config_path.read_text())
+    assert config["env"]["shellEnv"]["enabled"] is False
+
+
 def _openclaw_without_the_settings_route(monkeypatch, exc = RuntimeError("404")):
     real = start._http_json
 
