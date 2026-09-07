@@ -32958,6 +32958,11 @@ class LlamaCppBackend:
         _final_length_continuations = 0
         _continue_final = False
         _final_replayed_chars = 0
+        # The same mark for the thought, because a pause inside one carries it back as
+        # `reasoning_content`. Cumulative like `reasoning_text` itself, so without it a
+        # turn paused twice mid-thought sends the first half of the thought to the server
+        # a second time and the model continues a thought it has already been told twice.
+        _final_replayed_reasoning_chars = 0
         # Per ATTEMPT of the final pass, reported to the preemptor exactly as the in-loop
         # stream reports its own. `observe()` is the only thing that plans an eviction and
         # `on_tokens` is the only thing that calls it, so a long forced final answer grew
@@ -32965,8 +32970,13 @@ class LlamaCppBackend:
         # while it decoded thousands more tokens into the shared cache.
         _final_tokens_this_stream = 0
 
-        def _remaining_output_budget() -> "Optional[int]":
+        def _remaining_output_budget(spent_this_attempt = None) -> "Optional[int]":
             """What is left of a cap the CALLER set, or None when they set none.
+
+            ``spent_this_attempt`` overrides the charge for the attempt that has just
+            ended. A pause has already added its own tokens to
+            ``_accumulated_completion_tokens``, and the fallback below would then charge
+            the whole allowance a second time and hand the resumed attempt a cap of zero.
 
             `finish_reason: "length"` does not say which wall was hit. A caller asking for
             at most 100 completion tokens gets it at their own cap, and continuing twice
@@ -32989,8 +32999,13 @@ class LlamaCppBackend:
             # allowance it was given, so charge that. Guessing LOW here is what lets the
             # caller's cap be overrun, which is the defect this exists to prevent.
             _this_attempt = (
-                _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
-            ).get("completion_tokens", 0) or int(stream_payload.get("max_tokens") or 0)
+                spent_this_attempt
+                if spent_this_attempt is not None
+                else (_backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}).get(
+                    "completion_tokens", 0
+                )
+                or int(stream_payload.get("max_tokens") or 0)
+            )
             return max(0, max_tokens - _accumulated_completion_tokens - _this_attempt)
 
         def _continuation_would_be_served(
@@ -33056,6 +33071,18 @@ class LlamaCppBackend:
                     stream_payload,
                     cancel_event,
                     on_respawn = _refit_final_after_respawn,
+                    # The answering pass decodes into the same shared cache as the rounds
+                    # before it, and often for longer, so it has to be interruptible on the
+                    # same signal. Without this the sweep could choose this generation,
+                    # move it to PREEMPTING and set the signal, and the stream would read
+                    # nothing and keep filling KV: the participant then sat in a state no
+                    # later sweep may select, so the cells it was chosen to release were
+                    # never reclaimed and the chats waiting on them waited for room that
+                    # was never coming.
+                    # Conditional, never `preempt_event = preempt_event`, for the reason
+                    # the round stream above gives: a double written against the old
+                    # signature keeps working.
+                    **({} if preempt_event is None else {"preempt_event": preempt_event}),
                 ) as (
                     response,
                     first_token_deadline,
@@ -33067,6 +33094,10 @@ class LlamaCppBackend:
                         response,
                         cancel_event,
                         first_token_deadline = first_token_deadline,
+                        # Opening the stream on the signal is only half of it: this is the
+                        # call that polls it and raises, so the pause is noticed while the
+                        # answer is being written rather than after it has finished.
+                        **({} if preempt_event is None else {"preempt_event": preempt_event}),
                     ):
                         buffer += raw_chunk
                         while "\n" in buffer:
@@ -33517,6 +33548,168 @@ class LlamaCppBackend:
 
             except _LlamaStreamCancelled:
                 return
+            except _preemption.LlamaStreamPreempted:
+                # Paused to free KV while the answer was being written, which is not a
+                # cancel and must not end the turn. The rounds before this one have paused
+                # and resumed since the preemptor was written; this pass did not, so a
+                # turn chosen as a victim here kept decoding, stayed PREEMPTING, and the
+                # room the planner had already counted never came back.
+                #
+                # Same handshake as the round loop above, in the same order, over this
+                # pass's own accumulators: the visible answer this attempt has added since
+                # the last replay, and the thought it was in the middle of.
+                if cancel_event is not None and cancel_event.is_set():
+                    # A user who pressed Stop during a pause still meant Stop. The reader
+                    # already prefers cancel, and this is the second gate for a signal set
+                    # between the two.
+                    return
+                logger.info("llama preemption caught in the final answering pass")
+                _paused_visible = _last_emitted[_final_replayed_chars:]
+                _paused_reasoning = reasoning_text[_final_replayed_reasoning_chars:]
+                # An aborted attempt never receives its terminal chunk, and per-token
+                # timings are opt-in, so both readings are routinely absent and the
+                # estimate is what is left. Charged once, exactly as the round loop
+                # charges its own: uncharged, the controller never learns that the resume
+                # carries the partial back as prompt, and the caller's cap goes unspent so
+                # a turn paused n times may emit (n+1) times what it asked for.
+                _pre_usage_f = (
+                    _backfill_usage_from_timings(_metadata_usage, _metadata_timings) or {}
+                )
+                _pre_charged_f = int(
+                    _pre_usage_f.get("completion_tokens") or 0
+                ) or self._preempt_charged(_paused_visible, _paused_reasoning)
+                _checkpoint_f = _preemption.StreamCheckpoint(
+                    visible_text = _paused_visible,
+                    reasoning_text = _paused_reasoning,
+                    charged_tokens = _pre_charged_f,
+                    resumes = _preempt_resumes + 1,
+                    reason = getattr(preempt_event, "reason", None),
+                )
+
+                def _final_pause_gave_up():
+                    """End the turn the way a client can read, not by falling silent.
+
+                    The notice saying why the answer stopped, then a terminal metadata
+                    carrying `length`, which is the shape the client already resumes from.
+                    Whatever this pass has streamed stays on screen; the round loop's
+                    give-up can fall through to this pass, but this pass has nothing after
+                    it, so the two events are all the user gets.
+                    """
+                    yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
+                    _gave_up_meta = _build_metadata_event(
+                        _metadata_usage, _metadata_timings, "length"
+                    )
+                    if _gave_up_meta is not None:
+                        yield _gave_up_meta
+
+                if _preempt_resumes >= _MAX_PREEMPT_RESUMES:
+                    # Churning rather than progressing. Refusing to pause again is better
+                    # than pausing forever, and the admitted output clamp still bounds
+                    # what this request can occupy.
+                    logger.warning(
+                        "Not pausing the final answer again after %d resumes; finishing "
+                        "the turn instead",
+                        _preempt_resumes,
+                    )
+                    if preempt_event is not None:
+                        preempt_event.clear()
+                    yield from _final_pause_gave_up()
+                    return
+                _preempt_resumes += 1
+                _accumulated_completion_tokens += _pre_charged_f
+                _it_p_f = _metadata_timings or {}
+                _accumulated_predicted_ms += _it_p_f.get("predicted_ms", 0)
+                _accumulated_predicted_n += _it_p_f.get("predicted_n", 0)
+                try:
+                    preempt_policy.on_preempted(_checkpoint_f)
+                except Exception:
+                    logger.debug(
+                        "preemption policy raised on pause; resuming anyway", exc_info = True
+                    )
+                # Yielded AFTER on_preempted, so the signal cannot reach the client before
+                # the lease it describes has gone back, and before the wait below, which
+                # can last minutes.
+                yield {"type": "preempt", "state": "paused"}
+                try:
+                    _resumed_f = preempt_policy.await_resume()
+                    # Cleared BEFORE `on_resumed`, for the reason the round loop gives at
+                    # length: afterwards it races the sweep and can erase a pause that has
+                    # already been counted as room.
+                    if preempt_event is not None:
+                        preempt_event.clear()
+                    preempt_policy.on_resumed()
+                except Exception:
+                    logger.debug("preemption policy raised; resuming anyway", exc_info = True)
+                    _resumed_f = True
+                    if preempt_event is not None:
+                        preempt_event.clear()
+                if not _resumed_f:
+                    logger.info(
+                        "Paused final answer was not resumed; ending the turn with what "
+                        "it has and telling the client"
+                    )
+                    yield from _final_pause_gave_up()
+                    return
+                # Paired with the pause above, so a client that shows one shows the other.
+                yield {"type": "preempt", "state": "resumed"}
+                # The partial goes back as the turn to EXTEND, which is what the length
+                # continuation of this pass does and what the round loop does, through the
+                # same assembler: prose returns as `content` to be continued, a thought as
+                # `reasoning_content` to be re-opened. Assembling must never be able to
+                # end the turn, so any failure degrades to re-issuing the attempt whole,
+                # which is the path a pause before the first token already takes.
+                _resume_messages = list(stream_payload["messages"])
+                _merged_p = trailing_assistant_text(_resume_messages) is not None
+                try:
+                    _resume_continues = self._assemble_preempt_resume(
+                        _resume_messages, _checkpoint_f, _paused_visible, _paused_reasoning
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not assemble a preemption resume for the final answer; "
+                        "re-issuing the attempt whole and continuing",
+                        exc_info = True,
+                    )
+                    _resume_continues = False
+                if _resume_continues:
+                    # The replay is text the MODEL just produced, and the first payload
+                    # neutralized everything it carried, so a template delimiter inside it
+                    # would otherwise be read back as chat structure.
+                    _resume_messages = neutralize_control_markup_in_messages(
+                        _resume_messages, None, self.markup_profile
+                    )
+                    _resume_tail = _resume_messages[-1:]
+                    stream_payload["messages"] = _resume_messages
+                    _record_refit_tail(_resume_messages, _resume_tail, _merged_p)
+                    # Marked as replayed, so a second pause sends only what is new. Both
+                    # accumulators are cumulative across the attempts of this pass, and
+                    # handing them back whole a second time shows the user the same
+                    # sentence twice.
+                    _final_replayed_chars = len(_last_emitted)
+                    _final_replayed_reasoning_chars = len(reasoning_text)
+                    stream_payload["continue_final_message"] = True
+                    stream_payload["add_generation_prompt"] = False
+                # `max_tokens` bounds NEW tokens and this attempt's are already in the
+                # accumulator, so nothing more is spent here. Floored at 1: a request for
+                # zero tokens returns nothing at all, which would turn a pause into a
+                # silently empty turn.
+                _cap_left_p = _remaining_output_budget(0)
+                if _cap_left_p is not None:
+                    stream_payload["max_tokens"] = max(1, _cap_left_p)
+                _stream_done = False
+                _metadata_finish_reason = None
+                # Per attempt, like the finish reason: this attempt's charge has just been
+                # folded into the accumulator, so leaving these here would charge them a
+                # second time to a next attempt that reports none.
+                _metadata_usage = None
+                _metadata_timings = None
+                # The resumed attempt starts from what is on screen now, so a resume that
+                # shows nothing new is judged on its own.
+                _attempt_started_at = _last_emitted
+                # No blank status and no cleared display, for the reason the length
+                # continuation gives: this pass keeps `cumulative` across attempts, and a
+                # client whose cursor was reset is sent the partial twice.
+                continue
             except httpx.ConnectError:
                 raise RuntimeError("Lost connection to llama-server")
             except Exception as e:
