@@ -92,6 +92,11 @@ def test_export_commands_seed_compile_location(tmp_path, command_name):
 
     env = dict(os.environ)
     env.pop("UNSLOTH_COMPILE_LOCATION", None)
+    # UNSLOTH_STUDIO_HOME and STUDIO_HOME both outrank UNSLOTH_HOME in the resolver, so an
+    # inherited one (studio/backend/tests/conftest.py sets a session-scoped UNSLOTH_STUDIO_HOME,
+    # and a developer may export either) would send the probe somewhere this test never named.
+    for key in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UNSLOTH_PORTABLE"):
+        env.pop(key, None)
     env.update(
         HOME = str(tmp_path / "home"),
         UNSLOTH_HOME = str(unsloth_home),
