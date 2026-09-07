@@ -52,12 +52,10 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     # case in this file reads its stdout, so an interpreter that died at startup would surface as install.ps1 losing
     # half a moved environment.
     # See tests/_shared/unsloth_pwsh_runner.py.
-    #
     # Both ends of the pipe are pinned to UTF-8. `text = True` alone decodes with the LOCALE codec, cp1252 on the
-    # GitHub Windows runners, so a non-ASCII path came back doubly encoded -- `ä` written as UTF-8 and read as
-    # cp1252 is `Ã¤` -- and test_a_non_ascii_marker_survives_the_rollback failed on both shells against an
-    # install.ps1 that had done nothing wrong. `[Console]::OutputEncoding` is the child's half: Windows PowerShell
-    # 5.1 otherwise encodes a redirected stream with the console's OEM code page, which is not UTF-8 either.
+    # Windows runners, so a non-ASCII path came back doubly encoded and the rollback case failed against an
+    # install.ps1 that had done nothing wrong. `[Console]::OutputEncoding` is the child's half: 5.1 otherwise
+    # writes a redirected stream in the console's OEM code page.
     result = run_pwsh(
         [
             shell,
@@ -1029,10 +1027,8 @@ try {{
 
 
 def test_the_powershell_pipe_is_utf8_at_both_ends(monkeypatch):
-    """`text = True` alone decodes with the LOCALE codec, cp1252 on the Windows runners, so a
-    non-ASCII path came back doubly encoded and the rollback case failed against an install.ps1
-    that had done nothing wrong. Pinned here because the decode is invisible on a UTF-8 host:
-    both the child's output encoding and this side's decode have to name UTF-8."""
+    """The decode is invisible on a UTF-8 host, so both ends are pinned here: the child's output
+    encoding and this side's decode have to name UTF-8."""
     import tests.python.test_windows_python_venv_hardening as module
 
     seen = {}
