@@ -446,7 +446,9 @@ class TestExplicitFlagsThroughTheRealCli:
         assert load.supplied == frozenset()
         assert load.overrides() == frozenset()
 
-    @pytest.mark.parametrize("command", ["codex", "claude", "opencode", "hermes", "pi", "openclaw"])
+    @pytest.mark.parametrize(
+        "command", ["codex", "claude", "opencode", "hermes", "pi", "openclaw", "dsh"]
+    )
     def test_every_agent_command_tracks_flags_identically(self, command):
         load = self._load_for([command, "--no-launch", "--context-length", "0"])
         assert load is not None, f"{command} never reached _connect"
