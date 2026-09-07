@@ -19,7 +19,6 @@ from auth.authentication import (
     get_current_credential,
     require_ui_session_for_local_commands,
 )
-from hub.utils.hf_tokens import hf_token_arg
 from auth.storage import CredentialRotated
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
@@ -551,17 +550,18 @@ def job_dataset(
 def publish_job_dataset(
     job_id: str,
     payload: PublishDatasetRequest,
-    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     repo_id = payload.repo_id.strip()
     description = payload.description.strip()
-    # Same three-state token as Hub reads: an API key with no body token must
-    # not inherit the operator's HF_TOKEN. Collapsing the sentinel with `or`
-    # would restore ambient access.
-    hf_token = hf_token_arg(
-        payload.hf_token.strip() if isinstance(payload.hf_token, str) else None,
-        allow_ambient_token = allow_ambient_token,
-    )
+    hf_token = payload.hf_token.strip() if isinstance(payload.hf_token, str) else None
+    hf_token = hf_token or None
+    # publish_recipe_dataset hands this to the Hub client, so None publishes as the host.
+    if hf_token is None and not allow_ambient:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Hugging Face token is required to publish datasets when authenticated via API key.",
+        )
     artifact_path = (
         payload.artifact_path.strip() if isinstance(payload.artifact_path, str) else None
     )
@@ -594,7 +594,7 @@ def publish_job_dataset(
             artifact_path = artifact_path,
             repo_id = repo_id,
             description = description,
-            hf_token = hf_token,
+            hf_token = hf_token or None,
             private = payload.private,
         )
     except RecipeDatasetPublishError as exc:

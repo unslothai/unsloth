@@ -47,11 +47,6 @@ router = APIRouter()
 logger = get_logger(__name__)
 
 
-def _export_hub_token(hf_token: Optional[str], allow_ambient_token: bool) -> HfTokenArg:
-    """Resolve a body token under the same caller boundary as Hub reads."""
-    return hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
-
-
 async def _ensure_export_supported() -> None:
     """Reject a mutating export request up front (HTTP 400) when the host can't export.
 
@@ -80,9 +75,31 @@ async def _ensure_export_supported() -> None:
         )
 
 
+def _resolve_export_hf_token(
+    raw_token: Optional[str],
+    *,
+    push_to_hub: bool = False,
+    allow_ambient: bool = True,
+) -> HfTokenArg:
+    """The credential this export runs under, as the anonymous-aware sentinel.
+
+    ``None`` reads downstream as "go and find a credential" (``if token is None:
+    get_token()``), so a caller denied the ambient token is spelled ``False``.
+    """
+    token = raw_token.strip() if isinstance(raw_token, str) and raw_token.strip() else None
+    if push_to_hub and token is None and not allow_ambient:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Hugging Face token is required to push to Hub when authenticated via API key.",
+        )
+    return hf_token_arg(token, allow_ambient_token = allow_ambient)
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
-    request: LoadCheckpointRequest, current_subject: str = Depends(get_current_subject)
+    request: LoadCheckpointRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Load a checkpoint into the export backend (ExportBackend.load_checkpoint).
 
@@ -103,7 +120,9 @@ async def load_checkpoint(
             load_in_4bit = request.load_in_4bit,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-            hf_token = request.hf_token,
+            hf_token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient),
+            # A supplied token cannot say whether it came from a session or an API key.
+            allow_ambient = allow_ambient,
             subject = current_subject,
         )
 
@@ -311,7 +330,7 @@ def _export_details(
 async def export_merged_model(
     request: ExportMergedModelRequest,
     current_subject: str = Depends(get_current_subject),
-    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export a merged PEFT model (16-bit or 4-bit), optionally pushing to Hub.
 
@@ -326,7 +345,11 @@ async def export_merged_model(
             format_type = request.format_type,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = _export_hub_token(request.hf_token, allow_ambient_token),
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             compressed_method = request.compressed_method,
         )
@@ -358,7 +381,7 @@ async def export_merged_model(
 async def export_base_model(
     request: ExportBaseModelRequest,
     current_subject: str = Depends(get_current_subject),
-    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export a non-PEFT base model, optionally pushing to Hub.
 
@@ -372,7 +395,11 @@ async def export_base_model(
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = _export_hub_token(request.hf_token, allow_ambient_token),
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             base_model_id = request.base_model_id,
         )
@@ -404,7 +431,7 @@ async def export_base_model(
 async def export_gguf(
     request: ExportGGUFRequest,
     current_subject: str = Depends(get_current_subject),
-    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export the current model to GGUF format, optionally pushing to Hub.
 
@@ -421,7 +448,11 @@ async def export_gguf(
             quantization_method = request.quantization_method,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = _export_hub_token(request.hf_token, allow_ambient_token),
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             imatrix_file = imatrix_file,
             private = request.private,
             gguf_shard_size = request.gguf_shard_size,
@@ -454,7 +485,7 @@ async def export_gguf(
 async def export_lora_adapter(
     request: ExportLoRAAdapterRequest,
     current_subject: str = Depends(get_current_subject),
-    allow_ambient_token: bool = Depends(allow_ambient_hf_token),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """Export only the LoRA adapter (if the loaded model is PEFT).
 
@@ -468,7 +499,11 @@ async def export_lora_adapter(
             save_directory = request.save_directory,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
-            hf_token = _export_hub_token(request.hf_token, allow_ambient_token),
+            hf_token = _resolve_export_hf_token(
+                request.hf_token,
+                push_to_hub = request.push_to_hub,
+                allow_ambient = allow_ambient,
+            ),
             private = request.private,
             gguf = request.gguf,
             gguf_outtype = request.gguf_outtype,
