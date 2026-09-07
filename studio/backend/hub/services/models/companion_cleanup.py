@@ -146,7 +146,12 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
     return _impl(repo_id, variant)
 
 
-def companion_delete_dependents(repo_id, variant = None, cache_path = None, cache_scans = None):
+def companion_delete_dependents(
+    repo_id,
+    variant = None,
+    cache_path = None,
+    cache_scans = None,
+):
     """Dependents blocked by this deletion, unless another copy retains its assets."""
     from hub.utils.hf_cache_state import resolve_delete_target_root
 

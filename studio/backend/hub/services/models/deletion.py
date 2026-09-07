@@ -786,7 +786,9 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
 
 
 def _companion_share_blocks_delete(
-    repo_id: str, variant: Optional[str] = None, cache_path: Optional[str] = None
+    repo_id: str,
+    variant: Optional[str] = None,
+    cache_path: Optional[str] = None,
 ) -> Optional[str]:
     """The 400 detail when installed models still need *repo_id*'s shared assets, else None."""
     from hub.services.models import companion_cleanup
