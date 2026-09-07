@@ -112,7 +112,7 @@ if __name__ == '__main__':
     assert len(records) == 1
 
 
-def test_actual_python_https_allowlist(native_session, monkeypatch):
+def _assert_actual_python_https_allowlist(monkeypatch):
     import urllib.request
     from core.inference import tools, os_sandbox
 
@@ -142,6 +142,52 @@ else:
     assert len(records) == 1
     assert records[0].network_policy == "allowlist"
     assert records[0].network_allowlist == ("pypi.org",)
+
+
+def test_actual_python_https_allowlist(native_session, monkeypatch):
+    _assert_actual_python_https_allowlist(monkeypatch)
+
+
+@pytest.mark.parametrize("cafile_setting", ["missing", "empty"])
+def test_https_hashed_capath_without_cafile(native_session, monkeypatch, cafile_setting):
+    import re
+    import ssl
+    import tempfile
+    from pathlib import Path
+
+    defaults = ssl.get_default_verify_paths()
+    source = next(
+        (
+            Path(value)
+            for value in (defaults.capath, defaults.openssl_capath)
+            if value and Path(value).is_dir()
+        ),
+        None,
+    )
+    if source is None:
+        pytest.skip("host OpenSSL has no hashed certificate directory")
+    # This owned trust directory is outside the tool workdir; links resolve to
+    # existing public trust files that the sandbox must not broadly grant.
+    with tempfile.TemporaryDirectory(prefix = "unsloth-srt-capath-") as directory:
+        capath = Path(directory) / "certs"
+        capath.mkdir(mode = 0o700)
+        count = 0
+        for entry in source.iterdir():
+            if re.fullmatch(r"[0-9a-fA-F]{8}\.[0-9]+", entry.name) and entry.is_file():
+                target = entry.resolve(strict = True)
+                assert not target.is_relative_to(native_session)
+                (capath / entry.name).symlink_to(target)
+                count += 1
+        if not count:
+            pytest.skip("host trust directory contains no hashed certificate files")
+        monkeypatch.setenv(
+            "SSL_CERT_FILE",
+            str(Path(directory) / "missing.pem") if cafile_setting == "missing" else "",
+        )
+        monkeypatch.setenv("SSL_CERT_DIR", str(capath))
+        monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising = False)
+        assert ssl.get_default_verify_paths().cafile is None
+        _assert_actual_python_https_allowlist(monkeypatch)
 
 
 @pytest.mark.skipif(

@@ -132,3 +132,62 @@ def test_disabled_timeout_is_not_reported_as_enforced(tool_session):
         )
     )
     assert "timeout" not in prepared.execution_record.retained_safeguards
+
+
+@pytest.mark.parametrize("failure_stage", ["transport", "request"])
+def test_allowlist_setup_failure_closes_trust_snapshot(tmp_path, monkeypatch, failure_stage):
+    import sys
+    from core.inference import srt_network
+
+    closed = []
+
+    class Trust:
+        environment = {}
+        read_roots = ()
+
+        def start(self):
+            return self
+
+        def close(self):
+            closed.append("trust")
+
+    class Transport:
+        environment = {}
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            if failure_stage == "transport":
+                raise OSError("controlled setup failure")
+            return self
+
+        def close(self):
+            closed.append("transport")
+
+    def refuse_request(*args, **kwargs):
+        raise os_sandbox.srt_adapter.SrtError("controlled setup failure")
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_TOOL_NETWORK_ALLOWLIST", "pypi.org")
+    monkeypatch.setattr(
+        os_sandbox,
+        "capability_snapshot",
+        lambda **kwargs: os_sandbox.SandboxCapability(
+            "srt", False, "controlled", available = True, network_policies = ("deny", "allowlist")
+        ),
+    )
+    monkeypatch.setattr(srt_network, "TlsTrustSnapshot", Trust)
+    monkeypatch.setattr(srt_network, "SrtNetworkTransport", Transport)
+    monkeypatch.setattr(os_sandbox.srt_adapter, "request_for", refuse_request)
+    with pytest.raises(os_sandbox.SandboxUnavailableError, match = "controlled setup failure"):
+        os_sandbox.prepare_tool_launch(
+            os_sandbox.ToolLaunchPlan(
+                argv = (sys.executable, "-c", "print(1)"),
+                workdir = str(tmp_path),
+                env = {},
+                requested_mode = "os_isolation_required",
+                timeout_seconds = 5,
+                network_policy = "allowlist",
+            )
+        )
+    assert closed == (["trust"] if failure_stage == "transport" else ["transport", "trust"])

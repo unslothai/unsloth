@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, BinaryIO, Callable, Literal
 from loggers import get_logger
 from .network_proxy import NetworkAudit
-from .network_proxy import AllowlistProxy, NetworkAllowlist, tls_trust_paths, tls_trust_environment
+from .network_proxy import AllowlistProxy, NetworkAllowlist
 
 logger = get_logger(__name__)
 ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
@@ -389,30 +389,32 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                     f"OS_ISOLATION_UNAVAILABLE: {capability.reason} {capability.remediation}"
                 )
             transport = None
+            trust_store = None
             allowlist_hosts = ()
             launch_env = dict(canonical.env)
             extra_reads = ()
-            if canonical.network_policy == "allowlist":
-                if "allowlist" not in capability.network_policies:
-                    raise SandboxUnavailableError("SRT HTTPS allowlist transport is not qualified")
-                from .srt_network import SrtNetworkTransport
-
-                allowlist = NetworkAllowlist.from_env()
-                launch_env.update(
-                    {key: os.path.realpath(value) for key, value in tls_trust_environment().items()}
-                )
-                extra_reads = tls_trust_paths()
-                transport = SrtNetworkTransport(
-                    AllowlistProxy(allowlist),
-                    lifetime_seconds = (
-                        None
-                        if canonical.timeout_seconds is None
-                        else canonical.timeout_seconds + 60
-                    ),
-                ).start()
-                allowlist_hosts = allowlist.hosts
-                launch_env.update(transport.environment)
             try:
+                if canonical.network_policy == "allowlist":
+                    if "allowlist" not in capability.network_policies:
+                        raise SandboxUnavailableError(
+                            "SRT HTTPS allowlist transport is not qualified"
+                        )
+                    from .srt_network import SrtNetworkTransport, TlsTrustSnapshot
+
+                    allowlist = NetworkAllowlist.from_env()
+                    trust_store = TlsTrustSnapshot().start()
+                    launch_env.update(trust_store.environment)
+                    extra_reads = trust_store.read_roots
+                    transport = SrtNetworkTransport(
+                        AllowlistProxy(allowlist),
+                        lifetime_seconds = (
+                            None
+                            if canonical.timeout_seconds is None
+                            else canonical.timeout_seconds + 60
+                        ),
+                    ).start()
+                    allowlist_hosts = allowlist.hosts
+                    launch_env.update(transport.environment)
                 request = srt_adapter.request_for(
                     canonical.argv,
                     canonical.workdir,
@@ -427,8 +429,12 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                         "socatPath": srt_adapter.socat_executable(),
                     }
             except Exception as exc:
-                if transport is not None:
-                    transport.close()
+                try:
+                    if transport is not None:
+                        transport.close()
+                finally:
+                    if trust_store is not None:
+                        trust_store.close()
                 raise SandboxUnavailableError(str(exc)) from exc
             record = ToolExecutionRecord(
                 requested_mode = "os_isolation_required",
@@ -459,6 +465,8 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
             if transport is not None:
                 prepared.cleanup_callbacks.append(transport.close)
                 prepared.network_audit = transport.proxy.audit
+            if trust_store is not None:
+                prepared.cleanup_callbacks.append(trust_store.close)
 
             def launch(_prepared, kwargs):
                 try:

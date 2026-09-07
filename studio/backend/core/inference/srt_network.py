@@ -12,10 +12,97 @@ from pathlib import Path
 import socket
 import tempfile
 import threading
+import shutil
+import stat
 
 from .network_proxy import AllowlistProxy, PROXY_ENV_KEYS, NO_PROXY_VALUE
+from .network_proxy import _openssl_default_paths, _HASHED_CERT_RE, MAX_CAPATH_ENTRIES
 
 logger = logging.getLogger(__name__)
+
+MAX_TRUST_SNAPSHOT_BYTES = 16 * 1024 * 1024
+
+
+class TlsTrustSnapshot:
+    """Expose selected OpenSSL trust without exposing symlink target directories."""
+
+    def __init__(self, base_environment=None, *, parent_dir=None):
+        self._base = dict(os.environ if base_environment is None else base_environment)
+        self._parent_dir = parent_dir
+        self._directory = None
+        self.environment = {}
+        self.read_roots = ()
+        self._started = False
+
+    def start(self):
+        if self._started:
+            raise RuntimeError("TLS trust snapshot cannot be reused")
+        self._started = True
+        try:
+            cafile, capath = _openssl_default_paths()
+            cafile = self._base.get("SSL_CERT_FILE", cafile)
+            capath = self._base.get("SSL_CERT_DIR", capath)
+            roots = []
+            # Preserve explicit absent/empty stores instead of installing a fallback.
+            for key in ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE"):
+                if key in self._base:
+                    self.environment[key] = self._base[key]
+            if cafile and os.path.isfile(cafile):
+                cafile = os.path.realpath(cafile)
+                roots.append(cafile)
+                self.environment["SSL_CERT_FILE"] = cafile
+                if "REQUESTS_CA_BUNDLE" not in self._base:
+                    self.environment["REQUESTS_CA_BUNDLE"] = cafile
+            requests_bundle = self._base.get("REQUESTS_CA_BUNDLE")
+            if requests_bundle and os.path.isfile(requests_bundle):
+                requests_bundle = os.path.realpath(requests_bundle)
+                self.environment["REQUESTS_CA_BUNDLE"] = requests_bundle
+                if requests_bundle not in roots:
+                    roots.append(requests_bundle)
+            if capath and os.path.isdir(capath):
+                self._directory = Path(tempfile.mkdtemp(prefix="srt-trust-", dir=self._parent_dir))
+                os.chmod(self._directory, 0o700)
+                count = total = 0
+                with os.scandir(capath) as entries:
+                    for entry in entries:
+                        if not _HASHED_CERT_RE.fullmatch(entry.name):
+                            continue
+                        # Follow only leaf trust entries; never copy a directory tree.
+                        if not entry.is_file(follow_symlinks=True):
+                            continue
+                        count += 1
+                        if count > MAX_CAPATH_ENTRIES:
+                            raise ValueError("TLS trust snapshot exceeds certificate entry limit")
+                        fd = os.open(entry.path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+                        with os.fdopen(fd, "rb") as source:
+                            if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                                raise ValueError("TLS trust entry is not a regular file")
+                            data = source.read(MAX_TRUST_SNAPSHOT_BYTES - total + 1)
+                        total += len(data)
+                        if total > MAX_TRUST_SNAPSHOT_BYTES:
+                            raise ValueError("TLS trust snapshot exceeds byte limit")
+                        target = self._directory / entry.name
+                        with target.open("xb") as output:
+                            output.write(data)
+                        os.chmod(target, 0o600)
+                self.environment["SSL_CERT_DIR"] = str(self._directory)
+                roots.append(str(self._directory))
+            self.read_roots = tuple(roots)
+            return self
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        if self._directory is not None:
+            shutil.rmtree(self._directory)
+            self._directory = None
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *_exc):
+        self.close()
 
 
 class SrtNetworkTransport:
@@ -89,7 +176,7 @@ class SrtNetworkTransport:
                 raise RuntimeError("network transport cannot be reused")
             self._started = True
             try:
-                self._directory = Path(tempfile.mkdtemp(prefix = "srt-net-", dir = self._parent_dir))
+                self._directory = Path(tempfile.mkdtemp(prefix="srt-net-", dir=self._parent_dir))
                 os.chmod(self._directory, 0o700)
                 # The private listener API validates ownership before enabling
                 # socket authority and takes ownership even when it raises.
@@ -97,16 +184,16 @@ class SrtNetworkTransport:
                 self._socks = self._listener(self.socks_socket_path)
                 self._socks.settimeout(0.1)
                 self._refuser = threading.Thread(
-                    target = self._refuse_socks,
-                    name = "srt-socks-refusal",
-                    daemon = True,
+                    target=self._refuse_socks,
+                    name="srt-socks-refusal",
+                    daemon=True,
                 )
                 self._refuser.start()
                 if self._lifetime is not None:
                     self._watchdog = threading.Thread(
-                        target = self._expire,
-                        name = "srt-network-lifetime",
-                        daemon = True,
+                        target=self._expire,
+                        name="srt-network-lifetime",
+                        daemon=True,
                     )
                     self._watchdog.start()
                 return self
@@ -180,12 +267,12 @@ class SrtNetworkTransport:
         current = threading.current_thread()
         for worker in (self._refuser, self._watchdog):
             if worker is not None and worker is not current and worker.ident is not None:
-                worker.join(timeout = 1)
+                worker.join(timeout=1)
                 if worker.is_alive():
                     raise RuntimeError("SRT network transport worker did not stop")
         if self._directory is not None:
             for name in ("http.sock", "socks.sock"):
-                (self._directory / name).unlink(missing_ok = True)
+                (self._directory / name).unlink(missing_ok=True)
             self._directory.rmdir()
         if proxy_error is not None:
             raise RuntimeError("SRT proxy cleanup failed") from proxy_error
