@@ -21,6 +21,9 @@ function Install-UnslothStudio {
     $script:StudioUvMarkerSaved = $false
     $script:StudioUvMarkerExisted = $false
     $script:StudioUvMarkerPrevious = $null
+    # One flag for both rollbacks: clearing them separately leaves a window either way
+    # round, where an interruption restores one half of a committed install.
+    $script:StudioInstallCommitted = $false
 
     # The user's PowerShell profile has already run by the time this does, and the documented
     # piped web entry point documented in the README has no script file to re-launch
@@ -1260,7 +1263,11 @@ public static class UnslothStudioFinalPathV2
             # Under "Stop", Test-Path inside an ACL-denied directory throws.
             $existing = Test-Path -LiteralPath $markerFile -ErrorAction SilentlyContinue
             if ($existing) {
-                $previous = Get-Content -LiteralPath $markerFile -Raw -ErrorAction SilentlyContinue
+                # UTF8, not the default: Windows PowerShell 5.1 decodes a BOM-less file
+                # with the active ANSI code page, and the update writes this one BOM-less
+                # UTF-8, so a non-ASCII path came back as mojibake and was restored that way.
+                $previous = Get-Content -LiteralPath $markerFile -Raw -Encoding UTF8 `
+                    -ErrorAction SilentlyContinue
                 # One we cannot read is one we cannot put back, so leave it alone.
                 if ($null -eq $previous) { return }
                 $script:StudioUvMarkerPrevious = $previous
@@ -1290,6 +1297,7 @@ public static class UnslothStudioFinalPathV2
         # AllowEmptyString and the blank guard: a throw here would be reported as a
         # failed environment restore.
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$StudioRoot)
+        if ($script:StudioInstallCommitted) { return }
         if (-not $script:StudioUvMarkerSaved) { return }
         if ([string]::IsNullOrWhiteSpace($StudioRoot)) { return }
         $markerFile = Join-Path (Join-Path $StudioRoot "cache") "uv-cache-dir"
@@ -1311,6 +1319,15 @@ public static class UnslothStudioFinalPathV2
         $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
         if (-not [string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
             $script:StudioUvCacheMode = "custom"
+            # Absolute before anything uses it, so every phase of one install and the
+            # marker name the same directory (see _absolutize_uv_cache_dir in install.sh).
+            if (-not [System.IO.Path]::IsPathRooted($env:UV_CACHE_DIR)) {
+                try {
+                    $env:UV_CACHE_DIR = [System.IO.Path]::GetFullPath(
+                        (Join-Path $PWD.Path $env:UV_CACHE_DIR)
+                    )
+                } catch { }
+            }
             # Recorded like any other choice; a caller still outranks the marker.
             Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $env:UV_CACHE_DIR
             step "uv cache" "preserving custom UV_CACHE_DIR ($env:UV_CACHE_DIR)"
@@ -4297,6 +4314,9 @@ exit 0
     }
 
     function Restore-StudioVenvRollback {
+        # The same flag the marker restore consults, so an interruption mid-commit cannot
+        # put one half of a committed install back and keep the other.
+        if ($script:StudioInstallCommitted) { return }
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
@@ -4348,7 +4368,10 @@ exit 0
     }
 
     function Complete-StudioVenvRollback {
-        # Above the early return: a first install rolls nothing back and still commits.
+        # First and alone: this one assignment is what both restores consult, so an
+        # interruption cannot find them disagreeing. A first install rolls nothing back
+        # and still commits.
+        $script:StudioInstallCommitted = $true
         $script:StudioUvMarkerSaved = $false
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir

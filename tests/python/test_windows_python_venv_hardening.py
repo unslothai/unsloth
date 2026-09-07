@@ -749,7 +749,13 @@ try {{
     env["LOCALAPPDATA"] = str(tmp_path / "local app data")
     result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
 
-    expected = initial_value if initial_value.strip() else str(tmp_path / "studio" / "cache" / "uv")
+    # A caller's own value is kept, and resolved: setup runs uv from a directory of its
+    # own choosing, so a relative one would name two caches across the one install. What
+    # gets RESTORED afterwards is still the caller's spelling, asserted below.
+    if initial_value.strip():
+        expected = os.path.abspath(initial_value)
+    else:
+        expected = str(tmp_path / "studio" / "cache" / "uv")
     assert os.path.normcase(os.path.normpath(result["Active"])) == os.path.normcase(
         os.path.normpath(expected)
     )
@@ -806,6 +812,46 @@ foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
     assert result["Modes"] == ["studio", "studio"]
     assert result["PresentAfter"] is False
     assert result["ProviderPresentAfter"] is False
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_non_ascii_marker_survives_the_rollback(tmp_path: Path, shell: str):
+    """The update writes this file BOM-less UTF-8, and Windows PowerShell 5.1 reads a
+    BOM-less file with the active ANSI code page, so a non-ASCII path came back as
+    mojibake and the rollback wrote that back over a marker that had been correct."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in ("Write-StudioUvCacheMarker", "Restore-StudioUvCacheMarker")
+    )
+    studio_root = tmp_path / "studio root"
+    marker = studio_root / "cache" / "uv-cache-dir"
+    previous = tmp_path / "kaffee cache"
+    # As the Python backfill writes it: UTF-8, no BOM.
+    marker.parent.mkdir(parents = True)
+    marker.write_bytes(f"{previous}\n".replace("kaffee", "k\u00e4ffee").encode("utf-8"))
+    expected = str(previous).replace("kaffee", "k\u00e4ffee")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+$script:StudioUvMarkerExisted = $false
+$script:StudioUvMarkerPrevious = $null
+Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache $env:TEST_CHOSEN
+Restore-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME
+[pscustomobject]@{{
+    After = (Get-Content -LiteralPath $env:TEST_MARKER -Raw -Encoding UTF8).Trim()
+}} | ConvertTo-Json -Compress
+"""
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_CHOSEN"] = str(tmp_path / "chosen cache")
+    env["TEST_MARKER"] = str(marker)
+    result = json.loads(_run_powershell(shell, script, env).splitlines()[-1])
+
+    assert result["After"] == expected, result
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")

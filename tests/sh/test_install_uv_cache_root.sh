@@ -17,12 +17,13 @@ HELPERS=$(awk '
     /^_configure_uv_cache\(\) \{/ { grab = 1 }
     /^_prepare_studio_uv_cache_for_launch\(\) \{/ { grab = 1 }
     /^_record_uv_cache_choice\(\) \{/ { grab = 1 }
+    /^_absolutize_uv_cache_dir\(\) \{/ { grab = 1 }
     /^_restore_uv_cache_marker\(\) \{/ { grab = 1 }
     grab { print }
     grab && /^}/ { grab = 0 }
 ' "$INSTALL_SH")
 for _helper in _configure_uv_cache _prepare_studio_uv_cache_for_launch _record_uv_cache_choice \
-    _restore_uv_cache_marker; do
+    _restore_uv_cache_marker _absolutize_uv_cache_dir; do
     if ! printf '%s\n' "$HELPERS" | grep -q "^${_helper}() {"; then
         echo "  FAIL: could not extract $_helper from install.sh"
         exit 1
@@ -421,6 +422,31 @@ RELATIVE
         ok "$shell: a relative cache is recorded absolute"
     else
         bad "$shell: relative cache recorded as [$_rel], wanted [$CASE/relcache]"
+    fi
+
+    # And the exported variable is absolute too, not only the marker: setup.sh changes
+    # into its own directory before the dependency pass, so a relative value would put
+    # that phase's artifacts somewhere neither the install phase nor the marker names.
+    EXPORT_PROBE="$WORK/$shell custom export.sh"
+    {
+        printf '%s\n' "$HELPERS"
+        cat <<EXPORTED
+step() { :; }
+substep() { :; }
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+cd '$CASE'
+UV_CACHE_DIR='relcache'
+_configure_uv_cache
+printf '%s\n' "\$UV_CACHE_DIR"
+EXPORTED
+    } > "$EXPORT_PROBE"
+    rm -f "$MARKER"
+    _exp=$($shell "$EXPORT_PROBE")
+    if [ "$_exp" = "$CASE/relcache" ]; then
+        ok "$shell: a relative custom cache is exported absolute"
+    else
+        bad "$shell: custom cache exported as [$_exp], wanted [$CASE/relcache]"
     fi
 
     # An unwritable STUDIO_HOME is a reason to skip the marker, never to fail the install.

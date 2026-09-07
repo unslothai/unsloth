@@ -3723,12 +3723,18 @@ def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:
     if result.returncode != 0:
         # A malformed uv.toml beside the CALLER fails this, though setup.sh runs uv elsewhere.
         return _uv_platform_cache_dir()
-    lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    # Blank lines are dropped, the path itself is not stripped: a directory name may
+    # legitimately begin or end with a space, and uv reports it verbatim.
+    lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
     if not lines:
         return _uv_platform_cache_dir()
     # uv answers a relative cache-dir with the relative spelling, resolved against its own
-    # working directory. No expanduser: uv makes a literal "~" directory, not one in $HOME.
-    base = os.environ.get("UV_WORKING_DIR") or (str(cwd) if cwd is not None else os.getcwd())
+    # working directory. UV_WORKING_DIR may itself be relative, and uv resolves that after
+    # starting where this probe started, not where the update was launched from.
+    # No expanduser: uv makes a literal "~" directory, not one in $HOME.
+    probe_cwd = str(cwd) if cwd is not None else os.getcwd()
+    working = os.environ.get("UV_WORKING_DIR")
+    base = os.path.join(probe_cwd, working) if working else probe_cwd
     return Path(os.path.abspath(os.path.join(base, lines[-1])))
 
 
@@ -3834,9 +3840,12 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(1)
 
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
-    # The setup script's own directory: that is where it will run uv from, so that is
-    # where the probe has to ask what uv would default to.
-    env = _with_studio_uv_cache(env, cwd = script.parent)
+    # Where setup will run uv from, which is not the same answer on both platforms.
+    # setup.sh changes into its own directory first (studio/setup.sh:1788); setup.ps1
+    # never changes directory, it addresses everything through $PSScriptRoot and hands
+    # install_python_stack.py the cwd it inherited from here (studio/setup.ps1:5191).
+    setup_cwd = None if platform.system() == "Windows" else script.parent
+    env = _with_studio_uv_cache(env, cwd = setup_cwd)
 
     if platform.system() == "Windows":
         # Resolved, not bare: the gate that runs immediately before this in setup() and update()

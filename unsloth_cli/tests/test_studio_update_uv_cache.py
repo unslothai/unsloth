@@ -595,10 +595,11 @@ def test_the_probe_asks_from_the_directory_setup_will_ask_from(monkeypatch, tmp_
     assert seen["result"] == tmp_path / "studio" / "relcache", seen["result"]
 
 
-def test_the_setup_handoff_probes_from_the_setup_script_directory(monkeypatch, tmp_path):
-    """The wiring, not just the parameter: _run_setup_script is the only caller that knows
-    where the script it is about to run lives. Driven through the Windows branch, whose
-    handoff is a plain Popen rather than the POSIX streaming reader."""
+def test_the_windows_handoff_probes_from_the_directory_it_hands_the_child(monkeypatch, tmp_path):
+    """setup.ps1 never changes directory: it addresses everything through $PSScriptRoot and
+    hands install_python_stack.py the cwd it inherited (studio/setup.ps1:5191). Probing in
+    the script's directory there would answer for a configuration the child never sees, and
+    that answer is then forced on it through UV_CACHE_DIR."""
     studio = _studio()
     repo_root = tmp_path / "repo"
     (repo_root / "studio").mkdir(parents = True)
@@ -623,7 +624,48 @@ def test_the_setup_handoff_probes_from_the_setup_script_directory(monkeypatch, t
 
     studio._run_setup_script(repo_root = repo_root)
 
+    assert seen["cwd"] is None, seen
+
+
+def test_the_posix_handoff_probes_from_the_setup_script_directory(monkeypatch, tmp_path):
+    """setup.sh does change into its own directory before the dependency pass
+    (studio/setup.sh:1788), so there is where the probe has to ask."""
+    studio = _studio()
+    repo_root = tmp_path / "repo"
+    (repo_root / "studio").mkdir(parents = True)
+    (repo_root / "studio" / "setup.sh").write_text("", encoding = "utf-8")
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(studio, "_backfill_uv_cache_marker", lambda env: None)
+    monkeypatch.delenv("UV_CACHE_DIR", raising = False)
+    seen: dict = {}
+    monkeypatch.setattr(
+        studio, "_with_studio_uv_cache", lambda env, cwd = None: seen.update(cwd = cwd) or env
+    )
+    monkeypatch.setattr(
+        studio.subprocess, "Popen", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("stop"))
+    )
+
+    with pytest.raises(RuntimeError, match = "stop"):
+        studio._run_setup_script(repo_root = repo_root)
+
     assert seen["cwd"] == repo_root / "studio", seen
+
+
+def test_the_probe_keeps_whitespace_uv_reported(monkeypatch):
+    """A directory name may begin or end with a space and uv reports it verbatim, so
+    stripping the line probes a path that does not exist and reads a warm cache as cold."""
+    seen = _probe_kwargs(monkeypatch, stdout = "/spaced cache/uv  \n")
+
+    assert seen["result"] == Path("/spaced cache/uv  "), seen["result"]
+
+
+def test_a_relative_uv_working_dir_anchors_to_the_probe_directory(monkeypatch, tmp_path):
+    """uv resolves --directory after starting where it was started, so a relative
+    UV_WORKING_DIR belongs to the probe's cwd, not to wherever the update was launched."""
+    monkeypatch.setenv("UV_WORKING_DIR", "uvdir")
+    seen = _probe_kwargs(monkeypatch, stdout = "relcache\n", cwd = tmp_path / "studio")
+
+    assert seen["result"] == tmp_path / "studio" / "uvdir" / "relcache", seen["result"]
 
 
 def test_the_probe_decodes_utf8_whatever_the_console_codec_is(monkeypatch):

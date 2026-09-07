@@ -622,23 +622,30 @@ _resolve_studio_destinations() {
 # Records which cache this install used, so an update reuses it rather than guessing: the
 # launch below repoints the backend at the Studio cache even in shared mode, so one
 # on-demand install makes an empty Studio cache look full. Never fatal.
+# A relative UV_CACHE_DIR names a different directory in each phase of one install: uv
+# resolves it against its working directory, and setup.sh changes into its own before the
+# dependency pass (studio/setup.sh:1788). Absolute once, here, so both phases and the
+# marker agree. The base is uv's working directory, which --directory / UV_WORKING_DIR
+# moves, and which may itself be relative to where the installer was run.
+_absolutize_uv_cache_dir() {
+    case "$UV_CACHE_DIR" in
+        /*) return 0 ;;
+    esac
+    _uv_cache_base="${UV_WORKING_DIR:-$PWD}"
+    case "$_uv_cache_base" in
+        /*) ;;
+        *) _uv_cache_base="$PWD/$_uv_cache_base" ;;
+    esac
+    UV_CACHE_DIR="$_uv_cache_base/$UV_CACHE_DIR"
+}
+
 _record_uv_cache_choice() {
+    # In place, before anything reads it: every branch records, so this is the one point
+    # every phase of the install and the marker are made to agree on one directory.
+    _absolutize_uv_cache_dir
     _uv_marker_dir="$STUDIO_HOME/cache"
     _uv_marker_file="$_uv_marker_dir/uv-cache-dir"
-    # Absolute: the update resolves this against ITS working directory, and the base is
-    # uv's, which --directory / UV_WORKING_DIR moves.
-    case "$UV_CACHE_DIR" in
-        /*) _uv_marker_value="$UV_CACHE_DIR" ;;
-        *)
-            # Which may itself be relative, against the installer's own directory.
-            _uv_marker_base="${UV_WORKING_DIR:-$PWD}"
-            case "$_uv_marker_base" in
-                /*) ;;
-                *) _uv_marker_base="$PWD/$_uv_marker_base" ;;
-            esac
-            _uv_marker_value="$_uv_marker_base/$UV_CACHE_DIR"
-            ;;
-    esac
+    _uv_marker_value="$UV_CACHE_DIR"
     # Remembered so a failed install can put it back.
     if [ "$_UV_MARKER_SAVED" != true ]; then
         if [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; then
@@ -662,6 +669,7 @@ _record_uv_cache_choice() {
 }
 
 _restore_uv_cache_marker() {
+    [ "${_STUDIO_INSTALL_COMMITTED:-false}" = true ] && return 0
     [ "$_UV_MARKER_SAVED" = true ] || return 0
     _uv_marker_file="$STUDIO_HOME/cache/uv-cache-dir"
     rm -f "$_uv_marker_file" 2>/dev/null || true
@@ -779,6 +787,9 @@ _VENV_ROLLBACK_ACTIVE=false
 _UV_MARKER_SAVED=false
 _UV_MARKER_EXISTED=false
 _UV_MARKER_PREVIOUS=""
+# One flag for both rollbacks. Clearing them separately leaves a window either way round:
+# a signal between the two restores one half of a committed install and reverts the other.
+_STUDIO_INSTALL_COMMITTED=false
 
 _start_studio_venv_replacement() {
     _existing_dir="$1"
@@ -850,6 +861,9 @@ _discard_venv_for_recreate() {  # venv dir
 }
 
 _restore_studio_venv_replacement() {
+    # The same flag the marker restore consults, so a signal landing mid-commit cannot
+    # put one half of a committed install back and keep the other.
+    [ "${_STUDIO_INSTALL_COMMITTED:-false}" = true ] && return 0
     [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
     # -e/-L, not -d: a rollback holds whatever _dir_has_entries called occupied,
     # and -d would drop a file or a dangling link and strand the original.
@@ -911,7 +925,10 @@ _prune_stale_studio_venv_rollbacks() {
 }
 
 _commit_studio_venv_replacement() {
-    # Outside the branch: a first install rolls nothing back and still commits.
+    # First and alone, because a signal can land between any two statements: this one
+    # assignment is what both restores consult, so they cannot disagree about whether
+    # this install committed. A first install rolls nothing back and still commits.
+    _STUDIO_INSTALL_COMMITTED=true
     _UV_MARKER_SAVED=false
     if [ "$_VENV_ROLLBACK_ACTIVE" = true ]; then
         _rollback_to_remove="$_VENV_ROLLBACK_DIR"

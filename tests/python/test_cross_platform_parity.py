@@ -1195,6 +1195,7 @@ class TestInstallUvCacheRootParity:
             "$script:StudioUvMarkerSaved = $false",
             "$script:StudioUvMarkerExisted = $false",
             "$script:StudioUvMarkerPrevious = $null",
+            "$script:StudioInstallCommitted = $false",
         ):
             assert variable in ps1[entry:first_consumer], variable
 
@@ -1247,6 +1248,30 @@ class TestInstallUvCacheRootParity:
                 start : ps1_marker.index("Set-Content -LiteralPath $markerFile", start)
             ]
             assert "Get-Item -LiteralPath $markerFile -Force" in window, window
+
+        # Read as UTF-8, not the active ANSI code page: the update writes this file
+        # BOM-less UTF-8, and Windows PowerShell 5.1 would decode a non-ASCII path into
+        # mojibake and restore that. Asserted on the source, since pwsh 7 here already
+        # defaults to UTF-8 and would pass the round trip either way.
+        read_back = ps1_marker.index("Get-Content -LiteralPath $markerFile")
+        assert "-Encoding UTF8" in ps1_marker[read_back : read_back + 220], ps1_marker[read_back:]
+
+        # One flag decides both rollbacks. Clearing them separately leaves a window either
+        # way round, where a signal restores one half of a committed install.
+        assert commit_body.index("_STUDIO_INSTALL_COMMITTED=true") < commit_body.index(
+            "_UV_MARKER_SAVED=false"
+        )
+        for body in (
+            sh[sh.index("_restore_studio_venv_replacement() {") :][:400],
+            sh[sh.index("_restore_uv_cache_marker() {") :][:400],
+        ):
+            assert "_STUDIO_INSTALL_COMMITTED" in body, body
+        assert ps1_commit.index("$script:StudioInstallCommitted = $true") < ps1_commit.index(
+            "$script:StudioUvMarkerSaved = $false"
+        )
+        for name in ("Restore-StudioVenvRollback", "Restore-StudioUvCacheMarker"):
+            body = ps1[ps1.index(f"function {name} {{") :][:800]
+            assert "if ($script:StudioInstallCommitted) { return }" in body, name
 
         # Restored whether or not a venv replacement was ever in flight.
         assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_exit() {") :]
