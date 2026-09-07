@@ -2084,7 +2084,7 @@ class ExternalProviderClient:
                 #   https://platform.claude.com/docs/en/build-with-claude/vision)
                 anthropic_parts: list[dict[str, Any]] = []
                 for part in content:
-                    if part.get("type") == "text":
+                    if part.get("type") == "text" and part.get("text"):
                         anthropic_parts.append({"type": "text", "text": part["text"]})
                     elif part.get("type") == "compaction":
                         # Round-trip a prior turn's compaction block back onto this

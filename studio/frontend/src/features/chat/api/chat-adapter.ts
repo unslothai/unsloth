@@ -1191,9 +1191,10 @@ function buildReplayContent(
   textContent: string,
   imageParts: Array<{ type: "image_url"; image_url: { url: string } }>,
 ): OpenAIMessageContent {
-  return imageParts.length > 0
+  if (imageParts.length === 0) return textContent;
+  return textContent
     ? [{ type: "text", text: textContent }, ...imageParts]
-    : textContent;
+    : imageParts;
 }
 
 function collectAssistantTextThoughtSignature(
