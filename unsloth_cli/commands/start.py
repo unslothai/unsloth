@@ -193,8 +193,7 @@ _CLAUDE_ENV_UNSET = (
     "CLAUDE_CODE_USE_MANTLE",
 )
 _CODEX_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
-# OpenClaw reads CODEX_API_KEY before OPENAI_API_KEY for its openai provider, so dropping
-# only the latter still lets default-on memory search embed through OpenAI.
+# OpenClaw tries CODEX_API_KEY first, so dropping only OPENAI_API_KEY still embeds via OpenAI.
 _OPENCLAW_ENV_UNSET = ("OPENAI_API_KEY", "CODEX_API_KEY")
 
 # Shared by every agent command; only the config/env/command differ.
@@ -4717,9 +4716,7 @@ def write_openclaw_config(
         search.update({"provider": "none", "fallback": "none"})
         search.pop("model", None)
         search.pop("remote", None)
-    # OpenClaw ORs this flag with OPENCLAW_LOAD_SHELL_ENV, so a persisted true here would
-    # re-enable the login-shell import that hands the session back the provider keys the
-    # launcher drops. The env guard alone cannot reach a config that already says true.
+    # ORed with OPENCLAW_LOAD_SHELL_ENV: a persisted true re-enables the login-shell key import.
     _subdict(_subdict(config, "env"), "shellEnv")["enabled"] = False
     # Pin a default model, else OpenClaw drops into its setup agent ("no models available").
     agents = _subdict(config, "agents")
@@ -5421,10 +5418,7 @@ def openclaw(
             embedding_model = _studio_embedding_model(base, key),
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
-        # OPENCLAW_LOAD_SHELL_ENV makes OpenClaw re-read a login shell for any provider
-        # key it does not already hold, which would import the keys just dropped below
-        # straight back out of the user's profile. It treats a key it can see as an
-        # intentional override, so turning the fallback off is what keeps them gone.
+        # Off, else OpenClaw re-imports any provider key it cannot see from a login shell.
         env = {
             "OPENCLAW_CONFIG_PATH": str(config_path),
             "OPENCLAW_STATE_DIR": str(cfg),

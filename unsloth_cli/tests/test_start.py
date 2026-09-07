@@ -2327,8 +2327,7 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert "--model" not in command
     parent_home = tmp_path / "agents" / "codex-subagent" / "parent"
     _assert_env_set(result.output, "CODEX_HOME", str(parent_home))
-    # The parent here is the user's own cloud Codex, so its provider credentials
-    # must survive; only the local `unsloth start codex` session drops them.
+    # The parent is the user's own cloud Codex, so its credentials must survive.
     for name in start._CODEX_ENV_UNSET:
         _assert_env_kept(result.output, name)
     assert start._CODEX_ENV_KEY not in result.output
@@ -8772,10 +8771,7 @@ def test_launch_drops_provider_credentials(agent, unset, fake_studio, monkeypatc
 
 @pytest.mark.parametrize("enabled", ["1", "true", "yes", "on"])
 def test_openclaw_launch_disables_the_login_shell_key_fallback(enabled, fake_studio, monkeypatch):
-    # OPENCLAW_LOAD_SHELL_ENV makes OpenClaw run a login shell and import any
-    # provider key it cannot see, so dropping the keys above is not enough on its
-    # own: openclaw 2026.9.2 reads both of them straight back out of the user's
-    # profile (src/infra/shell-env.ts, keys from src/secrets/provider-env-vars.ts).
+    # openclaw 2026.9.2 reads dropped keys back from a login shell (src/infra/shell-env.ts).
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/openclaw")
     monkeypatch.setenv("OPENCLAW_LOAD_SHELL_ENV", enabled)
     captured = _capture_launch(monkeypatch, ["openclaw"])
@@ -8789,16 +8785,14 @@ def test_openclaw_no_launch_recipe_disables_the_login_shell_key_fallback(fake_st
 
 
 def test_openclaw_state_dir_is_a_real_path_not_a_blank(fake_studio, monkeypatch):
-    # OpenClaw falls back to the user's real home when the state dir is empty,
-    # which would undo the scoping the two vars beside it are there to provide.
+    # An empty state dir sends OpenClaw back to the user's real home, undoing the scoping.
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/openclaw")
     captured = _capture_launch(monkeypatch, ["openclaw"])
     assert captured["env"]["OPENCLAW_STATE_DIR"].strip()
 
 
 def test_openclaw_config_pins_the_shell_env_fallback_off(fake_studio, tmp_path, monkeypatch):
-    # OpenClaw ORs env.shellEnv.enabled with OPENCLAW_LOAD_SHELL_ENV, so a persisted
-    # true survives the env guard and imports the dropped keys back from a login shell.
+    # ORed with OPENCLAW_LOAD_SHELL_ENV, so a persisted true survives the env guard.
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
     config_path.parent.mkdir(parents = True)
