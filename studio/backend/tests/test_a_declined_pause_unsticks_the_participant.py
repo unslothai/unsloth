@@ -240,9 +240,9 @@ class TestTheRoundLoopHandsTheDecisionBack:
         )
         assert participant.preemptable, "a decoding chat has to be selectable again"
         assert not signal.is_set() and not signal.pending
-        assert any(event.get("type") == "content" for event in events), (
-            "the turn still has to produce its answer"
-        )
+        assert any(
+            event.get("type") == "content" for event in events
+        ), "the turn still has to produce its answer"
 
     def test_the_lease_and_the_cells_stay_where_they_are(self, monkeypatch):
         """Declining is not pausing: nothing was handed back, so nothing is released."""
@@ -351,13 +351,13 @@ class TestTheFinalPassHandsTheDecisionBack:
         )
         events = _run(recorder, signal = signal, policy = policy)
 
-        assert participant.state != ParticipantState.PREEMPTING, (
-            "the turn ended with the ledger still holding a chosen victim"
-        )
+        assert (
+            participant.state != ParticipantState.PREEMPTING
+        ), "the turn ended with the ledger still holding a chosen victim"
         assert not signal.is_set()
-        assert any(event.get("reason") == "preempt_gave_up" for event in events), (
-            "the turn ended with no notice of why"
-        )
+        assert any(
+            event.get("reason") == "preempt_gave_up" for event in events
+        ), "the turn ended with no notice of why"
         metadata = [event for event in events if event.get("type") == "metadata"]
         assert metadata and metadata[-1]["finish_reason"] == "length"
 
@@ -384,9 +384,9 @@ class TestTheControllerItself:
         controller.plan_preemptions(needed = 16384)
         controller.note_declined("chat")
         assert participant.state == ParticipantState.DECODING
-        assert not signal.is_set(), (
-            "a signal left set aborts the very stream this call is letting run"
-        )
+        assert (
+            not signal.is_set()
+        ), "a signal left set aborts the very stream this call is letting run"
         assert not signal.pending
 
     def test_a_declined_chat_can_be_chosen_again(self):
@@ -397,9 +397,9 @@ class TestTheControllerItself:
         controller.register("chat", tokens = 1000, signal = signal)
         controller.plan_preemptions(needed = 16384)
         controller.note_declined("chat")
-        assert [v.gen_id for v in controller.plan_preemptions(needed = 16384)] == ["chat"], (
-            "the point of the handback: pressure later in the turn can ask again"
-        )
+        assert [v.gen_id for v in controller.plan_preemptions(needed = 16384)] == [
+            "chat"
+        ], "the point of the handback: pressure later in the turn can ask again"
 
     def test_the_null_policy_answers_it(self):
         preemption.NullPreemptionPolicy().on_declined()
