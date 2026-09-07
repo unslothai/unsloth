@@ -177,9 +177,7 @@ def test_first_login_completes_on_a_migrated_old_database():
     # way an operator forced to change would be.
     conn = storage.get_connection()
     try:
-        conn.execute(
-            "UPDATE auth_user SET must_change_password = 1 WHERE username = ?", (admin,)
-        )
+        conn.execute("UPDATE auth_user SET must_change_password = 1 WHERE username = ?", (admin,))
         conn.commit()
     finally:
         conn.close()
@@ -392,7 +390,9 @@ def test_a_naive_expiry_is_rejected_rather_than_raising(monkeypatch):
 def test_a_far_future_expiry_still_needs_a_live_nonce_row():
     """The signature is not the single-use control; the row is."""
     admin = _seed_admin()
-    token = authentication.create_link_token(admin, expires_in = int(timedelta(days = 3650).total_seconds()))
+    token = authentication.create_link_token(
+        admin, expires_in = int(timedelta(days = 3650).total_seconds())
+    )
     conn = storage.get_connection()
     try:
         conn.execute("DELETE FROM link_tokens")
@@ -451,7 +451,10 @@ def test_a_swapped_payload_is_refused():
 
 def test_an_access_token_is_not_accepted_as_a_link_token():
     admin = _seed_admin()
-    assert authentication.exchange_link_token(authentication.create_access_token(subject = admin)) is None
+    assert (
+        authentication.exchange_link_token(authentication.create_access_token(subject = admin))
+        is None
+    )
 
 
 def test_a_link_token_is_not_accepted_as_a_bearer_token():
