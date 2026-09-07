@@ -40,6 +40,21 @@ from typing import Any, Optional
 DEFAULT_PORTS = list(range(8888, 8896))
 
 
+def split_model_ref(ref: str) -> tuple[str, Optional[str]]:
+    """`repo:variant` into the two fields /api/inference/load takes.
+
+    The backend has no shorthand parser: `model_path` is the repository or
+    path and `gguf_variant` selects the quant, and a colon left in `model_path`
+    reaches the hub as an invalid repository id. Only the CLI splits the
+    shorthand, so this does the same. A colon followed by a slash is part of a
+    path (`C:\\models\\x.gguf`), not a variant.
+    """
+    repo, sep, variant = ref.rpartition(":")
+    if not sep or not repo or "/" in variant or "\\" in variant:
+        return ref, None
+    return repo, variant
+
+
 class Timed:
     """Every HTTP call this script makes, with how long it took."""
 
@@ -129,19 +144,25 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> str:
     desktop install that has already been opened the file is gone and the only
     credential left is the one the app set. There is no way to recover it from
     disk, which is why --password exists.
+
+    The rotation is permanent and `revert` does not undo it, so the new
+    password is always the operator's own: a default here would leave every
+    probed machine on a published credential, and printing the operator's
+    choice would put it in studio-scenario.log inside the evidence zip.
     """
     boot_file = home / "auth" / ".bootstrap_password"
+    if not password:
+        raise SystemExit(
+            "no password given. Pass --password (or set UNSLOTH_STUDIO_PASSWORD): on a "
+            "Studio that has never been opened it becomes the account password, on one "
+            "that has it must be the password you sign in with."
+        )
     if boot_file.exists():
         secret = boot_file.read_text(encoding = "utf-8").strip()
         rotate = True
-    elif password:
+    else:
         secret = password
         rotate = False
-    else:
-        raise SystemExit(
-            f"{boot_file} does not exist, so this Studio has already been opened and its "
-            "password rotated. Pass --password with the password you use to sign in."
-        )
 
     status, body = _request(
         base_url, "POST", "/api/auth/login", {"username": "unsloth", "password": secret}
@@ -151,18 +172,17 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> str:
     token = body["access_token"]
 
     if rotate:
-        new_password = password or "unsloth-sac-probe"
         status, body = _request(
             base_url,
             "POST",
             "/api/auth/change-password",
-            {"current_password": secret, "new_password": new_password},
+            {"current_password": secret, "new_password": password},
             token = token,
         )
         if status != 200:
             raise SystemExit(f"password rotation failed ({status}): {str(body)[:300]}")
         token = body["access_token"]
-        print(f"  rotated the bootstrap password to: {new_password}")
+        print("  rotated the bootstrap password to the one given with --password")
     return token
 
 
@@ -179,20 +199,31 @@ class StatusPoller(threading.Thread):
         self.base_url = base_url
         self.token = token
         self.interval = interval
-        self._stop = threading.Event()
+        # Not `_stop`: Thread.join() calls its own internal `_stop()` method,
+        # and an Event assigned over it raised "'Event' object is not callable"
+        # out of the finally block before the results were written.
+        self._stop_event = threading.Event()
         self.durations: list[float] = []
+        self.in_flight_since: Optional[float] = None
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             start = time.monotonic()
+            self.in_flight_since = start
             _request(self.base_url, "GET", "/api/inference/status", token = self.token, timeout = 300)
+            self.in_flight_since = None
             self.durations.append((time.monotonic() - start) * 1000.0)
             # Interval from the last start, not the last finish, so a slow poll
             # does not quietly stretch the cadence and hide the pile-up.
-            self._stop.wait(max(0.0, self.interval - (time.monotonic() - start)))
+            self._stop_event.wait(max(0.0, self.interval - (time.monotonic() - start)))
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
+
+    def in_flight_ms(self) -> Optional[float]:
+        """How long the current poll has been waiting, if one is."""
+        since = self.in_flight_since
+        return None if since is None else (time.monotonic() - since) * 1000.0
 
 
 def chat(
@@ -237,7 +268,15 @@ def main() -> int:
     parser.add_argument("--out", default = ".", help = "directory for scenario-results.json")
     parser.add_argument("--port", type = int, default = None)
     parser.add_argument("--password", default = os.environ.get("UNSLOTH_STUDIO_PASSWORD"))
-    parser.add_argument("--home", default = str(Path.home() / ".unsloth" / "studio"))
+    parser.add_argument(
+        "--home",
+        default = (
+            os.environ.get("UNSLOTH_STUDIO_HOME")
+            or os.environ.get("STUDIO_HOME")
+            or str(Path.home() / ".unsloth" / "studio")
+        ),
+        help = "Studio home (where auth/ lives); follows UNSLOTH_STUDIO_HOME like Studio does",
+    )
     parser.add_argument(
         "--poll-seconds",
         type = float,
@@ -259,14 +298,24 @@ def main() -> int:
     poller = StatusPoller(base_url, token, args.poll_seconds)
     poller.start()
 
-    results: dict[str, Any] = {"model": args.model, "port": port, "steps": {}}
+    repo, variant = split_model_ref(args.model)
+    results: dict[str, Any] = {
+        "model": args.model,
+        "model_path": repo,
+        "gguf_variant": variant,
+        "port": port,
+        "steps": {},
+    }
+    load_payload: dict[str, Any] = {"model_path": repo}
+    if variant:
+        load_payload["gguf_variant"] = variant
     try:
         print(f"loading {args.model} ...")
         status, body = _request(
             base_url,
             "POST",
             "/api/inference/load",
-            {"model_path": args.model},
+            load_payload,
             token = token,
             timeout = 1800,
         )
@@ -286,7 +335,7 @@ def main() -> int:
             results["steps"]["inference"] = chat(
                 base_url,
                 token,
-                args.model,
+                repo,
                 "Reply with exactly one short sentence about the Antarctic.",
             )
             print(f"  {results['steps']['inference']['chars']} chars")
@@ -295,7 +344,7 @@ def main() -> int:
             results["steps"]["web_search"] = chat(
                 base_url,
                 token,
-                args.model,
+                repo,
                 "Search the web for today's date in Reykjavik and tell me what you found.",
                 tools = True,
                 enabled_tools = ["web_search"],
@@ -306,28 +355,48 @@ def main() -> int:
             results["steps"]["tool_calls"] = chat(
                 base_url,
                 token,
-                args.model,
+                repo,
                 "Use your tools to look up what the tallest building in the world is.",
                 tools = True,
                 enabled_tools = ["web_search"],
             )
             print(f"  tool calls: {results['steps']['tool_calls']['tool_calls']}")
 
-            _request(base_url, "POST", "/api/inference/unload", {}, token = token, timeout = 300)
-            print("unloaded")
+            # UnloadRequest.model_path is required; an empty body is a 422 that
+            # leaves the runtime resident, and the next matrix cell would then
+            # reuse this llama-server instead of loading its PE files again.
+            status, body = _request(
+                base_url,
+                "POST",
+                "/api/inference/unload",
+                {"model_path": repo},
+                token = token,
+                timeout = 300,
+            )
+            results["steps"]["unload"] = {
+                "status": status,
+                "ok": status == 200,
+                "error": None if status == 200 else str(body)[:400],
+            }
+            print("  unloaded" if status == 200 else f"  unload FAILED ({status}): {str(body)[:200]}")
     finally:
         poller.stop()
-        poller.join(timeout = 30)
+        # A poll stalled for the 75 to 80 seconds this exists to catch is still
+        # in flight here. Wait it out (its own timeout is 300s) rather than
+        # discard the daemon thread with the one duration that matters.
+        poller.join(timeout = 330)
 
     durations = poller.durations
+    in_flight = poller.in_flight_ms() if poller.is_alive() else None
     results["status_poll"] = {
         "count": len(durations),
+        "in_flight_ms": None if in_flight is None else round(in_flight, 1),
         "max_ms": round(max(durations), 1) if durations else None,
         "median_ms": round(statistics.median(durations), 1) if durations else None,
         # The watchdog kills the backend after roughly 75s of unanswered health
         # checks, so anything at or past that is the reported failure mode.
-        "over_10s": sum(1 for d in durations if d > 10_000),
-        "over_75s": sum(1 for d in durations if d > 75_000),
+        "over_10s": sum(1 for d in durations if d > 10_000) + (1 if in_flight and in_flight > 10_000 else 0),
+        "over_75s": sum(1 for d in durations if d > 75_000) + (1 if in_flight and in_flight > 75_000 else 0),
     }
     results["slowest_calls"] = TIMED.slowest(15)
     results["all_calls"] = TIMED.calls

@@ -73,11 +73,85 @@ $ErrorActionPreference = 'Stop'
 # policy replaces the active runtime policy. Both GUIDs and both destinations
 # are Microsoft's, from the Smart App Control testing documentation.
 $NOISG_GUID = '{5283AC0F-FFF1-49AE-ADA1-8A933130CAD6}'
-$LLAMA_DIR = Join-Path $env:USERPROFILE '.unsloth\llama.cpp'
+$NOISG_DEST = "S:\efi\microsoft\boot\cipolicies\active\$NOISG_GUID.cip"
+$CI_LOG = 'Microsoft-Windows-CodeIntegrity/Operational'
+
+# Where Studio keeps its state, resolved the way Studio resolves it: the
+# UNSLOTH_STUDIO_HOME override (STUDIO_HOME alias), else the legacy home.
+function Get-StudioHome {
+    $override = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $env:STUDIO_HOME }
+    if ($override) { return $override }
+    return (Join-Path $env:USERPROFILE '.unsloth\studio')
+}
+
+# The runtime Studio actually loads. UNSLOTH_LLAMA_CPP_PATH is an explicit
+# install dir; a custom Studio home keeps its runtime under <home>\llama.cpp;
+# only the legacy home uses ~\.unsloth\llama.cpp. Inventorying the wrong tree
+# would omit exactly the files the events are about.
+function Get-LlamaDir {
+    if ($env:UNSLOTH_LLAMA_CPP_PATH) { return $env:UNSLOTH_LLAMA_CPP_PATH }
+    $override = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $env:STUDIO_HOME }
+    if ($override) { return (Join-Path $override 'llama.cpp') }
+    return (Join-Path $env:USERPROFILE '.unsloth\llama.cpp')
+}
+$LLAMA_DIR = Get-LlamaDir
 $PE_EXT = @('.exe', '.dll', '.pyd', '.sys', '.ocx', '.cpl', '.scr')
 # 3076 audit, 3077 enforced block, 3089 signature detail, 3033/3099 policy and
 # validation failures, 3090/3091/3092 allow-and-origin context.
 $CI_EVENT_IDS = @(3033, 3076, 3077, 3089, 3090, 3091, 3092, 3099)
+
+# Native commands do not throw under $ErrorActionPreference = 'Stop' in Windows
+# PowerShell; their exit code has to be read, or a failed mount or refresh
+# reads as success and a later absence of events as an allow verdict.
+function Invoke-Native([string] $Exe, [string[]] $Arguments) {
+    & $Exe @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Exe $($Arguments -join ' ') exited $LASTEXITCODE"
+    }
+}
+
+# The audit policy lives in the EFI system partition. Mount it only if S: is
+# not already something, and hand back whether this call mounted it so the
+# caller's finally can unmount exactly what it mounted.
+function Mount-Efi {
+    if (Test-Path -LiteralPath 'S:\') {
+        return $false
+    }
+    Invoke-Native 'mountvol.exe' @('S:', '/S')
+    return $true
+}
+
+function Dismount-Efi([bool] $Mounted) {
+    if ($Mounted) {
+        & mountvol.exe S: /D
+        if ($LASTEXITCODE -ne 0) { Write-Warning "could not unmount S: (mountvol exited $LASTEXITCODE)" }
+    }
+}
+
+function Test-PolicyActive([string] $Guid) {
+    $bare = $Guid.Trim('{', '}').ToLowerInvariant()
+    foreach ($p in (Get-SacState).Policies) {
+        if ((([string]$p.PolicyID) -replace '[{}]', '') -eq $bare) { return $true }
+    }
+    return $false
+}
+
+# `wevtutil gl` prints `enabled: true` and `maxSize: 1052672`; both are
+# restored by revert, so prepare must record them.
+function Get-CiLogSettings {
+    $enabled = $null
+    $maxSize = $null
+    try {
+        $lines = & wevtutil.exe gl $CI_LOG 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            foreach ($line in $lines) {
+                if ($line -match '^\s*enabled:\s*(\S+)') { $enabled = ($Matches[1] -eq 'true') }
+                if ($line -match '^\s*maxSize:\s*(\d+)') { $maxSize = [int64]$Matches[1] }
+            }
+        }
+    } catch { }
+    return [pscustomobject]@{ Enabled = $enabled; MaxSize = $maxSize }
+}
 
 function Write-Section([string] $Text) {
     Write-Host ''
@@ -242,6 +316,7 @@ function Save-Baseline([string] $dir) {
     try { $mp = Get-MpPreference } catch { }
     $status = $null
     try { $status = Get-MpComputerStatus } catch { }
+    $ciLog = Get-CiLogSettings
 
     $baseline = [pscustomobject]@{
         CapturedAt              = (Get-Date).ToString('o')
@@ -256,7 +331,12 @@ function Save-Baseline([string] $dir) {
         PUAProtection           = if ($mp) { $mp.PUAProtection } else { $null }
         AMProductVersion        = if ($status) { $status.AMProductVersion } else { $null }
         AntivirusSignatureVersion = if ($status) { $status.AntivirusSignatureVersion } else { $null }
+        CiLogEnabled            = $ciLog.Enabled
+        CiLogMaxSize            = $ciLog.MaxSize
         AuditPolicyApplied      = $false
+        # A policy with the NoISG GUID that was there before prepare: kept
+        # aside and put back by revert rather than deleted as ours.
+        AuditPolicyPreexisting  = $false
     }
     $path = Join-Path $dir 'baseline.json'
     $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $path -Encoding UTF8
@@ -306,8 +386,8 @@ function Invoke-Prepare {
     # The default 1 MB fills quickly once a policy is auditing every load, and a
     # wrapped log silently loses the events this whole exercise exists to catch.
     try {
-        & wevtutil.exe sl Microsoft-Windows-CodeIntegrity/Operational /e:true /ms:67108864
-        Write-Host 'CodeIntegrity/Operational enabled, max size 64 MB'
+        Invoke-Native 'wevtutil.exe' @('sl', $CI_LOG, '/e:true', '/ms:67108864')
+        Write-Host ("CodeIntegrity/Operational enabled, max size 64 MB (was enabled={0}, maxSize={1})" -f $baseline.CiLogEnabled, $baseline.CiLogMaxSize)
     } catch {
         Write-Warning "could not configure the CodeIntegrity log: $_"
     }
@@ -321,11 +401,21 @@ function Invoke-Prepare {
         # lookup, which is why it works even with Smart App Control off. That is
         # the half of the verdict signing actually changes, so it is the useful
         # one here. It logs 3076 for anything it would refuse.
-        & mountvol.exe S: /S
-        $dest = "S:\efi\microsoft\boot\cipolicies\active\$NOISG_GUID.cip"
-        New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
-        Copy-Item -LiteralPath $AuditPolicy -Destination $dest -Force
-        & CiTool.exe -r
+        $mounted = Mount-Efi
+        try {
+            if (Test-Path -LiteralPath $NOISG_DEST) {
+                # Somebody's policy already carries this GUID. Keep it so revert
+                # restores it instead of deleting an administrator's policy.
+                Copy-Item -LiteralPath $NOISG_DEST -Destination (Join-Path $dir 'preexisting-policy.cip') -Force
+                $baseline.AuditPolicyPreexisting = $true
+                Write-Warning "a policy with $NOISG_GUID was already installed; saved to preexisting-policy.cip and will be restored by revert"
+            }
+            New-Item -ItemType Directory -Force -Path (Split-Path $NOISG_DEST) | Out-Null
+            Copy-Item -LiteralPath $AuditPolicy -Destination $NOISG_DEST -Force
+            Invoke-Native 'CiTool.exe' @('-r')
+        } finally {
+            Dismount-Efi $mounted
+        }
         Write-Host "applied $(Split-Path $AuditPolicy -Leaf) as $NOISG_GUID and refreshed policy"
 
         $baseline.AuditPolicyApplied = $true
@@ -335,6 +425,15 @@ function Invoke-Prepare {
         $after = Get-SacState
         foreach ($p in $after.Policies) {
             Write-Host ("  policy {0} enforced={1}" -f $p.FriendlyName, $p.IsEnforced)
+        }
+        # Printing whatever is listed is not verification. If the policy did
+        # not take, a run with no 3076 events would read as an allow verdict
+        # when it was an invalid setup. Only checkable where CiTool exists.
+        if ($after.Policies.Count -gt 0 -and -not (Test-PolicyActive $NOISG_GUID)) {
+            throw "the audit policy $NOISG_GUID is not in the active policy set after refresh; the machine is left as prepare found it apart from the copied file, run revert"
+        }
+        if ($after.Policies.Count -eq 0) {
+            Write-Warning 'CiTool is not available here, so the policy could not be verified as active; read the 3076 count with that in mind'
         }
     } else {
         Write-Host ''
@@ -391,8 +490,10 @@ function Invoke-Run {
     if (-not (Test-StudioResponding $Port)) { Initialize-Studio $dir }
 
     Write-Section 'Signature inventory'
+    Write-Host "runtime: $LLAMA_DIR"
     $inventory = @(Get-SignatureInventory $LLAMA_DIR)
-    $inventory | ConvertTo-Json -Depth 4 |
+    # -InputObject: an empty pipeline writes an empty file, not `[]`.
+    ConvertTo-Json -InputObject @($inventory) -Depth 4 |
         Set-Content -LiteralPath (Join-Path $dir 'signature-inventory.json') -Encoding UTF8
     $inventory | Export-Csv -LiteralPath (Join-Path $dir 'signature-inventory.csv') -NoTypeInformation -Encoding UTF8
 
@@ -411,6 +512,9 @@ function Invoke-Run {
         Write-Section 'Studio scenario'
         $scenario = Join-Path $PSScriptRoot 'studio_scenario.py'
         $log = Join-Path $dir 'studio-scenario.log'
+        if (-not $env:UNSLOTH_STUDIO_PASSWORD) {
+            Write-Warning 'UNSLOTH_STUDIO_PASSWORD is not set; the scenario needs it (see README) and will stop at login'
+        }
         Write-Host "python $scenario --model $Model --out $dir"
         # $ErrorActionPreference is Stop for the script, but a scenario that
         # fails is a result rather than an accident: that is what we came to
@@ -446,14 +550,14 @@ function Invoke-Collect {
     $events = @()
     try {
         $events = @(Get-WinEvent -FilterHashtable @{
-            LogName   = 'Microsoft-Windows-CodeIntegrity/Operational'
+            LogName   = $CI_LOG
             StartTime = $start
         } -ErrorAction Stop | Where-Object { $CI_EVENT_IDS -contains $_.Id })
     } catch {
         Write-Warning "no CodeIntegrity events in the window: $_"
     }
 
-    $shaped = $events | ForEach-Object {
+    $shaped = @($events | ForEach-Object {
         [pscustomobject]@{
             TimeCreated = $_.TimeCreated.ToString('o')
             Id          = $_.Id
@@ -467,8 +571,11 @@ function Invoke-Collect {
             ActivityID  = $_.ActivityId
             Message     = $_.Message
         }
-    }
-    $shaped | ConvertTo-Json -Depth 4 |
+    })
+    # -InputObject: zero events is a normal and important result for an
+    # allowed bundle, and piping an empty array writes an empty file that no
+    # consumer can tell from a failed collection. This writes `[]`.
+    ConvertTo-Json -InputObject $shaped -Depth 4 |
         Set-Content -LiteralPath (Join-Path $dir 'code-integrity-events.json') -Encoding UTF8
     $shaped | Format-List | Out-String |
         Set-Content -LiteralPath (Join-Path $dir 'code-integrity-events.txt') -Encoding UTF8
@@ -480,7 +587,7 @@ function Invoke-Collect {
     # Whole-log export as well, since the shaped view drops fields and a
     # reviewer may need the raw record.
     try {
-        & wevtutil.exe epl Microsoft-Windows-CodeIntegrity/Operational (Join-Path $dir 'CodeIntegrity-Operational.evtx') /ow:true
+        Invoke-Native 'wevtutil.exe' @('epl', $CI_LOG, (Join-Path $dir 'CodeIntegrity-Operational.evtx'), '/ow:true')
     } catch { Write-Warning "evtx export failed: $_" }
 
     try {
@@ -496,7 +603,7 @@ function Invoke-Collect {
         Set-Content -LiteralPath (Join-Path $dir 'sac-state-after.json') -Encoding UTF8
 
     # Studio's own logs, which carry the request timings and the backend errors.
-    $studioLogs = Join-Path $env:USERPROFILE '.unsloth\studio\logs'
+    $studioLogs = Join-Path (Get-StudioHome) 'logs'
     if (Test-Path -LiteralPath $studioLogs) {
         Copy-Item -LiteralPath $studioLogs -Destination (Join-Path $dir 'studio-logs') -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -522,15 +629,39 @@ function Invoke-Revert {
 
     if ($baseline.AuditPolicyApplied) {
         Write-Section 'Remove audit policy'
-        & mountvol.exe S: /S
-        $dest = "S:\efi\microsoft\boot\cipolicies\active\$NOISG_GUID.cip"
-        if (Test-Path -LiteralPath $dest) {
-            Remove-Item -LiteralPath $dest -Force
-            & CiTool.exe -r
-            Write-Host 'audit policy removed and policy refreshed'
-        } else {
-            Write-Host 'audit policy already absent'
+        $saved = Join-Path $dir 'preexisting-policy.cip'
+        $mounted = Mount-Efi
+        try {
+            if ($baseline.AuditPolicyPreexisting -and (Test-Path -LiteralPath $saved)) {
+                # Not ours to delete: put back the policy prepare found.
+                Copy-Item -LiteralPath $saved -Destination $NOISG_DEST -Force
+                Invoke-Native 'CiTool.exe' @('-r')
+                Write-Host 'pre-existing audit policy restored and policy refreshed'
+            } elseif (Test-Path -LiteralPath $NOISG_DEST) {
+                Remove-Item -LiteralPath $NOISG_DEST -Force
+                Invoke-Native 'CiTool.exe' @('-r')
+                Write-Host 'audit policy removed and policy refreshed'
+            } else {
+                Write-Host 'audit policy already absent'
+            }
+        } finally {
+            Dismount-Efi $mounted
         }
+    }
+
+    Write-Section 'Restore CodeIntegrity log'
+    # Only where prepare recorded a value; an absent baseline field is an
+    # older baseline.json and the setting is left alone.
+    try {
+        if ($null -ne $baseline.CiLogMaxSize -and $null -ne $baseline.CiLogEnabled) {
+            $enabled = if ($baseline.CiLogEnabled) { 'true' } else { 'false' }
+            Invoke-Native 'wevtutil.exe' @('sl', $CI_LOG, "/e:$enabled", "/ms:$($baseline.CiLogMaxSize)")
+            Write-Host ("CodeIntegrity/Operational restored: enabled={0}, maxSize={1}" -f $enabled, $baseline.CiLogMaxSize)
+        } else {
+            Write-Host 'no CodeIntegrity log baseline recorded; left as is'
+        }
+    } catch {
+        Write-Warning "could not restore the CodeIntegrity log settings: $_"
     }
 
     Write-Section 'Restore Defender preferences'

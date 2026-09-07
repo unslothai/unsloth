@@ -82,10 +82,20 @@ jobs:
           }
           Write-Host "auditing release $tag"
           Add-Content -Path $env:GITHUB_ENV -Value "AUDIT_TAG=$tag"
-          # One per backend family rather than all seventeen. The CUDA and ROCm
-          # bundles are hundreds of MB each and the signing state is per build,
-          # not per profile, so a representative set is enough.
-          foreach ($pattern in @('*windows-x64-cpu.zip', '*windows-x64-vulkan.zip', '*windows-x64-cuda12-legacy.zip')) {
+          # One per backend family rather than all seventeen: the CUDA and
+          # ROCm profiles are hundreds of MB each and the signing state is per
+          # build, not per profile. Every family is here, though. ROCm and the
+          # arm64 CPU bundle are built and packaged separately from the x64
+          # ones, so each can fail to be signed on its own; a set that skipped
+          # them would pass under `enforce` while those users still got
+          # unsigned PEs.
+          foreach ($pattern in @(
+            '*windows-x64-cpu.zip',
+            '*windows-arm64-cpu.zip',
+            '*windows-x64-vulkan.zip',
+            '*windows-x64-cuda12-legacy.zip',
+            '*windows-x64-rocm-gfx110X.zip'
+          )) {
             gh release download $tag --repo unslothai/llama.cpp --pattern $pattern --dir bundles --clobber
           }
           Get-ChildItem bundles | Format-Table Name, Length -AutoSize | Out-String | Write-Host

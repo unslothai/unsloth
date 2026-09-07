@@ -86,13 +86,23 @@ cd scripts\windows_sac_probe
 .\sac-probe.ps1 -Stage revert  -Label custom-sac-on
 ```
 
-If Studio has already been opened on that machine, its password has been rotated
-and the bootstrap file is gone, so pass yours through:
+`run` needs the Studio password, always:
 
 ```powershell
 $env:UNSLOTH_STUDIO_PASSWORD = 'your studio password'
 .\sac-probe.ps1 -Stage run -Label custom-sac-on
 ```
+
+On a Studio that has already been opened, that is the password you sign in
+with. On one that has never been opened, the bootstrap credential is still on
+disk and the scenario rotates it to the value you give here; the rotation is
+permanent and `revert` does not undo it, which is why there is no default. The
+password is never written to the evidence.
+
+If Studio runs from a custom home (`UNSLOTH_STUDIO_HOME`) or a custom runtime
+(`UNSLOTH_LLAMA_CPP_PATH`), set the same variables in the shell that runs the
+probe, so it inventories the runtime Studio actually loads and reads the logs
+Studio actually writes.
 
 `prepare` is slow the first time because it runs `winget upgrade --all` and
 `Update-MpSignature`. Add `-SkipUpdates` to skip both.
@@ -139,10 +149,10 @@ between stages, which is itself part of the reported behaviour.
 
 | stage | what it changes | how it is undone |
 | --- | --- | --- |
-| `prepare` | records a baseline; updates packages and Defender signatures; turns Defender real-time, MAPS advanced, cloud block level high and PUA on; raises the CodeIntegrity log to 64 MB; applies the audit policy if given; installs Unsloth Studio if it is missing, then starts it | `revert` (Studio is left installed) |
-| `run` | nothing; inventories signatures and drives Studio | n/a |
+| `prepare` | records a baseline; updates packages and Defender signatures; turns Defender real-time, MAPS advanced, cloud block level high and PUA on; raises the CodeIntegrity log to 64 MB; applies the audit policy if given (a pre-existing policy with the same GUID is saved first); installs Unsloth Studio if it is missing, then starts it | `revert` (Studio is left installed) |
+| `run` | nothing on the machine beyond restarting Studio if it stopped; inventories signatures and drives Studio (rotates a never-used bootstrap password to yours, see above) | n/a |
 | `collect` | nothing; exports events and zips the evidence | n/a |
-| `revert` | removes the audit policy, restores the Defender settings from the baseline | n/a |
+| `revert` | removes the audit policy (or restores the pre-existing one), restores the CodeIntegrity log settings and the Defender settings from the baseline; the EFI partition is never left mounted | n/a |
 
 `revert` reads `baseline.json` from the same `-Label` directory, so use the label
 you prepared with.
@@ -162,17 +172,27 @@ whole unsigned llama.cpp ecosystem is the problem". Upstream is also 0 of N
 signed, and so is `lemonade-sdk/llamacpp-rocm` (72 PE files, 0 signed), so U-on
 is what tells us whether download prevalence alone carries a build through.
 
-To pin a specific runtime before a run:
+To pin a specific runtime for a cell, the runtime has to be **installed** with
+that pin and Studio restarted before `run`; `UNSLOTH_LLAMA_RELEASE_TAG` is read
+by the installer only, and `run` neither installs nor restarts anything:
 
 ```powershell
 $env:UNSLOTH_LLAMA_RELEASE_TAG = 'b10715-mix-86bd2d3'   # an older, more established build
+# re-run the Studio installer (studio\setup.ps1) so it fetches that release,
+# then restart Studio, then:
+.\sac-probe.ps1 -Stage run -Label custom-b10715-sac-on
 ```
+
+For the upstream row, point Studio at an upstream build through its custom
+llama.cpp folder setting (or `UNSLOTH_LLAMA_CPP_PATH`) and restart it. Either
+way, check `signature-inventory.json` afterwards: the SHA-256 of each file is
+what says which build a cell actually exercised, not the label.
 
 ## Reading the output
 
 `collect` writes a zip to `%USERPROFILE%\unsloth-sac-probe\`. Inside:
 
-- `signature-inventory.csv` and `.json`: every PE under `~\.unsloth\llama.cpp` with its Authenticode `Status`, `StatusMessage`, signer subject, thumbprint and SHA-256. Record `Status`, not merely whether a certificate is present: an unsigned file and one whose chain did not build both report `UnknownError`, and `StatusMessage` is what separates them
+- `signature-inventory.csv` and `.json`: every PE under the runtime Studio loads (`UNSLOTH_LLAMA_CPP_PATH`, else `<Studio home>\llama.cpp`, else `~\.unsloth\llama.cpp`) with its Authenticode `Status`, `StatusMessage`, signer subject, thumbprint and SHA-256. Record `Status`, not merely whether a certificate is present: an unsigned file and one whose chain did not build both report `UnknownError`, and `StatusMessage` is what separates them
 - `code-integrity-events.json` and `.txt`: events 3033, 3076, 3077, 3089 and 3090 to 3099 in the run window
 - `CodeIntegrity-Operational.evtx`: the raw log
 - `scenario-results.json`: every HTTP call with its duration, plus the status-poll summary
