@@ -174,3 +174,63 @@ def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
                 assert not marker.evaluate(
                     {**env, **case}
                 ), f"{name} has no wheel for {case} and must not be resolved there"
+
+
+def test_torch211_rejects_torchcodec_010(monkeypatch):
+    """The guard must not be silent on the torch minor where the mismatch happens."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda _name: "0.10.0+cu128",
+    )
+    _stub_torch(monkeypatch, "2.11.0")
+
+    hint = fixes._torchcodec_version_mismatch_hint()
+    assert hint is not None, "torch 2.11 + torchcodec 0.10 must not go unreported"
+    assert "torchcodec 0.10.0+cu128" in hint
+    assert ">=0.11" in hint
+    assert "<0.12.0" in hint
+
+
+def test_torch211_accepts_torchcodec_011(monkeypatch):
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    _stub_torch(monkeypatch, "2.11.0+cu128")
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda _name: "0.11.1+cu128",
+    )
+
+    assert fixes._torchcodec_version_mismatch_hint() is None
+
+
+def test_torch211_accepts_abi_stable_torchcodec(monkeypatch):
+    """torchcodec 0.12+ targets torch >=2.11, so it is not locked to one minor."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    for torch_version in ("2.11.0+cu128", "2.12.0", "2.13.0+cu130"):
+        for codec_version in ("0.12.0", "0.15.0+cu130"):
+            _stub_torch(monkeypatch, torch_version)
+            monkeypatch.setattr(importlib.metadata, "version", lambda _name, _v = codec_version: _v)
+            assert (
+                fixes._torchcodec_version_mismatch_hint() is None
+            ), f"{torch_version} + torchcodec {codec_version} is supported upstream"
+
+
+def test_torch210_still_rejects_abi_stable_torchcodec(monkeypatch):
+    """The ABI-stable floor starts at torch 2.11: 2.10 keeps the exact pairing."""
+    import importlib.metadata
+
+    fixes = _load_import_fixes_module()
+    _stub_torch(monkeypatch, "2.10.0")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.15.0")
+
+    hint = fixes._torchcodec_version_mismatch_hint()
+    assert hint is not None
+    assert "audio-torch210" in hint

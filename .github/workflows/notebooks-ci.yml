@@ -26,6 +26,9 @@ on:
       - 'scripts/notebook_validator.py'
       - 'scripts/notebook_to_python.py'
       - 'scripts/data/colab_pip_freeze.gpu.txt'
+      # Rule-bearing since _marker_environment started reading the image's Python out of it:
+      # an OS-only rotation changes which requirements the validator replays.
+      - 'scripts/data/colab_os_info.gpu.txt'
       - 'scripts/data/colab_to_cpu_pin.json'
       - 'tests/notebooks/**'
       - 'tests/_zoo_aggressive_cuda_spoof.py'
@@ -144,10 +147,16 @@ jobs:
           python unsloth/scripts/notebook_validator.py colab-diff \
               --snapshot-dir unsloth/scripts/data
 
-      - name: Refresh Colab pip-freeze (best-effort; falls back to snapshot)
+      - name: Refresh Colab oracles (best-effort; falls back to snapshot)
+        # --all, not just pip-freeze: marker evaluation reads the Python version out of
+        # colab_os_info.gpu.txt, so refreshing the package set on its own would judge the
+        # live packages against the previous image's Python after a Colab version rotation,
+        # skipping requirements that apply or replaying ones that do not. --all writes
+        # nothing unless it fetched every oracle, so the fallback is the committed pair,
+        # which is at least self-consistent.
         run: |
           python unsloth/scripts/notebook_validator.py refresh-colab \
-              --out unsloth/scripts/data/colab_pip_freeze.gpu.txt \
+              --all --snapshot-dir unsloth/scripts/data \
             || echo "::warning::refresh-colab failed; using committed snapshot"
 
       - name: Drift check (re-run update_all_notebooks.py + git diff)
@@ -228,7 +237,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with: { python-version: '3.12' }
       - name: Install
-        run: pip install -U pip
+        # packaging is not in a bare setup-python environment, and _requirement_applies
+        # falls back to "applies" when it cannot import Marker. Without it this job
+        # replays every environment-marked requirement, including the ones Colab's pip
+        # skips, which is exactly what the Python-version oracle exists to decide.
+        run: pip install -U pip packaging
       - name: Diff Colab oracle vs committed snapshots (--strict on cron)
         # Cron-only escalation of the advisory PR-time check. Fails if
         # pip-freeze.gpu.txt has drifted from scripts/data/colab_*.txt --
@@ -251,7 +264,7 @@ jobs:
         if: always()
         run: |
           python unsloth/scripts/notebook_validator.py refresh-colab \
-              --out unsloth/scripts/data/colab_pip_freeze.gpu.txt
+              --all --snapshot-dir unsloth/scripts/data
       - name: Lint with live PyPI metadata
         if: always()
         # Same backlog, same disposition as the PR-time `Lint` step above:
