@@ -298,8 +298,13 @@ function Start-Studio([string] $python, [int] $port, [string] $logPath) {
     return $false
 }
 
-function Initialize-Studio([string] $dir) {
-    <# Ensure a Studio exists and is answering, installing it if needed. #>
+function Initialize-Studio([string] $dir, [bool] $allowInstall) {
+    <#
+        Ensure a Studio exists and is answering. Installing is allowed only
+        from prepare: the run stage restarts an existing Studio and never
+        installs one, so a prepare -SkipInstall is honoured without the
+        operator having to repeat the switch.
+    #>
     Write-Section 'Unsloth Studio'
     if (Test-StudioResponding $Port) {
         Write-Host "Studio already answering on port $Port"
@@ -308,6 +313,10 @@ function Initialize-Studio([string] $dir) {
 
     $python = Get-StudioPython
     if (-not $python) {
+        if (-not $allowInstall) {
+            Write-Warning 'Studio is not installed; the run stage does not install it, so there is nothing to drive. Run prepare without -SkipInstall, or install by hand.'
+            return
+        }
         if ($SkipInstall) {
             Write-Warning 'Studio is not installed and -SkipInstall was given; the run stage will have nothing to drive.'
             return
@@ -462,7 +471,11 @@ function Invoke-Prepare {
             throw "the audit policy $NOISG_GUID is not in the active policy set after refresh; the machine is left as prepare found it apart from the copied file, run revert"
         }
         if ($after.Policies.Count -eq 0) {
-            Write-Warning 'CiTool is not available here, so the policy could not be verified as active; read the 3076 count with that in mind'
+            # No policy list means no evidence the policy is active, and a run
+            # with no 3076 events would then read as an allow verdict. Every
+            # machine this probe targets ships CiTool; one that does not cannot
+            # produce a result this script would stand behind.
+            throw "CiTool listed no policies, so the audit policy cannot be verified as active; the copied file is left in place, run revert"
         }
     } else {
         Write-Host ''
@@ -478,7 +491,7 @@ function Invoke-Prepare {
     # code integrity event they raise is captured.
     (Get-Date).ToString('o') | Set-Content -LiteralPath (Join-Path $dir 'window-start.txt') -Encoding UTF8
 
-    Initialize-Studio $dir
+    Initialize-Studio $dir $true
 
     Write-Host ''
     Write-Host "prepare complete. Next: .\sac-probe.ps1 -Stage run -Label $Label"
@@ -518,7 +531,7 @@ function Invoke-Run {
     # a cleared cache after a restart. Bring Studio back rather than failing.
     # Not under -SkipStudio: a signature-only run must not start, let alone
     # install, Studio inside the evidence window.
-    if (-not $SkipStudio -and -not (Test-StudioResponding $Port)) { Initialize-Studio $dir }
+    if (-not $SkipStudio -and -not (Test-StudioResponding $Port)) { Initialize-Studio $dir $false }
 
     Write-Section 'Signature inventory'
     Write-Host "runtime: $LLAMA_DIR"
@@ -587,7 +600,15 @@ function Invoke-Collect {
             StartTime = $start
         } -ErrorAction Stop | Where-Object { $CI_EVENT_IDS -contains $_.Id })
     } catch {
-        Write-Warning "no CodeIntegrity events in the window: $_"
+        # Only "nothing matched" is an empty window. A channel that could not
+        # be read is a failed collection, and writing [] for it would ship a
+        # clean-looking allow verdict with no events behind it.
+        if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') {
+            Write-Host 'no CodeIntegrity events in the window'
+        } else {
+            $_.ToString() | Set-Content -LiteralPath (Join-Path $dir 'events-collection-error.txt') -Encoding UTF8
+            throw "could not read $CI_LOG, so the event window was not collected: $_"
+        }
     }
 
     $shaped = @($events | ForEach-Object {
@@ -700,16 +721,28 @@ function Invoke-Revert {
 
     Write-Section 'Restore Defender preferences'
     # Only what prepare changed, and only where a baseline value was captured.
-    try {
-        if ($null -ne $baseline.DisableRealtimeMonitoring) { Set-MpPreference -DisableRealtimeMonitoring $baseline.DisableRealtimeMonitoring }
-        if ($null -ne $baseline.MAPSReporting)        { Set-MpPreference -MAPSReporting $baseline.MAPSReporting }
-        if ($null -ne $baseline.SubmitSamplesConsent) { Set-MpPreference -SubmitSamplesConsent $baseline.SubmitSamplesConsent }
-        if ($null -ne $baseline.CloudBlockLevel)      { Set-MpPreference -CloudBlockLevel $baseline.CloudBlockLevel }
-        if ($null -ne $baseline.PUAProtection)        { Set-MpPreference -PUAProtection $baseline.PUAProtection }
-        Write-Host 'Defender preferences restored'
-    } catch {
-        Write-Warning "could not restore Defender preferences: $_"
+    # Each one on its own: a preference that has become policy-controlled
+    # throws, and one failure must not skip the values after it.
+    $restores = @(
+        @{ Name = 'DisableRealtimeMonitoring'; Value = $baseline.DisableRealtimeMonitoring },
+        @{ Name = 'MAPSReporting';             Value = $baseline.MAPSReporting },
+        @{ Name = 'SubmitSamplesConsent';      Value = $baseline.SubmitSamplesConsent },
+        @{ Name = 'CloudBlockLevel';           Value = $baseline.CloudBlockLevel },
+        @{ Name = 'PUAProtection';             Value = $baseline.PUAProtection }
+    )
+    $failed = 0
+    foreach ($r in $restores) {
+        if ($null -eq $r.Value) { continue }
+        try {
+            $params = @{ $r.Name = $r.Value }
+            Set-MpPreference @params
+        } catch {
+            $failed++
+            Write-Warning "could not restore $($r.Name): $_"
+        }
     }
+    if ($failed -eq 0) { Write-Host 'Defender preferences restored' }
+    else { Write-Warning "$failed Defender preference(s) were not restored; see above" }
 
     Write-Host ''
     Write-Host 'revert complete. Smart App Control itself was never changed by this script.'

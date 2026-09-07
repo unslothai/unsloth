@@ -149,8 +149,11 @@ python -X utf8 -I -m unsloth_cli studio -p 8888
 ```
 
 Pass `-SkipInstall` to refuse to install, or `-Port` if 8888 is taken. `run`
-re-checks and restarts Studio too, since a machine may have been rebooted
-between stages, which is itself part of the reported behaviour.
+re-checks and restarts an installed Studio too, since a machine may have been
+rebooted between stages, which is itself part of the reported behaviour; it
+never installs one, so a `prepare -SkipInstall` stays in force. `run` also
+evicts the model before the measured load, because a model already resident
+would make the load a no-op that loads no PE inside the window.
 
 ### What each stage does
 

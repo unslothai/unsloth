@@ -133,7 +133,7 @@ def test_the_scenario_loads_with_the_variant_field_and_unloads_by_model_path(tmp
             200,
             [
                 {"type": "tool_start", "tool_name": "web_search"},
-                {"type": "tool_end", "tool_name": "web_search"},
+                {"type": "tool_end", "tool_name": "web_search", "result": "Reykjavik: 7 September"},
                 {"choices": [{"delta": {"content": "found it"}}]},
             ],
             None,
@@ -163,8 +163,9 @@ def test_the_scenario_loads_with_the_variant_field_and_unloads_by_model_path(tmp
     assert s.main() == 0
     load = next(c for c in calls if c[1] == "/api/inference/load")
     assert load[2] == {"model_path": "unsloth/Qwen3.5-2B-MTP-GGUF", "gguf_variant": "UD-Q4_K_XL"}
-    unload = next(c for c in calls if c[1] == "/api/inference/unload")
-    assert unload[2] == {"model_path": "unsloth/Qwen3.5-2B-MTP-GGUF"}
+    unloads = [c for c in calls if c[1] == "/api/inference/unload"]
+    assert len(unloads) == 2, "one eviction before the load, one unload after"
+    assert all(u[2] == {"model_path": "unsloth/Qwen3.5-2B-MTP-GGUF"} for u in unloads)
     chat = next(c for c in calls if c[1] == "/v1/chat/completions")
     assert chat[2]["model"] == "unsloth/Qwen3.5-2B-MTP-GGUF"
     streamed = [c for c in calls if c[0] == "STREAM"]
@@ -172,31 +173,135 @@ def test_the_scenario_loads_with_the_variant_field_and_unloads_by_model_path(tmp
     assert all(c[2]["tool_choice"]["function"]["name"] == "web_search" for c in streamed)
     results = json.loads((tmp_path / "scenario-results.json").read_text(encoding = "utf-8"))
     assert results["steps"]["unload"]["ok"] is True
-    assert "in_flight_ms" in results["status_poll"]
+    assert "in_flight_ms" in results["status_poll"] and "stalls_ms" in results["status_poll"]
     assert results["gguf_variant"] == "UD-Q4_K_XL"
 
 
-def test_a_status_poll_still_in_flight_at_the_end_is_counted(monkeypatch):
-    """The 75 to 80 second stall this exists to catch is exactly the poll that
-    a 30 second join abandoned, so its duration was absent from the summary."""
+def test_the_poller_abandons_a_read_at_the_frontend_timeout_and_measures_the_stall(monkeypatch):
+    """The frontend ticks every 5 s and abandons a status read after 10 s, so a
+    stall is a stream of abandoned reads; one 300 s request neither reproduces
+    that load nor records the 75 to 80 s stall this exists to measure."""
     s = _load_scenario()
+    assert s.STATUS_READ_TIMEOUT_S == 10.0 and s.STATUS_INTERVAL_S == 5.0
     source = (PROBE_DIR / "studio_scenario.py").read_text(encoding = "utf-8")
-    assert "poller.join(timeout = 330)" in source
-    release = threading.Event()
+    status_call = source[source.index('"/api/inference/status"') :]
+    assert "timeout = self.read_timeout" in status_call[: status_call.index(")")]
+    assert "poller.join(timeout = STATUS_READ_TIMEOUT_S + 15)" in source
 
-    def slow(*a, **k):
-        release.wait(5)
-        return 200, {}
+    def stalled(base_url, method, path, payload = None, token = None, timeout = 900):
+        # What _request returns once urllib gives up at `timeout`.
+        threading.Event().wait(timeout)
+        return 0, "timed out"
 
-    monkeypatch.setattr(s, "_request", slow)
-    poller = s.StatusPoller("http://127.0.0.1:1", "t", interval = 0.01)
+    monkeypatch.setattr(s, "_request", stalled)
+    poller = s.StatusPoller("http://127.0.0.1:1", "t", interval = 0.02, read_timeout = 0.05)
     poller.start()
-    deadline = threading.Event()
-    deadline.wait(0.2)
-    assert poller.in_flight_ms() is not None and poller.in_flight_ms() > 100
+    threading.Event().wait(0.4)
     poller.stop()
-    release.set()
     poller.join(timeout = 5)
+    assert len(poller.polls) >= 4, "abandoned reads must be followed at once by the next"
+    assert all(timed_out for _, _, timed_out in poller.polls)
+    stalls = poller.stalls_ms()
+    assert len(stalls) == 1 and stalls[0] >= 200, stalls
+    # Mixed history: two runs of abandoned reads separated by a good read.
+    poller.polls = [(0.0, 50.0, True), (0.06, 50.0, True), (0.2, 5.0, False), (0.3, 50.0, True)]
+    assert [round(x) for x in poller.stalls_ms()] == [110, 50]
+
+
+def test_an_empty_bootstrap_file_means_rotated(tmp_path, monkeypatch):
+    """Studio truncates .bootstrap_password on Windows when it cannot delete
+    it, so an existence check picked the empty string over the operator's
+    password and every login failed on exactly the locked-down machines."""
+    s = _load_scenario()
+    (tmp_path / "auth").mkdir()
+    (tmp_path / "auth" / ".bootstrap_password").write_text("", encoding = "utf-8")
+    posted: list[tuple[str, dict]] = []
+
+    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+        posted.append((path, payload or {}))
+        return 200, {"access_token": "tok"}
+
+    monkeypatch.setattr(s, "_request", fake)
+    s.authenticate("http://x", tmp_path, "operators-choice")
+    assert posted[0] == ("/api/auth/login", {"username": "unsloth", "password": "operators-choice"})
+    assert not any(p[0] == "/api/auth/change-password" for p in posted)
+
+
+def test_a_model_already_resident_is_evicted_first_and_never_counts_as_loaded(tmp_path, monkeypatch):
+    """/load answers already_loaded for a resident model and starts nothing, so
+    no PE is loaded inside the evidence window and the absence of events would
+    read as an allow."""
+    s = _load_scenario()
+    calls: list[tuple[str, str]] = []
+
+    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+        calls.append((method, path))
+        if path == "/api/liveness":
+            return 200, {}
+        if path == "/api/auth/login":
+            return 200, {"access_token": "tok"}
+        if path == "/api/inference/load":
+            return 200, {"status": "already_loaded", "model": "x"}
+        return 200, {"status": "done"}
+
+    monkeypatch.setattr(s, "_request", fake)
+    monkeypatch.setattr(s, "_stream_events", lambda *a, **k: (200, [], None))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["studio_scenario.py", "--model", "m", "--out", str(tmp_path), "--port", "1", "--password", "pw", "--home", str(tmp_path), "--poll-seconds", "0.05"],
+    )
+    assert s.main() == 1
+    paths = [c[1] for c in calls]
+    assert paths.index("/api/inference/unload") < paths.index("/api/inference/load")
+    results = json.loads((tmp_path / "scenario-results.json").read_text(encoding = "utf-8"))
+    assert results["steps"]["load"]["ok"] is False
+    assert "already resident" in results["steps"]["load"]["error"]
+    assert results["evicted_before_load"]["status"] == 200
+
+
+def test_a_tool_end_carrying_a_refusal_or_error_is_not_an_execution(monkeypatch):
+    """The loop emits tool_end for a declined call, a lost runtime and an
+    interrupted call too, with the reason in `result`."""
+    s = _load_scenario()
+    assert s.tool_end_failure("") is not None
+    assert s.tool_end_failure(None) is not None
+    assert s.tool_end_failure(s.TOOL_REJECTED_MESSAGE) == "declined before running"
+    assert s.tool_end_failure("Error: lost connection to llama-server before the tool call completed.")
+    assert s.tool_end_failure('{"results": [{"title": "Burj Khalifa"}]}') is None
+    monkeypatch.setattr(
+        s,
+        "_stream_events",
+        lambda *a, **k: (
+            200,
+            [
+                {"type": "tool_start", "tool_name": "web_search"},
+                {"type": "tool_end", "tool_name": "web_search", "result": s.TOOL_REJECTED_MESSAGE},
+            ],
+            None,
+        ),
+    )
+    turn = s.chat("http://x", "t", "m", "look it up", tools = True)
+    assert turn["ok"] is False and turn["tools_run"] == [] and turn["tools_failed"][0]["why"] == "declined before running"
+
+
+def test_the_powershell_probe_collects_honestly_and_never_installs_from_run():
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    # run restarts an installed Studio and never installs one; prepare may.
+    assert "Initialize-Studio $dir $false" in ps1 and "Initialize-Studio $dir $true" in ps1
+    assert "function Initialize-Studio([string] $dir, [bool] $allowInstall)" in ps1
+    # No policy list is a failed setup, not a warning.
+    assert "CiTool listed no policies" in ps1 and "could not be verified as active; read the 3076 count" not in ps1
+    # Only "nothing matched" is an empty window; any other query failure is recorded and fatal.
+    assert "NoMatchingEventsFound*" in ps1 and "events-collection-error.txt" in ps1
+    assert 'Write-Warning "no CodeIntegrity events in the window' not in ps1
+    # Each Defender preference is restored on its own.
+    assert "foreach ($r in $restores)" in ps1 and ps1.count("Set-MpPreference @params") == 1
+
+
+def test_the_new_guard_runs_in_the_unfiltered_lint_job():
+    lint = (REPO_ROOT / ".github" / "workflows" / "workflow-trigger-lint.yml").read_text(encoding = "utf-8")
+    assert "tests/studio/test_windows_sac_probe.py" in lint
 
 
 def test_the_powershell_probe_restores_what_prepare_changed_and_unmounts_efi():
@@ -280,7 +385,7 @@ def test_a_tool_turn_is_ok_only_when_a_tool_actually_ran(monkeypatch):
             200,
             [
                 {"type": "tool_start", "tool_name": "web_search"},
-                {"type": "tool_end", "tool_name": "web_search"},
+                {"type": "tool_end", "tool_name": "web_search", "result": "Burj Khalifa, 828 m"},
             ],
             None,
         ),
@@ -293,7 +398,7 @@ def test_the_powershell_probe_handles_retries_skips_and_occupied_drives():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     # -SkipStudio means signature only: no Studio start or install in the window.
     assert (
-        "if (-not $SkipStudio -and -not (Test-StudioResponding $Port)) { Initialize-Studio $dir }"
+        "if (-not $SkipStudio -and -not (Test-StudioResponding $Port)) { Initialize-Studio $dir $false }"
         in ps1
     )
     # collect refuses to invent an event window.

@@ -223,8 +223,12 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> str:
             "Studio that has never been opened it becomes the account password, on one "
             "that has it must be the password you sign in with."
         )
-    if boot_file.exists():
-        secret = boot_file.read_text(encoding = "utf-8").strip()
+    # An EMPTY file is a rotated installation: on Windows Studio truncates the
+    # bootstrap file when it cannot delete it (auth/storage.py), which is the
+    # state of exactly the locked-down machines this probe targets.
+    bootstrap = boot_file.read_text(encoding = "utf-8").strip() if boot_file.exists() else ""
+    if bootstrap:
+        secret = bootstrap
         rotate = True
     else:
         secret = password
@@ -252,6 +256,15 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> str:
     return token
 
 
+# The frontend's numbers (studio/frontend/src/features/loaded-models): a tick
+# every 5 s, each status read abandoned after 10 s, and a tick that arrived
+# while a read was in flight runs as soon as that read ends. Under a stall the
+# pattern is therefore a stream of 10 s abandoned requests, not one long one,
+# and reproducing the load means reproducing that.
+STATUS_INTERVAL_S = 5.0
+STATUS_READ_TIMEOUT_S = 10.0
+
+
 class StatusPoller(threading.Thread):
     """Poll /api/inference/status the way the frontend does, and time it."""
 
@@ -259,29 +272,62 @@ class StatusPoller(threading.Thread):
         self,
         base_url: str,
         token: str,
-        interval: float = 5.0,
+        interval: float = STATUS_INTERVAL_S,
+        read_timeout: float = STATUS_READ_TIMEOUT_S,
     ) -> None:
         super().__init__(daemon = True)
         self.base_url = base_url
         self.token = token
         self.interval = interval
+        self.read_timeout = read_timeout
+        # (started_at, duration_ms, timed_out) per poll, in order.
+        self.polls: list[tuple[float, float, bool]] = []
         # Not `_stop`: Thread.join() calls its own internal `_stop()` method,
         # and an Event assigned over it raised "'Event' object is not callable"
         # out of the finally block before the results were written.
         self._stop_event = threading.Event()
-        self.durations: list[float] = []
         self.in_flight_since: Optional[float] = None
+
+    @property
+    def durations(self) -> list[float]:
+        return [ms for _, ms, _ in self.polls]
 
     def run(self) -> None:
         while not self._stop_event.is_set():
             start = time.monotonic()
             self.in_flight_since = start
-            _request(self.base_url, "GET", "/api/inference/status", token = self.token, timeout = 300)
+            status, _ = _request(
+                self.base_url,
+                "GET",
+                "/api/inference/status",
+                token = self.token,
+                timeout = self.read_timeout,
+            )
             self.in_flight_since = None
-            self.durations.append((time.monotonic() - start) * 1000.0)
-            # Interval from the last start, not the last finish, so a slow poll
-            # does not quietly stretch the cadence and hide the pile-up.
-            self._stop_event.wait(max(0.0, self.interval - (time.monotonic() - start)))
+            elapsed = time.monotonic() - start
+            timed_out = status == 0 and elapsed >= self.read_timeout
+            self.polls.append((start, elapsed * 1000.0, timed_out))
+            # A read that ran past the tick is followed at once by the tick it
+            # blocked, as the frontend's queued refresh does; otherwise the
+            # interval runs from the last start, so a slow poll does not
+            # quietly stretch the cadence and hide the pile-up.
+            self._stop_event.wait(max(0.0, self.interval - elapsed))
+
+    def stalls_ms(self) -> list[float]:
+        """Length of each run of consecutive abandoned reads, first start to last end."""
+        runs: list[float] = []
+        run_start: Optional[float] = None
+        run_end = 0.0
+        for start, ms, timed_out in self.polls:
+            if timed_out:
+                run_start = start if run_start is None else run_start
+                run_end = start + ms / 1000.0
+            elif run_start is not None:
+                runs.append((run_end - run_start) * 1000.0)
+                run_start = None
+        if run_start is not None:
+            runs.append((run_end - run_start) * 1000.0)
+        return runs
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -290,6 +336,22 @@ class StatusPoller(threading.Thread):
         """How long the current poll has been waiting, if one is."""
         since = self.in_flight_since
         return None if since is None else (time.monotonic() - since) * 1000.0
+
+
+# studio/backend/state/tool_approvals.py; the loop puts it in `result` when a
+# call is declined before running.
+TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
+
+
+def tool_end_failure(result: Any) -> Optional[str]:
+    """Why a tool_end did not come from an executed tool, or None if it did."""
+    if not isinstance(result, str) or not result.strip():
+        return "empty result"
+    if result.strip() == TOOL_REJECTED_MESSAGE:
+        return "declined before running"
+    if result.lstrip().startswith("Error:"):
+        return result.strip()[:160]
+    return None
 
 
 def chat(
@@ -324,14 +386,31 @@ def chat(
         text = ""
         started: list[str] = []
         finished: list[str] = []
+        failed: list[dict[str, str]] = []
         for event in events:
             kind = event.get("type")
             if kind == "tool_start":
                 started.append(str(event.get("tool_name") or ""))
             elif kind == "tool_end":
-                finished.append(str(event.get("tool_name") or ""))
+                # A tool_end is also what a refusal, a lost runtime and an
+                # interrupted call emit, with the reason in `result`. Only a
+                # non-empty result that is not one of those is an execution.
+                name = str(event.get("tool_name") or "")
+                why = tool_end_failure(event.get("result"))
+                if why is None:
+                    finished.append(name)
+                else:
+                    failed.append({"tool": name, "why": why})
             for choice in event.get("choices", []) or []:
                 text += (choice.get("delta") or {}).get("content") or ""
+        if error:
+            reason = error
+        elif finished:
+            reason = None
+        elif failed:
+            reason = "tool ended without executing: " + "; ".join(f["why"] for f in failed)[:300]
+        else:
+            reason = "no tool_end event: the turn executed no tool"
         return {
             "status": status,
             "ok": status == 200 and bool(finished),
@@ -339,10 +418,9 @@ def chat(
             "tool_calls": len(finished),
             "tools_started": started,
             "tools_run": finished,
+            "tools_failed": failed,
             "text": text[:600],
-            "error": error
-            if error
-            else (None if finished else "no tool_end event: the turn executed no tool"),
+            "error": reason,
         }
     status, body = _request(base_url, "POST", "/v1/chat/completions", payload, token = token)
     text = ""
@@ -408,6 +486,20 @@ def main() -> int:
     if variant:
         load_payload["gguf_variant"] = variant
     try:
+        # A model already resident makes /load a no-op ("already_loaded"), and
+        # then no PE is loaded inside the evidence window: the absence of
+        # events would read as an allow. Evict first; a 4xx here just means
+        # nothing was resident.
+        status, body = _request(
+            base_url,
+            "POST",
+            "/api/inference/unload",
+            {"model_path": repo},
+            token = token,
+            timeout = 300,
+        )
+        results["evicted_before_load"] = {"status": status, "body": str(body)[:200]}
+
         print(f"loading {args.model} ...")
         status, body = _request(
             base_url,
@@ -418,6 +510,11 @@ def main() -> int:
             timeout = 1800,
         )
         load_error = padded_route_failure(status, body)
+        if load_error is None and isinstance(body, dict) and body.get("status") == "already_loaded":
+            load_error = (
+                "the model was already resident, so this load started no llama-server and "
+                "loaded no PE; the evidence window contains nothing for it"
+            )
         results["steps"]["load"] = {
             "status": status,
             "ok": load_error is None,
@@ -487,24 +584,27 @@ def main() -> int:
             )
     finally:
         poller.stop()
-        # A poll stalled for the 75 to 80 seconds this exists to catch is still
-        # in flight here. Wait it out (its own timeout is 300s) rather than
-        # discard the daemon thread with the one duration that matters.
-        poller.join(timeout = 330)
+        # A read still in flight is abandoned at STATUS_READ_TIMEOUT_S like the
+        # frontend's; wait that out rather than discard the daemon thread with
+        # its record.
+        poller.join(timeout = STATUS_READ_TIMEOUT_S + 15)
 
     durations = poller.durations
     in_flight = poller.in_flight_ms() if poller.is_alive() else None
+    stalls = poller.stalls_ms()
     results["status_poll"] = {
         "count": len(durations),
         "in_flight_ms": None if in_flight is None else round(in_flight, 1),
         "max_ms": round(max(durations), 1) if durations else None,
         "median_ms": round(statistics.median(durations), 1) if durations else None,
-        # The watchdog kills the backend after roughly 75s of unanswered health
-        # checks, so anything at or past that is the reported failure mode.
-        "over_10s": sum(1 for d in durations if d > 10_000)
-        + (1 if in_flight and in_flight > 10_000 else 0),
-        "over_75s": sum(1 for d in durations if d > 75_000)
-        + (1 if in_flight and in_flight > 75_000 else 0),
+        # Reads the frontend would have abandoned, and how long each run of
+        # them lasted. The watchdog kills the backend after roughly 75s of
+        # unanswered health checks, so a stall that long is the reported
+        # failure mode.
+        "abandoned_reads": sum(1 for _, _, t in poller.polls if t),
+        "stalls_ms": [round(x, 1) for x in stalls],
+        "over_10s": sum(1 for d in durations if d >= 10_000),
+        "over_75s": sum(1 for x in stalls if x >= 75_000),
     }
     results["slowest_calls"] = TIMED.slowest(15)
     results["all_calls"] = TIMED.calls
@@ -519,7 +619,8 @@ def main() -> int:
     poll = results["status_poll"]
     print(
         f"status polls  {poll['count']}, median {poll['median_ms']} ms, max {poll['max_ms']} ms, "
-        f"{poll['over_10s']} over 10s, {poll['over_75s']} over 75s"
+        f"{poll['abandoned_reads']} abandoned at {STATUS_READ_TIMEOUT_S:.0f}s, "
+        f"{poll['over_75s']} stall(s) over 75s"
     )
     print(f"written to {path}")
 
