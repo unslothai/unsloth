@@ -80,6 +80,8 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 # Why CHAT_ONLY is True (Train/Export disabled). None when training is enabled.
 # "mlx_unavailable": Apple Silicon but the MLX stack is missing, too old, or broken
 # (the usual cause of "Train/Export greyed out" on Macs after a reinstall dropped MLX);
+# "no_torch": Apple Silicon installed --no-torch with no MLX on disk, GGUF-only by
+# request, so nothing is broken and `unsloth studio update` cannot change it;
 # "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host;
 # "torch_cpu_build" / "torch_cuda_unavailable": the host HAS GPUs, this PyTorch cannot
 # use them -- see classify_torch_build(). Those two must not read as "no_gpu": the fix
@@ -993,6 +995,27 @@ def _stated_torch_index_source() -> str:
     return (os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY") or "").strip()
 
 
+def _installed_without_torch() -> bool:
+    # The self-heal's reader, so the verdict and the gate that declines on it agree.
+    try:
+        from utils.mlx_repair import _installed_without_torch as recorded
+        return recorded()
+    except Exception:
+        return False
+
+
+def _mlx_distribution_installed() -> bool:
+    # Absent on disk is what a --no-torch install looks like; present but unusable is a
+    # broken stack, which keeps the mlx_unavailable verdict and its overturn path.
+    try:
+        pkg_version("mlx")
+    except PackageNotFoundError:
+        return False
+    except Exception:
+        return True
+    return True
+
+
 def _recorded_install_flavor() -> "tuple[str, bool]":
     """``(expected_torch_tag, expected_torch_tag_pinned)`` from the venv's manifest.
 
@@ -1862,7 +1885,16 @@ def _detect_hardware_locked() -> DeviceType:
     # CHAT_ONLY is still True here (every training-capable branch returned early),
     # so record WHY so the UI can explain the greyed-out Train/Export instead of
     # silently disabling them.
-    if is_apple_silicon():
+    if is_apple_silicon() and _installed_without_torch() and not _mlx_distribution_installed():
+        # GGUF-only by request: no MLX on disk and the self-heal declines, so this is
+        # not a broken stack and `unsloth studio update` cannot change it.
+        CHAT_ONLY_REASON = "no_torch"
+        _MLX_BLOCKERS_MEASURED = None
+        logger.info(
+            "Apple Silicon installed --no-torch (GGUF-only); Train/Export are off by "
+            "request. Reinstall without --no-torch to enable them."
+        )
+    elif is_apple_silicon():
         # Reached the CPU fallback on Apple Silicon, so the MLX stack is missing,
         # too old, or broken. This is usually an environment problem recoverable
         # with `unsloth studio update`.
@@ -2116,6 +2148,12 @@ def export_capability() -> dict:
         message = (
             "Hardware detection failed on this host, so export is disabled. The server log records "
             "the underlying error; restart Unsloth Studio to retry detection."
+        )
+    elif verdict[0] == "no_torch":
+        reason = "no_torch"
+        message = (
+            "This install was set up without the training stack (--no-torch), so export is "
+            "disabled. Reinstall Unsloth Studio without --no-torch to enable export."
         )
     elif is_apple_silicon():
         reason = "mlx_unavailable"

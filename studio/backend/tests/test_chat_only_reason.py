@@ -27,6 +27,9 @@ import utils.hardware.hardware as hw  # noqa: E402
 def _no_torch(monkeypatch):
     # Force the non-CUDA/XPU path regardless of the test host's real GPUs.
     monkeypatch.setattr(hw, "_has_torch", lambda: False)
+    # The no_torch verdict reads the venv's install manifest; pin it so the answer does
+    # not depend on which venv runs these tests.
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
     # detect_hardware() assigns these module globals directly (not via monkeypatch),
     # so save and restore them; otherwise a chat-only verdict here leaks into other
     # backend tests (e.g. test_utils.py) when they share a process on a GPU host.
@@ -63,6 +66,40 @@ def test_apple_silicon_with_incomplete_mlx_stack_stays_chat_only(monkeypatch):
     assert hw.detect_hardware() == hw.DeviceType.CPU
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
+
+
+def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatch):
+    # GGUF-only by request: not a broken stack, so the UI must not send the user to
+    # `unsloth studio update`, which keeps no-torch and cannot enable Train.
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
+    monkeypatch.setattr(hw, "_mlx_distribution_installed", lambda: False)
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
+    assert hw.detect_hardware() == hw.DeviceType.CPU
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    assert hw.CHAT_ONLY_DETAIL is None
+
+
+def test_apple_silicon_no_torch_install_with_a_broken_mlx_stays_mlx_unavailable(monkeypatch):
+    # MLX on disk but unusable is a broken stack whichever way the venv was installed, and
+    # keeping the reason keeps the post-warm overturn for a stack that only lost the import race.
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
+    monkeypatch.setattr(hw, "_mlx_distribution_installed", lambda: True)
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
+
+
+def test_apple_silicon_no_torch_install_with_usable_mlx_enables_training(monkeypatch):
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY is False
+    assert hw.CHAT_ONLY_REASON is None
 
 
 def test_intel_mac_reason(monkeypatch):
