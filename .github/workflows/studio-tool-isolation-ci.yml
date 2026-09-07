@@ -118,20 +118,25 @@ jobs:
         working-directory: studio/frontend
         run: |
           npm ci --ignore-scripts --no-audit --no-fund
-          npm install --ignore-scripts --no-save --package-lock=false --no-audit --no-fund playwright@1.58.2
-          npx playwright install chromium
+          npm install --prefix "$RUNNER_TEMP/srt-browser-deps" --ignore-scripts --no-save --package-lock=false --no-audit --no-fund playwright@1.58.2
+          node "$RUNNER_TEMP/srt-browser-deps/node_modules/playwright/cli.js" install chromium
       - name: Click through native macOS Python and Terminal policy flows
         if: runner.os == 'macOS'
         working-directory: studio/frontend
         env:
           SRT_BROWSER_ARTIFACTS: ${{ runner.temp }}/srt-browser
+          SRT_PLAYWRIGHT_MODULE: ${{ runner.temp }}/srt-browser-deps/node_modules/playwright/index.mjs
         run: SRT_BROWSER_PYTHON="$(command -v python)" node scripts/srt-browser/run.mjs
       - name: Upload macOS browser proof and cleanup diagnostics
         if: always() && runner.os == 'macOS'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: srt-browser-${{ matrix.os }}
-          path: ${{ runner.temp }}/srt-browser
+          path: |
+            ${{ runner.temp }}/srt-browser/*.png
+            ${{ runner.temp }}/srt-browser/*.json
+            ${{ runner.temp }}/srt-browser/*.txt
+            ${{ runner.temp }}/srt-browser/*.log
           if-no-files-found: warn
       - name: Remove upstream sandbox account and WFP from disposable Windows runner
         if: always() && runner.os == 'Windows'

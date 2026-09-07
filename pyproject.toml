@@ -96,6 +96,7 @@ exclude = [
     "*.unsloth_compiled_cache*",
     "*.node_modules",
     "*.node_modules.*",
+    "studio.frontend.scripts.srt-browser*",
 ]
 
 # Excluding a tests package above is not enough: include-package-data re-ships its
@@ -128,6 +129,7 @@ exclude = [
 # site-packages/studio/src-tauri/icons to build the macOS and Linux launchers.
 "studio" = [
     "backend/core/inference/srt_runtime/installed-runtime-settings.json",
+    "frontend/scripts/srt-browser/**",
     "frontend/public/**",
     "frontend/src/**",
     "frontend/package-lock.json",
