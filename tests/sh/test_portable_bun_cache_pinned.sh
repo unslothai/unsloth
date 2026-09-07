@@ -86,7 +86,8 @@ case "$shim_block" in
         printf '  PASS  %s\n' "the portable shim exports BUN_INSTALL_CACHE_DIR" ;;
     *) printf '  FAIL  %s\n' "the portable shim exports BUN_INSTALL_CACHE_DIR"; fails=$((fails+1)) ;;
 esac
-conf_block="$(sed -n '/studio.conf: exe path/,/studio\.conf"$/p' "$INSTALL")"
+# Anchored on the code, not on a comment install.sh has since lost.
+conf_block="$(sed -n "/UNSLOTH_EXE='\$_css_quoted_exe'/,/studio\.conf\"\$/p" "$INSTALL")"
 case "$conf_block" in *'.unsloth-portable'*|*'UNSLOTH_EXE'*) : ;; *) echo "FAIL: conf block extraction broke"; exit 1 ;; esac
 case "$conf_block" in
     *"export BUN_INSTALL_CACHE_DIR='\$_css_quoted_root/cache/bun'"*)

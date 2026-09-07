@@ -292,7 +292,15 @@ case "$shim_block" in
     *) printf '  FAIL  %s\n' "portable shim execs the venv entry point"; fails=$((fails+1)) ;;
 esac
 
-conf_block="$(sed -n '/studio.conf: exe path/,/studio\.conf"$/p' "$INSTALL")"
+# Anchored on the code, not on a comment: the previous start anchor was a comment line
+# install.sh has since lost, which made the range empty and every check below fail at once.
+conf_block="$(sed -n "/UNSLOTH_EXE='\$_css_quoted_exe'/,/studio\.conf\"\$/p" "$INSTALL")"
+# An empty range would otherwise report the exports as missing rather than saying the
+# extraction broke, which is the more useful message and the harder bug to spot.
+if [ -z "$conf_block" ]; then
+    printf '  FAIL  %s\n' "studio.conf writer block could not be extracted from install.sh"
+    fails=$((fails+1))
+fi
 for v in UNSLOTH_HOME UNSLOTH_PORTABLE UV_CACHE_DIR UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR \
          UV_INSTALL_DIR UV_TOOL_BIN_DIR NPM_CONFIG_CACHE BUN_INSTALL_CACHE_DIR \
          CUDA_CACHE_PATH PIP_CACHE_DIR; do
