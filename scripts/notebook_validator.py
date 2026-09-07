@@ -408,7 +408,12 @@ _INTERPRETER_RE = r"""(?:
 # `-m uv pip` as well as `-m pip`: unsloth_nb_pip_magic rewrites `(pip|uv)` after the
 # module flag, and uv's pip-compatible interface really is spelled `uv pip <action>`.
 PIP_LINE_RE = re.compile(
-    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip|" + _INTERPRETER_RE + r"\s+-m\s+(?:uv\s+)?pip)\s+"
+    # `python [option] ... [-m mod ...]`: interpreter options may sit before `-m`, and
+    # `python -I -m pip install git+...` otherwise matched nothing at all, so every install
+    # rule including the git+ ban was bypassed. Options only, never a bare word, or a script
+    # path would be read as the module flag.
+    r"^\s*!\s*(?P<tool>(?:uv\s+)?pip|" + _INTERPRETER_RE
+    + r"(?:\s+-[A-Za-z]\w*)*\s+-m\s+(?:uv\s+)?pip)\s+"
     r"(?P<action>install|uninstall)\b(?P<rest>.*)$",
     re.IGNORECASE | re.VERBOSE,
 )
@@ -500,7 +505,9 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
 # reached whenever the line is, while a `then` or `do` body runs only if that test said so.
 # Words that run the command after them rather than being it. `command pip install ...` and
 # `env FOO=1 pip install ...` install exactly as a bare `pip install ...` does.
-_SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "sudo", "builtin"})
+# No `builtin`: `builtin pip install ...` is `bash: builtin: pip: not a shell builtin` and
+# runs nothing, so unwrapping it made the replay report an install that cannot happen.
+_SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "sudo"})
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
 # Per prefix, the options taking a SEPARATE operand; everything else starting with `-` is a
 # lone flag and `--` ends them. This is what tells a prefix's operand from the command it
@@ -633,7 +640,7 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
             if token == "-" or not token.startswith("-"):
                 break
             if token.startswith("--split-string=") and name == "env":
-                rest = token.partition("=")[2]
+                rest = f"{token.partition('=')[2]} {tail}".strip()
                 break
             if "=" in token and token.startswith("--"):
                 rest = tail  # `--unset=NAME` carries its operand inline
@@ -643,8 +650,11 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
                 # (GNU coreutils env). The operand IS the command, so consuming it the way
                 # `-u NAME` is consumed left nothing to parse and R-INST-001 saw no install
                 # at all. Unquoted, since env splits it on unquoted whitespace itself.
-                operand, _ = _split_first_word(tail)
-                rest = operand
+                # `env -S'cmd args' [ARG]...` appends the following ARGs to what the split
+                # string produced -- that is how `#!/usr/bin/env -S perl -w` reaches
+                # `perl -w script.pl`. Dropping them left `pip install` with no packages.
+                operand, trailing = _split_first_word(tail)
+                rest = f"{operand} {trailing}".strip()
                 break
             if token in operand_flags:
                 _, rest = _split_first_word(tail)
@@ -1186,6 +1196,20 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     for inv in unconditional_pip_invocations(install_cell):
         if _is_dry_run(inv):
             continue
+        if inv.action == "uninstall":
+            # The cell removed it, so the environment it leaves behind has no such package
+            # and neither should this. Ignoring the verb left a pin in place for something
+            # `pip uninstall` had just deleted, and R-INST-003 and R-INST-005 then judged a
+            # package that is not there. The accumulated bound goes too, or a later
+            # reinstall would inherit it.
+            for raw in inv.packages:
+                sp = parse_spec(raw)
+                if sp is None:
+                    continue
+                out.pop(sp.name, None)
+                pinned.discard(sp.name)
+                upper_bounds.pop(sp.name, None)
+            continue
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or not _requirement_applies(raw, environment):
@@ -1664,8 +1688,15 @@ def _effective_version(
             # just below it is only in the index.
             if cap is not None:
                 current, exact_known = cap, cap_exact
+            elif landing is not None and floor is not None:
+                # pip takes the newest release a BOUNDED window admits, so `>=0.10,<0.12`
+                # lands on 0.11, not on its floor. Returning the floor as EXACT made that
+                # read as 0.10 and R-INST-004 reject a compatible install. A ceiling with
+                # no floor under it stays unknown (the case just above): which release sits
+                # below it is only in the index, and there is no floor to bound the guess.
+                current, exact_known = landing, True
             elif floor is not None and not exclusive_floor:
-                current, exact_known = floor, landing is not None
+                current, exact_known = floor, False
         elif floor is not None and (
             cmp_versions(floor, current) > 0
             # `>V` is not satisfied by V itself, so equality still forces a move.

