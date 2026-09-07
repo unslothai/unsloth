@@ -65,6 +65,14 @@ _INFERENCE_ROUTES = frozenset(
 )
 
 
+def is_empty_bearer(header: str) -> bool:
+    """Whether ``header`` is a bearer with no token: what a harness sends with no key set."""
+    from fastapi.security.utils import get_authorization_scheme_param
+
+    scheme, token = get_authorization_scheme_param(header)
+    return scheme.lower() == "bearer" and not token
+
+
 def _coerce_scope(value: Any) -> Optional[str]:
     if isinstance(value, str) and value.strip().lower() in KEYLESS_SCOPES:
         return value.strip().lower()
@@ -698,5 +706,7 @@ def asgi_request_is_keyless(asgi_scope, settings: Optional[tuple[str, bool]] = N
     # making a shape keyless to every route but not-keyless to the middleware that clamps the tool grant.
     from fastapi.security.utils import get_authorization_scheme_param
 
+    if is_empty_bearer(authorization[0]):
+        return True
     scheme, token = get_authorization_scheme_param(authorization[0])
     return bool(scheme.lower() == "bearer" and token in APPROVED_DUMMY_BEARERS)
