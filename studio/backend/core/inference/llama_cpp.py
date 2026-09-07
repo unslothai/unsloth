@@ -12667,7 +12667,14 @@ class LlamaCppBackend:
             (max(n_parallel + 3, n_parallel * 2), ubatch),
             (max(n_parallel + 3, _cells + 1), ubatch),
         )
-        ubatch_named = _moves((n_parallel, ubatch * 2), (n_parallel, max(1, ubatch // 2)))
+        # The micro-batch enters through the same 256-cell padding, as one term of a
+        # compact-SWA window, so a small ubatch and its double can share a bucket. A
+        # step of exactly one bucket always crosses into the next one.
+        ubatch_named = _moves(
+            (n_parallel, ubatch * 2),
+            (n_parallel, max(1, ubatch // 2)),
+            (n_parallel, ubatch + 256),
+        )
         scales_with_n_max = bool(
             target_rollback and n_max and self._rollback_state_bytes(n_parallel) > 0
         )

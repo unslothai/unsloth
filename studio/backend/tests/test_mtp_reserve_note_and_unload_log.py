@@ -138,6 +138,28 @@ def test_the_slot_probe_escapes_a_padding_plateau(backend, monkeypatch):
     assert "slots" not in flat
 
 
+def test_the_ubatch_probe_escapes_a_padding_plateau(backend, monkeypatch):
+    # The micro-batch reaches the reserve through the same 256-cell padding, as one term
+    # of a compact-SWA window, so a small value and its double can share a bucket while
+    # a larger one adds another. Halving and doubling alone therefore cannot see it.
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
+
+    def _window(_slots, ub):
+        # The shape of the compact-SWA branch: a padded window whose size the micro-batch
+        # is added into.
+        return llama_cpp_module._pad_kv_cells(1024 + ub)
+
+    assert _window(1, 64) == _window(1, 128) == _window(1, 32), "premise moved"
+    assert _window(1, 64 + 256) != _window(1, 64)
+
+    note = _note(backend, n_ubatch = 64, reprice = _window)
+    assert "ubatch 64" in note
+
+    # The control: a reserve the micro-batch really does not reach stays unnamed.
+    flat = _note(backend, n_ubatch = 64, reprice = lambda slots, ub: 3 * 1024**3)
+    assert "ubatch" not in flat
+
+
 def test_an_estimator_that_cannot_answer_keeps_the_dimension_named(backend, monkeypatch):
     # Dropping a name on a raise would silently under-report a real dependency, which
     # is the failure this whole line is meant to prevent, pointing the other way.
