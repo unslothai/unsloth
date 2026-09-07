@@ -994,6 +994,10 @@ def _normalized_variant(value: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
+class _UnmeasuredReading(Exception):
+    """A progress reading the server answered but could not actually measure."""
+
+
 class _ModelDownloadProgress:
     """Best-effort polling of the model download endpoints."""
 
@@ -1005,6 +1009,8 @@ class _ModelDownloadProgress:
         self._expected_bytes = 0
         self._downloaded_bytes = 0
         self._failures = 0
+        self._companions_disabled = False
+        self._companion_total = 0
         self._display = _DownloadProgressDisplay()
         self._configured = False
         self._disabled = not _is_hub_model_id(model)
@@ -1078,7 +1084,14 @@ class _ModelDownloadProgress:
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
-            self._downloaded_bytes = max(0, int(reading.get("downloaded_bytes") or 0))
+            if reading.get("cache_measured") is False:
+                # A scan the server could not complete answers 200 with zero bytes. Taking
+                # that as the truth would drop the count to zero and make the next real
+                # reading of the same cached bytes look like fresh growth.
+                raise _UnmeasuredReading
+            self._downloaded_bytes = (
+                max(0, int(reading.get("downloaded_bytes") or 0)) + self._companion_bytes()
+            )
             self._failures = 0
             self._display.update(reading)
         except Exception:
@@ -1088,6 +1101,50 @@ class _ModelDownloadProgress:
             self._failures += 1
             if self._failures >= _DOWNLOAD_POLL_MAX_FAILURES:
                 self._disabled = True
+
+    def _companion_bytes(self) -> int:
+        """Bytes of every other repo the server is fetching for this load.
+
+        A LoRA start downloads the adapter and then its base model -- `core/inference/
+        worker.py` watches both, calling the base the bottleneck -- so the adapter
+        finishing is not the transfer finishing. Best effort: a server without the
+        endpoint just leaves this at zero.
+        """
+        if self._companions_disabled:
+            return 0
+        try:
+            listing = _http_json(
+                "GET",
+                f"{self._base}{self._progress_prefix}/active-downloads",
+                self._key,
+                timeout = 10,
+            )
+            repos = {
+                str(item.get("repo_id") or "")
+                for item in listing.get("downloads") or []
+                if str(item.get("repo_id") or "") not in ("", self._model)
+            }
+            total = 0
+            for repo in sorted(repos):
+                reading = _http_json(
+                    "GET",
+                    f"{self._base}{self._progress_prefix}/download-progress?"
+                    f"{urlencode({'repo_id': repo})}",
+                    self._key,
+                    timeout = 10,
+                )
+                if reading.get("cache_measured") is not False:
+                    total += max(0, int(reading.get("downloaded_bytes") or 0))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:  # endpoint absent, and that will not change
+                self._companions_disabled = True
+            return self._companion_total
+        except Exception:
+            # Never let a companion lookup cost us the reading we already have; the last
+            # known total is a constant, and a constant cannot renew the deadline.
+            return self._companion_total
+        self._companion_total = total
+        return total
 
     @property
     def downloaded_bytes(self) -> int:
