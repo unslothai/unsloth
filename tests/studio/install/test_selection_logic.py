@@ -1077,10 +1077,6 @@ class TestValidatedChecksumsForBundle:
         assert plan.source_ref_kind == "commit"
         assert plan.source_ref == "a" * 40
 
-    # ===========================================================================
-    # K. linux_cuda_choice_from_release -- core selection
-    # ===========================================================================
-
     def test_reads_the_checksum_asset_from_the_listing(self, monkeypatch):
         bundle = make_release([], release_tag = "r1", upstream_tag = "b8508")
         sha_url = "https://github.com/unslothai/llama.cpp/releases/download/r1/sha.json"
@@ -1113,6 +1109,10 @@ class TestValidatedChecksumsForBundle:
         with pytest.raises(PrebuiltFallback, match = "did not expose"):
             validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
 
+
+# ===========================================================================
+# K. linux_cuda_choice_from_release -- core selection
+# ===========================================================================
 
 class TestLinuxCudaChoiceFromRelease:
     def test_no_runtime_lines_detected(self, monkeypatch):
