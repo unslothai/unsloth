@@ -157,15 +157,13 @@ def _safe_version_path(
             raise AgentWorkspaceError("A memory directory component is a symbolic link.")
     if path.is_symlink():
         raise AgentWorkspaceError("Memory entries cannot be symbolic links.")
-    if (
-        os.open in os.supports_dir_fd
-        and hasattr(os, "O_DIRECTORY")
-        and hasattr(os, "O_NOFOLLOW")
-    ):
+    if os.open in os.supports_dir_fd and hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW"):
         try:
             root_fd = os.open(str(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc:
-            raise AgentWorkspaceError("The project memory directory cannot be opened safely.") from exc
+            raise AgentWorkspaceError(
+                "The project memory directory cannot be opened safely."
+            ) from exc
         try:
             current_fd = root_fd
             for part in relative_parts[:-1]:
@@ -176,7 +174,9 @@ def _safe_version_path(
                         dir_fd = current_fd,
                     )
                 except OSError as exc:
-                    raise AgentWorkspaceError("A memory directory component is a symbolic link.") from exc
+                    raise AgentWorkspaceError(
+                        "A memory directory component is a symbolic link."
+                    ) from exc
                 if current_fd != root_fd:
                     os.close(current_fd)
                 current_fd = next_fd

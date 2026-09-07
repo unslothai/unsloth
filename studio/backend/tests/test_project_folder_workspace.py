@@ -647,7 +647,6 @@ def test_folder_project_edit_file_rejects_noop_without_rewriting(tmp_path):
     assert target.read_text(encoding = "utf-8") == "unchanged\n"
 
 
-
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason = "symlinks are unavailable")
 @pytest.mark.parametrize("disable_sandbox", [False, True], ids = ["sandboxed", "bypass"])
 def test_folder_project_edit_file_rejects_parent_symlink_swap(
@@ -1314,6 +1313,7 @@ def test_project_workspace_rejects_replaced_directory_identity(tmp_path, monkeyp
     assert ws.root == root.resolve()
 
     orig_ensure = common.ensure_chat_project_workspace
+
     def ensure_and_replace(pid):
         res = orig_ensure(pid)
         backup = tmp_path / "repo_backup"
@@ -1370,4 +1370,3 @@ def test_patch_project_goal_enforces_client_goal_revision_cas(tmp_path):
     assert res_b_ok.status_code == 200
     assert res_b_ok.json()["goal"] == "Updated by B"
     assert res_b_ok.json()["goalRevision"] == 2
-

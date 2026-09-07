@@ -630,7 +630,9 @@ def test_save_memory_entry_rejects_internal_version_store_symlink(tmp_path):
     version_project_dir.parent.mkdir(parents = True, exist_ok = True)
     version_project_dir.symlink_to(inside, target_is_directory = True)
 
-    with pytest.raises(AgentWorkspaceError, match = "A memory directory component is a symbolic link."):
+    with pytest.raises(
+        AgentWorkspaceError, match = "A memory directory component is a symbolic link."
+    ):
         write_memory_entry(
             "project",
             "project/architecture.md",
@@ -638,4 +640,3 @@ def test_save_memory_entry_rejects_internal_version_store_symlink(tmp_path):
             expected_hash = initial["hash"],
         )
     assert list(inside.iterdir()) == []
-
