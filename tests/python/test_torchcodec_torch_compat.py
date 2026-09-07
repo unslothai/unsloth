@@ -1678,14 +1678,19 @@ def test_a_dry_run_install_changes_nothing():
     version the cell never installed and raised a false R-INST-004."""
     from scripts import notebook_validator as nv
 
-    assert nv._effective_version(
-        "!pip install --dry-run torch==2.12.0", "torch", "2.11.0") == ("2.11.0", True)
+    assert nv._effective_version("!pip install --dry-run torch==2.12.0", "torch", "2.11.0") == (
+        "2.11.0",
+        True,
+    )
     # The documented pairing with --report is if anything the likelier spelling.
     assert nv._effective_version(
-        "!pip install --dry-run --report - torch==2.12.0", "torch", "2.11.0") == ("2.11.0", True)
+        "!pip install --dry-run --report - torch==2.12.0", "torch", "2.11.0"
+    ) == ("2.11.0", True)
     # A real install still lands.
-    assert nv._effective_version(
-        "!pip install torch==2.12.0", "torch", "2.11.0") == ("2.12.0", True)
+    assert nv._effective_version("!pip install torch==2.12.0", "torch", "2.11.0") == (
+        "2.12.0",
+        True,
+    )
 
 
 def test_an_exclusive_ceiling_beats_an_inclusive_cap():
@@ -1697,13 +1702,16 @@ def test_an_exclusive_ceiling_beats_an_inclusive_cap():
     from scripts import notebook_validator as nv
 
     assert nv._effective_version(
-        '!pip install "torchcodec>=0.8,<=0.11,<0.10"', "torchcodec", "0.7.0") == ("0.9", True)
+        '!pip install "torchcodec>=0.8,<=0.11,<0.10"', "torchcodec", "0.7.0"
+    ) == ("0.9", True)
     # The clamp downwards honours it too.
     assert nv._effective_version(
-        '!pip install "torchcodec<=0.11,<0.10"', "torchcodec", "0.12.0") == ("0.9", True)
+        '!pip install "torchcodec<=0.11,<0.10"', "torchcodec", "0.12.0"
+    ) == ("0.9", True)
     # Without the ceiling the cap is still exactly where pip lands.
     assert nv._effective_version(
-        '!pip install "torchcodec>=0.8,<=0.11"', "torchcodec", "0.7.0") == ("0.11", True)
+        '!pip install "torchcodec>=0.8,<=0.11"', "torchcodec", "0.7.0"
+    ) == ("0.11", True)
 
 
 def test_a_direct_archive_keeps_its_version_beside_a_marker():
@@ -1712,13 +1720,14 @@ def test_a_direct_archive_keeps_its_version_beside_a_marker():
     said nothing about a pairing the cell really installs."""
     from scripts import notebook_validator as nv
 
-    wheel = ("https://example.com/"
-             "torchcodec-0.11.0-cp313-cp313-manylinux_2_28_x86_64.whl")
+    wheel = "https://example.com/torchcodec-0.11.0-cp313-cp313-manylinux_2_28_x86_64.whl"
     marked = f"!pip install \"torchcodec @ {wheel} ; python_version >= '3.10'\""
     assert nv._effective_version(marked, "torchcodec", "0.9.0") == ("0.11.0", True)
     # Unchanged without a marker.
-    assert nv._effective_version(
-        f'!pip install "torchcodec @ {wheel}"', "torchcodec", "0.9.0") == ("0.11.0", True)
+    assert nv._effective_version(f'!pip install "torchcodec @ {wheel}"', "torchcodec", "0.9.0") == (
+        "0.11.0",
+        True,
+    )
 
 
 def test_a_quoted_word_survives_prefix_stripping():
@@ -1727,14 +1736,21 @@ def test_a_quoted_word_survives_prefix_stripping():
     from scripts import notebook_validator as nv
 
     assert nv._split_first_word('TOKEN="a b" pip install x') == ("TOKEN=a b", "pip install x")
-    assert nv._strip_exec_prefixes(
-        'env TOKEN="a b" pip install git+https://x/e.git') == ("pip install git+https://x/e.git", True)
-    assert nv._strip_exec_prefixes(
-        "env TOKEN='a b' pip install git+https://x/e.git") == ("pip install git+https://x/e.git", True)
+    assert nv._strip_exec_prefixes('env TOKEN="a b" pip install git+https://x/e.git') == (
+        "pip install git+https://x/e.git",
+        True,
+    )
+    assert nv._strip_exec_prefixes("env TOKEN='a b' pip install git+https://x/e.git") == (
+        "pip install git+https://x/e.git",
+        True,
+    )
 
     findings = nv.rule_inst_001_git_plus(
-        '!env TOKEN="a b" pip install git+https://x/e.git', "nb.ipynb", 0)
+        '!env TOKEN="a b" pip install git+https://x/e.git', "nb.ipynb", 0
+    )
     assert [f.rule for f in findings] == ["R-INST-001"]
     # An operand spelled `pip` is still consumed rather than read as the executable.
-    assert nv._strip_exec_prefixes(
-        "env -u pip pip install git+https://x/e.git") == ("pip install git+https://x/e.git", True)
+    assert nv._strip_exec_prefixes("env -u pip pip install git+https://x/e.git") == (
+        "pip install git+https://x/e.git",
+        True,
+    )
