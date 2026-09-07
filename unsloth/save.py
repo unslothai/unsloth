@@ -5572,8 +5572,8 @@ def save_lora_to_custom_dir(model, tokenizer, save_directory):
 # Valid output float types for llama.cpp's convert_lora_to_gguf.py.
 _LORA_GGUF_OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
 
-# get_token() reads only the first two; the rest are third-party conventions our child may read.
-# HF_OIDC_* hold no token but mint one, ahead of HF_TOKEN, on hub >= 1.19.
+# get_token() reads only the first two; the rest are third-party. HF_OIDC_* mint one, ahead of
+# HF_TOKEN, on hub >= 1.19.
 _HF_TOKEN_ENV_KEYS = (
     "HF_TOKEN",
     "HF_HUB_TOKEN",
@@ -5609,14 +5609,14 @@ def _apply_token_to_child_env(env, token, *, explicit):
     if token is False:
         for key in _HF_TOKEN_ENV_KEYS:
             env.pop(key, None)
-        # The flag stops the header being sent; this stops get_token() reading the file at all.
+        # The flag blocks the header; this blocks the read.
         env["HF_TOKEN_PATH"] = os.devnull
         env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
         return
     if not (isinstance(token, str) and token):
         return
     if not explicit:
-        # Ambient caller: promote the resolved token as always, and touch nothing else.
+        # Ambient: promote as before, scrub nothing.
         env["HF_TOKEN"] = token
         env["HUGGING_FACE_HUB_TOKEN"] = token
         return
@@ -5720,9 +5720,8 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
     # (save.py top); hf_hub_download is imported here since nothing else needs it.
     from huggingface_hub import hf_hub_download
 
-    # Pass the token as-is. Pre-resolving with get_token() and handing on the result made an
-    # ambient token look explicit, bypassing HF_HUB_DISABLE_IMPLICIT_TOKEN; None lets the header
-    # builder decide, which is the layer that honours the flag.
+    # As-is: pre-resolving made an ambient token look explicit, and only the header builder
+    # honours HF_HUB_DISABLE_IMPLICIT_TOKEN.
     token = _clean_save_token(token)
     api = HfApi(token = token)
     repos = _gguf_repo_candidates(model)
@@ -5774,9 +5773,8 @@ def _unsloth_save_lora_gguf(
             f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."
         )
     # Resolve a token even for local saves: the converter may fetch a gated/private base config.
-    # False is the forced-anonymous sentinel and must not resolve one. Record explicitness BEFORE
-    # the fallback: get_token() ignores HF_HUB_DISABLE_IMPLICIT_TOKEN, so what it returns is the
-    # implicit token itself, and the child must not be told to re-enable it.
+    # False must not resolve one. Explicitness BEFORE the fallback: get_token() ignores the flag,
+    # so what it returns is the implicit token itself.
     token = _clean_save_token(token)
     token_is_explicit = token is not None
     if token is None or token is True:
@@ -7116,8 +7114,7 @@ def _unsloth_save_compressed_tensors(
 
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
-    # Resolve a token for the hub push and/or a gated calibration dataset in the subprocess.
-    # Explicitness recorded before the fallback, as in the LoRA GGUF converter.
+    # For the hub push and/or a gated calibration dataset, as in the LoRA GGUF converter.
     token = _clean_save_token(token)
     token_is_explicit = token is not None
     if token is None or token is True:
@@ -7317,8 +7314,7 @@ def _unsloth_save_compressed_tensors(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # Expose the token for a gated/private calibration dataset, under the same boundary as
-        # the LoRA GGUF converter: False has to scrub, not merely withhold.
+        # Same boundary as the LoRA GGUF converter: False scrubs, it does not merely withhold.
         env = os.environ.copy()
         _apply_token_to_child_env(env, token, explicit = token_is_explicit)
 

@@ -338,9 +338,6 @@ def test_torchao_requires_config_or_qat(tmp_path):
         )
 
 
-# -- the converter subprocess inherits our env, so it needs the token denied explicitly ------
-
-
 def _run_lora_gguf(monkeypatch, tmp_path, token):
     """Drive _unsloth_save_lora_gguf to the converter call and return the env it would use."""
     captured = {}
@@ -398,25 +395,20 @@ def test_lora_gguf_converter_gets_an_explicit_token(monkeypatch, tmp_path):
     env = _run_lora_gguf(monkeypatch, tmp_path, token = "caller-token")
     assert env["HF_TOKEN"] == "caller-token"
     assert env["HUGGING_FACE_HUB_TOKEN"] == "caller-token"
-    # Granting one alias while ours sits in another hands the child two credentials.
     assert "HUGGINGFACEHUB_API_TOKEN" not in env
-    # An inherited =1 would make the child ignore the token we just granted it.
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "0"
 
 
 def test_lora_gguf_converter_keeps_the_ambient_token_when_none(monkeypatch, tmp_path):
-    # None means "ambient allowed"; that fallback is what a UI session relies on.
     env = _run_lora_gguf(monkeypatch, tmp_path, token = None)
     assert env["HF_TOKEN"] == "host-ambient-token"
 
 
 def test_lora_gguf_converter_does_not_overrule_the_operator_optout(monkeypatch, tmp_path):
-    # get_token() ignores HF_HUB_DISABLE_IMPLICIT_TOKEN, so a caller who passed nothing arrives here
-    # holding the very token the operator switched off. Clearing the flag for them would answer the
-    # opt-out on their behalf; only a token they actually supplied earns that.
+    # get_token() ignores the flag, so a caller who passed nothing holds the token the operator
+    # switched off; only a token they supplied earns clearing it.
     env = _run_lora_gguf(monkeypatch, tmp_path, token = None)
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
-    # An ambient caller is not being denied anything, so nothing is taken off them either.
     assert env["HUGGINGFACEHUB_API_TOKEN"] == "host-legacy-alias"
 
 
@@ -432,17 +424,14 @@ def test_lora_gguf_converter_does_not_overrule_the_operator_optout(monkeypatch, 
     ],
 )
 def test_clean_save_token(token, expected):
-    # Whitespace is not a credential. Left alone it reaches HfApi as a literal "Bearer " header:
-    # huggingface_hub 1.x raises LocalProtocolError before sending, and 0.x sends it and earns a
-    # 401. False must survive as False -- collapsing it to None is the ambient token, not anonymity.
+    # Blank reaches HfApi as a literal "Bearer " header, which 1.x rejects. False must survive:
+    # collapsing it to None is the ambient token, not anonymity.
     result = save_mod._clean_save_token(token)
     assert result is expected if expected in (None, False, True) else result == expected
 
 
 @pytest.mark.parametrize("blank", ["", "   "])
 def test_lora_gguf_converter_reads_a_blank_token_as_absent(monkeypatch, tmp_path, blank):
-    # A blank token means "I passed nothing", so the ambient caller's env is left exactly as it was
-    # -- in particular the operator's opt-out is not cleared on their behalf.
     env = _run_lora_gguf(monkeypatch, tmp_path, token = blank)
     assert env["HF_TOKEN"] == "host-ambient-token"
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
@@ -450,8 +439,8 @@ def test_lora_gguf_converter_reads_a_blank_token_as_absent(monkeypatch, tmp_path
 
 
 def test_lora_gguf_converter_denies_the_oidc_material(monkeypatch, tmp_path):
-    # hub >= 1.19 exchanges these inside get_token() ahead of HF_TOKEN, so scrubbing the token
-    # aliases alone still leaves a forced-anonymous child able to mint the operator's credential.
+    # hub >= 1.19 exchanges these inside get_token() ahead of HF_TOKEN, so scrubbing the aliases
+    # alone still lets a denied child mint one.
     monkeypatch.setenv("HF_OIDC_RESOURCE", "https://huggingface.co")
     monkeypatch.setenv("HF_OIDC_ID_TOKEN", "operator-oidc-assertion")
     env = _run_lora_gguf(monkeypatch, tmp_path, token = False)
@@ -460,15 +449,11 @@ def test_lora_gguf_converter_denies_the_oidc_material(monkeypatch, tmp_path):
 
 
 def test_lora_gguf_converter_honours_token_true(monkeypatch, tmp_path):
-    # huggingface_hub reads True as "definitely use the cached token", and it deliberately
-    # outranks HF_HUB_DISABLE_IMPLICIT_TOKEN. Falling through every branch turned that into plain
-    # inheritance, which an ambient =1 then silently voided.
+    # True means "use the cached token" and outranks the flag; falling through every branch made
+    # it plain inheritance, which an ambient =1 voided.
     env = _run_lora_gguf(monkeypatch, tmp_path, token = True)
     assert env["HF_TOKEN"] == "host-ambient-token"
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "0"
-
-
-# -- the same boundary, applied to every child env this module builds ------------------------
 
 
 @pytest.mark.parametrize(
