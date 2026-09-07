@@ -48,9 +48,10 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
         externalModelLabel(checkpoint) ||
         checkpoint ||
         "Current model";
-      // Three causes land here and the server does not say which, so name all three: /props reports
-      // video only when all of them line up.
-      unavailableReason = `${label} cannot accept video. Video needs a GGUF model whose mmproj supports video, a llama.cpp build with video enabled, and ffmpeg installed on this machine.`;
+      // The server does not say which cause applies, so name what each backend needs: a GGUF
+      // model reports video only when all three of its pieces line up, and an MLX model needs
+      // a processor and template that carry video.
+      unavailableReason = `${label} cannot accept video. Video needs a GGUF model whose mmproj supports video, with a llama.cpp build with video enabled and ffmpeg installed on this machine, or an MLX vision model that reads video.`;
     }
     if (unavailableReason) {
       toast.error(unavailableReason);

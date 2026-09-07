@@ -717,6 +717,58 @@ def test_image_tool_support_is_classified_from_the_processor_template():
     assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
 
 
+def test_video_tool_support_is_classified_from_the_processor_template():
+    """A clip renders through the processor, so tool support is read off the processor template."""
+    import asyncio
+    import os
+    import sys
+
+    import pytest as _pytest
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import routes.inference as inf
+    import test_sf_client_tools_passthrough as passthrough
+    from models.inference import ChatCompletionRequest, ChatMessage
+
+    backend = passthrough._ScriptedBackend(passthrough._fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["has_video_input"] = True
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": _PROCESSOR_TEMPLATE_NO_TOOLS,
+        "processor_template": _CHATML_WITH_TOOLS,
+    }
+    clip = "AAAAGGZ0eXBtcDQy"
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [ChatMessage(role = "user", content = "what moves")],
+        video_base64 = clip,
+        tools = [passthrough.LOOKUP_TOOL],
+        stream = False,
+    )
+
+    monkeypatch = _pytest.MonkeyPatch()
+    try:
+        passthrough._install(monkeypatch, backend)
+        monkeypatch.setattr(
+            inf,
+            "_detect_safetensors_features",
+            lambda _backend, template, **k: {"supports_tools": template == _CHATML_WITH_TOOLS},
+        )
+
+        async def _run():
+            return await inf.openai_chat_completions(
+                payload, request = passthrough._Request(), current_subject = "u"
+            )
+
+        asyncio.run(_run())
+    finally:
+        monkeypatch.undo()
+
+    assert backend.calls, "generation never ran"
+    assert backend.calls[0]["tools"] == [passthrough.LOOKUP_TOOL]
+    assert backend.calls[0]["video"] == clip
+
+
 def test_mlx_selects_structured_content_for_a_processor_render():
     """A processor template wants part lists and the nested-tokenizer fallback wants plain
     strings, so the choice follows whichever body chat_render_target selects (#10092)."""

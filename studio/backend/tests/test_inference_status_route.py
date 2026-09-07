@@ -219,6 +219,35 @@ def test_status_keeps_the_resident_model_visible_during_a_load(monkeypatch):
     assert response.loading == ["org/incoming-model"]
 
 
+def test_status_reports_the_mlx_video_capability(monkeypatch):
+    """The composer refuses a clip unless the status says the model reads one."""
+    backend = _FakeInferenceBackend()
+    backend.active_model_name = "org/mlx-video-model"
+    backend.models = {
+        "org/mlx-video-model": {"is_vision": True, "is_mlx": True, "has_video_input": True}
+    }
+    backend.loading_models = set()
+    _patch_fast_status(monkeypatch, backend)
+    monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.has_video_input is True
+
+
+def test_status_reports_no_video_capability_for_a_model_without_one(monkeypatch):
+    backend = _FakeInferenceBackend()
+    backend.active_model_name = "org/plain-vision-model"
+    backend.models = {"org/plain-vision-model": {"is_vision": True, "is_mlx": True}}
+    backend.loading_models = set()
+    _patch_fast_status(monkeypatch, backend)
+    monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
+
+    response = asyncio.run(inference_route.get_status(current_subject = "test"))
+
+    assert response.has_video_input is False
+
+
 def test_load_is_registered_before_the_lifecycle_gate_and_always_cleared(monkeypatch):
     from core.inference import llama_keepwarm
 
