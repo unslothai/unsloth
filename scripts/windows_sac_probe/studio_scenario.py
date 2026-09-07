@@ -461,7 +461,15 @@ def main() -> int:
     parser.add_argument("--model", default = "unsloth/Qwen3.5-2B-MTP-GGUF:UD-Q4_K_XL")
     parser.add_argument("--out", default = ".", help = "directory for scenario-results.json")
     parser.add_argument("--port", type = int, default = None)
-    parser.add_argument("--password", default = os.environ.get("UNSLOTH_STUDIO_PASSWORD"))
+    # SAC_PROBE_STUDIO_PASSWORD, not UNSLOTH_STUDIO_PASSWORD: unsloth_cli claims
+    # that name and treats it as set-the-initial-password, so a Studio that
+    # already has one hard-errors on launch. The probe sets this variable for
+    # this child alone and removes it afterwards. --password is still accepted
+    # for a hand-run, but the probe does not use it: an argv secret is readable
+    # from the process table and is captured by process-creation auditing.
+    parser.add_argument(
+        "--password", default = os.environ.get("SAC_PROBE_STUDIO_PASSWORD")
+    )
     parser.add_argument(
         "--home",
         default = (

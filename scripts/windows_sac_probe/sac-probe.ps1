@@ -433,10 +433,21 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
         # revert repairs the ACLs on exactly these, because they are the ones
         # this elevated run brought into being owned by Administrators; an
         # existing tree is the operator's and is left alone.
+        # Every tree the installer creates, each checked on its own. Listing
+        # only the three roots was not enough: when ~\.unsloth already exists
+        # and Studio does not, the installer still makes node\ and whisper.cpp\
+        # inside it (studio/setup.ps1 lines 3169 and 5936) and those come out
+        # administrator-owned exactly like the rest, leaving the user's own
+        # Studio unable to read its own node runtime. The README already named
+        # them; the candidate list did not.
+        $unslothHome = Join-Path $env:USERPROFILE '.unsloth'
         $candidates = @(
-            (Join-Path $env:USERPROFILE '.unsloth'),
+            $unslothHome,
             (Get-StudioHome),
-            (Get-LlamaDir)
+            (Get-LlamaDir),
+            (Join-Path $unslothHome 'node'),
+            (Join-Path $unslothHome 'whisper.cpp'),
+            (Join-Path $unslothHome '.cache')
         ) | Where-Object { $_ } | Select-Object -Unique
         $absentBefore = @($candidates | Where-Object { -not (Test-Path -LiteralPath $_) })
         $python = Install-Studio
@@ -657,6 +668,27 @@ function Invoke-Prepare {
     # started on purpose: the install downloads the llama.cpp bundle and the
     # first launch loads it, so both are inside the observed window and any
     # code integrity event they raise is captured.
+    # A retry of this label reopens the window, so the previous window's
+    # evidence must not survive into it. Without this, an operator who reruns
+    # prepare and then skips run (or whose run dies early) gets a collect that
+    # reads the OLD scenario-results.json, calls the load valid, and archives
+    # the old inventories and logs against a new and empty event window.
+    # baseline.json and rollback\ are deliberately kept: they describe the
+    # machine state revert has to restore, which the retry did not change.
+    foreach ($stale in @(
+        'scenario-status.json', 'scenario-results.json', 'runtime-selection.json',
+        'signature-inventory.json', 'signature-inventory.csv',
+        'venv-signature-inventory.json', 'venv-signature-inventory.csv',
+        'code-integrity-events.json', 'code-integrity-events.txt',
+        'CodeIntegrity-Operational.evtx', 'defender-detections.json',
+        'defender-query-error.txt', 'sac-state-after.json'
+    )) {
+        Remove-Item -LiteralPath (Join-Path $dir $stale) -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($staleDir in @('studio-logs', 'raw-logs')) {
+        Remove-Item -LiteralPath (Join-Path $dir $staleDir) -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     (Get-Date).ToString('o') | Set-Content -LiteralPath (Join-Path $dir 'window-start.txt') -Encoding UTF8
 
     Initialize-Studio $dir $true
@@ -742,14 +774,21 @@ function Invoke-Run {
             Write-Warning 'UNSLOTH_STUDIO_PASSWORD is not set; the scenario needs it (see README) and will stop at login'
         }
         $scenarioArgs = @($scenario, '--model', $Model, '--out', $dir, '--port', "$Port")
-        # As an argument, not an inherited variable: see $STUDIO_PASSWORD.
-        if ($STUDIO_PASSWORD) { $scenarioArgs += @('--password', $STUDIO_PASSWORD) }
+        # Neither UNSLOTH_STUDIO_PASSWORD (unsloth_cli claims that name and
+        # hard-errors, see $STUDIO_PASSWORD) nor --password on the command line.
+        # An argv secret is readable by anything that can see the process table
+        # and is captured verbatim by process-creation auditing and EDR
+        # telemetry, for the whole length of a scenario that can run minutes.
+        # A distinct variable, set for this child only and removed after, is
+        # visible to the process and its children and nothing else.
+        if ($STUDIO_PASSWORD) { $env:SAC_PROBE_STUDIO_PASSWORD = $STUDIO_PASSWORD }
         Write-Host "python $scenario --model $Model --out $dir --port $Port"
         $prev = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
             & python @scenarioArgs 2>&1 | Tee-Object -FilePath $log
             $code = $LASTEXITCODE
+            Remove-Item Env:\SAC_PROBE_STUDIO_PASSWORD -ErrorAction SilentlyContinue
             $scenarioStatus = [pscustomobject]@{
                 Ran      = $true
                 ExitCode = $code
@@ -757,6 +796,7 @@ function Invoke-Run {
             }
             Write-Host "scenario exit code: $code"
         } catch {
+            Remove-Item Env:\SAC_PROBE_STUDIO_PASSWORD -ErrorAction SilentlyContinue
             $scenarioStatus = [pscustomobject]@{ Ran = $true; ExitCode = $null; Reason = "$_" }
             Write-Warning "scenario failed: $_"
         } finally {
@@ -952,8 +992,15 @@ function Invoke-Collect {
             Select-Object InitialDetectionTime, ThreatID, Resources)
         ConvertTo-Json -InputObject $detections -Depth 4 |
             Set-Content -LiteralPath (Join-Path $dir 'defender-detections.json') -Encoding UTF8
+        Remove-Item -LiteralPath (Join-Path $dir 'defender-query-error.txt') -Force -ErrorAction SilentlyContinue
     } catch {
-        '[]' | Set-Content -LiteralPath (Join-Path $dir 'defender-detections.json') -Encoding UTF8
+        # A failed query wrote the same `[]` a clean machine writes, so the
+        # evidence claimed a quarantine-free window when Defender had simply
+        # not answered. Leave a marker instead; collect reports it and the
+        # reader can tell "nothing detected" from "not asked".
+        $_.ToString() | Set-Content -LiteralPath (Join-Path $dir 'defender-query-error.txt') -Encoding UTF8
+        Remove-Item -LiteralPath (Join-Path $dir 'defender-detections.json') -Force -ErrorAction SilentlyContinue
+        Write-Warning "Defender detections were NOT collected: $_. defender-query-error.txt records why; do not read the absence of detections as a clean window."
     }
 
     Get-SacState | ConvertTo-Json -Depth 6 |
@@ -1128,6 +1175,7 @@ function Invoke-Revert {
     Write-Section 'Restore CodeIntegrity log'
     # Only where prepare recorded a value; an absent baseline field is an
     # older baseline.json and the setting is left alone.
+    $ciRestoreError = $null
     try {
         if ($null -ne $baseline.CiLogMaxSize -and $null -ne $baseline.CiLogEnabled) {
             $enabled = if ($baseline.CiLogEnabled) { 'true' } else { 'false' }
@@ -1137,6 +1185,9 @@ function Invoke-Revert {
             Write-Host 'no CodeIntegrity log baseline recorded; left as is'
         }
     } catch {
+        # Recorded, not just printed: prepare raised this channel to 64MB and
+        # enabled it, so a failure here leaves the machine changed.
+        $ciRestoreError = $_
         Write-Warning "could not restore the CodeIntegrity log settings: $_"
     }
 
@@ -1164,6 +1215,11 @@ function Invoke-Revert {
     }
     if ($failed -eq 0) { Write-Host 'Defender preferences restored' }
     else { Write-Warning "$failed Defender preference(s) were not restored; see above" }
+    # Carried to the exit status below rather than left as a console warning:
+    # a preference that has become policy-controlled does not restore, and an
+    # operator reading only the exit code would believe the machine was put
+    # back while raised settings remain.
+    $restoreFailures = $failed
 
     Write-Section 'Restore Studio tree access'
     # Every stage is elevated, so a Studio that prepare installs is installed as
@@ -1213,6 +1269,15 @@ function Invoke-Revert {
         throw "revert restored the log and Defender settings but the audit policy is still applied: $policyError"
     }
     Write-Host ''
+    # Every restoration is attempted first, then the failures decide the exit
+    # status. Reporting success here while settings stayed raised is the same
+    # class of bug as collect implying evidence it did not have.
+    if ($restoreFailures -gt 0 -or $null -ne $ciRestoreError) {
+        if ($null -ne $ciRestoreError) {
+            Write-Warning "the $CI_LOG channel settings were not restored: $ciRestoreError"
+        }
+        throw "revert did not fully restore this machine: $restoreFailures Defender preference(s) and $(if ($null -ne $ciRestoreError) { 'the CodeIntegrity log settings' } else { 'no log settings' }) still differ from the baseline. See the warnings above."
+    }
     Write-Host 'revert complete. Smart App Control itself was never changed by this script.'
 }
 

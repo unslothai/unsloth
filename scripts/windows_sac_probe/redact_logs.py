@@ -50,12 +50,15 @@ def family_of(log: Path) -> str:
 def select(source: Path, since: float | None) -> list[Path]:
     logs = sorted((p for p in source.rglob("*") if p.is_file()), key = lambda p: p.stat().st_mtime)
     if since is not None:
-        in_window = [p for p in logs if p.stat().st_mtime >= since]
-        # A run that reused an already-running Studio can legitimately produce
-        # nothing inside the window. Falling back to the newest few is more
-        # useful than an empty studio-logs/, and is still bounded.
-        if in_window:
-            logs = in_window
+        # No fallback to historical logs when the window is empty. It looked
+        # like a kindness (an empty studio-logs/ is unhelpful) but the zip is
+        # attached to a public issue, and redaction masks tokens, not prompts,
+        # file paths or anything else private in a log from last month. The
+        # empty-window case is also exactly the interesting one: Studio blocked
+        # before its logger created a file. The probe's own Studio stdout is
+        # captured separately under raw-logs/, so nothing about this run is
+        # lost by declining to reach backwards.
+        logs = [p for p in logs if p.stat().st_mtime >= since]
     kept: dict[str, list[Path]] = {}
     for log in logs:
         kept.setdefault(family_of(log), []).append(log)

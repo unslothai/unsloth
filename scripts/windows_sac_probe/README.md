@@ -132,9 +132,14 @@ permanent and `revert` does not undo it, which is why there is no default. The
 password is never written to the evidence.
 
 The probe reads that variable and then **removes it from its own environment**
-before launching anything, handing it to the scenario as `--password` instead.
-`unsloth_cli` reads the same variable and treats it as *set the initial
-password*, so a Studio that already has one refuses to start with
+before launching anything, re-exporting it as `SAC_PROBE_STUDIO_PASSWORD` for
+the scenario process alone and clearing that again once the scenario exits.
+It is deliberately not passed as `--password`: an argument is readable from the
+process table by anything that can see it and is captured verbatim by
+process-creation auditing and EDR telemetry, for the whole length of a run that
+can take minutes. `unsloth_cli` reads `UNSLOTH_STUDIO_PASSWORD` itself and
+treats it as *set the initial password*, so a Studio that already has one
+refuses to start with
 
 ```
 Error: an Unsloth admin password is already set; --password only sets the
@@ -276,7 +281,8 @@ what says which build a cell actually exercised, not the label.
 - `venv-signature-inventory.csv` and `.json`: the same for every PE in the `unsloth_studio` venv, which is around 25 times as many files and is where the only enforced block so far actually landed. `run` also prints the ten worst packages by unsigned count
 - `scenario-status.json`: whether the Studio scenario ran and its exit code. Read this **before** reading the event count. A scenario that never authenticated or never loaded a model produces an empty window, and an empty window looks identical to a clean allow. `collect` warns loudly when this happened, and refuses to imply a result
 - `code-integrity-events.json` and `.txt`: events 3033, 3076, 3077, 3089 and 3090 to 3099 in the run window, each tagged with a `Scope` of `llama.cpp`, `venv` or `other`. The channel is machine-wide, so unrelated software lands in the same window: one run picked up seven 3076 events from a Git Bash session (`msys-2.0.dll`, `head.exe`, `tail.exe`). `collect` counts only the Unsloth scopes in its headline and reports the rest separately; nothing is dropped from the export
-- `CodeIntegrity-Operational.evtx`: the raw log
+- `CodeIntegrity-Operational.evtx`: the raw log, bounded to the same window as the JSON
+- `defender-query-error.txt`: present only when the Defender detection query itself failed. If you see this file, the absence of `defender-detections.json` is not a clean window, it is an uncollected one
 - `scenario-results.json`: every HTTP call with its duration, plus the status-poll summary
 - `studio-logs\`: Studio's own logs, the redirected Studio stdout from a start the probe did, and the scenario's console output, all passed through Studio's log redactor. The raw copies stay in `raw-logs\` on the machine and are not archived
 - `studio-logs\`: Studio's own backend and llama-server logs

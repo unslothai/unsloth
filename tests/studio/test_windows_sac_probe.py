@@ -378,18 +378,28 @@ def test_the_powershell_probe_restores_what_prepare_changed_and_unmounts_efi():
 
 
 def test_the_signature_audit_covers_every_windows_family():
-    """ROCm and the arm64 CPU bundle are built and packaged apart from the x64
-    ones; a set without them passes under enforce while those users get
-    unsigned PEs."""
+    """Every published Windows asset, enumerated from the release.
+
+    This used to name five literal patterns, which sampled one CUDA profile out
+    of seven and one ROCm out of seven. Each profile is packaged separately, so
+    the audit could pass while the bundle a modern NVIDIA machine actually
+    selects shipped unsigned. Enumerating means a profile added later is covered
+    without anyone editing the workflow, so the guard is that nothing narrows it
+    back to a literal list.
+    """
     body = WORKFLOW.read_text(encoding = "utf-8")
-    for pattern in (
-        "*windows-x64-cpu.zip",
-        "*windows-arm64-cpu.zip",
-        "*windows-x64-vulkan.zip",
+    assert "gh release view $tag --repo unslothai/llama.cpp --json assets" in body
+    assert "Where-Object { $_ -like '*windows*' -and $_ -like '*.zip' }" in body
+    assert 'throw "no Windows assets on $tag"' in body
+    # A hard coded profile would silently shrink the set again.
+    for sampled in (
         "*windows-x64-cuda12-legacy.zip",
         "*windows-x64-rocm-gfx110X.zip",
+        "*windows-arm64-cpu.zip",
     ):
-        assert pattern in body, pattern
+        assert sampled not in body, sampled
+    # Every enumerated asset has to end up inventoried.
+    assert "enumerated $($assets.Count) Windows asset(s) but inventoried $audited" in body
 
 
 def test_the_readme_does_not_claim_the_release_tag_pins_a_run():
@@ -483,11 +493,26 @@ def test_the_signature_audit_fails_on_any_missing_bundle():
     replaces $LASTEXITCODE, so a family whose asset was missing was audited as
     absent and passed under enforce."""
     body = WORKFLOW.read_text(encoding = "utf-8")
-    download = body.index("gh release download $tag")
-    loop_end = body.index("Get-ChildItem bundles | Format-Table")
+    download = body.index("gh release download $env:AUDIT_TAG")
+    loop_end = body.index("$audited = @($rows | Group-Object Bundle).Count")
     block = body[download:loop_end]
-    assert "if ($LASTEXITCODE -ne 0) { throw" in block
-    assert "Get-ChildItem bundles -Filter $pattern" in block
+    # Checked per asset, inside the loop, not once after it.
+    assert 'Write-Host "::error::gh release download exited $LASTEXITCODE for $asset"' in block
+    assert 'Write-Host "::error::$asset did not download"' in block
+    # And the bundle has to actually be on disk afterwards.
+    assert "Get-Item (Join-Path 'bundles' $asset)" in block
+
+
+def test_the_signature_audit_streams_one_bundle_at_a_time():
+    """Seventeen Windows assets are several GB; the hosted runner cannot hold
+    them all at once, which is why the audit used to sample instead."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    inventory = body.index("- name: Inventory Authenticode signatures")
+    block = body[inventory:]
+    assert "Remove-Item $zip.FullName -Force" in block, "the bundle is never deleted"
+    assert block.index("Remove-Item $zip.FullName -Force") < block.index(
+        "$audited = @($rows | Group-Object Bundle).Count"
+    ), "the delete must be inside the per-asset loop"
 
 
 class _FakeStream:
