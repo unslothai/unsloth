@@ -2972,7 +2972,12 @@ export function ModelConfigPage({
     // control keeps reading "Auto" while storage and the API override hold a concrete number
     // that a later load applies. Only this field can diverge: the numeric commits above already
     // reach state through onChange, and the diffusion sanitizer never touches the context.
+    //
+    // Gated on `remember`, because that is the branch persistConfig actually stored on. A
+    // forget deleted the entry, so there is nothing to reflect -- pinning the context there
+    // would turn a forget into a silent configuration change the next reload would use.
     if (
+      remember &&
       effectiveRuntimeConfig.customContextLength !== config.customContextLength
     ) {
       update({
