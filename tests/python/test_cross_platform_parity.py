@@ -1194,8 +1194,8 @@ class TestInstallUvCacheRootParity:
         # A failed install restores the marker whether or not a venv replacement was ever
         # in flight: a first install has no previous venv, and the ownership guard can
         # refuse the directory before one starts.
-        assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_exit() {"):]
-        assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_signal() {"):]
+        assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_exit() {") :]
+        assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_signal() {") :]
         assert ps1.count("Restore-StudioUvCacheMarker -StudioRoot") == 2
 
         # And the marker travels with the environment: a rolled-back install puts it back.
