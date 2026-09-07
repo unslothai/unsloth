@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import asyncio
 import json
 import re
@@ -185,7 +187,18 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
 
-    if (
+    # TEMPORARY DIAGNOSTIC (default ON so a restart alone activates it - env scoping proved unreliable across launchers).
+    # Tool-enabled turns take the durable path so the persisted event types can be observed; set
+    # UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 to restore the original refusal.
+    _durable_tools = os.environ.get("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    # NOTE: the guard wraps the WHOLE or-chain. `A and B or C or D` parses as `(A and B) or C or D`, so a bare
+    # prefix only guarded raw["tools"]; the Studio UI sends `enable_tools: true` (term 2), which still raised with
+    # the flag ON - the flip was inert for exactly the turns it was added to unblock.
+    if not _durable_tools and (
         raw.get("tools")
         or request.enable_tools is True
         or bool(request.mcp_enabled)

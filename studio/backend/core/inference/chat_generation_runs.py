@@ -460,6 +460,17 @@ class ChatGenerationSupervisor:
                 pass
             return True
         cancel_event = threading.Event()
+        # Durable marker read by state.tool_approvals.wait_tool_decision: a confirm-mode ("ask") call
+        # parked mid-run must wait for the returning session (resolved by approval_id) rather than auto-
+        # deny on the 3600s ceiling. In-memory only — a backend restart still loses the slot. Parking
+        # does not renew the progress lease, so an approval nobody answers is released by the lease
+        # sweeper, not by a ceiling: once the run's progress has aged past the lease timeout,
+        # reconcile_runs settles it as interrupted and supervisor.cancel() sets THIS event — which
+        # wait_tool_decision polls at 500ms, so it returns deny, pops its own _pending slot, and the
+        # producer unwinding balances the InferenceActivityReservation below. An abandoned park
+        # therefore holds its reservation for one lease window (default 1200s), exactly as a
+        # non-durable run already does.
+        cancel_event.durable = True
         activity = InferenceActivityReservation()
         activity.reserve()
         registration = active_generations.ActiveGeneration(
