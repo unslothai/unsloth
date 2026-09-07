@@ -7040,25 +7040,19 @@ def install_python_stack() -> int:
     if not _repair_damaged_core_payload(_core_package_names(package_name), local_repo = local_repo):
         return 1
 
-    # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
-    # mlx-vlm / mlx-lm transformers pin -- set at module load).
-    #
-    # Not gated on skip_base: that only means install.sh already placed
-    # unsloth + unsloth-zoo, and it never installs MLX by name. Gating it left
-    # fresh installs resolving MLX transitively, so nothing held tokenizers in
-    # mlx-lm's <=0.23.0 window and Train/Export came up off until update ran.
-    # Still gated on NO_TORCH: these are direct args, so NO_TORCH_SKIP_PACKAGES
-    # cannot filter them, and GGUF-only installs must not gain a training stack.
+    # Fresh installs skip core packages but still need MLX.
+    # Keep these pins aligned with utils/mlx_repair.py and unsloth-zoo.
+    # UV_OVERRIDE relaxes the MLX packages' Transformers pins.
     if IS_MAC_ARM and not NO_TORCH:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
             "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
             "--no-cache-dir",
             "--upgrade",
-            "mlx",
-            "mlx-metal",
-            "mlx-lm",
-            "mlx-vlm",
+            "mlx==0.32.1",
+            "mlx-metal==0.32.1",
+            "mlx-lm==0.31.3",
+            "mlx-vlm>=0.4.4,<0.7.0",
         )
 
     # gfx906: the base install below resolves unsloth's unconditional bitsandbytes
