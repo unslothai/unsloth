@@ -7814,6 +7814,35 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
     return paths
 
 
+def _amd_vulkan_icd_usable(path: str) -> bool:
+    """Whether a manifest still points at a driver library that is there.
+
+    An uninstall that leaves the JSON behind, or a manifest the loader cannot parse, is a
+    registration with no device behind it -- and this gate exists precisely to keep a
+    working ROCm install off a Vulkan build that would enumerate nothing. A bare library
+    name is accepted, because the loader resolves that through the system search path,
+    which this cannot see; only a path that names a directory is checked for presence.
+    """
+    try:
+        with open(path, "r", encoding = "utf-8") as handle:
+            manifest = json.load(handle)
+        library = (manifest.get("ICD") or {}).get("library_path")
+    except Exception:
+        return False
+    if not isinstance(library, str) or not library.strip():
+        return False
+    library = library.strip()
+    if not (os.path.isabs(library) or "/" in library or "\\" in library):
+        return True
+    if not os.path.isabs(library):
+        # Relative to the manifest's own directory, per the loader's interface document.
+        library = os.path.join(os.path.dirname(path), library)
+    try:
+        return os.path.isfile(library)
+    except OSError:
+        return False
+
+
 def _amd_vulkan_icd_present() -> bool:
     """Whether an AMD Vulkan driver is installed, so the Vulkan bundle has a device.
 
@@ -7831,7 +7860,10 @@ def _amd_vulkan_icd_present() -> bool:
         return any(needle in stem for needle in _AMD_VULKAN_ICD_NEEDLES)
 
     try:
-        return any(_is_amd_64_bit(PurePath(path).name) for path in _amd_vulkan_icd_manifest_paths())
+        return any(
+            _is_amd_64_bit(PurePath(path).name) and _amd_vulkan_icd_usable(path)
+            for path in _amd_vulkan_icd_manifest_paths()
+        )
     except Exception:
         return False
 
@@ -8299,25 +8331,45 @@ def _with_rocm_behind_vulkan(
     A named backend request is filtered afterwards, so this cannot smuggle ROCm into
     an explicit --llama-backend vulkan.
     """
+    cpu_kinds = install_kinds_for_backend("cpu")
+
+    def _without_cpu(plan: InstallReleasePlan) -> InstallReleasePlan:
+        """Drop the CPU tail from a plan that ends up with no ROCm attempt behind Vulkan.
+
+        Returning the plan unchanged would leave exactly the outcome this helper exists to
+        prevent: a Vulkan asset that cannot be installed falling through to CPU inference
+        on a host whose ROCm install works. A failed Vulkan install is recoverable; a
+        silent CPU one is the thing the user reports as "it got slow".
+        """
+        attempts = [attempt for attempt in plan.attempts if attempt.install_kind not in cpu_kinds]
+        if not attempts or len(attempts) == len(plan.attempts):
+            return plan
+        return dataclasses_replace(plan, attempts = attempts)
+
     try:
         _tag, rocm_plans = resolve_simple_install_release_plans(
             llama_tag, rocm_host, published_repo, published_release_tag
         )
     except Exception:
-        # A ROCm plan that will not resolve is not a reason to fail the Vulkan install.
-        return plans
+        # A ROCm plan that will not resolve is not a reason to fail the Vulkan install --
+        # but it is a reason not to keep a CPU fallback nothing now sits in front of.
+        return [_without_cpu(plan) for plan in plans]
     rocm_attempts = {plan.release_tag: plan.attempts for plan in rocm_plans}
-    cpu_kinds = install_kinds_for_backend("cpu")
     out: list[InstallReleasePlan] = []
     for plan in plans:
         present = {attempt.install_kind for attempt in plan.attempts}
+        candidates = rocm_attempts.get(plan.release_tag, [])
         extra = [
             attempt
-            for attempt in rocm_attempts.get(plan.release_tag, [])
+            for attempt in candidates
             if attempt.install_kind not in present and attempt.install_kind not in cpu_kinds
         ]
         if not extra:
-            out.append(plan)
+            # Nothing to insert either because the plan already carries this host's ROCm
+            # attempt, or because none resolved for this release. Only the second is the
+            # hazard above, so tell them apart rather than stripping both.
+            keeps_rocm = any(attempt.install_kind in present for attempt in candidates)
+            out.append(plan if keeps_rocm else _without_cpu(plan))
             continue
         at = next(
             (i for i, a in enumerate(plan.attempts) if a.install_kind in cpu_kinds),

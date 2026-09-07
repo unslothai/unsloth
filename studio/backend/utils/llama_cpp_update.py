@@ -642,6 +642,22 @@ def _selection_applied(
     return resolved is None or installed_backend is None or resolved == installed_backend
 
 
+
+def _remembered_rocm_gfx(marker: Optional[dict]) -> Optional[str]:
+    """The arch to replay when re-resolving, falling back to the installed asset's name.
+
+    The marker carries rocm_gfx only when the install itself resolved one, and a host whose
+    probe never named an arch is exactly the host that needs the replay: the resolver
+    re-probes from scratch, an AMD box with neither hipinfo nor amd-smi reads as CPU-only,
+    and a working per-gfx ROCm install is then judged to have drifted. The bundle it is
+    running names the family, which is the same record setup.sh reads.
+    """
+    recorded = (marker or {}).get("rocm_gfx")
+    if recorded:
+        return recorded
+    args = _flow.rocm_install_args((marker or {}).get("asset"))
+    return args[1] if len(args) == 2 and args[0] == "--rocm-gfx" else None
+
 def _pending_backend_migration(
     binary: Optional[str],
     marker: Optional[dict],
@@ -680,7 +696,7 @@ def _pending_backend_migration(
         _install_dir_for(binary),
         force_refresh = force_refresh,
         published_repo = repo,
-        rocm_gfx = marker.get("rocm_gfx"),
+        rocm_gfx = _remembered_rocm_gfx(marker),
     )
     if not resolved:
         return None
@@ -688,7 +704,14 @@ def _pending_backend_migration(
     if _selection_applied("auto", marker_backend(marker), options):
         return None
     auto = next((option for option in options if option["backend"] == "auto"), None)
-    return (auto or {}).get("resolved_backend")
+    target = (auto or {}).get("resolved_backend")
+    if target == "cpu" and marker_backend(marker) not in (None, "cpu"):
+        # A probe that came back empty and a host that really lost its GPU look identical
+        # from here, and only one of those wants a CPU install. Moving a working GPU
+        # install onto CPU is the costly side of that ambiguity, so it is never offered:
+        # a user who wants it can still pick CPU in Settings.
+        return None
+    return target
 
 
 def get_backend_status(*, force_refresh: bool = False) -> dict:

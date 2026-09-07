@@ -965,6 +965,83 @@ def test_a_marker_with_no_recorded_arch_passes_no_replay(monkeypatch, tmp_path):
     assert seen == [None]
 
 
+def test_the_arch_is_recovered_from_the_installed_bundle_when_none_was_recorded(
+    monkeypatch, tmp_path
+):
+    # The marker records rocm_gfx only when the install resolved one, and the host that
+    # needs the replay most is the one that never did: without it the re-probe reads an
+    # amd-smi-less AMD box as CPU-only and a working ROCm install looks drifted. The
+    # per-gfx bundle it is running names the family, which is what setup.sh reads too.
+    _install(
+        monkeypatch,
+        tmp_path,
+        backend = "rocm",
+        install_kind = "windows-rocm",
+        asset = "app-b9596-mix-abc-windows-x64-rocm-gfx1151.zip",
+    )
+    marker = upd.read_install_marker(upd._find_binary())
+    assert marker.get("rocm_gfx") is None
+    seen: list = []
+
+    def _resolver(**kwargs):
+        seen.append(kwargs.get("extra_env"))
+        gfx = (kwargs.get("extra_env") or {}).get("UNSLOTH_ROCM_GFX_REMEMBERED")
+        return {
+            "backends": [
+                {
+                    "backend": "auto",
+                    "available": True,
+                    "resolved_backend": "rocm" if gfx else "cpu",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve_backends_for_host)
+    monkeypatch.setattr(upd._flow, "resolve_prebuilt_for_host", _resolver)
+    upd._backends_memo.clear()
+
+    assert upd._pending_backend_migration(upd._find_binary(), marker) is None
+    assert seen == [{"UNSLOTH_ROCM_GFX_REMEMBERED": "gfx1151"}]
+
+
+def test_a_gpu_install_is_never_offered_a_migration_onto_cpu(monkeypatch, tmp_path):
+    # A probe that came back empty and a host that really lost its GPU are the same
+    # reading from here. Moving a working GPU install onto CPU is the costly side of that
+    # ambiguity, so the offer is withheld; picking CPU in Settings still works.
+    _install(
+        monkeypatch,
+        tmp_path,
+        backend = "rocm",
+        install_kind = "linux-rocm",
+        asset = "app-b9596-mix-abc-linux-x64-rocm-gfx1151.tar.gz",
+        rocm_gfx = "gfx1151",
+    )
+    marker = upd.read_install_marker(upd._find_binary())
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve_backends_for_host)
+    monkeypatch.setattr(
+        upd._flow,
+        "resolve_prebuilt_for_host",
+        lambda **_kw: {
+            "backends": [{"backend": "auto", "available": True, "resolved_backend": "cpu"}]
+        },
+    )
+    upd._backends_memo.clear()
+    assert upd._pending_backend_migration(upd._find_binary(), marker) is None
+
+    # The control: the same resolver answering with a GPU backend does produce an offer,
+    # so the None above is the guard rather than a resolve that never happened.
+    monkeypatch.setattr(
+        upd._flow,
+        "resolve_prebuilt_for_host",
+        lambda **_kw: {
+            "backends": [{"backend": "auto", "available": True, "resolved_backend": "vulkan"}]
+        },
+    )
+    upd._backends_memo.clear()
+    assert upd._pending_backend_migration(upd._find_binary(), marker) == "vulkan"
+
+
 def test_applying_a_migration_replays_the_arch_the_offer_was_made_with(monkeypatch, tmp_path):
     """The apply re-resolves before it installs, and that second resolve must see what
     the first one saw. Without the replay it resolves "auto" back onto the installed
