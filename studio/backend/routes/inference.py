@@ -2336,6 +2336,16 @@ def _openai_llama_effective_batch_tokens(llama_backend) -> int:
     return _OPENAI_LLAMA_DEFAULT_N_BATCH
 
 
+def _preempt_key(llama_backend) -> str:
+    """The controller key for one model load, which is the admission queue's key.
+
+    ``base_url``, because both are per load and a reload takes a fresh ephemeral port.
+    Every surface that reaches the ledger spells the fallback the same way, so a backend
+    that cannot name its URL lands all of them on one controller rather than several.
+    """
+    return str(getattr(llama_backend, "base_url", "llama-server"))
+
+
 def _llama_preemption_log(
     event: str,
     *,
@@ -2482,9 +2492,7 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         # `observe`), and a mirror that still said TOOLS_RUNNING would swallow the next
         # report as a repeat and leave the ledger a state behind.
         try:
-            controller = get_preemption_controller(
-                str(getattr(llama_backend, "base_url", "llama-server"))
-            )
+            controller = get_preemption_controller(_preempt_key(llama_backend))
             participant = controller.participant(completion_id)
             current = participant.state if participant is not None else _gguf_live_state["state"]
         except Exception:
@@ -2510,9 +2518,7 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         it is still growing, and evicting on the watermark.
         """
         try:
-            controller = get_preemption_controller(
-                str(getattr(llama_backend, "base_url", "llama-server"))
-            )
+            controller = get_preemption_controller(_preempt_key(llama_backend))
             _gguf_refresh_residency(controller)
             victims = controller.observe(completion_id, generated)
             if victims:
@@ -2578,7 +2584,7 @@ def _openai_llama_count_raw_holder(*, llama_backend, lease, gen_id: str) -> None
             return
         if lease is None:
             return
-        get_preemption_controller(str(getattr(llama_backend, "base_url", "llama-server"))).register(
+        get_preemption_controller(_preempt_key(llama_backend)).register(
             gen_id,
             lease = lease,
             tokens = int(getattr(lease, "tokens", 0) or 0),
@@ -2615,7 +2621,7 @@ def _openai_llama_preemption_arm(
         # nothing to preempt FOR.
         _llama_preemption_log("not-armed", reason = "no-lease-yet", gen_id = gen_id, level = "debug")
         return None
-    key = str(getattr(llama_backend, "base_url", "llama-server"))
+    key = _preempt_key(llama_backend)
     controller = get_preemption_controller(key)
     controller.configure(
         budget = _openai_llama_admission_budget(llama_backend),
@@ -2710,7 +2716,7 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
     because an over-counted ledger is merely pessimistic.
     """
     try:
-        key = str(getattr(llama_backend, "base_url", "llama-server"))
+        key = _preempt_key(llama_backend)
         get_preemption_controller(key).unregister(gen_id)
     except Exception:
         # Never let bookkeeping fail a response that already succeeded.
@@ -2773,9 +2779,7 @@ def _openai_llama_preemption_disarm(*, llama_backend, gen_id: str) -> None:
         )
         if freed:
             _llama_preemption_log("released-cells", gen_id = gen_id, freed = freed)
-            _controller = get_preemption_controller(
-                str(getattr(llama_backend, "base_url", "llama-server"))
-            )
+            _controller = get_preemption_controller(_preempt_key(llama_backend))
             _controller.note_resident(
                 max(0, int(occupancy.get("resident") or 0) - freed),
                 max(0, int(occupancy.get("idle_tokens") or 0) - freed),
@@ -2972,9 +2976,7 @@ def _openai_llama_admission_recost(
         # leader is queued, not stuck, and must not be told otherwise.
         _progress = None
         try:
-            _progress = get_preemption_controller(
-                str(getattr(llama_backend, "base_url", "llama-server"))
-            ).progress_signature
+            _progress = get_preemption_controller(_preempt_key(llama_backend)).progress_signature
         except Exception:
             _progress = None
         lease.recost_waiting(
@@ -22324,9 +22326,9 @@ async def produce_openai_chat_completions(
                     _res = _gguf_admission_hold["reservation"]
                     _lease = _res.lease_nowait() if _res is not None else None
                     if _lease is not None:
-                        get_preemption_controller(
-                            str(getattr(llama_backend, "base_url", "llama-server"))
-                        ).note_tokens(completion_id, int(_lease.tokens or 0))
+                        get_preemption_controller(_preempt_key(llama_backend)).note_tokens(
+                            completion_id, int(_lease.tokens or 0)
+                        )
                         # And SWEEP on the new figure. note_tokens only records it, and
                         # only observe() plans evictions, so a round that grew the prompt
                         # by thousands of tokens updated the ledger silently and nothing
@@ -22443,13 +22445,9 @@ async def produce_openai_chat_completions(
                 # replayed partial, so a stale figure can be a thousand tokens short at
                 # exactly the moment that matters.
                 try:
-                    get_preemption_controller(
-                        str(getattr(llama_backend, "base_url", "llama-server"))
-                    ).set_residency_probe(
+                    get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
                         lambda: _gguf_refresh_residency(
-                            get_preemption_controller(
-                                str(getattr(llama_backend, "base_url", "llama-server"))
-                            ),
+                            get_preemption_controller(_preempt_key(llama_backend)),
                             force = True,
                         )
                     )
@@ -23095,13 +23093,9 @@ async def produce_openai_chat_completions(
                     # reclaims an idle slot's cells. Idempotent, so re-registering the
                     # same probe the reservation site already set costs nothing.
                     try:
-                        get_preemption_controller(
-                            str(getattr(llama_backend, "base_url", "llama-server"))
-                        ).set_residency_probe(
+                        get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
                             lambda: _gguf_refresh_residency(
-                                get_preemption_controller(
-                                    str(getattr(llama_backend, "base_url", "llama-server"))
-                                ),
+                                get_preemption_controller(_preempt_key(llama_backend)),
                                 force = True,
                             )
                         )
@@ -23621,13 +23615,9 @@ async def produce_openai_chat_completions(
                     # was set on the tool branch alone, so a run with no tools in it never
                     # had one at all.
                     try:
-                        get_preemption_controller(
-                            str(getattr(llama_backend, "base_url", "llama-server"))
-                        ).set_residency_probe(
+                        get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
                             lambda: _plain_refresh_residency(
-                                get_preemption_controller(
-                                    str(getattr(llama_backend, "base_url", "llama-server"))
-                                ),
+                                get_preemption_controller(_preempt_key(llama_backend)),
                                 force = True,
                             )
                         )
@@ -23891,13 +23881,9 @@ async def produce_openai_chat_completions(
                 # was set on the tool branch alone, so a run with no tools in it never
                 # had one at all.
                 try:
-                    get_preemption_controller(
-                        str(getattr(llama_backend, "base_url", "llama-server"))
-                    ).set_residency_probe(
+                    get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
                         lambda: _plain_refresh_residency(
-                            get_preemption_controller(
-                                str(getattr(llama_backend, "base_url", "llama-server"))
-                            ),
+                            get_preemption_controller(_preempt_key(llama_backend)),
                             force = True,
                         )
                     )
@@ -30355,13 +30341,9 @@ async def anthropic_messages(
         already does.
         """
         try:
-            get_preemption_controller(
-                str(getattr(llama_backend, "base_url", "llama-server"))
-            ).set_residency_probe(
+            get_preemption_controller(_preempt_key(llama_backend)).set_residency_probe(
                 lambda: _anthropic_refresh_residency(
-                    get_preemption_controller(
-                        str(getattr(llama_backend, "base_url", "llama-server"))
-                    ),
+                    get_preemption_controller(_preempt_key(llama_backend)),
                     force = True,
                 )
             )
