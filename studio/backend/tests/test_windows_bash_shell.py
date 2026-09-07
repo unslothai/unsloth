@@ -21,6 +21,14 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 from core.inference import tools
+from core.inference import os_sandbox
+from types import SimpleNamespace
+
+
+def _legacy_backend(monkeypatch):
+    # These contracts cover the retained legacy dispatcher, not the current
+    # backend's canonical selected-shell path (covered in test_os_sandbox).
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: SimpleNamespace())
 
 
 @pytest.fixture(autouse = True)
@@ -49,6 +57,7 @@ def test_posix_shell_is_unchanged(monkeypatch):
 
 
 def test_windows_uses_bash_when_present(monkeypatch):
+    _legacy_backend(monkeypatch)
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
     assert tools._get_shell_cmd("echo hi") == [
@@ -59,6 +68,7 @@ def test_windows_uses_bash_when_present(monkeypatch):
 
 
 def test_windows_falls_back_to_cmd_without_bash(monkeypatch):
+    _legacy_backend(monkeypatch)
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: None)
     assert tools._get_shell_cmd("echo hi") == ["cmd", "/c", "echo hi"]
@@ -432,6 +442,7 @@ def test_a_program_path_is_not_read_as_a_cmd_switch(monkeypatch, _windows_blockl
 
 
 def test_os_isolated_windows_launch_uses_cmd_even_with_bash(monkeypatch):
+    _legacy_backend(monkeypatch)
     # MSYS2 bash cannot start inside an AppContainer, so the isolated launch
     # runs cmd while every other mode keeps the bash the host has.
     monkeypatch.setattr(tools.sys, "platform", "win32")
@@ -498,6 +509,7 @@ def test_the_isolated_batch_script_is_unwritable_while_the_launch_holds_it(tmp_p
 
 
 def test_os_isolated_description_names_cmd_only_on_windows_with_bash(monkeypatch):
+    _legacy_backend(monkeypatch)
     specs = [dict(tools.TERMINAL_TOOL), dict(tools.PYTHON_TOOL)]
     monkeypatch.setattr(tools.sys, "platform", "linux")
     assert tools.apply_os_isolated_tool_descriptions(specs) is specs

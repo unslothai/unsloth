@@ -33,6 +33,7 @@ from core.inference.tools import (
     TERMINAL_TOOL_FULL_ACCESS,
     apply_full_access_tool_descriptions,
     apply_limited_tool_descriptions,
+    apply_os_isolated_tool_descriptions,
 )
 from models.inference import ChatCompletionRequest, ChatCountTokensRequest
 from routes.inference import (
@@ -255,13 +256,15 @@ def _select(**payload_kwargs) -> list[dict]:
 def test_non_full_modes_keep_the_sandboxed_schemas(mode):
     tools = _select(permission_mode = mode)
     assert _desc(_named(tools, "python")) == _desc(PYTHON_TOOL)
-    assert _desc(_named(tools, "terminal")) == _desc(TERMINAL_TOOL)
+    expected = apply_os_isolated_tool_descriptions([TERMINAL_TOOL])[0]
+    assert _desc(_named(tools, "terminal")) == _desc(expected)
 
 
 def test_omitted_mode_keeps_the_sandboxed_schemas():
     tools = _select()
     assert _desc(_named(tools, "python")) == _desc(PYTHON_TOOL)
-    assert _desc(_named(tools, "terminal")) == _desc(TERMINAL_TOOL)
+    expected = apply_os_isolated_tool_descriptions([TERMINAL_TOOL])[0]
+    assert _desc(_named(tools, "terminal")) == _desc(expected)
 
 
 def test_limited_mode_uses_honest_model_visible_descriptions():

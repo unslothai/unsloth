@@ -7,6 +7,8 @@ The launch owner supplies canonical, leased paths and an admitted generation.
 Encoding this record cannot approve a runtime or give it startup authority.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, fields
 import ntpath
 import struct

@@ -1485,6 +1485,13 @@ class LinuxBubblewrapBackend:
                 False,
                 f"Bubblewrap is not a root-controlled executable: {candidate}",
             )
+        # Report namespace policy failures before traversing a large runtime.
+        # This empty-root preflight cannot execute a payload and never qualifies
+        # a backend; the full filesystem/network probe below remains mandatory.
+        if _read_text(_APPARMOR_USERNS_SYSCTL).strip() == "1":
+            refusal = _linux_namespace_preflight(candidate)
+            if refusal is not None:
+                return _explain_linux_probe_failure(refusal, candidate)
         system_roots = tuple(
             path
             for path in (*_LINUX_SYSTEM_ROOTS, *_LINUX_ETC_FILES, *_LINUX_CA_TRUST_PATHS)
@@ -1765,6 +1772,33 @@ def _bridged_spawn(
     return spawn
 
 
+def _linux_namespace_preflight(bwrap_path: str) -> SandboxCapability | None:
+    missing = "/__unsloth_namespace_probe_no_payload__"
+    try:
+        result = subprocess.run(
+            [bwrap_path, "--unshare-all", "--die-with-parent", "--", missing],
+            stdin = subprocess.DEVNULL,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            env = {"LANG": "C", "LC_ALL": "C"},
+            close_fds = True,
+            timeout = _PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return SandboxCapability(
+            "linux-bubblewrap", False, f"namespace preflight failed: {exc}", transient = True
+        )
+    if result.returncode != 0 and f"execvp {missing}: No such file or directory" in result.stderr:
+        return None
+    return SandboxCapability(
+        "linux-bubblewrap",
+        False,
+        f"namespace preflight failed ({result.returncode}): {result.stderr.strip()[-1000:]}",
+    )
+
+
 def _explain_linux_probe_failure(
     result: SandboxCapability, bwrap_path: str = _DEFAULT_BWRAP_PATH
 ) -> SandboxCapability:
@@ -1999,6 +2033,7 @@ def _macos_developer_paths() -> tuple[str, ...]:
                     ["/usr/bin/xcode-select", "-p"],
                     capture_output = True,
                     text = True,
+                    encoding = "utf-8",
                     timeout = 10,
                     check = False,
                 )

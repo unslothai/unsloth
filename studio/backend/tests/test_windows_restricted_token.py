@@ -2957,8 +2957,9 @@ def test_private_temp_removal_retries_a_sharing_violation_then_gives_up(tmp_path
     monkeypatch.setattr(
         token_launcher.shutil,
         "rmtree",
-        lambda path, **kwargs: attempts.append(path)
-        or (_ for _ in ()).throw(PermissionError(13, "still in use")),
+        lambda path, **kwargs: (
+            attempts.append(path) or (_ for _ in ()).throw(PermissionError(13, "still in use"))
+        ),
     )
     with pytest.raises(PermissionError):
         token_launcher._remove_private_temp(str(private))
@@ -3505,6 +3506,59 @@ def test_live_token_child_keeps_nul_and_the_anonymous_pipe(live_token_backend, t
     assert "grandchild ok" in output and output.strip().endswith("ok")
 
 
+def _full_control_dacl_sids(sddl: str) -> set[str]:
+    """Read trustees from the ACL; Windows may serialize a numeric SID as LA."""
+    api = windows_lpac._api()
+    convert = api.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_void_p,
+    ]
+    convert.restype = wintypes.BOOL
+    descriptor = ctypes.c_void_p()
+    assert convert(sddl, 1, ctypes.byref(descriptor), None), ctypes.get_last_error()
+    try:
+        present = wintypes.BOOL()
+        defaulted = wintypes.BOOL()
+        acl = ctypes.c_void_p()
+        assert api.advapi32.GetSecurityDescriptorDacl(
+            descriptor, ctypes.byref(present), ctypes.byref(acl), ctypes.byref(defaulted)
+        )
+        assert present.value and acl.value, "A missing or NULL DACL is not an explicit grant"
+        header = ctypes.cast(acl, ctypes.POINTER(windows_lpac._ACL)).contents
+        trustees = set()
+        for index in range(header.count):
+            entry = ctypes.c_void_p()
+            assert api.advapi32.GetAce(acl, index, ctypes.byref(entry))
+            ace = ctypes.cast(entry, ctypes.POINTER(windows_lpac._ACE_HEADER)).contents
+            if (
+                ace.kind != windows_lpac._ACCESS_ALLOWED_ACE_TYPE
+                or ace.flags & windows_lpac._INHERIT_ONLY_ACE
+            ):
+                continue
+            mask_address = entry.value + ctypes.sizeof(windows_lpac._ACE_HEADER)
+            mask = wintypes.DWORD.from_address(mask_address).value
+            if mask & windows_lpac._GENERIC_ALL:
+                sid = ctypes.c_void_p(mask_address + ctypes.sizeof(wintypes.DWORD))
+                trustees.add(windows_lpac._sid_string(api, sid))
+        return trustees
+    finally:
+        api.kernel32.LocalFree(descriptor)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "native SDDL alias resolution")
+def test_default_dacl_assertion_resolves_aliases_and_requires_an_allow_grant():
+    # Hosted Windows runs as the local Administrator, whose SID serializes as LA.
+    administrator = next(iter(_full_control_dacl_sids("D:(A;;GA;;;LA)")))
+    assert administrator.startswith("S-1-5-21-") and administrator.endswith("-500")
+    assert _full_control_dacl_sids(f"D:(A;;GA;;;{administrator})") == {administrator}
+    assert _full_control_dacl_sids("D:(A;;GR;;;LA)(D;;GA;;;LA)(A;IO;GA;;;LA)(A;;GA;;;BA)") == {
+        "S-1-5-32-544"
+    }
+
+
 def test_live_token_is_restricted_lua_and_privilege_stripped(live_token_backend, tmp_path):
     work = tmp_path / "work"
     work.mkdir()
@@ -3537,8 +3591,9 @@ def test_live_token_is_restricted_lua_and_privilege_stripped(live_token_backend,
     # is running under it. Both SIDs are on it: the launch SID answers the second
     # access check and the user SID the first, and an object created with only
     # one of them is an object the child cannot open for write.
-    assert launch_sid in findings["token_default_dacl"]
-    assert findings["user_sid"] in findings["token_default_dacl"]
+    full_control_sids = _full_control_dacl_sids(findings["token_default_dacl"])
+    assert launch_sid in full_control_sids
+    assert findings["user_sid"] in full_control_sids
     # The anonymous pipe is the requirement, and its descriptor is what says the
     # requirement was met for the documented reason rather than by accident.
     assert findings["anonymous_pipe"] is True

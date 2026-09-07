@@ -132,15 +132,14 @@ _PROFILE_LPAC = "lpac"
 _PROFILE_APPCONTAINER = "appcontainer"
 _PROFILE_BY_ID = {_PROFILE_ID: _PROFILE_LPAC, _APPCONTAINER_PROFILE_ID: _PROFILE_APPCONTAINER}
 _PROBE_TOKEN = "UNSLOTH_WINDOWS_LPAC_PROBE_OK"
+_PROBE_NULL_TOKEN = "UNSLOTH_WINDOWS_NULL_DEVICE "
 _ALL_APPLICATION_PACKAGES_SID = "S-1-15-2-1"
 _ALL_RESTRICTED_APPLICATION_PACKAGES_SID = "S-1-15-2-2"
 _LIMITATION_AMBIENT_READ = "all_application_packages_ambient_read"
 _LIMITATION_IPV6 = "ipv6_unavailable_on_host"
-# An AppContainer token gets no access to \Device\Null or to named pipes it did
-# not create with an AppContainer-aware descriptor, so inside the sandbox
-# open(os.devnull) and multiprocessing.Pipe() raise PermissionError. Code that
-# needs them (multiprocessing, torch through dill) runs in Limited or Full mode.
-_LIMITATION_NULL_DEVICE_PIPES = "null_device_and_named_pipes_denied"
+# Named pipes require an AppContainer-aware descriptor. NUL access varies by
+# host/profile and is measured separately by the live probe.
+_LIMITATION_NAMED_PIPES = "named_pipes_denied"
 # One AppContainer identity per installation, so concurrent launches of that
 # installation share the container's named-object namespace, its profile
 # directory (and therefore each other's private temp), and each other's workdir
@@ -3369,6 +3368,27 @@ for family, kind, address in {endpoints!r}:
 """
 
 
+def _null_device_limitations(output: str) -> tuple[str, str]:
+    reports = [
+        line[len(_PROBE_NULL_TOKEN) :]
+        for line in output.splitlines()
+        if line.startswith(_PROBE_NULL_TOKEN)
+    ]
+    if len(reports) != 1:
+        raise SandboxUnavailableError("The legacy NUL device observation is missing or duplicated")
+    observation = json.loads(reports[0])
+    if (
+        type(observation) is not dict
+        or set(observation) != {"read", "write"}
+        or any(type(value) is not bool for value in observation.values())
+    ):
+        raise SandboxUnavailableError("The legacy NUL device observation is invalid")
+    return tuple(
+        f"null_device_{access}_{'allowed' if observation[access] else 'denied'}"
+        for access in ("read", "write")
+    )
+
+
 def _probe_payload(
     workdir: str,
     external: str,
@@ -3377,7 +3397,7 @@ def _probe_payload(
     *,
     less_privileged: bool = True,
 ) -> str:
-    return f"""import ctypes, os, socket, sys
+    return f"""import ctypes, json, os, socket, sys
 from ctypes import wintypes
 k = ctypes.WinDLL('kernel32', use_last_error=True)
 a = ctypes.WinDLL('advapi32', use_last_error=True)
@@ -3449,6 +3469,16 @@ for path in ({external!r}, sys.executable):
         pass
 {_probe_network_payload(endpoints)}
 assert os.path.commonpath((os.environ['TEMP'], os.environ['LOCALAPPDATA'])) == os.environ['LOCALAPPDATA']
+null_access = {{}}
+for access, mode in (('read', 'rb'), ('write', 'wb')):
+    try:
+        with open(os.devnull, mode):
+            pass
+    except PermissionError:
+        null_access[access] = False
+    else:
+        null_access[access] = True
+print({_PROBE_NULL_TOKEN!r} + json.dumps(null_access, sort_keys=True))
 print({_PROBE_TOKEN!r})
 """
 
@@ -3519,7 +3549,7 @@ class WindowsLpacBackend:
                     protection_state = "preview",
                     profile_id = _PROFILE_ID,
                     limitations = (
-                        _LIMITATION_NULL_DEVICE_PIPES,
+                        _LIMITATION_NAMED_PIPES,
                         _LIMITATION_SHARED_CONTAINER,
                         *self._last_probe_limitations,
                     ),
@@ -3543,7 +3573,7 @@ class WindowsLpacBackend:
                         profile_id = _APPCONTAINER_PROFILE_ID,
                         limitations = (
                             _LIMITATION_AMBIENT_READ,
-                            _LIMITATION_NULL_DEVICE_PIPES,
+                            _LIMITATION_NAMED_PIPES,
                             _LIMITATION_SHARED_CONTAINER,
                             *self._last_probe_limitations,
                         ),
@@ -3640,6 +3670,7 @@ class WindowsLpacBackend:
                         process.returncode,
                         f"the {label} live probe failed ({process.returncode}): {detail}",
                     )
+                self._last_probe_limitations += _null_device_limitations(output)
             finally:
                 prepared.cleanup()
                 if prepared.cleanup_diagnostics:

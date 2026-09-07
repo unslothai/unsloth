@@ -173,6 +173,7 @@ def test_research_presentation_is_integrated() -> None:
     page = source("features/chat/chat-page.tsx")
     chat_index = source("features/chat/index.ts")
     store = source("features/chat/stores/chat-runtime-store.ts")
+    isolation_defaults = source("features/chat/utils/tool-isolation-defaults.ts")
     activity = source("features/chat/components/research-activity-panel.tsx")
     message = source("features/chat/components/research-message.tsx")
     markdown_preview = source("components/markdown/markdown-preview.tsx")
@@ -287,7 +288,11 @@ def test_research_presentation_is_integrated() -> None:
         "toggling deep research must re-resolve permissionMode from the chat's own level "
         "falling back to the persisted global"
     )
-    assert "permissionMode," in deep_research_update
+    assert re.search(
+        r"\.\.\.protectedIsolationDefaults\(\s*permissionMode\s*\)",
+        deep_research_update,
+    ), "enabling deep research must leave Full and Limited through the protected transition"
+    assert 'permissionMode === "full" ? "auto" : permissionMode' in isolation_defaults
 
 
 def test_research_plan_and_status_contract() -> None:

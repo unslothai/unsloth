@@ -1026,11 +1026,60 @@ class _TunnelAborted(Exception):
 
 
 def _close_quietly(sock: socket.socket) -> None:
-    """Close a socket whose failure to close is not something a caller can act on."""
+    """Gracefully end our writes, then close a socket whose errors are not actionable.
+
+    Windows resets a TCP connection when ``close`` discards request bytes that the
+    application has not read yet.  Cap refusals intentionally do not parse the CONNECT
+    head, and a worker that cannot start cannot parse it, so that reset could discard a
+    response already queued by ``sendall`` or surface as WinError 10053 instead of EOF.
+    Drain only bytes already waiting (never block), then queue a FIN behind any response.
+    This retains the bounded cleanup path and avoids turning overload handling into work.
+    """
+    try:
+        sock.setblocking(False)
+        remaining = MAX_HEADER_BYTES + 1
+        while remaining > 0:
+            chunk = sock.recv(min(4096, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+    except OSError:
+        pass
+    try:
+        sock.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
     try:
         sock.close()
     except OSError:
         pass
+
+
+def _discard_waiting_request_head(sock: socket.socket, budget: float = 0.1) -> None:
+    """Consume a request head already in flight, under a tiny wall-clock bound.
+
+    Used only when policy has already decided not to parse the request.  Waiting for
+    the peer's full header timeout here would let overload block the accept loop, but
+    closing with a normal CONNECT head unread makes Winsock abort the response.
+    """
+    deadline = time.monotonic() + budget
+    received = b""
+    try:
+        while len(received) <= MAX_HEADER_BYTES:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            readable, _, _ = select.select([sock], [], [], remaining)
+            if not readable:
+                return
+            chunk = sock.recv(min(4096, MAX_HEADER_BYTES + 1 - len(received)))
+            if not chunk:
+                return
+            received += chunk
+            if b"\r\n\r\n" in received:
+                return
+    except OSError:
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -1305,7 +1354,15 @@ class AllowlistProxy:
                 # slot for the life of the launch and leak the accepted socket.
                 logger.warning("Tool network proxy could not start a worker: %s", exc)
                 self._release_slots()
-                _close_quietly(client)
+                # This is the one failure path that cannot hand work to a thread.
+                # A short refusal fits the socket send buffer and tells the caller
+                # what happened; the write timeout keeps the accept loop bounded.
+                try:
+                    client.settimeout(self._header_timeout)
+                except OSError:
+                    pass
+                _discard_waiting_request_head(client)
+                self._refuse(client, 503, "proxy worker unavailable")
 
     def _dispatch_refusal(self, client: socket.socket, status: int, reason: str) -> None:
         """Answer a refusal off the accept thread, with a timeout on the write.
@@ -1346,6 +1403,12 @@ class AllowlistProxy:
                 # Tracked so ``close`` can shut this socket down: a client that
                 # never reads its refusal would otherwise sit in ``sendall``
                 # until the header timeout, well past the end of the tool call.
+                # Normal clients have already sent a complete CONNECT head.  Consume
+                # it when it is waiting so Winsock does not abort the close and throw
+                # away the 503.  A cap-flood socket that sent nothing is answered
+                # after only this tiny bounded wait rather than tying up the pool in
+                # the full header timeout.
+                _discard_waiting_request_head(client)
                 self._refuse(client, status, reason)
             else:
                 _close_quietly(client)
@@ -1441,7 +1504,15 @@ class AllowlistProxy:
         except OSError as exc:
             logger.debug("Tool network tunnel ended: %s", exc)
         except Exception as exc:  # noqa: BLE001 - one request must not kill the worker
-            logger.warning("Tool network proxy failed to serve a request: %s", exc, exc_info = True)
+            try:
+                logger.warning(
+                    "Tool network proxy failed to serve a request: %s", exc, exc_info = True
+                )
+            except UnicodeError:
+                # A logger that has not yet received Studio's configured renderer may
+                # use Rich's Unicode traceback on a narrow Windows console.  Reporting
+                # failure must never prevent the protocol's 400 response.
+                logger.warning("Tool network proxy failed to serve a request: %s", ascii(exc))
             self._refuse(client, 400, "the proxy could not process this request")
         finally:
             for sock in (client, upstream):

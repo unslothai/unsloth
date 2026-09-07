@@ -111,6 +111,12 @@ jobs:
           from core.inference.os_sandbox import capability_snapshot
           started = time.monotonic()
           capability = capability_snapshot(force=True)
+          # Retry only a transient capability measurement, never a tool command.
+          # Cold hosted-runner system scans can exhaust the bounded scan budget;
+          # refusal remains mandatory if the second complete probe also fails.
+          if capability.transient:
+              print(f"retrying transient qualification probe: {capability.reason}")
+              capability = capability_snapshot(force=True)
           print(f"probe took {time.monotonic() - started:.2f}s")
           print(capability)
           assert capability.environment == "native_linux", capability

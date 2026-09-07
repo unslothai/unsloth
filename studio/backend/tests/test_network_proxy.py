@@ -249,6 +249,37 @@ def _wait_for(predicate, timeout: float = 5.0) -> bool:
     return False
 
 
+def test_quiet_close_has_a_finite_drain_for_an_always_readable_peer():
+    """A hostile writer cannot keep cleanup spinning in its best-effort drain."""
+
+    class _AlwaysReadable:
+        def __init__(self):
+            self.recv_calls = 0
+            self.shutdown_how = None
+            self.closed = False
+
+        def setblocking(self, blocking):
+            assert blocking is False
+
+        def recv(self, size):
+            self.recv_calls += 1
+            return b"x" * size
+
+        def shutdown(self, how):
+            self.shutdown_how = how
+
+        def close(self):
+            self.closed = True
+
+    peer = _AlwaysReadable()
+    network_proxy._close_quietly(peer)
+
+    expected_calls = (network_proxy.MAX_HEADER_BYTES + 4096) // 4096
+    assert peer.recv_calls == expected_calls
+    assert peer.shutdown_how == socket.SHUT_WR
+    assert peer.closed
+
+
 # --- host normalization and allowlist ----------------------------------------
 
 
@@ -892,12 +923,9 @@ def test_a_worker_thread_that_cannot_start_releases_the_slot(monkeypatch, upstre
         client = socket.create_connection(("127.0.0.1", instance.port), timeout = 5)
         client.sendall(head.encode("latin-1"))
         client.settimeout(5)
-        try:
-            # The accepted socket is closed without a reply, which reaches the
-            # client as EOF or, when the head is still unread, as a reset.
-            assert client.recv(4096) == b""
-        except ConnectionResetError:
-            pass
+        response = _read_until_eof(client)
+        assert response.startswith(b"HTTP/1.1 503")
+        assert b"proxy worker unavailable" in response
         client.close()
         monkeypatch.undo()
         # The slot was released, so the single-slot proxy still serves.
@@ -1407,8 +1435,10 @@ def test_a_real_tls_client_is_told_why_its_tunnel_was_refused(proxy, upstream):
     # learns of this one from the alert, which the worker sends before it
     # records the denial, so reading the audit at once is a race.
     assert _wait_for(
-        lambda: proxy.audit.summary()["denied"].get("upstream.test", {}).get("reason")
-        == "SNI does not match the CONNECT host"
+        lambda: (
+            proxy.audit.summary()["denied"].get("upstream.test", {}).get("reason")
+            == "SNI does not match the CONNECT host"
+        )
     ), proxy.audit.summary()
 
 

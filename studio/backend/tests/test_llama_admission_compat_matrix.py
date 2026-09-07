@@ -224,10 +224,12 @@ class TestOldCallers:
         parameter = signature.parameters["on_conversation_grew"]
         assert parameter.default is None, "the hook must be optional for existing callers"
 
-    def test_the_hook_was_appended_rather_than_inserted(self):
-        """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
-        inserting one silently rebinds the arguments after it for positional callers, with
-        no exception to report it."""
+    def test_the_hook_still_follows_the_prior_last_parameter(self):
+        """Later options may be appended, but the hook cannot move into the old prefix.
+
+        There is no bare ``*`` in this signature, so inserting the hook before the former
+        tail silently rebinds positional callers with no exception to report it.
+        """
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -235,9 +237,12 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        assert (
-            names[-1] == "on_conversation_grew"
-        ), f"the hook must be last; signature ends {names[-3:]}"
+        hook = names.index("on_conversation_grew")
+        assert names[hook - 1] == "limited_grant", (
+            "the hook must remain immediately after the positional prefix it extended; "
+            f"signature around hook is {names[max(0, hook - 2) : hook + 2]}"
+        )
+        assert names.index("network_policy") > hook, "network policy must stay appended"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         assert DEFAULT_RECOST_WAIT_TIMEOUT_S > 0

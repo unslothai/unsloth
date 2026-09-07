@@ -118,7 +118,9 @@ def build(
 
         activation_output = output / "activation"
         build_activation(detours_source, activation_output, vs_root, sdk_root)
-        activation_evidence = json.loads((activation_output / "build.json").read_text())
+        activation_evidence = json.loads(
+            (activation_output / "build.json").read_text(encoding = "utf-8")
+        )
         detours_objects = [
             activation_output / (name + ".obj")
             for name in (

@@ -12,6 +12,7 @@ import functools
 import hashlib
 import json
 import http.client
+import ntpath
 import os
 import secrets
 import signal
@@ -7405,7 +7406,7 @@ def _get_shell_cmd(
 
         if getattr(_platform_backend(), "requires_fresh_qualification", False):
             selected = selected_windows_terminal()
-            if os.path.basename(selected).lower() == "bash.exe":
+            if ntpath.basename(selected).lower() == "bash.exe":
                 return (
                     [selected, "--noprofile", "--norc", "-c", command]
                     if os_isolated

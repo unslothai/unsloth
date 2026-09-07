@@ -311,7 +311,7 @@ def create_suspended_host(
         result, target = target, None
         return result
     finally:
-        original = sys.exception()
+        original = sys.exc_info()[1]
         retained = []
         for process in (target, donor):
             if process is not None:

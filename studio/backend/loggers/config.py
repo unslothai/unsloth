@@ -251,6 +251,29 @@ def with_readable_traceback(renderer):
     return _render
 
 
+def safe_for_stream(renderer, stream):
+    """Make a renderer's final text writable to its configured output stream.
+
+    The encoding boundary belongs after rendering: development's Rich traceback
+    formatter adds its own Unicode guide characters, while exception messages and
+    paths can add characters independently of the renderer.  Round-tripping with
+    ``backslashreplace`` preserves all text a UTF-8 sink accepts and losslessly spells
+    unsupported code points on narrower Windows consoles instead of losing the log.
+    """
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+
+    def _render(logger, method_name, event_dict):
+        rendered = renderer(logger, method_name, event_dict)
+        if not isinstance(rendered, str):
+            return rendered
+        try:
+            return rendered.encode(encoding, "backslashreplace").decode(encoding)
+        except LookupError:
+            return rendered.encode("utf-8", "backslashreplace").decode("utf-8")
+
+    return _render
+
+
 # Set alongside HF_HUB_DISABLE_PROGRESS_BARS when the value is Unsloth's default rather than the
 # operator's, so allow_progress_bars() can tell them apart.
 _PROGRESS_BARS_DEFAULTED = "UNSLOTH_STUDIO_PROGRESS_BARS_DEFAULTED"
@@ -532,11 +555,14 @@ class LogConfig:
                         if k not in ["timestamp", "level", "event", "extra"]
                     },
                 },
-                (
-                    # Preserve order; the wrapper adds the human-readable traceback copy.
-                    with_readable_traceback(structlog.processors.JSONRenderer(sort_keys = False))
-                    if env == "production"
-                    else structlog.dev.ConsoleRenderer()
+                safe_for_stream(
+                    (
+                        # Preserve order; the wrapper adds the human-readable traceback copy.
+                        with_readable_traceback(structlog.processors.JSONRenderer(sort_keys = False))
+                        if env == "production"
+                        else structlog.dev.ConsoleRenderer()
+                    ),
+                    sys.stdout,
                 ),
             ],
             wrapper_class = structlog.make_filtering_bound_logger(log_level),

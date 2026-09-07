@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import locale
 import os
 import re
 import shlex
@@ -51,15 +52,47 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     # and every venv and rollback case in this file reads its stdout, so an interpreter that
     # died at startup would surface as install.ps1 losing half a moved environment.
     # See tests/_shared/unsloth_pwsh_runner.py.
+    utf8_script = (
+        "$__UnslothTestUtf8 = [System.Text.UTF8Encoding]::new($false)\n"
+        "[Console]::OutputEncoding = $__UnslothTestUtf8\n"
+        "$OutputEncoding = $__UnslothTestUtf8\n" + script
+    )
     result = run_pwsh(
-        [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+        [shell, "-NoProfile", "-NonInteractive", "-Command", utf8_script],
         check = True,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
         env = env,
         timeout = 30,
     )
     return result.stdout.strip()
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_powershell_helper_preserves_multilingual_output_under_a_non_utf8_locale(
+    shell: str, monkeypatch: pytest.MonkeyPatch
+):
+    marker = "käffee 日本語 العربية 🚀"
+    producer = (
+        "$utf8 = [System.Text.UTF8Encoding]::new($false)\n"
+        "[Console]::OutputEncoding = $utf8\n"
+        f"Write-Output '{marker}'"
+    )
+    monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+
+    control = run_pwsh(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", producer],
+        check = True,
+        capture_output = True,
+        text = True,
+        errors = "replace",
+        env = os.environ.copy(),
+        timeout = 30,
+    )
+    assert control.stdout.strip() != marker, "the control must exercise cp1252 decoding"
+    assert _run_powershell(shell, f"Write-Output '{marker}'", os.environ.copy()) == marker
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")

@@ -435,6 +435,7 @@ def test_linux_bubblewrap_argv_exposes_only_selected_read_roots_and_workdir(monk
     group.write_text("studio:x:1:\n", encoding = "utf-8")
     runtime = tmp_path / "runtime"
     runtime.mkdir()
+    monkeypatch.setattr(os_sandbox, "_linux_environment", lambda: "native_linux")
     monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
     monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
     monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
@@ -548,6 +549,7 @@ def test_linux_nested_mount_beneath_exposed_root_is_masked(monkeypatch, tmp_path
     passwd.touch()
     group.touch()
     mount = os_sandbox._LinuxMount("2", "1", "0:2", "/", str(nested), "rw", "9p", "drvfs", "rw")
+    monkeypatch.setattr(os_sandbox, "_linux_environment", lambda: "native_linux")
     monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (str(runtime),))
     monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: (mount,))
     monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", lambda *args, **kwargs: None)
@@ -651,6 +653,7 @@ def test_runtime_paths_preserve_virtualenv_executable_spelling_and_configuration
     assert str(framework_image) in paths
     monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", (str(base_python.parent),))
     monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
+    monkeypatch.setattr(os_sandbox, "_linux_environment", lambda: "native_linux")
     monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
     workdir = tmp_path / "work"
     workdir.mkdir()
@@ -672,6 +675,7 @@ def test_linux_runtime_beneath_tmp_is_mounted_after_private_tmpfs(monkeypatch, t
     monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", lambda *args, **kwargs: None)
     monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
     monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
+    monkeypatch.setattr(os_sandbox, "_linux_environment", lambda: "native_linux")
     monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
     identity = tmp_path / "identity"
     identity.mkdir()
@@ -1530,6 +1534,7 @@ def _fake_prepare_environment(
     if identity_only:
         return
     monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: ())
+    monkeypatch.setattr(os_sandbox, "_linux_environment", lambda: "native_linux")
     monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
     monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", lambda *args, **kwargs: None)
     monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
@@ -1878,6 +1883,53 @@ def test_apparmor_userns_restriction_gets_profile_remediation(
     assert os_sandbox._explain_linux_probe_failure(other) == other
     passed = os_sandbox.SandboxCapability("linux-bubblewrap", True, "restrictive live probe passed")
     assert os_sandbox._explain_linux_probe_failure(passed) == passed
+
+
+def test_namespace_preflight_never_mounts_or_runs_a_payload(monkeypatch):
+    def run(command, **kwargs):
+        assert command == [
+            "/usr/bin/bwrap",
+            "--unshare-all",
+            "--die-with-parent",
+            "--",
+            "/__unsloth_namespace_probe_no_payload__",
+        ]
+        assert kwargs["close_fds"] is True
+        assert kwargs["env"] == {"LANG": "C", "LC_ALL": "C"}
+        return SimpleNamespace(
+            returncode = 1,
+            stderr = "bwrap: execvp /__unsloth_namespace_probe_no_payload__: No such file or directory\n",
+        )
+
+    monkeypatch.setattr(os_sandbox.subprocess, "run", run)
+    assert os_sandbox._linux_namespace_preflight("/usr/bin/bwrap") is None
+
+
+@pytest.mark.parametrize("exit_code,message", [(1, "Operation not permitted"), (0, "")])
+def test_namespace_preflight_failure_never_qualifies(monkeypatch, exit_code, message):
+    monkeypatch.setattr(
+        os_sandbox.subprocess,
+        "run",
+        lambda *_a, **_kw: SimpleNamespace(returncode = exit_code, stderr = message),
+    )
+    result = os_sandbox._linux_namespace_preflight("/usr/bin/bwrap")
+    assert not result.available and not result.qualified
+
+
+def test_apparmor_preflight_refuses_before_runtime_scan(monkeypatch):
+    monkeypatch.setattr(os_sandbox.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(os_sandbox.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(os_sandbox, "_trusted_linux_executable", lambda _path: True)
+    monkeypatch.setattr(os_sandbox, "_read_text", lambda _path: "1")
+    refusal = os_sandbox.SandboxCapability("linux-bubblewrap", False, "namespace refused")
+    monkeypatch.setattr(os_sandbox, "_linux_namespace_preflight", lambda _path: refusal)
+    monkeypatch.setattr(os_sandbox, "_explain_linux_probe_failure", lambda result, _path: result)
+    monkeypatch.setattr(
+        os_sandbox,
+        "_validate_runtime_paths",
+        lambda *_a, **_kw: pytest.fail("refused namespaces must precede runtime scanning"),
+    )
+    assert os_sandbox.LinuxBubblewrapBackend().probe() == refusal
 
 
 def test_runtime_read_paths_include_every_symlink_hop(monkeypatch, tmp_path):
@@ -2818,6 +2870,7 @@ def _bridge_argv_test_setup(monkeypatch, tmp_path):
     (identity / "group").write_text("studio:x:1:\n", encoding = "utf-8")
     runtime = tmp_path / "runtime"
     runtime.mkdir()
+    monkeypatch.setattr(os_sandbox, "_linux_environment", lambda: "native_linux")
     monkeypatch.setattr(os_sandbox, "_linux_mounts", lambda: ())
     monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
     monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())

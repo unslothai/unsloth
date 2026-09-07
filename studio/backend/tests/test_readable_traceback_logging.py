@@ -15,6 +15,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -75,10 +77,52 @@ def test_blank_and_non_string_exceptions_are_not_echoed():
 def test_console_renderer_is_left_alone(monkeypatch):
     # Development already prints tracebacks as tracebacks; wrapping it would double them.
     import inspect
+    import re
 
     source = inspect.getsource(log_config.LogConfig.setup_logging)
-    assert "with_readable_traceback(structlog.processors.JSONRenderer" in source
-    assert "with_readable_traceback(structlog.dev.ConsoleRenderer" not in source
+    compact = re.sub(r"\s+", "", source)
+    assert "with_readable_traceback(structlog.processors.JSONRenderer(sort_keys=False))" in compact
+    assert "with_readable_traceback(structlog.dev.ConsoleRenderer" not in compact
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "ascii"])
+def test_development_traceback_writes_to_a_strict_narrow_charmap(monkeypatch, encoding):
+    """Renderer glyphs and exception text must both fit a redirected console."""
+    import structlog
+
+    class _StrictCharmapStream:
+        def __init__(self):
+            self.encoding = encoding
+            self.buffer = bytearray()
+
+        def write(self, text):
+            encoded = text.encode(self.encoding)
+            self.buffer.extend(encoded)
+            return len(text)
+
+        def flush(self):
+            pass
+
+        def isatty(self):
+            return False
+
+    stream = _StrictCharmapStream()
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "stderr", stream)
+    previous_config = structlog.get_config()
+    try:
+        logger = log_config.LogConfig.setup_logging(env = "development", quiet_progress_bars = False)
+        try:
+            raise ValueError("the original failure: \u4e2d\u6587 caf\u00e9 \u2014")
+        except ValueError:
+            logger.warning("request failed", exc_info = True)
+    finally:
+        structlog.configure(**previous_config)
+
+    rendered = stream.buffer.decode(encoding)
+    assert "Traceback (most recent call last)" in rendered
+    assert "ValueError: the original failure" in rendered
+    assert "\\u4e2d\\u6587" in rendered
 
 
 def test_echoed_copy_is_the_redacted_truncated_one():

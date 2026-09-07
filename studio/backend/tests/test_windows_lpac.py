@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Source contract and mandatory Windows-live tests for the LPAC backend."""
+"""Legacy LPAC diagnostics and current Windows Required capability/refusal tests."""
 
 from __future__ import annotations
 
@@ -2922,8 +2922,12 @@ def test_prepare_records_access_denied_on_machine_wide_paths_instead_of_failing(
         monkeypatch.setattr(
             windows_lpac,
             "_grant_traverse",
-            lambda path, value, **_k: events.append(("traverse", path))
-            or ((_ for _ in ()).throw(OSError(5, "denied")) if "Program Files" in path else None),
+            lambda path, value, **_k: (
+                events.append(("traverse", path))
+                or (
+                    (_ for _ in ()).throw(OSError(5, "denied")) if "Program Files" in path else None
+                )
+            ),
         )
         fakes.backend._profile = "appcontainer"
         prepared = fakes.backend.prepare(fakes.spec)
@@ -2978,6 +2982,26 @@ def test_prepare_releases_its_hold_when_the_workdir_grant_fails(monkeypatch, tmp
         assert not list((fakes.profile / "Temp").iterdir())
 
 
+@pytest.mark.parametrize("read,write", [(True, True), (True, False), (False, True), (False, False)])
+def test_null_device_disclosure_preserves_each_observed_access(read, write):
+    output = windows_lpac._PROBE_NULL_TOKEN + json.dumps({"read": read, "write": write})
+    assert windows_lpac._null_device_limitations(output) == (
+        f"null_device_read_{'allowed' if read else 'denied'}",
+        f"null_device_write_{'allowed' if write else 'denied'}",
+    )
+
+
+@pytest.mark.parametrize("report", ["", "{}", "[]", '{"read":1,"write":false}', '{"read":true}'])
+def test_null_device_disclosure_rejects_missing_or_incomplete_observations(report):
+    with pytest.raises((os_sandbox.SandboxUnavailableError, ValueError)):
+        windows_lpac._null_device_limitations(windows_lpac._PROBE_NULL_TOKEN + report)
+    with pytest.raises(os_sandbox.SandboxUnavailableError):
+        windows_lpac._null_device_limitations(windows_lpac._PROBE_TOKEN)
+    complete = windows_lpac._PROBE_NULL_TOKEN + '{"read":true,"write":true}'
+    with pytest.raises(os_sandbox.SandboxUnavailableError):
+        windows_lpac._null_device_limitations(complete + "\n" + complete)
+
+
 def test_probe_falls_back_to_appcontainer_when_lpac_cannot_start_python(monkeypatch):
     backend = windows_lpac.WindowsLpacBackend()
     calls: list[str] = []
@@ -2986,7 +3010,7 @@ def test_probe_falls_back_to_appcontainer_when_lpac_cannot_start_python(monkeypa
         calls.append(profile)
         if profile == "lpac":
             return (-1073741790, "the LPAC live probe failed (-1073741790): STATUS_ACCESS_DENIED")
-        backend._last_probe_limitations = ()
+        backend._last_probe_limitations = ("null_device_read_allowed", "null_device_write_allowed")
         return None
 
     monkeypatch.setattr(windows_lpac, "_is_windows", lambda: True)
@@ -3002,8 +3026,10 @@ def test_probe_falls_back_to_appcontainer_when_lpac_cannot_start_python(monkeypa
     assert capability.profile_id == "windows-appcontainer-preview-v1"
     assert capability.limitations == (
         "all_application_packages_ambient_read",
-        "null_device_and_named_pipes_denied",
+        "named_pipes_denied",
         "concurrent_launches_share_the_container",
+        "null_device_read_allowed",
+        "null_device_write_allowed",
     )
     assert "AppContainer fallback passed" in capability.reason
     assert backend.active_profile == "appcontainer"
@@ -3049,14 +3075,20 @@ def test_probe_success_under_lpac_keeps_the_strong_profile(monkeypatch):
     monkeypatch.setattr(windows_lpac, "_is_windows", lambda: True)
     monkeypatch.setattr(windows_lpac, "_api", lambda: SimpleNamespace())
     monkeypatch.setattr(backend, "reconcile_stale_manifests", lambda: None)
-    backend._last_probe_limitations = ("ipv6_unavailable_on_host",)
+    backend._last_probe_limitations = (
+        "ipv6_unavailable_on_host",
+        "null_device_read_denied",
+        "null_device_write_denied",
+    )
     monkeypatch.setattr(backend, "_probe_profile", lambda profile: None)
     capability = backend.probe()
     assert capability.profile_id == "windows-lpac-preview-v1"
     assert capability.limitations == (
-        "null_device_and_named_pipes_denied",
+        "named_pipes_denied",
         "concurrent_launches_share_the_container",
         "ipv6_unavailable_on_host",
+        "null_device_read_denied",
+        "null_device_write_denied",
     )
     assert backend.active_profile == "lpac"
     assert backend.profile_id == "windows-lpac-preview-v1"
@@ -3150,30 +3182,96 @@ def test_limited_windows_job_requests_kill_on_close_and_is_terminated_after_drai
 def live_lpac_backend():
     if sys.platform != "win32":
         pytest.skip("native LPAC tests run only on Windows")
-    capability = os_sandbox.capability_snapshot(force = True)
-    assert capability.available is True, capability.reason
-    assert capability.qualified is True, capability.reason
-    assert capability.backend == "windows-lpac"
-    assert capability.protection_state == "preview"
+    # These assertions describe the legacy persistent-profile implementation.
+    # Its diagnostic result cannot qualify the current production backend.
+    backend = windows_lpac.WindowsLpacBackend()
+    capability = None
+    try:
+        capability = backend.probe()
+        assert capability.available is True, capability.reason
+        assert capability.qualified is True, capability.reason
+        assert capability.backend == "windows-lpac"
+        assert capability.protection_state == "preview"
+        assert capability.profile_id == backend.active_profile_id()
+        if backend.active_profile == "appcontainer":
+            assert capability.profile_id == windows_lpac._APPCONTAINER_PROFILE_ID
+            assert "AppContainer fallback passed" in capability.reason
+            assert windows_lpac._LIMITATION_AMBIENT_READ in capability.limitations
+        else:
+            assert capability.profile_id == windows_lpac.WindowsLpacBackend.profile_id
+            assert "zero-capability LPAC live enforcement probe passed" in capability.reason
+        print(f"legacy Windows container diagnostic profile: {backend.active_profile}")
+        yield backend
+    finally:
+        # Also retire grants if the probe/assertions fail before yielding.
+        released = backend.remove_persistent_grants()
+        moniker = windows_lpac._install_moniker()
+        if capability is not None and capability.available:
+            assert released == (moniker,), released
+        assert not Path(windows_lpac._persistent_manifest_path(moniker)).exists()
+
+
+@pytest.fixture
+def legacy_tool_backend(live_lpac_backend, monkeypatch):
+    # Only the legacy integration tests dispatch tools through this backend.
+    # Never populate the production cache with legacy qualification evidence.
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: live_lpac_backend)
+    monkeypatch.setattr(os_sandbox, "_capability_cache", {})
+    return live_lpac_backend
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "native Windows Required capability")
+@pytest.mark.parametrize("kind", ["python", "terminal"])
+def test_live_current_windows_required_obeys_real_qualification(kind, monkeypatch, tmp_path):
+    from core.inference.windows_sandbox.backend import WindowsBootstrapBackend
+
     backend = os_sandbox._platform_backend()
-    assert isinstance(backend, windows_lpac.WindowsLpacBackend)
-    assert capability.profile_id == backend.active_profile_id()
-    if backend.active_profile == "appcontainer":
-        assert capability.profile_id == windows_lpac._APPCONTAINER_PROFILE_ID
-        assert "AppContainer fallback passed" in capability.reason
-        assert windows_lpac._LIMITATION_AMBIENT_READ in capability.limitations
+    assert isinstance(backend, WindowsBootstrapBackend)
+    selected = sys.executable if kind == "python" else os_sandbox.selected_windows_terminal()
+    capability = os_sandbox.capability_snapshot(
+        force = True, execution_kind = kind, selected_executable = selected
+    )
+    assert capability.backend == backend.identity
+    assert capability.available is capability.qualified
+    assert capability.reason
+    workdir = tmp_path / "required-work"
+    workdir.mkdir()
+    marker = workdir / "payload-ran"
+    monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
+    spawns = []
+    real_spawn = inference_tools.spawn_prepared_launch
+
+    def traced_spawn(prepared, **kwargs):
+        spawns.append(prepared)
+        return real_spawn(prepared, **kwargs)
+
+    monkeypatch.setattr(inference_tools, "spawn_prepared_launch", traced_spawn)
+    records = []
+    call = inference_tools._python_exec if kind == "python" else inference_tools._bash_exec
+    payload = (
+        "open('payload-ran', 'w').write('ran'); print('required-ok')"
+        if kind == "python"
+        else "echo required-ok> payload-ran && echo required-ok"
+    )
+    result = call(
+        payload,
+        timeout = 20,
+        tool_execution_mode = "os_isolation_required",
+        launch_record_callback = records.append,
+    )
+    print(f"current Windows {kind}: available={capability.available}; {capability.reason}")
+    if not capability.available:
+        assert "OS_ISOLATION_UNAVAILABLE" in result, result
+        assert not marker.exists(), result
+        assert spawns == []
+        assert records == []
     else:
-        assert capability.profile_id == windows_lpac.WindowsLpacBackend.profile_id
-        assert "zero-capability LPAC live enforcement probe passed" in capability.reason
-    print(f"live Windows container profile: {backend.active_profile}")
-    yield backend
-    # The interpreter grant and the container profile are meant to outlive a
-    # launch, so a test run that does not release them leaves read+execute ACEs
-    # for this installation on the runner. This is also the production caller of
-    # the uninstall path.
-    released = backend.remove_persistent_grants()
-    assert released == (windows_lpac._install_moniker(),), released
-    assert not Path(windows_lpac._persistent_manifest_path(released[0])).exists()
+        assert result.strip() == "required-ok", result
+        assert marker.exists()
+        assert len(spawns) == len(records) == 1
+        assert records[0].effective_mode == "os_isolation_required"
+        assert records[0].os_isolation is True
+        assert records[0].profile_id == capability.profile_id
 
 
 def _run_native(
@@ -3550,25 +3648,20 @@ print('LPAC_HANDLES_OK')
             kernel32.CloseHandle(handle)
 
 
-def test_live_null_device_and_named_pipes_are_denied_and_disclosed(live_lpac_backend, tmp_path):
-    """The container cannot open NUL or create named pipes; the capability says so.
-
-    multiprocessing.Pipe() and therefore Queue(), Process() with the spawn
-    context, and torch (through dill, which opens os.devnull at import) cannot
-    work inside the sandbox. The limitation is advertised so the UI and the
-    model can route such work to Limited or Full mode instead of guessing.
-    """
+def test_live_null_access_is_measured_and_named_pipes_remain_denied(live_lpac_backend, tmp_path):
+    """NUL is a host/profile observation; named-pipe denial stays mandatory."""
     workdir = tmp_path / "work"
     workdir.mkdir()
     code = """
 import multiprocessing.connection as connection
 import os
 outcomes = {}
-try:
-    open(os.devnull, 'rb').close()
-    outcomes['devnull'] = 'opened'
-except PermissionError:
-    outcomes['devnull'] = 'denied'
+for access, mode in (('read', 'rb'), ('write', 'wb')):
+    try:
+        open(os.devnull, mode).close()
+        outcomes[access] = 'allowed'
+    except PermissionError:
+        outcomes[access] = 'denied'
 try:
     reader, writer = connection.Pipe(duplex=False)
     reader.close(); writer.close()
@@ -3578,15 +3671,20 @@ except PermissionError:
 print('LPAC_NULL_PIPES ' + repr(outcomes))
 """
     output, _elapsed = _run_native(live_lpac_backend, workdir, code)
-    assert "LPAC_NULL_PIPES {'devnull': 'denied', 'pipe': 'denied'}" in output, output
-    capability = os_sandbox.capability_snapshot()
-    assert windows_lpac._LIMITATION_NULL_DEVICE_PIPES in capability.limitations
+    outcomes = ast.literal_eval(output.strip().removeprefix("LPAC_NULL_PIPES "))
+    assert outcomes["pipe"] == "denied", output
+    capability = live_lpac_backend.probe()
+    assert capability.available, capability.reason
+    assert windows_lpac._LIMITATION_NAMED_PIPES in capability.limitations
+    for access in ("read", "write"):
+        assert f"null_device_{access}_{outcomes[access]}" in capability.limitations
+    assert "null_device_and_named_pipes_denied" not in capability.limitations
 
 
-def test_live_pytorch_import_failure_is_the_disclosed_null_device_limit(
+def test_live_legacy_pytorch_import_reports_only_known_container_denials(
     live_lpac_backend, tmp_path
 ):
-    """torch cannot import inside the container, and the failure is the advertised one."""
+    """Legacy import compatibility only; this does not qualify Required or tensor transfer."""
     if importlib.util.find_spec("torch") is None:
         pytest.skip("PyTorch is not installed")
     workdir = tmp_path / "work"
@@ -3597,22 +3695,33 @@ def test_live_pytorch_import_failure_is_the_disclosed_null_device_limit(
         if path
     ]
     code = (
-        f"import sys; sys.path[:0] = {site_dirs!r}\n"
+        # Match ordinary Python startup: third-party packages follow the stdlib.
+        # Prepending loads obsolete typing backports on otherwise healthy hosts.
+        f"import sys; sys.path.extend({site_dirs!r})\n"
         + """
 try:
     import torch
 except PermissionError as exc:
     print('LPAC_TORCH_DENIED ' + repr(exc.filename))
+except OSError as exc:
+    # _overlapped initializes Winsock during modern torch imports. This exact
+    # denial is also required by the live network probe; other failures escape.
+    assert exc.winerror == 10106, repr(exc)
+    print('LPAC_TORCH_WINSOCK_DENIED 10106')
 else:
     print('LPAC_TORCH_IMPORTED')
 """
     )
     output, _elapsed = _run_native(live_lpac_backend, workdir, code, timeout = 120)
-    assert "LPAC_TORCH_DENIED 'nul'" in output or "LPAC_TORCH_IMPORTED" in output, output
+    assert (
+        "LPAC_TORCH_DENIED 'nul'" in output
+        or "LPAC_TORCH_WINSOCK_DENIED 10106" in output
+        or "LPAC_TORCH_IMPORTED" in output
+    ), output
 
 
 def test_live_python_and_terminal_share_launcher_and_stream(
-    live_lpac_backend, monkeypatch, tmp_path
+    legacy_tool_backend, monkeypatch, tmp_path
 ):
     workdir = tmp_path / "work"
     workdir.mkdir()
@@ -3650,7 +3759,7 @@ def test_live_python_and_terminal_share_launcher_and_stream(
     assert all(record.os_isolation and record.backend == "windows-lpac" for record in records)
 
 
-def test_live_production_timeout_and_cancellation(live_lpac_backend, monkeypatch, tmp_path):
+def test_live_legacy_tool_timeout_and_cancellation(legacy_tool_backend, monkeypatch, tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     monkeypatch.setattr(inference_tools, "_get_workdir", lambda _session: str(workdir))
