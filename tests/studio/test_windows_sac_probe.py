@@ -22,7 +22,9 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "windows-llama-signature-audit.
 
 
 def _load_scenario():
-    spec = importlib.util.spec_from_file_location("studio_scenario", PROBE_DIR / "studio_scenario.py")
+    spec = importlib.util.spec_from_file_location(
+        "studio_scenario", PROBE_DIR / "studio_scenario.py"
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -57,7 +59,9 @@ def test_the_status_poller_does_not_shadow_thread_stop(monkeypatch):
     assert poller.in_flight_ms() is None
 
 
-def test_a_never_opened_studio_is_not_rotated_to_a_published_password(tmp_path, monkeypatch, capsys):
+def test_a_never_opened_studio_is_not_rotated_to_a_published_password(
+    tmp_path, monkeypatch, capsys
+):
     """The rotation is permanent and revert does not undo it; a default here
     left every probed machine on a known credential, and printing the value
     put it into the evidence zip."""
@@ -66,7 +70,14 @@ def test_a_never_opened_studio_is_not_rotated_to_a_published_password(tmp_path, 
     (tmp_path / "auth" / ".bootstrap_password").write_text("boot-secret", encoding = "utf-8")
     posted: list[tuple[str, dict]] = []
 
-    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+    def fake(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         posted.append((path, payload or {}))
         return 200, {"access_token": "tok"}
 
@@ -92,7 +103,14 @@ def test_the_scenario_loads_with_the_variant_field_and_unloads_by_model_path(tmp
     s = _load_scenario()
     calls: list[tuple[str, str, dict]] = []
 
-    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+    def fake(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         calls.append((method, path, payload or {}))
         if path == "/api/liveness":
             return 200, {}
@@ -169,9 +187,14 @@ def test_the_powershell_probe_restores_what_prepare_changed_and_unmounts_efi():
     # A pre-existing policy with the same GUID is saved and restored, not deleted.
     assert "AuditPolicyPreexisting" in ps1 and "preexisting-policy.cip" in ps1
     # The CodeIntegrity log settings are recorded and restored.
-    assert "CiLogMaxSize" in ps1 and "CiLogEnabled" in ps1 and "/ms:$($baseline.CiLogMaxSize)" in ps1
+    assert (
+        "CiLogMaxSize" in ps1 and "CiLogEnabled" in ps1 and "/ms:$($baseline.CiLogMaxSize)" in ps1
+    )
     # Zero events serialise as `[]`, not as an empty file.
-    assert "ConvertTo-Json -InputObject $shaped" in ps1 and "ConvertTo-Json -InputObject @($inventory)" in ps1
+    assert (
+        "ConvertTo-Json -InputObject $shaped" in ps1
+        and "ConvertTo-Json -InputObject @($inventory)" in ps1
+    )
     # The runtime and the logs follow Studio's own overrides.
     assert "UNSLOTH_LLAMA_CPP_PATH" in ps1 and "UNSLOTH_STUDIO_HOME" in ps1
     assert "Join-Path $env:USERPROFILE '.unsloth\\studio\\logs'" not in ps1

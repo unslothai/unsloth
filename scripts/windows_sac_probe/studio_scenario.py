@@ -378,7 +378,9 @@ def main() -> int:
                 "ok": status == 200,
                 "error": None if status == 200 else str(body)[:400],
             }
-            print("  unloaded" if status == 200 else f"  unload FAILED ({status}): {str(body)[:200]}")
+            print(
+                "  unloaded" if status == 200 else f"  unload FAILED ({status}): {str(body)[:200]}"
+            )
     finally:
         poller.stop()
         # A poll stalled for the 75 to 80 seconds this exists to catch is still
@@ -395,8 +397,10 @@ def main() -> int:
         "median_ms": round(statistics.median(durations), 1) if durations else None,
         # The watchdog kills the backend after roughly 75s of unanswered health
         # checks, so anything at or past that is the reported failure mode.
-        "over_10s": sum(1 for d in durations if d > 10_000) + (1 if in_flight and in_flight > 10_000 else 0),
-        "over_75s": sum(1 for d in durations if d > 75_000) + (1 if in_flight and in_flight > 75_000 else 0),
+        "over_10s": sum(1 for d in durations if d > 10_000)
+        + (1 if in_flight and in_flight > 10_000 else 0),
+        "over_75s": sum(1 for d in durations if d > 75_000)
+        + (1 if in_flight and in_flight > 75_000 else 0),
     }
     results["slowest_calls"] = TIMED.slowest(15)
     results["all_calls"] = TIMED.calls
