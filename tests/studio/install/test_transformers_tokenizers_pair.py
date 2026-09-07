@@ -39,6 +39,7 @@ import pytest
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
+from packaging.version import Version
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 REQ_ROOT = REPO_ROOT / "studio" / "backend" / "requirements"
@@ -194,7 +195,11 @@ def test_the_darwin_override_admits_only_the_pinned_transformers():
             f"the override ({req.specifier}) excludes the version constraints.txt pins "
             f"({version})"
         )
-        excess = [candidate for candidate in ("5.16.1", "5.15.1") if candidate in req.specifier]
+        excess = [
+            candidate
+            for candidate in ("5.16.1", "5.15.1")
+            if Version(candidate) > Version(version) and candidate in req.specifier
+        ]
         assert not excess, (
             f"the override admits transformers {excess}, above the pinned {version}. On "
             f"macOS arm64 that is what install.sh's core phase installs, and a later "
