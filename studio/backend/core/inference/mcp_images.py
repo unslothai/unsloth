@@ -932,9 +932,7 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
         returned_totals.clear()
         if into is None:
             before = {id(part) for part in _all_image_url_parts(out)}
-            append_image_turn(
-                out, results, per_result = True, limit = None, returned = returned
-            )
+            append_image_turn(out, results, per_result = True, limit = None, returned = returned)
             promoted.extend(part for part in _all_image_url_parts(out) if id(part) not in before)
             return None
         parts = content_parts_per_result(results)
