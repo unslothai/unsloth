@@ -197,6 +197,51 @@ class TestExternalProviderMessages:
         assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
         assert out[1] == {"role": "user", "content": "hi"}
 
+    @staticmethod
+    def _prepend_ollama(messages):
+        import routes.inference as inference
+        return inference._prepend_current_date_to_messages(messages, user_turn_fallback = True)
+
+    def test_ollama_fallback_dates_the_first_user_turn_when_no_system(self):
+        # #10436: a request-level system message would replace the Modelfile SYSTEM.
+        out = self._prepend_ollama([{"role": "user", "content": "hi"}])
+        assert out == [{"role": "user", "content": "The current date is 2026-08-15.\n\nhi"}]
+
+    def test_ollama_fallback_prefers_an_existing_system_turn(self):
+        out = self._prepend_ollama(
+            [{"role": "system", "content": "Be terse."}, {"role": "user", "content": "hi"}]
+        )
+        assert out[0]["content"] == "The current date is 2026-08-15.\n\nBe terse."
+        assert out[1] == {"role": "user", "content": "hi"}
+
+    def test_ollama_fallback_refreshes_a_stale_user_turn_date_instead_of_stacking(self):
+        out = self._prepend_ollama(
+            [{"role": "user", "content": "The current date is 2026-08-14.\n\nhi"}]
+        )
+        assert out == [{"role": "user", "content": "The current date is 2026-08-15.\n\nhi"}]
+
+    def test_ollama_fallback_leaves_a_fresh_user_turn_date_alone(self):
+        messages = [{"role": "user", "content": "The current date is 2026-08-15.\n\nhi"}]
+        assert self._prepend_ollama(messages) is messages
+
+    def test_ollama_fallback_prepends_structured_user_content(self):
+        out = self._prepend_ollama(
+            [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        )
+        assert out[0]["content"] == [
+            {"type": "text", "text": "The current date is 2026-08-15."},
+            {"type": "text", "text": "hi"},
+        ]
+
+    def test_ollama_fallback_empty_user_content_becomes_the_date(self):
+        out = self._prepend_ollama([{"role": "user", "content": ""}])
+        assert out == [{"role": "user", "content": "The current date is 2026-08-15."}]
+
+    def test_ollama_fallback_without_a_user_turn_still_creates_system(self):
+        out = self._prepend_ollama([{"role": "assistant", "content": "hello"}])
+        assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
+        assert out[1] == {"role": "assistant", "content": "hello"}
+
     def test_date_prefixes_text_inside_structured_content(self):
         messages = [{"role": "system", "content": [{"type": "text", "text": "Be terse."}]}]
         out = self._prepend(messages)

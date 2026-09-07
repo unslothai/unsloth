@@ -5089,11 +5089,17 @@ def _prepend_current_date_to_messages(
     request: Any = None,
     *,
     include_api_key: bool = False,
+    user_turn_fallback: bool = False,
 ) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
     The local path prefixes ``system_prompt`` before the messages exist; an external payload is
     assembled first, so the date goes onto its leading system turn instead.
+
+    ``user_turn_fallback`` is for providers whose request-level system message REPLACES the
+    system baked into the model (Ollama's Modelfile SYSTEM, #10436): with no system turn of the
+    caller's, inventing one to carry the date would wipe that baked-in prompt, so the date goes
+    onto the first user turn instead.
     """
     if request is not None and not _wants_current_date(request):
         if not include_api_key or _request_is_internal_workflow(request):
@@ -5112,6 +5118,22 @@ def _prepend_current_date_to_messages(
         if changed:
             msg["content"] = content
             refreshed = True
+    # A date stamped into the first user turn by an earlier request of this same kind must be
+    # refreshed, not stacked: the system-turn scan above does not see it.
+    fallback_msg = None
+    if user_turn_fallback:
+        for msg in copied:
+            if msg.get("role") == "user":
+                fallback_msg = msg
+                break
+        if fallback_msg is not None:
+            content, content_stated, changed = _refresh_stated_date(
+                fallback_msg.get("content"), date_line
+            )
+            stated = stated or content_stated
+            if changed:
+                fallback_msg["content"] = content
+                refreshed = True
     if stated:
         if not refreshed:
             return messages
@@ -5133,6 +5155,19 @@ def _prepend_current_date_to_messages(
                 return copied
             msg["content"] = [{"type": "text", "text": date_line}, *copied_parts]
             return copied
+    if user_turn_fallback and fallback_msg is not None:
+        content = fallback_msg.get("content", "")
+        if isinstance(content, str):
+            fallback_msg["content"] = (
+                date_line if not content else date_line + "\n\n" + content.lstrip()
+            )
+            return copied
+        if isinstance(content, list):
+            parts = [dict(part) if isinstance(part, dict) else part for part in content]
+            fallback_msg["content"] = [{"type": "text", "text": date_line}, *parts]
+            return copied
+        fallback_msg["content"] = date_line
+        return copied
     return [{"role": "system", "content": date_line}, *copied]
 
 
@@ -20302,10 +20337,13 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
+    # Ollama answers a request-level system message as a full replacement of the Modelfile
+    # SYSTEM, so with no system prompt of the user's the date must not invent one (#10436).
     chat_messages = _prepend_current_date_to_messages(
         chat_messages,
         request,
         include_api_key = run_studio_tool_loop,
+        user_turn_fallback = provider_type == "ollama",
     )
     if run_studio_tool_loop and payload.bypass_permissions:
         # Full access disables the sandbox at execution time, so the schemas must
