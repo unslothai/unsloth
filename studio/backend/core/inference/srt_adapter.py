@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import select
+import site
 import shutil
 import subprocess
 import stat
@@ -52,24 +53,54 @@ def validate_roots(roots: list[str], workdir: str) -> list[str]:
             denied_mounts.append(mount)
     count = 0
     deadline = time.monotonic() + 30
+
+    def check_bound(path):
+        nonlocal count
+        count += 1
+        if count > 500_000:
+            raise SrtError(f"Runtime filesystem scan exceeded 500000 entries at: {path}")
+        if time.monotonic() > deadline:
+            raise SrtError(
+                f"Runtime filesystem scan exceeded 30 seconds after {count} entries at: {path}"
+            )
+
+    def masked(path):
+        return any(path == mount or path.startswith(mount + os.sep) for mount in denied_mounts)
+
+    def in_workdir(path):
+        return path == workdir or path.startswith(workdir + os.sep)
+
     pending = list(scan_roots)
     while pending:
         path = pending.pop()
-        if any(path == mount or path.startswith(mount + os.sep) for mount in denied_mounts):
+        if masked(path):
             continue
-        count += 1
-        if count > 500_000 or time.monotonic() > deadline:
-            raise SrtError("Runtime filesystem scan exceeded its safety bound")
+        check_bound(path)
         try:
             info = os.lstat(path)
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
                 with os.scandir(path) as entries:
-                    pending.extend(entry.path for entry in entries)
+                    for entry in entries:
+                        if masked(entry.path):
+                            continue
+                        check_bound(entry.path)
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks = False):
+                            pending.append(entry.path)
+                        elif not entry.is_file(follow_symlinks = False):
+                            raise SrtError(
+                                f"Runtime or workdir contains a host IPC/device entry: {entry.path}"
+                            )
+                        elif in_workdir(entry.path) and os.lstat(entry.path).st_nlink > 1:
+                            raise SrtError(
+                                "Workdir contains a hardlinked file with unrelated host authority"
+                            )
             elif not stat.S_ISREG(info.st_mode):
                 raise SrtError(f"Runtime or workdir contains a host IPC/device entry: {path}")
-            elif info.st_nlink > 1 and (path == workdir or path.startswith(workdir + os.sep)):
+            elif info.st_nlink > 1 and in_workdir(path):
                 raise SrtError("Workdir contains a hardlinked file with unrelated host authority")
         except OSError as exc:
             raise SrtError(f"Cannot validate runtime entry: {path}") from exc
@@ -116,7 +147,6 @@ def read_roots(executable: str) -> list[str]:
     roots = {
         "/usr/bin",
         "/usr/sbin",
-        "/usr/lib",
         "/usr/lib64",
         "/usr/libexec",
         "/usr/share/zoneinfo",
@@ -124,10 +154,8 @@ def read_roots(executable: str) -> list[str]:
         "/usr/share/fontconfig",
         "/usr/share/locale",
         "/usr/local/bin",
-        "/usr/local/lib",
         "/bin",
         "/sbin",
-        "/lib",
         "/lib64",
         "/etc/ld.so.cache",
         "/etc/alternatives",
@@ -136,7 +164,22 @@ def read_roots(executable: str) -> list[str]:
         str(Path(__file__).with_name("sandbox_site")),
         os.path.dirname(os.path.realpath(executable)),
         *(value for key, value in sysconfig.get_paths().items() if key != "data"),
+        *site.getsitepackages(),
     }
+    multiarch = sysconfig.get_config_var("MULTIARCH")
+    if multiarch:
+        roots.update((f"/lib/{multiarch}", f"/usr/lib/{multiarch}"))
+    # Restore the loader/library closure without admitting unrelated SDK and
+    # interpreter trees installed beside the selected runtime on build hosts.
+    for directory in ("/lib", "/usr/lib", "/usr/local/lib"):
+        if not os.path.isdir(directory):
+            continue
+        with os.scandir(directory) as entries:
+            roots.update(
+                entry.path
+                for entry in entries
+                if (entry.name.endswith(".so") or ".so." in entry.name) and entry.is_file()
+            )
     roots.update(
         prefix for prefix in (sys.prefix, sys.base_prefix) if prefix not in ("/usr", "/usr/local")
     )

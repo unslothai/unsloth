@@ -92,6 +92,7 @@ def test_extra_trust_alias_mounts_only_canonical_target(tmp_path, monkeypatch):
 
 
 def test_sysconfig_data_does_not_admit_entire_system_prefix(monkeypatch):
+    monkeypatch.setattr(srt_adapter.sysconfig, "get_config_var", lambda name: "x86_64-linux-gnu")
     monkeypatch.setattr(
         srt_adapter.sysconfig, "get_paths", lambda: {"data": "/", "stdlib": "/usr/lib/python"}
     )
@@ -101,6 +102,33 @@ def test_sysconfig_data_does_not_admit_entire_system_prefix(monkeypatch):
     monkeypatch.setattr(srt_adapter.os.path, "realpath", lambda path: path)
     assert "/" not in srt_adapter.read_roots("/usr/bin/python")
     assert "/usr" not in srt_adapter.read_roots("/usr/bin/python")
+
+
+def test_read_roots_exclude_unselected_sdk_and_interpreter_trees(monkeypatch):
+    monkeypatch.setattr(
+        srt_adapter.sysconfig,
+        "get_paths",
+        lambda: {"stdlib": "/usr/lib/python3.12", "purelib": "/selected/env/lib/site-packages"},
+    )
+    monkeypatch.setattr(srt_adapter.sysconfig, "get_config_var", lambda name: "x86_64-linux-gnu")
+    monkeypatch.setattr(
+        srt_adapter.site, "getsitepackages", lambda: ["/usr/lib/python3/dist-packages"]
+    )
+    monkeypatch.setattr(srt_adapter.sys, "prefix", "/selected/env")
+    monkeypatch.setattr(srt_adapter.sys, "base_prefix", "/usr")
+    monkeypatch.setattr(srt_adapter.os.path, "exists", lambda path: True)
+    monkeypatch.setattr(srt_adapter.os.path, "isdir", lambda path: False)
+    monkeypatch.setattr(srt_adapter.os.path, "realpath", lambda path: path)
+    monkeypatch.setattr(srt_adapter.os.path, "abspath", lambda path: path)
+    roots = srt_adapter.read_roots("/usr/bin/python3.12")
+    assert not {"/usr/lib", "/lib", "/usr/local/lib"}.intersection(roots)
+    assert {
+        "/lib/x86_64-linux-gnu",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib/python3.12",
+        "/usr/lib/python3/dist-packages",
+        "/selected/env",
+    }.issubset(roots)
 
 
 @pytest.mark.parametrize(
