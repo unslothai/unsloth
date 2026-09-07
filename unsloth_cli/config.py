@@ -176,6 +176,9 @@ def _config_error_message(path: Path, error: ValidationError) -> str:
         loc = tuple(err.get("loc") or ())
         if err.get("type") == "extra_forbidden" and loc:
             lines.append(f"  - {_describe_unknown_key(loc)}")
+        elif not loc:
+            got = type(err.get("input")).__name__
+            lines.append(f"  - the top level must be a mapping of keys and sections, not a {got}")
         else:
             field = ".".join(str(part) for part in loc) or "config"
             lines.append(f"  - {field}: {err.get('msg', 'invalid value')}")
@@ -193,12 +196,21 @@ def load_config(path: Optional[Path]) -> Config:
 
     text = path.read_text(encoding = "utf-8")
     if path.suffix.lower() in {".yaml", ".yml"}:
-        data = yaml.safe_load(text) or {}
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as error:
+            raise ConfigError(f"Could not parse config file: {path}\n  - {error}") from None
     else:
         import json
-        data = json.loads(text or "{}")
+        try:
+            data = json.loads(text or "{}")
+        except json.JSONDecodeError as error:
+            raise ConfigError(f"Could not parse config file: {path}\n  - {error}") from None
+
+    if data is None:
+        data = {}
 
     try:
-        return Config(**data)
+        return Config.model_validate(data)
     except ValidationError as error:
         raise ConfigError(_config_error_message(path, error)) from None

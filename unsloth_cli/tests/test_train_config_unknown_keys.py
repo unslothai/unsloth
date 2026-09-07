@@ -118,3 +118,52 @@ def test_train_exits_2_instead_of_tracebacking_on_an_unknown_key(tmp_path):
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "learning_rate" in result.output
     assert "training:" in result.output
+
+
+def test_unparseable_yaml_reports_cleanly_instead_of_tracebacking(tmp_path):
+    path = _write(tmp_path, "training:\n  num_epochs: 3\n   learning_rate: 1\n")
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+
+    assert "Could not parse config file" in str(excinfo.value)
+
+
+def test_unparseable_json_reports_cleanly_instead_of_tracebacking(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text("{oops}", encoding = "utf-8")
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+
+    assert "Could not parse config file" in str(excinfo.value)
+
+
+def test_a_top_level_list_reports_cleanly_instead_of_tracebacking(tmp_path):
+    path = _write(tmp_path, "- model: unsloth/Qwen2.5-0.5B\n- model: unsloth/Qwen2.5-1.5B\n")
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+
+    message = str(excinfo.value)
+    assert "must be a mapping" in message
+    assert "list" in message
+
+
+def test_an_empty_config_still_loads_defaults(tmp_path):
+    assert load_config(_write(tmp_path, "")).training.num_epochs == 3
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "training:\n  num_epochs: 3\n   learning_rate: 1\n",
+        "- model: unsloth/Qwen2.5-0.5B\n",
+    ],
+)
+def test_train_exits_2_on_an_unloadable_config(tmp_path, body):
+    result = CliRunner().invoke(_train_app(), ["--config", str(_write(tmp_path, body))])
+
+    assert result.exit_code == 2
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert result.output.startswith("Error: ")
