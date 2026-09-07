@@ -23,7 +23,8 @@ $subjectNames = @(
     "Test-StudioVenvRollbackMustBePreserved",
     "Remove-StaleStudioVenvRollbacks",
     "Restore-StudioVenvRollback",
-    "Complete-StudioVenvRollback"
+    "Complete-StudioVenvRollback",
+    "Restore-StudioUvCacheMarker"
 )
 
 $definitions = @{}

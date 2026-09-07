@@ -619,12 +619,67 @@ _resolve_studio_destinations() {
     _STUDIO_HOME_REDIRECT=default
 }
 
+# Records which cache this install used, so an update reuses it rather than guessing: the
+# launch below repoints the backend at the Studio cache even in shared mode, so one
+# on-demand install makes an empty Studio cache look full. Never fatal.
+_record_uv_cache_choice() {
+    _uv_marker_dir="$STUDIO_HOME/cache"
+    _uv_marker_file="$_uv_marker_dir/uv-cache-dir"
+    # Absolute: the update resolves this against ITS working directory, and the base is
+    # uv's, which --directory / UV_WORKING_DIR moves.
+    case "$UV_CACHE_DIR" in
+        /*) _uv_marker_value="$UV_CACHE_DIR" ;;
+        *)
+            # Which may itself be relative, against the installer's own directory.
+            _uv_marker_base="${UV_WORKING_DIR:-$PWD}"
+            case "$_uv_marker_base" in
+                /*) ;;
+                *) _uv_marker_base="$PWD/$_uv_marker_base" ;;
+            esac
+            _uv_marker_value="$_uv_marker_base/$UV_CACHE_DIR"
+            ;;
+    esac
+    # Remembered so a failed install can put it back.
+    if [ "$_UV_MARKER_SAVED" != true ]; then
+        if [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; then
+            # One we cannot read is one we cannot put back, so leave it alone.
+            _UV_MARKER_PREVIOUS=$(cat "$_uv_marker_file" 2>/dev/null) || return 0
+            _UV_MARKER_EXISTED=true
+        else
+            _UV_MARKER_PREVIOUS=""
+            _UV_MARKER_EXISTED=false
+        fi
+        _UV_MARKER_SAVED=true
+    fi
+    (
+        mkdir -p "$_uv_marker_dir" 2>/dev/null &&
+            # Unlinked first: a redirection follows a symlink and truncates its target.
+            rm -f "$_uv_marker_file" 2>/dev/null &&
+            # And only once gone: rm can fail on a link in an undeletable directory.
+            ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; } &&
+            printf '%s\n' "$_uv_marker_value" > "$_uv_marker_file" 2>/dev/null
+    ) || true
+}
+
+_restore_uv_cache_marker() {
+    [ "$_UV_MARKER_SAVED" = true ] || return 0
+    _uv_marker_file="$STUDIO_HOME/cache/uv-cache-dir"
+    rm -f "$_uv_marker_file" 2>/dev/null || true
+    if [ "$_UV_MARKER_EXISTED" = true ] \
+       && ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; }; then
+        printf '%s\n' "$_UV_MARKER_PREVIOUS" > "$_uv_marker_file" 2>/dev/null || true
+    fi
+    _UV_MARKER_SAVED=false
+}
+
 _configure_uv_cache() {
     _uv_studio_cache="$STUDIO_HOME/cache/uv"
     case "${UV_CACHE_DIR-}" in
         *[![:space:]]*)
             _UV_CACHE_MODE=custom
             export UV_CACHE_DIR
+            # Recorded like any other choice; a caller still outranks the marker.
+            _record_uv_cache_choice
             step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
             return 0
             ;;
@@ -634,6 +689,7 @@ _configure_uv_cache() {
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=isolated
         export UV_CACHE_DIR
+        _record_uv_cache_choice
         step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
         return 0
     fi
@@ -687,6 +743,7 @@ _configure_uv_cache() {
         _UV_CACHE_MODE=studio
     fi
     export UV_CACHE_DIR
+    _record_uv_cache_choice
 
     case "$_UV_CACHE_MODE" in
         shared)
@@ -718,6 +775,10 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
+# The marker travels with the environment. See _record_uv_cache_choice.
+_UV_MARKER_SAVED=false
+_UV_MARKER_EXISTED=false
+_UV_MARKER_PREVIOUS=""
 
 _start_studio_venv_replacement() {
     _existing_dir="$1"
@@ -850,6 +911,8 @@ _prune_stale_studio_venv_rollbacks() {
 }
 
 _commit_studio_venv_replacement() {
+    # Outside the branch: a first install rolls nothing back and still commits.
+    _UV_MARKER_SAVED=false
     if [ "$_VENV_ROLLBACK_ACTIVE" = true ]; then
         _rollback_to_remove="$_VENV_ROLLBACK_DIR"
         # The new environment is already committed. Clear the restore state
@@ -886,6 +949,8 @@ _on_install_exit() {
     _status=$?
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
+        # Separate from the venv restore: an install can fail before one is in flight.
+        _restore_uv_cache_marker
     fi
     _cleanup_install_temporaries
     exit "$_status"
@@ -898,6 +963,7 @@ _on_install_signal() {
     trap - EXIT
     trap '' HUP INT TERM
     _restore_studio_venv_replacement
+    _restore_uv_cache_marker
     _cleanup_install_temporaries
     exit "$_signal_status"
 }

@@ -15,6 +15,7 @@ fails outright when uv may read only what is cached.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -228,6 +229,9 @@ def test_the_chosen_cache_is_named_rather_than_left_to_the_child(monkeypatch, tm
     studio_cache, default_cache = caches
     for warm, expected in ((default_cache, default_cache), (studio_cache, studio_cache)):
         _fill(warm)
+        # The previous iteration's run backfills a marker, which would then decide this
+        # one. Each iteration states its own starting point.
+        (tmp_path / "StudioHome" / "cache" / "uv-cache-dir").unlink(missing_ok = True)
         seen = _run_posix(monkeypatch, tmp_path)
         assert seen["env"]["UV_CACHE_DIR"] == str(expected), seen["env"].get("UV_CACHE_DIR")
 
@@ -302,6 +306,225 @@ def test_an_absent_cache_is_not_warm(tmp_path):
     studio = _studio()
 
     assert studio._uv_cache_has_packages(tmp_path / "nope") is False
+
+
+# --- The cache the installer recorded --------------------------------------------------
+
+
+def _record(studio_home: Path, value) -> None:
+    marker = studio_home / "cache"
+    marker.mkdir(parents = True, exist_ok = True)
+    (marker / "uv-cache-dir").write_text(f"{value}\n", encoding = "utf-8")
+
+
+def test_the_recorded_install_cache_beats_both_guesses(monkeypatch, tmp_path, caches):
+    """The case content cannot decide: a shared install whose backend has since dropped
+    one wheel into the Studio cache (install.sh:705), so both caches hold packages."""
+    studio_cache, default_cache = caches
+    _fill(studio_cache, name = "some_runtime_wheel.whl")
+    _fill(default_cache)
+    _record(tmp_path / "StudioHome", default_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_recorded_studio_cache_survives_the_user_warming_their_own(monkeypatch, tmp_path, caches):
+    """The mirror: a studio install, and the user has since warmed uv's own cache."""
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    _fill(default_cache)
+    _record(tmp_path / "StudioHome", studio_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_an_emptied_recorded_cache_does_not_outrank_a_warm_one(monkeypatch, tmp_path, caches):
+    """A marker pointing at an emptied cache is stale, not authoritative."""
+    studio_cache, default_cache = caches
+    _fill(default_cache)
+    _record(tmp_path / "StudioHome", studio_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_installs_older_than_the_marker_still_work(monkeypatch, tmp_path, caches):
+    """The normal state for everyone installed before this change."""
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_reinstall_into_a_custom_cache_is_not_shadowed_by_the_old_marker(
+    monkeypatch, tmp_path, caches
+):
+    """A reinstall with a nonblank UV_CACHE_DIR fills that cache, so it is recorded too:
+    a stale marker would aim later updates at a cache this install never filled, and both
+    hold packages, so nothing downstream could notice."""
+    studio_cache, _default = caches
+    custom = tmp_path / "caller cache"
+    _fill(studio_cache)
+    _fill(custom)
+    _record(tmp_path / "StudioHome", custom)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(custom), seen["env"].get("UV_CACHE_DIR")
+
+
+@pytest.mark.parametrize("spelling", ["trailing ", " leading", "  both  "])
+def test_a_recorded_path_keeps_its_whitespace(monkeypatch, tmp_path, caches, spelling):
+    """A recorded name may start or end with a space, and stripping it would probe a
+    different path and read a warm cache as cold."""
+    _studio_cache, _default = caches
+    odd = tmp_path / spelling
+    _fill(odd)
+    _record(tmp_path / "StudioHome", odd)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(odd), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_marker_written_by_windows_powershell_is_read_back(monkeypatch, tmp_path, caches):
+    """PowerShell 5.1 writes `-Encoding utf8` with a BOM, which utf-8 would decode into
+    the first character of the path."""
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    _fill(default_cache)
+    marker = tmp_path / "StudioHome" / "cache"
+    marker.mkdir(parents = True, exist_ok = True)
+    (marker / "uv-cache-dir").write_bytes(b"\xef\xbb\xbf" + f"{studio_cache}\r\n".encode("utf-8"))
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_relative_marker_is_resolved_before_it_is_handed_over(monkeypatch, tmp_path, caches):
+    """setup.sh changes directory, so a relative path would name somewhere else there."""
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    monkeypatch.chdir(tmp_path)
+    _record(tmp_path / "StudioHome", "StudioHome/cache/uv")
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+# --- Backfilling the marker for installs that predate it --------------------------------
+
+
+def _marker(tmp_path: Path) -> Path:
+    return tmp_path / "StudioHome" / "cache" / "uv-cache-dir"
+
+
+def test_a_legacy_install_records_what_the_update_worked_out(monkeypatch, tmp_path, caches):
+    """Otherwise the fallback is re-derived every time, and goes stale the moment the
+    backend drops one wheel into the Studio cache."""
+    _studio_cache, default_cache = caches
+    _fill(default_cache)
+    _run_posix(monkeypatch, tmp_path)
+
+    assert _marker(tmp_path).read_text(encoding = "utf-8").strip() == str(default_cache)
+
+
+def test_a_failed_update_records_nothing(monkeypatch, tmp_path, caches):
+    """A cache that did not get through setup is not one to aim later updates at."""
+    studio = _studio()
+    _studio_cache, default_cache = caches
+    _fill(default_cache)
+    monkeypatch.setattr(studio.platform, "system", lambda: "Linux")
+
+    class _Failed:
+        returncode = 1
+
+    monkeypatch.setattr(studio.subprocess, "run", lambda argv, **kw: _Failed())
+    with pytest.raises(studio.typer.Exit):
+        studio._run_setup_script(repo_root = _setup_tree(tmp_path))
+
+    assert not _marker(tmp_path).exists(), _marker(tmp_path).read_text(encoding = "utf-8")
+
+
+def test_a_live_marker_is_not_overwritten_by_the_update(monkeypatch, tmp_path, caches):
+    """The installer's statement outranks the update's inference while it still holds."""
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    _record(tmp_path / "StudioHome", studio_cache)
+    _run_posix(monkeypatch, tmp_path)
+
+    assert _marker(tmp_path).read_text(encoding = "utf-8").strip() == str(studio_cache)
+
+
+def test_a_stale_marker_is_replaced_once_the_fallback_works(monkeypatch, tmp_path, caches):
+    """A marker whose cache was emptied is already ignored; stop re-deriving that."""
+    studio_cache, default_cache = caches
+    _fill(default_cache)
+    _record(tmp_path / "StudioHome", studio_cache)
+    _run_posix(monkeypatch, tmp_path)
+
+    assert _marker(tmp_path).read_text(encoding = "utf-8").strip() == str(default_cache)
+
+
+def test_a_caller_supplied_cache_is_never_promoted_to_the_marker(monkeypatch, tmp_path, caches):
+    """One run's environment variable must not become every later update's default."""
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "caller cache"))
+    _run_posix(monkeypatch, tmp_path)
+
+    assert not _marker(tmp_path).exists()
+
+
+def test_a_staged_update_does_not_write_the_live_marker(monkeypatch, tmp_path, caches):
+    """STUDIO_HOME names the LIVE install even in a staged child, and the stage can
+    still be rejected, so writing now would aim it at an environment never activated."""
+    studio = _studio()
+    _studio_cache, default_cache = caches
+    _fill(default_cache)
+    monkeypatch.setenv(studio._studio_stage.STAGE_ROOT_ENV, str(tmp_path / "stage"))
+    _run_posix(monkeypatch, tmp_path)
+
+    assert not _marker(tmp_path).exists()
+
+
+def test_the_backfill_replaces_a_symlink_rather_than_its_target(monkeypatch, tmp_path, caches):
+    """write_text follows a symlink, so a marker path linked elsewhere would truncate an
+    unrelated file."""
+    _studio_cache, default_cache = caches
+    _fill(default_cache)
+    victim = tmp_path / "someone elses file"
+    victim.write_text("do not clobber", encoding = "utf-8")
+    marker = _marker(tmp_path)
+    marker.parent.mkdir(parents = True, exist_ok = True)
+    marker.symlink_to(victim)
+    _run_posix(monkeypatch, tmp_path)
+
+    assert victim.read_text(encoding = "utf-8") == "do not clobber"
+    assert not marker.is_symlink()
+    assert marker.read_text(encoding = "utf-8").strip() == str(default_cache)
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "POSIX filesystem byte semantics")
+def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, tmp_path):
+    """An undecodable POSIX path reaches Python as surrogates, and encoding those raises
+    UnicodeEncodeError, which is not an OSError and escaped the best-effort handler: an
+    update whose setup had succeeded failed at the end, with its marker already gone."""
+    studio = _studio()
+    weird = (tmp_path / os.fsdecode(b"caf\xe9-cache")).resolve()
+    _fill(weird)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "StudioHome")
+    monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda: weird)
+    monkeypatch.delenv("UV_CACHE_DIR", raising = False)
+
+    studio._backfill_uv_cache_marker({"UV_CACHE_DIR": str(weird)})
+
+    assert _marker(tmp_path).read_bytes().strip() == os.fsencode(str(weird))
+    # And the reader gives back the path the filesystem uses, not one with U+FFFD in it.
+    assert studio._recorded_install_uv_cache() == weird
+    # The tmp_path reaper cannot always delete a name it cannot decode.
+    shutil.rmtree(weird, ignore_errors = True)
 
 
 # --- The uv probe ---------------------------------------------------------------------
