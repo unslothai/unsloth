@@ -1265,6 +1265,4 @@ def test_an_earlier_attachment_keeps_its_own_turn_against_a_newer_replay():
     ]
     assert len(marker_turns) == 2, rendered
     assert marker_turns[0] < marker_turns[1]
-    assert seen["images"] == [attachment, replayed], (
-        "the pixels bound to each other's markers"
-    )
+    assert seen["images"] == [attachment, replayed], "the pixels bound to each other's markers"

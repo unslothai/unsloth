@@ -4336,6 +4336,4 @@ def test_mlx_binds_an_earlier_attachment_to_its_own_turn_not_a_newer_replay():
     # The attachment's marker is on the FIRST turn, the replay's on the placeholder
     # after it -- so the pixels have to arrive in that same order.
     assert marker_turns[0] < marker_turns[1]
-    assert attached == [attachment, replayed], (
-        "the pixels bound to each other's markers"
-    )
+    assert attached == [attachment, replayed], "the pixels bound to each other's markers"

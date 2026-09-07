@@ -1555,12 +1555,11 @@ def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch
     # pre-mark, the top-up places the attachment's marker at its own ordinal and
     # the history/attachment split survives.
     prior = mcp_images.image_marker_parts(sent)
-    topped = mcp_images.top_up_image_markers(
-        sent, len(replayed) + 1, ordinal = call["image_ordinal"]
-    )
+    topped = mcp_images.top_up_image_markers(sent, len(replayed) + 1, ordinal = call["image_ordinal"])
     ordered = mcp_images.pixels_in_marker_order(topped, prior, ["MCP"], "ATTACHMENT")
 
     assert len(mcp_images.image_marker_parts(topped)) == 2, topped
-    assert ordered == ["ATTACHMENT", "MCP"], (
-        "the route pre-marked, so the pixels bound to each other's markers"
-    )
+    assert ordered == [
+        "ATTACHMENT",
+        "MCP",
+    ], "the route pre-marked, so the pixels bound to each other's markers"
