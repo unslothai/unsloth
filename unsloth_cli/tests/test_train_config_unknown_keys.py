@@ -104,9 +104,7 @@ def test_valid_config_still_loads(tmp_path):
     assert cfg.lora.lora_r == 8
 
 
-@pytest.mark.parametrize(
-    "name", ["full_finetune.yaml", "lora_text.yaml", "vision_lora.yaml"]
-)
+@pytest.mark.parametrize("name", ["full_finetune.yaml", "lora_text.yaml", "vision_lora.yaml"])
 def test_shipped_example_configs_still_load(name):
     assert load_config(_SHIPPED_CONFIGS / name).model
 
