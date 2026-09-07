@@ -86,6 +86,7 @@ from gpu_assert import (  # noqa: E402
     is_cuda_install,
     offload_verdict,
     parse_compute_apps,
+    listed_pids,
 )
 from studio_client import (  # noqa: E402
     Studio,
@@ -173,12 +174,47 @@ def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(cmd, 127, "", f"{type(exc).__name__}: {exc}")
 
 
+def visible_device_selector() -> str | None:
+    """CUDA_VISIBLE_DEVICES as an ``nvidia-smi -i`` argument, or None if unset.
+
+    nvidia-smi ignores CUDA_VISIBLE_DEVICES and reports every PHYSICAL card, so both
+    samplers below were device-wide on a two-card host while the payload was pinned to
+    one. An unrelated process starting on the HIDDEN card and taking 200 MiB was then
+    enough to carry a CPU-served run past the memory assertion.
+
+    The entries are passed to `-i` as written, which is the same reading of them that
+    gpu_inventory() already uses to slice nvidia-smi's rows, and matches build_kernel.py
+    setting the variable from the index it admitted the payload on. `-i` also accepts the
+    GPU-UUID form, so a UUID entry needs no mapping here.
+
+    Drivers old enough to take only ONE id reject the list, and both callers read that as
+    "nvidia-smi did not answer" -- no sample rather than a device-wide one, which is the
+    safe direction: it withdraws the fallback ruler instead of widening it.
+    """
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return None
+    return ",".join(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _scoped(cmd: list[str]) -> list[str] | None:
+    """`cmd` restricted to the visible cards, or None when none are visible at all."""
+    selector = visible_device_selector()
+    if selector is None:
+        return cmd
+    if not selector:
+        # A deliberate empty CUDA_VISIBLE_DEVICES: no card is visible, so there is
+        # nothing to sample. Reading it as "every card" is the bug being fixed.
+        return None
+    return [cmd[0], "-i", selector, *cmd[1:]]
+
+
 def nvidia_used_mib() -> float | None:
-    """Device-wide VRAM in use, summed over every visible GPU."""
-    proc = run(
-        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-        timeout = 60,
-    )
+    """VRAM in use, summed over the cards this process can actually see."""
+    cmd = _scoped(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"])
+    if cmd is None:
+        return None
+    proc = run(cmd, timeout = 60)
     if proc.returncode != 0:
         return None
     total = 0.0
@@ -195,11 +231,31 @@ def nvidia_used_mib() -> float | None:
     return total if seen else None
 
 
+def card_is_shared(apps_before: dict[int, int] | None, listed_before: set[int] | None) -> bool:
+    """Was another CUDA process already on the card when this run launched?
+
+    The device-wide total is the fallback ruler whenever attribution fails, and it is only
+    a measurement of THIS process when this process owns the card. Under --studio-concurrent
+    it does not: a training leg shares it, and that leg both allocates and frees inside the
+    window -- one recorded run read the delta as -182.0 MiB while the server genuinely held
+    2.6 GB. Accepting a +200 MiB device rise there would pass a CPU-served run on memory
+    somebody else allocated.
+
+    Evidence, not configuration: the payload is not told whether it is the concurrent half,
+    but a pid on the card before launch says so. Absence of evidence is left alone -- an
+    ordinary single-payload run has an empty listing and keeps the fallback it needs, which
+    is the whole point of the fallback on parts that report [N/A] for everything.
+    """
+    return bool(apps_before) or bool(listed_before)
+
+
 def cli_run_gpu_failure(
     apps_before: dict[int, int] | None,
     apps_after: dict[int, int] | None,
     baseline: float | None,
     settled: float | None,
+    listed_before: set[int] | None = None,
+    listed_after: set[int] | None = None,
 ) -> tuple[str | None, dict]:
     """Did a model actually reach the card? Returns (failure or None, detail).
 
@@ -230,6 +286,13 @@ def cli_run_gpu_failure(
     if apps_after is None:
         if baseline is None or settled is None:
             return "nvidia-smi did not answer, so GPU use is unmeasured", detail
+        if card_is_shared(apps_before, listed_before):
+            detail["card_shared_before_launch"] = True
+            return (
+                "nvidia-smi could not attribute any process, and another was already on "
+                "the card before the launch -- the device total is a shared counter, so "
+                "GPU use is unmeasured rather than proven"
+            ), detail
         if settled - baseline < 200.0:
             return (
                 f"device VRAM grew by {settled - baseline:.1f} MiB across the "
@@ -240,6 +303,38 @@ def cli_run_gpu_failure(
         return None, detail
 
     before = apps_before or {}
+    # A pid that APPEARED but carries no figure is the mixed-listing case: a readable row
+    # on one GPU keeps the mapping nonempty, so the all-[N/A] guard in the probe does not
+    # fire, and the newly launched server is simply missing from it. Concluding "nothing
+    # appeared" there reports CPU for a process that is on the card and merely
+    # unattributable, so this defers to the device-wide delta exactly as the all-[N/A]
+    # case does.
+    if listed_before is not None and listed_after is not None:
+        appeared_unattributed = sorted((listed_after - set(listed_before)) - set(apps_after))
+        if appeared_unattributed:
+            detail["compute_apps_unattributed"] = appeared_unattributed
+            if baseline is None or settled is None:
+                return (
+                    "nvidia-smi listed a new process but could not say how much "
+                    "memory it holds, and gave no device total either, so GPU use "
+                    "is unmeasured"
+                ), detail
+            if card_is_shared(apps_before, listed_before):
+                detail["card_shared_before_launch"] = True
+                return (
+                    f"nvidia-smi could not attribute the new process "
+                    f"{appeared_unattributed}, and another was already on the card "
+                    f"before the launch -- the device total is a shared counter, so "
+                    f"GPU use is unmeasured rather than proven"
+                ), detail
+            if settled - baseline < 200.0:
+                return (
+                    f"device VRAM grew by {settled - baseline:.1f} MiB across the "
+                    f"launch and a served completion, and nvidia-smi could not "
+                    f"attribute the new process {appeared_unattributed} -- "
+                    f"`unsloth run` served from the CPU"
+                ), detail
+            return None, detail
     appeared = {pid: mib for pid, mib in apps_after.items() if pid not in before}
     detail["compute_apps_appeared"] = appeared
     grew = sum(appeared.values())
@@ -254,14 +349,39 @@ def cli_run_gpu_failure(
     return None, detail
 
 
-def nvidia_compute_apps() -> dict[int, int] | None:
-    proc = run(
-        ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"],
-        timeout = 60,
+def nvidia_compute_apps_listing() -> tuple[dict[int, int], set[int]] | None:
+    """(pids with a readable figure, every pid listed), or None if nvidia-smi did not answer.
+
+    Both, because the interesting case is the difference: a pid that is listed but has no
+    figure is on the card and unattributable, which is not the same as absent.
+    """
+    cmd = _scoped(
+        ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"]
     )
+    if cmd is None:
+        return None
+    proc = run(cmd, timeout = 60)
     if proc.returncode != 0:
         return None
-    return parse_compute_apps(proc.stdout)
+    return parse_compute_apps(proc.stdout), listed_pids(proc.stdout)
+
+
+def attributed_apps(listing: tuple[dict[int, int], set[int]] | None) -> dict[int, int] | None:
+    """The readable figures from a listing, or None when it cannot attribute at all."""
+    if listing is None:
+        return None
+    apps, listed = listing
+    if not apps and listed:
+        # Processes were listed but none carried a readable figure: WDDM and
+        # unified-memory parts report [N/A] for every one, including a -ngl 0
+        # server. That cannot attribute anything, so it is the same as not
+        # enumerating, and the device-wide delta decides.
+        return None
+    return apps
+
+
+def nvidia_compute_apps() -> dict[int, int] | None:
+    return attributed_apps(nvidia_compute_apps_listing())
 
 
 def visible_device_indices() -> list[int] | None:
@@ -2316,7 +2436,9 @@ class Payload:
         # The per-process reading is taken alongside the device one because the
         # device one is only valid when this payload owns the card, and under
         # --studio-concurrent it does not. See the verdict below.
-        apps_before = nvidia_compute_apps() or {}
+        _listing_before = nvidia_compute_apps_listing()
+        apps_before = attributed_apps(_listing_before) or {}
+        listed_before = _listing_before[1] if _listing_before else None
         detail["compute_apps_before"] = apps_before
 
         head = self.studio_command()[:1] or [sys.executable]
@@ -2440,13 +2562,17 @@ class Payload:
             # after it.
             settled = nvidia_used_mib()
             detail["vram_after_mib"] = settled
-            apps_after = nvidia_compute_apps()
+            _listing_after = nvidia_compute_apps_listing()
+            apps_after = attributed_apps(_listing_after)
+            listed_after = _listing_after[1] if _listing_after else None
             detail["compute_apps"] = apps_after
             failure, measured = cli_run_gpu_failure(
                 apps_before,
                 apps_after,
                 baseline,
                 settled,
+                listed_before,
+                listed_after,
             )
             detail.update(measured)
             if failure:
@@ -2754,6 +2880,12 @@ class Payload:
         # home's state is not a configuration anybody ships. assert_chat_ui
         # ends by stopping the server, so by here the port is free, the card is
         # empty, and the VRAM delta below measures this launch alone.
+        # Stopped here, not only at the end of assert_chat_ui: with --skip-ui that driver never
+        # runs, so the Studio server and its llama-server were still alive when assert_cli_run
+        # took its before-launch listing. On parts that report [N/A] per process, that pid read
+        # as a co-tenant, the device-delta fallback was refused, and a GPU-backed run came back
+        # "unmeasured rather than proven". Idempotent when assert_chat_ui already stopped it.
+        self.stop_server()
         self.assert_cli_run()
 
         # LAST of all, and the only thing here that touches the public

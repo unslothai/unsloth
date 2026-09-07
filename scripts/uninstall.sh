@@ -358,6 +358,16 @@ _is_studio_root() {
     [ -n "$_r" ] || return 1
     [ -f "$_r/share/studio.conf" ] && return 0
     [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
+    # The venv shapes older installers left. Before the unsloth_studio rename the venv was
+    # $_r/.venv, and before .unsloth-studio-owned neither name carried a marker, so an old
+    # install can reach here with none of the three above. Accept the legacy venv's own
+    # marker, and either venv dir carrying bin/unsloth -- the console script pip generates
+    # for the unsloth distribution. Both are things Unsloth put there, which is what the
+    # gate is testing; a bare .venv or a hand-made "studio" directory has neither.
+    [ -f "$_r/.venv/.unsloth-studio-owned" ] && return 0
+    for _v in unsloth_studio .venv; do
+        [ -f "$_r/$_v/bin/unsloth" ] && return 0
+    done
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
@@ -585,7 +595,19 @@ _unsloth_uninstall_main() {
             _remove_path "$_lex_sd_cpp"
         fi
     done
-    _remove_root_recording_db "$HOME/.unsloth/studio"
+    # Gated on the same ownership sentinels as a custom root above: this is a recursive delete of
+    # a path the user never named, and "studio" under ~/.unsloth is an ordinary thing for someone
+    # to create by hand (notes, a checkout, a scratch dir) on a machine where Unsloth was only
+    # ever installed in env mode. Without the gate a bare run -- the documented curl | sh, no
+    # UNSLOTH_STUDIO_HOME set -- takes that directory and then ~/.unsloth with it via the
+    # empty-dir prune below, having removed nothing of ours. Refusing leaves an interrupted
+    # install that lost every sentinel on disk, which is the failure direction that does not
+    # destroy data, and it says so rather than doing it silently.
+    if [ -e "$HOME/.unsloth/studio" ] && ! _is_studio_root "$HOME/.unsloth/studio"; then
+        echo "  refusing to remove non-Unsloth path: $HOME/.unsloth/studio" >&2
+    else
+        _remove_root_recording_db "$HOME/.unsloth/studio"
+    fi
     # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
     # by deleting it). No-op in env/custom mode (they nest under the custom root) and
     # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.

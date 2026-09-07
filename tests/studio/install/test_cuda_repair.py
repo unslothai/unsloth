@@ -725,6 +725,7 @@ def _run_flavor_invariant(
     index_family = None,
     index_url = None,
     win_arm64 = False,
+    win_arm64_interpreter = None,
     probe_cuda = None,
     probe_hip = None,
 ):
@@ -794,6 +795,15 @@ def _run_flavor_invariant(
         patch.object(stack_mod, "_RECORDED_TORCH_TAG", recorded),
         patch.object(stack_mod.platform, "machine", return_value = "AMD64"),
         patch.object(stack_mod, "_is_windows_arm64", return_value = win_arm64),
+        # The interpreter's arch, which the CUDA-preservation shortcut reads. A native
+        # ARM64 venv is the only place both are true, and that is the host under test.
+        # They separate on an ARM64 machine running an emulated x64 python, which is
+        # every install predating native support; `win_arm64_interpreter` drives that.
+        patch.object(
+            stack_mod,
+            "_is_win_arm64_interpreter",
+            return_value = win_arm64 if win_arm64_interpreter is None else win_arm64_interpreter,
+        ),
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = nvidia),
         patch.object(stack_mod.shutil, "which", side_effect = _which),
         patch.object(stack_mod.os.path, "isfile", return_value = True),
@@ -1276,6 +1286,84 @@ class TestAPinnedCpuIndexIsEnforcedToo:
         )
         assert ok is True
         mock_pip.assert_not_called()
+
+
+class TestWindowsOnArmPreservesCudaOnlyForAnInferredExpectation:
+    """The win_arm64 CUDA shortcut must not swallow an explicit CPU pin.
+
+    Preserving an installed cu* build is right for an expectation DERIVED from the driver:
+    download.pytorch.org publishes no win_arm64 CUDA wheel, so that "repair" resolves
+    nothing. A pin is not a derivation, and /cpu does publish win_arm64 torch and
+    torchvision, so that repair has somewhere to go.
+    """
+
+    _PIN = "https://download.pytorch.org/whl/cpu"
+
+    def test_an_explicit_cpu_pin_still_repairs_a_cuda_venv(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            repaired = "2.10.0+cpu",
+            expected_env = "cpu",
+            index_url = self._PIN,
+            backend = "cpu",
+            win_arm64 = True,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+        assert _index_url(mock_pip) == self._PIN
+        args = [str(a) for a in mock_pip.call_args.args]
+        # No win_arm64 torchaudio on /cpu either, so the existing drop still applies.
+        assert not any(a.startswith("torchaudio") for a in args)
+
+    def test_the_family_spelling_of_the_pin_is_honoured_too(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            repaired = "2.10.0+cpu",
+            expected_env = "cpu",
+            index_family = "cpu",
+            backend = "cpu",
+            win_arm64 = True,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+
+    def test_a_driver_inferred_cuda_expectation_is_still_preserved(self):
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            expected_env = "cu130",
+            win_arm64 = True,
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_a_probed_cpu_tag_with_no_pin_does_not_downgrade_it(self):
+        # setup.ps1 also publishes "cpu" when its nvidia-smi probe comes back empty; that
+        # is a probe result, so the shortcut keeps the CUDA build as it does off-ARM.
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.11.0+cu134",
+            expected_env = "cpu",
+            nvidia = False,
+            win_arm64 = True,
+        )
+        assert ok is True
+        mock_pip.assert_not_called()
+
+    def test_an_emulated_x64_interpreter_on_an_arm64_machine_still_repairs(self):
+        """The machine and the interpreter are separate axes, and the shortcut reads the
+        interpreter. Every Windows on ARM install predating native support runs an
+        emulated x64 python against ordinary win_amd64 wheels from
+        download.pytorch.org, so the repair must reach them exactly as it always did.
+        """
+        ok, mock_pip = _run_flavor_invariant(
+            installed = "2.9.1+cu118",
+            repaired = "2.10.0+cu128",
+            expected_env = "cu128",
+            win_arm64 = True,
+            win_arm64_interpreter = False,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+        assert _index_url(mock_pip).endswith("/cu128")
 
 
 class TestWindowsOnArmKeepsTheNoTorchaudioException:
@@ -2050,9 +2138,14 @@ class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
     def test_the_windows_rocm_install_drops_torchaudio_on_arm64(self):
         source = inspect.getsource(stack_mod._ensure_rocm_torch)
         block = source[source.index("_WINDOWS_ROCM_TORCH_PKG_SPECS.get") :][:1200]
+        # The interpreter's arch, not the machine's: wheel availability is a property of
+        # the venv, and an emulated x64 venv on an ARM64 box can install win_amd64 torchaudio.
         assert (
-            "_is_windows_arm64()" in block
+            "_is_win_arm64_interpreter()" in block
         ), "the delegated ROCm repair needs the same exception as the flavor repair"
+        assert (
+            "_is_windows_arm64()" not in block
+        ), "the machine predicate would drop torchaudio from x64 venvs"
         assert "*_rocm_trio" in block, "the trio has to be built, not passed positionally"
 
     def test_x64_windows_still_asks_for_all_three(self):

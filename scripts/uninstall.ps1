@@ -61,11 +61,22 @@ Environment:
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         if (-not (Test-Path -LiteralPath $Path)) { return }
-        for ($attempt = 1; $attempt -le 4; $attempt++) {
+        # Escalating backoff rather than a flat 700ms x4. That old ~2.1s budget was
+        # shorter than the teardown of a Studio that had actually been used: torch
+        # inductor's compile workers keep handles on the .py files they wrote under
+        # <root>\TORCHINDUCTOR_CACHE_DIR for several seconds after the server is
+        # stopped. Those are plain data handles on files the worker did not load as a
+        # module, so neither the ExecutablePath pass nor the loaded-module pass in
+        # _StopProcessesLockingRoots can find a process to kill -- waiting is the only
+        # move. Giving up at 2.1s left the entire install tree, studio.db included, on
+        # disk while the summary told the user to go delete it by hand.
+        $delays = @(250, 500, 1000, 2000, 4000, 4000, 4000, 4000)
+        for ($attempt = 0; $attempt -le $delays.Count; $attempt++) {
+            $lastTry = ($attempt -eq $delays.Count)
             try {
                 Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
             } catch {
-                if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
+                if (-not $lastTry) { Start-Sleep -Milliseconds $delays[$attempt]; continue }
                 _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
                 # The closing summary must not promise the data is gone.
                 $script:RemoveFailed = $true
@@ -78,7 +89,7 @@ Environment:
                 _Substep "removed: $Path" "Green"
                 return
             }
-            if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
+            if (-not $lastTry) { Start-Sleep -Milliseconds $delays[$attempt]; continue }
             _Substep "still present (files held open): $Path" "Yellow"
             $script:RemoveFailed = $true
         }
@@ -108,13 +119,20 @@ Environment:
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         # Anchor a relative reparse-point target to the link's own parent, or Join-Path
         # resolves it from the uninstaller's working directory and the db test reads false.
+        #
+        # Split-Path -LiteralPath takes no -Parent, here or anywhere else in this script.
+        # Windows PowerShell 5.1 puts -LiteralPath in its own parameter set, which carries
+        # only -Resolve and -Credential; -Parent belongs to the -Path set, so the two
+        # together are an unresolvable parameter set and the call throws. -LiteralPath on
+        # its own already splits off the parent, and it is the spelling we want: -Path
+        # globs, so a home containing [ ] would be read as a wildcard.
         $resolveTarget = {
             param($Item, $Fallback)
             if (-not $Item -or -not $Item.Target) { return $Fallback }
             $t = @($Item.Target)[0]
             if ([string]::IsNullOrWhiteSpace($t)) { return $Fallback }
             if (-not [System.IO.Path]::IsPathRooted($t)) {
-                $t = Join-Path (Split-Path -LiteralPath $Item.FullName -Parent) $t
+                $t = Join-Path (Split-Path -LiteralPath $Item.FullName) $t
             }
             return $t
         }
@@ -387,13 +405,32 @@ Environment:
     # The .cmd is the interpreter-based launcher install.ps1 writes beside the .exe for
     # machines whose Application Control policy denies the generated console script. An
     # install whose .exe was removed by that policy's quarantine still owns its root.
+    #
+    # Plus the venv shapes older installers left, because that list alone strands them.
+    # On Windows share\studio.conf is never written -- only install.sh writes it -- so the
+    # three that actually decide a Windows root all postdate the bin\ shim dir. An install
+    # from before it has no bin\ at all: the venv lived at <root>\.venv (install.ps1 still
+    # migrates exactly that, at "found legacy Unsloth environment"), and the venv's Scripts
+    # dir, not a shim dir, was what went on PATH. Older still, .unsloth-studio-owned did not
+    # exist, so neither venv layout carries it. Every one of those is a real install the
+    # ownership gate would refuse, leaving the user's tree and studio.db on disk with a
+    # message calling their own install a non-Unsloth path.
+    #
+    # So also accept the marker inside the legacy venv dir, and either venv dir carrying
+    # Scripts\unsloth.exe -- the console script pip generates for the unsloth distribution.
+    # Both are things Unsloth put there, which is the property the gate is actually testing;
+    # a bare .venv or a hand-made "studio" directory still has neither.
     function _IsStudioRoot {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
         if (Test-Path -LiteralPath (Join-Path $Path "share\studio.conf") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) { return $true }
+        if (Test-Path -LiteralPath (Join-Path $Path ".venv\.unsloth-studio-owned") -PathType Leaf) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "bin\unsloth.exe") -PathType Leaf) { return $true }
         if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
+        foreach ($venv in @("unsloth_studio", ".venv")) {
+            if (Test-Path -LiteralPath (Join-Path $Path "$venv\Scripts\unsloth.exe") -PathType Leaf) { return $true }
+        }
         return $false
     }
 
@@ -412,7 +449,7 @@ Environment:
             $userProfile = $userProfile.TrimEnd('\','/')
             if ($norm -ieq $userProfile) { return $true }
             try {
-                $parent = Split-Path -LiteralPath $userProfile -Parent
+                $parent = Split-Path -LiteralPath $userProfile
                 if ($parent -and ($norm -ieq $parent.TrimEnd('\','/'))) { return $true }
             } catch { }
         }
@@ -441,9 +478,9 @@ Environment:
         if ($line -match "^UNSLOTH_EXE\s*=\s*'(.*)'\s*$") {
             $exe = $Matches[1] -replace "''", "'"
             try {
-                $bin = Split-Path -LiteralPath $exe -Parent
-                $studio = Split-Path -LiteralPath $bin -Parent
-                $root = Split-Path -LiteralPath $studio -Parent
+                $bin = Split-Path -LiteralPath $exe
+                $studio = Split-Path -LiteralPath $bin
+                $root = Split-Path -LiteralPath $studio
                 if ($root) { return $root }
             } catch { }
         }
@@ -629,7 +666,7 @@ Environment:
                 # A symlink target may be relative; a junction's never is. Anchor it on the link's
                 # own parent, or GetFullPath would read it from the uninstaller's working directory.
                 if (-not [System.IO.Path]::IsPathRooted($t)) {
-                    $t = Join-Path (Split-Path -LiteralPath $item.FullName -Parent) $t
+                    $t = Join-Path (Split-Path -LiteralPath $item.FullName) $t
                 }
                 $t = [System.IO.Path]::GetFullPath($t).TrimEnd('\', '/')
                 if (-not $t) { continue }
@@ -815,7 +852,7 @@ Environment:
     # so add them to the handle scan too, gated on the same owner marker.
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
-        $sdc = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        $sdc = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
         if ((Test-Path -LiteralPath $sdc) -and (Test-Path -LiteralPath (Join-Path $sdc ".unsloth-studio-owned") -PathType Leaf)) {
             $customSdCppToStop += $sdc
         }
@@ -848,7 +885,7 @@ Environment:
         # "stable-diffusion.cpp" is exactly what a git clone of the upstream project produces, so
         # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
         # unowned checkout. Guard the derived parent path the same way.
-        $customSdCpp = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        $customSdCpp = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
         if (_IsUnsafeRoot $customSdCpp) {
             _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"
         } elseif ((Test-Path -LiteralPath $customSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $customSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
@@ -857,8 +894,21 @@ Environment:
             _RemovePath $customSdCpp
         }
     }
-    # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
-    if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
+    # Default install dir (always at %USERPROFILE%\.unsloth\studio when present). Gated on the
+    # same ownership sentinels as a custom root above: this is a recursive delete of a path the
+    # user never named, and "studio" under ~/.unsloth is an ordinary thing for someone to create
+    # by hand (notes, a checkout, a scratch dir) on a machine where Unsloth was only ever
+    # installed in env mode. Without the gate a bare run -- the documented irm | iex, no
+    # UNSLOTH_STUDIO_HOME set -- takes that directory and then ~/.unsloth with it via the
+    # empty-dir prune below, having removed nothing of ours. Refusing leaves an interrupted
+    # install that lost all four sentinels on disk, which is the failure direction that does not
+    # destroy data, and it says so rather than doing it silently.
+    if ($defaultStudioHome -and (Test-Path -LiteralPath $defaultStudioHome) -and
+        -not (_IsStudioRoot $defaultStudioHome)) {
+        _Substep "refusing to remove non-Unsloth path: $defaultStudioHome" "Yellow"
+    } elseif ($defaultStudioHome) {
+        _RemoveRootRecordingDb $defaultStudioHome
+    }
     # Default data dir. The private temp sweep goes FIRST and hands back what it
     # kept: the primary temp directory lives under this data dir, so a wholesale
     # removal here would erase a live Unsloth's %TEMP% before the sweep ever looked

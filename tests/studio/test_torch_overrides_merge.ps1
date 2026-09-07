@@ -3,8 +3,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit test for install.ps1's New-UnslothTorchOverridesFile, the Windows twin of install.sh's
 # _build_unsloth_torch_overrides. It folds a caller's UV_OVERRIDE file into the frozen torch-trio
-# pins without corrupting it: non-ASCII lines must survive, and the merged file must stay beside
-# the caller's override, as uv resolves `-r nested.txt` relative to THAT file's own directory.
+# pins without corrupting it: non-ASCII lines must survive, and every relative reference must come
+# across REBASED, since uv resolves them against the file that contains them and the merge does not
+# live in that directory. It used to try to, by writing beside the caller's override when there was
+# exactly one -- but the native ARM64 path normally has two override files, so that fell through to
+# %TEMP% and the references pointed at nothing.
 # Run: pwsh -NoProfile -File tests/studio/test_torch_overrides_merge.ps1
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +24,14 @@ $fn = $ast.FindAll({ param($n)
     $n.Name -eq "New-UnslothTorchOverridesFile"
 }, $true)
 if ($fn.Count -ne 1) { throw "expected exactly one New-UnslothTorchOverridesFile in install.ps1, found $($fn.Count)" }
+# PowerShell does not hoist, so the helpers the merge calls have to be defined here too.
+foreach ($helper in "Get-WoaRequirementEntries", "Resolve-WoaOverrideLine") {
+    $h = $ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $helper
+    }, $true)
+    if ($h.Count -ne 1) { throw "expected exactly one $helper in install.ps1, found $($h.Count)" }
+    Invoke-Expression $h[0].Extent.Text
+}
 Invoke-Expression $fn[0].Extent.Text
 
 $failures = 0
@@ -66,14 +77,14 @@ try {
 
     Check "non-ASCII caller requirement survives the merge (no '?' substitution)" `
         ($mergedText -match "caf${acute}pkg==1\.0" -and $mergedText -notmatch 'caf\?pkg')
-    Check "merged file sits where the caller's relative includes still resolve" `
-        (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $merged) "nested.txt"))
+    Check "the caller's relative include is rebased, not carried as a relative line" `
+        ($mergedText -notmatch '(?m)^\s*-r\s')
+    Check "and its contents come across instead" ($mergedText -match '(?m)^idna==3\.6$')
 
     # Guards on the behaviour that already worked, so the fix cannot regress it.
     Check "frozen torch trio is pinned first" ($mergedText -match '^torch==2\.11\.0\+cu130')
     Check "caller's torch-trio lines are dropped" `
         ($mergedText -notmatch '(?m)^torch==1\.0$' -and $mergedText -notmatch '(?m)^torchvision==0\.1$')
-    Check "caller's relative include line is carried over" ($mergedText -match '(?m)^-r nested\.txt$')
     Check "caller's ordinary requirements are carried over" ($mergedText -match '(?m)^plainpkg==2\.0$')
     Check "merged file is newline terminated" ($mergedText.EndsWith("`n"))
 
@@ -101,7 +112,7 @@ try {
     # Three Windows-only hazards, so each is asserted behaviourally where it can be and
     # structurally from the AST, which runs everywhere.
 
-    $env:UV_OVERRIDE = $ovPath
+    $env:UV_OVERRIDE = $callerOv
     $script:TorchOverridesFile = $null
     $merged = New-UnslothTorchOverridesFile -PythonExe $fakePy
     $made += $merged
@@ -116,8 +127,15 @@ try {
     # Get-Content decodes a BOM-less file with the ANSI code page on PS 5.1, which is where the
     # mojibake came from. pwsh on Linux defaults to UTF-8, so the round trip cannot fail here
     # even unfixed; the assertion holding the fix in place is the one on the reader.
+    # The reading moved into Get-WoaRequirementEntries, so that is where the encoding rule now
+    # lives. The behavioural non-ASCII check above is the one that actually holds it in place.
+    $scanSrc = ($ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $n.Name -eq "Get-WoaRequirementEntries"
+    }, $true))[0].Extent.Text
     Check "the caller's override is read as UTF-8, not by the shell's default codepage" (
-        ($src -match '\[System\.IO\.File\]::ReadAllLines\(') -and ($src -notmatch 'Get-Content -LiteralPath \$ovFile')
+        ($scanSrc -match '\[System\.IO\.File\]::ReadAllLines\(') -and
+        ($src -notmatch 'Get-Content -LiteralPath \$ovFile')
     )
     Check "the inherited ACL is replaced rather than kept" (
         ($src -match 'SetAccessRuleProtection\(\$true, \$false\)') -and ($src -match 'Set-Acl -LiteralPath \$f')

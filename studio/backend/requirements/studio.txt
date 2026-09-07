@@ -12,8 +12,10 @@ packaging==26.3
 matplotlib==3.10.9
 # Held at 2.3.3 rather than the 3.0.x line: single-env/constraints.txt pins
 # pandas==2.3.3, and 2.3.3 is also the newest release that still installs on
-# 3.9. Bump both together.
-pandas==2.3.3
+# 3.9. Bump both together. Windows on ARM is the exception: win_arm64 pandas wheels
+# start at 3.0, and the 3.11 floor there is pandas 3's own requires-python.
+pandas==2.3.3; sys_platform != "win32" or platform_machine != "ARM64" or python_version < "3.11"
+pandas>=3.0,<4; sys_platform == "win32" and platform_machine == "ARM64" and python_version >= "3.11"
 nest_asyncio==1.6.0
 datasets==4.3.0
 pyjwt==2.13.0
@@ -37,7 +39,10 @@ structlog>=24.1.0
 diceware==1.0.1
 ddgs==9.14.4; python_version >= "3.10"
 ddgs==9.8.0; python_version < "3.10"
-cryptography>=42.0.0
+cryptography>=42.0.0; sys_platform != "win32" or platform_machine != "ARM64"
+# Windows on ARM: 46.0.7 has no win_arm64 wheel and its sdist needs Rust. Matches
+# constraints.txt, which a plain pip install of the extra does not reach.
+cryptography>=42.0.0,<=46.0.3; sys_platform == "win32" and platform_machine == "ARM64"
 boto3>=1.34.0                    # optional: S3 dataset loading
 httpx>=0.27.0
 fastmcp>=3.0.2
@@ -53,8 +58,12 @@ gguf==0.18.0; python_version < "3.10"
 av>=12.0.0
 # RAG (knowledge bases, hybrid retrieval). sentence-transformers lives in
 # extras-no-deps.txt; these add the lexical+dense store and document parsing.
-sqlite-vec==0.1.9
-pymupdf==1.27.2.3
+# sqlite-vec publishes win_amd64 only and no sdist, so there is no version to floor to
+# on win_arm64. The RAG store treats a missing sqlite_vec as "RAG unavailable".
+sqlite-vec==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
+# pymupdf publishes a win_arm64 wheel from 1.28 only.
+pymupdf==1.27.2.3; sys_platform != "win32" or platform_machine != "ARM64"
+pymupdf>=1.28.2; sys_platform == "win32" and platform_machine == "ARM64"
 # 0.3.x keeps pymupdf-layout (which pulls onnxruntime) an optional extra; the
 # lockstep 1.27.x line makes it a hard dep we do not need for to_markdown().
 pymupdf4llm==0.3.4

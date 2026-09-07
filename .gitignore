@@ -254,3 +254,9 @@ Speech_12dB_s16.flac
 # storage_roots.studio_root at it. It is a mutable SQLite runtime database, not a fixture,
 # so a test run or an Unsloth start rewrites it and dirties the checkout.
 .studio-test-root/
+
+# _filter_requirements() in studio/install_python_stack.py writes its skip-filtered copy
+# beside the source file so relative -r/-c includes still resolve. pip_install() unlinks
+# them in a finally, but a test that calls the helper directly, or an install killed
+# mid-run, leaves them behind. They are a snapshot of a file already in the tree.
+studio/backend/requirements/.*-filtered-*.txt

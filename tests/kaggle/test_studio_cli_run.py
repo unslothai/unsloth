@@ -202,6 +202,19 @@ def test_a_real_cpu_fallback_still_fails():
     assert failure and "served from the CPU" in failure
 
 
+def test_a_unified_memory_part_that_cannot_attribute_is_judged_on_the_device_delta():
+    """Measured on a GB10 (Windows, unified memory): nvidia-smi lists the server with
+    [N/A], the device counter reads 132 MiB idle, 272 MiB with a bare CUDA context
+    (-ngl 0) and 560 MiB with the 270M model offloaded. The verdict must pass the
+    second and fail the first, with nothing to attribute per process."""
+    failure, detail = _verdict()(None, None, 132.0, 560.0)
+    assert failure is None, failure
+    assert detail["vram_delta_mib"] == 428.0
+    failure, detail = _verdict()(None, None, 132.0, 272.0)
+    assert failure and "served from the CPU" in failure
+    assert detail["vram_delta_mib"] == 140.0
+
+
 def test_the_device_delta_is_the_fallback_only_when_processes_are_unreadable():
     """An nvidia-smi that answers a total but cannot enumerate apps still gets a
     verdict rather than a silent pass."""
@@ -218,4 +231,12 @@ def test_the_before_sample_is_taken_before_the_launch():
     """An `apps_before` read after the server started would contain the server,
     so nothing would ever have `appeared` and every run would fail."""
     body = _body()
-    assert body.index("apps_before = nvidia_compute_apps()") < body.index("subprocess.Popen")
+    # Anchored on the sample itself rather than on one spelling of it: the reading is
+    # taken from a single nvidia_compute_apps_listing() call now, so the attributed
+    # mapping and the listed pids describe the same moment.
+    assert body.index("_listing_before = nvidia_compute_apps_listing()") < body.index(
+        "subprocess.Popen"
+    )
+    assert body.index("apps_before = attributed_apps(_listing_before)") < body.index(
+        "subprocess.Popen"
+    )

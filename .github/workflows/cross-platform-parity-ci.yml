@@ -57,6 +57,12 @@ on:
       - 'scripts/install*.ps1'
       - 'scripts/uninstall*.sh'
       - 'scripts/uninstall*.ps1'
+      # These two assert over scripts/uninstall.ps1 and were wired into no workflow at
+      # all, while the uninstall*.ps1 filters above already brought a run here. Dead
+      # trigger surface: the run happened and asserted nothing about the uninstaller.
+      - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
+      - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - 'tests/sh/test_uninstall_legacy_layout_gate.sh'
       - 'scripts/build_whisper_cpp.sh'
       - 'studio/setup*.bat'
       - 'setup*.sh'
@@ -120,6 +126,12 @@ on:
       - 'scripts/install*.ps1'
       - 'scripts/uninstall*.sh'
       - 'scripts/uninstall*.ps1'
+      # These two assert over scripts/uninstall.ps1 and were wired into no workflow at
+      # all, while the uninstall*.ps1 filters above already brought a run here. Dead
+      # trigger surface: the run happened and asserted nothing about the uninstaller.
+      - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
+      - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - 'tests/sh/test_uninstall_legacy_layout_gate.sh'
       - 'scripts/build_whisper_cpp.sh'
       - 'studio/setup*.bat'
       - 'setup*.sh'
@@ -267,9 +279,33 @@ jobs:
       - name: Application Control CLI fallback tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_application_control_cli_fallback.ps1
+      # Both parse scripts/uninstall.ps1 with the AST and execute only the one helper under
+      # test, so no elevation, no venv and no Windows are needed and they run on every row.
+      # Worth stating what they cannot catch: neither runs the uninstaller BODY, so a
+      # runtime parameter-binding fault there stays invisible to both. That is not
+      # hypothetical -- `Split-Path -LiteralPath $p -Parent` binds to no parameter set and
+      # throws on every uninstall, yet it parses, so it reached users past a green board.
+      - name: Uninstaller prebuilt parity tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_uninstall_prebuilt_parity.ps1
+      # The reparse test creates a real directory link. A junction needs no privilege; a
+      # symlink does, and this runner is an administrator, so this row is the one that
+      # covers BOTH kinds. It reports which kinds it managed to create.
+      - name: Uninstaller reparse stop-root tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_uninstall_reparse_stop_roots.ps1
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh
+      # The POSIX half of the uninstaller's ownership gate, which decides whether
+      # ~/.unsloth/studio is recursively deleted. Both directions are asserted: a real old
+      # install must stay removable, and a directory that is not ours must stay refused.
+      # This ran on no row at all until now, and the gate had regressed in the first
+      # direction on Linux and macOS as well as on Windows -- three layouts install.sh
+      # itself still migrates were being refused.
+      - name: POSIX uninstaller ownership gate tests
+        if: runner.os == 'Linux'
+        run: bash tests/sh/test_uninstall_legacy_layout_gate.sh
       # bash, not sh: the helper under test is extracted from install.sh, which is bash.
       - name: install.sh XPU flavor probe tests
         if: runner.os != 'Windows'
