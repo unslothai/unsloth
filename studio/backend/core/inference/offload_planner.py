@@ -490,10 +490,30 @@ class Plan:
     predicted_request_ms: float = 0.0
     predicted_fit_request_ms: float = 0.0
     reason: str = ""
+    # Rungs 0 to 2. ``n_parallel`` is 0 when the caller's slot count stands and the
+    # reduced count when rung 1 fired (emit ``--parallel N``). ``mmproj_to_host``
+    # asks for ``--no-mmproj-offload``. ``draft_dropped`` is a decision only: the
+    # caller owns the speculative flags, since only it knows which kind of draft
+    # it priced. ``cache_ram_mib`` is -1 when llama-server's default stands and
+    # the clamped value only when the clamp BINDS.
+    n_parallel: int = 0
+    mmproj_to_host: bool = False
+    draft_dropped: bool = False
+    cache_ram_mib: int = -1
+    # The cost gate said no. Distinct from "cannot be checked" (per-device, multi
+    # device) and from "does not fit": a declined load is feasible as planned and
+    # a smaller context may make it worth taking, which is what FIT_ONLY tries.
+    declined_by_gate: bool = False
 
     @property
     def spills_anything(self) -> bool:
         return bool(self.spilled_blocks) or self.spilled_lm_head
+
+    @property
+    def reshapes_launch(self) -> bool:
+        """A rung above the first weight spill fired, so the launch changes even
+        when no pattern is emitted."""
+        return self.n_parallel > 0 or self.mmproj_to_host or self.draft_dropped
 
 
 def _device_reserve(opts: PlanOptions, n_ctx: int) -> int:
@@ -1279,13 +1299,13 @@ def plan_placement(
             layout,
             opts,
             n_ctx,
-            budget,
             host_ram_bytes,
             quantised,
             kv_bytes_floor,
             vram_bytes_per_device,
             split_weights_per_device or vram_bytes_per_device,
             kv_layer_weights,
+            requested_ctx = n_ctx,
         )
         if plan is not None:
             return plan
@@ -1307,13 +1327,13 @@ def plan_placement(
                     layout,
                     opts,
                     shrunk,
-                    budget,
                     host_ram_bytes,
                     quantised,
                     kv_bytes_floor,
                     vram_bytes_per_device,
                     split_weights_per_device or vram_bytes_per_device,
                     kv_layer_weights,
+                    requested_ctx = n_ctx,
                 )
                 if plan is not None:
                     return plan
@@ -1478,27 +1498,88 @@ def _per_device_shortfall(
     return None
 
 
+def _knob_description(knobs: _Knobs, opts: PlanOptions) -> str:
+    parts = []
+    if knobs.mmproj_to_host:
+        parts.append("moving the vision projector to the host")
+    if knobs.n_parallel < max(1, opts.n_parallel):
+        parts.append(f"serving {knobs.n_parallel} slot(s) instead of {opts.n_parallel}")
+    if knobs.draft_dropped:
+        parts.append("dropping the speculative draft")
+    return ", ".join(parts)
+
+
 def _plan_at(
     layout: ModelLayout,
     opts: PlanOptions,
     n_ctx: int,
-    budget: int,
     host_ram_bytes: Optional[int],
     quantised: bool,
     kv_bytes_floor: int = 0,
     vram_bytes_per_device: Sequence[int] = (),
     split_weights_per_device: Sequence[int] = (),
     kv_layer_weights: Sequence[int] = (),
+    *,
+    requested_ctx: int = 0,
 ) -> Optional[Plan]:
-    """One pass of the ladder at a fixed context and cache dtype."""
-    needed = all_resident_bytes(
-        layout,
-        n_ctx,
-        kv_quantised = quantised,
-        kv_bytes_floor = kv_bytes_floor,
-        kv_on_host = opts.kv_on_host,
-    )
+    """One pass of the ladder at a fixed context and cache dtype.
+
+    The budget is computed HERE, not by the caller: it is a function of the
+    context (the per-device reserve has a context term) and of what rungs 0 to 2
+    have taken off the card, so it changes inside this function.
+
+    Rungs 0 to 2 come first because each is free per token: the projector runs
+    once per image, a slot is a cache the caller is not using, and the draft is
+    priced by ``draft_drop_penalty_frac``. Each stops the moment the load fits.
+    Only when all three are exhausted does the first weight leave the device.
+    """
+    n_devices = len(vram_bytes_per_device)
+    floor_ctx = requested_ctx or n_ctx
+
+    def price(k: _Knobs) -> Optional[tuple[int, int, int]]:
+        """(needed, budget, cache floor) at these knobs, or None if unpriceable."""
+        floor = _kv_floor_at(layout, opts, kv_bytes_floor, floor_ctx, n_ctx, k.n_parallel)
+        if floor is None:
+            return None
+        needed = all_resident_bytes(
+            layout,
+            n_ctx,
+            kv_quantised = quantised,
+            kv_bytes_floor = floor,
+            kv_on_host = opts.kv_on_host,
+            n_seq = k.n_parallel,
+        )
+        budget = _usable_vram(
+            vram_bytes_per_device,
+            opts,
+            n_ctx,
+            outside_layout_bytes = _outside_layout_bytes(opts, k),
+        )
+        return needed, budget, floor
+
+    knobs = _Knobs(n_parallel = max(1, opts.n_parallel))
+    priced = price(knobs)
+    assert priced is not None  # the caller's own slot count is always priceable
+    needed, budget, floor = priced
+
+    # Rung 0: the projector.
+    if needed > budget and opts.mmproj_movable and opts.mmproj_bytes > 0:
+        knobs = _Knobs(knobs.n_parallel, True, knobs.draft_dropped)
+        needed, budget, floor = price(knobs)  # type: ignore[misc]
+    # Rung 1: one slot at a time. A step the floor cannot be re-priced for ends it.
+    while needed > budget and knobs.n_parallel > max(1, opts.min_parallel):
+        cand = _Knobs(knobs.n_parallel - 1, knobs.mmproj_to_host, knobs.draft_dropped)
+        got = price(cand)
+        if got is None:
+            break
+        knobs, (needed, budget, floor) = cand, got
+    # Rung 2: the draft.
+    if needed > budget and opts.draft_droppable and opts.draft_bytes > 0:
+        knobs = _Knobs(knobs.n_parallel, knobs.mmproj_to_host, True)
+        needed, budget, floor = price(knobs)  # type: ignore[misc]
+
     if needed <= budget:
+        gave_up = _knob_description(knobs, opts)
         return _finish(
             layout,
             opts,
@@ -1507,15 +1588,18 @@ def _plan_at(
             False,
             host_ram_bytes,
             quantised = quantised,
-            kv_bytes_floor = kv_bytes_floor,
+            kv_bytes_floor = floor,
             budget = budget,
+            knobs = knobs,
             reason = (
                 f"the whole load fits in VRAM ({needed / GIB:.2f} of "
-                f"{budget / GIB:.2f} GiB usable), so nothing is spilled"
+                f"{budget / GIB:.2f} GiB usable"
+                + (f" after {gave_up}" if gave_up else "")
+                + "), so nothing is spilled"
             ),
         )
 
-    n_devices = len(vram_bytes_per_device)
+    kv_bytes_floor = floor
     deficit = needed - budget
     spillable = [b for b in layout.blocks if b.spillable_bytes > 0]
 
@@ -1572,6 +1656,7 @@ def _plan_at(
             kv_bytes_floor = kv_bytes_floor,
             split_weights_per_device = split_weights_per_device,
             kv_layer_weights = kv_layer_weights,
+            extra_on_device0 = _outside_layout_bytes(opts, knobs),
         )
         if uneven is not None:
             return Plan(
@@ -1592,6 +1677,7 @@ def _plan_at(
             kv_bytes_floor = kv_bytes_floor,
             budget = budget,
             kv_on_host_rung = kv_host,
+            knobs = knobs,
             reason = reason,
         )
 
@@ -1697,6 +1783,7 @@ def _cost_gate(
     kv_bytes_floor: int,
     host_bytes: int = 0,
     host_ram_bytes: Optional[int] = None,
+    knobs: Optional[_Knobs] = None,
 ) -> tuple[Optional[Plan], float, float]:
     """An abstaining Plan when ``--fit on`` is as good as this spill, else None.
 
@@ -1735,6 +1822,7 @@ def _cost_gate(
             return (
                 Plan(
                     n_ctx = n_ctx,
+                    declined_by_gate = True,
                     reason = (
                         f"the spill needs {host_bytes / GIB:.2f} GiB of host RAM and only "
                         f"{spendable / GIB:.2f} GiB is spendable, so it would page from disk "
@@ -1767,11 +1855,17 @@ def _cost_gate(
     )
     plan_ms = _score_of(plan, scored)
     fit_ms = _score_of(fallback, scored)
+    if knobs is not None and knobs.draft_dropped and opts.draft_drop_penalty_frac > 0:
+        # Rung 2 gave up the draft to make room for this spill; the fitter keeps
+        # it. Charge the plan what that costs, so a spill that only fits because
+        # the draft went is scored against the draft's own speed.
+        plan_ms *= 1.0 + opts.draft_drop_penalty_frac
     if plan_ms <= fit_ms * (1.0 - opts.min_penalty_reduction):
         return None, plan_ms, fit_ms
     return (
         Plan(
             n_ctx = n_ctx,
+            declined_by_gate = True,
             predicted_request_ms = plan_ms,
             predicted_fit_request_ms = fit_ms,
             reason = (
@@ -1847,6 +1941,7 @@ def _finish(
     kv_bytes_floor: int = 0,
     budget: Optional[int] = None,
     kv_on_host_rung: bool = False,
+    knobs: Optional[_Knobs] = None,
     reason: str = "",
 ) -> Plan:
     """Assemble patterns, decide the load mode, and account for both sides.
@@ -1876,6 +1971,7 @@ def _finish(
             kv_bytes_floor = kv_bytes_floor,
             host_bytes = layout.token_embd_bytes + spilled_weight_bytes,
             host_ram_bytes = host_ram_bytes,
+            knobs = knobs,
         )
         if declined is not None:
             return declined
@@ -1915,11 +2011,42 @@ def _finish(
     else:
         load_mode_none = host_bytes <= max(0, host_ram_bytes - opts.host_ram_headroom_bytes)
 
+    # The prompt cache is host RAM llama-server takes on top of the spill, 8 GiB by
+    # default, and it is the cheapest thing in the system to give up: losing a
+    # prefix hit costs one re-prefill, mis-sizing host RAM costs the load. Bound it
+    # to what is left under the headroom once the plan's own host side is paid,
+    # and only under --load-mode none, where the host side is resident rather than
+    # pageable. Reported only when the bound is BELOW the default.
+    cache_ram_mib = -1
+    if load_mode_none and host_ram_bytes is not None and opts.cache_ram_default_mib > 0:
+        spendable = max(0, host_ram_bytes - opts.host_ram_headroom_bytes - host_bytes)
+        clamped = min(opts.cache_ram_default_mib, spendable // MIB)
+        if clamped < opts.cache_ram_default_mib:
+            cache_ram_mib = int(clamped)
+
+    n_parallel = 0
+    mmproj_to_host = draft_dropped = False
+    if knobs is not None:
+        if knobs.n_parallel < max(1, opts.n_parallel):
+            n_parallel = knobs.n_parallel
+        mmproj_to_host = knobs.mmproj_to_host
+        draft_dropped = knobs.draft_dropped
     cache_type = opts.kv_quant_type if quantised else None
-    changed = bool(patterns) or load_mode_none or cache_type is not None
+    changed = (
+        bool(patterns)
+        or load_mode_none
+        or cache_type is not None
+        or n_parallel > 0
+        or mmproj_to_host
+        or draft_dropped
+    )
     return Plan(
         changed = changed,
         n_ctx = n_ctx,
+        n_parallel = n_parallel,
+        mmproj_to_host = mmproj_to_host,
+        draft_dropped = draft_dropped,
+        cache_ram_mib = cache_ram_mib,
         ot_patterns = tuple(patterns),
         load_mode_none = load_mode_none,
         # Matched pairs only: an unmatched K/V combination is not compiled
@@ -1960,6 +2087,13 @@ def plan_to_args(plan: Plan) -> list[str]:
     if plan.cache_type_k and plan.cache_type_v:
         args.extend(["--cache-type-k", plan.cache_type_k])
         args.extend(["--cache-type-v", plan.cache_type_v])
+    if plan.mmproj_to_host:
+        args.append("--no-mmproj-offload")
+    if plan.n_parallel > 0:
+        args.extend(["--parallel", str(plan.n_parallel)])
+    if plan.cache_ram_mib >= 0:
+        args.extend(["--cache-ram", str(plan.cache_ram_mib)])
+    # draft_dropped has no flag here: the caller owns the speculative flags.
     return args
 
 
