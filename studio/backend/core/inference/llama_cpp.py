@@ -32611,17 +32611,18 @@ class LlamaCppBackend:
                     # The policy stopped waiting for room. Ending the turn leaves the
                     # partial in the conversation rather than hanging the chat.
                     logger.info("Paused generation was not resumed; ending the turn")
-                    # And says so. This loop breaks into the final answering pass, so
-                    # unlike the plain path it usually still produces text, but the pause
-                    # the client was shown ("Paused while another chat finishes") has to
-                    # be resolved either way: a chat that waited minutes and then answered
-                    # something shorter has told the user nothing about the minutes, and a
-                    # final pass that produces nothing leaves the same blank turn the plain
-                    # path did. Yielded here rather than appended to `_carried_truncations`
-                    # because those are drained at the TOP of this loop, which the break
-                    # below never reaches again; emitted once, because the break follows.
+                    # And says so, then ends the turn the way the final pass does when its
+                    # own resume is refused: the notice, then a terminal metadata carrying
+                    # `length`, which is the shape the client already resumes from. This
+                    # used to break into the final answering pass instead, but the lease
+                    # went back with on_preempted and the participant is PAUSED, so that
+                    # pass decoded on cells the planner had already handed out, uncounted
+                    # and unselectable; whatever the rounds streamed stays on screen.
                     yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
-                    break
+                    _gave_up_meta = _build_metadata_event(_iter_usage, _iter_timings, "length")
+                    if _gave_up_meta is not None:
+                        yield _gave_up_meta
+                    return
                 # Paired with the pause above, so a client that shows one shows the other.
                 yield {"type": "preempt", "state": "resumed"}
                 # `max_tokens` bounds NEW tokens and the next iteration rebuilds the
