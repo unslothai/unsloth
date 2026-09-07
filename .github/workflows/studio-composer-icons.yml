@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Composer icon alignment
+
+on:
+  pull_request:
+    paths:
+      - 'studio/frontend/src/index.css'
+      - 'studio/frontend/src/components/assistant-ui/**'
+      - 'studio/frontend/src/components/ui/button.tsx'
+      - 'studio/frontend/src/components/ui/tooltip*.tsx'
+      - 'studio/frontend/src/features/chat/shared-composer.tsx'
+      - 'studio/frontend/package*.json'
+      - 'studio/frontend/vite.config.ts'
+      - 'studio/frontend/smoke-composer-icons*'
+      - 'studio/frontend/tests/composer-icon-alignment.test.ts'
+      - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/_playwright_robust.py'
+      - '.github/workflows/studio-composer-icons.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'studio/frontend/**'
+      - 'tests/studio/playwright_composer_icons.py'
+      - 'tests/studio/_playwright_robust.py'
+      - '.github/workflows/studio-composer-icons.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: composer-icons-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  alignment:
+    name: Icons / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engines: chromium firefox
+          - os: windows-latest
+            engines: chromium firefox
+          - os: macos-15
+            engines: chromium firefox webkit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Audit dependency lockfiles
+        run: python scripts/lockfile_supply_chain_audit.py
+      - name: Install npm with allowScripts enforcement
+        run: npm install -g npm@11.19.0 --no-fund --no-audit
+      - name: Install frontend dependencies
+        run: npm ci --prefix studio/frontend --strict-allow-scripts --no-fund --no-audit
+      - name: Install Playwright
+        run: python -m pip install playwright==1.61.0
+      - name: Install browser engines
+        run: python -m playwright install ${{ matrix.engines }}
+      - name: Verify rendered icon centers
+        run: python tests/studio/playwright_composer_icons.py ${{ matrix.engines }}
+      - name: Upload measurements and screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: composer-icons-${{ matrix.os }}
+          path: logs/composer-icons
+          retention-days: 7
