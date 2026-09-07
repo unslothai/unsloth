@@ -371,9 +371,24 @@ def version_minor(v: str) -> str:
 _PRERELEASE_RE = re.compile(r"(?:a|b|c|rc|alpha|beta|pre|preview|dev)\d*$", re.IGNORECASE)
 
 
+def _split_prerelease(version: str) -> tuple[str, bool]:
+    """`(release core, is a prerelease)`, hyphenated PEP 440 spellings included.
+
+    `normalise_version` cuts everything from the hyphen, so `2.11.0-rc1` reached the check as
+    a plain `2.11.0` and cleared the ABI floor it sits below. The separator is folded away
+    first: PEP 440 spells the same prerelease `2.11.0rc1`, `2.11.0-rc1` and `2.11.0.rc1`.
+    """
+    text = str(version).split("+", 1)[0].strip().lower()
+    text = re.sub(r"[-_.]?(a|b|c|rc|alpha|beta|pre|preview|dev)[-_.]?(\d*)$", r"\1\2", text)
+    match = _PRERELEASE_RE.search(text)
+    if match is None:
+        return text, False
+    return text[: match.start()].rstrip("-_."), True
+
+
 def _is_prerelease(version: str) -> bool:
     """Does this version sort below the release with the same numbers?"""
-    return bool(_PRERELEASE_RE.search(normalise_version(version).replace("_", ".").rstrip(".")))
+    return _split_prerelease(version)[1]
 
 
 def at_least(version: str, floor: str) -> bool:
@@ -385,11 +400,11 @@ def at_least(version: str, floor: str) -> bool:
     """
     # The suffix goes before the digits are read, or `2.11.0rc1` compares as 2.11.0.1 and
     # sorts ABOVE 2.11 on the strength of its prerelease number.
-    core = _PRERELEASE_RE.sub("", normalise_version(version)).rstrip(".")
+    core, prerelease = _split_prerelease(version)
     order = cmp_versions(core, floor)
     if order != 0:
         return order > 0
-    return not _is_prerelease(version)
+    return not prerelease
 
 
 def cmp_versions(a: str, b: str) -> int:
@@ -1091,6 +1106,18 @@ def _command_execs(command: str) -> bool:
     return False
 
 
+# `true` and `:` are documented as always succeeding, so an `&&` after one is always reached.
+# Treating every non-pip command as a possibly-failing probe dropped the install behind them.
+_ALWAYS_SUCCEEDS = frozenset({"true", ":"})
+
+
+def _piece_always_succeeds(piece: str) -> bool:
+    """Is this piece a command whose exit status is documented as always zero?"""
+    stripped = _strip_exec_prefixes(piece.strip().lstrip("!").strip())[0].strip()
+    word = _split_first_word(stripped)[0] if stripped else ""
+    return word in _ALWAYS_SUCCEEDS
+
+
 def _fold_and_or(assured: list[bool], prev_ops: list[str], piece_is_pip: bool) -> None:
     """Fold the piece just read into "is this and-or list assumed to have succeeded?".
 
@@ -1179,9 +1206,14 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     def in_sub() -> bool:
         return in_backtick or not all(groupings)
 
-    def flush() -> None:
+    # The operator that ENDED each piece. `exec` under `|` or `&` runs in a subshell, so the
+    # parent shell reaches the next command and the list must not be truncated there.
+    seps: list[str] = []
+
+    def flush(separator: str = "") -> None:
         nonlocal buf
         out.append(("".join(buf), buf_conditional))
+        seps.append(separator)
         buf = []
 
     while i < len(line):
@@ -1238,9 +1270,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf.append(ch)  # its separators are its own; the body is split on its own later
             i += 1
         elif line.startswith("||", i):
-            _fold_and_or(list_has_pip, prev_ops, _piece_is_pip("".join(buf)))
+            _fold_and_or(
+                list_has_pip,
+                prev_ops,
+                _piece_is_pip("".join(buf)) or _piece_always_succeeds("".join(buf)),
+            )
             prev_ops[-1] = "||"
-            flush()
+            flush("||")
             tails[-1] = True
             buf_conditional = any(tails)
             i += 2
@@ -1257,9 +1293,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # `nvidia-smi && pip install torch==2.12.0` installs nothing on a CPU box, and
             # R-INST-004 is error severity, so replaying it reddened CI on a correct
             # notebook.
-            _fold_and_or(list_has_pip, prev_ops, _piece_is_pip("".join(buf)))
+            _fold_and_or(
+                list_has_pip,
+                prev_ops,
+                _piece_is_pip("".join(buf)) or _piece_always_succeeds("".join(buf)),
+            )
             prev_ops[-1] = "&&"
-            flush()
+            flush("&&")
             tails[-1] = not list_has_pip[-1]
             buf_conditional = any(tails)
             i += 2
@@ -1267,14 +1307,17 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             ch == ";"
             or (
                 # `A & B` backgrounds A and runs B, `A | B` runs both: unconditional either way.
-                # `>&` and `&>` are redirections, not separators.
                 ch in "&|"
-                # `>&`, `&>` and `>|` are redirections rather than separators.
-                and not (ch == "&" and (line[i - 1 : i] == ">" or line[i + 1 : i + 2] == ">"))
+                # `>&`, `<&`, `&>` and `>|` are redirections rather than separators. `<&`
+                # duplicates an INPUT descriptor, so `0<&1 pip install ...` is one command and
+                # splitting on its `&` left `1 pip install ...`, which reads as no pip at all.
+                and not (
+                    ch == "&" and (line[i - 1 : i] in ("<", ">") or line[i + 1 : i + 2] == ">")
+                )
                 and not (ch == "|" and line[i - 1 : i] == ">")
             )
         ):
-            flush()
+            flush(ch if ch in "&|" else ";")
             tails[-1] = False
             list_has_pip[-1] = False
             prev_ops[-1] = ""  # a new and-or list starts here
@@ -1329,11 +1372,12 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # unreachable. Its own substitutions still expanded first, and one inside a `$( )` only
     # replaces that subshell, so this is applied at this level alone.
     handed_over = False
+    seps = seps + [""] * (len(out) - len(seps))
     # One flag per open compound statement: True once its BODY has started. `if false; then
     # echo x; pip install ...; fi` runs neither command, but only the piece carrying the
     # `then` was being flagged, so the second one replayed as an install bash never performs.
     body_levels: list[bool] = []
-    for (piece, flag), (text, command_flag) in zip(out, commands):
+    for (piece, flag), (text, command_flag), separator in zip(out, commands, seps):
         if handed_over:
             break
         for keyword in _leading_shell_keywords(piece):
@@ -1368,7 +1412,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`
             # along with every other transparent prefix. An `exec` bash may never reach hands
             # nothing over, so the body condition counts here as much as the separator one.
-            handed_over = not piece_conditional and _command_execs(piece)
+            handed_over = (
+                not piece_conditional
+                and separator not in ("|", "&")  # a subshell; the parent shell carries on
+                and _command_execs(piece)
+            )
     return ordered
 
 
@@ -1565,6 +1613,11 @@ def _git_source_repository(source: str) -> str:
     can carry `github.com/unslothai/unsloth` inside its own path, and a substring test reads
     that as permission.
     """
+    # `pip install $(printf %s git+https://.../unsloth.git)` hands pip a clean URL, but the
+    # raw scan keeps the substitution's closing bracket, and `unsloth.git)` matched no
+    # allowlist entry so a permitted install was reported. Quotes and brackets are shell
+    # syntax, never part of a repository path.
+    source = source.strip().rstrip(")}`\"'")
     remainder = source.split("+", 1)[1] if "+" in source else source
     # pip normalises the scheme, so the comparison is on the lowered host and path below.
     remainder = remainder.split("://", 1)[-1]
@@ -2813,11 +2866,24 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             f"upstream={len(upstream)} snapshot={len(snapshot)} "
             f"diff={n} (new={len(new)} removed={len(removed)} changed={len(changed)}) ==="
         )
+        strict_keys = COLAB_STRICT_ORACLE_KEYS.get(upstream_name, frozenset())
+        # Present in BOTH, not merely equal in both. An upstream format change acknowledged
+        # into the snapshot leaves the two parses identical and empty of the key, so the
+        # no-drift return below passed while `_colab_python_version` answered None and marker
+        # evaluation silently replayed every requirement.
+        missing_keys = sorted(k for k in strict_keys if k not in upstream or k not in snapshot)
+        if missing_keys:
+            any_diff = True
+            strict_diff = True
+            print(
+                f"::error::colab-diff: {upstream_name} has no parseable "
+                f"{', '.join(missing_keys)} entry; _parse_os_lines needs updating"
+            )
         if not n:
-            print("  no drift")
+            if not missing_keys:
+                print("  no drift")
             continue
         any_diff = True
-        strict_keys = COLAB_STRICT_ORACLE_KEYS.get(upstream_name, frozenset())
         drifted_strict_keys = sorted(
             strict_keys.intersection(
                 [k for k, _ in new] + [k for k, _ in removed] + [k for k, _, _ in changed]

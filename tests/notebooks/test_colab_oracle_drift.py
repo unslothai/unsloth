@@ -37,7 +37,10 @@ import notebook_validator as nv  # noqa: E402
 
 PIP = "torch==2.10.0\naccelerate==1.13.0\n"
 APT = "curl/jammy,now 7.81.0-1ubuntu1.24 amd64 [installed]\n"
-OS_INFO = "R version 4.5.3\n"
+# The real os-info carries a `Python 3.x.y` line, and COLAB_STRICT_ORACLE_KEYS makes it
+# rule-bearing: `_marker_environment` reads it. A fixture without one is the very drift
+# `colab-diff --strict` has to catch, so it is spelled out here rather than left implicit.
+OS_INFO = "Python 3.13.15\nR version 4.5.3\n"
 
 UPSTREAM = {
     "pip-freeze.gpu.txt": PIP,
@@ -87,7 +90,9 @@ def test_pip_drift_is_advisory_without_strict(oracle):
     "name, drifted",
     [
         ("apt-list-gpu.txt", "curl/jammy,now 7.81.0-1ubuntu1.25 amd64 [installed]\n"),
-        ("os-info-gpu.txt", "R version 4.6.0\n"),
+        # The Python line stays: dropping it is rule-bearing drift, which the case below
+        # covers. What is under test here is an R release nothing consults.
+        ("os-info-gpu.txt", "Python 3.13.15\nR version 4.6.0\n"),
     ],
 )
 def test_non_rule_oracles_never_fail_strict(oracle, capsys, name, drifted):
@@ -245,3 +250,19 @@ def test_a_missing_advisory_snapshot_stays_advisory(oracle):
     _, snapshot_dir = oracle
     (snapshot_dir / nv.COLAB_ORACLE_FILES["apt-list-gpu.txt"]).unlink()
     assert _diff(snapshot_dir, strict = True) == 0
+
+
+def test_a_strict_key_absent_from_both_oracles_fails_strict(oracle):
+    """Present in BOTH, not merely equal in both.
+
+    An upstream format change acknowledged into the snapshot leaves the two parses identical
+    and empty of the key, so the no-drift return fired while `_colab_python_version` answered
+    None and marker evaluation silently replayed every requirement.
+    """
+    upstream, snapshot_dir = oracle
+    without_python = "R version 4.5.3\n"
+    upstream["os-info-gpu.txt"] = without_python
+    (snapshot_dir / nv.COLAB_ORACLE_FILES["os-info-gpu.txt"]).write_text(
+        without_python, encoding = "utf-8"
+    )
+    assert _diff(snapshot_dir, strict = True) == 1
