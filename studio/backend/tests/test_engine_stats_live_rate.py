@@ -142,9 +142,7 @@ def test_an_idle_tick_between_two_generations_closes_the_window(monkeypatch):
     assert [s["gen_tok_s"] for s in stats][-1] == 5.0
 
 
-def test_the_second_of_two_concurrent_generations_is_not_divided_by_the_gap(
-    monkeypatch,
-):
+def test_the_second_of_two_concurrent_generations_is_not_divided_by_the_gap(monkeypatch):
     """The 183.7 tok/s record again, reached the other way.
 
     Two 1837-token generations run together for 80 seconds and release one poll

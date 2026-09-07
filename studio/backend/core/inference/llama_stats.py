@@ -204,9 +204,7 @@ class LlamaServerStatsLogger:
                     self._gen_busy_s += dt
                 self._gen_tokens += released
                 gen_delta = (
-                    self._token_rate(self._gen_tokens, self._gen_busy_s, dt)
-                    if released
-                    else 0.0
+                    self._token_rate(self._gen_tokens, self._gen_busy_s, dt) if released else 0.0
                 )
                 # Plain delta: this counter moves on every decode step, so the tick
                 # it is read in IS the window it was produced in.
