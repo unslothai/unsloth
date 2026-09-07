@@ -359,7 +359,10 @@ def scaled_reserve(reserve_hours: float, total_hours: float, basis_hours: float)
 
 
 def in_flight_for_commit(
-    own_busy: list[str], head_sha: str, kind: str, slot: str = "1"
+    own_busy: list[str],
+    head_sha: str,
+    kind: str,
+    slot: str = "1",
 ) -> str | None:
     """The ref of a busy kernel of ours already running THIS commit for THIS
     workflow in THIS slot, or None.

@@ -505,9 +505,9 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
     sweep, selection = main.split("for account_id in order:", 2)[1:]
     assert "in_flight_for_commit(survey" in sweep and "concurrency_verdict(" not in sweep
     assert "concurrency_verdict(" in selection and "in_flight_for_commit(" not in selection
-    assert "_survey(account_id)" in sweep and "_survey(account_id)" in selection, (
-        "surveys are not shared between the sweep and the selection"
-    )
+    assert (
+        "_survey(account_id)" in sweep and "_survey(account_id)" in selection
+    ), "surveys are not shared between the sweep and the selection"
     for path, kind in ((NOTEBOOK_WF, "notebook"), (STUDIO_WF, "studio")):
         gate_steps = [
             s
@@ -520,7 +520,14 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
 
 
 def _drive_gate(
-    monkeypatch, tmp_path, *, holder, outcomes = None, extra = (), clock = None, holder_slot = "1"
+    monkeypatch,
+    tmp_path,
+    *,
+    holder,
+    outcomes = None,
+    extra = (),
+    clock = None,
+    holder_slot = "1",
 ):
     """Run gate.main() with two stub accounts. `holder` is the account whose
     survey shows a notebook kernel of the commit under test; `outcomes` maps an
@@ -599,7 +606,9 @@ def _drive_gate(
     )
     code = gate.main()
     outputs = dict(
-        line.split("=", 1) for line in (tmp_path / "out.txt").read_text().splitlines() if "=" in line
+        line.split("=", 1)
+        for line in (tmp_path / "out.txt").read_text().splitlines()
+        if "=" in line
     )
     return code, outputs, surveys_asked, sha
 
@@ -672,7 +681,11 @@ def test_the_second_slot_is_not_a_duplicate_but_its_own_retry_is(monkeypatch, tm
     # The workflow threads its slot input through the gate, the collector's
     # in-flight check and the launcher (which writes it into the slug).
     steps = {s.get("id"): s for _j, _n, s in _steps(_wf(NOTEBOOK_WF)) if s.get("id")}
-    for step_id, script in (("decide", "gate.py"), ("collect", "collect.py"), ("launch", "launch.py")):
+    for step_id, script in (
+        ("decide", "gate.py"),
+        ("collect", "collect.py"),
+        ("launch", "launch.py"),
+    ):
         run = steps[step_id]["run"]
         assert script in run
         assert "--slot '${{ inputs.slot || '1' }}'" in run, f"{step_id} is not told the slot"
@@ -705,7 +718,7 @@ def test_the_gate_is_keyed_on_the_commit_the_gpu_job_will_test():
         assert ref["env"]["UNSLOTH_REF"] == "${{ inputs.unsloth_ref }}"
         assert "head_sha=" in ref["run"] and "git ls-remote" in ref["run"]
         decide = steps["decide"]
-        assert "--head-sha '${{ steps.ref.outputs.head_sha }}'" in decide["run"], (
-            f"{path.name}: the gate is keyed on a commit the GPU job may not test"
-        )
+        assert (
+            "--head-sha '${{ steps.ref.outputs.head_sha }}'" in decide["run"]
+        ), f"{path.name}: the gate is keyed on a commit the GPU job may not test"
         assert "github.sha" not in decide["run"]

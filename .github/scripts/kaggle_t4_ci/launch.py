@@ -157,7 +157,11 @@ def parse_slug(slug: str) -> dict | None:
     }
 
 
-def slug_name(kind: str = "", commit_sha: str = "", slot: str = "1") -> str:
+def slug_name(
+    kind: str = "",
+    commit_sha: str = "",
+    slot: str = "1",
+) -> str:
     """The name for a kernel about to be pushed.
 
     Falls back to the legacy random form when no commit is named, as a local

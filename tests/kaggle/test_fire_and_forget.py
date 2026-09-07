@@ -124,9 +124,18 @@ def test_the_slug_carries_the_slot_and_reads_slot_one_when_absent():
     assert launch._slugify(two.replace("-", " ")) == two
     # The collector narrows its in-flight answer by slot too.
     assert "slot" in launch.parse_slug(two)
-    assert gate.in_flight_for_commit([f"me/{two} (RUNNING)"], "1a2b3c4d5e6f7890", "notebook", "2") == f"me/{two}"
-    assert gate.in_flight_for_commit([f"me/{two} (RUNNING)"], "1a2b3c4d5e6f7890", "notebook", "1") is None
-    assert gate.in_flight_for_commit([f"me/{one} (RUNNING)"], "1a2b3c4d5e6f7890", "notebook", "2") is None
+    assert (
+        gate.in_flight_for_commit([f"me/{two} (RUNNING)"], "1a2b3c4d5e6f7890", "notebook", "2")
+        == f"me/{two}"
+    )
+    assert (
+        gate.in_flight_for_commit([f"me/{two} (RUNNING)"], "1a2b3c4d5e6f7890", "notebook", "1")
+        is None
+    )
+    assert (
+        gate.in_flight_for_commit([f"me/{one} (RUNNING)"], "1a2b3c4d5e6f7890", "notebook", "2")
+        is None
+    )
 
 
 def test_the_collector_in_flight_answer_is_per_slot(tmp_path, monkeypatch):
@@ -1074,7 +1083,13 @@ class _PagedApi(_StubApi):
         self._pages = pages
         self.pages_asked: list[int] = []
 
-    def kernels_list(self, mine = True, page = 1, page_size = 100, sort_by = "dateRun"):
+    def kernels_list(
+        self,
+        mine = True,
+        page = 1,
+        page_size = 100,
+        sort_by = "dateRun",
+    ):
         self.pages_asked.append(page)
         return self._pages[page - 1] if page <= len(self._pages) else []
 
@@ -1094,7 +1109,9 @@ def test_a_kernel_of_ours_below_five_hundred_newer_records_is_still_reached():
         [_StubKernel(f"me/human-notebook-{p}-{i}", last_run_time = recent) for i in range(100)]
         for p in range(6)
     ]
-    ours = _StubKernel("me/unsloth-t4-ci-nabcdef012345-1111", last_run_time = now - timedelta(hours = 5))
+    ours = _StubKernel(
+        "me/unsloth-t4-ci-nabcdef012345-1111", last_run_time = now - timedelta(hours = 5)
+    )
     pages = human + [[ours] + [_StubKernel(f"me/old-{i}", last_run_time = recent) for i in range(99)]]
     api = _PagedApi(pages, {})
     found = collect.find_ours(api, now = now)
@@ -1130,7 +1147,10 @@ def test_the_listing_walk_stops_at_the_pass_deadline(monkeypatch):
 
     now = datetime(2026, 9, 6, 12, 0, 0)
     pages = [
-        [_StubKernel(f"me/human-{p}-{i}", last_run_time = now - timedelta(hours = 1)) for i in range(100)]
+        [
+            _StubKernel(f"me/human-{p}-{i}", last_run_time = now - timedelta(hours = 1))
+            for i in range(100)
+        ]
         for p in range(5)
     ]
     api = _PagedApi(pages, {})
@@ -1157,7 +1177,13 @@ def test_a_reaped_kernel_is_not_reported_deleted_before_it_is(tmp_path, monkeypa
 
     slug = "me/unsloth-t4-ci-nabcdef012345-1111"
     api = _StubApi([], {slug: "RUNNING"})
-    entry = {"slug": slug, "sha": "abcdef012345", "kind": "notebook", "legacy": False, "age_hours": 5.0}
+    entry = {
+        "slug": slug,
+        "sha": "abcdef012345",
+        "kind": "notebook",
+        "legacy": False,
+        "age_hours": 5.0,
+    }
     record = collect.collect_one(api, entry, tmp_path, expect = 1, max_age_hours = 3.0, delete = False)
     assert record["verdict"] == "reaped"
     assert "released for deletion" in record["reason"] and "was deleted" not in record["reason"]
