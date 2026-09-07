@@ -964,9 +964,9 @@ class TestTheRetryHintIsInsideTheCap:
         # body has to give up about 400 characters to pay for it. Charged as prose it
         # gives up its length, which line rounding can inflate a little: three times over
         # is comfortably past anything that rounding explains.
-        assert len(without) - len(body) >= 3 * len(hint), (
-            "the body gave up about the hint's length, so the hint was charged as prose"
-        )
+        assert len(without) - len(body) >= 3 * len(
+            hint
+        ), "the body gave up about the hint's length, so the hint was charged as prose"
 
     def test_a_result_that_fits_still_carries_it(self):
         assert tools._truncate("ok", 1_000, hint = self._HINT) == "ok" + self._HINT

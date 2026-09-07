@@ -452,9 +452,9 @@ def test_public_address_refuses_the_blocks_ipaddress_still_calls_global(address)
     """Membership of 2000::/3 decides, because ``is_global`` alone does not."""
     import ipaddress
 
-    assert ipaddress.ip_address(address).is_global is True, (
-        "this address is only interesting while ipaddress still calls it global"
-    )
+    assert (
+        ipaddress.ip_address(address).is_global is True
+    ), "this address is only interesting while ipaddress still calls it global"
     assert public_address(address) is False
 
 
@@ -1369,9 +1369,9 @@ def test_a_client_hello_at_the_body_cap_is_not_refused_by_its_record_framing(pro
     """The cap bounds the handshake body; the wire also carries a header per record."""
     hello = _hello_at_the_body_cap("upstream.test")
     wire = _hello_records(hello, 4096)
-    assert len(wire) > network_proxy.MAX_CLIENT_HELLO_BYTES, (
-        "the framing has to push this past the body cap or the test proves nothing"
-    )
+    assert (
+        len(wire) > network_proxy.MAX_CLIENT_HELLO_BYTES
+    ), "the framing has to push this past the body cap or the test proves nothing"
     assert len(wire) <= network_proxy.MAX_CLIENT_HELLO_WIRE_BYTES
     client = _tunnel(proxy, upstream, "upstream.test")
     client.sendall(wire)
