@@ -2594,6 +2594,8 @@ export function HubModelPicker({
   models,
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
+  loadedLoadIdOverride,
+  loadedGgufVariantOverride,
   loraModels = [],
   externalModels = [],
   value,
@@ -2618,6 +2620,8 @@ export function HubModelPicker({
    *  example the two-file STT sidecars). */
   additionalOnDeviceModels?: ModelOption[];
   loadedModelIdOverride?: string;
+  loadedLoadIdOverride?: string;
+  loadedGgufVariantOverride?: string | null;
   /** Fine-tuned models, shown as a section in the On Device view. */
   loraModels?: LoraModelOption[];
   /** Connected provider models, shown in the Connected section. */
@@ -2670,7 +2674,8 @@ export function HubModelPicker({
     ? selectedCheckpoint
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
-  const activeLoadId = useChatRuntimeStore((s) => s.activeLoadId);
+  const chatActiveLoadId = useChatRuntimeStore((s) => s.activeLoadId);
+  const activeLoadId = loadedLoadIdOverride ?? chatActiveLoadId;
   const loadingPick = useChatRuntimeStore((s) => s.loadingModelPick);
   const selectedLoadId = selectedLoadIdOverride ?? (
     modelIdsMatchForPicker(loadingPick?.id, value)
@@ -2682,12 +2687,14 @@ export function HubModelPicker({
   const matchesSelectedCacheCopy = (repoId: string, loadId?: string | null) =>
     modelIdsMatchForPicker(loadId || repoId, selectedLoadId);
   const matchesLoadedCacheCopy = (repoId: string, loadId?: string | null) =>
-    loadedModelIdOverride !== undefined ||
+    (loadedModelIdOverride !== undefined && loadedLoadIdOverride === undefined) ||
     !modelIdsMatchForPicker(loadedModelId, repoId) ||
     modelIdsMatchForPicker(loadId || repoId, activeLoadId || loadedModelId);
 
   // Loaded GGUF quant of the active model; marks the matching pinned row.
-  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const chatActiveGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeGgufVariant = loadedModelIdOverride !== undefined
+    ? loadedGgufVariantOverride ?? null : chatActiveGgufVariant;
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
   // Fade the list's top edge once scrolled, and its bottom edge while more rows sit below the fold.
@@ -3766,6 +3773,12 @@ export function HubModelPicker({
       sortCachedRepos(
         cachedGguf.filter(
           (c) =>
+            // STT sidecars accept curated keys, not an arbitrary cached snapshot.
+            !(
+              c.active_cache === false &&
+              (c.task === "automatic-speech-recognition" ||
+                (typeof task === "string" ? [task] : task ?? []).includes("automatic-speech-recognition"))
+            ) &&
             passesTaskGate(
               c.task,
               c.repo_id,
@@ -5226,7 +5239,8 @@ export function HubModelPicker({
       quant: variant.quant,
       loadedModelId,
       activeGgufVariant,
-      loadId: loadedModelIdOverride === undefined ? c.load_id : undefined,
+      loadId: loadedModelIdOverride === undefined || loadedLoadIdOverride !== undefined
+        ? c.load_id : undefined,
       activeLoadId,
       selectedLoadId,
       selectedGgufVariant,

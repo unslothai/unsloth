@@ -607,12 +607,17 @@ def test_snapshot_base_model_metadata_keeps_logical_repo(tmp_path, monkeypatch):
     calls = []
 
     def model_info(self, repo_id, **kwargs):
-        calls.append(repo_id)
-        return SimpleNamespace(cardData = {"base_model": "Tongyi-MAI/Z-Image"})
+        calls.append((repo_id, kwargs.get("revision")))
+        base = (
+            "Tongyi-MAI/Z-Image"
+            if kwargs.get("revision") == "revision"
+            else "Tongyi-MAI/Z-Image-Turbo"
+        )
+        return SimpleNamespace(cardData = {"base_model": base})
 
     monkeypatch.setattr(huggingface_hub.HfApi, "model_info", model_info)
     assert diffusion._hf_base_model(str(snapshot), None) == "Tongyi-MAI/Z-Image"
-    assert calls == ["unsloth/Z-Image-GGUF"]
+    assert calls == [("unsloth/Z-Image-GGUF", "revision")]
 
 
 @pytest.mark.parametrize("escape", ["foreign_blob", "sibling_snapshot", "symlinked_blobs"])

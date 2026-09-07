@@ -3342,7 +3342,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       const loadedModelId = loadResp.model || modelPath;
       // The identity stays the backend's; the pin is recorded alongside it so a later reload finds the same directory.
       useChatRuntimeStore.setState({
-        activeLoadId: modelPath === candidate.id ? null : modelPath,
+        activeLoadId: loadResp.cache_load_id ?? (modelPath === candidate.id ? null : modelPath),
       });
       useChatRuntimeStore
         .getState()
@@ -3507,7 +3507,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       if (!(loadResp.is_lora ?? false)) {
         recordLastLocalModelLoad({
           id: candidate.id,
-          loadId: candidate.loadId,
+          loadId: loadResp.cache_load_id ?? candidate.loadId,
           kind: candidate.kind,
           ggufVariant: candidate.ggufVariant,
         });
@@ -3818,10 +3818,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: loadResp.is_local_model ?? false,
+          activeLoadId: loadResp.cache_load_id ?? null,
           ...resolveLoadedSpeculativeSettings(loadResp),
         });
         recordLastLocalModelLoad({
           id: DEFAULT_CHAT_MODEL_REPO,
+          loadId: loadResp.cache_load_id,
           kind: "gguf",
           ggufVariant: DEFAULT_CHAT_MODEL_VARIANT,
         });

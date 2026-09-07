@@ -870,6 +870,7 @@ class TestLoadHubDownloadExclusion:
             # Read from requested_extra_args, which is what the load was invoked
             # with rather than the rewritten launch list.
             "requested_llama_extra_args",
+            "cache_load_id",
         }
         unresolved = sorted(
             name

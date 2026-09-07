@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { hfCacheRepoId } from "@/features/hub/lib/model-identity";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeftRightIcon,
@@ -2831,6 +2832,9 @@ export function ImagesPage({
     revertPick,
   ]);
 
+  const residentLoadId = status?.loaded ? status.repo_id ?? "" : "";
+  const residentModelId = hfCacheRepoId(residentLoadId) ?? residentLoadId;
+
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
@@ -3583,8 +3587,13 @@ export function ImagesPage({
             ) : (
               <ModelSelector
                 models={imageModels}
-                value={status?.loaded ? status.repo_id ?? undefined : undefined}
-                activeGgufVariant={quant}
+                value={residentModelId || undefined}
+                selectedLoadId={residentLoadId}
+                selectedGgufVariant={status?.gguf_variant ?? null}
+                loadedModelIdOverride={residentModelId}
+                loadedLoadIdOverride={residentLoadId}
+                loadedGgufVariantOverride={status?.gguf_variant ?? null}
+                activeGgufVariant={status?.gguf_variant ?? quant}
                 onValueChange={handleModelSelect}
                 resolveDownloadFootprint={resolveDownloadFootprint}
                 onEject={status?.loaded ? handleUnload : undefined}

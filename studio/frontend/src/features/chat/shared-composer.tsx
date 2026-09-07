@@ -1705,7 +1705,7 @@ export function SharedComposer({
           loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
           mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
-          activeLoadId: sel.loadId ?? null,
+          activeLoadId: resp.cache_load_id ?? sel.loadId ?? null,
           // Same value as the baseline above, so when this pane becomes the active model the UI and a later
           // reload use the context it actually loaded with.
           customContextLength: keepCustomCtx,

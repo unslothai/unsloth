@@ -6,6 +6,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import {
+  isHfCacheSnapshotPath,
+  publicModelId,
+} from "../src/features/hub/lib/model-identity.ts";
+import { modelIdsMatchForPicker } from "../src/features/model-picker/components/model-selector/row-identity.ts";
+import {
   createPickGuard,
   runGgufRepoPick,
 } from "../src/lib/diffusion-gguf-pick.ts";
@@ -16,6 +21,8 @@ const repoId = "unsloth/Z-Image-Turbo-GGUF";
 const localPath =
   "/custom/models--unsloth--Z-Image-Turbo-GGUF/snapshots/revision";
 const filename = "model-Q8_0.gguf";
+const hfCacheRepoId = (path: string) =>
+  isHfCacheSnapshotPath(path) ? publicModelId(path) : null;
 
 function parse(path: string) {
   return ts.createSourceFile(
@@ -43,9 +50,12 @@ function evaluate(
   file: ts.SourceFile,
   env: Record<string, unknown>,
 ) {
-  const js = ts.transpileModule(`const result = (${node.getText(file)});`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2020 },
-  }).outputText;
+  const js = ts.transpileModule(
+    `const result = (${node.getText(file).replace(/^export\s+/, "")});`,
+    {
+      compilerOptions: { target: ts.ScriptTarget.ES2020 },
+    },
+  ).outputText;
   return new Function(...Object.keys(env), `${js}; return result;`)(
     ...Object.values(env),
   );
@@ -65,6 +75,58 @@ function callback(
 }
 
 for (const page of ["images", "video"]) {
+  test(`${page}: hydrated status marks the logical repository and exact resident copy`, () => {
+    const file = parse(`features/${page}/${page}-page.tsx`);
+    const status = { loaded: true, repo_id: localPath, gguf_variant: "Q8_0" };
+    const env: Record<string, unknown> = {
+      status,
+      quant: "Q6_K",
+      hfCacheRepoId,
+    };
+    for (const name of ["residentLoadId", "residentModelId"]) {
+      const [decl] = find(
+        file,
+        (n) => ts.isVariableDeclaration(n) && n.name.getText(file) === name,
+      ) as ts.VariableDeclaration[];
+      if (decl?.initializer) env[name] = evaluate(decl.initializer, file, env);
+    }
+    const [selector] = find(
+      file,
+      (n) =>
+        ts.isJsxSelfClosingElement(n) &&
+        n.tagName.getText(file) === "ModelSelector",
+    ) as ts.JsxSelfClosingElement[];
+    const props = Object.fromEntries(
+      selector.attributes.properties.flatMap((p) => {
+        if (
+          !ts.isJsxAttribute(p) ||
+          !p.initializer ||
+          !ts.isJsxExpression(p.initializer) ||
+          !p.initializer.expression
+        )
+          return [];
+        const name = p.name.getText(file);
+        if (
+          ![
+            "value",
+            "selectedLoadId",
+            "selectedGgufVariant",
+            "loadedModelIdOverride",
+            "loadedLoadIdOverride",
+            "loadedGgufVariantOverride",
+          ].includes(name)
+        )
+          return [];
+        return [[name, evaluate(p.initializer.expression, file, env)]];
+      }),
+    );
+    assert.equal(props.value, repoId);
+    assert.equal(props.selectedLoadId, localPath);
+    assert.equal(props.selectedGgufVariant, "Q8_0");
+    assert.equal(props.loadedModelIdOverride, repoId);
+    assert.equal(props.loadedLoadIdOverride, localPath);
+    assert.equal(props.loadedGgufVariantOverride, "Q8_0");
+  });
   test(`${page}: route validation and exact filename keep the physical target`, () => {
     const file = parse(`app/routes/${page}.tsx`);
     const [property] = find(
@@ -156,3 +218,97 @@ for (const page of ["images", "video"]) {
     );
   });
 }
+
+test("chat status keeps its logical checkpoint and physical load identity", () => {
+  const file = parse("features/chat/lib/apply-inference-status-to-store.ts");
+  const [fn] = find(
+    file,
+    (n) =>
+      ts.isFunctionDeclaration(n) &&
+      n.name?.text === "resolveInferenceCheckpointId",
+  ) as ts.FunctionDeclaration[];
+  const resolve = evaluate(fn, file, { hfCacheRepoId });
+  const status = {
+    active_model: repoId,
+    model_identifier: localPath,
+    is_gguf: true,
+  };
+  assert.equal(resolve(status), repoId);
+  const [state] = find(
+    file,
+    (n) =>
+      ts.isObjectLiteralExpression(n) &&
+      n.properties.some(
+        (p) =>
+          ts.isPropertyAssignment(p) &&
+          p.name.getText(file) === "residentCheckpoint",
+      ),
+  ) as ts.ObjectLiteralExpression[];
+  assert.deepEqual(evaluate(state, file, { status, checkpointId: repoId }), {
+    residentCheckpoint: repoId,
+    activeLoadId: localPath,
+  });
+  assert.deepEqual(evaluate(state, file, {
+    status: { ...status, model_identifier: repoId, cache_load_id: localPath }, checkpointId: repoId,
+  }), { residentCheckpoint: repoId, activeLoadId: localPath });
+});
+
+test("the transcription run picker excludes unsupported inactive snapshots", () => {
+  const file = parse(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  const [decl] = find(
+    file,
+    (n) =>
+      ts.isVariableDeclaration(n) &&
+      n.name.getText(file) === "sortedCachedGguf",
+  ) as ts.VariableDeclaration[];
+  assert.ok(decl.initializer && ts.isCallExpression(decl.initializer));
+  for (const task of ["automatic-speech-recognition", undefined]) {
+    const rows: unknown[] = evaluate(decl.initializer.arguments[0], file, {
+      cachedGguf: [
+        { repo_id: "Org/STT", active_cache: true },
+        { repo_id: "Org/STT", active_cache: false },
+      ],
+      task,
+      catalog: [],
+      activeCatalogArtifactIds: [],
+      downloadedSort: "name",
+      loadTimes: {},
+      sortCachedRepos: (candidates: unknown[]) => candidates,
+      passesTaskGate: () => true,
+      audioPickIsRoutable: () => true,
+      artifactForRepoId: () => ({}),
+      AUDIO_CATALOG: [],
+    })();
+    assert.equal(rows.length, task ? 1 : 2);
+  }
+});
+
+test("media residency overrides mark only the loaded cache copy", () => {
+  const file = parse(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  const [decl] = find(
+    file,
+    (n) =>
+      ts.isVariableDeclaration(n) &&
+      n.name.getText(file) === "matchesLoadedCacheCopy",
+  ) as ts.VariableDeclaration[];
+  assert.ok(decl.initializer);
+  const matches = evaluate(decl.initializer, file, {
+    loadedModelIdOverride: repoId,
+    loadedLoadIdOverride: localPath,
+    loadedModelId: repoId,
+    activeLoadId: localPath,
+    modelIdsMatchForPicker,
+  });
+  assert.equal(matches(repoId, localPath), true);
+  assert.equal(
+    matches(
+      repoId,
+      "/default/models--unsloth--Z-Image-Turbo-GGUF/snapshots/other",
+    ),
+    false,
+  );
+});

@@ -451,7 +451,9 @@ def _cache_inventory_fields(
         capabilities["can_chat"] = False
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
-        "load_id": identity.load_id,
+        "load_id": str(identity.load_snapshot)
+        if model_format == "gguf" and identity.load_snapshot is not None
+        else identity.load_id,
         "active_cache": identity.active_cache,
         "model_format": model_format,
         "runtime": _runtime_for_format(model_format),

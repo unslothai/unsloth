@@ -91,6 +91,7 @@ def test_cached_gguf_keeps_quants_in_previous_download_folders(cache_locations, 
     assert len({row["inventory_id"] for row in rows}) == 2
     for quant, (repo, file_path) in expected.items():
         assert found[quant]["cache_path"] == str(repo)
+        assert found[quant]["load_id"] == str(file_path.parent)
         assert file_path.is_file()
         assert found[quant]["active_cache"] == (
             repo.parent == hf_cache_settings.get_hf_cache_paths().hub_cache
@@ -172,3 +173,90 @@ def test_unknown_loaded_copy_keeps_delete_guard(cache_locations, monkeypatch):
     )
     monkeypatch.setattr("routes.inference.get_llama_cpp_backend", lambda: backend)
     assert deletion._llama_cpp_blocks_delete(repo_id, "Q8_0", str(expected["Q6_K"][0]))
+
+
+@pytest.mark.parametrize("media", ["images", "video"])
+def test_delete_other_copy_of_loaded_media(cache_locations, cache_client, monkeypatch, media):
+    repo_id, expected = cache_locations
+    unused_repo, unused_file = expected["Q6_K"]
+    loaded_repo, loaded_file = expected["Q8_0"]
+    backend = SimpleNamespace(
+        status = lambda: {"loaded": True, "repo_id": str(loaded_file.parent)},
+        loaded_repo_ids = lambda: [str(loaded_file.parent)],
+        loading_repo_ids = lambda: [],
+    )
+    monkeypatch.setattr(deletion, "_llama_cpp_blocks_delete", lambda *args: False)
+    monkeypatch.setattr(deletion, "_inference_backend_blocks_delete", lambda *args: False)
+    if media == "images":
+        monkeypatch.setattr(
+            "core.inference.diffusion_engine_router.get_active_diffusion_engine", lambda: backend
+        )
+        monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *args: None)
+    else:
+        monkeypatch.setattr("core.inference.video.get_video_backend", lambda: backend)
+        monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *args: None)
+    response = cache_client.request(
+        "DELETE",
+        "/api/hub/delete-cached",
+        json = {"repo_id": repo_id, "cache_path": str(unused_repo)},
+    )
+    assert response.status_code == 200, response.text
+    assert not unused_file.exists()
+    assert loaded_file.is_file()
+    response = cache_client.request(
+        "DELETE",
+        "/api/hub/delete-cached",
+        json = {"repo_id": repo_id, "cache_path": str(loaded_repo)},
+    )
+    assert response.status_code == 400
+    assert loaded_file.is_file()
+
+
+def test_companion_duplicate_survives_selected_delete(cache_locations, cache_client, monkeypatch):
+    from hub.services.models import companion_cleanup
+    from hub.utils import companion_assets
+
+    repo_id, expected = cache_locations
+    unused_repo, unused_file = expected["Q6_K"]
+    surviving_repo, surviving_file = expected["Q8_0"]
+    # Both copies hold the same required asset; a different quant is not a substitute.
+    duplicate = surviving_file.with_name(unused_file.name)
+    duplicate.write_bytes(unused_file.read_bytes())
+    inventory_scan.invalidate_hf_cache_scans()
+    monkeypatch.setattr(companion_assets, "is_companion_base", lambda _repo: True)
+    monkeypatch.setattr(
+        companion_assets,
+        "required_companion_bases",
+        lambda *a, **k: {repo_id.lower(): {"Org/Image-GGUF"}},
+    )
+    monkeypatch.setattr(companion_assets, "known_companion_base_ids", lambda: {repo_id.lower()})
+    monkeypatch.setattr(deletion, "_llama_cpp_blocks_delete", lambda *args: False)
+    monkeypatch.setattr(deletion, "_inference_backend_blocks_delete", lambda *args: False)
+    monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *args: None)
+    monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *args: None)
+    duplicate.write_bytes(b"")
+    inventory_scan.invalidate_hf_cache_scans()
+    assert companion_cleanup._delete_impact_blocking(repo_id, None, str(unused_repo))[
+        "blocked_by"
+    ] == ["Org/Image-GGUF"]
+    duplicate.write_bytes(unused_file.read_bytes())
+    inventory_scan.invalidate_hf_cache_scans()
+    impact = companion_cleanup._delete_impact_blocking(repo_id, None, str(unused_repo))
+    assert impact["blocked_by"] == []
+    response = cache_client.request(
+        "DELETE",
+        "/api/hub/delete-cached",
+        json = {"repo_id": repo_id, "cache_path": str(unused_repo)},
+    )
+    assert response.status_code == 200, response.text
+    assert duplicate.is_file()
+    assert companion_cleanup._delete_impact_blocking(repo_id, None, str(surviving_repo))[
+        "blocked_by"
+    ] == ["Org/Image-GGUF"]
+    response = cache_client.request(
+        "DELETE",
+        "/api/hub/delete-cached",
+        json = {"repo_id": repo_id, "cache_path": str(surviving_repo)},
+    )
+    assert response.status_code == 400
+    assert duplicate.is_file()

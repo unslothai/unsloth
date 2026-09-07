@@ -1071,6 +1071,11 @@ class GenerateRequest(BaseModel):
 class _InferenceRuntimeFields(BaseModel):
     """Runtime fields shared by load and status responses."""
 
+    cache_load_id: Optional[str] = Field(
+        None,
+        description = "Immutable HF snapshot holding the resident GGUF; absent for native grants and non-cache loads.",
+    )
+
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"

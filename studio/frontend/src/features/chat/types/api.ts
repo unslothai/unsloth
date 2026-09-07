@@ -200,6 +200,7 @@ export function isMultimodalResponse(
 }
 
 export interface LoadModelResponse {
+  cache_load_id?: string | null;
   is_mlx?: boolean;
   status: string;
   model: string;
@@ -303,6 +304,7 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  cache_load_id?: string | null;
   is_mlx?: boolean;
   active_model: string | null;
   model_identifier?: string | null;

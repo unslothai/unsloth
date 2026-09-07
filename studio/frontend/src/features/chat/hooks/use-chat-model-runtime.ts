@@ -1077,7 +1077,7 @@ export function useChatModelRuntime() {
             // while an external pick is active, so a pin taken for an earlier resident would survive and
             // Apply would reload that old model.
             useChatRuntimeStore.setState({
-              activeLoadId: loadPath === modelId ? null : loadPath,
+              activeLoadId: confirmedStatus.cache_load_id ?? (loadPath === modelId ? null : loadPath),
             });
             useChatRuntimeStore
               .getState()
@@ -2037,7 +2037,7 @@ export function useChatModelRuntime() {
               mmprojFallbackReason: loadResponse.mmproj_fallback_reason ?? null,
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeModelIsLocal: loadResponse.is_local_model ?? false,
-              activeLoadId: loadPath === modelId ? null : loadPath,
+              activeLoadId: loadResponse.cache_load_id ?? (loadPath === modelId ? null : loadPath),
               activeNativePathToken: nativePathToken ?? null,
               activeNativePathExpiresAtMs: nativePathToken
                 ? nativePathExpiresAtMs
@@ -2084,7 +2084,7 @@ export function useChatModelRuntime() {
             ) {
               recordLastLocalModelLoad({
                 id: modelId,
-                loadId: loadPath,
+                loadId: loadResponse.cache_load_id ?? loadPath,
                 kind:
                   loadResponse.is_gguf || isGguf || ggufVariant
                     ? "gguf"

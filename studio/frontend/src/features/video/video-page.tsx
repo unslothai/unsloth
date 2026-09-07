@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { hfCacheRepoId } from "@/features/hub/lib/model-identity";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Cancel01Icon,
@@ -2857,6 +2858,9 @@ function VideoGenerator({
     pickGuard.cancel();
   }, [abandonPick, pickGuard]);
 
+  const residentLoadId = status?.loaded ? status.repo_id ?? "" : "";
+  const residentModelId = hfCacheRepoId(residentLoadId) ?? residentLoadId;
+
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     // Status is authoritative when another client replaced the resident model; the ref remains the
@@ -3456,8 +3460,13 @@ function VideoGenerator({
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
             models={videoModels}
-            value={status?.loaded ? status.repo_id ?? undefined : undefined}
-            activeGgufVariant={quant}
+            value={residentModelId || undefined}
+            selectedLoadId={residentLoadId}
+            selectedGgufVariant={status?.gguf_variant ?? null}
+            loadedModelIdOverride={residentModelId}
+            loadedLoadIdOverride={residentLoadId}
+            loadedGgufVariantOverride={status?.gguf_variant ?? null}
+            activeGgufVariant={status?.gguf_variant ?? quant}
             onValueChange={handleModelSelect}
             resolveDownloadFootprint={resolveDownloadFootprint}
             onEject={status?.loaded ? handleUnload : undefined}

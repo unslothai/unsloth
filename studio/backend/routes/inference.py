@@ -6425,6 +6425,21 @@ def _is_explicit_tensor_drop(request: LoadRequest) -> bool:
     return override is not None and override.strip().lower() != "tensor"
 
 
+def _llama_cache_load_id(llama_backend) -> Optional[str]:
+    if getattr(llama_backend, "_native_grant_backed", False):
+        return None
+    target = getattr(llama_backend, "gguf_path", None)
+    if not isinstance(target, str) or not target:
+        return None
+    path = Path(target)
+    for candidate in (path, *path.parents):
+        if candidate.parent.name == "snapshots" and candidate.parent.parent.name.startswith(
+            "models--"
+        ):
+            return str(candidate)
+    return None
+
+
 def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     """Runtime state shared by load, dedupe, and status; duplicates echo active settings."""
     fields = {
@@ -6433,6 +6448,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         if hasattr(llama_backend, name) or hasattr(llama_backend, f"_{name}")
     }
     fields.update(
+        cache_load_id = _llama_cache_load_id(llama_backend),
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         mlx_kv_bits = None,

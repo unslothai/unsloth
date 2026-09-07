@@ -6502,16 +6502,29 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
     2512 Qwen revision). HF snapshot paths retain their repository identity;
     other local paths are skipped. None on any lookup failure.
     """
+    revision = None
     if Path(repo_id).expanduser().exists():
         from core.inference.model_ids import hf_cache_repo_id
 
         cached_repo = hf_cache_repo_id(repo_id)
         if not cached_repo:
             return None
+        parts = repo_id.replace("\\", "/").split("/")
+        snapshot_index = next(
+            i
+            for i, part in enumerate(parts)
+            if part.startswith("models--") and parts[i + 1 : i + 2] == ["snapshots"]
+        )
+        revision = parts[snapshot_index + 2] if len(parts) > snapshot_index + 2 else None
         repo_id = cached_repo
     try:
         from huggingface_hub import HfApi
-        meta = HfApi().model_info(repo_id, token = hf_token).cardData or {}
+        meta = (
+            HfApi()
+            .model_info(repo_id, token = hf_token, **({"revision": revision} if revision else {}))
+            .cardData
+            or {}
+        )
     except Exception:  # noqa: BLE001 - best-effort; fall back to the family default
         return None
     base = meta.get("base_model")

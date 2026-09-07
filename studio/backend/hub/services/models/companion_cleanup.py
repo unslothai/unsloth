@@ -146,6 +146,49 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
     return _impl(repo_id, variant)
 
 
+def companion_delete_dependents(repo_id, variant = None, cache_path = None, cache_scans = None):
+    """Dependents blocked by this deletion, unless another copy retains its assets."""
+    from hub.utils.hf_cache_state import resolve_delete_target_root
+
+    scans = cache_scans if cache_scans is not None else cache_inventory.all_hf_cache_scans()
+    holders = companion_dependents(repo_id, scans, ignore_repo_ids = [repo_id])
+    if not holders:
+        return []
+    copies = _repos_by_id(scans).get(repo_id.strip().lower(), [])
+    if len(copies) < 2:
+        return holders
+    owners = {Path(repo.repo_path).parent.resolve() for repo in copies}
+    root = resolve_delete_target_root("model", repo_id, cache_path, owners)
+    if root is None:
+        raise HTTPException(status_code = 400, detail = "Invalid cache_path")
+
+    def files(repo, selected):
+        wanted = _variant_keys(repo, variant) if selected and variant else None
+        found = set()
+        for revision in getattr(repo, "revisions", ()) or ():
+            snapshot = Path(revision.snapshot_path)
+            for file in getattr(revision, "files", ()) or ():
+                path = Path(file.file_path)
+                name = path.relative_to(snapshot).as_posix()
+                if wanted is not None and gguf_variant_key(name).lower() not in wanted:
+                    continue
+                if path.is_file() and path.stat().st_size > 0:
+                    found.add((name, path.stat().st_size))
+        return found
+
+    removed = set()
+    surviving = []
+    for repo in copies:
+        if Path(repo.repo_path).parent.resolve() == root:
+            removed.update(files(repo, True))
+        else:
+            surviving.append(repo)
+    # A partial or different-quant copy cannot substitute for the removed assets.
+    if removed and any(removed <= files(repo, False) for repo in surviving):
+        return []
+    return holders
+
+
 def _delete_impact_blocking(
     repo_id: str,
     variant: Optional[str],
@@ -215,7 +258,7 @@ def _delete_impact_blocking(
         # a chat GGUF repo, so previewing only whole-repo deletes left Delete enabled and the refusal
         # arriving after the user confirmed.
         "blocked_by": (
-            companion_dependents(repo_id, scans, ignore_repo_ids = [repo_id])
+            companion_delete_dependents(repo_id, variant, cache_path, scans)
             if companion_assets.is_companion_base(repo_id)
             and (variant is None or _variant_is_a_required_companion_asset(repo_id, variant))
             else []

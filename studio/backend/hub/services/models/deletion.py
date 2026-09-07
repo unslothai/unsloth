@@ -692,7 +692,7 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
 
 
-def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
+def _diffusion_blocks_delete(repo_id: str, cache_path: Optional[str] = None) -> Optional[str]:
     """The 400 detail if the Images backend holds *repo_id*, else None.
 
     Queries the ACTIVE engine: on a native selection the diffusers singleton reports
@@ -707,21 +707,21 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
         return None
     status = engine.status()
     if status.get("loaded") and status.get("repo_id"):
-        if _loaded_id_matches_repo(str(status["repo_id"]), repo_id):
+        if _loaded_id_matches_repo(str(status["repo_id"]), repo_id, cache_path):
             return "Unload the model before deleting"
     # sd.cpp re-reads companion VAE / text-encoder files every generation and status().repo_id covers
     # only the main GGUF, so refuse the companions too.
     for lid in getattr(engine, "loaded_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id):
+        if _loaded_id_matches_repo(str(lid), repo_id, cache_path):
             return "Unload the model before deleting"
     # A downloading repo still reports loaded=False, but deleting would pull blobs from under the in-flight fetch.
     for lid in getattr(engine, "loading_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id):
+        if _loaded_id_matches_repo(str(lid), repo_id, cache_path):
             return "An Images model load is using this repo; wait for it to finish"
     return None
 
 
-def _video_blocks_delete(repo_id: str) -> Optional[str]:
+def _video_blocks_delete(repo_id: str, cache_path: Optional[str] = None) -> Optional[str]:
     """The 400 detail if the Video backend holds or is fetching *repo_id*, else None.
 
     Video repos share the On Device delete action, so a live Wan / LTX / Hunyuan
@@ -739,15 +739,15 @@ def _video_blocks_delete(repo_id: str) -> Optional[str]:
         # and text encoders, so refuse it too.
         for key in ("repo_id", "base_repo"):
             held = status.get(key)
-            if held and _loaded_id_matches_repo(str(held), repo_id):
+            if held and _loaded_id_matches_repo(str(held), repo_id, cache_path):
                 return "Unload the model before deleting"
     # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are
     # neither of the two ids above, so refuse those as well.
     for lid in getattr(backend, "loaded_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id):
+        if _loaded_id_matches_repo(str(lid), repo_id, cache_path):
             return "Unload the model before deleting"
     for lid in getattr(backend, "loading_repo_ids", tuple)():
-        if _loaded_id_matches_repo(str(lid), repo_id):
+        if _loaded_id_matches_repo(str(lid), repo_id, cache_path):
             return "A Video model load is using this repo; wait for it to finish"
     return None
 
@@ -785,11 +785,13 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
         return True
 
 
-def _companion_share_blocks_delete(repo_id: str) -> Optional[str]:
+def _companion_share_blocks_delete(
+    repo_id: str, variant: Optional[str] = None, cache_path: Optional[str] = None
+) -> Optional[str]:
     """The 400 detail when installed models still need *repo_id*'s shared assets, else None."""
     from hub.services.models import companion_cleanup
 
-    holders = companion_cleanup.companion_dependents(repo_id, ignore_repo_ids = [repo_id])
+    holders = companion_cleanup.companion_delete_dependents(repo_id, variant, cache_path)
     if not holders:
         return None
     shown = ", ".join(holders[:3])
@@ -834,7 +836,9 @@ async def delete_cached_model_response(
         ):
             return "Unload the model before deleting"
         # The guards above are chat-only; Images / Video hold their own pipelines.
-        return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
+        return _diffusion_blocks_delete(repo_id, cache_path) or _video_blocks_delete(
+            repo_id, cache_path
+        )
 
     try:
         blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
@@ -953,7 +957,7 @@ def _delete_cached_model_blocking(
         # Fails CLOSED, and only here: the lookup above already established this repo IS a companion base,
         # so an unreadable cache means the dependants cannot be enumerated, not that there are none.
         try:
-            shared_detail = _companion_share_blocks_delete(repo_id)
+            shared_detail = _companion_share_blocks_delete(repo_id, variant, cache_path)
         except Exception as e:
             logger.warning(f"Companion dependency check failed for {repo_id}; refusing delete: {e}")
             raise HTTPException(

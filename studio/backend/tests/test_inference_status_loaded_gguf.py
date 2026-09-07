@@ -92,6 +92,18 @@ def test_a_loaded_repo_gguf_reports_its_public_id(status_route):
     assert status.is_local_model is False
 
 
+def test_loaded_repo_alias_reports_immutable_cache_target(status_route, tmp_path):
+    backend = _StatusBackend("org/A-GGUF", native_grant_backed = False)
+    snapshot = tmp_path / "models--org--A-GGUF" / "snapshots" / "revision"
+    backend.gguf_path = str(snapshot / "model-Q8_0.gguf")
+    status = status_route(backend)
+    assert status.model_identifier == "org/A-GGUF"
+    assert status.cache_load_id == str(snapshot)
+    # This field must obey the same native-grant path confidentiality as model_identifier.
+    backend._native_grant_backed = True
+    assert status_route(backend).cache_load_id is None
+
+
 def test_a_backend_without_the_flag_still_reports(status_route):
     # A server started before the flag existed: read through a default, do not assume it.
     backend = _StatusBackend("org/A-GGUF")
