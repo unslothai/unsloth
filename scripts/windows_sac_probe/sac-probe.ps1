@@ -57,8 +57,14 @@ param(
     # prepare only: skip winget/Defender updates, which are slow.
     [switch] $SkipUpdates,
 
-    # run only: skip the Playwright scenario and just do the signature inventory.
-    [switch] $SkipStudio
+    # run only: skip the Studio scenario and just do the signature inventory.
+    [switch] $SkipStudio,
+
+    # prepare only: do not install Unsloth Studio when it is missing.
+    [switch] $SkipInstall,
+
+    # Port the probe expects Studio on.
+    [int] $Port = 8888
 )
 
 $ErrorActionPreference = 'Stop'
@@ -130,6 +136,105 @@ function Get-SacState {
         Mode          = $name
         Policies      = $policies
     }
+}
+
+function Get-StudioPython {
+    <#
+        The managed interpreter, or $null when Studio is not installed.
+
+        Deliberately not the generated unsloth.exe. Windows materialises the
+        console script as an unsigned PE, and AppLocker, WDAC and Smart App
+        Control deny it while the signed interpreter beside it keeps running
+        (issue 8490). On exactly the machines this probe targets, calling
+        unsloth.exe would fail for a reason that has nothing to do with what we
+        are measuring.
+    #>
+    $roots = @()
+    if ($env:UNSLOTH_STUDIO_HOME) { $roots += $env:UNSLOTH_STUDIO_HOME }
+    $roots += (Join-Path $env:USERPROFILE '.unsloth\studio')
+    foreach ($root in $roots) {
+        $py = Join-Path $root 'unsloth_studio\Scripts\python.exe'
+        if (Test-Path -LiteralPath $py) { return $py }
+    }
+    return $null
+}
+
+function Test-StudioResponding([int] $port) {
+    try {
+        $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/liveness" -TimeoutSec 5 -UseBasicParsing
+        return $r.StatusCode -eq 200
+    } catch {
+        return $false
+    }
+}
+
+function Install-Studio {
+    Write-Section 'Install Unsloth Studio'
+    # The documented install command, run exactly as a user would. Piping keeps
+    # the script off disk, which matters here: the copy served from unsloth.ai
+    # is not Authenticode signed, so downloading it first would attach
+    # Mark-of-the-Web and the default RemoteSigned policy would refuse to run
+    # it. Reproducing the user's real path is also the point.
+    Write-Host 'irm https://unsloth.ai/install.ps1 | iex'
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        Invoke-Expression (Invoke-RestMethod -Uri 'https://unsloth.ai/install.ps1' -TimeoutSec 120)
+    } catch {
+        Write-Warning "installer failed: $_"
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    return (Get-StudioPython)
+}
+
+function Start-Studio([string] $python, [int] $port, [string] $logPath) {
+    Write-Host "starting Studio on port $port"
+    # -X utf8 -I -m unsloth_cli is the supported entry point on a locked-down
+    # machine, per unsloth_cli/__main__.py. -I drops the working directory from
+    # sys.path so a stray unsloth_cli folder cannot shadow the package.
+    # Not $args: that is a PowerShell automatic variable.
+    $cliArgs = @('-X', 'utf8', '-I', '-m', 'unsloth_cli', 'studio', '-p', "$port")
+    Start-Process -FilePath $python -ArgumentList $cliArgs `
+        -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err" `
+        -WindowStyle Hidden | Out-Null
+
+    # Studio imports torch on a warm thread, so first start is slow. Poll rather
+    # than sleep, and give it long enough that a slow machine is not called dead.
+    foreach ($i in 1..60) {
+        Start-Sleep -Seconds 5
+        if (Test-StudioResponding $port) {
+            Write-Host "Studio answering on port $port after $($i * 5)s"
+            return $true
+        }
+    }
+    Write-Warning "Studio did not answer on port $port within 5 minutes; see $logPath"
+    return $false
+}
+
+function Initialize-Studio([string] $dir) {
+    <# Ensure a Studio exists and is answering, installing it if needed. #>
+    Write-Section 'Unsloth Studio'
+    if (Test-StudioResponding $Port) {
+        Write-Host "Studio already answering on port $Port"
+        return
+    }
+
+    $python = Get-StudioPython
+    if (-not $python) {
+        if ($SkipInstall) {
+            Write-Warning 'Studio is not installed and -SkipInstall was given; the run stage will have nothing to drive.'
+            return
+        }
+        Write-Host 'Studio is not installed on this machine.'
+        $python = Install-Studio
+        if (-not $python) {
+            Write-Warning 'Studio still not found after the installer ran. Install it by hand, then re-run this stage.'
+            return
+        }
+    }
+    Write-Host "managed interpreter: $python"
+    Start-Studio $python $Port (Join-Path $dir 'studio-start.log') | Out-Null
 }
 
 function Save-Baseline([string] $dir) {
@@ -239,8 +344,14 @@ function Invoke-Prepare {
         Write-Host 'machine where Smart App Control is genuinely on.'
     }
 
-    # Marks the window collect will export. Written last so it covers the run.
+    # Marks the window collect will export. Set before Studio is installed and
+    # started on purpose: the install downloads the llama.cpp bundle and the
+    # first launch loads it, so both are inside the observed window and any
+    # code integrity event they raise is captured.
     (Get-Date).ToString('o') | Set-Content -LiteralPath (Join-Path $dir 'window-start.txt') -Encoding UTF8
+
+    Initialize-Studio $dir
+
     Write-Host ''
     Write-Host "prepare complete. Next: .\sac-probe.ps1 -Stage run -Label $Label"
 }
@@ -274,6 +385,11 @@ function Invoke-Run {
     Assert-Elevated
     $dir = Get-RunDir
 
+    # A machine that was prepared earlier may have been rebooted since, which is
+    # itself part of the reported behaviour: Smart App Control re-evaluates from
+    # a cleared cache after a restart. Bring Studio back rather than failing.
+    if (-not (Test-StudioResponding $Port)) { Initialize-Studio $dir }
+
     Write-Section 'Signature inventory'
     $inventory = @(Get-SignatureInventory $LLAMA_DIR)
     $inventory | ConvertTo-Json -Depth 4 |
@@ -302,7 +418,7 @@ function Invoke-Run {
         $prev = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            & python $scenario --model $Model --out $dir 2>&1 | Tee-Object -FilePath $log
+            & python $scenario --model $Model --out $dir --port $Port 2>&1 | Tee-Object -FilePath $log
             Write-Host "scenario exit code: $LASTEXITCODE"
         } catch {
             Write-Warning "scenario failed: $_"

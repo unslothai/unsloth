@@ -43,7 +43,6 @@ reports whichever mode it finds the machine in.
 ## Requirements
 
 - Windows 11, elevated PowerShell (right click Windows Terminal, Run as administrator)
-- Unsloth Studio installed and running
 - Any Python 3 on `PATH`. The scenario uses only the standard library: no pip install, no browser
 - Optional but strongly preferred: `SmartAppControlAuditNoISG.bin` from <https://aka.ms/sacauditpolicies>
 
@@ -98,11 +97,49 @@ $env:UNSLOTH_STUDIO_PASSWORD = 'your studio password'
 `prepare` is slow the first time because it runs `winget upgrade --all` and
 `Update-MpSignature`. Add `-SkipUpdates` to skip both.
 
+### On a machine with no Unsloth on it
+
+Nothing extra to do. `prepare` detects that Studio is absent and installs it with
+the documented command, then starts it and waits for it to answer:
+
+```
+=== Unsloth Studio ===
+Studio is not installed on this machine.
+
+=== Install Unsloth Studio ===
+irm https://unsloth.ai/install.ps1 | iex
+...
+managed interpreter: C:\Users\you\.unsloth\studio\unsloth_studio\Scripts\python.exe
+starting Studio on port 8888
+Studio answering on port 8888 after 65s
+```
+
+The install happens **after** the event log window opens, on purpose: installing
+is what downloads the llama.cpp bundle, and first launch is what loads it, so
+both are inside the window `collect` exports. On an affected machine the block
+may well appear during `prepare` rather than during `run`.
+
+Studio is started through the managed interpreter, not the generated
+`unsloth.exe`. Windows materialises that console script as an unsigned PE and
+Application Control denies it (unslothai/unsloth#8490) while the signed
+interpreter beside it keeps running, so on exactly the machines this probe
+targets, launching the normal way would fail for a reason unrelated to what is
+being measured. The supported entry point is documented in
+`unsloth_cli/__main__.py`:
+
+```powershell
+python -X utf8 -I -m unsloth_cli studio -p 8888
+```
+
+Pass `-SkipInstall` to refuse to install, or `-Port` if 8888 is taken. `run`
+re-checks and restarts Studio too, since a machine may have been rebooted
+between stages, which is itself part of the reported behaviour.
+
 ### What each stage does
 
 | stage | what it changes | how it is undone |
 | --- | --- | --- |
-| `prepare` | records a baseline; updates packages and Defender signatures; turns Defender real-time, MAPS advanced, cloud block level high and PUA on; raises the CodeIntegrity log to 64 MB; applies the audit policy if given | `revert` |
+| `prepare` | records a baseline; updates packages and Defender signatures; turns Defender real-time, MAPS advanced, cloud block level high and PUA on; raises the CodeIntegrity log to 64 MB; applies the audit policy if given; installs Unsloth Studio if it is missing, then starts it | `revert` (Studio is left installed) |
 | `run` | nothing; inventories signatures and drives Studio | n/a |
 | `collect` | nothing; exports events and zips the evidence | n/a |
 | `revert` | removes the audit policy, restores the Defender settings from the baseline | n/a |
