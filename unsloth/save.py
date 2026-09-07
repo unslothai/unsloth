@@ -2877,31 +2877,23 @@ def upload_to_huggingface(
 
 
 def fix_tokenizer_bos_token(tokenizer):
+    from .tokenizer_utils import (
+        _chat_template_emits_bos,
+        _strip_bos_from_chat_template_text,
+        _tokenizer_auto_adds_bos,
+    )
+
     fix_bos_token = False
     chat_template = getattr(tokenizer, "chat_template", None)
 
-    if tokenizer("A").input_ids[0] == getattr(tokenizer, "bos_token_id", None):
-        if chat_template is not None and (
-            tokenizer.bos_token in chat_template
-            or "{bos_token}" in chat_template.replace(" ", "")
-            or "{bos_token+" in chat_template.replace(" ", "")
-        ):
+    if _tokenizer_auto_adds_bos(tokenizer):
+        if chat_template is not None and _chat_template_emits_bos(tokenizer):
             fix_bos_token = True
             logger.warning(
                 "Unsloth: ##### The current model auto adds a BOS token.\n"
                 "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
             )
-
-            new_chat_template = re.sub(
-                r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\}[\s]{0,}\}", "", chat_template
-            )
-            new_chat_template = re.sub(
-                r"\{[\s]{0,}\{[\s]{0,}bos\_token[\s]{0,}\+[\s]{0,}",
-                "",
-                new_chat_template,
-            )
-
-            tokenizer.chat_template = new_chat_template
+            tokenizer.chat_template = _strip_bos_from_chat_template_text(chat_template)
 
     return fix_bos_token, chat_template
 

@@ -144,6 +144,53 @@ def _chat_template_emits_bos(tokenizer):
     return False
 
 
+def _tokenizer_auto_adds_bos(tokenizer):
+    bos_token_id = getattr(tokenizer, "bos_token_id", None)
+    if bos_token_id is None:
+        return bool(getattr(tokenizer, "add_bos_token", False))
+    try:
+        return tokenizer("A").input_ids[0] == bos_token_id
+    except Exception:
+        return bool(getattr(tokenizer, "add_bos_token", False))
+
+
+def _strip_bos_from_chat_template_text(chat_template):
+    if not chat_template:
+        return chat_template
+    stripped = re.sub(
+        r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\}[\s\-]*\}",
+        "",
+        chat_template,
+        count = 1,
+    )
+    stripped = re.sub(
+        r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\+[\s\-]*",
+        "",
+        stripped,
+        count = 1,
+    )
+    return stripped
+
+
+def _dedupe_bos_chat_template(tokenizer):
+    """Drop template-emitted BOS when the tokenizer already prepends one."""
+    for obj in _tokenizer_objects(tokenizer):
+        if not _tokenizer_auto_adds_bos(obj):
+            continue
+        template = getattr(obj, "chat_template", None)
+        if template is None or not _chat_template_emits_bos(obj):
+            continue
+        if isinstance(template, dict):
+            obj.chat_template = {
+                key: _strip_bos_from_chat_template_text(value)
+                if isinstance(value, str)
+                else value
+                for key, value in template.items()
+            }
+        elif isinstance(template, str):
+            obj.chat_template = _strip_bos_from_chat_template_text(template)
+
+
 def _is_gemma4_instruct_tokenizer(tokenizer):
     if tokenizer is None:
         return False
@@ -230,9 +277,13 @@ def _enable_add_bos_token(tokenizer):
 
 
 def _fix_gemma4_base_bos_token(tokenizer, config = None):
-    if tokenizer is None or not _needs_gemma4_base_bos(tokenizer, config = config):
+    if tokenizer is None:
         return tokenizer
-    _enable_add_bos_token(tokenizer)
+    if not (_is_gemma4_tokenizer(tokenizer) or _is_gemma4_config(config)):
+        return tokenizer
+    if _needs_gemma4_base_bos(tokenizer, config = config):
+        _enable_add_bos_token(tokenizer)
+    _dedupe_bos_chat_template(tokenizer)
     return tokenizer
 
 

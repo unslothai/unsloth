@@ -2083,9 +2083,16 @@ def get_chat_template(
             f"{CHAT_TEMPLATES.keys()}"
         )
 
-    # bos_token is a must on Gemma or losses become too high.
-    if IS_GEMMA and not chat_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
-        chat_template = "{{ bos_token }}" + chat_template
+    # bos_token is a must on Gemma or losses become too high. When the tokenizer
+    # already prepends BOS (e.g. Gemma 4 base after load), do not also emit it in
+    # the template or chat prompts get a duplicate after save/reload.
+    if IS_GEMMA:
+        from .tokenizer_utils import _dedupe_bos_chat_template, _tokenizer_auto_adds_bos
+
+        if not _tokenizer_auto_adds_bos(tokenizer) and not chat_template.startswith(
+            ("{{ bos_token }}", "{{- bos_token }}")
+        ):
+            chat_template = "{{ bos_token }}" + chat_template
 
     # The spliced ShareGPT values land inside Jinja literals, so escape them.
     new_chat_template = chat_template\
@@ -2117,6 +2124,9 @@ def get_chat_template(
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
 
     tokenizer.chat_template = chat_template
+    if IS_GEMMA:
+        _dedupe_bos_chat_template(tokenizer)
+        chat_template = getattr(tokenizer, "chat_template", chat_template)
 
     # Also fix up other tokens
     old_pad_token = getattr(old_tokenizer, "pad_token", None)

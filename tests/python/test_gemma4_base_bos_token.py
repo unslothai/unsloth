@@ -276,3 +276,39 @@ def test_gemma4_e2b_hub_tokenizer_prepends_bos():
     raw = AutoTokenizer.from_pretrained("unsloth/gemma-4-E2B", trust_remote_code = True)
     raw_ids = raw("This book is largely concerned with Hobbits,")["input_ids"]
     assert raw_ids[0] != raw.bos_token_id
+
+
+def test_chat_template_bos_is_stripped_when_tokenizer_auto_adds():
+    tok = _gemma4_base(
+        add_bos_token = True,
+        chat_template = "{{ bos_token }}{% for m in messages %}{{ m }}{% endfor %}",
+    )
+    tu._fix_gemma4_base_bos_token(tok)
+    assert tok.add_bos_token is True
+    assert "{{ bos_token }}" not in tok.chat_template
+    assert tok.chat_template.startswith("{% for m in messages %}")
+
+
+def test_gemma_template_prepend_skipped_when_auto_bos():
+    template = "{%- for message in messages %}{{ message }}{% endfor %}"
+    tok = _gemma4_base(add_bos_token = True)
+    assert tu._tokenizer_auto_adds_bos(tok)
+    if not tu._tokenizer_auto_adds_bos(tok) and not template.startswith(
+        ("{{ bos_token }}", "{{- bos_token }}")
+    ):
+        template = "{{ bos_token }}" + template
+    assert not template.startswith("{{ bos_token }}")
+
+    stripped = tu._strip_bos_from_chat_template_text("{{- bos_token -}}" + template)
+    assert "bos_token" not in stripped.split("for message", 1)[0]
+
+
+def test_save_reload_shape_keeps_one_bos_in_chat_prompt():
+    """Saved configs can carry both add_bos_token and a template that emits bos."""
+    tok = _gemma4_base(
+        add_bos_token = True,
+        chat_template = "{{ bos_token }}{% for m in messages %}{{ m }}{% endfor %}",
+    )
+    tu._fix_gemma4_base_bos_token(tok)
+    assert tok.add_bos_token is True
+    assert "{{ bos_token }}" not in tok.chat_template
