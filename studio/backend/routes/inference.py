@@ -11764,6 +11764,15 @@ def _wait_for_native_audio_gpu_free_gb(
         time.sleep(min(interval, remaining))
 
 
+def _spark_topology() -> Optional[str]:
+    """The two-Spark serving topology for the status poll; None off a paired Spark."""
+    try:
+        from core.inference.spark_serving import current_topology
+        return current_topology()
+    except Exception:
+        return None
+
+
 async def _unload_llama_before_standard_load(llama_backend) -> None:
     """Tear down llama-server and wait for asynchronous driver VRAM reclaim."""
     if not llama_backend.is_loaded:
@@ -13153,6 +13162,35 @@ def _cancel_scoped_load_attempt(
         return attempt, is_running
 
 
+def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
+    """The previous same-model load's pass-through extras, which
+    ``_resolve_inherited_extra_args`` carries into a request that omits the field. The
+    Spark orchestrator reads them so a ``--spec-type`` the caller owns there is left
+    alone rather than shadowed by the first-class field it would otherwise set."""
+    if getattr(request, "llama_extra_args", None) is not None:
+        return None
+    try:
+        llama_backend = get_llama_cpp_backend()
+        stored = getattr(llama_backend, "extra_args", None)
+        source = getattr(llama_backend, "extra_args_source", None)
+    except Exception:
+        return None
+    if not stored:
+        return None
+    requested = str(getattr(request, "model_path", "") or "").strip().lower()
+    stored_id = str(source[0] if source and source[0] else "").strip().lower()
+    if stored_id and requested and stored_id != requested:
+        # The stored identifier is the RESOLVED one (a local file or a bare repo name can
+        # resolve to another string), so a plain mismatch is not proof of another model;
+        # a shared stem is. Erring towards handing the extras over only costs the Spark
+        # draft depth for one load, while missing them could shadow a --spec-type the
+        # caller set. A different model's extras are cleared by the resolver anyway.
+        a, b = Path(requested).stem, Path(stored_id).stem
+        if a != b and a not in stored_id and b not in requested:
+            return None
+    return list(stored)
+
+
 async def _run_tracked_load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -13171,14 +13209,33 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        return await _load_model_impl(
+        # Two-Spark serving (paired DGX Spark only; a no-op everywhere else). Before the
+        # load it may turn the request into a layer split by starting the peer's
+        # rpc-server and adding --rpc to the extra args; after it, it may attach a
+        # replica on the peer behind the in-process router.
+        from core.inference import spark_serving
+
+        _spark_slots = _resolve_parallel_slots(request, fastapi_request)
+        request = await spark_serving.before_load(
             request,
-            fastapi_request,
-            current_subject,
-            current_request_counted = current_request_counted,
-            on_reload_confirmed = on_reload_confirmed,
-            load_cancel_event = attempt.cancel_event,
+            _spark_slots,
+            inherited_extra_args = _spark_inherited_extra_args(request),
         )
+        try:
+            response = await _load_model_impl(
+                request,
+                fastapi_request,
+                current_subject,
+                current_request_counted = current_request_counted,
+                on_reload_confirmed = on_reload_confirmed,
+                load_cancel_event = attempt.cancel_event,
+            )
+        except BaseException:
+            # A failed or cancelled load leaves nothing for the peer to serve.
+            await spark_serving.load_failed()
+            raise
+        await spark_serving.after_load(get_llama_cpp_backend(), _spark_slots)
+        return response
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
@@ -16364,6 +16421,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
+                spark_topology = _spark_topology(),
             )
 
         # Otherwise report Unsloth backend status. Peek rather than build: no singleton means

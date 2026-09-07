@@ -243,7 +243,7 @@ def _is_dgx_spark():
 
     for path in ("/etc/dgx-release", "/sys/class/dmi/id/product_name"):
         try:
-            with open(path, "r", errors = "replace") as handle:
+            with open(path, "r", encoding = "utf-8", errors = "replace") as handle:
                 if _re.search(r"dgx[_ -]*spark", handle.read(4096), _re.IGNORECASE):
                     return True
         except OSError:
@@ -257,14 +257,14 @@ def _spark_peer_cabled():
 
     for port in glob.glob("/sys/class/infiniband/*/ports/1"):
         try:
-            with open(port + "/state") as handle:
+            with open(port + "/state", encoding = "utf-8") as handle:
                 if "ACTIVE" not in handle.read().upper():
                     continue
-            with open(port + "/gid_attrs/ndevs/0") as handle:
+            with open(port + "/gid_attrs/ndevs/0", encoding = "utf-8") as handle:
                 netdev = handle.read().strip()
             if not netdev:
                 continue
-            with open("/sys/class/net/%s/carrier" % netdev) as handle:
+            with open("/sys/class/net/%s/carrier" % netdev, encoding = "utf-8") as handle:
                 if handle.read().strip() == "1":
                     return True
         except OSError:

@@ -1631,6 +1631,15 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "here. None on a backend too old to report it."
         ),
     )
+    spark_topology: Optional[str] = Field(
+        None,
+        description = (
+            "How a GGUF is being served on a paired DGX Spark: single (this node only), "
+            "replicas (one llama-server per node behind the in-process router) or "
+            "layer_split (the peer's ggml-rpc-server holds part of the model). None off a "
+            "paired Spark. GET /api/inference/spark/status has the per-node detail."
+        ),
+    )
     audio_probe_pending: bool = Field(
         False,
         description = (

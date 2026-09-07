@@ -920,6 +920,19 @@ def train(
     layer_split: str = typer.Option(
         "", "--layer-split", "-L", help = "Model to split across the Sparks instead."
     ),
+    data_parallel: str = typer.Option(
+        "",
+        "--data-parallel",
+        "-D",
+        help = "Model to replicate on both Sparks (DDP over the LoRA gradients). "
+        "Throughput, not capacity: it must fit on one Spark.",
+    ),
+    fsdp: bool = typer.Option(
+        False,
+        "--fsdp",
+        help = "With --data-parallel: shard the base weights across the pair "
+        "instead of replicating them.",
+    ),
     shard_load: bool = typer.Option(
         False,
         "--shard-load",
@@ -945,13 +958,17 @@ def train(
     schedule: str = typer.Option(
         "1f1b",
         "--schedule",
-        help = "On --pp-backend torch, measured on two Sparks vs one: "
-        "1f1b 1.94x (default), dualpipev 1.96x, zbv 1.94x, "
-        "interleaved 1.93x, gpipe 1.86x, zerobubble 1.72x. "
-        "1f1b is the default over dualpipev because the 0.7% "
-        "gap is within noise while 1f1b's peak memory is lower "
-        "(7.34 vs 9.58 GiB). Avoid gpipe: it peaked at 99.92 "
-        "GiB for the same work, against a 121.69 GiB node.",
+        help = "On --pp-backend torch. Against a healthy single-Spark "
+        "control: 1f1b 1.57x at 2B and 1.77x at 9B, dualpipev "
+        "1.58x and 1.79x -- a tie. 1f1b is the default on memory "
+        "(5.52 vs 9.58 GiB at 2B, 16.86 vs 24.13 at 9B), and at "
+        "capacity sizes it is not a preference but a requirement: "
+        "dualpipev ran out of memory training a 70B on the pair "
+        "at global batch 16 and again at 8, where 1f1b held "
+        "69.5/69.8 GiB and reached 148 tok/s. Its V layout puts "
+        "the embedding, the LM head and the loss on one rank. "
+        "Avoid gpipe: it peaked at 99.92 GiB for the same work, "
+        "against a 121.69 GiB node.",
     ),
     steps: int = typer.Option(20, "--steps"),
     batch: int = typer.Option(8, "--batch", help = "Global batch per step."),
@@ -962,12 +979,15 @@ def train(
         False, "--run", help = "Launch it on both Sparks instead of printing commands."
     ),
 ) -> None:
-    """Print the two-node commands for DDP (--script) or layer-split (--layer-split).
+    """Print the two-node commands for DDP (--script), a layer split (--layer-split) or
+    a built-in data-parallel LoRA run (--data-parallel).
 
-    The two modes solve different problems. DDP replicates the model for throughput, so
-    it must still fit on one Spark. A layer split divides the decoder stack across both,
-    which is the only way to train something larger than one Spark's ~117 GiB -- verified
-    here on Llama-3.3-70B, which is 132 GiB and cannot be trained on a single node.
+    The modes solve different problems. DDP replicates the model for throughput, so it
+    must still fit on one Spark; --data-parallel is that, on the same loader, LoRA and
+    loss as the layer split, so the two can be compared on one model. A layer split
+    divides the decoder stack across both, which is the only way to train something
+    larger than one Spark's ~117 GiB -- verified here on Llama-3.3-70B, which is 132 GiB
+    and cannot be trained on a single node.
     """
     sc = _cluster_or_none()
     if sc is None:
@@ -977,9 +997,16 @@ def train(
         "these are two-Spark launch commands and do not apply here. "
         "Train as usual with `unsloth train`.",
     )
-    if not script and not layer_split:
-        typer.echo("give either --script <train.py> (DDP) or --layer-split <model>.")
+    if not script and not layer_split and not data_parallel:
+        typer.echo(
+            "give one of --script <train.py>, --layer-split <model> or --data-parallel <model>."
+        )
         raise typer.Exit(2)
+    if layer_split and data_parallel:
+        typer.echo("--layer-split and --data-parallel are different topologies; give one.")
+        raise typer.Exit(2)
+    if data_parallel:
+        layer_split = data_parallel
     if layer_split:
         extra = [
             f"--microbatches {microbatches}",
@@ -993,6 +1020,10 @@ def train(
             extra.append("--shard-load")
         if full_finetune:
             extra.append("--full-finetune")
+        if data_parallel:
+            extra.append("--data-parallel")
+            if fsdp:
+                extra.append("--fsdp")
         argv = [
             "train",
             "--layer-split",

@@ -6108,17 +6108,16 @@ _unsloth_spark_cluster_offer() {
     _unsloth_spark_perf_hint
 
 
+    # No prompt here. This used to ask "Set up the second Spark now?" behind a tty
+    # check, which meant a piped install could not stall on it, but the installer
+    # still must not grow questions: an answer given once during install is one the
+    # user cannot find again afterwards, which is what #7016 did and #8040 reverted.
+    # The setting is an environment variable with a non-interactive default of no,
+    # and the line below always says how to do it later, so nothing is lost by not
+    # asking. tests/test_installer_interactive_prompts.py enforces this.
     case "${UNSLOTH_SPARK_CLUSTER:-}" in
         1|yes|YES|true|TRUE|on|ON) _sp_reply=y ;;
-        *)
-            if [ -t 1 ] && _can_read_tty; then
-                printf "  Set up the second Spark now? [y/N] "
-                # EOF is not consent: default to no, like the autostart prompt.
-                read -r _sp_reply </dev/tty || _sp_reply=n
-            else
-                _sp_reply=n
-            fi
-            ;;
+        *) _sp_reply=n ;;
     esac
 
     case "${_sp_reply:-n}" in
@@ -6132,7 +6131,8 @@ _unsloth_spark_cluster_offer() {
             "$VENV_DIR/bin/python" -m studio.spark_cluster setup --yes || true
             ;;
         *)
-            substep "Skipped. To do it later, run:  unsloth spark setup"
+            substep "Not paired. To set up the link, run:  unsloth spark setup"
+            substep "(or re-run this installer with UNSLOTH_SPARK_CLUSTER=1)"
             ;;
     esac
     echo ""
