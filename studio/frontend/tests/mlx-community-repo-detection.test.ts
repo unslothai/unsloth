@@ -42,5 +42,8 @@ test("a plain safetensors repo still answers the safetensors filter", () => {
   const plain = "unsloth/Qwen3-8B";
   assert.equal(matchesFormatFilter(plain, false, "safetensors"), true);
   assert.equal(matchesFormatFilter(plain, false, "mlx"), false);
-  assert.equal(matchesFormatFilter("org/mlxray-7B", false, "safetensors"), true);
+  assert.equal(
+    matchesFormatFilter("org/mlxray-7B", false, "safetensors"),
+    true,
+  );
 });
