@@ -576,19 +576,54 @@ function Get-InstalledLlamaPrebuiltRelease {
         return $null
     }
 
+    # An empty, truncated or non-object marker deserializes to $null or to a scalar, and
+    # the guard below reads properties off it OUTSIDE the try above. Under a caller's
+    # Set-StrictMode that read is a terminating error, and without one the function fell
+    # through and printed "installed release: @". An interrupted marker write leaves
+    # exactly this file behind, so it is reachable on any old install.
+    if ($null -eq $payload -or $payload -isnot [System.Management.Automation.PSCustomObject]) {
+        return $null
+    }
+    if (-not ($payload.PSObject.Properties.Name -ccontains 'published_repo') -or
+        -not ($payload.PSObject.Properties.Name -ccontains 'release_tag')) {
+        return $null
+    }
     if (-not $payload.published_repo -or -not $payload.release_tag) {
         return $null
     }
 
     $message = "installed release: $($payload.published_repo)@$($payload.release_tag)"
-    if ($payload.tag -and $payload.tag -ne $payload.release_tag) {
-        $message += " (tag $($payload.tag))"
+    # tag is optional in the same way backend is: guard it rather than leaving one strict
+    # mode hazard beside a fixed one.
+    $llamaTag = ""
+    if ($payload.PSObject.Properties.Name -ccontains 'tag') {
+        $llamaTag = [string]$payload.tag
+    }
+    if ($llamaTag -and $llamaTag -ne $payload.release_tag) {
+        $message += " (tag $llamaTag)"
     }
     # Name the backend. Without it a host running a Vulkan bundle and a host running
     # a ROCm one print the same line, so a bundle that has drifted away from the
     # hardware is invisible in the install log.
-    if ($payload.backend) {
-        $message += " -- $($payload.backend) backend"
+    #
+    # The key only exists in markers written since #8520; every install from #4562 (Mar 2026)
+    # to then has none, and reading a missing property under a CALLER's Set-StrictMode
+    # -Version 2.0+ is a terminating error, which would abort setup on exactly those hosts.
+    # Probe PSObject.Properties first, as the other optional reads in this file do.
+    #
+    # The type and shape checks keep this printer byte-identical to its setup.sh twin: a
+    # non-string value renders differently in each language (PowerShell prints @(1,2) as
+    # "1 2", Python as "[1, 2]"), and a newline would split the log line. Backend names come
+    # from one closed vocabulary (cuda/rocm/vulkan/cpu/metal), so nothing real is rejected.
+    $backendName = ""
+    # -ccontains, not -contains: PowerShell property access is case-insensitive and Python's
+    # dict lookup in the setup.sh twin is not, so a case-folded guard here would print a
+    # suffix for a "BACKEND" key that setup.sh silently ignores.
+    if (($payload.PSObject.Properties.Name -ccontains 'backend') -and ($payload.backend -is [string])) {
+        $backendName = $payload.backend.Trim()
+    }
+    if ($backendName -match '^[A-Za-z0-9._+-]{1,32}$') {
+        $message += " -- $backendName backend"
     }
     return $message
 }

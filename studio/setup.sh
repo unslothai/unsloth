@@ -775,6 +775,7 @@ installed_llama_prebuilt_release() {
     [ -f "$metadata_path" ] || return 0
     python - "$metadata_path" <<'PY' 2>/dev/null || true
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -792,7 +793,11 @@ llama_tag = str(payload.get("tag") or "").strip()
 source = str(payload.get("source") or "").strip()
 binary_repo = str(payload.get("binary_repo") or "").strip()
 binary_tag = str(payload.get("binary_release_tag") or "").strip()
-backend = str(payload.get("backend") or "").strip()
+_backend_raw = payload.get("backend")
+# str() only for an actual string. The key is absent in every marker written before #8520
+# and can be JSON null when backend_for_install_kind() had no answer, and a non-string would
+# render differently here than in the setup.ps1 twin (Python str([1, 2]) vs PowerShell "1 2").
+backend = _backend_raw.strip() if isinstance(_backend_raw, str) else ""
 if not repo or not release_tag:
     raise SystemExit(0)
 
@@ -807,8 +812,10 @@ else:
         message += f" (tag {llama_tag})"
 # Name the backend. Without it a host running a Vulkan bundle and a host running a
 # ROCm one print the same line, so a bundle that has drifted away from the hardware
-# is invisible in the install log.
-if backend:
+# is invisible in the install log. The shape check keeps this line single-line and keeps
+# the setup.ps1 twin's output byte-identical; backend names are one closed vocabulary
+# (cuda/rocm/vulkan/cpu/metal), so nothing real is rejected.
+if re.fullmatch(r"[A-Za-z0-9._+-]{1,32}", backend):
     message += f" -- {backend} backend"
 print(message)
 PY
