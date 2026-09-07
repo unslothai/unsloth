@@ -25372,8 +25372,15 @@ async def produce_openai_chat_completions(
             ] or None
         else:
             gen_kwargs["tools"] = payload.tools
-    elif _sf_renders_image:
+    elif _sf_renders_image and not sf_mcp_images:
         # The plain route too: later turns then share the prefix that holds the image.
+        #
+        # Only when nothing was replayed. Both backends snapshot the conversation's
+        # existing markers as "history" before topping up, so a marker added HERE is
+        # counted as a replayed picture's and the pixels bind to the wrong turns: with
+        # the attachment on an earlier turn than a tool's picture, the model is shown
+        # the screenshot where its own diagram belongs. The top-up places the marker
+        # at the same ordinal anyway, so the only thing lost is the ambiguity.
         _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
         if _sf_image_ordinal is not None:
             gen_kwargs["messages"] = _mark_image_owner_turn(

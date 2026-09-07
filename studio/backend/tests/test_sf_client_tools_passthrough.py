@@ -1479,3 +1479,88 @@ def test_a_replay_only_image_turn_also_keeps_the_client_catalog(monkeypatch):
 
     assert backend.calls, "generation never ran"
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
+
+
+def test_the_plain_route_leaves_the_attachment_marker_to_the_backend(monkeypatch):
+    """The backends snapshot the conversation's existing markers as history's before
+    topping up, so a marker the ROUTE pre-added is counted as a replayed picture's.
+    With the attachment on an earlier turn than a tool's picture the two pixels then
+    bind to each other's turns, and the model reads the screenshot as the diagram."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+
+    backend = _ScriptedBackend(_fixed("a plain answer"))
+    backend.models["sf-model"]["is_vision"] = True
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": "{% for m in messages %}{{ m['content'] }}{% endfor %}",
+        "renders_image": True,
+    }
+    payload = _request(
+        messages = [
+            # The attachment rides on an EARLIER turn than the tool's picture.
+            ChatMessage(
+                role = "user",
+                content = [
+                    {"type": "text", "text": "here is my diagram"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{_PNG_B64}"},
+                    },
+                ],
+            ),
+            ChatMessage(role = "assistant", content = "noted"),
+            ChatMessage(
+                role = "assistant",
+                content = "",
+                tool_calls = [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "mcp__s__shot", "arguments": "{}"},
+                    }
+                ],
+            ),
+            ChatMessage(
+                role = "tool",
+                tool_call_id = "c1",
+                content = "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+            ),
+            ChatMessage(role = "user", content = "which one is bluer?"),
+        ],
+        stream = False,
+    )
+
+    # supports_tools=False is what makes this the PLAIN path: the replayed picture
+    # arrives with tool history, and a template that renders tools would send the
+    # request to the client-tool passthrough, which orders the pixels itself.
+    _call(payload, monkeypatch, backend, supports_tools = False)
+
+    [call] = backend.calls
+    sent, replayed = call["messages"], call["images"] or []
+    assert call["image"] is not None, "the attachment reached the backend"
+    assert len(replayed) == 1, "so did the replayed picture"
+
+    # Exactly what the backends do next. Given a conversation the route did not
+    # pre-mark, the top-up places the attachment's marker at its own ordinal and
+    # the history/attachment split survives.
+    prior = mcp_images.image_marker_parts(sent)
+    topped = mcp_images.top_up_image_markers(
+        sent, len(replayed) + 1, ordinal = call["image_ordinal"]
+    )
+    ordered = mcp_images.pixels_in_marker_order(topped, prior, ["MCP"], "ATTACHMENT")
+
+    assert len(mcp_images.image_marker_parts(topped)) == 2, topped
+    assert ordered == ["ATTACHMENT", "MCP"], (
+        "the route pre-marked, so the pixels bound to each other's markers"
+    )

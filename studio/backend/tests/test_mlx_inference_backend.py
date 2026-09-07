@@ -4275,3 +4275,67 @@ def test_mlx_normalizes_a_replay_only_conversation_for_a_processor_template():
     assert all(isinstance(message.get("content"), list) for message in sent), sent
     markers = sum(_count_vlm_images(message.get("content")) for message in sent)
     assert markers == len(attached) == 1
+
+
+def test_mlx_binds_an_earlier_attachment_to_its_own_turn_not_a_newer_replay():
+    """The attachment's turn can PRECEDE a tool's picture. The route used to pre-add
+    its marker, so the backend counted that marker as history's, the top-up became a
+    no-op, and the two pixels bound to each other's turns -- the model was shown the
+    screenshot where the user's own diagram belonged."""
+    from core.inference.mcp_images import placeholder_turn
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_args, **_kwargs: (
+        captured.append((messages, attached)) or iter(())
+    )
+    attachment, replayed = object(), object()
+
+    # What the plain route hands the backend once the fix stops it pre-marking: the
+    # attachment's turn is still a plain string, and the only marker in the
+    # conversation is the replayed picture's.
+    messages = [
+        {"role": "user", "content": "here is my diagram"},
+        {"role": "assistant", "content": "noted"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "mcp__s__shot", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "[1 image returned]"},
+        placeholder_turn(1, 1),
+        {"role": "user", "content": "which one is bluer?"},
+    ]
+
+    list(
+        backend.generate_chat_response(
+            messages,
+            image = attachment,
+            images = [replayed],
+            image_ordinal = 0,
+        )
+    )
+
+    sent_messages, attached = captured[0]
+    marker_turns = [
+        index
+        for index, message in enumerate(sent_messages)
+        if isinstance(message.get("content"), list)
+        and any(part.get("type") == "image" for part in message["content"])
+    ]
+    assert len(marker_turns) == 2, sent_messages
+    # The attachment's marker is on the FIRST turn, the replay's on the placeholder
+    # after it -- so the pixels have to arrive in that same order.
+    assert marker_turns[0] < marker_turns[1]
+    assert attached == [attachment, replayed], (
+        "the pixels bound to each other's markers"
+    )
