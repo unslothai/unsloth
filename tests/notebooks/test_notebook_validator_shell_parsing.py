@@ -2119,11 +2119,13 @@ def test_the_cron_lint_job_installs_packaging():
     for step in install_steps:
         assert "packaging" in step, step
 
+
 # ----------------------------------------------------------------------------------
 # Moved here from tests/python/test_torchcodec_torch_compat.py. They exercise the pip
 # replay and the shell reader, not the torchcodec matrix, so they belong beside the code
 # they describe rather than in a module about one package's compatibility table.
 # ----------------------------------------------------------------------------------
+
 
 def test_the_2_11_row_does_not_flag_an_abi_stable_codec():
     """Adding the 2.11 row without the ABI-stable short-circuit is a false positive.
