@@ -14,22 +14,25 @@ export async function reconcileGgufPinsAfterDelete(
   quant?: string,
   hfToken?: string,
 ): Promise<void> {
-  const pins = pinnedQuantEntries(
-    usePinnedModelsStore.getState().pinned,
-  ).filter((pin) => pin.repoId === repoId && (!quant || pin.quant === quant));
-  if (!pins.length) return;
+  const pinned = usePinnedModelsStore.getState().pinned;
+  const barePinned = pinned.includes(pinKey(repoId));
+  const pins = pinnedQuantEntries(pinned).filter(
+    (pin) => pin.repoId === repoId && (!quant || pin.quant === quant),
+  );
+  if (!pins.length && !barePinned) return;
   try {
-    const missing = await missingPinnedQuants(
-      pins,
-      await listCachedGguf(),
-      async (copy) => {
-        const response = await listGgufVariants(copy.repo_id, hfToken, {
-          preferLocalCache: true,
-          localPath: copy.cache_path || copy.load_id || undefined,
-        });
-        return response.variants;
-      },
-    );
+    const copies = await listCachedGguf();
+    const missing = await missingPinnedQuants(pins, copies, async (copy) => {
+      const response = await listGgufVariants(copy.repo_id, hfToken, {
+        preferLocalCache: true,
+        localPath: copy.cache_path || copy.load_id || undefined,
+      });
+      return response.variants;
+    });
+    if (barePinned && !copies.some((copy) => copy.repo_id === repoId)) {
+      const state = usePinnedModelsStore.getState();
+      if (state.pinned.includes(pinKey(repoId))) state.togglePinned(repoId);
+    }
     for (const pin of missing) {
       const state = usePinnedModelsStore.getState();
       if (state.pinned.includes(pinKey(pin.repoId, pin.quant))) {

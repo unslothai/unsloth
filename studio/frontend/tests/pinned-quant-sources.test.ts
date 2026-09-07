@@ -6,9 +6,75 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import {
+  pinKey,
+  pinnedQuantEntries,
+} from "../src/features/model-picker/components/model-selector/pinned-models.ts";
+import {
   missingPinnedQuants,
   resolvePinnedQuantSources,
 } from "../src/features/model-picker/components/model-selector/pinned-quant-sources.ts";
+
+test("bare GGUF pins survive another copy and disappear after the last copy", async () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-selector/reconcile-gguf-pins.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const declaration = source
+    .slice(source.indexOf("export async function"))
+    .replace("export ", "");
+  const compile = new Function(
+    "listCachedGguf",
+    "listGgufVariants",
+    "pinKey",
+    "pinnedQuantEntries",
+    "usePinnedModelsStore",
+    "missingPinnedQuants",
+    `${ts.transpileModule(declaration, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText}; return reconcileGgufPinsAfterDelete;`,
+  );
+  const repoId = "Org/Model";
+  for (const copies of [[{ repo_id: repoId, cache_path: "/other" }], []]) {
+    let pinned = [repoId, "Other/Model"];
+    const reconcile = compile(
+      async () => copies,
+      async () => ({ variants: [] }),
+      pinKey,
+      pinnedQuantEntries,
+      {
+        getState: () => ({
+          pinned,
+          togglePinned: (id: string, quant?: string) => {
+            pinned = pinned.filter((key) => key !== pinKey(id, quant));
+          },
+        }),
+      },
+      missingPinnedQuants,
+    );
+    await reconcile(repoId);
+    assert.deepEqual(
+      pinned,
+      copies.length ? [repoId, "Other/Model"] : ["Other/Model"],
+    );
+  }
+  const reconcile = compile(
+    async () => {
+      throw new Error("scan unavailable");
+    },
+    () => assert.fail("unexpected variant lookup"),
+    pinKey,
+    pinnedQuantEntries,
+    {
+      getState: () => ({
+        pinned: [repoId],
+        togglePinned: () => assert.fail("an unavailable scan must retain pins"),
+      }),
+    },
+    missingPinnedQuants,
+  );
+  await reconcile(repoId);
+});
 
 test("the pinned-row delete handler revalidates the surviving copy", async () => {
   const source = readFileSync(

@@ -43,9 +43,8 @@ export function ggufVariantsMatchForPicker(
 
 /** Selected and loaded state for a row that names one quant, such as a pinned quant or an On
  *  Device repo holding a single quant. Loaded is exact: only the running quant wears the badge.
- *  Selected follows the picker's value, minus the case where the repo is running a different
- *  quant. Compare panes hold a staged value while another pane's model is resident, so a repo
- *  that is not the loaded one stays selected on its value alone. */
+ *  Selected follows the staged copy and quant when supplied. Otherwise it follows the picker
+ *  value, excluding a different resident quant. Selection and residency can name different copies. */
 export function soleQuantRowState({
   pickerValue,
   repoId,
@@ -54,6 +53,8 @@ export function soleQuantRowState({
   activeGgufVariant,
   loadId,
   activeLoadId,
+  selectedLoadId,
+  selectedGgufVariant,
 }: {
   pickerValue: string | null | undefined;
   repoId: string;
@@ -62,6 +63,8 @@ export function soleQuantRowState({
   activeGgufVariant: string | null | undefined;
   loadId?: string | null;
   activeLoadId?: string | null;
+  selectedLoadId?: string | null;
+  selectedGgufVariant?: string | null;
 }): { selected: boolean; loaded: boolean } {
   const repoIsLoaded = modelIdsMatchForPicker(loadedModelId, repoId);
   const quantIsLoaded =
@@ -69,7 +72,17 @@ export function soleQuantRowState({
     ggufVariantsMatchForPicker(activeGgufVariant, quant) &&
     (!loadId || modelIdsMatchForPicker(loadId, activeLoadId || loadedModelId));
   return {
-    selected: pickerValue === repoId && (!repoIsLoaded || quantIsLoaded),
+    selected:
+      pickerValue === repoId &&
+      (!loadId ||
+        modelIdsMatchForPicker(
+          loadId,
+          selectedLoadId ||
+            (repoIsLoaded ? activeLoadId || loadedModelId : repoId),
+        )) &&
+      (selectedGgufVariant !== undefined
+        ? ggufVariantsMatchForPicker(selectedGgufVariant, quant)
+        : !repoIsLoaded || quantIsLoaded),
     loaded: quantIsLoaded,
   };
 }

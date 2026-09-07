@@ -153,6 +153,7 @@ interface ModelSelectorProps {
   activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
+  selectedLoadId?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   /** Optional task-specific resolver for companion assets a GGUF row alone cannot describe. */
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
@@ -363,6 +364,7 @@ function ModelSelectorContent({
   activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
+  selectedLoadId,
   onSelect,
   resolveDownloadFootprint,
   onEject,
@@ -388,6 +390,7 @@ function ModelSelectorContent({
   activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
+  selectedLoadId?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
@@ -612,6 +615,8 @@ function ModelSelectorContent({
               loraModels={fineTunedModels}
               externalModels={externalModels}
               value={value}
+              selectedLoadId={selectedLoadId}
+              selectedGgufVariant={selectedGgufVariant}
               onSelect={handlePick}
               resolveDownloadFootprint={resolveDownloadFootprint}
               onFoldersChange={onFoldersChange}
@@ -662,6 +667,7 @@ export function ModelSelector({
   activeLoadedContextLength,
   selectedConfig,
   selectedGgufVariant,
+  selectedLoadId,
   onValueChange,
   resolveDownloadFootprint,
   onEject,
@@ -691,7 +697,13 @@ export function ModelSelector({
   const t = useT();
   const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
 
+  const [lastPick, setLastPick] = useState<{
+    id: string;
+    loadId: string;
+    ggufVariant?: string;
+  } | null>(null);
   const selected = value ?? uncontrolled;
+  const selectedPick = lastPick?.id === selected ? lastPick : null;
   // A selection is only a load when the caller has not said otherwise: the chat model can be
   // evicted by an image or video load while the pick survives.
   const isLoaded = selected !== "" && (loaded ?? true);
@@ -788,6 +800,7 @@ export function ModelSelector({
   ]);
 
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
+    setLastPick({ id, loadId: meta.loadId || id, ggufVariant: meta.ggufVariant });
     if (onValueChange) {
       onValueChange(id, meta);
     } else {
@@ -832,7 +845,8 @@ export function ModelSelector({
         activeModelConfig={activeModelConfig}
         activeLoadedContextLength={activeLoadedContextLength}
         selectedConfig={selectedConfig}
-        selectedGgufVariant={selectedGgufVariant}
+        selectedGgufVariant={selectedGgufVariant !== undefined ? selectedGgufVariant : selectedPick?.ggufVariant}
+        selectedLoadId={selectedLoadId ?? selectedPick?.loadId}
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}

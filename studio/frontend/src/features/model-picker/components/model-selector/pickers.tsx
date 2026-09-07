@@ -2598,6 +2598,8 @@ export function HubModelPicker({
   externalModels = [],
   value,
   onSelect: onSelectProp,
+  selectedLoadId: selectedLoadIdOverride,
+  selectedGgufVariant,
   resolveDownloadFootprint,
   onFoldersChange,
   onBrowseHub,
@@ -2622,6 +2624,8 @@ export function HubModelPicker({
   externalModels?: ExternalModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  selectedLoadId?: string | null;
+  selectedGgufVariant?: string | null;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
   /** Open the full Hub page to browse more models. */
@@ -2667,6 +2671,16 @@ export function HubModelPicker({
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
   const activeLoadId = useChatRuntimeStore((s) => s.activeLoadId);
+  const loadingPick = useChatRuntimeStore((s) => s.loadingModelPick);
+  const selectedLoadId = selectedLoadIdOverride ?? (
+    modelIdsMatchForPicker(loadingPick?.id, value)
+      ? loadingPick?.loadId || loadingPick?.id
+      : modelIdsMatchForPicker(selectedCheckpoint, value)
+        ? activeLoadId || selectedCheckpoint
+        : value
+  );
+  const matchesSelectedCacheCopy = (repoId: string, loadId?: string | null) =>
+    modelIdsMatchForPicker(loadId || repoId, selectedLoadId);
   const matchesLoadedCacheCopy = (repoId: string, loadId?: string | null) =>
     loadedModelIdOverride !== undefined ||
     !modelIdsMatchForPicker(loadedModelId, repoId) ||
@@ -5072,8 +5086,8 @@ export function HubModelPicker({
       pinKey(entry.repoId, entry.quant),
     );
     const isSelected =
-      value === entry.repoId && activeGgufVariant === entry.quant &&
-      matchesLoadedCacheCopy(entry.repoId, entry.loadId);
+      value === entry.repoId && (selectedGgufVariant ?? activeGgufVariant) === entry.quant &&
+      matchesSelectedCacheCopy(entry.repoId, entry.loadId);
     const isLoaded =
       modelIdsMatchForPicker(loadedModelId, entry.repoId) &&
       !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
@@ -5214,6 +5228,8 @@ export function HubModelPicker({
       activeGgufVariant,
       loadId: loadedModelIdOverride === undefined ? c.load_id : undefined,
       activeLoadId,
+      selectedLoadId,
+      selectedGgufVariant,
     });
     const isSelected = rowState.selected;
     const expectedBytes = ggufVariantExpectedBytes(variant);
@@ -5346,7 +5362,7 @@ export function HubModelPicker({
     const rowKey = cachedGgufRowKey(c);
     const optionKey = makeModelOptionKey("downloaded-gguf", rowKey);
     const copyMatches = matchesLoadedCacheCopy(c.repo_id, c.load_id);
-    const isSelected = value === c.repo_id && copyMatches;
+    const isSelected = value === c.repo_id && matchesSelectedCacheCopy(c.repo_id, c.load_id);
     const soleQuant = soleQuants.quants.get(rowKey);
     if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
     // Auto-expansion waits for the probe: expanding every row first would mount an expander, and

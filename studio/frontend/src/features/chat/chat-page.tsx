@@ -532,6 +532,7 @@ const SingleContent = memo(function SingleContent({
 
 type CompareModelSelection = {
   id: string;
+  loadId?: string;
   isLora: boolean;
   ggufVariant?: string;
   isDiffusion?: boolean;
@@ -962,6 +963,7 @@ function GeneralCompareHeader({
   value,
   selectedConfig,
   selectedGgufVariant,
+  selectedLoadId,
   onValueChange,
   onFoldersChange,
   onModelsChange,
@@ -975,6 +977,7 @@ function GeneralCompareHeader({
   value: string;
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
+  selectedLoadId?: string | null;
   onValueChange: (
     id: string,
     meta: ModelSelectorChangeMeta,
@@ -1008,6 +1011,7 @@ function GeneralCompareHeader({
         value={value}
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
+        selectedLoadId={selectedLoadId}
         onValueChange={onValueChange}
         onFoldersChange={onFoldersChange}
         onModelsChange={onModelsChange}
@@ -1053,6 +1057,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const globalLoadId = useChatRuntimeStore((s) => s.activeLoadId);
   const globalIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
   const active = useChatActive();
   // Global, with only RE-lists waiting on it; see the note on the Lora variant above.
@@ -1062,6 +1067,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   const listedPairRef = useRef<string | null>(null);
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
+    loadId: globalLoadId ?? undefined,
     isLora: false,
     ggufVariant: globalGgufVariant ?? undefined,
     isDiffusion: globalIsDiffusion,
@@ -1158,9 +1164,11 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               value={model1.id}
               selectedConfig={model1.config}
               selectedGgufVariant={model1.ggufVariant}
+              selectedLoadId={model1.loadId ?? model1.id}
               onValueChange={(id, meta) =>
                 setModel1({
                   id,
+                  loadId: meta.loadId ?? undefined,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
                   isDiffusion: meta.isDiffusion,
@@ -1193,9 +1201,11 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
               value={model2.id}
               selectedConfig={model2.config}
               selectedGgufVariant={model2.ggufVariant}
+              selectedLoadId={model2.loadId ?? model2.id}
               onValueChange={(id, meta) =>
                 setModel2({
                   id,
+                  loadId: meta.loadId ?? undefined,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
                   isDiffusion: meta.isDiffusion,
@@ -2266,6 +2276,7 @@ export function ChatPage({
     }
   }, [search]);
   const inferenceParams = useChatRuntimeStore((state) => state.params);
+  const activeLoadId = useChatRuntimeStore((state) => state.activeLoadId);
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
@@ -3945,6 +3956,12 @@ export function ChatPage({
                 externalModels={externalModels}
                 externalConnections={externalConnections}
                 value={inferenceParams.checkpoint}
+                selectedLoadId={loadingModel?.id === inferenceParams.checkpoint
+                  ? loadingModel.loadId || loadingModel.id
+                  : activeLoadId || inferenceParams.checkpoint}
+                selectedGgufVariant={loadingModel?.id === inferenceParams.checkpoint
+                  ? loadingModel.ggufVariant
+                  : activeGgufVariant}
                 // Resident, not merely picked: an image or video load evicts the chat model and leaves this
                 // selection behind, so the tick stayed on a released model.
                 loaded={chatModelLoaded({

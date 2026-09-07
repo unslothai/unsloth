@@ -10,6 +10,137 @@ import {
   soleQuantRowState,
 } from "../src/features/model-picker/components/model-selector/row-identity.ts";
 
+test("the picker resolves selection from explicit, in-flight, and resident copy targets", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-selector/pickers.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const start = source.indexOf("const selectedLoadId =");
+  assert.ok(start >= 0);
+  const resolve = new Function(
+    "selectedLoadIdOverride",
+    "loadingPick",
+    "value",
+    "selectedCheckpoint",
+    "activeLoadId",
+    "modelIdsMatchForPicker",
+    `${source.slice(start, source.indexOf(";", start) + 1)} return selectedLoadId;`,
+  );
+  assert.equal(
+    resolve(
+      "/staged",
+      null,
+      "Org/Model",
+      "Other/Model",
+      "/resident",
+      modelIdsMatchForPicker,
+    ),
+    "/staged",
+  );
+  assert.equal(
+    resolve(
+      undefined,
+      { id: "Org/Model", loadId: "/starting" },
+      "Org/Model",
+      "Other/Model",
+      "/resident",
+      modelIdsMatchForPicker,
+    ),
+    "/starting",
+  );
+  assert.equal(
+    resolve(
+      undefined,
+      null,
+      "Org/Model",
+      "Org/Model",
+      "/resident",
+      modelIdsMatchForPicker,
+    ),
+    "/resident",
+  );
+  assert.equal(
+    resolve(
+      undefined,
+      { id: "Other/Model", loadId: "/starting" },
+      "Org/Model",
+      "Other/Model",
+      "/resident",
+      modelIdsMatchForPicker,
+    ),
+    "Org/Model",
+  );
+});
+
+test("compare guards and load requests retain the staged physical cache target", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
+    "utf8",
+  );
+  const guards = [...source.matchAll(/const isAlreadyActive =([\s\S]*?);/g)];
+  assert.equal(guards.length, 2);
+  const sel = { id: "Org/Model", loadId: "/old/snapshot", ggufVariant: "Q8_0" };
+  for (const guard of guards) {
+    const active = new Function(
+      "currentStore",
+      "sel",
+      "modelIdsMatch",
+      `return (${guard[1]});`,
+    );
+    for (const activeLoadId of [null, "/old/snapshot"]) {
+      assert.equal(
+        active(
+          {
+            params: { checkpoint: sel.id },
+            activeLoadId,
+            activeGgufVariant: sel.ggufVariant,
+          },
+          sel,
+          modelIdsMatch,
+        ),
+        activeLoadId === sel.loadId,
+      );
+    }
+  }
+  const requests = [...source.matchAll(/model_path: (sel\.[^,\n]+),/g)];
+  assert.equal(requests.length, 3);
+  for (const request of requests) {
+    assert.equal(
+      new Function("sel", `return (${request[1]});`)(sel),
+      sel.loadId,
+    );
+  }
+});
+
+test("only the staged cache copy is selected before it becomes resident", () => {
+  for (const loadedModelId of [undefined, "Other/Model", "Org/Model"]) {
+    const rows = ["Org/Model", "/old/snapshot"].map((loadId) =>
+      soleQuantRowState({
+        pickerValue: "Org/Model",
+        repoId: "Org/Model",
+        quant: "Q8_0",
+        loadedModelId,
+        activeGgufVariant: "Q8_0",
+        activeLoadId: null,
+        loadId,
+        selectedLoadId: "/old/snapshot",
+        selectedGgufVariant: "Q8_0",
+      }),
+    );
+    assert.deepEqual(
+      rows.map((row) => row.selected),
+      [false, true],
+    );
+    assert.deepEqual(
+      rows.map((row) => row.loaded),
+      [loadedModelId === "Org/Model", false],
+    );
+  }
+});
+
 test("Hub carries the chat loader's physical target into resident and loading state", () => {
   const source = readFileSync(
     new URL("../src/features/hub/hub-page.tsx", import.meta.url),
