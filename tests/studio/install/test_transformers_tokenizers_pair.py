@@ -173,6 +173,37 @@ def test_no_requirements_file_admits_a_tokenizers_outside_the_window():
     )
 
 
+def test_the_darwin_override_admits_only_the_pinned_transformers():
+    """The override is the one file that can widen what the core install resolves, because
+    install.sh runs that one uv command without constraints.txt and an override replaces
+    every requirement on the package -- including pyproject's own cap. Bounded to exactly
+    what constraints.txt pins, it cannot drift into a fourth independent pin."""
+    pinned = {
+        str(req.marker): version
+        for req in _named(_requirements(CONSTRAINTS), "transformers")
+        for version in (
+            [spec.version for spec in req.specifier if spec.operator == "=="] or [None]
+        )
+    }
+    assert pinned, "constraints.txt no longer pins transformers"
+    for req in _named(_requirements(DARWIN_OVERRIDES), "transformers"):
+        version = pinned.get(str(req.marker))
+        assert version is not None, (
+            f"the override's transformers line for marker {req.marker} has no counterpart "
+            f"in constraints.txt; the two must move together"
+        )
+        assert version in req.specifier, (
+            f"the override ({req.specifier}) excludes the version constraints.txt pins "
+            f"({version})"
+        )
+        excess = [candidate for candidate in ("5.16.1", "5.15.1") if candidate in req.specifier]
+        assert not excess, (
+            f"the override admits transformers {excess}, above the pinned {version}. On "
+            f"macOS arm64 that is what install.sh's core phase installs, and a later "
+            f"--no-deps pin then strands tokenizers where the newer release put it."
+        )
+
+
 def test_the_checker_rejects_the_pair_that_broke_apple_silicon():
     """Negative control. Every assertion above is a "nothing found" shape, which is also
     what a checker that has quietly stopped checking reports."""
