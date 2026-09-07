@@ -1879,6 +1879,30 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # Same shape, same reason: a venv installed before the tokenizers pin can
+        # hold a tokenizers the installed transformers rejects at import, which
+        # takes down every `import transformers` and so the whole MLX stack, while
+        # $_PKG_NAME itself is current. Without this the fast path reports "up to
+        # date" and repairs nothing. Ask the metadata, not an import: the import is
+        # what is broken. Any unreadable half exits 1 and changes nothing.
+        if "$VENV_DIR/bin/python" -c "
+import sys
+from importlib.metadata import PackageNotFoundError, requires, version
+try:
+    from packaging.requirements import Requirement
+    installed = version('tokenizers')
+    windows = [
+        req.specifier
+        for req in (Requirement(raw) for raw in (requires('transformers') or []))
+        if req.name == 'tokenizers' and req.marker is None
+    ]
+except (PackageNotFoundError, ImportError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if windows and installed not in windows[0] else 1)
+" 2>/dev/null; then
+            substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
         # An interrupted install leaves $_PKG_NAME current while studio.txt
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
