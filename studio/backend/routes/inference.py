@@ -15801,10 +15801,8 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                     model = _lifecycle_model_label(_unloaded, _unloaded_variant),
                     reason = "manual",
                 )
-                # No log line here: unload_model already emits one, for every unload
-                # rather than only the manual route, and two lines 1-3 ms apart under
-                # two different names made the reload count ungreppable. The manual
-                # event itself is on record above, in api_monitor.record_lifecycle.
+                # No log line here: unload_model emits one for every unload, and two
+                # under different names made the reload count ungreppable.
                 return UnloadResponse(status = "unloaded", model = request.model_path)
 
             # Unload from Unsloth backend off the event loop: unload takes _gen_lock, which
