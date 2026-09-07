@@ -386,13 +386,27 @@ assert_eq "KFD names gfx1033 behind the spoof -> cpu" \
 assert_eq "KFD names gfx1030 -> rocm" \
     "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_kfd_host gfx1030)"
 
+# A stub file making the SIMULATED host the subject, not the machine running the test.
+# _has_amd_rocm_gpu falls back to `[ -e /dev/kfd ]` plus the KFD topology, and _kfd_gfx_targets
+# reads that topology directly; both are absolute paths with no seam, so on a real AMD box the
+# runner's own silicon answered and the scenarios below stopped being about the host they
+# describe. Presence is asserted rather than left to the machine, and KFD is silenced, so these
+# read the same on a Deck, a gfx1151 runner and a laptop with no GPU at all.
+_amd_host_no_kfd_stub() {  # -> a file to source AFTER funcs.sh
+    _ahs_dir=$(mktemp -d)
+    {
+        printf '_has_amd_rocm_gpu() { return 0; }\n'
+        printf '_kfd_gfx_targets() { :; }\n'
+    } > "$_ahs_dir/host.sh"
+    printf '%s' "$_ahs_dir/host.sh"
+}
+
 echo "=== An override nothing can verify is not evidence of a healthy arch ==="
 # Older ROCr that answers only while the override is set, no amd-smi, no KFD: the chain
 # used to end at the spoofed probe. Absence of evidence is not evidence of absence.
 _index_unverifiable_override() {  # $1 = the env assignment to apply
     _iuo_dir=$(_make_kfd_only_host)
-    _iuo_stub=$(mktemp -d)
-    printf '_kfd_gfx_targets() { :; }\n' > "$_iuo_stub/kfd.sh"
+    _iuo_stub=$(_amd_host_no_kfd_stub)
     PATH="$_iuo_dir:$_TOOLS_DIR" "$_SH" -c "
         unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL
         unset UNSLOTH_TORCH_INDEX_FAMILY ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
@@ -400,10 +414,10 @@ _index_unverifiable_override() {  # $1 = the env assignment to apply
         export $1
         _ARCH=x86_64
         . '$_E2E_FUNCS'
-        . '$_iuo_stub/kfd.sh'
+        . '$_iuo_stub'
         get_torch_index_url
     " 2>/dev/null | tail -1
-    rm -rf "$_iuo_dir" "$_iuo_stub"
+    rm -rf "$_iuo_dir" "$(dirname "$_iuo_stub")"
 }
 assert_eq "HSA override with no verifiable source -> cpu" \
     "https://download.pytorch.org/whl/cpu" \
@@ -415,8 +429,7 @@ assert_eq "HSA override with no verifiable source -> cpu" \
 # the ordinary no-version deferral. Assert on which branch spoke.
 _stderr_unverifiable_override() {  # $1 = env assignment -> stderr only
     _suo_dir=$(_make_kfd_only_host)
-    _suo_stub=$(mktemp -d)
-    printf '_kfd_gfx_targets() { :; }\n' > "$_suo_stub/kfd.sh"
+    _suo_stub=$(_amd_host_no_kfd_stub)
     PATH="$_suo_dir:$_TOOLS_DIR" "$_SH" -c "
         unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_TORCH_INDEX_URL
         unset UNSLOTH_TORCH_INDEX_FAMILY ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES
@@ -424,10 +437,10 @@ _stderr_unverifiable_override() {  # $1 = env assignment -> stderr only
         export $1
         _ARCH=x86_64
         . '$_E2E_FUNCS'
-        . '$_suo_stub/kfd.sh'
+        . '$_suo_stub'
         get_torch_index_url >/dev/null
     " 2>&1
-    rm -rf "$_suo_dir" "$_suo_stub"
+    rm -rf "$_suo_dir" "$(dirname "$_suo_stub")"
 }
 assert_eq "the spoof refusal names HSA_OVERRIDE_GFX_VERSION" "yes" \
     "$(_stderr_unverifiable_override HSA_OVERRIDE_GFX_VERSION=10.3.0 \
@@ -435,8 +448,12 @@ assert_eq "the spoof refusal names HSA_OVERRIDE_GFX_VERSION" "yes" \
 assert_eq "a declared arch on a tool-blind host is not a spoof" "yes" \
     "$(_stderr_unverifiable_override UNSLOTH_ROCM_GFX_ARCH=gfx1151 \
        | grep -qF 'cannot confirm its real arch' && echo no || echo yes)"
-assert_eq "and it still reaches the cpu index for the reroute to pick up" \
-    "https://download.pytorch.org/whl/cpu" \
+# ROCm, not cpu: nothing is being spoofed here, so the declared gfx1151 is simply the arch,
+# and the gate has no reason to refuse it. This asserted cpu until the presence stub above
+# landed, which it only ever got by short-circuiting on a host with no AMD GPU at all -- the
+# gfx1151 runner returns rocm7.2 and is right to.
+assert_eq "a declared arch on a real AMD host keeps its rocm index" \
+    "https://download.pytorch.org/whl/rocm7.2" \
     "$(_index_unverifiable_override UNSLOTH_ROCM_GFX_ARCH=gfx1151)"
 # With NO override in force there is nothing being spoofed, so an empty physical read is
 # just a host the probes cannot read, and the pre-existing routing is left alone.
@@ -466,6 +483,7 @@ assert_eq "declared gfx1030 on a real gfx1030 host keeps rocm" \
     "https://download.pytorch.org/whl/rocm7.2" "$(_index_for_declared_arch gfx1030 gfx1030)"
 # And it is still honoured where nothing else can answer: no rocminfo, no amd-smi.
 _no_probe_index=$( _np=$(mktemp -d)
+    _np_stub=$(_amd_host_no_kfd_stub)
     printf '#!/bin/sh\necho 7.2.0\n' > "$_np/hipconfig"; chmod +x "$_np/hipconfig"
     PATH="$_np:$_TOOLS_DIR" "$_SH" -c "
         unset UNSLOTH_TORCH_INDEX_URL UNSLOTH_TORCH_INDEX_FAMILY HSA_OVERRIDE_GFX_VERSION
@@ -473,8 +491,9 @@ _no_probe_index=$( _np=$(mktemp -d)
         UNSLOTH_ROCM_GFX_ARCH=gfx1033; export UNSLOTH_ROCM_GFX_ARCH
         _ARCH=x86_64
         . '$_E2E_FUNCS'
+        . '$_np_stub'
         get_torch_index_url" 2>/dev/null | tail -1
-    rm -rf "$_np" )
+    rm -rf "$_np" "$(dirname "$_np_stub")" )
 assert_eq "declared gfx1033 with no probe tool -> cpu" \
     "https://download.pytorch.org/whl/cpu" "$_no_probe_index"
 
