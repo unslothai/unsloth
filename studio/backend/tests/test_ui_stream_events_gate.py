@@ -82,16 +82,16 @@ def test_none_request_is_refused():
 
 
 def test_background_generation_run_opts_into_control_frames():
-    # Durable runs replay the producer's SSE lines (tool cards included) to the
-    # Studio UI, so their synthetic request must carry the opt-in.
+    # Durable runs replay the producer's SSE lines (tool cards included) to the Studio UI,
+    # so their synthetic request must carry the opt-in.
     from core.inference.chat_generation_runs import _background_request
     req = _background_request(app = None, run_id = "run-1", cancel_event = threading.Event())
     assert _ui_stream_events_enabled(req) is True
 
 
 def test_openai_stream_control_yields_are_gated():
-    # Every raw control-frame yield in the OpenAI chat producer must sit behind
-    # the per-request opt-in; keepalive/error chunks are plain SSE and exempt.
+    # Every raw control-frame yield must sit behind the per-request opt-in; keepalive and
+    # error chunks are plain SSE and exempt.
     src = inspect.getsource(produce_openai_chat_completions)
     lines = src.splitlines()
     control_yields = (
@@ -116,9 +116,9 @@ def test_openai_stream_control_yields_are_gated():
 
 
 def test_dropped_frames_still_pace_a_keepalive():
-    # A gated-off frame writes nothing but still restarts the stall-keepalive wait, and
-    # tool_stream_exec's own heartbeat, so an unpaced stream is silent for the whole tool
-    # run and a Cloudflare quick tunnel drops it at ~100s idle (_DroppedFrameKeepalive).
+    # A gated-off frame writes nothing but still restarts the stall-keepalive wait and
+    # tool_stream_exec's heartbeat, so an unpaced stream is silent for the whole tool run
+    # and a Cloudflare quick tunnel drops it at ~100s idle.
     keepalive = _DroppedFrameKeepalive(now = 0.0)
     assert keepalive.due(now = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S - 0.01) is False
     assert keepalive.due(now = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S) is True
@@ -128,8 +128,8 @@ def test_dropped_frames_still_pace_a_keepalive():
 
 
 def test_every_gated_frame_falls_back_to_a_keepalive():
-    # Companion to the gating check above: dropping a frame must never mean writing
-    # nothing, so each opt-in branch carries the paced keepalive on its else side.
+    # Dropping a frame must never mean writing nothing, so each opt-in branch carries the
+    # paced keepalive on its else side.
     src = inspect.getsource(produce_openai_chat_completions)
     gates = [
         node
@@ -154,8 +154,8 @@ def test_every_gated_frame_falls_back_to_a_keepalive():
 
 
 def test_control_frame_lines_are_recognised_by_type():
-    # The vocabulary lives in sse_control_frames so the passthrough relay and the local
-    # gate cannot drift apart when a frame type is added.
+    # The vocabulary lives in sse_control_frames so the passthrough relay and the local gate
+    # cannot drift apart when a frame type is added.
     for frame in (
         "tool_start",
         "tool_end",
@@ -206,8 +206,8 @@ def test_confirm_gate_needs_both_a_stream_and_the_frames():
     # Either channel missing means the gate has nowhere to ask.
     assert _confirm_gate_has_no_channel(_gate_payload(), False) is True
     assert _confirm_gate_has_no_channel(_gate_payload(), True) is False
-    # Non-streaming keeps the reading it has always had: an unset mode stays lenient
-    # there (a health check must not 400), an explicit one has nowhere to prompt.
+    # Non-streaming keeps its old reading: an unset mode stays lenient (a health check must
+    # not 400), an explicit one has nowhere to prompt.
     assert _confirm_gate_has_no_channel(_gate_payload(stream = False), True) is False
     assert (
         _confirm_gate_has_no_channel(_gate_payload(stream = False, permission_mode = "ask"), True)
@@ -219,9 +219,9 @@ def test_confirm_gate_needs_both_a_stream_and_the_frames():
 
 
 def test_a_streaming_request_that_can_never_prompt_is_not_refused():
-    # An unset permission_mode is read as auto on a stream, the way the loop defaults it,
-    # so an always-safe selection is not refused over a prompt that can never fire. Deep
-    # research drives its own /v1/chat/completions this way (enabled_tools: []).
+    # An unset permission_mode is read as auto on a stream, the way the loop defaults it, so
+    # an always-safe selection is not refused over a prompt that can never fire. Deep research
+    # drives its own /v1/chat/completions this way (enabled_tools: []).
     assert _confirm_gate_has_no_channel(_gate_payload(enabled_tools = []), False) is False
     # A selection that can prompt still is.
     assert _confirm_gate_has_no_channel(_gate_payload(enabled_tools = ["terminal"]), False) is True
@@ -235,9 +235,9 @@ def test_a_streaming_request_that_can_never_prompt_is_not_refused():
 
 
 def test_a_request_that_can_run_no_tool_is_not_refused():
-    # stream_with_studio_tools withdraws the catalogue unless tool_choice is not "none"
-    # and the budget is unspent, so neither shape can reach a prompt. The selector reads
-    # neither field, so the catalogue alone cannot answer this.
+    # stream_with_studio_tools withdraws the catalogue unless tool_choice is not "none" and
+    # the budget is unspent, so neither shape can reach a prompt. The selector reads neither
+    # field, so the catalogue alone cannot answer this.
     assert _confirm_gate_has_no_channel(_gate_payload(tool_choice = "none"), False) is False
     assert _confirm_gate_has_no_channel(_gate_payload(max_tool_calls_per_message = 0), False) is False
     # An unspent budget is not a disabled one.
@@ -261,8 +261,8 @@ _LIVE_SMOKE = Path(__file__).resolve().parent / "test_studio_api.py"
 
 
 def test_the_live_tool_smoke_sends_the_shape_the_examples_hand_out():
-    # Example 4 in the live smoke is the same curl the API keys tab shows, so it has to
-    # stay runnable for the same reason and in the same way.
+    # Example 4 in the live smoke is the same curl the API keys tab shows, so it has to stay
+    # runnable in the same way.
     src = _LIVE_SMOKE.read_text(encoding = "utf-8")
     body = src[src.index("def test_curl_with_tools") :]
     body = body[: body.index("\ndef ")]
@@ -271,9 +271,9 @@ def test_the_live_tool_smoke_sends_the_shape_the_examples_hand_out():
 
 
 def test_the_bundled_api_examples_are_still_runnable():
-    # Copy-paste snippets from the API keys tab. They stream with python and terminal
-    # enabled and deliberately do not take the control frames, so without an explicit
-    # mode the confirm gate would refuse every one of them before generation.
+    # The API keys tab's copy-paste snippets stream with python and terminal enabled and
+    # deliberately do not take the control frames, so without an explicit mode the confirm
+    # gate would refuse every one of them before generation.
     src = _USAGE_EXAMPLES.read_text(encoding = "utf-8")
     tool_branches = src.count("enable_tools")
     assert tool_branches, "the tool variants disappeared from the examples"
@@ -300,9 +300,9 @@ def test_the_bundled_api_examples_are_still_runnable():
 
 
 def test_a_structured_type_field_does_not_crash_the_relay():
-    # sanitize_provider_sse_line deliberately passes a non-string `type` through, and a
-    # frozenset membership test on an unhashable value raises, so a custom provider could
-    # end an otherwise relayable stream with a server error.
+    # sanitize_provider_sse_line passes a non-string `type` through, and a frozenset
+    # membership test on an unhashable value raises, so a custom provider could end an
+    # otherwise relayable stream with a server error.
     for value in ('{"a": 1}', "[1, 2]", "3", "null", "true"):
         line = 'data: {"type": %s, "choices": []}' % value
         assert is_ui_control_sse_line(line) is False, line
@@ -310,9 +310,9 @@ def test_a_structured_type_field_does_not_crash_the_relay():
 
 def test_the_loops_bare_status_frames_are_held_back_too():
     # build_synthetic_search_exchange brackets a RAG autoinjection with {"type": "status"}
-    # frames, which stream_with_studio_tools writes straight onto the relayed stream.
-    # "status" is not in the provider-forgery vocabulary, but it carries no choices, so a
-    # strict client fails on it exactly like a tool card.
+    # frames, written straight onto the relayed stream. "status" is not in the
+    # provider-forgery vocabulary, but it carries no choices, so a strict client fails on it
+    # exactly like a tool card.
     assert is_ui_control_sse_line('data: {"type": "status", "text": "Searching: x"}') is True
     assert is_ui_control_sse_line('data: {"type": "status", "text": ""}') is True
     # usage and error are the provider's own vocabulary; a client reads them.
@@ -323,10 +323,9 @@ def test_the_loops_bare_status_frames_are_held_back_too():
 
 
 def test_a_call_the_server_runs_itself_is_not_offered_to_the_caller():
-    # The loop relays the provider's delta.tool_calls and the finish_reason that ends that
-    # turn, for a call Unsloth executes and answers in a later turn. Its catalogue is
-    # Unsloth's own, so a client acting on those chunks runs the tool a second time, or
-    # stops at the finish_reason before the real answer arrives.
+    # The loop relays the provider's delta.tool_calls and the finish_reason ending that turn,
+    # for a call Unsloth runs and answers later. The catalogue is Unsloth's own, so a client
+    # acting on those chunks runs the tool twice, or stops before the real answer arrives.
     assert (
         strip_server_executed_tool_call(
             'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"id": "c1"}]}}]}'
@@ -365,9 +364,9 @@ def test_the_relay_only_strips_calls_the_loop_owns():
 
 
 def test_a_legacy_function_call_is_left_for_the_caller():
-    # The loop reads delta.tool_calls and nothing else, so a legacy function_call is one
-    # it never executes: stripping it would drop a call the caller is meant to run, and
-    # its matching finish_reason would arrive with no name or arguments behind it.
+    # The loop reads delta.tool_calls and nothing else, so a legacy function_call is one it
+    # never executes: stripping it would drop a call the caller is meant to run, and its
+    # matching finish_reason would arrive with no name or arguments behind it.
     for line in (
         'data: {"choices": [{"index": 0, "delta": {"function_call": {"name": "f"}}}]}',
         'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "function_call"}]}',
@@ -379,11 +378,10 @@ def test_a_legacy_function_call_is_left_for_the_caller():
 
 
 def test_a_stop_that_only_looks_final_is_held_back_too():
-    # llama.cpp and vLLM finish a perfectly good structured tool call on "stop", and the
-    # loop deliberately runs those (studio_tool_loop keeps "stop" out of its `truncated`
-    # set). Stripping only the call leaves an empty chunk marked finish_reason "stop", so
-    # a client that ends its turn on the first finish_reason never reads the answer the
-    # loop is about to stream: the same lost reply the frame gate exists to prevent.
+    # llama.cpp and vLLM finish a perfectly good structured tool call on "stop", and the loop
+    # deliberately runs those (studio_tool_loop keeps "stop" out of `truncated`). Stripping
+    # only the call leaves an empty chunk marked finish_reason "stop", so a client ending on
+    # the first finish_reason never reads the answer the loop is about to stream.
     stripper = ServerToolCallStripper()
     call = (
         'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, '
@@ -394,8 +392,8 @@ def test_a_stop_that_only_looks_final_is_held_back_too():
 
     # The call chunk carries nothing else, so it drops entirely, as it already did.
     assert stripper.strip(call) is None
-    # New: so does the "stop" that closes the turn that call belonged to. Without this
-    # the caller gets an empty chunk marked finish_reason "stop" and ends the turn there.
+    # So does the "stop" that closes that turn: otherwise the caller gets an empty chunk
+    # marked finish_reason "stop" and ends the turn there.
     assert stripper.strip(end) is None
     # The loop's next turn is the caller's to read, finish_reason and all.
     answer = 'data: {"choices": [{"index": 0, "delta": {"content": "56088"}}]}'
@@ -404,9 +402,8 @@ def test_a_stop_that_only_looks_final_is_held_back_too():
 
 
 def test_a_stop_the_loop_will_not_run_past_stays_final():
-    # "length" and "content_filter" are the two the loop refuses to run (a call cut off at
-    # the token ceiling may be half-written), so that turn really is the last one and its
-    # finish_reason has to reach the caller.
+    # "length" and "content_filter" are the two the loop refuses to run (a call cut off at the
+    # token ceiling may be half-written), so that turn really is the last one.
     for reason in ("length", "content_filter"):
         stripper = ServerToolCallStripper()
         call = (
@@ -436,10 +433,10 @@ _ONE_CALL = [
 
 
 def test_a_call_co_emitted_with_its_finish_reason_is_still_held_back():
-    # A provider may put the call and the reason that ends its turn on ONE line -- any
-    # non-streamed upstream relayed as a single line does. The withheld-call flag has to
-    # be raised before the strip reads it, or this leaks the exact empty "stop" chunk the
-    # gate exists to prevent, and then eats the real one that follows.
+    # A provider may put the call and the reason that ends its turn on ONE line; any
+    # non-streamed upstream relayed as a single line does. So the withheld-call flag has to be
+    # raised before the strip reads it, or this leaks the empty "stop" the gate exists to
+    # prevent and then eats the real one that follows.
     for reason in ("stop", "tool_calls"):
         stripper = ServerToolCallStripper()
         assert stripper.strip(_call_chunk({"tool_calls": _ONE_CALL}, reason)) is None
@@ -453,9 +450,9 @@ def test_a_call_co_emitted_with_its_finish_reason_is_still_held_back():
 
 def test_a_withheld_call_the_loop_never_runs_still_ends_the_stream():
     # The loop can close without opening the turn a withheld call promised: a spent tool
-    # budget, a discarded or unparsable call, a provider that failed mid-loop. The reason
-    # removed with that call was then this stream's last one, and finish_reason is a
-    # required key -- openai-node raises "missing finish_reason for choice 0" outright.
+    # budget, a discarded call, a provider that failed mid-loop. The reason removed with that
+    # call was then the stream's last one, and finish_reason is required -- openai-node raises
+    # "missing finish_reason for choice 0".
     stripper = ServerToolCallStripper()
     assert stripper.strip(_call_chunk({"tool_calls": _ONE_CALL})) is None
     assert stripper.strip(_call_chunk({}, "stop")) is None
@@ -471,9 +468,8 @@ def test_a_withheld_call_the_loop_never_runs_still_ends_the_stream():
 
 
 def test_an_empty_tool_calls_entry_counts_as_a_withheld_call():
-    # The strip removes the key whether or not it is truthy, so the flag must read the
-    # same condition; otherwise the line is dropped without arming the turn and the
-    # following "stop" leaks.
+    # The strip removes the key whether or not it is truthy, so the flag must read the same
+    # condition; otherwise the line drops without arming the turn and the next "stop" leaks.
     stripper = ServerToolCallStripper()
     stripper.strip(_call_chunk({"tool_calls": []}))
     assert stripper.strip(_call_chunk({}, "stop")) is None
@@ -496,20 +492,18 @@ def test_a_turn_with_no_withheld_call_keeps_its_own_stop():
 
 
 def test_a_process_wide_tools_on_flag_does_not_refuse_a_plain_request():
-    # `unsloth studio run --enable-tools` fills the tool-policy OVERRIDE slot, not the
-    # default one, so _tools_on_by_launcher_default_only stops answering for it. Reading
-    # that narrower predicate here would 400 every ordinary OpenAI stream on that
-    # launcher -- `unsloth chat`'s own included, which sends no tool fields and no header.
-    # Which slot the operator used is not something the caller can see or act on.
+    # `unsloth studio run --enable-tools` fills the tool-policy OVERRIDE slot, not the default
+    # one, so _tools_on_by_launcher_default_only stops answering for it. Reading that narrower
+    # predicate here would 400 every ordinary OpenAI stream on that launcher, `unsloth chat`'s
+    # own included, over a slot choice the caller cannot see or act on.
     payload = _gate_payload(enable_tools = None, enabled_tools = None)
     for policy in (None, True):
         with mock.patch("state.tool_policy.get_tool_policy", return_value = policy):
             assert _confirm_gate_has_no_channel(payload, False, ["python"]) is False
-            # Tools are withdrawn for that stream instead, the same way the launcher
-            # default is, so the loop it could not be prompted for never opens.
+            # Tools are withdrawn for that stream instead, so the loop it could not be
+            # prompted for never opens.
             assert _launcher_tool_default_applies(payload, False) is False
-    # A request that asked for tools itself is still refused: it can be told about the
-    # header, and it is the one the gate was written for.
+    # A request that asked for tools itself is still refused: it can be told about the header.
     asked = _gate_payload(enable_tools = True, enabled_tools = ["python"])
     for policy in (None, True):
         with mock.patch("state.tool_policy.get_tool_policy", return_value = policy):
@@ -525,9 +519,8 @@ def test_a_disabled_tool_policy_can_never_prompt():
 
 
 def test_the_selected_catalog_beats_a_stale_mcp_flag():
-    # mcp_enabled arms the classifier on the flag alone. Once the catalogue is resolved it
-    # answers better: an MCP ask that discovery filtered to nothing leaves only always-safe
-    # built-ins, which never prompt.
+    # mcp_enabled arms the classifier on the flag alone. The resolved catalogue answers
+    # better: an MCP ask discovery filtered to nothing leaves only always-safe built-ins.
     payload = _gate_payload(mcp_enabled = True, enabled_tools = ["search_knowledge_base"])
     assert _confirm_gate_has_no_channel(payload, False) is True
     assert _confirm_gate_has_no_channel(payload, False, ["search_knowledge_base"]) is False
@@ -538,8 +531,8 @@ def test_the_selected_catalog_beats_a_stale_mcp_flag():
 
 
 def test_a_stripped_call_still_paces_a_keepalive():
-    # Same trap as the gated frames: a long argument stream drops every fragment and keeps
-    # the loop's stall timer from firing, so the relay must write something.
+    # Same trap as the gated frames: a long argument stream drops every fragment and holds off
+    # the loop's stall timer, so the relay must write something.
     src = inspect.getsource(_proxy_to_external_provider)
     assert src.count("_tool_call_stripper.strip(line)") == 2
     # Each strip that drops the line pairs with the paced keepalive before continuing.
@@ -552,9 +545,9 @@ def test_a_stripped_call_still_paces_a_keepalive():
 
 
 def test_the_launcher_default_does_not_claim_a_stream_it_cannot_prompt(monkeypatch):
-    # `unsloth studio run` installs a tools-on default. A request that never mentions
-    # tools cannot be expected to know about the header either, so putting it behind a
-    # confirm gate would 400 every ordinary OpenAI call on that launcher, or park it in
+    # `unsloth studio run` installs a tools-on default, but a request that never mentions
+    # tools cannot be expected to know about the header either. Putting it behind a confirm
+    # gate would 400 every ordinary OpenAI call on that launcher, or park it in
     # wait_tool_decision on the first high-risk call. It asked for plain chat.
     from state import tool_policy
 
@@ -564,8 +557,8 @@ def test_the_launcher_default_does_not_claim_a_stream_it_cannot_prompt(monkeypat
     assert _confirm_gate_has_no_channel(silent, False) is False
     # The Studio UI takes the frames, so the default keeps answering for it.
     assert _launcher_tool_default_applies(silent, True) is True
-    # A request that asked for tools itself is not the launcher's default, and still needs
-    # the channel; so does one that stated its intent through the standard fields.
+    # A request that asked for tools itself is not the launcher's default and still needs the
+    # channel; so does one that stated its intent through the standard fields.
     asked = _gate_payload(enable_tools = True, enabled_tools = None)
     assert _launcher_tool_default_applies(asked, False) is True
     assert _confirm_gate_has_no_channel(asked, False) is True
@@ -582,10 +575,10 @@ def test_both_local_branches_consult_the_launcher_default_rule():
 
 
 def test_the_mlx_counter_honours_tool_choice_none():
-    # The safetensors completion withdraws the catalogue outright for tool_choice "none",
-    # so a count that still prices the schemas -- or trips the MCP discovery 503 -- no
-    # longer describes the prompt generation renders. The GGUF counter already draws this
-    # line with _client_disabled_tool_calls; this is the MLX branch of the same rule.
+    # The safetensors completion withdraws the catalogue outright for tool_choice "none", so a
+    # count that still prices the schemas, or trips the MCP discovery 503, no longer describes
+    # the prompt generation renders. The MLX branch of the rule the GGUF counter already draws
+    # with _client_disabled_tool_calls.
     from routes import inference as inf
 
     src = inspect.getsource(inf._mlx_count_chat_tokens)
@@ -595,10 +588,10 @@ def test_the_mlx_counter_honours_tool_choice_none():
 
 def test_tool_choice_none_withdraws_the_catalogue_but_not_the_capability():
     # _sf_template_tools decides which branch of a named template is READ, not what is
-    # rendered. Following tool_choice there reads the plain branch for a tool
-    # conversation, which turns off _sf_client_tools and drops the assistant's tool_calls
-    # and the tool result's correlation fields -- exactly when "none" asks for the final
-    # answer. The withdrawal belongs to _sf_tools_on and _sf_tools_to_use instead.
+    # rendered. Following tool_choice there reads the plain branch for a tool conversation,
+    # turning off _sf_client_tools and dropping the assistant's tool_calls and the result's
+    # correlation fields, exactly when "none" asks for the final answer. The withdrawal
+    # belongs to _sf_tools_on and _sf_tools_to_use instead.
     src = inspect.getsource(produce_openai_chat_completions)
     detect = src[src.index("_sf_template_tools = ") :][:400]
     assert 'payload.tool_choice != "none"' not in detect
@@ -608,10 +601,9 @@ def test_tool_choice_none_withdraws_the_catalogue_but_not_the_capability():
 
 
 def test_a_withheld_call_always_leaves_the_caller_a_finish_reason():
-    # A provider that closes the turn on [DONE] alone offers no finish_reason to remove,
-    # so arming the debt only where one was removed left the caller holding a stream whose
-    # only chunk was withheld. finish_reason is required in the chunk schema: openai-node
-    # raises without it.
+    # A provider closing the turn on [DONE] alone offers no finish_reason to remove, so arming
+    # the debt only where one was removed left the caller holding a stream whose only chunk
+    # was withheld. finish_reason is required in the chunk schema: openai-node raises without.
     stripper = ServerToolCallStripper()
     call = 'data: {"id": "c", "choices": [{"index": 0, "delta": {"tool_calls": [{"id": "x"}]}}]}'
     assert stripper.strip(call) is None
@@ -623,10 +615,9 @@ def test_a_withheld_call_always_leaves_the_caller_a_finish_reason():
 
 def test_a_removed_reason_owes_a_terminal_even_with_no_call_to_latch_onto():
     # A provider can report finish_reason "tool_calls" for a call its own parser failed to
-    # emit; llama.cpp and vLLM both have open bugs of that shape. Nothing is there for the
-    # withheld-call flag to latch onto, so the reason was blanked with no debt recorded and
-    # the stream ended carrying no finish_reason at all -- worse than the call being held
-    # back, and the exact openai-node failure the minting exists to prevent.
+    # emit (open llama.cpp and vLLM bugs). Nothing is there for the withheld-call flag to
+    # latch onto, so the reason was blanked with no debt recorded and the stream ended with no
+    # finish_reason at all, the openai-node failure the minting exists to prevent.
     stripper = ServerToolCallStripper()
     stripper.strip('data: {"id": "c", "choices": [{"index": 0, "delta": {"content": "hi"}}]}')
     stripper.strip(
@@ -648,9 +639,9 @@ def test_a_removed_reason_owes_a_terminal_even_with_no_call_to_latch_onto():
 
 def test_a_legacy_finish_after_a_structured_call_is_withheld_too():
     # A gateway may stream modern delta.tool_calls and still close the turn on the legacy
-    # "function_call"; LocalAI picks that value whenever the client sent no tools, and
-    # litellm relays it verbatim. The loop runs such a call (only "length" and
-    # "content_filter" stop it), so relaying the reason ends the caller's turn early.
+    # "function_call" (LocalAI picks it whenever the client sent no tools, litellm relays it
+    # verbatim). The loop runs such a call, so relaying the reason ends the caller's turn
+    # early.
     stripper = ServerToolCallStripper()
     call = 'data: {"id": "c", "choices": [{"index": 0, "delta": {"tool_calls": [{"id": "x"}]}}]}'
     assert stripper.strip(call) is None
@@ -660,8 +651,8 @@ def test_a_legacy_finish_after_a_structured_call_is_withheld_too():
     )
     assert out is None or '"function_call"' not in out
 
-    # A genuine legacy call is the caller's own to run, and keeps both its delta and its
-    # reason: pending is keyed on "tool_calls", which a function_call delta never sets.
+    # A genuine legacy call is the caller's own to run and keeps its delta and its reason:
+    # pending is keyed on "tool_calls", which a function_call delta never sets.
     legacy = ServerToolCallStripper()
     passed = legacy.strip(
         'data: {"id": "c", "choices": [{"index": 0, "delta": {"function_call":'
@@ -676,8 +667,8 @@ def test_a_legacy_finish_after_a_structured_call_is_withheld_too():
 
 
 def test_a_stream_that_kept_its_own_terminal_is_owed_nothing():
-    # No spurious extra chunk when the caller already has a real finish_reason, whether or
-    # not a call was withheld earlier in the stream.
+    # No spurious extra chunk when the caller already has a real finish_reason, whether or not
+    # a call was withheld earlier in the stream.
     plain = ServerToolCallStripper()
     plain.strip('data: {"id": "c", "choices": [{"index": 0, "delta": {"content": "hi"}}]}')
     plain.strip(
@@ -709,8 +700,8 @@ def test_the_mlx_counter_keeps_capability_out_of_the_withdrawal_too():
 
 
 def test_external_provider_relay_drops_control_frames_too():
-    # The provider proxy returns before the local producer's per-yield gates and relays
-    # stream_with_studio_tools' frames verbatim, so it filters the same vocabulary.
+    # The provider proxy returns before the local producer's per-yield gates and relays the
+    # loop's frames verbatim, so it filters the same vocabulary.
     src = inspect.getsource(_proxy_to_external_provider)
     relays = [line for line in src.splitlines() if line.strip() == 'yield f"{line}\\n\\n"']
     assert relays, "the provider relay yields disappeared"
@@ -720,13 +711,13 @@ def test_external_provider_relay_drops_control_frames_too():
 
 
 def test_a_safetensors_stream_that_disabled_tool_calls_opens_no_loop(monkeypatch):
-    # The gate exempts tool_choice: "none" from needing an event channel, on the promise
-    # that no call can happen. The safetensors/MLX branch is the one that had to be made
-    # to keep it: nothing on that path read the field (not _sf_use_tools, not
-    # _select_request_tools, and generate_chat_completion_with_tools is never passed it),
-    # so the loop opened with the full built-in catalogue for a headerless stream that had
-    # just been admitted for being unable to call anything. The first high-risk call then
-    # wrote a tool_start the relay drops and blocked in wait_tool_decision for the hour.
+    # The gate exempts tool_choice: "none" from needing an event channel, on the promise that
+    # no call can happen. The safetensors/MLX branch had to be made to keep that promise:
+    # nothing on that path read the field (not _sf_use_tools, not _select_request_tools, and
+    # generate_chat_completion_with_tools is never passed it), so the loop opened with the
+    # full built-in catalogue for a headerless stream just admitted for being unable to call
+    # anything. The first high-risk call then wrote a tool_start the relay drops and blocked
+    # in wait_tool_decision for the hour.
     import asyncio
 
     from core.inference.api_monitor import ApiMonitor

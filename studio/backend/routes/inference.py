@@ -19498,11 +19498,10 @@ async def _proxy_to_external_provider(
         and not _selects_only_provider_hosted_tools(payload, provider_type)
     )
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
-    # The loop relays the same control frames the local routes gate, so this path needs
-    # the same per-request answer (see UI_STREAM_EVENTS_HEADER).
+    # The loop relays the same control frames the local routes gate (see UI_STREAM_EVENTS_HEADER).
     _ui_events = _ui_stream_events_enabled(request)
     _drop_keepalive = _DroppedFrameKeepalive()
-    # One per request: it carries the withheld-call state across the lines of a turn.
+    # One per request: carries the withheld-call state across the lines of a turn.
     _tool_call_stripper = ServerToolCallStripper()
     # Unsloth's UI asks for the gate by permission_mode, not by confirm_tool_calls,
     # so reading the raw flag admits the exact request the local routes reject: a
@@ -19738,8 +19737,8 @@ async def _proxy_to_external_provider(
                 mcp_allowed = bool(payload.mcp_enabled),
             )
             if studio_tool_payloads:
-                # The loop runs iff the catalog is non-empty (policy below), and its
-                # approval handshake rides the control frames.
+                # The loop runs iff the catalog is non-empty, and its approval handshake
+                # rides the control frames.
                 _reject_confirm_gate_without_channel(
                     payload, _ui_events, selected_names = _catalog_names(studio_tool_payloads)
                 )
@@ -19892,13 +19891,13 @@ async def _proxy_to_external_provider(
                         line = _tool_call_stripper.strip(line)
                         if line is None:
                             # A long argument stream drops every fragment here and, like a
-                            # gated frame, keeps the loop's stall timer from firing.
+                            # gated frame, holds off the loop's stall timer.
                             if _drop_keepalive.due():
                                 yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             continue
                     yield f"{line}\n\n"
-                # The loop can end without opening the turn a withheld call promised, and
-                # the reason removed with that call was this stream's last one.
+                # The loop can end without opening the turn a withheld call promised, and the
+                # reason removed with that call was this stream's last one.
                 _owed = _tool_call_stripper.owed_terminal_chunk()
                 if _owed is not None:
                     yield f"{_owed}\n\n"
@@ -20079,8 +20078,8 @@ async def _proxy_to_external_provider(
         )
     run_studio_tool_loop = bool(external_studio_tools)
     if run_studio_tool_loop:
-        # Only once the catalog is known: mcp_enabled with no MCP tools enabled leaves
-        # this empty and skips the loop, so there is no prompt to find a channel for.
+        # Only once the catalog is known: mcp_enabled with no MCP tools enabled leaves this
+        # empty and skips the loop, so there is no prompt to find a channel for.
         _reject_confirm_gate_without_channel(
             payload, _ui_events, monitor_id, _catalog_names(external_studio_tools)
         )
@@ -20179,9 +20178,8 @@ async def _proxy_to_external_provider(
                     rag_scope = payload.rag_scope,
                     auto_heal = payload.auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
-                    # Matches the strip below: only a headerless caller has its tool calls
-                    # withheld, and only it needs the loop to flag a healed one the wire
-                    # never carried. The opt-in stream keeps every frame, so it arms nothing.
+                    # Matches the strip below: only a headerless caller has its calls
+                    # withheld, so only it needs a healed one the wire never carried flagged.
                     on_withheld_tool_call = (None if _ui_events else _tool_call_stripper.arm),
                     on_provider_turn_end = (None if _ui_events else _tool_call_stripper.end_turn),
                 ),
@@ -20226,8 +20224,7 @@ async def _proxy_to_external_provider(
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
                 if not _ui_events and run_studio_tool_loop:
-                    # Only inside the loop: on a plain proxy the calls are the caller's
-                    # own and must pass through untouched.
+                    # Only inside the loop: on a plain proxy the calls are the caller's own.
                     line = _tool_call_stripper.strip(line)
                     if line is None:
                         if _drop_keepalive.due():
@@ -20240,7 +20237,7 @@ async def _proxy_to_external_provider(
                 if _is_openai_sse_done(line):
                     sent_done = True
             # The loop can end without opening the turn a withheld call promised, and the
-            # reason removed with that call was this stream's last one. Before [DONE], as
+            # reason removed with that call was this stream's last one. Before [DONE], where
             # the GGUF passthrough places its own synthetic finish.
             _owed = _tool_call_stripper.owed_terminal_chunk()
             if _owed is not None and not stream_failed:
@@ -20584,11 +20581,10 @@ def _chat_cancel_event(request: Request) -> threading.Event:
 
 # Unsloth multiplexes its own UI control frames (tool_start / tool_end / tool_output /
 # tool_args / tool_status / reasoning_summary / diffusion_frame) onto the SSE stream of
-# /v1/chat/completions. Those frames carry no `choices`, so strict OpenAI clients --
-# openai-python, the Vercel AI SDK, opencode -- fail schema validation mid-stream and
-# drop the response (their Anthropic route already drops these events for the same
-# reason). Default is therefore a clean OpenAI stream; the Studio UI opts back in with
-# an explicit header. See core.inference.sse_control_frames for the client-side parser.
+# /v1/chat/completions. They carry no `choices`, so strict OpenAI clients -- openai-python,
+# the Vercel AI SDK, opencode -- fail schema validation mid-stream and drop the response
+# (the Anthropic route already drops these events for the same reason). So the default is a
+# clean OpenAI stream and the Studio UI opts back in with this header.
 UI_STREAM_EVENTS_HEADER = "X-Unsloth-Events"
 
 
@@ -20677,10 +20673,10 @@ async def produce_openai_chat_completions(
         request,
         cancel_on_disconnect = cancel_on_disconnect,
     )
-    # Control frames are opt-in per request (see UI_STREAM_EVENTS_HEADER); captured once
-    # here so every stream generator below shares one answer.
+    # Opt-in per request (see UI_STREAM_EVENTS_HEADER); captured once so every stream
+    # generator below shares one answer.
     _ui_events = _ui_stream_events_enabled(request)
-    # Seeded at stream start, so a tool already chatty past the window still gets one.
+    # Seeded at stream start, so a tool already chatty past the window still gets a keepalive.
     _drop_keepalive = _DroppedFrameKeepalive()
 
     # OpenAI's newer "developer" role is equivalent to "system". Normalize it
@@ -20819,11 +20815,11 @@ async def produce_openai_chat_completions(
         _studio_local_tool_loop = bool(_use_tools_intent) and (
             _explicit_studio_tool_loop_requested(payload) or not _client_tool_passthrough
         )
-        # Non-streaming only: this runs before the model switch, so it only has the
-        # request's intent, and mcp_enabled with no MCP tools enabled selects an empty
-        # catalogue and skips the loop. The per-backend guards below refuse a stream that
-        # hid the frames, with the selection in hand. A switch before that refusal is
-        # cheaper than 400ing a request that would have run.
+        # Non-streaming only: this runs before the model switch, so it has only the request's
+        # intent, and mcp_enabled with no MCP tools enabled selects an empty catalogue and
+        # skips the loop. The per-backend guards below refuse a frameless stream with the
+        # selection in hand; a switch before that refusal beats 400ing a request that would
+        # have run.
         if (
             not payload.bypass_permissions
             and not payload.stream
@@ -21447,8 +21443,8 @@ async def produce_openai_chat_completions(
         # own. Measured on a non-streaming request with permission_mode ask, and equally
         # on auto and on a bare confirm_tool_calls, which the validator folds to ask.
         # Non-streaming only, deliberately: a stream that merely hid the control frames is
-        # refused by the tool branch alone, and widening the window to it would change what
-        # a plain request is handed (tools_withheld).
+        # refused by the tool branch alone, and widening this would change what a plain
+        # request is handed (tools_withheld).
         or (
             _confirm_gate_needs_stream(payload)
             and not payload.bypass_permissions
@@ -22080,7 +22076,7 @@ async def produce_openai_chat_completions(
                                 # Tool card is client-visible output; stamp the turn here.
                                 # Not decoded output: the tool run (or a human confirming
                                 # it) before the next turn is not decoding time. Gated with
-                                # the card: the stamp is set once, so a caller that cannot
+                                # the card, since the stamp is set once: a caller that cannot
                                 # see it would report the tool run as its TTFT.
                                 if _ui_events:
                                     api_monitor.mark_first_token(monitor_id, decoded = False)
@@ -23344,15 +23340,14 @@ async def produce_openai_chat_completions(
     # request as before.
     if _sf_tools_on and not _launcher_tool_default_applies(payload, _ui_events):
         _sf_tools_on = False
-    # tool_choice: "none" withdraws the catalogue outright, the way the GGUF loop does at
-    # its controller (`controller_tools = [] if tool_choice == "none"`). Nothing below
-    # reads the field -- neither _sf_use_tools nor _select_request_tools, and
-    # generate_chat_completion_with_tools is not passed it -- so without this the loop
-    # renders the full built-in catalogue for a request that asked for no call at all. It
-    # is also what _tool_calls_are_disabled promises the confirm gate: without it, a
-    # headerless stream is admitted on the strength of "none", the model calls anyway, and
-    # the tool_start carrying the approval_id is dropped while the generator blocks in
-    # wait_tool_decision for the full hour.
+    # tool_choice: "none" withdraws the catalogue outright, as the GGUF loop does at its
+    # controller. Nothing below reads the field (not _sf_use_tools, not
+    # _select_request_tools, and generate_chat_completion_with_tools is never passed it), so
+    # without this the loop renders the full built-in catalogue for a request that asked for
+    # no call at all. It is also what _tool_calls_are_disabled promises the confirm gate:
+    # otherwise a headerless stream is admitted on the strength of "none", the model calls
+    # anyway, and the tool_start carrying the approval_id is dropped while the generator
+    # blocks in wait_tool_decision for the full hour.
     if payload.tool_choice == "none":
         _sf_tools_on = False
     _sf_mcp_allowed = (
@@ -23362,19 +23357,19 @@ async def produce_openai_chat_completions(
     # Named templates may expose native reasoning only in their ``tool_use``
     # branch. Use a truthy placeholder for Unsloth-managed tools, whose concrete
     # schemas are selected below, and the request schemas for client passthrough.
-    # A withdrawn catalogue renders plain here too, so the probe and the completion do not
-    # disagree about which branch the conversation is in.
+    # A withdrawn catalogue renders plain here too, so the probe and the completion agree on
+    # which branch the conversation is in.
     _sf_server_tool_intent = payload.tool_choice != "none" and bool(
         _sf_tools_on or _explicit_studio_tool_loop_requested(payload)
     )
-    # Detection only -- this picks which branch of a named template is READ, and never what
-    # is rendered; the catalogue is withdrawn above and in _sf_tools_to_use. So it must not
-    # follow tool_choice: a conversation carrying client tools or tool history is a tool
+    # Detection only: this picks which branch of a named template is READ, never what is
+    # rendered (the catalogue is withdrawn above and in _sf_tools_to_use), so it must not
+    # follow tool_choice. A conversation carrying client tools or tool history is a tool
     # conversation whatever the field says, and reading the plain branch for it turns off
     # _sf_client_tools, which is what routes the history through
-    # _structured_tool_history_for_local_template. Without that the assistant's tool_calls
-    # and the tool result's correlation fields are dropped by _extract_content_parts --
-    # exactly when "none" is used to ask for the final answer.
+    # _structured_tool_history_for_local_template. Without that, _extract_content_parts drops
+    # the assistant's tool_calls and the result's correlation fields, exactly when "none" is
+    # used to ask for the final answer.
     _sf_template_tools = payload.tools or None
     if not _sf_template_tools and (
         _sf_server_tool_intent or any(m.role == "tool" or m.tool_calls for m in payload.messages)
@@ -23742,8 +23737,8 @@ async def produce_openai_chat_completions(
 
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
-                            # Same as the GGUF loop, and gated with the card for the same
-                            # reason: the stamp is set once.
+                            # Same as the GGUF loop, gated with the card for the same reason:
+                            # the stamp is set once.
                             if _ui_events:
                                 api_monitor.mark_first_token(monitor_id, decoded = False)
                             # Flush reasoning before tool_start so the thinking block closes ahead of the card.
@@ -28597,14 +28592,13 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # The launcher's default answers a request that said nothing about tools; one that
     # stated its intent goes to the passthrough, not the tool loop. Called rather than
     # restated, so a count cannot price the tool_use branch of a template the completion
-    # renders plain: the same helper decides it at the safetensors and GGUF branches, and
-    # it now also withdraws the default from a stream the confirm gate could not prompt.
+    # renders plain: the same helper decides it at the safetensors and GGUF branches.
     if _tools_on and not _launcher_tool_default_applies(
         payload, _ui_stream_events_enabled(request)
     ):
         _tools_on = False
-    # tool_choice "none" withdraws the catalogue outright on the completion's safetensors
-    # branch, so neither the schemas nor the MCP discovery 503 belong in a count for it.
+    # "none" withdraws the catalogue on the completion's safetensors branch, so neither the
+    # schemas nor the MCP discovery 503 belong in a count for it.
     if getattr(payload, "tool_choice", None) == "none":
         _tools_on = False
     _mcp_on = (
@@ -28618,11 +28612,10 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # the tools handed in -- so hand it a placeholder for the schemas selected below.
     # Without them it reads the plain branch and prices away the whole catalog.
     _tpl = (entry.get("chat_template_info") or {}).get("template")
-    # Detection only, exactly as the completion draws it: this picks which branch of a
-    # named template is read, never what is rendered, so it must not follow tool_choice.
-    # A count that reads the plain branch for a tool conversation loses the assistant's
-    # calls and the result correlation fields to _extract_content_parts, and then prices a
-    # history the completion keeps.
+    # Detection only, exactly as the completion draws it: which branch is read, never what is
+    # rendered, so it must not follow tool_choice. A count reading the plain branch for a tool
+    # conversation loses the assistant's calls and the result correlation fields to
+    # _extract_content_parts, and prices a history the completion keeps.
     _template_tools = payload.tools or None
     if not _template_tools and (
         _tools_on

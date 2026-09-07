@@ -383,8 +383,8 @@ def test_tool_choice_none_is_not_refused_for_a_prompt_it_can_never_show(monkeypa
         resp = await inf._proxy_to_external_provider(payload, headerless, current_subject = "t")
         return [chunk async for chunk in resp.body_iterator]
 
-    # Reaches the loop rather than being refused; the loop then withdraws the catalogue
-    # per turn (tools_available), so the request answers as plain text.
+    # Reaches the loop rather than being refused; the loop then withdraws the catalogue per
+    # turn (tools_available), so the request answers as plain text.
     with pytest.raises(LoopEntered):
         _drive(go())
 

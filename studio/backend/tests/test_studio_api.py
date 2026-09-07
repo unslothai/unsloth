@@ -251,9 +251,8 @@ def test_curl_with_tools(base_url: str, api_key: str):
             "stream": True,
             "enable_tools": True,
             "enabled_tools": ["python"],
-            # The shape the API keys tab hands out for this example. A curl caller cannot
-            # render an approval prompt, and the confirm gate only asks over the opt-in
-            # X-Unsloth-Events frames, so it says plainly that the tools run unprompted.
+            # The shape the API keys tab hands out. The confirm gate only asks over the
+            # opt-in X-Unsloth-Events frames, so this says the tools run unprompted.
             "permission_mode": "off",
             "session_id": "test-session",
         },
@@ -263,11 +262,10 @@ def test_curl_with_tools(base_url: str, api_key: str):
     assert status == 200, f"Expected 200, got {status}"
     assert len(chunks) > 0, "No SSE chunks received for tools request"
 
-    # Check that at least one chunk has the expected shape. Only `choices`: this request
-    # sends the documented snippet shape, which does not take X-Unsloth-Events, so a bare
-    # `type` frame can no longer arrive and accepting one would read as coverage this no
-    # longer has. Frame-level proof that the tool ran lives in the CI smokes, which opt in
-    # precisely so their tool_start/tool_end assertions keep a witness.
+    # Only `choices`: this sends the documented snippet shape, which does not take
+    # X-Unsloth-Events, so a bare `type` frame can no longer arrive and accepting one would
+    # read as coverage this no longer has. Frame-level proof that the tool ran lives in the
+    # CI smokes, which opt in so their tool_start/tool_end assertions keep a witness.
     has_valid_chunk = any("choices" in c for c in chunks)
     assert has_valid_chunk, "No valid chunks in tools response"
     full = _collect_streamed_content(chunks)

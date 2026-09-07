@@ -65,9 +65,9 @@ _TEXT_FORM_TURN = [
     _DONE,
 ]
 
-# Same call with the closing tag missing: promotion happens only in finalize(), which runs
-# after the provider already sent its finish_reason. Arming at promotion time alone would
-# be too late for this one, which is why the loop holds the chunk back instead.
+# Same call with the closing tag missing: promotion happens only in finalize(), after the
+# provider already sent its finish_reason. Arming at promotion time would be too late here,
+# which is why the loop holds the chunk back instead.
 _UNTERMINATED_TURN = [
     _sse({"content": "Let me look that up. "}),
     _sse({"content": '<tool_call>{"name": "web_search", '}),

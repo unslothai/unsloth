@@ -4285,8 +4285,8 @@ class TestGgufVisionToolRouting:
         assert monitor.active_count() == 0
 
     def test_streaming_confirm_gate_refuses_a_caller_that_hid_the_frames(self, monkeypatch):
-        # A stream without X-Unsloth-Events has nowhere to be asked, so the loop would
-        # park in wait_tool_decision for the full timeout (_confirm_gate_has_no_channel).
+        # A stream without X-Unsloth-Events has nowhere to be asked, so the loop would park
+        # in wait_tool_decision for the full timeout (_confirm_gate_has_no_channel).
         import routes.inference as inf_mod
 
         reset_tool_policy()
@@ -4351,9 +4351,9 @@ class TestGgufVisionToolRouting:
         assert "".join(d.get("content", "") for d in deltas) == "done"
 
     def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(self, monkeypatch):
-        # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery here finds
-        # no MCP tool, so the selection is empty and the loop is skipped. Refusing on
-        # intent would 400 a request that answers fine without ever prompting.
+        # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery finds no MCP
+        # tool here, so the selection is empty and the loop is skipped. Refusing on intent
+        # would 400 a request that answers fine without ever prompting.
         import routes.inference as inf_mod
 
         reset_tool_policy()

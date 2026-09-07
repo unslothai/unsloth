@@ -174,9 +174,9 @@ function bodyExtraLines(variant: Variant, indent: string): string[] {
   if (variant !== "plain") {
     lines.push(`${indent}"enable_tools": true,`);
     lines.push(`${indent}"enabled_tools": [${toolsJson}],`);
-    // A CLI client cannot render an approval prompt, and the gate only asks over the
-    // X-Unsloth-Events frames these snippets deliberately do not take. Say plainly that
-    // the tools run unprompted rather than hand out a request the server refuses.
+    // The gate only asks over the X-Unsloth-Events frames these snippets deliberately do
+    // not take, so say the tools run unprompted rather than hand out a request the server
+    // refuses.
     lines.push(`${indent}"permission_mode": "off",`);
   }
   return lines;

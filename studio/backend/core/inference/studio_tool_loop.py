@@ -359,11 +359,11 @@ class ToolLoopPolicy:
     auto_heal: bool | None = None
     # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
     nudge_tool_calls: bool | None = None
-    # Called just before the loop relays the chunk that ends a turn it healed a text-form call out of. Only the headerless
-    # relay sets it, to arm its ServerToolCallStripper for a call that never appeared on the wire as a tool_calls key.
+    # Called before relaying the chunk that ends a turn a text-form call was healed out of. Headerless relay only, to arm
+    # its ServerToolCallStripper for a call that never reached the wire as a tool_calls key.
     on_withheld_tool_call: Callable[[], None] | None = None
-    # Called when a provider turn ends, however it ended. Same headerless-only wiring: it clears the stripper's
-    # withheld-call flag, which the wire cannot always close because a turn may end on [DONE] alone.
+    # Called when a provider turn ends, however it ended. Headerless only: clears the stripper's withheld-call flag,
+    # which the wire cannot always close because a turn may end on [DONE] alone.
     on_provider_turn_end: Callable[[], None] | None = None
 
 
@@ -1021,7 +1021,6 @@ def _split_turn_end(
     now_choice["delta"] = delta
     now_payload = {key: value for key, value in payload.items() if key != "choices"}
     now_payload["choices"] = [now_choice] + list(payload.get("choices", [])[1:])
-    # Nothing worth sending when the chunk carried the reason and nothing else.
     now = _sse(now_payload) if (delta or len(now_payload["choices"]) > 1) else None
 
     held_payload = {key: value for key, value in payload.items() if key != "choices"}
@@ -1295,10 +1294,10 @@ async def stream_with_studio_tools(
         turn = _Turn(round = provider_turns)
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
         # A healed text-form call never reaches the wire as a tool_calls key, so a headerless caller's stripper cannot
-        # tell this turn ends in a call the loop is about to run rather than in an answer. Hold that turn-ending chunk
-        # until finalize() has said whether anything was promoted, then arm the stripper before releasing it. Arming at
-        # promotion time instead would still be too late for unterminated markup, which only promotes in finalize(),
-        # after the provider's "stop" has already gone out.
+        # tell this turn ends in a call the loop is about to run rather than in an answer. Hold the turn-ending chunk
+        # until finalize() says whether anything was promoted, then arm the stripper before releasing it. Arming at
+        # promotion time is too late for unterminated markup, which only promotes in finalize(), after the provider's
+        # "stop" has gone out.
         held_final: str | None = None
 
         active_tools = controller.active_tools()
@@ -1372,8 +1371,8 @@ async def stream_with_studio_tools(
                 turn.note_hosted_tool_event(payload.get("_toolEvent"))
                 if isinstance(choice.get("finish_reason"), str):
                     turn.finish_reason = choice["finish_reason"]
-                # Only a live healer can still promote a call this turn. Once it is dormant the structured path is in
-                # charge and the wire already carries the tool_calls key the stripper arms on.
+                # Only a live healer can still promote a call this turn; once dormant, the wire already carries the
+                # tool_calls key the stripper arms on.
                 hold_final = (
                     isinstance(choice.get("finish_reason"), str)
                     and healer is not None
@@ -1445,15 +1444,13 @@ async def stream_with_studio_tools(
                     elif kind == "tool_call":
                         turn.healed.append(value)
 
-            # The turn ended in a call this loop is about to run, so the provider's reason, if it sent one, is not the end
-            # of the response. Arming blanks it for headerless callers and records the debt, so owed_terminal_chunk()
-            # still mints a terminal if the loop stops before a later turn supplies one. A truncated turn is the
-            # exception: it refuses to run the call, so its reason really is final and stands.
+            # The turn ended in a call this loop is about to run, so the provider's reason is not the end of the
+            # response. Arming blanks it for headerless callers and records the debt, so owed_terminal_chunk() still
+            # mints a terminal if the loop stops before a later turn supplies one. A truncated turn is the exception: it
+            # refuses to run the call, so its reason really is final.
             #
-            # Deliberately not conditioned on held_final. A provider is free to close a turn on [DONE] alone, and one
-            # that does while a healed call is promoted would otherwise leave the debt unarmed: the loop runs the tool,
-            # the client is sent no finish_reason for that turn, and if nothing later supplies one the stream ends on
-            # [DONE] with none at all, which openai-node rejects outright.
+            # Deliberately not conditioned on held_final: a provider that closes on [DONE] alone while a healed call is
+            # promoted would leave the debt unarmed, ending the stream with no finish_reason, which openai-node rejects.
             if (
                 turn.healed
                 and turn.finish_reason not in ("length", "content_filter")
@@ -1475,16 +1472,15 @@ async def stream_with_studio_tools(
                     pass
 
         # The provider turn is over, whichever way it ended. Said explicitly because a turn closed on [DONE] alone
-        # carries no finish_reason for the stripper to read the boundary off, and the loop consumes that sentinel here
-        # rather than relaying it.
+        # carries no finish_reason for the stripper to read the boundary off, and the loop consumes that sentinel.
         if policy.on_provider_turn_end is not None:
             policy.on_provider_turn_end()
 
-        # Both mean the turn ended before the model finished Both of these mean the turn ended before the model finished
-        # saying what it wanted: "length" hit the token ceiling, "content_filter" had the output cut by the provider's
-        # own filter. Either way a call collected so far may be half-written, so it is described rather than run. "stop"
-        # is not in this set: llama.cpp and vLLM routinely finish a perfectly good tool call with it, and refusing those
-        # would disable tool calling on exactly the self-hosted servers this path exists for.
+        # Both mean the turn ended before the model finished saying what it wanted: "length" hit the token ceiling,
+        # "content_filter" had the output cut by the provider. Either way a call collected so far may be half-written,
+        # so it is described rather than run. "stop" is not in this set: llama.cpp and vLLM routinely finish a perfectly
+        # good tool call with it, and refusing those would disable tool calling on the self-hosted servers this path
+        # exists for.
         truncated = turn.finish_reason in ("length", "content_filter")
         if truncated and healer is not None and turn.healed:
             # A call cut off at the token limit must not run: its arguments can be half-written and the model never
