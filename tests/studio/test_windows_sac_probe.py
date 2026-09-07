@@ -587,12 +587,18 @@ def test_the_powershell_probe_redacts_logs_rejects_empty_inventories_and_keeps_r
     assert "Copy-Item -LiteralPath $studioLogs" not in ps1
     assert "Redact-Secrets $text" in ps1 and "function Redact-Secrets" in ps1
     for shape in ("hf_[A-Za-z0-9]{20,}", "Bearer", "AKIA|ASIA", "eyJ", "cookie"):
-        assert shape in ps1[ps1.index("function Redact-Secrets") : ps1.index("function Write-Section")], shape
+        assert (
+            shape in ps1[ps1.index("function Redact-Secrets") : ps1.index("function Write-Section")]
+        ), shape
     # A runtime with no PE files is an invalid cell, not a clean one.
     assert "no PE files found under $LLAMA_DIR" in ps1
     # A policy failure in revert does not skip the log and Defender restores.
     revert = ps1[ps1.index("function Invoke-Revert") :]
     assert "$policyError = $_" in revert
-    assert revert.index("$policyError = $_") < revert.index("Write-Section 'Restore CodeIntegrity log'")
-    assert revert.index("Write-Section 'Restore Defender preferences'") < revert.index("if ($null -ne $policyError) {")
+    assert revert.index("$policyError = $_") < revert.index(
+        "Write-Section 'Restore CodeIntegrity log'"
+    )
+    assert revert.index("Write-Section 'Restore Defender preferences'") < revert.index(
+        "if ($null -ne $policyError) {"
+    )
     assert "the audit policy is still applied" in revert
