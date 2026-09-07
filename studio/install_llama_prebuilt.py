@@ -7326,10 +7326,24 @@ def validate_prebuilt_choice(
     )
     log(f"overlaying prebuilt bundle {choice.name} into {install_dir}")
     server_path, quantize_path = install_from_archives(choice, host, install_dir, work_dir)
-    if choice.install_kind in VULKAN_INSTALL_KINDS and not runtime_payload_is_healthy(
-        install_dir, host, choice
-    ):
-        raise PrebuiltFallback(f"Vulkan bundle {choice.name} omitted a required runtime component")
+    # Every WINDOWS kind, not just Vulkan. The reuse path checks all kinds, so
+    # limiting the FRESH install to Vulkan meant a windows-cpu, windows-cuda or
+    # windows-rocm tree missing llama-common.dll was activated and reported
+    # successful, with the new requirement only biting on some later installer
+    # run. That is the gap this change exists to close, so it has to hold where
+    # the bundle is first unpacked.
+    #
+    # Deliberately not widened to Linux and macOS here. Their groups are
+    # unchanged by this PR and their bundles are built differently, so turning
+    # a previously unchecked path into a hard fallback for them belongs in its
+    # own change with its own evidence.
+    if (
+        choice.install_kind in VULKAN_INSTALL_KINDS
+        or choice.install_kind.startswith("windows-")
+    ) and not runtime_payload_is_healthy(install_dir, host, choice):
+        raise PrebuiltFallback(
+            f"{choice.install_kind} bundle {choice.name} omitted a required runtime component"
+        )
     preflight_linux_installed_binaries((server_path, quantize_path), install_dir, host)
     preflight_macos_installed_binaries((server_path, quantize_path), install_dir, host)
     ensure_repo_shape(install_dir)

@@ -6979,3 +6979,24 @@ def test_existing_install_matches_plan_windows_rejects_missing_llama_common(tmp_
 
     (runtime_dir / "llama-common.dll").write_bytes(b"DLL")
     assert INSTALL_LLAMA_PREBUILT._runtime_payload_has(install_dir, host, groups) is True
+
+
+def test_a_fresh_windows_install_is_payload_checked_not_just_vulkan():
+    """The check has to run where the bundle is first unpacked.
+
+    runtime_payload_is_healthy was called on a fresh install only for the Vulkan
+    kinds, so a newly extracted windows-cpu, windows-cuda or windows-rocm tree
+    missing llama-common.dll was activated and reported successful, and the
+    requirement bit only on a later run through the existing-install reuse path.
+    A source guard rather than a behavioural one because reaching that call
+    needs a full download, extract and activate; the behaviour it gates is
+    covered by test_existing_install_matches_plan_windows_rejects_missing_llama_common.
+    """
+    source = MODULE_PATH.read_text(encoding = "utf-8")
+    gate = source[source.index("overlaying prebuilt bundle") :]
+    gate = gate[: gate.index("preflight_linux_installed_binaries")]
+    assert "runtime_payload_is_healthy" in gate, "fresh installs are not payload checked at all"
+    assert 'choice.install_kind.startswith("windows-")' in gate, (
+        "fresh Windows installs are not payload checked"
+    )
+    assert "VULKAN_INSTALL_KINDS" in gate, "the Vulkan check must not be dropped"
