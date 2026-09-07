@@ -687,9 +687,7 @@ def test_a_quant_id_v1_models_used_to_publish_still_resolves(tmp_path):
 def test_a_legacy_quant_id_never_shadows_a_quant_that_is_really_there(tmp_path):
     # b-BF16.gguf IS the BF16 file; a-BF16-Q4_K_M.gguf merely used to be called that. The
     # real one keeps the name, so no alias is offered and no request changes weights.
-    entry = _one_gguf_repo(
-        tmp_path, "collide", ["a-BF16-Q4_K_M.gguf", "b-BF16.gguf"]
-    )
+    entry = _one_gguf_repo(tmp_path, "collide", ["a-BF16-Q4_K_M.gguf", "b-BF16.gguf"])
     assert entry is not None
     assert set(entry.variants) == {"Q4_K_M", "BF16"}
     assert entry.aliases == ()
@@ -702,9 +700,7 @@ def test_a_legacy_quant_id_never_shadows_a_quant_that_is_really_there(tmp_path):
 def test_an_ambiguous_legacy_quant_id_resolves_to_nothing(tmp_path):
     # Two files whose old label was the same one. Guessing between them would serve weights
     # nobody asked for, so it names neither -- the rule the override key folding already uses.
-    entry = _one_gguf_repo(
-        tmp_path, "ambiguous", ["x-BF16-Q4_K_M.gguf", "y-BF16-Q6_K.gguf"]
-    )
+    entry = _one_gguf_repo(tmp_path, "ambiguous", ["x-BF16-Q4_K_M.gguf", "y-BF16-Q6_K.gguf"])
     assert entry is not None
     assert set(entry.variants) == {"Q4_K_M", "Q6_K"}
     assert entry.aliases == ()
@@ -737,7 +733,6 @@ def test_a_bundle_repos_mirror_is_not_emptied_by_the_h3_filter(tmp_path):
     # filter kept nothing there, and an empty quant list withholds the entry entirely -- so a
     # fully downloaded model vanished from /v1/models and a request for it 404'd.
     from types import SimpleNamespace
-
     for name in ("MiniMax-H3-GGUF-mirror", "minimax-h3-gguf-i1", "MiniMax-H3-GGUF-BF16"):
         snapshot = tmp_path / f"models--unsloth--{name}" / "snapshots" / "abc"
         snapshot.mkdir(parents = True)
