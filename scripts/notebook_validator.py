@@ -589,7 +589,7 @@ _PREFIX_TERMINAL_FLAGS = frozenset({"--help", "--version"})
 # it. Unwrapping past either fabricated an install from a line that never reaches pip.
 _PREFIX_LOOKUP_FLAGS: dict[str, frozenset[str]] = {
     "command": frozenset({"-v", "-V"}),
-    "su" "do": frozenset({"-v", "--validate", "-l", "--list", "-V", "-h"}),
+    "sudo": frozenset({"-v", "--validate", "-l", "--list", "-V", "-h"}),
 }
 # `PATH+=:/opt/bin cmd` is an assignment prefix too: bash runs the child with the appended
 # value, so leaving the `+=` word standing made it the supposed executable.
@@ -1555,7 +1555,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 last_ok.append(None)
                 case_depths.append(0)
                 if not "".join(buf).strip():
-                    buf_conditional = any(tails) or any(def_levels)  # the group opens before the command
+                    buf_conditional = any(tails) or any(
+                        def_levels
+                    )  # the group opens before the command
             elif ch in ")}" and not (ch == ")" and case_depths[-1]):
                 grouping_closed = groupings.pop() if groupings else True
                 if len(case_depths) > 1:

