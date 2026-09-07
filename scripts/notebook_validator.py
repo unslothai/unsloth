@@ -924,13 +924,43 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     return (f"!{stripped}" if bang and stripped else stripped), conditional
 
 
-def _substitution_bodies(command: str) -> list[str]:
+# `${name:-word}`, `${name:+word}`, `${name:=word}`, `${name:?word}`: the word is expanded
+# only on the branch the parameter's state selects, so a substitution inside one is
+# conditional. `${name}` and `${#name}` carry no word and open no branch.
+_CONDITIONAL_EXPANSION_RE = re.compile(r"\$\{[A-Za-z_]\w*(?:\[[^\]]*\])?:?[-+=?]")
+
+
+def _conditional_expansion_spans(command: str) -> list[tuple[int, int]]:
+    """Half-open ranges covering the word of every branching `${ }` expansion."""
+    spans: list[tuple[int, int]] = []
+    for match in _CONDITIONAL_EXPANSION_RE.finditer(command):
+        depth, j = 1, match.end()
+        while j < len(command) and depth:
+            if command[j] == "{":
+                depth += 1
+            elif command[j] == "}":
+                depth -= 1
+            j += 1
+        spans.append((match.end(), j))
+    return spans
+
+
+def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
     """The insides of every substitution in `command`, in the order the shell runs them.
 
     `$( )`, backticks and the `<( )` / `>( )` process forms all run when the command runs, so
     a pip call in one is an install like any other and the outer command is usually not pip.
     Single quotes and an escaped `$` make the text literal, and then nothing runs.
+
+    With `conditional` set the caller wants only the bodies bash may SKIP: those inside a
+    branching `${name:-word}`, which is expanded on one branch of the parameter's state.
+    Without it they are excluded, so the two calls together cover every body exactly once.
     """
+    spans = _conditional_expansion_spans(command)
+
+    def in_branch(index: int) -> bool:
+        return any(start <= index < end for start, end in spans)
+
     bodies: list[str] = []
     quote = ""
     i = 0
@@ -983,7 +1013,8 @@ def _substitution_bodies(command: str) -> list[str]:
                         elif word.group(0) == "esac" and case_depth:
                             case_depth -= 1
                 j += 1
-            bodies.append(command[i + 2 : j - 1 if depth == 0 else j])
+            if in_branch(i) == conditional:
+                bodies.append(command[i + 2 : j - 1 if depth == 0 else j])
             i = j
         elif ch == "`":
             # The first UNESCAPED backtick closes it. In a legacy nested substitution the
@@ -1003,7 +1034,8 @@ def _substitution_bodies(command: str) -> list[str]:
             # Unescape before recording it. Inside backticks the shell strips one level, so
             # the inner command really is ``echo `pip install ...` `` and the body has to be
             # handed on in that form or the nested substitution never opens.
-            bodies.append(command[i + 1 : j].replace("\\`", "`").replace("\\\\", "\\"))
+            if in_branch(i) == conditional:
+                bodies.append(command[i + 1 : j].replace("\\`", "`").replace("\\\\", "\\"))
             i = j + 1
         else:
             i += 1
@@ -1013,7 +1045,10 @@ def _substitution_bodies(command: str) -> list[str]:
 def _piece_is_pip(piece: str) -> bool:
     """Is this chunk of a chained line a pip command? `!` only ever leads the first piece,
     and the splitter re-adds it to the rest, so it is normalised before asking."""
-    stripped = _strip_exec_prefixes(piece.strip())[0].lstrip("!").strip()
+    # The bang first: `_strip_exec_prefixes` reads words, and with `!env` still glued to the
+    # front it matched no prefix name, so `!env X=1 pip install ...` did not read as pip and
+    # the `&&` after it wrongly went conditional.
+    stripped = _strip_exec_prefixes(piece.strip().lstrip("!").strip())[0].strip()
     return bool(stripped) and bool(PIP_LINE_RE.match("!" + stripped))
 
 
@@ -1302,7 +1337,12 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         if handed_over:
             break
         for keyword in _leading_shell_keywords(piece):
-            if keyword in _SHELL_TEST_KEYWORDS:
+            if keyword == "case":
+                # Every command between `case` and `esac` sits in some arm, and only the
+                # matching arm runs. No body keyword ever opens one -- an arm starts with a
+                # pattern -- so the level is active from the word itself.
+                body_levels.append(True)
+            elif keyword in _SHELL_TEST_KEYWORDS:
                 body_levels.append(False)  # the test itself runs whenever the line does
             elif keyword in _SHELL_BODY_KEYWORDS:
                 if body_levels:
@@ -1311,16 +1351,24 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     body_levels.append(True)
             elif body_levels:
                 body_levels.pop()  # fi / done / esac
+        # `flag` alone is the separator-level state: a substitution inside a compound body or
+        # a case arm is expanded only when that body runs, so it inherits those too.
+        piece_conditional = flag or command_flag or any(body_levels)
         for inner in _substitution_bodies(piece):
             ordered.extend(
-                (inner_text, flag or inner_flag)
+                (inner_text, piece_conditional or inner_flag)
                 for inner_text, inner_flag in _split_chained(f"!{inner}")
             )
+        # `${READY:-$(pip install ...)}` expands its word only when READY is unset, so the
+        # install inside it is a path the notebook MAY take, never one it certainly does.
+        for inner in _substitution_bodies(piece, conditional = True):
+            ordered.extend((inner_text, True) for inner_text, _ in _split_chained(f"!{inner}"))
         if text:
-            ordered.append((text, command_flag or any(body_levels)))
+            ordered.append((text, piece_conditional))
             # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`
-            # along with every other transparent prefix.
-            handed_over = not command_flag and _command_execs(piece)
+            # along with every other transparent prefix. An `exec` bash may never reach hands
+            # nothing over, so the body condition counts here as much as the separator one.
+            handed_over = not piece_conditional and _command_execs(piece)
     return ordered
 
 
@@ -1598,14 +1646,17 @@ def _removed_by_cell(install_cell: str, name: str) -> bool:
     needs is the broken state they exist to catch, so the two cases have to be told apart.
     """
     wanted = name.replace("_", "-").lower()
+    removed = False
     for inv in unconditional_pip_invocations(install_cell):
-        if inv.action != "uninstall":
-            continue
         for raw in inv.packages:
             sp = parse_spec(raw)
-            if sp is not None and sp.name.replace("_", "-").lower() == wanted:
-                return True
-    return False
+            if sp is None or sp.name.replace("_", "-").lower() != wanted:
+                continue
+            # Replayed in order: `pip uninstall x; pip install x` leaves x installed, and
+            # answering on the first uninstall it met claimed the cell removes a dependency
+            # pip puts straight back.
+            removed = inv.action == "uninstall"
+    return removed
 
 
 def rule_inst_002_no_deps_transitive(
@@ -2735,7 +2786,21 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             print(f"::warning::colab-diff: could not fetch {url}: {e}")
             continue
         if not snap_path.exists():
-            print(f"::warning::colab-diff: no committed snapshot at {snap_path}; skipping")
+            # An absent snapshot is not "nothing to compare": the rules read it. Without
+            # os-info's Python line `_marker_environment` has no version and marker
+            # evaluation silently replays every requirement, so the strict-key declaration
+            # has to be consulted HERE, before the continue, or --strict passed on a file
+            # that was never committed.
+            strict_file = upstream_name == COLAB_STRICT_ORACLE
+            strict_keys = COLAB_STRICT_ORACLE_KEYS.get(upstream_name, frozenset())
+            if strict_file or strict_keys:
+                any_diff = True
+                strict_diff = True
+                print(f"::error::colab-diff: no committed snapshot at {snap_path}")
+                if strict_keys:
+                    print(f"  (rule-bearing key(s) unavailable: {', '.join(sorted(strict_keys))})")
+            else:
+                print(f"::warning::colab-diff: no committed snapshot at {snap_path}; skipping")
             continue
         snapshot_text = snap_path.read_text(encoding = "utf-8", errors = "replace")
         parser = _COLAB_ORACLE_PARSERS[upstream_name]
