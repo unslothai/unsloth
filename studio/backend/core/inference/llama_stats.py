@@ -14,11 +14,104 @@ import os
 import re
 import threading
 import time
+import json
 import urllib.request
 
 # Prometheus body lines: "llamacpp:<name>[{labels}] <value>" (skip "#" HELP/TYPE).
 _METRIC_RE = re.compile(r"^llamacpp:(\w+)(?:\{[^}]*\})?\s+([0-9.eE+-]+)", re.MULTILINE)
 _OFF = {"0", "false", "no", "off"}
+
+
+def fetch_llama_slots(
+    base_url,
+    timeout_s = 3.0,
+    headers = None,
+):
+    """One ``GET /slots`` read as a list, or None if it could not be read.
+
+    ``headers`` carries the backend's ``Authorization`` when the load was launched with
+    ``--api-key`` (``UNSLOTH_DIRECT_STREAM=1``). llama.cpp exempts only ``/health`` and
+    ``/v1/health`` from the key check, so an unauthenticated read of ``/slots`` answers
+    401 and the ``except`` below turns that into None -- "cannot tell" -- which silently
+    switches the whole exact-residency probe off in a supported mode.
+
+    Added against the advice in the original design, which said to reuse the /metrics
+    scraper and NOT add a slots poller. That advice was written before the residue was
+    understood: /metrics reports requests_processing and token counters but nothing about
+    cells still held by IDLE slots, and llama.cpp keeps a slot's prompt cache after its
+    request finishes. Measured 2026-09-01, one idle slot held 16383 of a 16384 cache
+    while the scheduler believed it was nearly empty. This is the only endpoint that can
+    say so.
+
+    None means "cannot tell" -- endpoint disabled, older build, socket error -- and must
+    never be read as "the cache is empty".
+    """
+    url = f"{str(base_url).rstrip('/')}/slots"
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers = dict(headers or {})), timeout = timeout_s
+        ) as r:
+            if r.status != 200:
+                return None
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, list) else None
+
+
+def erase_llama_slot(
+    base_url,
+    slot_id,
+    timeout_s = 3.0,
+    headers = None,
+) -> int:
+    """Drop one idle slot's cached prompt. Returns tokens erased, 0 on any failure.
+
+    Cheaper than preempting: the cache belongs to a request that has already finished, so
+    this costs a future prefix-cache hit rather than a running conversation's progress.
+    """
+    url = f"{str(base_url).rstrip('/')}/slots/{int(slot_id)}?action=erase"
+    try:
+        # Authorized for the same reason the read above is: a 401 here returns 0 tokens
+        # erased, so a paused slot's cells are never released and the waiter it was freed
+        # for waits out its deadline.
+        request = urllib.request.Request(url, method = "POST", data = b"", headers = dict(headers or {}))
+        with urllib.request.urlopen(request, timeout = timeout_s) as r:
+            if r.status != 200:
+                return 0
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return 0
+    try:
+        return max(0, int(payload.get("n_erased") or 0))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def scrape_llama_metrics(base_url, timeout_s = 3.0):
+    """One /metrics read as a {name: float} dict, or None if it could not be read.
+
+    Split out of the daemon's own scrape so a caller needing a single sample (the
+    preemption reclaim barrier) reuses this parser instead of adding a second one, or a
+    ``GET /slots`` poller. None covers every reason the read did not happen: no
+    ``--metrics``, a server still starting, a socket error. Callers must treat that as
+    "cannot tell", never as "nothing is running".
+    """
+    url = f"{str(base_url).rstrip('/')}/metrics"
+    try:
+        with urllib.request.urlopen(url, timeout = timeout_s) as r:
+            if r.status != 200:
+                return None
+            body = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    out = {}
+    for k, v in _METRIC_RE.findall(body):
+        try:  # a malformed value must not kill the daemon thread
+            out[k] = float(v)
+        except ValueError:
+            continue
+    return out
 
 
 class LlamaServerStatsLogger:
@@ -35,7 +128,8 @@ class LlamaServerStatsLogger:
         interval_s = 10.0,
         stall_timeout_s = 600.0,
     ):
-        self._url = f"{base_url.rstrip('/')}/metrics"
+        self._base_url = base_url.rstrip("/")
+        self._url = f"{self._base_url}/metrics"
         self._log = logger
         self._interval = max(1.0, float(interval_s))
         self._stop = threading.Event()
@@ -56,20 +150,7 @@ class LlamaServerStatsLogger:
         self._stop.set()
 
     def _scrape(self):
-        try:
-            with urllib.request.urlopen(self._url, timeout = 3) as r:
-                if r.status != 200:
-                    return None
-                body = r.read().decode("utf-8", "replace")
-        except Exception:
-            return None
-        out = {}
-        for k, v in _METRIC_RE.findall(body):
-            try:  # a malformed value must not kill the daemon thread
-                out[k] = float(v)
-            except ValueError:
-                continue
-        return out
+        return scrape_llama_metrics(self._base_url)
 
     def _stalled_for(self, now, running, decode_calls):
         """Seconds the engine has held a slot without calling llama_decode().

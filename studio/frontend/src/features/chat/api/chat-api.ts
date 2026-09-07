@@ -41,6 +41,10 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import {
+  type AdmissionStatus,
+  readAdmissionComment,
+} from "../utils/admission-status";
 import { publishChatHistoryRevision } from "../utils/chat-history-revision";
 import {
   type GgufVariantsRequestOptions,
@@ -1441,14 +1445,29 @@ export async function estimateKvCache(
   return parseJsonOrThrow<KvCacheEstimate>(response);
 }
 
-function parseSseEvent(rawEvent: string): string[] {
+/**
+ * Split one SSE block into its data lines and its admission signal, if it carries one.
+ *
+ * The admission comments are the only comments this reader acts on, and they arrive in
+ * blocks with no `data:` line at all, so the caller must handle the signal BEFORE its
+ * empty-block early exit. Every other comment (`: keep-alive`) still falls through
+ * untouched.
+ */
+function parseSseEvent(rawEvent: string): {
+  dataLines: string[];
+  admission: AdmissionStatus | null;
+} {
   const dataLines: string[] = [];
+  let admission: AdmissionStatus | null = null;
   for (const line of rawEvent.split(/\r?\n/)) {
     if (line.startsWith("data:")) {
       dataLines.push(line.slice(5).trimStart());
+      continue;
     }
+    // Last one wins: a block carrying both wait and done ends in the state it ended in.
+    admission = readAdmissionComment(line) ?? admission;
   }
-  return dataLines;
+  return { dataLines, admission };
 }
 
 function hasNonWhitespaceText(value: unknown): boolean {
@@ -1581,7 +1600,14 @@ export async function* streamChatCompletions(
         const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
         buffer = buffer.slice(separatorIndex + separatorLength);
 
-        const dataLines = parseSseEvent(rawEvent);
+        const { dataLines, admission } = parseSseEvent(rawEvent);
+        if (admission) {
+          // Before the empty-block exit below: an admission block is precisely a block
+          // with no data lines, so testing it after would drop every one of them.
+          yield {
+            _admissionStatus: admission,
+          } as unknown as OpenAIChatChunk;
+        }
         if (dataLines.length === 0) {
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;

@@ -6,7 +6,11 @@
  *  the prompt ends mid-sentence and the new text is appended to the partial. */
 
 /** Why a turn ended before the model was done. */
-export type IncompleteReason = "length" | "cancelled" | "interrupted";
+export type IncompleteReason =
+  | "length"
+  | "cancelled"
+  | "interrupted"
+  | "paused";
 
 /** Metadata stamped on an assistant message that stopped early. */
 export type IncompleteInfo = {
@@ -17,6 +21,7 @@ const INCOMPLETE_REASONS: readonly IncompleteReason[] = [
   "length",
   "cancelled",
   "interrupted",
+  "paused",
 ];
 
 /** Below this a shared boundary is likely coincidence, and trimming would eat output. */
@@ -45,7 +50,12 @@ export function readIncompleteInfo(metadata: unknown): IncompleteInfo | null {
 
 /** assistant-ui's reason for each of ours. `length` is a truthful stop, not a failure: mapping it
  *  to `error` paints a red box and a Retry button over a turn that already offers the Continue
- *  bar. `interrupted` keeps `error` on purpose, since a cut stream must be told about. */
+ *  bar. `interrupted` keeps `error` on purpose, since a cut stream must be told about.
+ *
+ *  `paused` is a turn the backend put on hold so another chat could finish, and it is the one
+ *  reason here that is not a stop at all. assistant-ui has only these three values and none for
+ *  it, so it takes `cancelled`: neither an error box over a healthy turn nor a false claim that
+ *  Max Tokens was reached. */
 const STATUS_REASON: Record<
   IncompleteReason,
   "cancelled" | "length" | "error"
@@ -53,6 +63,7 @@ const STATUS_REASON: Record<
   cancelled: "cancelled",
   length: "length",
   interrupted: "error",
+  paused: "cancelled",
 };
 
 /** Restore assistant-ui's status without losing the product-specific stop reason. */
@@ -70,6 +81,12 @@ const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   length: "Response hit the Max Tokens limit",
   cancelled: "Response stopped",
   interrupted: "Response interrupted",
+  // No failure vocabulary: nothing went wrong, the model was shared out. Says where the
+  // text went (nowhere) and why it stopped, because a half-written answer with a neutral
+  // label reads as a bug. Deliberately does not promise text: the backend can give up
+  // before the first token, and the blank turn that produces is the whole reason this
+  // reason has a producer at all.
+  paused: "Response paused while another chat used the model, and did not get it back",
 };
 
 /** The user-facing explanation of why a turn stopped. */
@@ -166,9 +183,18 @@ export function budgetImpliesTruncation({
 
 /** Whether an assistant turn can be resumed at all. A turn that called a tool cannot: the
  *  continuation runs as a sibling, so the call and its result are absent from the outbound
- *  history. Matches the backend guard. */
+ *  history. Matches the backend guard.
+ *
+ *  `allowEmpty` drops the requirement that there BE text, and nothing else: the tool-call
+ *  rule is unchanged. One caller passes it, the Continue bar on a turn the backend gave up
+ *  on while waiting for room in the shared KV cache. Such a turn can be empty -- a chat
+ *  evicted while still prefilling never produced a token -- and that is precisely the case
+ *  that must not render as a blank bubble with nothing to do about it. Continuing an empty
+ *  partial runs as an ordinary regeneration, since `readContinuationRequest` refuses one,
+ *  which is the right recovery: there is nothing to extend. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
+  { allowEmpty = false }: { allowEmpty?: boolean } = {},
 ): boolean {
   if (!content) {
     return false;
@@ -186,7 +212,30 @@ export function isContinuableContent(
     }
     return false;
   }
-  return hasText;
+  return hasText || allowEmpty;
+}
+
+/** The `reason` the backend stamps on a `context_truncated` event when it stopped waiting
+ *  for room in the shared KV cache and finished the turn early. Not a truncation: that
+ *  event carries it because it is the one event that already reaches this client on every
+ *  surface, including a durable run's follower. See `_preempt_gave_up_event` in
+ *  `core/inference/llama_cpp.py`, which is the only writer. */
+export const PREEMPT_GAVE_UP_REASON = "preempt_gave_up";
+
+/** Whether a `context_truncated` payload is that signal rather than a fit. */
+export function isPreemptGaveUp(
+  truncation: { reason?: string } | null | undefined,
+): boolean {
+  return truncation?.reason === PREEMPT_GAVE_UP_REASON;
+}
+
+/** Reasons a turn may offer Continue with no text behind it. Only `paused` does, and it is
+ *  the only reason the backend can raise before the first token: it means the chat lost the
+ *  cache to another chat and never got it back. */
+export function resumesWithoutText(
+  reason: IncompleteReason | null | undefined,
+): boolean {
+  return reason === "paused";
 }
 
 /** The newest Gemini text-part thoughtSignature on an assistant turn, carried so the resumed turn
@@ -285,7 +334,13 @@ export function readContinuationRequest(
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.
  *  Every other reason is left alone, since `cancelled` would restart what the user just
  *  stopped and `interrupted` can hide a broken link. Bounded, because a model that will not
- *  stop would loop forever and each round drives compaction harder. */
+ *  stop would loop forever and each round drives compaction harder.
+ *
+ *  `paused` is refused for a reason of its own, pinned by a test so widening the guard cannot
+ *  start doing this by accident. A pause is the backend rationing one KV cache between chats
+ *  and it resumes in place on its own; racing that with a client-side continuation asks for a
+ *  SECOND slot for a turn already queued for one, which is the oversubscription the pause
+ *  exists to relieve. */
 export const AUTO_CONTINUE_LIMIT = 3;
 
 /** Rounds already spent per logical turn, keyed by the parent the continuation hangs off: a

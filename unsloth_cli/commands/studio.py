@@ -1499,6 +1499,53 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
                 pass
 
 
+_REEXEC_DEPTH_ENV = "UNSLOTH_STUDIO_REEXEC_DEPTH"
+
+
+def _running_inside_studio_venv(studio_venv_dir: Path) -> bool:
+    """Whether this interpreter is the Studio venv's, symlinks and all.
+
+    Compared on resolved paths. `sys.prefix` is the venv's REAL directory, while
+    `STUDIO_HOME / "unsloth_studio"` is whatever path the user gave, so a home whose venv
+    is a symlink (a shared venv between two homes, a relocated install) never matched. The
+    consequence was not an error but a loop: the parent re-executed the venv's own console
+    script, which made the same comparison, failed it the same way, and re-executed itself
+    again, at 100 percent CPU, forever, printing nothing. Measured at over seven minutes
+    before it was killed.
+    """
+    try:
+        prefix = Path(sys.prefix).resolve()
+        target = Path(studio_venv_dir).resolve()
+    except OSError:
+        return sys.prefix.startswith(str(studio_venv_dir))
+    return prefix == target or target in prefix.parents
+
+
+def _guard_reexec_loop(target: str) -> None:
+    """Refuse the second hand-off rather than loop.
+
+    A child that still believes it is outside the venv would hand off again. One hand-off
+    is the design; a second means the venv check cannot succeed in this layout, and the
+    only useful outcome is to say so. The marker is inherited through `os.execvp` and
+    `subprocess.Popen` because both pass the environment on.
+    """
+    depth = os.environ.get(_REEXEC_DEPTH_ENV, "0")
+    try:
+        depth_n = int(depth)
+    except ValueError:
+        depth_n = 0
+    if depth_n >= 1:
+        typer.echo(
+            "Error: Unsloth handed off to the Studio venv's launcher, which did not "
+            f"recognise itself as inside {target}. Refusing to hand off again. "
+            "Check that UNSLOTH_STUDIO_HOME points at the home whose unsloth_studio venv "
+            "this is.",
+            err = True,
+        )
+        raise typer.Exit(2)
+    os.environ[_REEXEC_DEPTH_ENV] = str(depth_n + 1)
+
+
 def _child_self_suppresses(*, in_studio_venv: bool, child_run_py: Optional[Path]) -> bool:
     """True when the child that will serve Unsloth is provably THIS install's
     backend, whose pre-bind gate sets app.state.suppress_bootstrap_injection and
@@ -2004,7 +2051,7 @@ def studio_default(
     # .bootstrap_password, so aborting afterward (venv/run.py missing) would leave
     # must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = _running_inside_studio_venv(studio_venv_dir)
     # Before any of the three launch paths below, and before the environment is handed
     # to a child: an override contradicting single-arch wheels makes every kernel launch
     # fail, and the installer's own unset cannot reach a launch it does not perform (#7331).
@@ -2142,7 +2189,14 @@ def studio_default(
                     )
                 raise typer.Exit(rc)
             else:
-                os.execvp(str(studio_python), args)
+                _guard_reexec_loop(str(studio_venv_dir))
+                try:
+                    os.execvp(str(studio_python), args)
+                finally:
+                    # exec does not return on success. On a failed launch, or under a
+                    # test double, this process continues and must not carry the
+                    # child's marker into its own next hand-off.
+                    os.environ.pop(_REEXEC_DEPTH_ENV, None)
         else:
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
@@ -2695,7 +2749,7 @@ def run(
     # .bootstrap_password, so aborting afterward (venv/entry point missing) would
     # leave must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = _running_inside_studio_venv(studio_venv_dir)
     studio_bin = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -2853,10 +2907,12 @@ def run(
                     rc = proc.wait()
                 raise typer.Exit(rc)
             else:
+                _guard_reexec_loop(str(studio_venv_dir))
                 os.execvp(str(studio_bin), args)
         finally:
             # execvp doesn't return on success; restore env after a Windows wait or a failed launch.
             os.environ.pop(_START_API_KEY_MARKER_ENV, None)
+            os.environ.pop(_REEXEC_DEPTH_ENV, None)
 
     # ── 2. Start server (always suppress built-in banner) ─────────────
     with _studio_deps.studio_backend_imports("unsloth studio"):
