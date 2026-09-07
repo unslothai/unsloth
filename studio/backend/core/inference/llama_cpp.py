@@ -509,8 +509,12 @@ def _drive_tool_stream(stream, out_queue) -> None:
         out_queue.put(("error", exc))
 
 
-def _start_tool_call(decision, stream, budget_cell, starved_cell):
+def _start_tool_call(decision, stream, budget_cell, starved_cell, compact_flag = False):
     """Put one call's tool in flight and return the entry its turn will be read from.
+
+    ``compact_flag`` is the gate's promise for THIS call, carried in the entry: the settle
+    that keeps it runs after every call of the round has been prepared, by which time the
+    loop-scoped name has been reset by the calls behind this one.
 
     The driver is a daemon, like the worker underneath it: a tool that ignores the cancel
     event is left to finish on its own rather than holding the response open, which is the
@@ -524,7 +528,9 @@ def _start_tool_call(decision, stream, budget_cell, starved_cell):
         name = f"tool-drive-{getattr(decision, 'tool_name', '') or 'unknown'}",
     )
     driver.start()
-    return (decision, stream, out_queue, _TOOL_PRIME_PENDING, None, budget_cell, starved_cell)
+    return (
+        decision, stream, out_queue, _TOOL_PRIME_PENDING, None, budget_cell, starved_cell, compact_flag,
+    )
 
 
 class _CombinedCancelEvent:
@@ -30376,6 +30382,12 @@ class LlamaCppBackend:
                 content_buffer = ""  # Raw content held during BUFFERING
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
+                # Bound here rather than at the chunk loop below, because a pause can be
+                # raised before the first chunk arrives -- while the stream is being
+                # opened, or on the very first read -- and the handler for it charges what
+                # this attempt decoded. Reading a name the attempt never reached would
+                # turn a recoverable pause into a NameError that ends the turn.
+                _tokens_this_stream = 0
                 _prov_entry = None
                 # Time each reasoning pass so final answers can replace tool timing.
                 _reasoning_started_at = None
@@ -31690,7 +31702,9 @@ class LlamaCppBackend:
                 # order the model asked for. The controller's ledger, the repeat guard, the
                 # forced-choice flag and the conversation are all order sensitive; only the
                 # WAITING above was ever worth overlapping.
-                def _settle_tool_call(decision, result, _last_result_budget, _starved_call):
+                def _settle_tool_call(
+                    decision, result, _last_result_budget, _starved_call, _compact_flag
+                ):
                     nonlocal _kb_search_count, _last_reprompt_text, _turn_executed_real_tool
                     nonlocal _forced_choice_resolved, _forced_tool_call_pending, assistant_msg
                     # What the result actually cost against what it was allowed. The pair
@@ -31790,8 +31804,11 @@ class LlamaCppBackend:
                     _forced_choice_resolved = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
-                    if _compact_after_execution and decision.tool_call_id:
-                        # The promise the gate made when it let this run. Applied here
+                    if _compact_flag and decision.tool_call_id:
+                        # The promise the gate made when it let this run, passed in with
+                        # the call because in an overlapped round this settle runs after
+                        # every call has been prepared and the loop's own flag then
+                        # belongs to the last of them. Applied here
                         # rather than on the next pass because the next pass may not
                         # come: this turn's own generation is the request that would
                         # otherwise be rejected.
@@ -31951,7 +31968,7 @@ class LlamaCppBackend:
                                 # arrive. The same mistake on the provider loop is what CI
                                 # caught: a mixed round reported ['c2', 'c1'].
                                 _pending_calls.append(
-                                    (None, None, None, _noop_end, None, None, None)
+                                    (None, None, None, _noop_end, None, None, None, False)
                                 )
                             else:
                                 yield _noop_end
@@ -32321,7 +32338,16 @@ class LlamaCppBackend:
                             # No tool to start, but its place in the round is still its own:
                             # settled here it would report before the calls above it.
                             _pending_calls.append(
-                                (decision, None, None, result, None, ["<not passed>"], [False])
+                                (
+                                    decision,
+                                    None,
+                                    None,
+                                    result,
+                                    None,
+                                    ["<not passed>"],
+                                    [False],
+                                    _compact_after_execution,
+                                )
                             )
                             continue
                     else:
@@ -32684,6 +32710,7 @@ class LlamaCppBackend:
                                     _tool_stream,
                                     _last_result_budget,
                                     _starved_call,
+                                    _compact_after_execution,
                                     None,
                                     None,
                                 )
@@ -32722,7 +32749,7 @@ class LlamaCppBackend:
                         if decision.tool_name in RAG_SEARCH_TOOLS:
                             _kb_search_count += 1
                     yield from _settle_tool_call(
-                        decision, result, _last_result_budget, _starved_call
+                        decision, result, _last_result_budget, _starved_call, _compact_after_execution
                     )
 
                 # The round's overlapped calls, read back in the order the model asked for.
@@ -32765,7 +32792,7 @@ class LlamaCppBackend:
                     for _entry_index, _entry in enumerate(_pending_calls):
                         if _entry[0] is _TOOL_START_DEFERRED:
                             _pending_calls[_entry_index] = _start_tool_call(
-                                _entry[1], _entry[2], _entry[3], _entry[4]
+                                _entry[1], _entry[2], _entry[3], _entry[4], _entry[5]
                             )
 
                 # Empty unless `_parallel_round`, so the sequential path never reaches here.
@@ -32777,6 +32804,7 @@ class LlamaCppBackend:
                     _p_error,
                     _p_budget,
                     _p_starved,
+                    _p_compact,
                 ) in _pending_calls:
                     if _p_decision is None:
                         # A card to close, not a call to settle: the controller made this
@@ -32811,7 +32839,9 @@ class LlamaCppBackend:
                             result = f"Error: tool raised an exception: {_tool_exc}"
                     # Already counted at launch, above. A capped call is not counted at
                     # all, on either path: it ran no search.
-                    yield from _settle_tool_call(_p_decision, result, _p_budget, _p_starved)
+                    yield from _settle_tool_call(
+                        _p_decision, result, _p_budget, _p_starved, _p_compact
+                    )
                 _pending_calls = []
 
                 # A mixed execute/no-op batch already has a real tool result, so keeping the
@@ -32907,9 +32937,18 @@ class LlamaCppBackend:
                 # carries the partial back as prompt, and it leaves the caller's cap
                 # unspent, so a chat paused n times may emit (n+1) times what it asked
                 # for. The plain path already falls back to the same estimate.
-                _pre_charged = int(
-                    _pre_usage.get("completion_tokens") or 0
-                ) or self._preempt_charged(content_accum, reasoning_accum)
+                # The OBSERVED chunk count when the server sent no usage, with the
+                # four-characters-per-token approximation only as a floor under it. One
+                # chunk is about one token, so the count this attempt actually saw beats
+                # an estimate that undercharges token-dense text: CJK and emoji run nearer
+                # one character per token, so len/4 prices a paused attempt at a quarter of
+                # what it decoded. The same figure is replayed to `note_replayed` and
+                # deducted from the caller's allowance, so undercharging here is both an
+                # output cap the caller never agreed to and cells the watermark cannot see.
+                _pre_charged = max(
+                    int(_pre_usage.get("completion_tokens") or 0) or _tokens_this_stream,
+                    self._preempt_charged(content_accum, reasoning_accum),
+                )
                 _checkpoint = _preemption.StreamCheckpoint(
                     visible_text = content_accum,
                     reasoning_text = reasoning_accum,
