@@ -1281,9 +1281,7 @@ def _close_group(
     # Three-valued too, for the `||` reachability fold: `{ false; } || pip install x` always
     # reaches the install, and discarding the group's KNOWN failure marked it conditional.
     models[-1] = (
-        inner_model
-        if prev_ops[-1] == ""
-        else _fold_status(models[-1], prev_ops[-1], inner_model)
+        inner_model if prev_ops[-1] == "" else _fold_status(models[-1], prev_ops[-1], inner_model)
     )
 
 
