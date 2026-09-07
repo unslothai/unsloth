@@ -42,35 +42,28 @@ HELPER = ".github/scripts/retry-with-apt-lock.sh"
 # PyYAML reads the `on:` key as the boolean True.
 ON = True
 
-# apt reached directly, or via playwright, which shells out to it. `--with-deps`
-# is qualified by `playwright install` on purpose: scan_packages.py takes a flag
-# of the same name that has nothing to do with apt.
+# apt reached directly, or via playwright, which shells out to it.
+# `--with-deps` is qualified by `playwright install` on purpose: scan_packages.py takes a flag of the same name that has
+# nothing to do with apt.
 _APT = re.compile(r"\bapt-get\s+(?:update|install)\b|playwright\s+install\b[^\n]*--with-deps\b")
 
-# `release_dpkg_lock()` waits up to 24 * 5s for the orphaned holder, then kills it
-# and sleeps 5. It runs between attempts, so N attempts pay it N-1 times.
+# `release_dpkg_lock()` waits up to 24 * 5s for the orphaned holder, then kills it and sleeps 5.
 LOCK_WAIT_SECONDS = 125
 
-# Workflows whose apt calls do not run on a hosted runner and cannot use the
-# helper. Each is here for a reason that would survive a rewrite, not because it
-# was inconvenient to convert.
+# Workflows whose apt calls do not run on a hosted runner and cannot use the helper. Each is here for a reason that
+# would survive a rewrite, not because it was inconvenient to convert.
 EXEMPT_WORKFLOWS = {
-    # Runs apt inside bare distro containers and inside WSL, as root, with no
-    # checkout (the whole point is a machine with no git). There is no repo on
-    # disk to read the helper from, and `sudo`/`fuser` are deliberately absent --
-    # one leg asserts that `sudo` does not exist on the image at all.
+    # Runs apt inside bare distro containers and inside WSL, as root, with no checkout (the whole point is a machine
+    # with no git). There is no repo on disk to read the helper from, and `sudo`/`fuser` are deliberately absent -- one
+    # leg asserts that `sudo` does not exist on the image at all.
     "clean-machine-install-ci.yml",
 }
 
 # Individual steps that reach apt as the thing under test rather than as setup.
-# Retrying these would retry an assertion.
 EXEMPT_STEPS = {
-    # Removes curl to construct the no-transport case. A retry loop around a
-    # removal is meaningless, and it is bounded by being a removal.
+    # Removes curl to construct the no-transport case.
     ("clean-machine-install-ci.yml", "Take the transport away again"),
-    # Installs the built .deb to find out whether the package declares its own
-    # runtime dependencies. A failure here is the answer, not a transport
-    # hiccup. Its apt *preamble* (update + xvfb) does go through the helper.
+    # Installs the built .deb to find out whether the package declares its own runtime dependencies.
     ("desktop-app-clean-machine-ci.yml", "Install with NO dev tooling, only runtime libs"),
     # Greps the documentation for the apt line it tells users to run. It reads an
     # apt command as data; it never executes one.
@@ -116,8 +109,8 @@ def _worst_case_seconds(step: dict, run: str) -> int:
     attempts = env.get("RETRY_ATTEMPTS")
     per_attempt = env.get("RETRY_ATTEMPT_TIMEOUT")
 
-    # A step may also set them inline, as `RETRY_ATTEMPTS=3 bash ...helper`, which
-    # is how the two steps that embed the call in a larger script pass them.
+    # A step may also set them inline, as `RETRY_ATTEMPTS=3 bash ...helper`, which is how the two steps that embed the
+    # call in a larger script pass them.
     if attempts is None:
         inline = re.search(r"RETRY_ATTEMPTS=(\d+)", run)
         attempts = inline.group(1) if inline else None
@@ -217,7 +210,7 @@ def test_a_workflow_that_calls_the_helper_reruns_when_the_helper_changes(path: P
             continue
         paths = spec.get("paths")
         if paths is None:
-            continue  # unfiltered: it runs for every change, helper included
+            continue
         assert HELPER in paths, (
             f"{path.name}: the '{event}' trigger filters on paths but does not "
             f"list {HELPER}, which its steps call. A change to the helper would "
@@ -252,10 +245,7 @@ def test_the_helper_makes_apt_fail_fast() -> None:
     """
     source = (REPO_ROOT / HELPER).read_text(encoding = "utf-8")
 
-    # The generated config only, not the whole file. Searching the file matches the
-    # header comment, which names these options while explaining them -- so deleting
-    # the line that actually sets one would have gone unnoticed. It did, on the
-    # first version of this test.
+    # The generated config only, not the whole file.
     written = re.search(r'conf="(.*?)"\n', source, re.DOTALL)
     assert written, f"{HELPER} no longer builds an apt config to write"
     conf = written.group(1)
@@ -268,8 +258,7 @@ def test_the_helper_makes_apt_fail_fast() -> None:
     ):
         assert option in conf, f"{HELPER} no longer sets {option}; it writes: {conf!r}"
 
-    # Well under apt's 120s default, or it buys nothing. The whole point is that a
-    # dead transfer is abandoned in seconds rather than minutes.
+    # Well under apt's 120s default, or it buys nothing.
     match = re.search(r'APT_TIMEOUT="\$\{APT_ACQUIRE_TIMEOUT:-(\d+)\}"', source)
     assert match, f"{HELPER} does not define a default transfer timeout"
     assert int(match.group(1)) <= 30, (
@@ -277,8 +266,8 @@ def test_the_helper_makes_apt_fail_fast() -> None:
         f"default that a stalled mirror still eats the step budget"
     )
 
-    # Ordering is the whole value: configured inside or after the retry loop, the
-    # first attempt -- the one that actually stalls -- runs unconfigured.
+    # Ordering is the whole value: configured inside or after the retry loop, the first attempt,
+    # the one that actually stalls, runs unconfigured.
     configure = source.index("configure_apt_fail_fast\n\nfor attempt")
     loop = source.index('for attempt in $(seq 1 "$ATTEMPTS")')
     assert configure < loop, (
@@ -287,8 +276,6 @@ def test_the_helper_makes_apt_fail_fast() -> None:
     )
 
     # Best effort: a runner that cannot write the file must still run the command.
-    # `set -e` is absent here by design, but a bare failing `tee` would still leave
-    # the function returning non-zero into a caller that may have it set.
     assert "could not write" in source, (
         f"{HELPER} does not handle an unwritable apt config, so a runner that "
         f"refuses the write would fail before running the command at all"

@@ -56,6 +56,9 @@ class AudioCodecManager:
         self._bicodec_code_dir = None
         self._dac_audio_codec = None
         self._outetts_code_dir = None
+        # The loaders reuse a resident codec, so a later request gets the first
+        # placement rather than the one it asked for.
+        self._codec_devices: dict = {}
 
     def load_codec(
         self,
@@ -89,6 +92,7 @@ class AudioCodecManager:
             .to(device)
             .eval()
         )
+        self._codec_devices["snac"] = device
         logger.info("Loaded SNAC codec (24kHz)")
 
     def _load_bicodec(
@@ -109,6 +113,7 @@ class AudioCodecManager:
         tokenizer_path = model_repo_path or spark_code_dir
         self._bicodec_repo_path = tokenizer_path
         self._bicodec_tokenizer = BiCodecTokenizer(tokenizer_path, device)
+        self._codec_devices["bicodec"] = device
         logger.info(f"Loaded BiCodec tokenizer from {tokenizer_path}")
 
     def _load_dac(self, device: str) -> None:
@@ -133,6 +138,7 @@ class AudioCodecManager:
         )
         processor = AudioProcessor(config = dummy_config)
         self._dac_audio_codec = processor.audio_codec
+        self._codec_devices["dac"] = device
         logger.info("Loaded DAC audio codec")
 
     # ── Decoders ─────────────────────────────────────────────────
@@ -258,7 +264,14 @@ class AudioCodecManager:
         token_ids: Optional[list] = None,
         text: Optional[str] = None,
     ) -> Tuple[bytes, int]:
-        """Unified decode — dispatches to the right codec decoder."""
+        """Unified decode — dispatches to the right codec decoder.
+
+        ``device`` is what the caller would like. Where the codec is actually
+        resident wins: input tensors built on another device fail outright for SNAC
+        and DAC, and BiCodec would move a CPU-resident codec onto the card, taking
+        the VRAM a CPU RAM load promised not to take.
+        """
+        device = self._codec_devices.get(audio_type, device)
         if audio_type == "snac":
             if not token_ids:
                 raise ValueError("SNAC decoding requires token_ids")
@@ -293,4 +306,5 @@ class AudioCodecManager:
         if self._outetts_code_dir is not None:
             deactivate_pinned_package("outetts", self._outetts_code_dir)
             self._outetts_code_dir = None
+        self._codec_devices.clear()
         logger.info("Unloaded all audio codecs")

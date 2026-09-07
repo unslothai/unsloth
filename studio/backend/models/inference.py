@@ -257,6 +257,19 @@ class LoadRequest(BaseModel):
             "non-GGUF models."
         ),
     )
+    audio_device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
+        None,
+        description = (
+            "Native audio (TTS / music) models only: where to hold the weights. "
+            "'cpu' keeps them in CPU RAM rather than the GPU -- slower generation, "
+            "but it leaves VRAM for other models and runs checkpoints too large for "
+            "the card. 'gpu' prefers the accelerator; 'auto' (default) detects. "
+            "Ignored for every non-audio model, and for GGUF audio: llama.cpp "
+            "placement comes from gpu_memory_mode and gpu_layers, which are decided "
+            "before anything can know a GGUF is audio. Send gpu_memory_mode='manual' "
+            "with gpu_layers=0 and speculative_type='off' to hold a GGUF TTS in RAM."
+        ),
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = (
@@ -397,6 +410,14 @@ class TranscribeRequest(BaseModel):
         None,
         description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
     )
+    device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
+        None,
+        description = (
+            "Where to hold the model: 'cpu' keeps it in CPU RAM, 'gpu' prefers the "
+            "accelerator, 'auto' (default) detects. Applies when this request has to "
+            "load the model; a resident model on another device is reloaded to honour it."
+        ),
+    )
 
 
 class SttLoadRequest(BaseModel):
@@ -406,6 +427,13 @@ class SttLoadRequest(BaseModel):
     engine: Optional[str] = Field(
         None,
         description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+    )
+    device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
+        None,
+        description = (
+            "Where to hold the model: 'cpu' keeps it in CPU RAM rather than the GPU, "
+            "'gpu' prefers the accelerator, 'auto' (default) detects."
+        ),
     )
 
 
@@ -440,6 +468,14 @@ class ValidateModelRequest(BaseModel):
     # refuse a load that then fits.
     disable_vision: bool = Field(False)
     gpu_ids: Optional[List[int]] = Field(None)
+    # Sized with too: preflighting a CPU load would refuse one that takes no VRAM.
+    audio_device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
+        None,
+        description = (
+            "Native audio placement intended for the follow-up load. 'cpu' skips "
+            "the GPU-memory preflight, which that load would not use."
+        ),
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = (
@@ -3070,7 +3106,7 @@ class ResponsesOutputMessage(BaseModel):
 
     type: Literal["message"] = "message"
     id: str = Field(default_factory = lambda: f"msg_{uuid.uuid4().hex[:12]}")
-    status: Literal["completed", "in_progress"] = "completed"
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
     role: Literal["assistant"] = "assistant"
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
@@ -3139,7 +3175,7 @@ class ResponsesResponse(BaseModel):
     id: str = Field(default_factory = lambda: f"resp_{uuid.uuid4().hex[:12]}")
     object: Literal["response"] = "response"
     created_at: int = Field(default_factory = lambda: int(time.time()))
-    status: Literal["completed", "in_progress", "failed"] = "completed"
+    status: Literal["completed", "in_progress", "incomplete", "failed"] = "completed"
     model: str = "default"
     output: list[ResponsesOutputItem] = Field(default_factory = list)
     usage: ResponsesUsage = Field(default_factory = ResponsesUsage)

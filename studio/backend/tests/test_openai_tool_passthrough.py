@@ -4,6 +4,7 @@
 """Tests for the OpenAI /v1/chat/completions client-side tool pass-through."""
 
 import os
+import re
 import sys
 import asyncio
 import base64
@@ -161,9 +162,205 @@ class TestFriendlyUpstreamError:
         # An unrelated upstream error still passes through verbatim.
         assert "llama-server error:" in _openai_passthrough_error(500, "disk full").detail
 
+    def test_anthropic_upstream_error_rewords_context_overflow(self):
+        from routes.inference import _anthropic_upstream_error
+
+        raw = (
+            '{"error":{"code":500,"message":"the request exceeds the available context '
+            'size. try increasing the context size or enable context shift",'
+            '"type":"server_error"}}'
+        )
+        msg = _anthropic_upstream_error(raw)
+        assert "prompt is too long" in msg.lower()
+        assert "llama-server error:" not in msg
+
+    def test_anthropic_upstream_error_includes_token_counts_when_known(self):
+        from routes.inference import _anthropic_upstream_error
+
+        msg = _anthropic_upstream_error(
+            "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        )
+        m = re.search(r"prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)", msg, re.I)
+        assert m and m.groups() == ("214331", "131072")
+
+    def test_anthropic_upstream_error_leaves_other_failures_alone(self):
+        from routes.inference import _anthropic_upstream_error
+        assert _anthropic_upstream_error("disk full") == "llama-server error: disk full"
+        assert "compile a grammar" in _anthropic_upstream_error("failed to parse grammar")
+
+    def test_anthropic_upstream_error_keeps_kv_starvation_out_of_the_overflow_rewrite(self):
+        """llama-server says "Context size has been exceeded" when concurrent
+        generations drain the shared KV cache. Nothing about the request was too
+        long, so rewording it as an oversized prompt sends the client compacting a
+        valid conversation instead of retrying."""
+        from routes.inference import _anthropic_upstream_error, _classify_llama_generation_error
+        from core.inference.stream_errors import KV_STARVATION_MESSAGE
+
+        for raw in (
+            "Context size has been exceeded.",
+            '{"error":{"message":"Context size has been exceeded.","code":500}}',
+        ):
+            assert _anthropic_upstream_error(raw) == KV_STARVATION_MESSAGE
+            assert "too long" not in _anthropic_upstream_error(raw).lower()
+            # None keeps the upstream status: a 400 would blame the caller's request.
+            assert _classify_llama_generation_error(Exception(raw)) is None
+
+    def test_in_band_sse_recovers_counts_from_the_chunk_the_message_came_from(self):
+        """`_monitor_openai_error_message` returns only the message string. When that
+        string carries no numbers but the chunk around it does, the totals -- and the
+        window `oversize_advice` needs -- have to come from the payload."""
+        import json as _json
+
+        from core.inference import context_refusal
+        from routes.inference import (
+            _anthropic_upstream_stream_error_event,
+            _json_dumps_safe,
+            _monitor_openai_error_message,
+        )
+
+        chunk = {
+            "error": {
+                "code": 400,
+                "message": "the request exceeds the available context size",
+                "type": "exceed_context_size_error",
+                "n_prompt_tokens": 70494,
+                "n_ctx": 67584,
+            }
+        }
+        message = _monitor_openai_error_message(chunk)
+        source = _json_dumps_safe(chunk.get("error", chunk))
+
+        def body(text, counts_source):
+            event = _anthropic_upstream_stream_error_event(text, counts_source = counts_source)
+            return _json.loads(event.split("data: ", 1)[1].strip().splitlines()[0])["error"]
+
+        assert "70494" not in body(message, None)["message"]
+        assert (
+            "Prompt is too long: 70494 tokens > 67584 maximum" in body(message, source)["message"]
+        )
+
+        try:
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 67584,
+                    "irreducible_tokens": 70000,
+                    "latest_turn_tokens": 500,
+                }
+            )
+            # The recovered window is what lets the fit be consulted at all.
+            assert "shortening the conversation will not help" in body(message, source)["message"]
+        finally:
+            context_refusal.clear()
+
+        # An unrelated error must not have the payload spliced into its text.
+        assert body("disk full", source)["message"] == "llama-server error: disk full"
+
+    def test_counts_come_from_the_structured_fields_when_the_message_has_none(self):
+        """An exceed_context_size_error body carries n_prompt_tokens/n_ctx even when its
+        message spells out no numbers. These paths are handed the whole body, so the
+        totals are right there; dropping them sends the client a count-less refusal."""
+        from routes.inference import _anthropic_upstream_error, _oversize_counts
+
+        body = (
+            '{"error":{"code":400,"message":"the request exceeds the available context '
+            'size","type":"exceed_context_size_error","n_prompt_tokens":70494,'
+            '"n_ctx":67584}}'
+        )
+        assert _oversize_counts(body) == (70494, 67584)
+        assert "Prompt is too long: 70494 tokens > 67584 maximum" in _anthropic_upstream_error(body)
+
+    def test_the_remedy_comes_from_the_fit_not_a_flat_shorten_the_conversation(self):
+        """When the latest turn or the irreducible floor is what does not fit, compacting
+        the history cannot make it fit, and a client told to compact just retries."""
+        from core.inference import context_refusal
+        from routes.inference import _anthropic_upstream_error
+
+        body = "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        try:
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 131072,
+                    "irreducible_tokens": 140000,
+                    "latest_turn_tokens": 500,
+                }
+            )
+            msg = _anthropic_upstream_error(body)
+            # The head Anthropic clients key on survives.
+            assert msg.startswith("Prompt is too long: 214331 tokens > 131072 maximum.")
+            assert "shortening the conversation will not help" in msg
+
+            context_refusal.record_fit(
+                {
+                    "fits": False,
+                    "context_length": 131072,
+                    "irreducible_tokens": 140000,
+                    "latest_turn_tokens": 139000,
+                    "latest_turn_role": "tool",
+                    "latest_turn_counted": True,
+                }
+            )
+            msg = _anthropic_upstream_error(body)
+            assert "A tool returned more than this context window can hold" in msg
+            assert "shortening the conversation will not help" in msg
+        finally:
+            context_refusal.clear()
+
+        # With no recorded fit it stays the generic wording.
+        assert "Try increasing the Context Length" in _anthropic_upstream_error(body)
+
+    def test_in_band_sse_error_gets_the_same_wording_as_the_non_200_branch(self):
+        """A 200 stream that later emits data: {"error": ...} used to be wrapped in a
+        plain RuntimeError, and _friendly_error flattens the count-less oversize
+        refusal to "An internal error occurred" -- a 400/invalid_request_error with
+        nothing the client can read or compact on."""
+        import json as _json
+
+        from routes.inference import _anthropic_upstream_stream_error_event
+
+        def body(text):
+            event = _anthropic_upstream_stream_error_event(text)
+            return _json.loads(event.split("data: ", 1)[1].strip().splitlines()[0])["error"]
+
+        no_counts = body(
+            "the request exceeds the available context size. try increasing the context size"
+        )
+        assert "internal error" not in no_counts["message"].lower()
+        assert no_counts["message"].startswith("Prompt is too long")
+        assert no_counts["type"] == "invalid_request_error"
+
+        counted = body(
+            "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+        )
+        assert "Prompt is too long: 214331 tokens > 131072 maximum" in counted["message"]
+        assert counted["type"] == "invalid_request_error"
+
+        # Starvation keeps the retry advice and must not become a 400.
+        starved = body("Context size has been exceeded.")
+        assert "shared pool of context" in starved["message"]
+        assert "too long" not in starved["message"].lower()
+        assert starved["type"] == "api_error"
+
+        unrelated = body("disk full")
+        assert unrelated["message"] == "llama-server error: disk full"
+        assert unrelated["type"] == "api_error"
+
+    def test_a_genuine_oversize_body_is_still_classified_as_an_overflow(self):
+        from routes.inference import _classify_llama_generation_error
+        assert (
+            _classify_llama_generation_error(
+                Exception(
+                    "the request (214331 tokens) exceeds the available context size (131072 tokens)"
+                )
+            )
+            is True
+        )
+
 
 # =====================================================================
-# ChatMessage — tool role, tool_calls, optional content
+
+# ChatMessage - tool role, tool_calls, optional content
 # =====================================================================
 
 
@@ -331,7 +528,8 @@ class TestChatMessageToolRoles:
 
 
 # =====================================================================
-# ChatCompletionRequest — standard OpenAI tool fields
+
+# ChatCompletionRequest - standard OpenAI tool fields
 # =====================================================================
 
 
@@ -2145,7 +2343,11 @@ class TestChatCompletionRequestToolFields:
         )
         self._assert_unsupported_param(resp, param)
 
-    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(self, monkeypatch):
+    # Same two rejection sites, and same reason to pin one, as the GGUF case below.
+    @pytest.mark.parametrize("validate_before_switch", [False, True])
+    def test_confirm_tool_calls_requires_streaming_for_safetensors_tools(
+        self, monkeypatch, validate_before_switch
+    ):
         import routes.inference as inference_route
 
         class _NoGGUFBackend:
@@ -2167,6 +2369,9 @@ class TestChatCompletionRequestToolFields:
             "_detect_safetensors_features",
             lambda backend, chat_template, tools = None: {"supports_tools": True},
         )
+        monkeypatch.setattr(
+            inference_route, "_should_validate_before_switch", lambda: validate_before_switch
+        )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
         client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
@@ -2185,9 +2390,13 @@ class TestChatCompletionRequestToolFields:
         body = resp.json()
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "requires stream=true" in body["error"]["message"]
-        [entry] = monitor.snapshot()
-        assert entry["status"] == "error"
-        assert "confirm_tool_calls requires stream=true" in entry["error"]
+        if validate_before_switch:
+            # Early site rejects before the monitor row is opened.
+            assert monitor.snapshot() == []
+        else:
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "confirm_tool_calls requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
 
     def test_multiturn_tool_loop_messages(self):
@@ -2233,7 +2442,8 @@ class TestChatCompletionRequestToolFields:
 
 
 # =====================================================================
-# anthropic_tool_choice_to_openai — pure translation helper
+
+# anthropic_tool_choice_to_openai - pure translation helper
 # =====================================================================
 
 
@@ -2264,7 +2474,8 @@ class TestAnthropicToolChoiceToOpenAI:
 
 
 # =====================================================================
-# _build_passthrough_payload — tool_choice propagation
+
+# _build_passthrough_payload - tool_choice propagation
 # =====================================================================
 
 
@@ -2572,6 +2783,8 @@ class TestOpenAIPassthroughSSETerminalState:
 
 
 # =====================================================================
+
+# =====================================================================
 # Passthrough reasoning kwargs — enable_thinking / reasoning_effort /
 # preserve_thinking must reach llama-server via chat_template_kwargs,
 # gated on template capabilities like the non-passthrough paths.
@@ -2682,7 +2895,8 @@ class TestPassthroughReasoningKwargs:
 
 
 # =====================================================================
-# OpenAI API compatibility helpers — verified spec edge cases
+
+# OpenAI API compatibility helpers - verified spec edge cases
 # =====================================================================
 
 
@@ -3246,7 +3460,8 @@ class TestOpenAICompatibilityHelpers:
 
 
 # =====================================================================
-# _friendly_error — httpx transport failures
+
+# _friendly_error - httpx transport failures
 # =====================================================================
 
 
@@ -3272,7 +3487,7 @@ class TestFriendlyErrorHttpx:
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
-        # — a context-size message must still produce "Message too long".
+        # - a context-size message must still produce "Message too long".
         ctx_msg = "request (4096 tokens) exceeds the available context size (2048 tokens)"
         assert "Message too long" in _friendly_error(ValueError(ctx_msg))
 
@@ -3999,7 +4214,14 @@ class TestGgufVisionToolRouting:
         assert exc.value.status_code == 400
         assert exc.value.detail["error"]["param"] == "tool_choice"
 
-    def test_confirm_tool_calls_requires_streaming_for_gguf_tools(self, monkeypatch):
+    # Two sites reject this shape and `_should_validate_before_switch()` picks
+    # which; the early one runs before the api_monitor row is opened. It reads
+    # process-wide state, so unpinned this asserted whichever site the xdist
+    # worker happened to leave reachable. Pinned, both sites are covered.
+    @pytest.mark.parametrize("validate_before_switch", [False, True])
+    def test_confirm_tool_calls_requires_streaming_for_gguf_tools(
+        self, monkeypatch, validate_before_switch
+    ):
         import routes.inference as inf_mod
 
         def _plain(**kwargs):
@@ -4018,6 +4240,9 @@ class TestGgufVisionToolRouting:
             generate_chat_completion_with_tools = _tools,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(
+            inf_mod, "_should_validate_before_switch", lambda: validate_before_switch
+        )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
 
@@ -4040,9 +4265,15 @@ class TestGgufVisionToolRouting:
             )
         assert exc.value.status_code == 400
         assert "requires stream=true" in exc.value.detail["error"]["message"]
-        [entry] = monitor.snapshot()
-        assert entry["status"] == "error"
-        assert "confirm_tool_calls requires stream=true" in entry["error"]
+        if validate_before_switch:
+            # Early site rejects before the monitor row is opened, so there is no
+            # row to fail; opening one here would be a behaviour change, not a fix.
+            assert monitor.snapshot() == []
+        else:
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "confirm_tool_calls requires stream=true" in entry["error"]
+        # Neither site may leave a row running.
         assert monitor.active_count() == 0
 
     def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
@@ -9940,6 +10171,8 @@ class TestApiMonitorAudioInput:
 
 
 # =====================================================================
+
+# =====================================================================
 # Responses API -> Chat Completions translation: chat_template_kwargs
 # (e.g. {"enable_thinking": true}) sent via the Responses extra-body must
 # reach the built ChatCompletionRequest's typed ``enable_thinking`` field,
@@ -10098,6 +10331,8 @@ class TestResponsesChatTemplateKwargs:
 
         asyncio.run(_run())
 
+
+# =====================================================================
 
 # =====================================================================
 # GGUF chat-template role alternation: coalesce orphaned user turns left

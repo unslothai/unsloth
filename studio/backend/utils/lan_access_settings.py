@@ -295,9 +295,9 @@ def configure_lan_access(
 def _launch_urls(app_state) -> list[str]:
     """Where a launch-managed bind answers on this network.
 
-    A wildcard launch cannot use ``server_url``: run.py builds that from
-    ``_display_host_for_bind``, which resolves the machine's public IP for
-    sharing, and behind NAT that address reaches nothing on the LAN.
+    A wildcard launch cannot rely only on ``server_url``: run.py gives that
+    direct base one LAN-reachable address, while Settings must show every
+    currently reachable address in each family the launch serves.
     """
     if getattr(app_state, "lan_access_wildcard_bind", False):
         from lan_access import detect_lan_addresses
@@ -503,7 +503,7 @@ def maybe_auto_start_lan_access(app) -> bool:
     try:
         start_lan_access(app)
     except Exception as exc:
-        # an optional preference must never take the whole server down
+        # an optional preference must never take the whole server down with it
         logger.info("LAN access auto-start skipped: %s", exc)
         return False
     return True

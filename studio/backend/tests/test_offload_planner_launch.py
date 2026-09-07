@@ -220,3 +220,22 @@ def test_a_launch_the_planner_does_not_own_is_untouched(tmp_path, monkeypatch):
     assert seen["inputs"]["mmproj_movable"] is False
     assert seen["inputs"]["draft_droppable"] is False
     assert "--cache-ram" not in cmd
+
+
+def test_a_planner_owned_launch_on_windows_carries_the_clamp_and_not_the_tuning_zero(
+    tmp_path, monkeypatch
+):
+    """#5692's Windows full-offload tuning emits --cache-ram 0, and #10382 skips it
+    on a shared pool. Neither reaches a launch the planner owns: the tuning keys
+    on fully_gpu_offloaded, which only the "model fits, force every layer on"
+    branch sets, and a planner launch (spill or --fit on fallback) never takes
+    that branch. So the argv carries exactly one --cache-ram, the planner's host
+    RAM clamp, and no trailing zero for last-wins to prefer."""
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    plan = Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,))
+    cmd, _backend, _ = _launch_with(tmp_path, monkeypatch, plan)
+    assert cmd.count("--cache-ram") == 1, cmd
+    assert _flag(cmd, "--cache-ram") == "8192"
+    assert "--ctx-checkpoints" not in cmd

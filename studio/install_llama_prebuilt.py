@@ -373,6 +373,9 @@ class HostInfo:
     has_usable_nvidia: bool
     has_rocm: bool = False
     has_intel_gpu: bool = False
+    # AMD GPU present but ROCm unusable. Linux only, probed only when there is no usable
+    # NVIDIA and no ROCm, so the ROCm branches still own every host where ROCm works.
+    has_amd_gpu_without_rocm: bool = False
     rocm_gfx_target: str | None = None
     rocm_gfx_targets: list[str] = field(default_factory = list)
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
@@ -539,6 +542,14 @@ class UnknownBackendRequest(RuntimeError):
 
 _os_error_messages = _core._os_error_messages
 is_busy_lock_error = _core.is_busy_lock_error
+
+
+def is_cross_device_error(exc: BaseException) -> bool:
+    """True for an EXDEV "cross-device link" rename failure, e.g. inside a Docker
+    build where the staging tree and the install dir land on different overlayfs
+    layers. Unlike a busy/in-use error, such a move is safely completed by copy +
+    remove of the (idle) source."""
+    return isinstance(exc, OSError) and exc.errno == errno.EXDEV
 
 
 # Status logs default to stderr so resolver modes keep stdout machine-readable
@@ -1119,10 +1130,11 @@ def direct_upstream_release_plan(
         # ROCm hosts are excluded: this ggml-org path ships no per-gfx ROCm
         # asset, so they fall through to the empty-attempts raise (HIP source
         # build) rather than silently getting a CPU binary on a GPU host.
-        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. The
-        # elif already excludes usable NVIDIA and ROCm; also require no PHYSICAL
-        # NVIDIA so a CUDA-hidden card isn't reached through Vulkan (CPU below).
-        if host.has_intel_gpu and not host.has_physical_nvidia:
+        # Intel or AMD GPU with no usable ROCm: use the Vulkan prebuilt. No PHYSICAL NVIDIA,
+        # so a CUDA-hidden card is not reached through Vulkan. Widening from Intel-only is
+        # safe: the Vulkan bundle is a superset of the CPU one and falls back to CPU when no
+        # Vulkan device enumerates. Steam Deck (gfx1033, Qwen2.5-0.5B Q4_0): 112.8 vs 49.8 tok/s.
+        if (host.has_intel_gpu or host.has_amd_gpu_without_rocm) and not host.has_physical_nvidia:
             vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-x64.tar.gz"
             vulkan_url = assets.get(vulkan_asset)
             if vulkan_url:
@@ -1155,9 +1167,9 @@ def direct_upstream_release_plan(
         # selector returned 0 attempts and the installer fell back to a
         # source build on every Linux ARM64 host (DGX Spark, Ampere
         # Altra, GitHub-hosted ubuntu-24.04-arm runners, etc.).
-        # Intel (or other non-NVIDIA/non-AMD) GPU: prefer the Vulkan prebuilt,
-        # mirroring the x86_64 branch. Upstream ships bin-ubuntu-vulkan-arm64.
-        # No physical NVIDIA: don't reach a CUDA-hidden card through Vulkan.
+        # Intel GPU: prefer the Vulkan prebuilt (bin-ubuntu-vulkan-arm64). No physical NVIDIA,
+        # so a CUDA-hidden card is not reached through Vulkan. Deliberately NOT
+        # has_amd_gpu_without_rocm as x86_64 does: that widening was only measured there.
         if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
             vulkan_asset = f"llama-{release_tag}-bin-ubuntu-vulkan-arm64.tar.gz"
             vulkan_url = assets.get(vulkan_asset)
@@ -2388,6 +2400,8 @@ def run_capture(
         command,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = timeout,
         env = env,
         **windows_hidden_subprocess_kwargs(),
@@ -2561,8 +2575,8 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     int(cuda_match.group(1)),
                     int(cuda_match.group(2)),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            log(f"nvidia-smi driver probe failed: {exc}")
 
         try:
             caps = run_capture(
@@ -2729,22 +2743,34 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
         # since the HIP SDK can be installed without an AMD GPU.
 
-    # Detect an Intel GPU; gates the Vulkan prebuilt. Linux reads the DRM sysfs
-    # vendor id (0x8086); Windows reads the display-adapter registry class,
-    # then falls back to the WMI video controller list. Only probed with no
-    # usable NVIDIA and no ROCm (matching the Vulkan branches), keeping the
-    # probe (notably the Windows powershell call) off that path.
+    # Detect an Intel or AMD GPU; gates the Vulkan prebuilt. Linux reads DRM sysfs vendor ids
+    # (0x8086 Intel, 0x1002 AMD); Windows reads the display-adapter registry, then WMI. Only
+    # probed with no usable NVIDIA and no ROCm, matching the Vulkan branches, so
+    # "without_rocm" holds by construction.
     has_intel_gpu = False
+    has_amd_gpu_without_rocm = False
     if not has_usable_nvidia and not has_rocm:
+        # ROCR_VISIBLE_DEVICES set means the caller asked for GPU isolation, and Vulkan honours
+        # no HIP mask (it selects via GGML_VK_VISIBLE_DEVICES), so auto-routing would hand
+        # llama.cpp the GPU that request hid. ROCR alone, not the three
+        # _hip_visible_device_mask_set() reads: it filters the HSA agent list, while
+        # HIP_VISIBLE_DEVICES and its CUDA_VISIBLE_DEVICES alias filter HIP's device list (AMD
+        # GPU-isolation docs), so counting those would cost Vulkan to any host merely exporting
+        # CUDA_VISIBLE_DEVICES. Windows reads all three: its probe is hipinfo, a HIP
+        # application. Intel is unaffected by HIP masks.
+        _amd_hidden_by_mask = os.environ.get("ROCR_VISIBLE_DEVICES") is not None
         if is_linux:
+            # No early break: a laptop can pair an Intel iGPU with an AMD dGPU.
             for _vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
                 try:
                     with open(_vendor_file, encoding = "utf-8") as _vf:
-                        if _vf.read().strip().lower() == "0x8086":
-                            has_intel_gpu = True
-                            break
+                        _vendor_id = _vf.read().strip().lower()
                 except (OSError, UnicodeDecodeError):
                     continue
+                if _vendor_id == "0x8086":
+                    has_intel_gpu = True
+                elif _vendor_id == "0x1002" and not _amd_hidden_by_mask:
+                    has_amd_gpu_without_rocm = True
         elif is_windows:
             # Registry first (in-process; see windows_intel_gpu_in_registry).
             # The CIM query stays as the fallback when the registry shows no
@@ -2785,6 +2811,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         has_usable_nvidia = has_usable_nvidia,
         has_rocm = has_rocm,
         has_intel_gpu = has_intel_gpu,
+        has_amd_gpu_without_rocm = has_amd_gpu_without_rocm,
         rocm_gfx_target = rocm_gfx_target,
         rocm_gfx_targets = rocm_gfx_targets,
         macos_version = macos_version,
@@ -2824,6 +2851,7 @@ def _apply_host_overrides(
             rocm_gfx_target = None,
             rocm_gfx_targets = [],
             has_intel_gpu = False,
+            has_amd_gpu_without_rocm = False,
         )
     gfx = _normalize_forwarded_gfx(override_rocm_gfx)
     if gfx:
@@ -3384,6 +3412,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
             if result.returncode == 0:
@@ -3409,6 +3439,8 @@ def _detect_host_rocm_version() -> tuple[int, int] | None:
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
         except Exception:
@@ -3537,13 +3569,19 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 "falling back to source build with HIP support"
             )
 
-        # Intel (or other non-NVIDIA/non-AMD) GPU: use the Vulkan prebuilt. No
-        # physical NVIDIA (not just no usable one): a CUDA-hidden card must not
-        # be reached through Vulkan, which ignores CUDA_VISIBLE_DEVICES.
-        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
+        # Intel or AMD GPU with no usable ROCm: the Vulkan prebuilt. No PHYSICAL NVIDIA, since
+        # Vulkan ignores CUDA_VISIBLE_DEVICES. The ROCm branch above still wins wherever ROCm
+        # runs; this only rescues hosts falling through to CPU.
+        if (
+            (host.has_intel_gpu or host.has_amd_gpu_without_rocm)
+            and not host.has_physical_nvidia
+            and not host.has_rocm
+        ):
+            # Name the vendor actually found: this branch now also covers AMD.
+            vendor = "Intel GPU" if host.has_intel_gpu else "AMD GPU without usable ROCm"
             vulkan_name = f"llama-{llama_tag}-bin-ubuntu-vulkan-x64.tar.gz"
             if vulkan_name in upstream_assets:
-                log(f"Intel GPU detected -- using upstream Vulkan prebuilt {vulkan_name}")
+                log(f"{vendor} detected -- using upstream Vulkan prebuilt {vulkan_name}")
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
                     tag = llama_tag,
@@ -3552,7 +3590,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "linux-vulkan",
                 )
-            log("Intel GPU detected but no Vulkan prebuilt found -- falling back to CPU")
+            log(f"{vendor} detected but no Vulkan prebuilt found -- falling back to CPU")
 
         upstream_name = f"llama-{llama_tag}-bin-ubuntu-x64.tar.gz"
         if upstream_name not in upstream_assets:
@@ -4459,20 +4497,94 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
     ``os.replace`` failure means the directory is genuinely in use, and a
     silent copy + ``rmtree`` could partially delete a live install.
 
-    Only busy/lock errors (``is_busy_lock_error``) trigger the copy; anything
-    else (disk full, cross-device, missing path) re-raises so it cannot leave
-    a partially copied install behind. A copy is preferred over retrying the
-    rename because antivirus scans of large DLLs can outlast any reasonable
-    retry window.
+    Only busy/lock errors (``is_busy_lock_error``) and cross-device links
+    (``is_cross_device_error``, hit when a Docker build lands the staging tree
+    and the install dir on different overlay layers) trigger the copy; anything
+    else (disk full, missing path) re-raises so it cannot leave a partially
+    copied install behind. A copy is preferred over retrying the rename because
+    antivirus scans of large DLLs can outlast any reasonable retry window.
     """
     try:
         os.replace(staging_dir, dst)
     except OSError as exc:
-        if not is_busy_lock_error(exc):
+        # busy/in-use (Windows AV) or cross-device (Docker overlayfs) are both safe to
+        # complete by copy + remove; anything else re-raises
+        if not (is_busy_lock_error(exc) or is_cross_device_error(exc)):
             raise
         log(f"os.replace failed ({exc!r}); falling back to file-by-file copy of staging tree")
-        shutil.copytree(staging_dir, dst, dirs_exist_ok = True)
+        # symlinks = True, like the aside-move and rollback-restore copies below. The
+        # default DEREFERENCES every link, so each soname alias is written out as a
+        # full second copy of its library. Measured on the linux-x64-cuda12 bundle
+        # this branch exists for (Docker overlayfs EXDEV): 5 symlinks, 13.1 MiB
+        # duplicated. Not the headline number one might expect -- the 358 MB
+        # libggml-cuda.so is a regular file and is copied once either way -- but it is
+        # wasted bytes and it replaces the link topology the loader resolves against.
+        # dirs_exist_ok stays for the empty-dst case
+        # os.replace also accepts; a NON-empty dst never reaches here on one device
+        # (ENOTEMPTY re-raises above), and if a partially removed aside-move left one
+        # behind, os.symlink's FileExistsError fails the activation into the rollback
+        # path instead of silently half-merging two installs.
+        shutil.copytree(staging_dir, dst, dirs_exist_ok = True, symlinks = True)
         remove_tree(staging_dir)
+
+
+def move_install_dir_aside(
+    src: Path,
+    dst: Path,
+    *,
+    busy_retry: bool = False,
+) -> None:
+    """Move an existing install dir to ``dst`` (a unique, non-existent sibling).
+
+    os.replace is the fast path, falling back to copy + remove on EXDEV. A busy/in-use
+    failure is deliberately NOT copy-faked: the source is a live install and a partial
+    copy + rmtree would be worse than failing.
+
+    ``busy_retry`` is opt-in per call site: the aside-move of the *live* install is the
+    one this installer most needs to survive, while the recovery path's move of an
+    already-failed tree has a cheaper answer (drop the tree) than blocking on a scanner.
+
+    Callers treat ``dst.exists()`` as proof of a COMPLETE tree, so the copy goes to a
+    temp sibling and is published with one atomic rename; a copy that dies halfway
+    leaves nothing at ``dst`` and ``src`` untouched.
+    """
+    try:
+        if busy_retry:
+            replace_with_busy_retry(src, dst)
+        else:
+            os.replace(src, dst)
+    except OSError as exc:
+        if not is_cross_device_error(exc):
+            raise
+        if _is_link_or_junction(src):
+            # copytree always follows the ROOT it is given, so copying a linked
+            # install would duplicate a checkout this installer does not own
+            log("install path is a link; not copying it aside")
+            raise
+        copy_tmp = dst.with_name(dst.name + ".copying")
+        counter = 0
+        while copy_tmp.exists():
+            counter += 1
+            copy_tmp = dst.with_name(f"{dst.name}.copying-{counter}")
+        log(f"os.replace cross-device ({exc!r}); copy+publish {src} -> {dst}")
+        try:
+            # symlinks = True, matching the rollback-restore copy below. The default
+            # DEREFERENCES links inside the tree, and a Linux llama.cpp bundle is full
+            # of soname links (libllama.so.0 -> libllama.so), so the aside copy would
+            # duplicate every shared library and, restored after a failed activation,
+            # replace the install's link topology with independent files. Safe here
+            # only because copy_tmp is a fresh uniquified path: combined with
+            # dirs_exist_ok it raises FileExistsError on any name the destination
+            # already holds, which is why the remaining dirs_exist_ok calls in this
+            # file (which merge into populated trees) cannot simply be given the same
+            # flag. activate_staged_dir can, because a dst os.replace refused is empty
+            # or absent.
+            shutil.copytree(src, copy_tmp, symlinks = True)
+            os.replace(copy_tmp, dst)
+        except BaseException:
+            remove_tree(copy_tmp)
+            raise
+        remove_tree(src)
 
 
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
@@ -4485,7 +4597,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             had_existing = True
             rollback_dir = unique_install_side_path(install_dir, "rollback")
             log(f"moving existing install to rollback path {rollback_dir}")
-            replace_with_busy_retry(install_dir, rollback_dir)
+            move_install_dir_aside(install_dir, rollback_dir, busy_retry = True)
             moved_aside = True
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
@@ -4520,7 +4632,10 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 failed_dir = unique_install_side_path(install_dir, "failed")
                 log(f"moving failed active install to {failed_dir}")
                 try:
-                    os.replace(install_dir, failed_dir)
+                    # not a bare os.replace: in a Docker build the failed tree and
+                    # the staging root can sit on different overlay layers, and EXDEV
+                    # there must not cost the retained copy
+                    move_install_dir_aside(install_dir, failed_dir)
                 except Exception as failed_move_exc:
                     failed_dir = None
                     log(f"failed active install could not be moved aside: {failed_move_exc}")
@@ -5725,6 +5840,8 @@ def validate_quantize(
         command,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = 120,
         env = binary_env(quantize_path, install_dir, host, runtime_line = runtime_line),
         **windows_hidden_subprocess_kwargs(),
@@ -5815,6 +5932,8 @@ def validate_server(
                     stdout = log_handle,
                     stderr = subprocess.STDOUT,
                     text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
                     env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
                     **_validation_server_kwargs(),
                     **windows_hidden_subprocess_kwargs(),
@@ -6298,7 +6417,10 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         if published_rocm is not None:
             attempts.append(published_rocm)
     else:
-        if host.has_intel_gpu and not host.has_physical_nvidia:
+        # Same condition as direct_upstream_release_plan and resolve_upstream_asset_choice,
+        # which all three must state; this is the normal published-bundle branch. Reaching here
+        # already means not has_rocm (it is the else).
+        if (host.has_intel_gpu or host.has_amd_gpu_without_rocm) and not host.has_physical_nvidia:
             vulkan_choice = published_asset_choice_for_kind(bundle, "linux-vulkan", host = host)
             if vulkan_choice is not None:
                 attempts.append(vulkan_choice)

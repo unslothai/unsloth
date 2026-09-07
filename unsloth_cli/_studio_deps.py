@@ -169,6 +169,8 @@ def _venv_site_packages(root: Path) -> List[Path]:
                 [str(executable), "-I", "-c", probe],
                 stderr = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 5,
             )
             values = json.loads(output)
@@ -275,6 +277,8 @@ def _requirements_root_in(root: Path) -> Optional[Path]:
                         [str(executable), "-I", "-c", probe],
                         stderr = subprocess.DEVNULL,
                         text = True,
+                        encoding = "utf-8",
+                        errors = "replace",
                         timeout = 5,
                     )
                 )

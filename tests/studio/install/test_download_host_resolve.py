@@ -188,8 +188,8 @@ def _stub_downloads(
 
     monkeypatch.setattr(ILP, "github_release", _no_api)
     monkeypatch.setattr(ILP, "fetch_json", _no_api)
-    # The authoritative latest tag comes from the /releases/latest redirect
-    # (github.com, no api.github.com); stub it so no real request is made.
+    # The authoritative latest tag comes from the /releases/latest redirect (github.com, no api.github.com); stub it so
+    # no real request is made.
     monkeypatch.setattr(ILP, "_download_host_latest_release_tag", lambda _repo: latest_tag)
 
     def _download_bytes(url, *_a, **_k):
@@ -209,16 +209,16 @@ def test_resolved_release_adds_tag_pinned_url_for_manifest_only_asset(monkeypatc
     resolved = ILP._download_host_resolved_release(FORK_REPO, RELEASE_TAG)
     assert resolved is not None
     assert resolved.bundle.release_tag == RELEASE_TAG
-    # Binary is named only in the manifest, yet the fast path must expose a
-    # tag-pinned CDN URL for it (the API path gets it from the real asset list).
+    # Binary is named only in the manifest, yet the fast path must expose a tag-pinned CDN URL for it (the API path gets
+    # it from the real asset list).
     assert resolved.bundle.assets[BINARY_ASSET] == (
         f"https://github.com/{FORK_REPO}/releases/download/{RELEASE_TAG}/{BINARY_ASSET}"
     )
 
 
 def test_resolved_release_rejects_manifest_checksum_mismatch(monkeypatch):
-    # A wrong manifest hash in the checksum payload must fail closed, so the
-    # router falls back to the API rather than trusting the fast path.
+    # A wrong manifest hash in the checksum payload must fail closed, so the router falls back to the API rather than
+    # trusting the fast path.
     _stub_downloads(monkeypatch, _sha_payload(manifest_sha256 = "b" * 64), _manifest_bytes())
     with pytest.raises(PrebuiltFallback, match = "manifest checksum"):
         ILP._download_host_resolved_release(FORK_REPO)
@@ -234,8 +234,8 @@ def test_resolved_release_rejects_release_tag_mismatch(monkeypatch):
 
 
 def test_resolved_release_manifest_404_falls_back(monkeypatch):
-    # An in-progress release can serve the checksum asset before the manifest; a
-    # manifest 404 returns None so the router falls back to the API.
+    # An in-progress release can serve the checksum asset before the manifest;
+    # a manifest 404 returns None so the router falls back to the API.
     not_found = urllib.error.HTTPError(
         f"https://github.com/{FORK_REPO}/releases/download/{RELEASE_TAG}/{MANIFEST_ASSET}",
         404,

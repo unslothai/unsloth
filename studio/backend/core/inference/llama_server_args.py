@@ -95,7 +95,7 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     # --agent is --tools by another name: upstream documents it as "enable CORS proxy and ALL built-in tools", and that
     # set includes exec_shell_command. Denying --tools while allowing this left the same capability one alias away.
     frozenset({"-ag", "--agent", "-no-ag", "--no-agent"}),
-    # Where those tools run: docker:/podman: spins up a container, ssh:<target> runs them on another host
+    # Where those tools run: docker:/podman: spins up a container, ssh:<target> runs them on another host entirely.
     frozenset({"--tools-runtime"}),
     # MCP servers are tools from a config file or an inline JSON blob; upstream says "do not enable in untrusted
     # environments" for both.
@@ -1869,7 +1869,7 @@ def memory_state_satisfies_settings(
         return True
     mlock, reserves_ram = state
     if get_no_ram_reserve():
-        # mlock_applicable only excuses a MISSING lock; a live reservation still has to go, wherever the weights are
+        # mlock_applicable only excuses a MISSING lock; a live reservation still has to go, wherever the weights are.
         return not (mlock or reserves_ram)
     if get_keep_resident():
         return mlock or not mlock_applicable

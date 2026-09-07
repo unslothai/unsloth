@@ -156,7 +156,8 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
     for repo_info in repos:
         reclaimed += _variant_bytes(repo_info, variant) if variant else _repo_blob_bytes(repo_info)
 
-    # Would this delete leave the repo with no runnable checkpoint? Only then can its companions
+    # Would this delete leave the repo with no runnable checkpoint? Only then can its companions become reclaimable;
+    # while a sibling quant survives they stay in use.
     removes_last_checkpoint = True
     if variant:
         for repo_info in repos:

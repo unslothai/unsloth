@@ -1080,7 +1080,7 @@ def _validate_checkpoint(
                 ),
             )
             return False
-    # fp8 fast-accum is baked into the saved kernels; only enforce when the caller forces it
+    # fp8 fast-accum is baked into the saved kernels; only enforce when the caller forces it.
     if fast_accum is not None:
         ckpt_fa = meta.get("fast_accum")
         if ckpt_fa is not None and bool(ckpt_fa) != bool(fast_accum):

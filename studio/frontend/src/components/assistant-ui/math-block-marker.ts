@@ -46,8 +46,9 @@
  *
  *   - Passing `rehypePlugins` to `<Streamdown>` replaces its default list, and Streamdown only
  *     installs the `allowedTags` sanitizer schema when that list is still the default one
- *     (`rehypePlugins === defaultRehypePlugins`). Supplying our own would silently drop the
- *     sanitize pass this renderer depends on. That is a security regression to buy a class name.
+ *     (`rehypePlugins === defaultRehypePlugins`). A pipeline that does not carry the merge silently
+ *     drops the sanitize pass this renderer depends on -- a security regression to buy a class name;
+ *     the one now passed for data images carries it (`lib/markdown-data-images.ts`).
  *   - Marking on the mdast side, through `data.hProperties`, lands the class BEFORE
  *     `rehype-sanitize`, whose `defaultSchema` permits `className` on `a`, `code`, `h2`, `li`,
  *     `ol`, `section` and `ul` and NOWHERE ELSE. A class on a `<p>` would be stripped, and
