@@ -25073,9 +25073,7 @@ class LlamaCppBackend:
                                 # still what self._process names and the teardown is
                                 # clearing it. Waiting on it and then reading it for
                                 # an exit code is how the NoneType poll came back.
-                                _cleanup_cancelled_load(
-                                    "App shut down during the text-only retry"
-                                )
+                                _cleanup_cancelled_load("App shut down during the text-only retry")
                                 return False
                             if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
                                 healthy = True
@@ -25100,9 +25098,7 @@ class LlamaCppBackend:
                                 # Snapshotted, not re-read per term: a teardown between
                                 # the two reads is the NoneType poll again.
                                 _retry_proc = self._process
-                                _retry_rc = (
-                                    _retry_proc.poll() if _retry_proc is not None else None
-                                )
+                                _retry_rc = _retry_proc.poll() if _retry_proc is not None else None
                                 self._kill_process()
                                 if _finish_cancelled_health_wait(
                                     "Load cancelled during the text-only retry health wait"
