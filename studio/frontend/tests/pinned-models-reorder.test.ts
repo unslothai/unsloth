@@ -549,9 +549,7 @@ test("unpinning a repo that was never pinned writes nothing", () => {
   assert.equal(storedPinned(), null, "no write, so the record is untouched");
 });
 
-test("both repo-level deletes clear pins through that one action", async () => {
-  // The picker's partial repo row and the Hub's cache row do the same delete, so they must not
-  // drift into two answers about what a pin outlives.
+test("GGUF repo deletes reconcile surviving copies before clearing shared pins", async () => {
   const pickers = await readFile(
     new URL(
       "../src/features/model-picker/components/model-selector/pickers.tsx",
@@ -561,9 +559,10 @@ test("both repo-level deletes clear pins through that one action", async () => {
   );
   assert.equal(
     pickers.split("unpinRepo(c.repo_id);").length - 1,
-    2,
-    "the partial GGUF repo row and the cached model row alike",
+    1,
+    "only the non-GGUF cached model row unpins the entire repo",
   );
+  assert.ok(pickers.includes("reconcileGgufPinsAfterDelete(c.repo_id, undefined,"));
   assert.ok(
     !pickers.includes("if (pinnedSet.has(pinKey(c.repo_id))) {"),
     "and neither clears by toggling the bare repo key",
@@ -580,4 +579,5 @@ test("both repo-level deletes clear pins through that one action", async () => {
       "usePinnedModelsStore.getState().unpinRepo(deletableRepoId);",
     ),
   );
+  assert.ok(rows.includes("await reconcileGgufPinsAfterDelete(deletableRepoId);"));
 });

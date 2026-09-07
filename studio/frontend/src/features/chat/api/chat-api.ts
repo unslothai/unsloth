@@ -460,6 +460,7 @@ export async function resolveToolConfirmation(
 
 export interface CachedGgufRepo {
   repo_id: string;
+  active_cache?: boolean | null;
   inventory_id?: string | null;
   load_id?: string | null;
   size_bytes: number;

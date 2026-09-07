@@ -2,8 +2,132 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { resolvePinnedQuantSources } from "../src/features/model-picker/components/model-selector/pinned-quant-sources.ts";
+import ts from "typescript";
+import {
+  missingPinnedQuants,
+  resolvePinnedQuantSources,
+} from "../src/features/model-picker/components/model-selector/pinned-quant-sources.ts";
+
+test("the pinned-row delete handler revalidates the surviving copy", async () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-selector/pickers.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const start = source.indexOf(
+    "await deleteCachedModel(\n                  entry.repoId,",
+  );
+  assert.ok(start >= 0);
+  const body = source.slice(start, source.indexOf("\n              },", start));
+  const pins = [{ repoId: "Org/Model", quant: "Q8_0" }];
+  let pinned = true;
+  let deleted = false;
+  const run = new Function(
+    "entry",
+    "hfToken",
+    "deleteCachedModel",
+    "refreshCachedLists",
+    "togglePinned",
+    "reconcileGgufPinsAfterDelete",
+    `return (async () => { ${body} })();`,
+  );
+  await run(
+    { ...pins[0], cachePath: "/active" },
+    "",
+    async () => {
+      deleted = true;
+    },
+    () => {},
+    () => {
+      pinned = false;
+    },
+    async () => {
+      assert.equal(deleted, true);
+      const missing = await missingPinnedQuants(
+        pins,
+        [{ repo_id: "Org/Model", cache_path: "/old" }],
+        async () => [
+          { quant: "Q8_0", filename: "model.gguf", downloaded: true },
+        ],
+      );
+      if (missing.length) pinned = false;
+    },
+  );
+  assert.equal(pinned, true);
+});
+
+test("deleting one copy retains its shared pin until the last complete copy is gone", async () => {
+  const pins = [{ repoId: "Org/Model", quant: "Q8_0" }];
+  const remaining = [{ repo_id: "Org/Model", cache_path: "/old" }];
+  const complete = [
+    { quant: "Q8_0", filename: "model.gguf", downloaded: true },
+  ];
+  assert.deepEqual(
+    await missingPinnedQuants(pins, remaining, async () => complete),
+    [],
+  );
+  assert.deepEqual(
+    await missingPinnedQuants(pins, [], async () => complete),
+    pins,
+  );
+  assert.deepEqual(
+    await missingPinnedQuants(pins, remaining, async () => [
+      { ...complete[0], partial: true },
+    ]),
+    pins,
+  );
+  await assert.rejects(
+    missingPinnedQuants(pins, remaining, async () => {
+      throw new Error("offline");
+    }),
+    /offline/,
+  );
+});
+
+test("the picker inventory adapter preserves the active copy for duplicate pins", async () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/model-picker/inventory/use-chat-picker-inventory.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const start = source.indexOf("function toCachedGgufRepo(");
+  assert.ok(start >= 0);
+  const code = source.slice(start, source.indexOf("\n}", start) + 2);
+  const convert = new Function(
+    "epochMillisecondsToSeconds",
+    `${
+      ts.transpileModule(code, {
+        compilerOptions: { target: ts.ScriptTarget.ES2020 },
+      }).outputText
+    }; return toCachedGgufRepo;`,
+  )((value: number) => value / 1000);
+  const copies = [false, true].map((active) =>
+    convert({
+      repoId: "Org/Model",
+      id: active ? "active" : "old",
+      loadId: active ? "Org/Model" : "/old/rev",
+      cachePath: active ? "/active" : "/old",
+      activeCache: active,
+      bytes: 100,
+      lastModified: 0,
+      capabilities: { supportsVision: false },
+    }),
+  );
+  const entries = await resolvePinnedQuantSources(
+    [{ repoId: "Org/Model", quant: "Q8_0" }],
+    copies,
+    async () => [
+      { quant: "Q8_0", filename: "Model-Q8_0.gguf", downloaded: true },
+    ],
+  );
+  assert.equal(entries[0].cachePath, "/active");
+});
 
 test("a pinned quant resolves its load, reveal, and delete target from the cache that holds it", async () => {
   const copies = [

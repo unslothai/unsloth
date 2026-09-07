@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { reconcileGgufPinsAfterDelete } from "./reconcile-gguf-pins";
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -2232,10 +2233,7 @@ function GgufVariantExpander({
                           disabled: deleteDisabled,
                           onConfirm: async () => {
                             await onDeleteVariant(v.quant);
-                            // Drop the pin too: a pinned row for a deleted file loads something gone.
-                            if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
-                              togglePinnedQuant(repoId, v.quant);
-                            }
+                            await reconcileGgufPinsAfterDelete(repoId, v.quant, hfToken);
                             // Re-fetch this expander's variants so the deleted quant stops showing as
                             // downloaded while other cached quants remain.
                             // repo still has other cached quants.
@@ -5181,8 +5179,7 @@ export function HubModelPicker({
                   entry.cachePath,
                 );
                 refreshCachedLists();
-                // The file is gone, so drop its pin too.
-                togglePinned(entry.repoId, entry.quant);
+                await reconcileGgufPinsAfterDelete(entry.repoId, entry.quant, hfToken || undefined);
               },
             }}
           />
@@ -5323,8 +5320,7 @@ export function HubModelPicker({
                   hfToken || undefined,
                   c.cache_path || undefined,
                 );
-                // The file is gone, so drop its pin too.
-                if (isPinned) togglePinned(c.repo_id, variant.quant);
+                await reconcileGgufPinsAfterDelete(c.repo_id, variant.quant, hfToken || undefined);
                 prunePinnedQuantValidation(c.repo_id, variant.quant);
                 refreshCachedLists();
               },
@@ -5416,8 +5412,7 @@ export function HubModelPicker({
                       hfToken || undefined,
                       c.cache_path || undefined,
                     );
-                    // Every quant goes with the repo, so every quant pin goes too.
-                    unpinRepo(c.repo_id);
+                    await reconcileGgufPinsAfterDelete(c.repo_id, undefined, hfToken || undefined);
                   },
                   onDeleted: refreshCachedLists,
                 }}

@@ -21,6 +21,31 @@ export type ResolvedPinnedQuant = {
   filename: string;
 };
 
+export async function missingPinnedQuants(
+  pins: readonly { repoId: string; quant: string }[],
+  copies: readonly CacheCopy[],
+  read: (copy: CacheCopy) => Promise<readonly Variant[]>,
+): Promise<readonly { repoId: string; quant: string }[]> {
+  // A failed scan is not evidence that the last copy has been deleted.
+  const relevant = copies.filter((copy) =>
+    pins.some((pin) => pin.repoId === copy.repo_id),
+  );
+  const variants = await Promise.all(relevant.map(read));
+  return pins.filter(
+    (pin) =>
+      !relevant.some(
+        (copy, index) =>
+          copy.repo_id === pin.repoId &&
+          variants[index].some(
+            (variant) =>
+              variant.quant === pin.quant &&
+              variant.downloaded &&
+              !variant.partial,
+          ),
+      ),
+  );
+}
+
 export async function resolvePinnedQuantSources(
   pins: readonly { repoId: string; quant: string }[],
   copies: readonly CacheCopy[],

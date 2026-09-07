@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { agentCacheLoadIds } from "../lib/agent-cache-targets";
 import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import {
   Command,
@@ -823,8 +824,7 @@ export function AgentsTab() {
   // A GGUF outside the active cache does not resolve by repo id, so name its
   // snapshot path; `unsloth start` now also matches a path by the basename
   // /v1/models advertises for it. The resident model is exempt: it already
-  // loaded by id, and cached-gguf keeps the largest copy across caches, whose
-  // snapshot could switch cache or quant under it.
+  // loaded by id, and rediscovery must not switch the cache underneath it.
   const selectedModelIsActive =
     activeStatusModel != null &&
     modelKey(selectedModel) === modelKey(activeStatusModel);
@@ -958,16 +958,8 @@ export function AgentsTab() {
           ...cachedGgufs.map((cached) => cached.repo_id),
           ...localEntries.map((entry) => entry.id),
         ]);
-        // Keep the snapshot load_id for --model while listing the model by repo id.
-        const loadIds: Record<string, string> = {};
-        for (const cached of cachedGgufs) {
-          if (cached.load_id && cached.load_id !== cached.repo_id) {
-            // Key both spellings: the merge above keeps whichever casing arrived
-            // first, which may not be this endpoint's.
-            loadIds[cached.repo_id] = cached.load_id;
-            loadIds[cached.repo_id.toLowerCase()] = cached.load_id;
-          }
-        }
+        // One command target per repo: prefer the active cache, then a stable snapshot.
+        const loadIds = agentCacheLoadIds(cachedGgufs);
         const labels: Record<string, string> = {};
         for (const entry of localEntries) {
           if (entry.label !== entry.id) {
