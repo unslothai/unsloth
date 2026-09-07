@@ -4604,6 +4604,36 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
         }
+        # Same shape, same reason, and the sibling of the probe setup.sh runs: a venv
+        # installed before the tokenizers pin can hold a tokenizers the installed
+        # transformers rejects at import, which takes down every `import transformers`
+        # and so the whole model stack, while $_PkgName itself is current. Without this
+        # the fast path reports "up to date" and repairs nothing. Ask the metadata, not
+        # an import: the import is what is broken. Any unreadable half exits 1 and
+        # changes nothing.
+        $_tokenizersBad = $false
+        try {
+            & python -c "
+import sys
+from importlib.metadata import PackageNotFoundError, requires, version
+try:
+    from packaging.requirements import Requirement
+    installed = version('tokenizers')
+    windows = [
+        req.specifier
+        for req in (Requirement(raw) for raw in (requires('transformers') or []))
+        if req.name == 'tokenizers' and req.marker is None
+    ]
+except (PackageNotFoundError, ImportError, ValueError, IndexError):
+    sys.exit(1)
+sys.exit(0 if windows and installed not in windows[0] else 1)
+" 2>$null
+            if ($LASTEXITCODE -eq 0) { $_tokenizersBad = $true }
+        } catch {}
+        if ($_tokenizersBad) {
+            substep "installed transformers rejects the installed tokenizers -- forcing dependency pass to repair..." "Cyan"
+            $SkipPythonDeps = $false
+        }
         # An interrupted install leaves $_PkgName current while studio.txt
         # never finished, so the compare above says "up to date" and update --
         # plus the desktop Repair button -- no-ops on a venv that cannot boot.
