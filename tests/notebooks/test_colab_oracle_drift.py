@@ -35,17 +35,15 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import notebook_validator as nv  # noqa: E402
 
-# A real pin file, not a stub: _oracle_payload_is_usable refuses a rule-bearing oracle that
-# has lost the packages R-INST-002/003/004/005 seed on, and a fixture missing them would be
-# testing the refusal rather than the drift.
+# A real pin file, not a stub: _oracle_payload_is_usable refuses a rule-bearing oracle missing
+# the packages the R-INST rules seed on, so a stub would test the refusal rather than the drift.
 PIP = (
     "torch==2.10.0\ntorchcodec==0.10.0\npeft==0.19.0\ntorchao==0.16.0\n"
     "transformers==5.1.0\ntokenizers==0.23.0\naccelerate==1.13.0\n"
 )
 APT = "curl/jammy,now 7.81.0-1ubuntu1.24 amd64 [installed]\n"
-# The real os-info carries a `Python 3.x.y` line, and COLAB_STRICT_ORACLE_KEYS makes it
-# rule-bearing: `_marker_environment` reads it. A fixture without one is the very drift
-# `colab-diff --strict` has to catch, so it is spelled out here rather than left implicit.
+# The real os-info carries a `Python 3.x.y` line that COLAB_STRICT_ORACLE_KEYS makes
+# rule-bearing, and a fixture without one is the drift `colab-diff --strict` has to catch.
 OS_INFO = "Python 3.13.15\nR version 4.5.3\n"
 
 UPSTREAM = {
@@ -239,8 +237,7 @@ def test_a_missing_strict_snapshot_fails_strict(oracle):
     `cmd_colab_diff` detected the missing file and continued before consulting the strict-key
     declaration, so deleting `colab_os_info.gpu.txt` left `--strict` green while
     `_colab_python_version` returned None and marker evaluation silently replayed every
-    requirement.
-    """
+    requirement."""
     _, snapshot_dir = oracle
     (snapshot_dir / nv.COLAB_ORACLE_FILES["os-info-gpu.txt"]).unlink()
     assert _diff(snapshot_dir, strict = True) == 1
@@ -249,10 +246,9 @@ def test_a_missing_strict_snapshot_fails_strict(oracle):
 def test_a_missing_pip_snapshot_fails_strict(oracle):
     """The rule-bearing pip oracle counts the same way as os-info.
 
-    A separate test rather than a second assertion: `oracle` is function-scoped, so asking for
-    it twice in one test hands back the SAME directory, and the second check would have passed
-    on the first deletion however pip's absence were handled.
-    """
+    A separate test rather than a second assertion: `oracle` is function-scoped, so asking for it
+    twice in one test hands back the SAME directory, and the second check would have passed on the
+    first deletion however pip's absence were handled."""
     _, snapshot_dir = oracle
     (snapshot_dir / nv.COLAB_ORACLE_FILES["pip-freeze.gpu.txt"]).unlink()
     assert _diff(snapshot_dir, strict = True) == 1
@@ -268,10 +264,9 @@ def test_a_missing_advisory_snapshot_stays_advisory(oracle):
 def test_a_strict_key_absent_from_both_oracles_fails_strict(oracle):
     """Present in BOTH, not merely equal in both.
 
-    An upstream format change acknowledged into the snapshot leaves the two parses identical
-    and empty of the key, so the no-drift return fired while `_colab_python_version` answered
-    None and marker evaluation silently replayed every requirement.
-    """
+    An upstream format change acknowledged into the snapshot leaves the two parses identical and
+    empty of the key, so the no-drift return fired while `_colab_python_version` answered None and
+    marker evaluation silently replayed every requirement."""
     upstream, snapshot_dir = oracle
     without_python = "R version 4.5.3\n"
     upstream["os-info-gpu.txt"] = without_python
@@ -285,10 +280,9 @@ def test_an_unreadable_strict_value_fails_strict(oracle):
     """The key being present is not enough; its consumer has to be able to read it.
 
     `_parse_os_lines` emits a `python` key for any line starting with `Python`, while
-    `_colab_python_version` only accepts `Python <digits>`. An upstream reformat refreshed into
-    the snapshot leaves both sides equal and the key present, so the no-drift return fired
-    while marker evaluation quietly disabled itself.
-    """
+    `_colab_python_version` only accepts `Python <digits>`. An upstream reformat refreshed into the
+    snapshot leaves both sides equal and the key present, so the no-drift return fired while marker
+    evaluation quietly disabled itself."""
     upstream, snapshot_dir = oracle
     reformatted = "Python version 3.14\nR version 4.5.3\n"
     upstream["os-info-gpu.txt"] = reformatted
@@ -303,8 +297,7 @@ def test_an_advisory_oracle_that_will_not_fetch_does_not_fail_the_refresh(oracle
 
     `--all` refused to write anything unless every oracle fetched, so a transient failure on the
     one oracle no rule reads reddened the daily job and left the pip drift unacknowledged -- the
-    opposite of the disposition colab-diff gives that same file.
-    """
+    opposite of the disposition colab-diff gives that same file."""
     upstream, _ = oracle
     real = nv.urllib.request.urlopen
 
@@ -375,10 +368,9 @@ def test_a_refresh_never_acknowledges_a_payload_the_rules_cannot_read(
 def test_a_failed_write_restores_the_whole_snapshot_set(oracle, tmp_path, monkeypatch, capsys):
     """A refresh lands as a set or not at all.
 
-    Each write is atomic on its own, but failing part way through left a fresh package list
-    beside a stale Python version, and the workflow's `|| echo` fallback then linted against
-    that mix while reporting it had fallen back to the committed snapshot.
-    """
+    Each write is atomic on its own, but failing part way through left a fresh package list beside
+    a stale Python version, and the workflow's `|| echo` fallback then linted against that mix
+    while reporting it had fallen back to the committed snapshot."""
     upstream, snapshot_dir = oracle
     committed = {
         name: (snapshot_dir / name).read_bytes() for name in nv.COLAB_ORACLE_FILES.values()
@@ -440,10 +432,9 @@ def test_the_seed_list_is_the_one_the_rules_use():
 def test_a_pin_file_missing_a_seed_package_is_not_acknowledged(oracle, tmp_path, dropped):
     """A truncated 200 parses fine and resolves every R-INST rule against nothing.
 
-    Accepting any payload with one readable pin let `refresh-colab --all` overwrite the
-    committed snapshot with it, and the lint that follows then returns early on every rule
-    whose seed package is gone.
-    """
+    Accepting any payload with one readable pin let `refresh-colab --all` overwrite the committed
+    snapshot with it, and the lint that follows then returns early on every rule whose seed package
+    is gone."""
     upstream, _ = oracle
     upstream["pip-freeze.gpu.txt"] = "\n".join(
         line for line in PIP.splitlines() if not line.startswith(f"{dropped}==")
@@ -457,9 +448,8 @@ def test_a_pin_file_missing_a_seed_package_is_not_acknowledged(oracle, tmp_path,
 def test_a_rollback_survives_a_filesystem_that_is_still_full(oracle, tmp_path, monkeypatch):
     """Restoring by rewriting the bytes needs the room the failure just proved is missing.
 
-    A second raise mid-rollback left the files written before the failure fresh beside stale
-    ones, which is the mixed generation the rollback exists to prevent.
-    """
+    A second raise mid-rollback left the files written before the failure fresh beside stale ones,
+    which is the mixed generation the rollback exists to prevent."""
     upstream, snapshot_dir = oracle
     committed = {
         name: (snapshot_dir / name).read_bytes() for name in nv.COLAB_ORACLE_FILES.values()
@@ -492,8 +482,7 @@ def test_a_dry_run_install_does_not_undo_a_removal():
     """`--dry-run` prints what pip would do and changes nothing, here as everywhere else.
 
     Treating it as a real reinstall reset the removal, so R-INST-005 returned early instead of
-    reporting the dependency the cell really leaves missing.
-    """
+    reporting the dependency the cell really leaves missing."""
     assert nv._removed_by_cell(
         "!pip uninstall -y tokenizers; pip install --dry-run tokenizers", "tokenizers"
     )
@@ -506,10 +495,8 @@ def test_a_dry_run_install_does_not_undo_a_removal():
 def test_an_unfetchable_rule_bearing_oracle_fails_strict(oracle, capsys):
     """Not compared is not "no drift".
 
-    A transient fetch failure only warned and returned success, so the job reported a pass for
-    a check that never ran and the refresh after it fed the lint an oracle nothing had
-    compared.
-    """
+    A transient fetch failure only warned and returned success, so the job reported a pass for a
+    check that never ran and the refresh after it fed the lint an oracle nothing had compared."""
     upstream, snapshot_dir = oracle
     real = nv.urllib.request.urlopen
 
