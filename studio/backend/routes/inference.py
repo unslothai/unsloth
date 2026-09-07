@@ -20183,9 +20183,7 @@ async def _proxy_to_external_provider(
                     # withheld, and only it needs the loop to flag a healed one the wire
                     # never carried. The opt-in stream keeps every frame, so it arms nothing.
                     on_withheld_tool_call = (None if _ui_events else _tool_call_stripper.arm),
-                    on_provider_turn_end = (
-                        None if _ui_events else _tool_call_stripper.end_turn
-                    ),
+                    on_provider_turn_end = (None if _ui_events else _tool_call_stripper.end_turn),
                 ),
                 cancel_event = cancel_event,
             )
