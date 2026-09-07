@@ -744,23 +744,76 @@ def evaluate_fetch(
     return last or {"status": 0, "body": None, "error": "no attempt made"}
 
 
+class _WallClockWatchdog:
+    """A `deadline_s` budget that `kick()` can push forward, hard-exiting on expiry.
+
+    A caller that never kicks gets exactly the absolute wall a `threading.Timer` gave it.
+    A caller that kicks on each step converts it to an inactivity deadline, which is the
+    only shape that can outlast EVERY bounded wait in a script: an absolute wall has to
+    cover the sum of them, and a script whose waits sum past the runner's job cap can
+    then never let a late one reach its own timeout and name itself.
+
+    `threading.Timer` has no reschedule (only `cancel()`, and only before it fires), so
+    the deadline lives in an attribute and a daemon thread re-reads it after each wait.
+    """
+
+    def __init__(
+        self,
+        deadline_s: float,
+        on_expiry: Callable[[], None],
+    ) -> None:
+        self._budget_s = float(deadline_s)
+        self._on_expiry = on_expiry
+        self._lock = threading.Lock()
+        self._deadline = time.monotonic() + self._budget_s
+        self._cancelled = threading.Event()
+        self._thread = threading.Thread(target = self._run, daemon = True)
+
+    def start(self) -> "_WallClockWatchdog":
+        self._thread.start()
+        return self
+
+    def kick(self) -> None:
+        """Report progress: restart the budget from now."""
+        with self._lock:
+            self._deadline = time.monotonic() + self._budget_s
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                remaining = self._deadline - time.monotonic()
+            if remaining <= 0:
+                if not self._cancelled.is_set():
+                    self._on_expiry()
+                return
+            # Cap the wait so a kick that arrives mid-sleep is picked up promptly; the
+            # loop re-reads the deadline rather than trusting the wait it just made.
+            if self._cancelled.wait(min(remaining, 1.0)):
+                return
+
+
 # Wall-clock watchdog.
-# A browser wedge (CPU-pinned JS, silent renderer crash, asyncio deadlock) can still hang the script. A daemon Timer
-# calls os._exit(2) after deadline_s; exit code 2 lets the workflow's `set -e` propagate. Pick deadline_s above the
-# slowest healthy run (macos-14 cold cache ~7-9 min) but under the 30-min cap.
+# A browser wedge (CPU-pinned JS, silent renderer crash, asyncio deadlock) can still hang the script. A daemon thread
+# calls os._exit(2) after deadline_s of no `kick()`; exit code 2 lets the workflow's `set -e` propagate. Pick
+# deadline_s above the longest single wait the script can legitimately make, so that wait always reaches its own
+# timeout and names itself.
 def install_wall_clock_watchdog(
     deadline_s: float,
     *,
     label: str = "playwright",
     info: Callable[[str], None] | None = None,
-) -> threading.Timer:
-    """Start a daemon Timer that hard-exits the process at `deadline_s`; returned
-    so the caller can `.cancel()` on clean exit (daemonised, dies with process)."""
+) -> _WallClockWatchdog:
+    """Start a daemon watchdog that hard-exits the process `deadline_s` after the last
+    `kick()` (or after arming, if never kicked); returned so the caller can `.cancel()`
+    on clean exit (daemonised, dies with process)."""
 
     def _kaboom() -> None:
         msg = (
-            f"[{label}] WATCHDOG: hit {deadline_s:.0f}s wall-clock "
-            f"deadline; forcing exit(2). The script wedged somewhere "
+            f"[{label}] WATCHDOG: {deadline_s:.0f}s with no step reported; "
+            f"forcing exit(2). The script wedged somewhere "
             f"the per-action timeouts could not bound. Inspect the "
             f"most recent step printed above to localise."
         )
@@ -787,12 +840,10 @@ def install_wall_clock_watchdog(
             pass
         os._exit(2)
 
-    timer = threading.Timer(deadline_s, _kaboom)
-    timer.daemon = True
-    timer.start()
+    watchdog = _WallClockWatchdog(deadline_s, _kaboom).start()
     if info is not None:
-        info(f"watchdog armed: hard-exit at {deadline_s:.0f}s")
-    return timer
+        info(f"watchdog armed: hard-exit {deadline_s:.0f}s after the last step")
+    return watchdog
 
 
 def click_forced(

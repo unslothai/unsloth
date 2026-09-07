@@ -54,7 +54,7 @@ TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 # cannot close the gap, and paid once per run.
 RAPID_FIRST_TURN_HOLD_S = 3.0
 
-# Wall-clock cap for the whole script (healthy run is 5-9 min).
+# Watchdog budget, measured from the last progress report (healthy run is 5-9 min).
 #
 # Derived from TURN_TIMEOUT_MS rather than pinned, because the watchdog has to
 # outlast the longest single wait in the script or it fires first: the process is
@@ -63,12 +63,17 @@ RAPID_FIRST_TURN_HOLD_S = 3.0
 # then reports only "wedged somewhere", which is unlocalisable.
 #
 # The longest single wait is the rapid-submit completion check at 2x the turn
-# timeout. studio-windows-ui-smoke.yml and studio-mac-ui-smoke.yml both set
-# STUDIO_UI_TURN_TIMEOUT_MS to 540000 for their slower CPU inference, which makes
-# that wait 1080s on its own, while nothing set STUDIO_UI_WALL_TIMEOUT_S anywhere,
-# so it stayed at 720s. On those two runners the wait provably could not reach its
-# own timeout. The Linux default is unaffected: 2 x 180s + margin is 480s, under
-# the 720s floor, so that path keeps the budget it already had.
+# timeout. studio-mac-ui-smoke.yml sets STUDIO_UI_TURN_TIMEOUT_MS to 540000 for its
+# slower CPU inference, which makes that wait 1080s on its own, while nothing set
+# STUDIO_UI_WALL_TIMEOUT_S anywhere, so it stayed at 720s. On that runner the wait
+# provably could not reach its own timeout. The Linux default is unaffected: 2 x 180s
+# + margin is 480s, under the 720s floor, so that path keeps the budget it already had.
+#
+# This covers ONE wait, not their sum, so `wall_kick()` restarts it whenever a wait
+# returns. An absolute wall cannot be made to work at any number: `send_and_wait`
+# alone budgets up to 4x the turn timeout per turn and the script drives seven of them,
+# which is hours at the mac setting, so a late wait would still be cut off mid-wait --
+# the exact failure this constant exists to prevent.
 _WALL_FLOOR_S = 720.0
 _LONGEST_WAIT_S = (TURN_TIMEOUT_MS / 1000) * 2
 WALL_TIMEOUT_S = float(
@@ -95,13 +100,29 @@ LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"
 
 _n = [0]
 
+# Set once the watchdog is armed, below. Everything above it runs before there is one.
+_watchdog = None
+
+
+def wall_kick():
+    """Report progress to the watchdog: restart its budget from now.
+
+    Call it after a bounded wait returns. WALL_TIMEOUT_S is sized for a single wait, so
+    two consecutive ones have to be separated by a kick or the second inherits whatever
+    the first left over.
+    """
+    if _watchdog is not None:
+        _watchdog.kick()
+
 
 def step(s):
     print(f"[ui] STEP {s}", flush = True)
+    wall_kick()
 
 
 def info(s):
     print(f"[ui] {s}", flush = True)
+    wall_kick()
 
 
 def fail(m):
@@ -1139,6 +1160,7 @@ with sync_playwright() as p:
             state = "attached",
             timeout = TURN_TIMEOUT_MS,
         )
+        wall_kick()
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
@@ -1152,6 +1174,7 @@ with sync_playwright() as p:
                 state = "detached",
                 timeout = TURN_TIMEOUT_MS,
             )
+        wall_kick()
 
         # 2. Snapshot total bubble count before send; we wait for it to grow by exactly 1. We do NOT require
         #    non-empty text: an empty assistant response is legitimate (gemma-3-270m does this at temp 0), and the
@@ -1186,6 +1209,7 @@ with sync_playwright() as p:
             arg = bubbles_before + 1,
             timeout = TURN_TIMEOUT_MS,
         )
+        wall_kick()
 
         # 4. Wait for this turn's streaming to finish. Stop may never appear (gemma-3-270m can finish before it
         #    paints), so its appearance is best-effort; then wait for it to detach.
@@ -1197,6 +1221,7 @@ with sync_playwright() as p:
             )
         except Exception:
             pass
+        wall_kick()
         try:
             page.wait_for_selector(
                 'button[aria-label="Stop generating"]',
@@ -1383,6 +1408,8 @@ with sync_playwright() as p:
     # Settle before the five-turn sequence below: two bubbles, nothing streaming, nothing queued.
     # What the turns SAID is not checked here and never was;
     # the queue behaviour this step exists to prove is `state.queueSeen` above.
+    # The longest single wait in the script, so it starts on a full budget.
+    wall_kick()
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(
