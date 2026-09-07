@@ -69,11 +69,17 @@ XPU_SAFE_TRAINING_OPTIMIZER = "adamw_torch"
 XPU_DEVICE_BACKEND = "xpu"
 PAGED_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_8bit"
 ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER = "adamw_bnb_8bit"
-XPU_UNSUPPORTED_8BIT_OPTIMIZERS = frozenset(
+PAGED_32BIT_BITSANDBYTES_TRAINING_OPTIMIZER = "paged_adamw_32bit"
+# Bit width is not the dividing line: bitsandbytes routes BOTH optimizer_update_8bit_blockwise
+# and optimizer_update_32bit to its Triton kernels on XPU (backends/xpu/ops.py), and the Intel
+# Triton backend asserts on a missing SYCL toolchain the installer does not ship. So the paged
+# 32-bit AdamW crashes at the first step exactly like the 8-bit ones.
+XPU_UNSUPPORTED_BITSANDBYTES_OPTIMIZERS = frozenset(
     (
         DEFAULT_TRAINING_OPTIMIZER,
         PAGED_BITSANDBYTES_TRAINING_OPTIMIZER,
         ADAMW_BITSANDBYTES_TRAINING_OPTIMIZER,
+        PAGED_32BIT_BITSANDBYTES_TRAINING_OPTIMIZER,
     )
 )
 
@@ -184,7 +190,10 @@ def normalize_training_optimizer_for_device(optimizer: Any, *, device_backend: s
     if not isinstance(optimizer, str):
         return optimizer
     optimizer_key = optimizer.strip().lower().replace("-", "_")
-    if device_backend == XPU_DEVICE_BACKEND and optimizer_key in XPU_UNSUPPORTED_8BIT_OPTIMIZERS:
+    if (
+        device_backend == XPU_DEVICE_BACKEND
+        and optimizer_key in XPU_UNSUPPORTED_BITSANDBYTES_OPTIMIZERS
+    ):
         return XPU_SAFE_TRAINING_OPTIMIZER
     return optimizer
 

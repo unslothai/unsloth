@@ -38,6 +38,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BITSANDBYTES_OPTIMIZER = "adamw_8bit"
 PAGED_BITSANDBYTES_OPTIMIZER = "paged-adamw-8bit"
 ADAMW_BITSANDBYTES_OPTIMIZER = "adamw_bnb_8bit"
+PAGED_32BIT_BITSANDBYTES_OPTIMIZER = "paged_adamw_32bit"
 XPU_SAFE_OPTIMIZER = "adamw_torch"
 
 
@@ -931,7 +932,7 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(config["resolved_gpu_ids"], [0, 1])
         self.assertEqual(config["gpu_selection"]["selection_mode"], "auto")
 
-    def test_training_backend_swaps_default_8bit_optimizer_on_xpu(self):
+    def test_training_backend_swaps_bitsandbytes_optimizers_on_xpu(self):
         class DummyProcess:
             pid = 12345
 
@@ -948,6 +949,7 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
             DEFAULT_BITSANDBYTES_OPTIMIZER,
             PAGED_BITSANDBYTES_OPTIMIZER,
             ADAMW_BITSANDBYTES_OPTIMIZER,
+            PAGED_32BIT_BITSANDBYTES_OPTIMIZER,
         ):
             with self.subTest(optimizer = optimizer):
                 backend = TrainingBackend()
