@@ -617,7 +617,7 @@ def test_the_provenance_name_survives_local_extraction():
 
     body = inspect.getsource(inference_route._extract_content_parts)
     assert (
-        'chat_message["name"] = msg.name' in body
+        'chat_message["name"] = _tool_name' in body
     ), "the tool message's name has to reach promote_history"
 
 
@@ -1522,3 +1522,124 @@ def test_the_caller_attachment_is_composited_on_the_way_to_the_worker():
 
     assert out.getpixel((0, 0)) == (255, 255, 255), "transparency flattened to black"
     assert out.getpixel((4, 4)) == (0, 0, 0), "the drawn pixel was lost"
+
+
+def _call(call_id, name):
+    return {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": call_id, "type": "function", "function": {"name": name, "arguments": "{}"}}
+        ],
+    }
+
+
+def test_repeated_call_ids_pair_each_result_with_its_own_call():
+    """The backend restarts ids like call_0 every response. A conversation-wide
+    last-wins lookup let a later non-MCP call_0 rename an earlier MCP result -- and
+    the reverse -- so an earlier picture was suppressed or a later envelope trusted."""
+    history = [
+        _call("call_0", "mcp__shot__capture"),
+        {"role": "tool", "tool_call_id": "call_0", "content": _envelope("[1]", _image())},
+        {"role": "assistant", "content": "a blue square"},
+        _call("call_0", "read_file"),
+        {"role": "tool", "tool_call_id": "call_0", "content": _envelope("[1]", _image())},
+    ]
+
+    names = mcp_images.resolve_tool_names(history)
+    assert names == {1: "mcp__shot__capture", 4: "read_file"}, names
+
+    out = promote_history(history, vision = True)
+    promoted = sum(
+        1
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    )
+    assert promoted == 1, "exactly the MCP result's picture, not the client tool's"
+
+
+def test_a_batch_with_a_later_text_result_does_not_say_the_tool_call_above():
+    """pending stays open across a later image-free result of the same batch, so the
+    image turn lands after it and 'the tool call above' named the wrong call."""
+    history = [
+        {"role": "tool", "name": "mcp__s__shot", "content": _envelope("[1]", _image())},
+        {"role": "tool", "name": "mcp__s__list", "content": "three files"},
+        # An assistant follows, so the turn is INSERTED after the batch rather than
+        # merged into a user message -- the case that carries a note at all.
+        {"role": "assistant", "content": "done"},
+    ]
+
+    out = promote_history(history, vision = True)
+
+    note = next(
+        part["text"]
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "text" and part["text"].startswith("Images returned by")
+    )
+    assert note.startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT), note
+
+
+def test_the_note_honours_a_returned_count_the_frontend_left_on_the_envelope():
+    """The frontend bounds the envelope before it is ever seen here; it records the
+    length it started from on the first entry so the note can still say so."""
+    images = [_image() for _ in range(2)]
+    images[0]["returned"] = 100
+    history = [{"role": "tool", "name": "mcp__s__shot", "content": _envelope("[100]", *images)}]
+
+    out = promote_history(history, vision = True)
+
+    note = next(
+        part["text"]
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "text"
+    )
+    assert "of 100)" in note, note
+
+
+def test_the_local_rebuild_names_an_unnamed_result_from_its_call():
+    """_extract_content_parts drops tool_call_id and the calls, so the local path
+    could not run the provenance gate on an unnamed result at all."""
+    from models.inference import ChatMessage
+    from routes.inference import _extract_content_parts
+
+    messages = [
+        ChatMessage(**_call("call_0", "read_file")),
+        ChatMessage(role = "tool", tool_call_id = "call_0", content = _envelope("[1]", _image())),
+    ]
+
+    _, chat_messages, _ = _extract_content_parts(messages, keep_tool_images = True)
+
+    tool = next(message for message in chat_messages if message["role"] == "tool")
+    assert tool.get("name") == "read_file", tool
+
+
+def test_admission_does_not_charge_an_envelope_a_non_mcp_call_produced():
+    from routes.inference import _openai_llama_admission_messages_for_estimate
+
+    history = [
+        _call("call_0", "read_file"),
+        {"role": "tool", "tool_call_id": "call_0", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+    ]
+
+    _, image_parts = _openai_llama_admission_messages_for_estimate(history)
+
+    assert image_parts == 0, f"reserved {image_parts} embeddings generation never sends"
+
+
+def test_the_monitor_prompt_never_retains_envelope_bytes():
+    from routes.inference import _monitor_prompt_from_messages
+
+    payload = _png()
+    text = _monitor_prompt_from_messages(
+        [{"role": "tool", "content": _envelope("[1 image returned]", {"data": payload, "mimeType": "image/png"})}]
+    )
+
+    assert payload not in text
+    assert mcp_images.SENTINEL not in text
+    assert "[1 image returned]" in text

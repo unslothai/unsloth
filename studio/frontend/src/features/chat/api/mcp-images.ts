@@ -9,6 +9,9 @@ export const MCP_IMAGES_MARKER = "\n__MCP_IMAGES__:";
 export interface McpImage {
   data: string;
   mimeType: string;
+  // Set on the first entry once this side has shortened the array, so the backend's
+  // note can still say how many the tool returned rather than how many were uploaded.
+  returned?: number;
 }
 
 export function isMcpImageArray(value: unknown): value is McpImage[] {
@@ -87,17 +90,19 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     const message = out[i];
     if (!message || message.role !== "tool") continue;
     if (typeof message.content !== "string") continue;
-    // A named non-MCP result keeps its text verbatim, exactly as the backend
-    // leaves it: trimming it here would change what the model reads.
+    const { text, images } = splitMcpImages(message.content);
+    if (images.length === 0) continue;
+    // A named non-MCP result is never promoted, and the backend strips its envelope
+    // regardless -- so drop it here too. Left alone it bypassed both bounds below,
+    // and its base64 was re-uploaded whole on every later turn.
     if (
       typeof message.name === "string" &&
       message.name &&
       !message.name.startsWith(MCP_TOOL_PREFIX)
     ) {
+      out[i] = { ...message, content: text };
       continue;
     }
-    const { text, images } = splitMcpImages(message.content);
-    if (images.length === 0) continue;
     // The backend promotes at most MAX_MODEL_IMAGES out of any one result, so a
     // result carrying more must not spend history budget on images that will be
     // dropped anyway -- that would evict older results which still had room.
@@ -135,9 +140,13 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     budget -= charged;
     spare -= keep.length - charged;
     if (keep.length === images.length) continue;
+    // Carry the count the tool actually returned, or a prior bound's record of it,
+    // so the backend's note does not describe this upload as the whole result.
+    const returned = Math.max(images[0]?.returned ?? 0, images.length);
+    const bounded = keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
     out[i] = {
       ...message,
-      content: keep.length > 0 ? text + mcpImagesEnvelope(keep) : text,
+      content: bounded.length > 0 ? text + mcpImagesEnvelope(bounded) : text,
     };
   }
   return out;

@@ -1962,7 +1962,11 @@ def _openai_llama_admission_messages_for_estimate(
     # many an envelope becomes, but a caller that really attaches more images than
     # that must still be charged for every one (#9842).
     envelope_image_parts = 0
-    for message in messages:
+    # Same provenance resolution generation uses: an unnamed result correlated to a
+    # non-MCP call is never promoted, so charging its envelope reserves up to eight
+    # embeddings the request never sends.
+    _resolved = _mcp_resolve_tool_names(messages)
+    for _index, message in enumerate(messages):
         # exclude_none like every other dump here, including the generation paths this
         # predicts: the five unset optionals on ChatMessage otherwise serialise as
         # `"name": null` and get priced as prompt text (34 tokens for a two-key message
@@ -1985,7 +1989,13 @@ def _openai_llama_admission_messages_for_estimate(
                 # Charged only where generation will really send pixels: a text-only
                 # model has them stripped, and a named non-MCP result is not promoted
                 # at all, so charging either reserves KV for images never sent.
-                if vision and not _names_a_non_mcp_tool(message_dict):
+                _correlated = _resolved.get(_index)
+                _non_mcp = _names_a_non_mcp_tool(message_dict) or (
+                    isinstance(_correlated, str)
+                    and bool(_correlated)
+                    and not _correlated.startswith("mcp__")
+                )
+                if vision and not _non_mcp:
                     # Only entries that could become a picture: _flatten_result
                     # accepts formats Pillow cannot read, promotion drops them, and
                     # four such entries would reserve most of a small window for
@@ -3273,6 +3283,7 @@ from core.inference.mcp_images import (
     image_marker_parts as mcp_image_marker_parts,
     DETACHED_IMAGE_TURN_TEXT as _MCP_DETACHED_IMAGE_TURN_TEXT,
     flattened_rgb as _mcp_flattened_rgb,
+    resolve_tool_names as _mcp_resolve_tool_names,
     insert_placeholder_turn as insert_mcp_image_turn_before,
     pixels_in_marker_order as mcp_pixels_in_marker_order,
     trim_image_turns as trim_mcp_image_turns,
@@ -5673,7 +5684,11 @@ def _monitor_content_text(content) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
-        return content
+        # A replayed envelope is megabytes of base64 in a plain string. Generation
+        # and the search index both strip it; the monitor copied it into the prompt
+        # entry, exposing image bytes in inspection and truncating away the later
+        # conversation behind them.
+        return split_mcp_images(content)[0]
     if isinstance(content, list):
         parts: list[str] = []
         for part in content:
@@ -19775,7 +19790,8 @@ def _extract_content_parts(
     latest_image_b64: Optional[str] = None
     latest_user_image_b64: Optional[str] = None
 
-    for msg in messages:
+    _resolved_tool_names = _mcp_resolve_tool_names(messages)
+    for _msg_index, msg in enumerate(messages):
         # ── System / developer messages → extract as system_prompt ────────
         if msg.role in ("system", "developer"):
             if isinstance(msg.content, str):
@@ -19832,9 +19848,14 @@ def _extract_content_parts(
         chat_message = {"role": msg.role, "content": combined_text}
         # Carried through: promote_history reads it to decide whether an envelope
         # came from an MCP server, and dropping it here made an unnamed tool
-        # message that bypasses the check entirely.
-        if msg.role == "tool" and isinstance(getattr(msg, "name", None), str) and msg.name:
-            chat_message["name"] = msg.name
+        # message that bypasses the check entirely. Resolved from the call when the
+        # result itself is unnamed: this rebuild drops tool_call_id and the calls,
+        # so the correlation has to happen here or the local path cannot run the
+        # provenance gate at all.
+        if msg.role == "tool":
+            _tool_name = getattr(msg, "name", None) or _resolved_tool_names.get(_msg_index)
+            if isinstance(_tool_name, str) and _tool_name:
+                chat_message["name"] = _tool_name
         if msg.role == "assistant" and msg.reasoning_content:
             chat_message["reasoning_content"] = msg.reasoning_content
         chat_messages.append(chat_message)

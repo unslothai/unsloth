@@ -3874,7 +3874,13 @@ class TestGgufVisionMessages:
 
         _, chat_messages, _ = _extract_content_parts(req.messages)
 
-        assert chat_messages[2] == {"role": "tool", "content": "[1 image returned]"}
+        # The name is correlated from the call now, so the local path can run the
+        # provenance gate on a result that arrived unnamed.
+        assert chat_messages[2] == {
+            "role": "tool",
+            "content": "[1 image returned]",
+            "name": "mcp__fs__read_media_file",
+        }
 
     def test_a_replayed_envelope_alone_does_not_demand_a_vision_model(self):
         """The capability preflight runs before promote_history strips the envelope

@@ -123,10 +123,20 @@ test("a conversation inside the budget is left byte-identical", () => {
   assert.deepEqual(boundMcpImageEnvelopes(messages), messages);
 });
 
-test("a non-MCP tool result is never rewritten", () => {
-  const messages = [shot(0, "bash")];
+test("a non-MCP tool result keeps its text and loses only the envelope", () => {
+  // The backend never promotes a named non-MCP result and strips its envelope
+  // regardless, so leaving it whole here only re-uploaded megabytes of base64 on
+  // every later turn. The text the model reads is unchanged.
+  const message = {
+    role: "tool",
+    name: "read_file",
+    content: "plain text" + mcpImagesEnvelope([{ data: "QUJD", mimeType: "image/png" }]),
+  };
 
-  assert.deepEqual(boundMcpImageEnvelopes(messages), messages);
+  const [bounded] = boundMcpImageEnvelopes([message]);
+
+  assert.equal(bounded.content, "plain text");
+  assert.equal(bounded.name, "read_file");
 });
 
 const shotOf = (n: string, count: number) => ({
@@ -307,4 +317,22 @@ test("an oversized replay image is skipped, not the rest of its result", () => {
     .flatMap((m) => splitMcpImages(m.content as string).images)
     .reduce((n, image) => n + image.data.length, 0);
   assert.ok(chars <= MAX_TOTAL_MCP_IMAGE_CHARS, `${chars} characters uploaded`);
+});
+
+test("a bounded envelope records how many the tool returned", () => {
+  const images = Array.from({ length: 20 }, (_, i) => ({ data: `IMG${i}`, mimeType: "image/png" }));
+  const [bounded] = boundMcpImageEnvelopes([
+    { role: "tool", name: "mcp__s__shot", content: "r" + mcpImagesEnvelope(images) },
+  ]);
+  const kept = splitMcpImages(bounded.content as string).images;
+  assert.ok(kept.length < 20, "the bound must actually have cut");
+  assert.equal(kept[0].returned, 20, "the original count survives on the first entry");
+});
+
+test("a named non-MCP result has its envelope stripped, not re-uploaded", () => {
+  const huge = "Z".repeat(3_000_000);
+  const [bounded] = boundMcpImageEnvelopes([
+    { role: "tool", name: "read_file", content: "here" + mcpImagesEnvelope([{ data: huge, mimeType: "image/png" }]) },
+  ]);
+  assert.equal(bounded.content, "here");
 });

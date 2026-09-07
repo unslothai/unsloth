@@ -581,6 +581,7 @@ def append_image_turn(
     owned: "list | None" = None,
     reserve_caller_images: bool = False,
     returned: "int | None" = None,
+    lead: str = IMAGE_TURN_TEXT,
 ) -> None:
     """A user turn, not the ``role=tool`` result they came with: tool messages take
     no image parts, and local templates render tool content as a string.
@@ -610,7 +611,7 @@ def append_image_turn(
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": _turn_text(len(parts), total)},
+                    {"type": "text", "text": _turn_text(len(parts), total, lead)},
                     *parts,
                 ],
             }
@@ -864,20 +865,27 @@ def promote_history_local(
     return out, payloads
 
 
-def tool_names_by_call_id(messages: Sequence[dict]) -> dict:
-    """Which tool each result answers, read off the assistant call that made it.
+def _field(message, key):
+    return message.get(key) if isinstance(message, dict) else getattr(message, key, None)
 
-    A role="tool" message carries no ``name`` in plain OpenAI (the field is
-    optional) or in anything translated from Anthropic, and an absent name is read
-    below as legacy MCP history that may be trusted. Correlating the id is what lets
-    the mcp__ gate run at all on those wire formats -- without it any client tool
-    whose output merely ends in a valid envelope is promoted as image input.
+
+def resolve_tool_names(messages: Sequence) -> dict:
+    """Which tool each role="tool" message answers, keyed by its POSITION.
+
+    A tool message carries no ``name`` in plain OpenAI (the field is optional) or in
+    anything translated from Anthropic, and an absent name is read as legacy MCP
+    history that may be trusted. Correlating the call is what lets the mcp__ gate
+    run on those wire formats at all.
+
+    Each result is paired with the nearest UNMATCHED preceding call bearing its id,
+    not with a conversation-wide last-wins lookup: the backend itself restarts ids
+    like ``call_0`` every response, so one dict let a later non-MCP ``call_0``
+    rename an earlier MCP result -- or the reverse.
     """
+    open_calls: dict = {}
     names: dict = {}
-    for message in messages or ():
-        if not isinstance(message, dict):
-            continue
-        for call in message.get("tool_calls") or ():
+    for index, message in enumerate(messages or ()):
+        for call in _field(message, "tool_calls") or ():
             if not isinstance(call, dict):
                 continue
             function = call.get("function")
@@ -885,15 +893,34 @@ def tool_names_by_call_id(messages: Sequence[dict]) -> dict:
             if isinstance(function, dict) and isinstance(call_id, str):
                 name = function.get("name")
                 if isinstance(name, str) and name:
-                    names[call_id] = name
+                    open_calls.setdefault(call_id, []).append(name)
+        if _field(message, "role") == "tool":
+            call_id = _field(message, "tool_call_id")
+            stack = open_calls.get(call_id) if isinstance(call_id, str) else None
+            if stack:
+                names[index] = stack.pop()
     return names
+
+
+def _returned_count(images: Sequence[dict]) -> int:
+    """How many the tool returned. An upstream bound may already have shortened the
+    array; it leaves the original length on the first entry when it does."""
+    first = images[0] if images else None
+    stated = first.get("returned") if isinstance(first, dict) else None
+    if isinstance(stated, int) and stated >= len(images):
+        return stated
+    return len(images)
 
 
 def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[str], list[dict]]:
     out: list[dict] = []
     # Resolved once for the whole conversation, so the provenance gate below works on
     # every wire format rather than only the ones that happen to send ``name``.
-    call_names = tool_names_by_call_id(messages)
+    call_names = resolve_tool_names(messages)
+    # Set while an image result waits for its turn and a LATER, image-free result of
+    # the same batch is appended after it: "the tool call above" would then name the
+    # wrong call, so the turn takes the wording that claims no adjacency.
+    interrupted = [False]
     # Resolved before a single decode runs: the trim at the bottom keeps the newest
     # eight, and decoding a whole replayed history to throw nearly all of it away is
     # work a caller's own message list gets to choose the size of.
@@ -915,6 +942,8 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
             returned_totals.clear()
             return into
         returned = sum(returned_totals) or sum(len(result) for result in pending)
+        lead = DETACHED_IMAGE_TURN_TEXT if interrupted[0] else IMAGE_TURN_TEXT
+        interrupted[0] = False
         if local:
             encoded = png_payloads_per_result(pending)
             pending.clear()
@@ -924,7 +953,7 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
             payloads.extend(encoded)
             markers = [{"type": "image"} for _ in encoded]
             if into is None:
-                out.append(placeholder_turn(len(encoded), returned))
+                out.append(placeholder_turn(len(encoded), returned, lead))
                 return None
             return _with_parts(into, markers)
         results = list(pending)
@@ -932,7 +961,9 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
         returned_totals.clear()
         if into is None:
             before = {id(part) for part in _all_image_url_parts(out)}
-            append_image_turn(out, results, per_result = True, limit = None, returned = returned)
+            append_image_turn(
+                out, results, per_result = True, limit = None, returned = returned, lead = lead
+            )
             promoted.extend(part for part in _all_image_url_parts(out) if id(part) not in before)
             return None
         parts = content_parts_per_result(results)
@@ -947,7 +978,7 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
             # must never read it as text. Provenance decides only whether it becomes
             # IMAGE input: a named non-MCP tool that happens to end in a valid
             # envelope is not one an MCP server served.
-            name = message.get("name") or call_names.get(message.get("tool_call_id"))
+            name = message.get("name") or call_names.get(position)
             if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
                 out.append(
                     {**message, "content": text or "[image returned]"} if images else message
@@ -962,8 +993,12 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
                     # What the TOOL returned, which the slice above has already lost.
                     # Summing the admitted candidates instead made a 100-image result
                     # read "(4 of 8)" beside a tool result saying 100 -- the note
-                    # describing the admission pass rather than the tool.
-                    returned_totals.append(len(images))
+                    # describing the admission pass rather than the tool. The frontend
+                    # bounds the envelope before it ever gets here and records the
+                    # count it started from on the first entry; honour that too.
+                    returned_totals.append(_returned_count(images))
+            elif pending:
+                interrupted[0] = True
             out.append({**message, "content": text or "[image returned]"} if images else message)
             continue
         if pending and vision and message.get("role") == "user":
