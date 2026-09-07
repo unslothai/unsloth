@@ -1644,9 +1644,8 @@ def test_a_cuda_index_codec_also_installs_npp():
 
 
 def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():
-    """UNSLOTH_TORCH_INDEX_URL may be an authenticated mirror ending in `/simple?token=...`,
-    and matching `/cuNNN$` against it skipped NPP on a `+cu128` host, so the codec installed
-    and then failed to import wherever no system CUDA toolkit was present."""
+    """Matching `/cuNNN$` against an authenticated mirror ending `/simple?token=...` skipped
+    NPP on a `+cu128` host, so the codec then failed to import without a CUDA toolkit."""
     import re as _re
 
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
@@ -1674,8 +1673,8 @@ def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():
 
 def test_a_dry_run_install_changes_nothing():
     """`--dry-run` is "Don't actually install anything, just print what would be"
-    (https://pip.pypa.io/en/stable/cli/pip_install/), so replaying its bounds reported a
-    version the cell never installed and raised a false R-INST-004."""
+    (https://pip.pypa.io/en/stable/cli/pip_install/), so replaying it raised a false
+    R-INST-004 about a version the cell never installed."""
     from scripts import notebook_validator as nv
 
     assert nv._effective_version("!pip install --dry-run torch==2.12.0", "torch", "2.11.0") == (
@@ -1694,11 +1693,10 @@ def test_a_dry_run_install_changes_nothing():
 
 
 def test_an_exclusive_ceiling_beats_an_inclusive_cap():
-    """A requirement satisfies EVERY specifier it carries, so `>=0.8,<=0.11,<0.10` admits
-    0.8 through 0.9.x and pip takes the newest of those. Reading the cap alone recorded 0.11.
-
-    The upward move is the case `resolved_set()` cannot pre-clamp: the starting version is
-    already below the floor, so the cap is chosen here rather than applied earlier."""
+    """A requirement satisfies EVERY specifier, so `>=0.8,<=0.11,<0.10` admits 0.8 to 0.9.x
+    and pip takes the newest. Reading the cap alone recorded 0.11. The upward move is the case
+    `resolved_set()` cannot pre-clamp: the start is below the floor, so the cap is chosen
+    here rather than applied earlier."""
     from scripts import notebook_validator as nv
 
     assert nv._effective_version(
@@ -1716,8 +1714,8 @@ def test_an_exclusive_ceiling_beats_an_inclusive_cap():
 
 def test_a_direct_archive_keeps_its_version_beside_a_marker():
     """The `; marker` suffix rode into the archive regex, so the filename version was
-    unrecoverable and the package read as replaced by an unknown version -- R-INST-004 then
-    said nothing about a pairing the cell really installs."""
+    unrecoverable, the package read as replaced by an unknown one, and R-INST-004 said
+    nothing about a pairing the cell really installs."""
     from scripts import notebook_validator as nv
 
     wheel = "https://example.com/torchcodec-0.11.0-cp313-cp313-manylinux_2_28_x86_64.whl"
@@ -1731,8 +1729,8 @@ def test_a_direct_archive_keeps_its_version_beside_a_marker():
 
 
 def test_a_quoted_word_survives_prefix_stripping():
-    """Splitting the raw text on whitespace broke `TOKEN="a b"` into two, left `b"` as the
-    supposed executable, and R-INST-001 then missed the prohibited `git+` source entirely."""
+    """Splitting raw text on whitespace broke `TOKEN="a b"` in two, left `b"` as the supposed
+    executable, and R-INST-001 missed the prohibited `git+` source entirely."""
     from scripts import notebook_validator as nv
 
     assert nv._split_first_word('TOKEN="a b" pip install x') == ("TOKEN=a b", "pip install x")

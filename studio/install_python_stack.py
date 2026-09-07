@@ -57,17 +57,12 @@ IS_LINUX = sys.platform.startswith("linux")
 # amd-smi auto-elevates on Windows (UAC/DiskPart); RunAsInvoker keeps probes un-elevated.
 if IS_WINDOWS:
     os.environ.setdefault("__COMPAT_LAYER", "RunAsInvoker")
-# torchcodec ships wheels for manylinux_2_28 x86_64 and aarch64, macosx arm64, and
-# win_amd64. On other hosts the audio extras must be filtered out (the extras-no-deps
-# step would otherwise fail), regardless of NO_TORCH. Named as the platforms that HAVE a
-# wheel: listing the ones that do not missed every Linux architecture past Arm, ppc64le
-# and s390x among them, and the pyproject markers this mirrors read the same way round.
-#
-# aarch64 belongs here: it has no wheel at 0.10, which is where this list was written, but
-# 0.11.0 added manylinux_2_28_aarch64 and every release since has kept it. Since the whole
-# point of this branch is to select 0.11 on torch 2.11, excluding aarch64 would have denied
-# audio to exactly the hosts the new row serves. WHICH release a platform first published is
-# _torchcodec_platform_floor's job; this only asks whether it ever did.
+# Platforms that HAVE a torchcodec wheel (manylinux_2_28 x86_64/aarch64, macosx arm64,
+# win_amd64); elsewhere the audio extras are filtered out or extras-no-deps fails. Stated
+# as the allowlist, like the pyproject markers this mirrors: the denylist spelling missed
+# every Linux arch past Arm. aarch64 arrived at 0.11.0, which is the row torch 2.11 selects,
+# so omitting it would deny audio to the hosts that row serves. Whether a platform ever
+# published, not when -- that is _torchcodec_platform_floor's job.
 _PLATFORM_HAS_TORCHCODEC_WHEEL = (
     (IS_LINUX and platform.machine() in {"x86_64", "AMD64", "aarch64", "arm64"})
     or (IS_WINDOWS and platform.machine().lower() in {"amd64", "x86_64"})
@@ -381,17 +376,16 @@ _TORCHCODEC_TORCH_SPECS: dict[int, str] = {
 }
 _TORCHCODEC_MAX_KNOWN_MINOR = max(_TORCHCODEC_TORCH_SPECS)
 
-# torchcodec did not publish every platform from 0.1. Read off the live PyPI index:
+# Not every platform was published from 0.1. Read off the live PyPI index:
 #
-#   win_amd64            first appears at 0.7.0   (0.1 .. 0.6 are Linux/macOS only)
-#   manylinux aarch64    first appears at 0.11.0
+#   win_amd64            first at 0.7.0   (0.1 .. 0.6 are Linux/macOS only)
+#   manylinux aarch64    first at 0.11.0
 #   manylinux x86_64     from the start
-#   macosx arm64         from the start, but the minimum macOS moves 11.0 -> 14.0 at 0.12.0
+#   macosx arm64         from the start, min macOS moves 11.0 -> 14.0 at 0.12.0
 #
-# This matters because the step that installs the spec is fatal on failure: a window whose
-# releases have no wheel here does not skip audio, it aborts the whole install. The reachable
-# case is not exotic. The cu118 index tops out at torch 2.7, so a Windows box on an older
-# driver selects `>=0.3.0,<0.6.0`, and not one release in that window ships win_amd64.
+# A window whose releases have no wheel here aborts the install rather than skipping audio,
+# and it is reachable: cu118 tops out at torch 2.7, so an older-driver Windows box selects
+# `>=0.3.0,<0.6.0`, and no release in that window ships win_amd64.
 _TORCHCODEC_MIN_WHEEL_VERSION = (0, 1, 0)
 _TORCHCODEC_MIN_WHEEL_WINDOWS = (0, 7, 0)
 _TORCHCODEC_MIN_WHEEL_LINUX_AARCH64 = (0, 11, 0)
@@ -426,18 +420,18 @@ def _macos_release_major() -> "int | None":
         return None
 
 
-# torchcodec's supported Python range is not constant across the lines we select from; it
-# moves three times. Transcribed from upstream's published table (README / PyPI):
+# The supported Python range moves three times across the lines we select from.
+# Transcribed from upstream's published table (README / PyPI):
 #
 #   0.1        >=3.9,  <=3.12
 #   0.2 .. 0.7 >=3.9,  <=3.13
 #   0.8        >=3.10, <=3.13
 #   0.9 +      >=3.10, <=3.14
 #
-# Each entry is (first release of the run, min python, max python); a run ends where the next
-# begins. This is a separate axis from the platform floor above: a host can have a wheel for
-# the architecture and still have none for its interpreter. The reachable case is torch 2.5 on
-# Python 3.13 -- the only line built against torch 2.5 is 0.1, which stops at 3.12.
+# Entries are (first release of the run, min python, max python); a run ends where the next
+# begins. A separate axis from the platform floor: a host can have a wheel for its
+# architecture and none for its interpreter. Reachable at torch 2.5 on Python 3.13, whose
+# only line is 0.1, which stops at 3.12.
 _TORCHCODEC_PYTHON_WINDOWS: "tuple[tuple[tuple[int, int, int], tuple[int, int], tuple[int, int]], ...]" = (
     ((0, 1, 0), (3, 9), (3, 12)),
     ((0, 2, 0), (3, 9), (3, 13)),
@@ -476,13 +470,11 @@ _TORCHCODEC_MIN_ON_TORCH_INDEX = (0, 3, 0)
 def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
     """`"12"`, `"13"`, or `""` when this codec install needs no NPP runtime.
 
-    The resident torch's LOCAL TAG first, the index URL only as a fallback. Reading the URL
-    alone required it to end in `/cuNNN`, which a supported UNSLOTH_TORCH_INDEX_URL need not
-    do: an authenticated or query-bearing mirror ends in `/simple?token=...`, so a `+cu128`
-    host silently skipped NPP and the codec then failed to import on any machine without a
-    system CUDA toolkit. The tag is also the better source rather than merely the more
-    robust one, since _torchcodec_index_url only returns an index at all once it has seen a
-    `cpu` or `cuNNN` local tag, so the tag is always present and always says which.
+    The resident torch's LOCAL TAG first, the index URL only as a fallback. Matching
+    `/cuNNN$` on the URL failed for a supported UNSLOTH_TORCH_INDEX_URL ending in
+    `/simple?token=...`, so a `+cu128` host skipped NPP and the codec then failed to import
+    without a system CUDA toolkit. The tag is also the better source: _torchcodec_index_url
+    only returns an index once it has seen a `cpu` or `cuNNN` tag, so the tag is always there.
     """
     local = str(torch_version or "").partition("+")[2].strip().lower()
     match = re.fullmatch(r"cu(\d+)", local)
@@ -519,14 +511,12 @@ def _torchcodec_index_url(torch_version: "str | None", spec: str = "") -> "str |
             return None  # window sits entirely below what any torch index publishes
     local = str(torch_version).partition("+")[2].strip().lower()
     if local == "cpu" or re.fullmatch(r"cu\d+", local):
-        # An explicit pin wins, exactly as it does for the torch repair helpers. Synthesising
-        # the public URL from the local tag sent an authenticated, corporate or air-gapped
-        # mirror to download.pytorch.org, and the --index-url that follows also makes
-        # _install_env_for_cmd drop the inherited index configuration, so the codec install
-        # fails outright wherever public PyTorch is unreachable.
-        # _PYTORCH_WHL_BASE, not a literal: UNSLOTH_PYTORCH_MIRROR redirects every other
-        # index this module builds, and a codec fetched from the public site on a host
-        # configured for a mirror either cannot be reached or bypasses the artifact source.
+        # An explicit pin wins, as it does for the torch repair helpers: synthesising the
+        # public URL from the local tag sent authenticated, corporate and air-gapped mirrors
+        # to download.pytorch.org, and the --index-url also makes _install_env_for_cmd drop
+        # the inherited index config, so the install fails outright there. _PYTORCH_WHL_BASE
+        # rather than a literal, since UNSLOTH_PYTORCH_MIRROR redirects every other index
+        # this module builds.
         return _explicit_torch_index_url() or f"{_PYTORCH_WHL_BASE}/{local}"
     return None
 

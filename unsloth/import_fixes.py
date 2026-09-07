@@ -2496,16 +2496,15 @@ def _torch_index_url_for_remedy(local_tag: str) -> str:
     mirror is where the matching build actually is.
     """
     if os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip():
-        # The variable itself, not its value: an authenticated mirror carries credentials in
-        # its userinfo or a query token, and this string goes into a warning that lands in
-        # terminals and CI logs. The shell expands it, so the command still works verbatim
-        # for the person who configured it, and nothing is written down.
+        # The variable, not its value: an authenticated mirror carries credentials in its
+        # userinfo or query token, and this warning lands in terminals and CI logs. The
+        # shell expands it, so the command still works and nothing is written down.
         return _shell_env_ref("UNSLOTH_TORCH_INDEX_URL")
     leaf = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip().strip("/") or local_tag
     if os.environ.get("UNSLOTH_PYTORCH_MIRROR", "").strip():
-        # UNSLOTH_PYTORCH_MIRROR replaces the base every index in install_python_stack is
-        # built from, so a remedy naming the public site cannot be reached on an air-gapped
-        # host. Same treatment as the URL above: expand the variable, disclose nothing.
+        # UNSLOTH_PYTORCH_MIRROR replaces the base every install_python_stack index is built
+        # from, so naming the public site fails on an air-gapped host. Expanded, not disclosed,
+        # as above.
         return f"{_shell_env_ref('UNSLOTH_PYTORCH_MIRROR')}/{leaf}"
     return f"https://download.pytorch.org/whl/{leaf}"
 
@@ -2571,10 +2570,9 @@ def _torchcodec_version_mismatch_hint() -> str | None:
         upper = _torchcodec_exclusive_upper(pin)
         install_hint = f"`pip install {_index_flag(tuple(int(x) for x in pin.split('.')))}'torchcodec>={pin},{upper}'`"
         extra = _TORCH_TORCHCODEC_EXTRAS.get(torch_minor)
-        # Only offer the extra when no index pin is needed. An extra cannot carry one: the
-        # marker picks the version, not the index, and putting --index-url on the whole
-        # command would resolve unsloth itself from the torch index too. On a +cuNNN or +cpu
-        # venv it would hand back the same unloadable wheel this warning is about.
+        # Only when no index pin is needed. An extra cannot carry one -- the marker picks the
+        # version, not the index -- and --index-url on the whole command would resolve unsloth
+        # from the torch index too, handing back the same unloadable wheel.
         if extra is not None and not _index_flag(tuple(int(x) for x in pin.split("."))):
             install_hint += f" or `pip install 'unsloth[{extra}]'`"
     return (
@@ -2607,10 +2605,9 @@ def _torchcodec_provenance_hint() -> "str | None":
         return None  # rocm and xpu publish no torchcodec under this name
     index = _torch_index_url_for_remedy(torch_local)
     codec_from = codec_local or "the default index"
-    # Pin the window the table allows, not a bare name. The accelerator indexes carry the
-    # whole codec line, so `pip install torchcodec` on a torch 2.9 host installs the newest
-    # release there and trades a wrong-accelerator build for a wrong-VERSION one, which
-    # leaves audio just as disabled. Past the table, the ABI-stable floor is the pin.
+    # The window the table allows, not a bare name: the accelerator indexes carry the whole
+    # codec line, so `pip install torchcodec` on torch 2.9 trades a wrong-accelerator build
+    # for a wrong-VERSION one and audio stays disabled. Past the table, the ABI floor pins.
     try:
         from packaging.version import Version
         parts = Version(str(torch.__version__).split("+", 1)[0]).release
@@ -2626,10 +2623,9 @@ def _torchcodec_provenance_hint() -> "str | None":
         want = f"'torchcodec>={abi}.0'"
     else:
         want = "torchcodec"
-    # "may be", not "is": all this establishes is that the two came from different indexes.
-    # torchcodec is published per accelerator on every line, 0.12+ included, so a mismatch
-    # stays possible there -- but the load can also have failed for an unrelated reason such
-    # as a missing libavutil, which no reinstall from any index repairs. Name both.
+    # "may be", not "is": this only establishes different indexes. torchcodec is published
+    # per accelerator on every line, 0.12+ included, so a mismatch stays possible -- but the
+    # load can equally have failed on a missing libavutil, which no reinstall fixes. Name both.
     return (
         f"torchcodec {getattr(torchcodec, '__version__', '?')} came from {codec_from} while "
         f"torch {getattr(torch, '__version__', '?')} is a {torch_local} build, so the codec "
@@ -2666,9 +2662,8 @@ def disable_torchcodec_if_broken():
         from torchcodec.decoders import AudioDecoder
     except (ImportError, RuntimeError, OSError):
         if mismatch_hint is None:
-            # The versions agree, so the load failed for some other reason. A mismatched
-            # accelerator build is the one this can still name, and it is the one the
-            # installer repairs by pinning the index.
+            # Versions agree, so the load failed for another reason. A mismatched accelerator
+            # build is the one this can still name, and the one pinning the index repairs.
             try:
                 provenance_hint = _torchcodec_provenance_hint()
                 if provenance_hint is not None:

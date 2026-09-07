@@ -81,10 +81,8 @@ COLAB_PIP_FREEZE_URL = (
 )
 COLAB_FALLBACK_FILE = DATA_DIR / "colab_pip_freeze.gpu.txt"
 
-# Oracle files snapshotted from googlecolab/backend-info. The colab-diff
-# subcommand surfaces NEW/REMOVED/CHANGED entries so upstream Colab base
-# image rotations land in CI within ~24h, giving R-INST-002/003/004/005
-# earlier signal.
+# Oracle files snapshotted from googlecolab/backend-info. colab-diff surfaces
+# NEW/REMOVED/CHANGED entries, so a Colab base image rotation reaches CI within ~24h.
 # The image's Python, from the os-info oracle ("Python 3.13.15"). Only used for PEP 508
 # markers, so an unreadable snapshot just replays every requirement, as before.
 _COLAB_OS_INFO_FILE = DATA_DIR / "colab_os_info.gpu.txt"
@@ -188,11 +186,10 @@ COLAB_ORACLE_FILES: dict[str, str] = {
     "apt-list-gpu.txt": "colab_apt_list.gpu.txt",
     "os-info-gpu.txt": "colab_os_info.gpu.txt",
 }
-# The pip oracle fails --strict: `lint --colab-pin` reads it and R-INST-002/003/004/005
-# resolve against it. os-info is rule-bearing too now, since _marker_environment reads its
-# Python line, so the two must be refreshed TOGETHER (`refresh-colab --all`) and
-# COLAB_STRICT_ORACLE_KEYS makes that one line fail --strict. Everything else stays
-# advisory: an Ubuntu bump nothing can consult must not turn the daily cron red.
+# The pip oracle fails --strict, since the R-INST rules resolve against it. os-info is
+# rule-bearing too (_marker_environment reads its Python line), so both refresh TOGETHER
+# via `refresh-colab --all` and COLAB_STRICT_ORACLE_KEYS makes that one line strict.
+# The rest stays advisory: an Ubuntu bump nothing consults must not redden the daily cron.
 COLAB_STRICT_ORACLE = "pip-freeze.gpu.txt"
 # Keys within a non-strict oracle that are rule-bearing anyway. `python` is the one
 # _parse_os_lines emits for the "Python 3.13.15" line.
@@ -371,9 +368,8 @@ def cmp_versions(a: str, b: str) -> int:
         return tuple(int(x) for x in re.findall(r"\d+", normalise_version(v)))
 
     ta, tb = to_tuple(a), to_tuple(b)
-    # PEP 440 pads the shorter release segment with zeros, so `0.11` and `0.11.0` are the
-    # same version. Comparing the raw tuples made `0.11` sort BELOW `0.11.0`, which discarded
-    # a ceiling-derived minor whenever the floor spelled out its patch.
+    # PEP 440 zero-pads the shorter release, so `0.11` == `0.11.0`. Raw tuples sorted `0.11`
+    # BELOW `0.11.0`, discarding a ceiling-derived minor when the floor spelled its patch.
     width = max(len(ta), len(tb))
     ta = ta + (0,) * (width - len(ta))
     tb = tb + (0,) * (width - len(tb))
@@ -398,11 +394,10 @@ class PipInvocation:
     conditional: bool = False  # the fallback side of an `||`: runs only if the left failed
 
 
-# `python -m pip` is pip's own recommended invocation and must parse the same as bare `pip`;
-# without it a cell matched _PIP_CELL_RE, yielded nothing, and R-INST-001 missed a `git+`
-# install. Interpreter spellings kept in step with unsloth_nb_pip_magic.py::_PY_M_PIP, which
-# rewrites the same forms at runtime. Transformers see the RAW text (IPython expands
-# `{sys.executable}` later), so the braced and path forms are matched here too.
+# `python -m pip` must parse the same as bare `pip`; without it a cell matched _PIP_CELL_RE,
+# yielded nothing, and R-INST-001 missed a `git+` install. Spellings kept in step with
+# unsloth_nb_pip_magic.py::_PY_M_PIP. Transformers see RAW text (IPython expands
+# `{sys.executable}` later), so the braced and path forms are matched too.
 _INTERPRETER_RE = r"""(?:
         (?:python[0-9.]*|py)
       | ["']?\{\s*sys\.executable\s*\}["']?
