@@ -30988,6 +30988,19 @@ async def anthropic_count_tokens(
     # matches the prompt the real request would build (otherwise empty-assistant
     # sentinels / synthetic tool history inflate the count or hit the fallback).
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
+    # Refused rather than answered, exactly as /v1/chat/completions' counter refuses
+    # the same shape: count_chat_tokens renders /apply-template, which swaps each
+    # image for a short media marker, so a promoted envelope would be reported
+    # without any of the projector tokens /v1/messages actually spends on it. An
+    # undercount here is worse than no answer -- it is what a client sizes its
+    # context against. Checked on the translated list because an Anthropic envelope
+    # arrives nested in a tool_result block, not as a role="tool" string.
+    if llama_backend.is_vision and _messages_have_mcp_image_envelope(openai_messages):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Cannot count tokens for messages containing images.",
+        )
+
     # Priced as the images the request really sends, not as the base64 the envelope
     # carries: rendered verbatim a replayed screenshot counts thousands of tokens the
     # completion never sends, and the two endpoints must agree on the same prompt.

@@ -103,7 +103,11 @@ def has_images(result: str) -> bool:
     return bool(split_images(result)[1])
 
 
-def _decoded_urls(images: Sequence[dict], limit: int = MAX_MODEL_IMAGES) -> list[str]:
+def _decoded_urls(
+    images: Sequence[dict],
+    limit: int = MAX_MODEL_IMAGES,
+    attempts: "list | None" = None,
+) -> list[str]:
     """Up to *limit* data URLs, counting only what decoded.
 
     Slicing first would spend the quota on formats Pillow cannot read -- an SVG
@@ -113,14 +117,17 @@ def _decoded_urls(images: Sequence[dict], limit: int = MAX_MODEL_IMAGES) -> list
     unreadable ones would otherwise hold an inference worker open on Pillow for a
     turn that can show four pictures at most. Same allowance the replay side spends,
     for the same reason -- enough slack to look past a run of rejects.
+
+    *attempts* is a one-element budget shared across a parallel batch. Per result it
+    resets, and a 25-call turn of malformed results then buys 25 x 8 decodes of
+    attacker-chosen rasters against a cap of eight pictures.
     """
     urls = []
-    attempts = 0
-    budget = limit + DECODE_FAILURE_ALLOWANCE
+    own = [limit + DECODE_FAILURE_ALLOWANCE] if attempts is None else attempts
     for image in images:
-        if len(urls) >= limit or attempts >= budget:
+        if len(urls) >= limit or own[0] <= 0:
             break
-        attempts += 1
+        own[0] -= 1
         url = _png_data_url(image.get("data", ""))
         if url:
             urls.append(url)
@@ -142,10 +149,14 @@ def _decoded_urls_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
     """
     chosen: list[list[str]] = []
     room = MAX_TOTAL_MODEL_IMAGES
+    # One budget for the whole batch, not one per result: room only falls on a
+    # SUCCESSFUL decode, so results that fail late in Pillow never close the loop
+    # and a parallel turn could pay for the allowance again on every call it made.
+    attempts = [MAX_TOTAL_MODEL_IMAGES + DECODE_FAILURE_ALLOWANCE]
     for images in reversed(results):
-        if room <= 0:
+        if room <= 0 or attempts[0] <= 0:
             break
-        urls = _decoded_urls(images, min(MAX_MODEL_IMAGES, room))
+        urls = _decoded_urls(images, min(MAX_MODEL_IMAGES, room), attempts = attempts)
         room -= len(urls)
         chosen.append(urls)
     # Back into document order: the parts are positional and a batch's own results
@@ -213,6 +224,27 @@ def png_payloads_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
     return [url.split(",", 1)[1] for url in _decoded_urls_per_result(results)]
 
 
+def _flattened(image):
+    """RGB with any transparency composited onto white, not simply dropped.
+
+    ``convert("RGB")`` keeps whatever colour sits UNDER the alpha, and a tool that
+    never painted a background leaves that black -- so a transparent screenshot's
+    dark text or line art converts to black on black and the model is handed a
+    blank rectangle. Only images that actually carry alpha take the composite.
+    """
+    from PIL import Image
+
+    has_alpha = image.mode in ("RGBA", "LA", "PA") or (
+        image.mode == "P" and "transparency" in image.info
+    )
+    if not has_alpha:
+        return image.convert("RGB")
+    rgba = image.convert("RGBA")
+    canvas = Image.new("RGB", rgba.size, (255, 255, 255))
+    canvas.paste(rgba, mask = rgba.getchannel("A"))
+    return canvas
+
+
 def _png_data_url(data: str) -> str | None:
     # PNG regardless of what the server sent: llama-server's stb_image reads only
     # a few formats, and MCP servers commonly answer with WebP.
@@ -237,7 +269,7 @@ def _png_data_url(data: str) -> str | None:
         if max(image.size) > MAX_IMAGE_EDGE:
             image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
-        image.convert("RGB").save(buffer, format = "PNG")
+        _flattened(image).save(buffer, format = "PNG")
     except Exception:
         logger.debug("MCP image could not be decoded", exc_info = True)
         return None
@@ -285,7 +317,7 @@ def placeholder_turn(
     }
 
 
-def _relabelled(kept: list, part_type: str) -> list:
+def _relabelled(kept: list, part_type: str, original: int) -> list:
     """The turn's note rewritten for what actually survived a partial trim.
 
     The label exists to tell the model which of the returned images it was really
@@ -304,20 +336,25 @@ def _relabelled(kept: list, part_type: str) -> list:
                 if str(part.get("text", "")).startswith(DETACHED_IMAGE_TURN_TEXT)
                 else IMAGE_TURN_TEXT
             )
-            total = _note_total(part.get("text"), remaining)
+            total = _note_total(part.get("text"), original)
             out.append({**part, "text": _turn_text(remaining, total, lead)})
             continue
         out.append(part)
     return out
 
 
-def _note_total(text, remaining: int) -> int:
-    """The "of N" the note already carried, so a second trim does not re-baseline it
-    to whatever is left and lose how many the tool actually returned."""
+def _note_total(text, original: int) -> int:
+    """How many the tool returned, for a turn that no longer carries them all.
+
+    The note's own "of N" wins, so a second trim does not re-baseline to whatever is
+    left. A turn that arrived COMPLETE carries no such suffix, and falling back to
+    the post-trim count there told the model nothing had been dropped -- the one
+    thing the note exists to say. Fall back to what the turn held before this trim.
+    """
     match = re.search(r"\((?:first )?\d+ of (\d+)\)\s*$", str(text or ""))
     if match:
         return int(match.group(1))
-    return remaining
+    return original
 
 
 def _is_image_turn_note(text) -> bool:
@@ -367,6 +404,9 @@ def _drop_oldest_image_parts(
         content = message.get("content")
         if not isinstance(content, list):
             continue
+        original = sum(
+            1 for part in content if isinstance(part, dict) and part.get("type") == part_type
+        )
         kept = []
         for part in content:
             if (
@@ -390,7 +430,10 @@ def _drop_oldest_image_parts(
             # which strict provider APIs and chat templates reject.
             drained.append(index)
         else:
-            conversation[index] = {**message, "content": _relabelled(kept, part_type)}
+            conversation[index] = {
+                **message,
+                "content": _relabelled(kept, part_type, original),
+            }
     for index in reversed(drained):
         del conversation[index]
 
@@ -411,6 +454,9 @@ def _drop_image_parts_at(conversation: list, ordinals: set, part_type: str) -> N
         content = message.get("content")
         if not isinstance(content, list):
             continue
+        original = sum(
+            1 for part in content if isinstance(part, dict) and part.get("type") == part_type
+        )
         kept = []
         for part in content:
             if isinstance(part, dict) and part.get("type") == part_type:
@@ -428,7 +474,10 @@ def _drop_image_parts_at(conversation: list, ordinals: set, part_type: str) -> N
         ):
             drained.append(index)
         else:
-            conversation[index] = {**message, "content": _relabelled(kept, part_type)}
+            conversation[index] = {
+                **message,
+                "content": _relabelled(kept, part_type, original),
+            }
     for index in reversed(drained):
         del conversation[index]
 
@@ -874,7 +923,21 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
     if local:
         trim_image_turns(out, payloads)
     else:
-        trim_image_url_turns(out, only = promoted)
+        # Replay is trimmed to leave the caller's own pictures room, the way the
+        # local route reserves the attachment's slot before interleaving it.
+        #
+        # The cap says attachments are never counted against it, which is right for
+        # what THIS cap protects. But providers apply their own per-request cap in
+        # document order, and promotion prepends the replay to the user turn: on
+        # Gemini (8 images, later ones dropped silently) eight replayed screenshots
+        # therefore evicted the picture the current question was about, and the model
+        # answered it from stale tool output.
+        _caller_parts = len(_all_image_url_parts(out)) - len(promoted)
+        trim_image_url_turns(
+            out,
+            limit = max(0, MAX_TOTAL_MODEL_IMAGES - _caller_parts),
+            only = promoted,
+        )
     return out, payloads, promoted
 
 

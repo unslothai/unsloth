@@ -1174,3 +1174,151 @@ def test_the_note_never_claims_the_survivors_are_the_first_ones():
     )
     assert "(8 of 12)" in note, note
     assert "first" not in note, note
+
+
+def test_a_parallel_batch_shares_one_decode_attempt_budget():
+    """room falls only on a SUCCESSFUL decode, so results that fail late in Pillow
+    never close the loop. Per result the allowance reset, and a 25-call turn of
+    malformed results bought 25 x 8 decodes of attacker-chosen rasters against a
+    conversation cap of eight pictures."""
+    attempts: list = []
+    original = mcp_images._png_data_url
+    mcp_images._png_data_url = lambda data: (attempts.append(data), None)[1]
+    try:
+        results = [
+            [{"data": f"junk{r}-{i}", "mimeType": "image/png"} for i in range(8)]
+            for r in range(25)
+        ]
+        assert mcp_images._decoded_urls_per_result(results) == []
+    finally:
+        mcp_images._png_data_url = original
+
+    assert len(attempts) <= (
+        mcp_images.MAX_TOTAL_MODEL_IMAGES + mcp_images.DECODE_FAILURE_ALLOWANCE
+    ), f"{len(attempts)} Pillow opens for one parallel turn"
+
+
+def test_the_shared_budget_still_reaches_a_good_result_behind_bad_ones():
+    """The bound must not defeat what it protects: the newest result failing must
+    still leave enough attempts to find the real pictures behind it."""
+    def _url(data):
+        return None if data.startswith("bad") else "data:image/png;base64," + _png()
+
+    original = mcp_images._png_data_url
+    mcp_images._png_data_url = _url
+    try:
+        results = [
+            [{"data": f"good{i}", "mimeType": "image/png"} for i in range(4)],
+            [{"data": f"bad{i}", "mimeType": "image/svg+xml"} for i in range(4)],
+        ]
+        urls = mcp_images._decoded_urls_per_result(results)
+    finally:
+        mcp_images._png_data_url = original
+
+    assert len(urls) == 4, f"the older result's real pictures were lost: {len(urls)}"
+
+
+def test_a_complete_turn_keeps_its_total_when_the_cap_first_trims_it():
+    """A turn that arrived complete carries no "(n of m)" suffix. Falling back to the
+    post-trim count there told the model nothing had been dropped -- the one thing
+    the note exists to say."""
+    conversation = [
+        mcp_images.placeholder_turn(4, 4),
+        mcp_images.placeholder_turn(4, 4),
+        mcp_images.placeholder_turn(2, 2),
+    ]
+    payloads = [f"p{i}" for i in range(10)]
+
+    mcp_images.trim_image_turns(conversation, payloads)
+
+    kept = sum(1 for part in conversation[0]["content"] if part.get("type") == "image")
+    note = next(
+        part["text"] for part in conversation[0]["content"] if part.get("type") == "text"
+    )
+    assert kept == 2
+    assert f"({kept} of 4)" in note, note
+
+
+def test_a_transparent_screenshot_is_composited_rather_than_flattened_to_black():
+    """convert("RGB") keeps whatever colour sits UNDER the alpha, and a tool that
+    never painted a background leaves that black -- so a transparent screenshot's
+    dark text converted to black on black and the model saw a blank rectangle."""
+    import base64 as _b64
+    import io as _io
+
+    from PIL import Image
+
+    def _roundtrip(image):
+        buffer = _io.BytesIO()
+        image.save(buffer, format = "PNG")
+        url = mcp_images._png_data_url(_b64.b64encode(buffer.getvalue()).decode())
+        assert url, "the image did not decode at all"
+        return Image.open(_io.BytesIO(_b64.b64decode(url.split(",", 1)[1])))
+
+    rgba = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+    rgba.putpixel((4, 4), (0, 0, 0, 255))
+    palette = Image.new("P", (8, 8), 0)
+    palette.putpalette([0, 0, 0] * 256)
+    palette.info["transparency"] = 0
+    palette.putpixel((4, 4), 1)
+    grey = Image.new("LA", (8, 8), (0, 0))
+    grey.putpixel((4, 4), (0, 255))
+
+    for name, image in (("RGBA", rgba), ("P", palette), ("LA", grey)):
+        out = _roundtrip(image)
+        assert out.getpixel((0, 0)) == (255, 255, 255), f"{name}: background not composited"
+        assert out.getpixel((4, 4)) == (0, 0, 0), f"{name}: the drawn pixel was lost"
+
+
+def test_replay_leaves_room_for_the_pictures_the_caller_attached():
+    """Providers apply their own per-request cap in document order, and promotion
+    PREPENDS the replay to the user turn. On Gemini (8 images, later ones dropped
+    silently) eight replayed screenshots evicted the picture the current question
+    was about."""
+    attachment = {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64," + _png()},
+    }
+    history = []
+    for index in range(2):
+        history.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"c{index}",
+                        "type": "function",
+                        "function": {"name": "mcp__s__shot", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        history.append(
+            {
+                "role": "tool",
+                "tool_call_id": f"c{index}",
+                "name": "mcp__s__shot",
+                "content": _envelope("[4]", *[_image() for _ in range(4)]),
+            }
+        )
+    history.append(
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "and how does this compare?"}, attachment],
+        }
+    )
+
+    out = promote_history(history, vision = True)
+    urls = [
+        part["image_url"]["url"]
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    ]
+
+    assert len(urls) <= mcp_images.MAX_TOTAL_MODEL_IMAGES, len(urls)
+    assert attachment["image_url"]["url"] in urls, "the caller's own picture was trimmed"
+    # And it survives a provider that keeps only the first MAX_TOTAL_MODEL_IMAGES.
+    assert attachment["image_url"]["url"] in urls[: mcp_images.MAX_TOTAL_MODEL_IMAGES]

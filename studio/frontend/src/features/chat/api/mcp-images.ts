@@ -57,6 +57,13 @@ export const MAX_MODEL_IMAGES = 4;
 // images that DECODE and this side cannot tell which will. Bounded, so a result
 // of unreadable blobs still cannot grow the request without limit.
 export const DECODE_FAILURE_ALLOWANCE = 4;
+// Base64 characters of replayed envelope one request may carry, across every result
+// in it. The count bound alone is not a size bound: MAX_IMAGE_PAYLOAD_CHARS lets ONE
+// authentic result be 12 million characters, so twelve retained candidates could
+// re-upload ~144 MB on every later turn of an image-heavy chat. Set to that same
+// per-result ceiling, so a whole replayed history can never cost more to send than
+// the single tool result the backend already permits.
+export const MAX_TOTAL_MCP_IMAGE_CHARS = 12_000_000;
 
 const MCP_TOOL_PREFIX = "mcp__";
 
@@ -74,6 +81,7 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
   // Shared, so at most MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE candidates
   // ever leave here however many results there are.
   let spare = DECODE_FAILURE_ALLOWANCE;
+  let charsLeft = MAX_TOTAL_MCP_IMAGE_CHARS;
   // Newest first: those are the ones the backend would have kept.
   for (let i = out.length - 1; i >= 0; i--) {
     const message = out[i];
@@ -107,7 +115,16 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     // charge the full room, and the next result down then sees room 0 and loses its
     // envelope entirely -- so four valid PNGs are dropped while the allowance that
     // exists for exactly that case is still untouched.
-    const keep = images.slice(0, room + spare);
+    const candidates = images.slice(0, room + spare);
+    // Newest first here too, so the pictures a request gives up under the byte
+    // budget are the oldest ones -- the same ones every other cap here drops.
+    const keep: McpImage[] = [];
+    for (const image of candidates) {
+      const cost = image.data.length;
+      if (charsLeft - cost < 0) break;
+      charsLeft -= cost;
+      keep.push(image);
+    }
     // Charged for what this result can actually contribute, never for room it did
     // not use, and never for the spares -- those exist only so the backend has
     // candidates to decode and must not evict an older result on their own account.

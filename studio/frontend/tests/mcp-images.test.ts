@@ -9,6 +9,7 @@ import {
   DECODE_FAILURE_ALLOWANCE,
   MAX_MODEL_IMAGES,
   MAX_TOTAL_MCP_IMAGES,
+  MAX_TOTAL_MCP_IMAGE_CHARS,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
   mcpImagesEnvelope,
@@ -225,4 +226,49 @@ test("the decode-failure allowance survives an undecodable newest result", () =>
     total <= MAX_TOTAL_MCP_IMAGES + DECODE_FAILURE_ALLOWANCE,
     `bounded: ${total} candidates uploaded`,
   );
+});
+
+test("a replayed history is bounded by bytes, not only by image count", () => {
+  // One authentic result may carry MAX_IMAGE_PAYLOAD_CHARS (12M) of base64, so the
+  // twelve candidates the count bound allows could re-upload ~144MB on every later
+  // turn of an image-heavy chat.
+  const huge = "A".repeat(4_000_000);
+  const messages = Array.from({ length: 6 }, (_, i) => ({
+    role: "tool",
+    name: `mcp__s__shot${i}`,
+    content:
+      `result ${i}` +
+      mcpImagesEnvelope([{ data: huge, mimeType: "image/png" }]),
+  }));
+
+  const bounded = boundMcpImageEnvelopes(messages);
+  const kept = bounded.flatMap((m) => splitMcpImages(m.content as string).images);
+  const chars = kept.reduce((n, image) => n + image.data.length, 0);
+
+  assert.ok(
+    chars <= MAX_TOTAL_MCP_IMAGE_CHARS,
+    `${chars} characters uploaded against a budget of ${MAX_TOTAL_MCP_IMAGE_CHARS}`,
+  );
+  assert.ok(kept.length > 0, "the budget must not starve the newest result");
+  // The newest results are the ones kept, as everywhere else here.
+  const newest = splitMcpImages(bounded[5].content as string).images;
+  assert.equal(newest.length, 1, "the newest result keeps its picture");
+  assert.equal(
+    splitMcpImages(bounded[0].content as string).images.length,
+    0,
+    "the oldest gives its bytes up first",
+  );
+});
+
+test("an ordinary conversation is untouched by the byte budget", () => {
+  const small = "B".repeat(2048);
+  const messages = Array.from({ length: 2 }, (_, i) => ({
+    role: "tool",
+    name: `mcp__s__shot${i}`,
+    content: `r${i}` + mcpImagesEnvelope([{ data: small, mimeType: "image/png" }]),
+  }));
+
+  const bounded = boundMcpImageEnvelopes(messages);
+
+  assert.deepEqual(bounded, messages, "nothing was rewritten");
 });

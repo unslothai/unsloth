@@ -5161,3 +5161,26 @@ def test_a_text_only_anthropic_model_is_not_shown_the_envelope_either():
 
     assert mcp_images.SENTINEL not in json.dumps(out)
     assert not any(isinstance(message.get("content"), list) for message in out)
+
+
+def test_the_anthropic_count_refuses_a_promoted_image_rather_than_undercount():
+    """count_chat_tokens renders /apply-template, which swaps each image for a short
+    media marker. Counting a promoted envelope there reports none of the projector
+    tokens /v1/messages really spends, and an undercount is what a client sizes its
+    context against -- so the OpenAI counter refuses this shape and so must this one."""
+    import inspect
+
+    from routes import inference
+
+    count = inspect.getsource(inference.anthropic_count_tokens)
+    refusal = count.index("_messages_have_mcp_image_envelope(openai_messages)")
+    promotion = count.index("_promote_mcp_history_images_async(")
+    assert refusal < promotion, (
+        "the refusal has to come BEFORE promotion, or the envelope is already "
+        "image parts by the time it is checked"
+    )
+    assert "Cannot count tokens for messages containing images." in count
+    assert "llama_backend.is_vision and _messages_have_mcp_image_envelope" in count, (
+        "a text-only model has the envelope stripped and sends no pixels, so it "
+        "must still be counted rather than refused"
+    )
