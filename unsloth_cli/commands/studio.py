@@ -3650,6 +3650,195 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 )
 
 
+_UV_CACHE_BUCKETS = ("archive-", "builds-", "built-wheels-", "wheels-", "sdists-")
+_UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
+
+
+def _uv_cache_has_packages(cache_dir: Path) -> bool:
+    """wheels-* is metadata only on uv 0.10, so counting any file reads a cache that was
+    merely resolved against as warm. Same rule as install.sh:_configure_uv_cache."""
+    try:
+        buckets = [
+            entry
+            for entry in cache_dir.iterdir()
+            if entry.name.startswith(_UV_CACHE_BUCKETS) and entry.is_dir()
+        ]
+    except (OSError, ValueError):
+        # ValueError too: an embedded NUL builds a Path fine and then raises out of
+        # scandir, aborting an update over a file that is only advisory.
+        return False
+    for bucket in buckets:
+        for _root, _dirs, files in os.walk(bucket):
+            for name in files:
+                if name in ("CACHEDIR.TAG", ".git", ".gitignore"):
+                    continue
+                if name.endswith(_UV_CACHE_METADATA_SUFFIXES):
+                    continue
+                return True
+    return False
+
+
+def _uv_platform_cache_dir() -> Optional[Path]:
+    """install.sh:646's fallback, for when uv cannot be asked: that is not "no cache"."""
+    if platform.system() == "Windows":
+        local_app_data = (os.environ.get("LOCALAPPDATA") or "").strip()
+        return Path(local_app_data) / "uv" / "cache" if local_app_data else None
+    xdg = (os.environ.get("XDG_CACHE_HOME") or "").strip()
+    if xdg:
+        return Path(xdg) / "uv"
+    home = (os.environ.get("HOME") or "").strip()
+    return Path(home) / ".cache" / "uv" if home else None
+
+
+# uv's boolish spelling. Anything outside it is a value uv refuses to run on, which is
+# not "no cache" either.
+_UV_TRUE = ("1", "true", "yes", "on")
+
+
+def _uv_no_cache_requested() -> bool:
+    """uv --no-cache caches in a temporary directory and discards it on exit, so the
+    probe would report that throwaway, --no-cache outranks --cache-dir anyway, and
+    recording it would aim later updates at a cache that never existed."""
+    return (os.environ.get("UV_NO_CACHE") or "").strip().lower() in _UV_TRUE
+
+
+def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:
+    """Asked of uv, not reconstructed, so uv.toml and UV_CONFIG_FILE count.
+
+    Asked from where setup will ask it, too. Both setup scripts change into their own
+    directory before the dependency pass (studio/setup.sh:1788), and uv discovers
+    uv.toml and pyproject.toml from its working directory, so probing in the caller's
+    would answer for whatever project the user happens to be standing in.
+    """
+    uv = shutil.which("uv")
+    if not uv:
+        return _uv_platform_cache_dir()
+    child_env = {key: value for key, value in os.environ.items() if key != "UV_CACHE_DIR"}
+    try:
+        result = subprocess.run(
+            [uv, "cache", "dir"],
+            cwd = str(cwd) if cwd is not None else None,
+            capture_output = True,
+            text = True,
+            # UnicodeDecodeError is a ValueError, so the handler below would not catch it.
+            encoding = "utf-8",
+            errors = "replace",
+            env = child_env,
+            timeout = 30,
+            # Creation flags are not inherited from a hidden desktop update.
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        # Best effort: not knowing costs a preference, never the update.
+        return _uv_platform_cache_dir()
+    if result.returncode != 0:
+        # A malformed uv.toml beside the CALLER fails this, though setup.sh runs uv elsewhere.
+        return _uv_platform_cache_dir()
+    # Not stripped: a name may end in a space, and uv reports it verbatim.
+    lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return _uv_platform_cache_dir()
+    # uv answers a relative cache-dir with the relative spelling, against its own working
+    # directory, and resolves a relative UV_WORKING_DIR after starting where this probe
+    # did. No expanduser: uv makes a literal "~" directory, not one in $HOME.
+    probe_cwd = str(cwd) if cwd is not None else os.getcwd()
+    working = os.environ.get("UV_WORKING_DIR")
+    base = os.path.join(probe_cwd, working) if working else probe_cwd
+    return Path(os.path.abspath(os.path.join(base, lines[-1])))
+
+
+def _recorded_install_uv_cache() -> Optional[Path]:
+    """The cache the installer used, as it recorded it.
+
+    Content cannot tell a Studio cache the installer filled from one holding a single
+    wheel the running backend dropped there (wheel_utils.py:405), since install.sh:705
+    points it there even in shared mode. Absent, the caller falls back to content.
+    """
+    try:
+        # utf-8-sig: Windows PowerShell 5.1 writes `-Encoding utf8` WITH a BOM.
+        # surrogateescape: a POSIX path may not be UTF-8, and U+FFFD would name nothing.
+        recorded = (STUDIO_HOME / "cache" / "uv-cache-dir").read_text(
+            encoding = "utf-8-sig", errors = "surrogateescape"
+        )
+    except OSError:
+        return None
+    # One record, one trailing delimiter, everything before it the path: splitting on
+    # lines would take a POSIX path containing a newline for several. Not otherwise
+    # stripped, since a path may end or begin with a space; blank means unset.
+    if recorded.endswith("\n"):
+        recorded = recorded[:-1]
+    if recorded.endswith("\r"):
+        recorded = recorded[:-1]
+    if not recorded.strip():
+        return None
+    # No expanduser, as in the probe: uv treats a tilde as an ordinary path segment.
+    return Path(os.path.abspath(recorded))
+
+
+def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
+    """Record the cache this update used, for installs whose installer never did.
+
+    Those reach the content fallback, which goes stale the moment the backend drops one
+    wheel into the Studio cache and both caches look warm. Writing the choice down once
+    setup has succeeded closes that, and likewise for a marker whose cache was emptied.
+    """
+    if (os.environ.get("UV_CACHE_DIR") or "").strip():
+        # One run's value. Only an installer's own choice becomes a marker.
+        return
+    if _uv_no_cache_requested():
+        # Setup cached nothing that outlived it, so there is no choice to record.
+        return
+    chosen = (env or {}).get("UV_CACHE_DIR")
+    if not chosen:
+        return
+    live = _recorded_install_uv_cache()
+    if live is not None and _uv_cache_has_packages(live):
+        return
+    stage_root = (os.environ.get(_studio_stage.STAGE_ROOT_ENV) or "").strip()
+    if stage_root:
+        # STUDIO_HOME names the LIVE install here and the stage can still be rejected,
+        # so the choice is parked and _studio_stage.stage promotes it on acceptance.
+        # Dropping it instead left desktop-only installs on the content fallback.
+        marker = Path(stage_root) / _studio_stage.UV_CACHE_MARKER
+    else:
+        marker = STUDIO_HOME / "cache" / "uv-cache-dir"
+    try:
+        marker.parent.mkdir(parents = True, exist_ok = True)
+        # Unlinked first: a write follows a symlink and truncates its target.
+        marker.unlink(missing_ok = True)
+        # fsencode: an undecodable path arrives as surrogates, and encoding those
+        # raises UnicodeEncodeError, which is not an OSError.
+        marker.write_bytes(os.fsencode(f"{chosen}\n"))
+    except (OSError, ValueError):
+        # ValueError covers UnicodeError, for a path fsencode still cannot render.
+        pass
+
+
+def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
+    """An update reached neither installer nor _setup_cache_env, so uv re-downloaded
+    what the install had just fetched."""
+    if (os.environ.get("UV_CACHE_DIR") or "").strip():
+        return env
+    if _uv_no_cache_requested():
+        # --no-cache outranks --cache-dir, so naming one changes nothing.
+        return env
+    studio_cache = STUDIO_HOME / "cache" / "uv"
+    recorded = _recorded_install_uv_cache()
+    if recorded is not None and _uv_cache_has_packages(recorded):
+        # Only while it holds something: a marker for an emptied cache loses to a warm one.
+        return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
+    # No marker, so this install predates it and content is all there is, and content
+    # cannot settle it: install.sh:705 points the running backend at the Studio cache even
+    # in shared mode, so one on-demand wheel warms it. uv's default is what such an install
+    # has been updating from all along, and it cannot record its way out of a wrong guess.
+    default_cache = _uv_default_cache_dir(cwd)
+    if default_cache is not None and _uv_cache_has_packages(default_cache):
+        # Named, not re-resolved: a blank inherited value reaches uv as
+        # `--cache-dir ''` and exits 2.
+        return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
+    return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
     script = _find_setup_script(repo_root)
@@ -3664,6 +3853,11 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(1)
 
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
+    # Where setup will run uv from, which differs by platform: setup.sh changes into its
+    # own directory (setup.sh:1788), setup.ps1 never does and hands install_python_stack.py
+    # the cwd it inherited from here (setup.ps1:5191).
+    setup_cwd = None if platform.system() == "Windows" else script.parent
+    env = _with_studio_uv_cache(env, cwd = setup_cwd)
 
     if platform.system() == "Windows":
         # Resolved, not bare: the gate that runs immediately before this in setup() and update()
@@ -3719,6 +3913,8 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 
     if returncode != 0:
         raise typer.Exit(returncode)
+    # Only now: a cache that did not get through setup is not one to record.
+    _backfill_uv_cache_marker(env)
 
 
 # The refresh re-runs the installer with --shortcuts-only, fetched rather than shipped
