@@ -98,6 +98,23 @@ def test_slots_and_ubatch_are_named_only_where_they_move_the_reserve(backend, mo
     assert "ubatch" in _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + ub)
 
 
+def test_a_single_slot_launch_still_probes_a_distinct_slot_count(backend, monkeypatch):
+    # At n_parallel 1 the "double it" perturbation is also "+1", so a pair built from
+    # both probes one point, and a reserve that is flat from 1 to 2 slots only because
+    # of cell padding reads as slot-independent. The real layout is exactly that: a
+    # non-unified 8192-cell context splits into 1 x 8192 and 2 x 4096, then 3 x 2816.
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
+
+    def _cells(slots, _ub):
+        _, streams, per_stream = llama_cpp_module._kv_cache_cell_layout(8192, slots, False)
+        return streams * per_stream
+
+    assert _cells(1, 0) == _cells(2, 0) and _cells(3, 0) != _cells(1, 0), "premise moved"
+
+    note = _note(backend, n_parallel = 1, reprice = _cells)
+    assert "x 1 slots" in note
+
+
 def test_an_estimator_that_cannot_answer_keeps_the_dimension_named(backend, monkeypatch):
     # Dropping a name on a raise would silently under-report a real dependency, which
     # is the failure this whole line is meant to prevent, pointing the other way.

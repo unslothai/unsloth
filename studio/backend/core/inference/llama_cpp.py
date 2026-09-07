@@ -12655,8 +12655,12 @@ class LlamaCppBackend:
             return False
 
         # Two perturbations per axis: cell counts are padded, so a single step can
-        # land inside the same bucket on a dimension the number does follow.
-        slots_named = _moves((n_parallel + 1, ubatch), (max(1, n_parallel * 2), ubatch))
+        # land inside the same bucket on a dimension the number does follow. The
+        # second slot candidate is kept distinct from the first at n_parallel 1,
+        # where doubling is also +1 and the pair would probe one point.
+        slots_named = _moves(
+            (n_parallel + 1, ubatch), (max(n_parallel + 2, n_parallel * 2), ubatch)
+        )
         ubatch_named = _moves((n_parallel, ubatch * 2), (n_parallel, max(1, ubatch // 2)))
         scales_with_n_max = bool(
             target_rollback and n_max and self._rollback_state_bytes(n_parallel) > 0
