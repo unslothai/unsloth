@@ -251,7 +251,7 @@ what says which build a cell actually exercised, not the label.
 - `signature-inventory.csv` and `.json`: every PE under that runtime with its Authenticode `Status`, `StatusMessage`, signer subject, thumbprint and SHA-256. Record `Status`, not merely whether a certificate is present: an unsigned file and one whose chain did not build both report `UnknownError`, and `StatusMessage` is what separates them
 - `venv-signature-inventory.csv` and `.json`: the same for every PE in the `unsloth_studio` venv, which is around 25 times as many files and is where the only enforced block so far actually landed. `run` also prints the ten worst packages by unsigned count
 - `scenario-status.json`: whether the Studio scenario ran and its exit code. Read this **before** reading the event count. A scenario that never authenticated or never loaded a model produces an empty window, and an empty window looks identical to a clean allow. `collect` warns loudly when this happened, and refuses to imply a result
-- `code-integrity-events.json` and `.txt`: events 3033, 3076, 3077, 3089 and 3090 to 3099 in the run window
+- `code-integrity-events.json` and `.txt`: events 3033, 3076, 3077, 3089 and 3090 to 3099 in the run window, each tagged with a `Scope` of `llama.cpp`, `venv` or `other`. The channel is machine-wide, so unrelated software lands in the same window: one run picked up seven 3076 events from a Git Bash session (`msys-2.0.dll`, `head.exe`, `tail.exe`). `collect` counts only the Unsloth scopes in its headline and reports the rest separately; nothing is dropped from the export
 - `CodeIntegrity-Operational.evtx`: the raw log
 - `scenario-results.json`: every HTTP call with its duration, plus the status-poll summary
 - `studio-logs\`: Studio's own backend and llama-server logs
@@ -263,6 +263,7 @@ what says which build a cell actually exercised, not the label.
 - **3076** is audit only: "would have been blocked". Strong, but not enforcement.
 - **3089** carries the signature detail for a block. Correlate it to a 3077 by `ActivityID`, never by timestamp alone.
 - **3090 to 3092** are allow and origin context, and prove nothing on their own.
+- Events scoped `other` are somebody else's binaries and say nothing about Studio. Do not quote a raw total off the evtx; read the scoped counts.
 
 Also keep "unsigned" and "low reputation" apart. Smart App Control may allow a
 validly signed file whose reputation is inconclusive, which is the behaviour the
