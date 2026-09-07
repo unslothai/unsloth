@@ -3751,7 +3751,10 @@ def _recorded_install_uv_cache() -> Optional[Path]:
     lines = [line for line in recorded.splitlines() if line.strip()]
     if not lines:
         return None
-    return Path(os.path.abspath(os.path.expanduser(lines[-1])))
+    # No expanduser, for the same reason the probe drops it: the installers write this
+    # path through the way uv would read it, and uv treats a tilde as an ordinary path
+    # segment rather than $HOME.
+    return Path(os.path.abspath(lines[-1]))
 
 
 def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
