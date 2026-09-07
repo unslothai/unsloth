@@ -139,36 +139,84 @@ def _gated_hub_error(message = "gated"):
     return _Gated(message)
 
 
-def test_the_access_probe_calls_auth_check_not_repo_info():
+class _FakeHubSession:
+    def __init__(self, handler):
+        self._handler = handler
+        self.calls: list[dict] = []
+
+    def get(self, url, *, headers = None, timeout = None, **kwargs):
+        self.calls.append({"url": url, "headers": headers, "timeout": timeout, **kwargs})
+        return self._handler(url, headers = headers, timeout = timeout, **kwargs)
+
+
+def _patch_auth_check_get(monkeypatch, handler):
+    session = _FakeHubSession(handler)
+    monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: session)
+    return session
+
+
+def _ok_auth_check_response():
+    return SimpleNamespace(status_code = 200, raise_for_status = lambda: None)
+
+
+def test_the_access_probe_hits_auth_check_not_repo_info():
     """repo_info succeeds on gated public metadata with an invalid token."""
     import inspect
     from hub.utils import hf_tokens
 
     source = inspect.getsource(hf_tokens._probe_repo_access)
-    assert "auth_check(" in source
+    assert "auth-check" in source
+    assert "get_session()" in source
+    assert "timeout" in source
     assert "repo_info(" not in source
+    assert "Thread(" not in source
     assert "_REPO_ACCESS_PROBE_TIMEOUT_S" in source
 
 
 def test_a_hanging_auth_check_probe_times_out(monkeypatch):
-    """A stalled Hub auth_check must fail closed instead of blocking Studio."""
-    import threading
-    import time
+    """A stalled /auth-check must fail closed without leaving probe workers behind."""
+    import requests
 
     reset_repo_access_cache()
     monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
-    release = threading.Event()
-
-    def _hang(*_a, **_k):
-        release.wait(30)
-
-    monkeypatch.setattr("huggingface_hub.auth_check", _hang)
     monkeypatch.setattr("hub.utils.hf_tokens._REPO_ACCESS_PROBE_TIMEOUT_S", 0.2)
 
+    def _hang(url, *, headers = None, timeout = None, **_k):
+        assert timeout == 0.2
+        raise requests.exceptions.Timeout("auth-check timed out")
+
+    session = _patch_auth_check_get(monkeypatch, _hang)
     started = time.monotonic()
     assert cache_reads_authorized("hf_real", repo_id = "org/private") is False
     assert time.monotonic() - started < 5
-    release.set()
+    assert "/auth-check" in session.calls[0]["url"]
+    assert not [t for t in threading.enumerate() if t.name == "hf-repo-auth-check"]
+
+
+def test_twenty_distinct_cold_keys_leave_no_probe_workers_after_timeout(monkeypatch):
+    """Each cold key must time out on the HTTP call, not in a detached probe thread."""
+    import requests
+
+    reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    monkeypatch.setattr(hf_tokens, "_REPO_ACCESS_PROBE_TIMEOUT_S", 0.05)
+
+    def _hang(url, *, headers = None, timeout = None, **_k):
+        raise requests.exceptions.Timeout("auth-check timed out")
+
+    _patch_auth_check_get(monkeypatch, _hang)
+
+    with ThreadPoolExecutor(max_workers = 20) as pool:
+        answers = [
+            f.result(timeout = 5)
+            for f in [
+                pool.submit(cache_reads_authorized, f"tok{i}", repo_id = f"org/repo{i}")
+                for i in range(20)
+            ]
+        ]
+
+    assert answers == [False] * 20
+    assert not [t for t in threading.enumerate() if t.name == "hf-repo-auth-check"]
 
 
 @pytest.mark.parametrize("repo_type", ["model", "dataset"])
@@ -178,20 +226,14 @@ def test_a_gated_repo_denies_cache_reads_for_an_invalid_token(monkeypatch, repo_
     monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
     seen = {}
 
-    def _auth_check(
-        repo_id,
-        *,
-        repo_type = None,
-        token = None,
-        **_k,
-    ):
-        seen["args"] = (repo_id, repo_type, token)
+    def _auth_check(url, *, headers = None, timeout = None, **_k):
+        seen["args"] = (url, headers, timeout)
         raise _gated_hub_error()
 
-    monkeypatch.setattr("huggingface_hub.auth_check", _auth_check)
+    _patch_auth_check_get(monkeypatch, _auth_check)
 
     assert cache_reads_authorized("hf_invalid", repo_id = "org/gated", repo_type = repo_type) is False
-    assert seen["args"] == ("org/gated", repo_type, "hf_invalid")
+    assert seen["args"][0].endswith(f"/api/{repo_type}s/org/gated/auth-check")
 
 
 def test_repo_info_success_does_not_authorize_a_gated_cache_read(monkeypatch):
@@ -199,18 +241,10 @@ def test_repo_info_success_does_not_authorize_a_gated_cache_read(monkeypatch):
     reset_repo_access_cache()
     monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
 
-    class _Api:
-        def __init__(self, token = None):
-            self.token = token
-
-        def repo_info(self, *_a, **_k):
-            return SimpleNamespace(id = "org/gated")
-
     def _auth_check(*_a, **_k):
         raise _gated_hub_error()
 
-    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    monkeypatch.setattr("huggingface_hub.auth_check", _auth_check)
+    _patch_auth_check_get(monkeypatch, _auth_check)
 
     assert cache_reads_authorized("hf_invalid", repo_id = "org/gated") is False
 
@@ -218,7 +252,7 @@ def test_repo_info_success_does_not_authorize_a_gated_cache_read(monkeypatch):
 def test_a_public_repo_still_authorizes_cache_reads(monkeypatch):
     reset_repo_access_cache()
     monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
-    monkeypatch.setattr("huggingface_hub.auth_check", lambda *_a, **_k: None)
+    _patch_auth_check_get(monkeypatch, lambda *_a, **_k: _ok_auth_check_response())
 
     assert cache_reads_authorized("hf_dummy", repo_id = "org/public") is True
 
@@ -230,15 +264,17 @@ def test_a_timed_out_probe_is_not_memoized_for_the_full_ttl(monkeypatch):
     behind: one stalled connection denying a valid token for the whole TTL is the same
     outage twice.
     """
+    import requests
+
     reset_repo_access_cache()
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
     monkeypatch.setattr(hf_tokens, "_REPO_ACCESS_PROBE_TIMEOUT_S", 0.2)
-    released = threading.Event()
-    monkeypatch.setattr("huggingface_hub.auth_check", lambda *_a, **_k: released.wait(30))
-    try:
-        assert cache_reads_authorized("hf_dummy", repo_id = "org/private") is False
-    finally:
-        released.set()
+
+    def _hang(*_a, **_k):
+        raise requests.exceptions.Timeout("auth-check timed out")
+
+    _patch_auth_check_get(monkeypatch, _hang)
+    assert cache_reads_authorized("hf_dummy", repo_id = "org/private") is False
     (expiry, allowed) = next(iter(hf_tokens._repo_access_cache.values()))
     assert allowed is False
     assert expiry - time.monotonic() <= hf_tokens._REPO_ACCESS_UNREACHABLE_TTL_S

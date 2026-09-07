@@ -34,12 +34,11 @@ _HF_TOKEN_ENV_KEYS = (
     "HUGGINGFACEHUB_API_TOKEN",
 )
 
-# auth_check has no timeout in the pinned Hub client; a stalled connection must not
-# hang Studio while cache_reads_authorized probes a gated repo. Neither does the session
-# under it: 0.x hands requests no timeout at all and 1.30's httpx client carries
-# Timeout(timeout=None), so against a listener that accepts and never replies the call
-# does not come back. Measured: no return in 40s, and 16 concurrent callers opened 16
-# separate connections.
+# ``auth_check`` has no timeout kwarg in the pinned Hub client, and neither does the
+# session under it: 0.x hands requests no timeout at all and 1.30's httpx client carries
+# ``Timeout(timeout=None)``. Call ``/auth-check`` through ``get_session().get`` with an
+# explicit ``timeout`` instead (same pattern as ``hf_token_validation._check_remote``), so
+# a stalled connection cannot leave orphan probe workers behind after the caller returns.
 _REPO_ACCESS_PROBE_TIMEOUT_S = 10.0
 
 
@@ -93,6 +92,21 @@ _repo_access_lock = threading.Lock()
 # connections against a stalled Hub. Callers that arrive during a probe wait for its
 # answer.
 _repo_access_inflight: dict[tuple[str, str, str], threading.Lock] = {}
+
+
+class _ProbeTimedOut(Exception):
+    """Raised when the /auth-check HTTP call hits its timeout budget."""
+
+
+def _is_probe_timeout(exc: BaseException) -> bool:
+    for cls in type(exc).__mro__:
+        name = cls.__name__
+        if name in {"Timeout", "ReadTimeout", "ConnectTimeout"}:
+            return True
+        module = getattr(cls, "__module__", "") or ""
+        if module.startswith(("requests.", "httpx.", "urllib3.")) and "Timeout" in name:
+            return True
+    return False
 
 
 def reset_repo_access_cache() -> None:
@@ -205,17 +219,21 @@ def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bo
         if cached is not None:
             return cached
         started = time.monotonic()
-        allowed = _probe_repo_access(repo_id, token, repo_type)
+        try:
+            allowed = _probe_repo_access(repo_id, token, repo_type)
+            timed_out = False
+        except _ProbeTimedOut:
+            allowed = False
+            timed_out = True
         # AFTER the probe, not before it. Reading the clock first and storing
         # ``start + TTL`` means a probe slower than the TTL memoizes an entry that is
         # already expired, so every later request re-probes and the memo never takes
         # effect -- exactly the regime a stalled Hub creates.
         finished = time.monotonic()
-        # A probe that spent its whole budget hit the timeout inside _probe_repo_access
-        # rather than hearing "no" from the Hub, and a timeout says nothing about the
-        # credential. Read off the clock because the probe answers in bool, which is the
-        # shape every caller and test stub expects.
-        timed_out = not allowed and (finished - started) >= _REPO_ACCESS_PROBE_TIMEOUT_S
+        # A timed-out probe never heard "no" from the Hub, so it says nothing about the
+        # credential and must not deny a valid token for the full TTL.
+        if not timed_out:
+            timed_out = not allowed and (finished - started) >= _REPO_ACCESS_PROBE_TIMEOUT_S
         expiry = finished + (_REPO_ACCESS_UNREACHABLE_TTL_S if timed_out else _REPO_ACCESS_TTL_S)
         with _repo_access_lock:
             if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
@@ -249,19 +267,21 @@ def _inflight_lock(key: tuple[str, str, str]) -> threading.Lock:
 
 
 def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
-    probe_result: list[bool] = []
+    try:
+        from huggingface_hub import HfApi, constants
+        from huggingface_hub.utils import build_hf_headers, get_session, hf_raise_for_status
 
-    def _run() -> None:
-        try:
-            from huggingface_hub import auth_check
-            auth_check(repo_id, repo_type = repo_type, token = token)
-            probe_result.append(True)
-        except Exception:
-            probe_result.append(False)
-
-    thread = threading.Thread(target = _run, daemon = True)
-    thread.start()
-    thread.join(_REPO_ACCESS_PROBE_TIMEOUT_S)
-    if thread.is_alive():
+        if repo_type not in constants.REPO_TYPES:
+            return False
+        path = f"{HfApi().endpoint}/api/{repo_type}s/{repo_id}/auth-check"
+        response = get_session().get(
+            path,
+            headers = build_hf_headers(token = token),
+            timeout = _REPO_ACCESS_PROBE_TIMEOUT_S,
+        )
+        hf_raise_for_status(response)
+        return True
+    except Exception as exc:
+        if _is_probe_timeout(exc):
+            raise _ProbeTimedOut from exc
         return False
-    return bool(probe_result and probe_result[0])
