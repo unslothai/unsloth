@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==80.9.0", "setuptools-scm==9.2.0"]
+requires = ["setuptools==82.0.1", "setuptools-scm==9.2.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -98,6 +98,41 @@ exclude = [
 [tool.setuptools.exclude-package-data]
 "studio.backend" = ["tests/*"]
 "studio.backend.hub" = ["tests/*"]
+# Same mechanism, applied to the frontend source tree. package-data above names
+# `frontend/dist/**/*` and nothing else under frontend/, but include-package-data
+# plus setuptools-scm's git file finder ships every tracked file under studio/
+# anyway, so the wheel carried the whole pre-build tree:
+#
+#   frontend/public   31.1MB compressed, and every one of its 99 files is already
+#                     in frontend/dist byte for byte, because Vite copies public/
+#                     into dist/ during `npm run build`. Pure duplication.
+#   frontend/src       4.0MB of .ts/.tsx that nothing imports at runtime.
+#
+# Neither path is read from an installed Unsloth: run.py mounts frontend/dist
+# (_DEFAULT_FRONTEND_PATH) and the only `frontend/public` references in Python are
+# the remote raw.githubusercontent URLs in backend/colab.py. The desktop app is
+# unaffected either way, since release-desktop.yml builds both the frontend and
+# Tauri from a git checkout, not from this wheel.
+#
+# src-tauri is the desktop crate: Rust sources plus NSIS/AppImage/dmg installer
+# branding, all consumed by `tauri build` in CI from the checkout. icons/ is the
+# exception and stays, because install.sh reads icon.icns and icon.png back out of
+# site-packages/studio/src-tauri/icons to build the macOS and Linux launchers.
+"studio" = [
+    "frontend/public/**",
+    "frontend/src/**",
+    "frontend/package-lock.json",
+    "src-tauri/src/**",
+    "src-tauri/linux/**",
+    "src-tauri/windows/**",
+    "src-tauri/dmg/**",
+    "src-tauri/capabilities/**",
+    "src-tauri/Cargo.lock",
+    "src-tauri/Cargo.toml",
+    "src-tauri/build.rs",
+    "src-tauri/*.plist",
+    "src-tauri/tauri*.json",
+]
 
 [project.optional-dependencies]
 # Unsloth's server stack, mirroring studio/backend/requirements/studio.txt.

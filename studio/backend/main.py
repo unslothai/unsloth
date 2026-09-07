@@ -2575,7 +2575,7 @@ def setup_frontend(
 
         file_path = (build_path / full_path).resolve()
 
-        # Block path traversal — resolved path must stay inside build_path
+        # Block path traversal - resolved path must stay inside build_path
         if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)
 
@@ -2589,7 +2589,7 @@ def setup_frontend(
         if is_engine_probe_path(full_path):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
-        # Serve index.html as bytes — avoids Content-Length mismatch
+        # Serve index.html as bytes - avoids Content-Length mismatch
         return _build_index_response(request)
 
     # The catch-all above is what 404s a GET probe. The lifespan reads this to decide

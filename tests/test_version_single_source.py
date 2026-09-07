@@ -82,8 +82,7 @@ def test_importing_the_version_alone_pulls_in_no_heavy_dependency():
 
 
 def test_models_utils_still_re_exports_the_same_version():
-    # Every banner, every saved config's unsloth_version, and unsloth.__version__ on the
-    # GPU path come through here.
+    # Every banner, every saved config's unsloth_version, and unsloth.__version__ on the GPU path come through here.
     from unsloth.models._utils import __version__ as via_utils
     assert via_utils == _load_version_module_standalone().__version__
 
@@ -134,10 +133,7 @@ def _Path_read(p):
 
 
 def test_studio_version_fallback_reports_the_real_version_on_a_source_checkout():
-    # get_unsloth_version falls back to scanning the source when distribution metadata is
-    # missing. The scan matches a `__version__ = ` line prefix, so a file that only
-    # re-exports the name yields nothing and Unsloth silently reports "dev". Driving the
-    # real function against the real tree catches that whatever the scan is pointed at.
+    # get_unsloth_version falls back to scanning the source when distribution metadata is missing.
     reported = _get_unsloth_version_with_metadata_missing(
         _REPO_ROOT / "studio" / "backend" / "main.py"
     )
@@ -188,8 +184,8 @@ def test_the_studio_fallback_survives_a_half_updated_tree(tmp_path):
 
 
 def test_the_mlx_branch_no_longer_borrows_the_zoo_version():
-    # unsloth#8171: the MLX path reported unsloth_zoo's number, which is a different
-    # package pinned with >=, so it was neither the installed core nor the latest zoo.
+    # unsloth#8171: the MLX path reported unsloth_zoo's number, which is a different package pinned with >=, so it
+    # was neither the installed core nor the latest zoo.
     init_py = (_REPO_ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")
     assert "__version__ = unsloth_zoo.__version__" not in init_py
     assert "from ._version import __version__" in init_py

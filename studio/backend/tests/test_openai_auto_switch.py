@@ -601,6 +601,174 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     assert e2 is not None and e2.variants
 
 
+def test_local_gguf_entry_labels_a_quantless_filename_as_the_picker_does(tmp_path):
+    # No quant token in the name, so the picker and every saved setting key this variant by
+    # the stem. Labelling it "v2" here left an API load reading a key nothing wrote (#10227).
+    from types import SimpleNamespace
+
+    from utils.openai_auto_switch_settings import override_lookup_candidates
+
+    repo = tmp_path / "models--org--KAT-GGUF"
+    snapshot = repo / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    (snapshot / "KAT-Coder-V2.5-Dev-APEX-dynamic-v2.gguf").write_text("x")
+
+    entry = resolver._local_gguf_entry("org/KAT-GGUF", SimpleNamespace(path = str(repo)))
+    assert entry is not None
+    assert entry.variants == ("KAT-Coder-V2.5-Dev-APEX-dynamic-v2",)
+    assert "org/KAT-GGUF:KAT-Coder-V2.5-Dev-APEX-dynamic-v2" in override_lookup_candidates(
+        entry.load_path, entry.loader_id, entry.variants[0]
+    )
+
+
+def test_local_gguf_entry_skips_a_quant_whose_blob_is_gone(tmp_path):
+    # An evicted blob leaves a dangling link, and advertising it offers a quant no load can
+    # open. The twins repo is the other direction: one quant, two checkpoints, dead one first.
+    from types import SimpleNamespace
+
+    evicted = tmp_path / "models--org--evicted" / "snapshots" / "abc"
+    evicted.mkdir(parents = True)
+    (evicted / "m-Q8_0.gguf").write_text("x")
+    twins = tmp_path / "models--org--twins" / "snapshots" / "abc"
+    twins.mkdir(parents = True)
+    (twins / "z-BF16.gguf").write_text("x")
+    try:
+        (evicted / "m-Q4_K_M.gguf").symlink_to(tmp_path / "evicted-blob")
+        (twins / "a-BF16.gguf").symlink_to(tmp_path / "evicted-blob")
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks unavailable (Windows without developer mode)")
+
+    entry = resolver._local_gguf_entry(
+        "org/evicted", SimpleNamespace(path = str(evicted.parent.parent))
+    )
+    assert entry is not None and entry.variants == ("Q8_0",)
+    assert resolver._resolve_from_index("org/evicted", {"org/evicted": entry})[1] == "Q8_0"
+
+    twin_entry = resolver._local_gguf_entry(
+        "org/twins", SimpleNamespace(path = str(twins.parent.parent))
+    )
+    assert twin_entry is not None and twin_entry.variants == ("BF16",)
+
+
+def _one_gguf_repo(tmp_path, name, filenames):
+    """An HF-cache repo dir holding *filenames*, and the entry the index builds for it."""
+    from types import SimpleNamespace
+
+    snapshot = tmp_path / f"models--org--{name}" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    for index, filename in enumerate(filenames):
+        (snapshot / filename).write_bytes(b"\0" * (4096 + index * 100))
+    return resolver._local_gguf_entry(
+        f"org/{name}", SimpleNamespace(path = str(snapshot.parent.parent))
+    )
+
+
+def test_a_quant_id_v1_models_used_to_publish_still_resolves(tmp_path):
+    # /v1/models published the loader's spelling (first token, BF16) where the shared lister
+    # takes the K-quant, and a quant-looking label is refused rather than read as a repo tag,
+    # so the swap alone would 404 a client pinned to "<repo>:BF16".
+    entry = _one_gguf_repo(tmp_path, "float-then-k", ["DeepSeek-R1-BF16-Q4_K_M.gguf"])
+    assert entry is not None
+    assert entry.variants == ("Q4_K_M",)
+    assert entry.aliases == (("bf16", "Q4_K_M"),)
+
+    index = {"org/float-then-k": entry}
+    for requested in ("org/float-then-k:BF16", "org/float-then-k:bf16"):
+        resolved = resolver._resolve_from_index(requested, index)
+        assert resolved is not None, requested
+        # the CURRENT label, so the override lookup reads the key the UI wrote
+        assert resolved[1] == "Q4_K_M"
+    # a quant genuinely not on disk still misses
+    assert resolver._resolve_from_index("org/float-then-k:Q8_0", index) is None
+
+
+def test_a_legacy_quant_id_never_shadows_a_quant_that_is_really_there(tmp_path):
+    # b-BF16.gguf IS the BF16 file; a-BF16-Q4_K_M.gguf merely used to be called that, so the
+    # real one keeps the name and no alias is offered.
+    entry = _one_gguf_repo(tmp_path, "collide", ["a-BF16-Q4_K_M.gguf", "b-BF16.gguf"])
+    assert entry is not None
+    assert set(entry.variants) == {"Q4_K_M", "BF16"}
+    assert entry.aliases == ()
+
+    index = {"org/collide": entry}
+    assert resolver._resolve_from_index("org/collide:BF16", index)[1] == "BF16"
+    assert resolver._resolve_from_index("org/collide:Q4_K_M", index)[1] == "Q4_K_M"
+
+
+def test_an_ambiguous_legacy_quant_id_resolves_to_nothing(tmp_path):
+    # two files, one old label: it names neither, as the override key folding already does.
+    entry = _one_gguf_repo(tmp_path, "ambiguous", ["x-BF16-Q4_K_M.gguf", "y-BF16-Q6_K.gguf"])
+    assert entry is not None
+    assert set(entry.variants) == {"Q4_K_M", "Q6_K"}
+    assert entry.aliases == ()
+    assert resolver._resolve_from_index("org/ambiguous:BF16", {"org/ambiguous": entry}) is None
+
+
+def test_a_quantless_pin_keeps_its_own_weights_instead_of_quietly_getting_the_quant(tmp_path):
+    # This repo published "8B" for the unquantized file and ":8b" loaded it. "8B" does not look
+    # like a quant, so the swap does not 404 that pin: it falls through to the Ollama-tag branch
+    # and quietly serves the Q4_K_M instead. The quiet failure is why quantless labels alias too.
+    entry = _one_gguf_repo(
+        tmp_path, "quantless-pin", ["Meta-Llama-3-8B.gguf", "Meta-Llama-3-8B-Q4_K_M.gguf"]
+    )
+    assert entry is not None
+    assert entry.aliases == (("8b", "Meta-Llama-3-8B"),)
+    resolved = resolver._resolve_from_index("org/quantless-pin:8b", {"org/quantless-pin": entry})
+    assert resolved is not None and resolved[1] == "Meta-Llama-3-8B"
+    # the bare id never reaches an alias, so preferred_quant still decides it
+    bare = resolver._resolve_from_index("org/quantless-pin", {"org/quantless-pin": entry})
+    assert bare[1] == entry.variants[0] == "Q4_K_M"
+
+
+def test_a_bundle_repos_mirror_is_not_emptied_by_the_h3_filter(tmp_path):
+    # A cache dir name only ever extends a repo id by more of that id, so these contain the
+    # bundle marker while being ordinary chat repos. Matched as a substring, the denoiser filter
+    # left them with no quants, which withholds the entry and 404s a downloaded model.
+    from types import SimpleNamespace
+    for name in ("MiniMax-H3-GGUF-mirror", "minimax-h3-gguf-i1", "MiniMax-H3-GGUF-BF16"):
+        snapshot = tmp_path / f"models--unsloth--{name}" / "snapshots" / "abc"
+        snapshot.mkdir(parents = True)
+        (snapshot / "m-Q4_K_M.gguf").write_bytes(b"\0" * 4096)
+        (snapshot / "m-Q8_0.gguf").write_bytes(b"\0" * 8192)
+        entry = resolver._local_gguf_entry(
+            f"unsloth/{name}", SimpleNamespace(path = str(snapshot.parent.parent))
+        )
+        assert entry is not None, f"{name} disappeared from the index"
+        assert set(entry.variants) == {"Q4_K_M", "Q8_0"}, name
+
+
+def test_a_broken_alias_helper_costs_the_aliases_and_not_the_model(tmp_path, monkeypatch):
+    # _local_gguf_entry answers None on any raise, so an escaping shim would drop the repo.
+    monkeypatch.setattr(
+        resolver,
+        "_legacy_variant_aliases",
+        lambda variants: (_ for _ in ()).throw(RuntimeError("renamed private helper")),
+    )
+    entry = _one_gguf_repo(tmp_path, "shim-broke", ["DeepSeek-R1-BF16-Q4_K_M.gguf"])
+    assert entry is None, "a raising helper must not be what deletes the entry"
+
+    # And it swallows its own failure: it reaches into two private names in another module.
+    monkeypatch.undo()
+    from utils.models import model_config
+
+    def renamed_away(*_args, **_kwargs):
+        raise AttributeError("_qualified_variant_name")
+
+    monkeypatch.setattr(model_config, "_qualified_variant_name", renamed_away)
+    entry = _one_gguf_repo(tmp_path, "shim-renamed", ["DeepSeek-R1-BF16-Q4_K_M.gguf"])
+    assert entry is not None and entry.variants == ("Q4_K_M",)
+    assert entry.aliases == ()
+
+
+def test_a_repo_the_two_listers_agree_on_carries_no_aliases(tmp_path):
+    # The overwhelmingly common case: every alias is a cost, so a repo that needs none
+    # carries none, and an id naming no local quant keeps missing.
+    entry = _one_gguf_repo(tmp_path, "ordinary", ["m-Q4_K_M.gguf", "m-Q8_0.gguf"])
+    assert entry is not None
+    assert entry.aliases == ()
+    assert resolver._resolve_from_index("org/ordinary:BF16", {"org/ordinary": entry}) is None
+
+
 def test_local_gguf_entry_rejects_standalone_companions(tmp_path, monkeypatch):
     # Codex P2: _scan_models_dir's standalone-.gguf pass emits an entry for a
     # bare mmproj projector (it only filters mmproj inside directory scans). A
@@ -1095,6 +1263,7 @@ def _mock_override_store(monkeypatch):
         entry_value,
         *,
         fill_absent_fields = False,
+        coupled_fields = (),
     ):
         current = dict(store.get(key) or {})
         if fill_absent_fields:
@@ -1103,7 +1272,11 @@ def _mock_override_store(monkeypatch):
                 return current
             stored = current.get(entry_key)
             if isinstance(stored, dict):
-                current[entry_key] = {**entry_value, **stored}
+                incoming = entry_value
+                for group in coupled_fields:
+                    if any(field in stored for field in group):
+                        incoming = {k: v for k, v in incoming.items() if k not in group}
+                current[entry_key] = {**incoming, **stored}
             else:
                 current[entry_key] = entry_value
         elif entry_value:
@@ -6222,6 +6395,30 @@ def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
     assert entry == {"max_seq_length": 8192, "speculative_type": "mtp", "gpu_ids": [1, 0, 2]}
 
 
+def test_gpu_index_kind_is_stored_only_when_it_is_not_the_legacy_default():
+    # Absent means physical, so writing it back would churn every row for no information.
+    physical = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "physical"})
+    assert physical == {"gpu_ids": [0]}
+    assert settings.normalize_model_override({"gpu_ids": [0]}) == {"gpu_ids": [0]}
+    vulkan = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "vulkan"})
+    assert vulkan == {"gpu_ids": [0], "gpu_index_kind": "vulkan"}
+    assert settings.normalize_model_override({"gpu_index_kind": "vulkan"}) == {}
+
+
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        ({}, "physical"),
+        ({"gpu_ids": [0]}, "physical"),
+        ({"gpu_ids": [0], "gpu_index_kind": "vulkan"}, "vulkan"),
+        ({"gpu_ids": [0], "gpu_index_kind": "metal"}, "physical"),
+        ({"gpu_ids": [0], "gpu_index_kind": None}, "physical"),
+    ],
+)
+def test_stored_gpu_index_kind_reads_absent_as_physical(override, expected):
+    assert settings.stored_gpu_index_kind(override) == expected
+
+
 def test_normalize_model_override_rejects_oversized_chat_template():
     small = settings.normalize_model_override({"chat_template_override": "{{ bos }}"})
     assert small["chat_template_override"] == "{{ bos }}"
@@ -6752,6 +6949,25 @@ def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
     assert resp.overrides[_LEGACY_SNAPSHOT]["max_seq_length"] == 4096
 
 
+def test_a_fill_never_labels_the_server_s_gpu_pin_with_this_browser_s_index_space(override_store):
+    # Two browsers against one server: the stored pin is physical and this backfill offers
+    # Vulkan ordinals, so the qualifier cannot arrive without its ids.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", gpu_ids = [0, 1])
+
+    resp = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        gpu_ids = [2],
+        gpu_index_kind = "vulkan",
+        max_seq_length = 32768,
+        fill_absent_fields = True,
+    )
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["gpu_ids"] == [0, 1]
+    assert "gpu_index_kind" not in entry
+    assert settings.stored_gpu_index_kind(entry) == "physical"
+    assert entry["max_seq_length"] == 32768
+
+
 def test_the_one_time_fill_retires_nothing(override_store):
     # fill_absent_fields only adds what is missing; the migration mirroring both spellings
     # of one row must not have its own first write deleted by its second.
@@ -6799,7 +7015,7 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
         lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
     )
 
-    async def _unusable(ids):
+    async def _unusable(ids, index_kind = "physical"):
         return False
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _unusable)
@@ -6823,7 +7039,7 @@ def test_usable_gpu_ids_are_kept(monkeypatch):
     )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -6854,9 +7070,9 @@ def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
     )
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7])) is False
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1])) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "vulkan")) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7], "vulkan")) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1], "vulkan")) is False
 
 
 def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
@@ -6865,7 +7081,56 @@ def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
 
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: None))
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "vulkan")) is True
+
+
+def _pin_resolves_on_a_host_with_device_0(monkeypatch):
+    """Make device 0 exist, so the index-kind check is the only thing under test.
+
+    Without this the whole helper falls to its `except: return False` on a CPU-only
+    runner, which is how the mismatch cases below would pass for the wrong reason and
+    how the matching case failed on CI while passing on a GPU box.
+    """
+    import utils.hardware as hardware_pkg
+    from utils.hardware import DeviceType
+    from utils.hardware import hardware as hardware_mod
+
+    monkeypatch.setattr(hardware_pkg, "get_device", lambda: DeviceType.CUDA)
+    monkeypatch.setattr(
+        hardware_mod, "resolve_requested_gpu_ids", lambda ids, is_vulkan = False: list(ids)
+    )
+
+
+def test_a_pin_written_in_the_other_index_space_is_unusable(monkeypatch):
+    # What the availability checks cannot see: ordinal 0 and physical device 0 both exist,
+    # so a pin carried across a backend change passes every presence test.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _pin_resolves_on_a_host_with_device_0(monkeypatch)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
+    )
+    for installed_is_vulkan, stored_kind in (
+        (True, "physical"),
+        (False, "vulkan"),
+    ):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: installed_is_vulkan)
+        )
+        assert (
+            asyncio.run(inference_route._override_gpu_ids_still_resolve([0], stored_kind)) is False
+        ), (installed_is_vulkan, stored_kind)
+
+
+def test_a_rocm_pin_survives_while_the_backend_is_still_rocm(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _pin_resolves_on_a_host_with_device_0(monkeypatch)
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "physical")) is True
 
 
 def test_default_save_preserves_flags_instead_of_removing(override_store):
@@ -7074,7 +7339,7 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
         settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
     )
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -7113,7 +7378,7 @@ def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
     )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0]})
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -7779,6 +8044,41 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     db.upsert_app_setting_map_entry(key, "a", {"v": 9})
     db.upsert_app_setting_map_entry(key, "b", None)
     assert db.get_app_setting(key) == {"a": {"v": 9}}
+
+
+def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
+    tmp_path, monkeypatch
+):
+    """A pin and the index space it is written in are one value.
+
+    The server holds physical ids with no qualifier, which is what every writer
+    before the field meant; this browser's backfill offers Vulkan ordinals. Field
+    by field the ids would stay and the qualifier would land, and the row would
+    then name devices in a space it was never written in.
+    """
+    import storage.studio_db as db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", False)
+
+    key = "test_map_entry_coupled"
+    coupled = (("gpu_ids", "gpu_index_kind"),)
+    db.upsert_app_setting_map_entry(key, "m", {"gpu_ids": [0, 1]})
+    assert db.upsert_app_setting_map_entry(
+        key,
+        "m",
+        {"gpu_ids": [2], "gpu_index_kind": "vulkan", "max_seq_length": 4096},
+        fill_absent_fields = True,
+        coupled_fields = coupled,
+    ) == {"m": {"gpu_ids": [0, 1], "max_seq_length": 4096}}
+    db.upsert_app_setting_map_entry(key, "n", {"max_seq_length": 2048})
+    assert db.upsert_app_setting_map_entry(
+        key,
+        "n",
+        {"gpu_ids": [2], "gpu_index_kind": "vulkan"},
+        fill_absent_fields = True,
+        coupled_fields = coupled,
+    )["n"] == {"max_seq_length": 2048, "gpu_ids": [2], "gpu_index_kind": "vulkan"}
 
 
 def test_gpu_ids_dedupe_is_not_a_scan_of_the_list_being_built():

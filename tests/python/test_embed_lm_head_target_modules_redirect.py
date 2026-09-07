@@ -63,11 +63,9 @@ def _run_redirect_check(new_model_path: bool, target_modules):
 
         assert any("embed_tokens" in m for m in saved_modules), saved_modules
 
-        # target_modules should no longer carry the embedding modules
         assert "embed_tokens" not in config.target_modules, config.target_modules
         assert "lm_head" not in config.target_modules, config.target_modules
 
-        # Attention/MLP LoRA adapters should still be present
         assert any("layers.0.self_attn.q_proj.lora_A" in k for k in state)
 
         # embed_tokens/lm_head must be trainable via ModulesToSave, not LoRA
@@ -126,8 +124,8 @@ def test_a_repeat_call_with_the_same_targets_still_passes_through():
             model.peft_config["default"], "modules_to_tie", None
         ), "tied model did not redirect lm_head; this guard would check nothing"
         model = FastLanguageModel.get_peft_model(model, **kwargs)
-        # Same configuration, written the other way round: the embeddings named directly
-        # in modules_to_save rather than reached through the redirect.
+        # Same configuration, written the other way round: the embeddings named directly in modules_to_save rather than
+        # reached through the redirect.
         model = FastLanguageModel.get_peft_model(
             model,
             r = 8,
@@ -229,7 +227,6 @@ def test_flipping_ensure_weight_tying_is_seen_as_a_different_request():
         ), "model is not tied here; this guard would check nothing"
         with pytest.raises(TypeError, match = "parameters are different"):
             FastLanguageModel.get_peft_model(model, ensure_weight_tying = False, **kwargs)
-        # Asking for the mode it already has is still the same request.
         FastLanguageModel.get_peft_model(model, ensure_weight_tying = True, **kwargs)
     finally:
         del model
@@ -259,7 +256,6 @@ def test_a_classification_repeat_call_is_not_tripped_by_peft_added_modules():
             "score" in saved or "classifier" in saved
         ), f"PEFT did not add its classifier modules ({saved}); this guard checks nothing"
         FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16, target_modules = list(core))
-        # A genuinely different request is still rejected.
         with pytest.raises(TypeError, match = "parameters are different"):
             FastLanguageModel.get_peft_model(model, r = 8, lora_alpha = 16, target_modules = ["q_proj"])
     finally:
