@@ -153,7 +153,6 @@ def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:
     def _run() -> None:
         try:
             from huggingface_hub import auth_check
-
             auth_check(repo_id, repo_type = repo_type, token = token)
             probe_result.append(True)
         except Exception:
