@@ -678,7 +678,9 @@ def test_durable_tool_turn_toggle_restores_the_legacy_refusal(monkeypatch):
         _sanitize_request(_model())
 
 
-def test_durable_tool_turn_toggle_refuses_a_cli_override_even_when_the_request_disables_tools(monkeypatch):
+def test_durable_tool_turn_toggle_refuses_a_cli_override_even_when_the_request_disables_tools(
+    monkeypatch,
+):
     monkeypatch.setenv("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "0")
     set_tool_policy(True)
     with pytest.raises(Exception, match = "legacy streaming path"):
@@ -687,6 +689,7 @@ def test_durable_tool_turn_toggle_refuses_a_cli_override_even_when_the_request_d
 
 def test_durable_tool_turn_toggle_refuses_a_checkpoint_recall_tool_loop(monkeypatch):
     import routes.inference as inference_routes
+
     monkeypatch.setenv("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "0")
     monkeypatch.setattr(
         inference_routes, "_checkpoint_recall_may_enable_tools", lambda request: True, raising = False
