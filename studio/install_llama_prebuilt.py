@@ -7338,8 +7338,7 @@ def validate_prebuilt_choice(
     # a previously unchecked path into a hard fallback for them belongs in its
     # own change with its own evidence.
     if (
-        choice.install_kind in VULKAN_INSTALL_KINDS
-        or choice.install_kind.startswith("windows-")
+        choice.install_kind in VULKAN_INSTALL_KINDS or choice.install_kind.startswith("windows-")
     ) and not runtime_payload_is_healthy(install_dir, host, choice):
         raise PrebuiltFallback(
             f"{choice.install_kind} bundle {choice.name} omitted a required runtime component"

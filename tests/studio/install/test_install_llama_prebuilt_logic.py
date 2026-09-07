@@ -6996,7 +6996,7 @@ def test_a_fresh_windows_install_is_payload_checked_not_just_vulkan():
     gate = source[source.index("overlaying prebuilt bundle") :]
     gate = gate[: gate.index("preflight_linux_installed_binaries")]
     assert "runtime_payload_is_healthy" in gate, "fresh installs are not payload checked at all"
-    assert 'choice.install_kind.startswith("windows-")' in gate, (
-        "fresh Windows installs are not payload checked"
-    )
+    assert (
+        'choice.install_kind.startswith("windows-")' in gate
+    ), "fresh Windows installs are not payload checked"
     assert "VULKAN_INSTALL_KINDS" in gate, "the Vulkan check must not be dropped"
