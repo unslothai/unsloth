@@ -266,3 +266,20 @@ def test_a_strict_key_absent_from_both_oracles_fails_strict(oracle):
         without_python, encoding = "utf-8"
     )
     assert _diff(snapshot_dir, strict = True) == 1
+
+
+def test_an_unreadable_strict_value_fails_strict(oracle):
+    """The key being present is not enough; its consumer has to be able to read it.
+
+    `_parse_os_lines` emits a `python` key for any line starting with `Python`, while
+    `_colab_python_version` only accepts `Python <digits>`. An upstream reformat refreshed into
+    the snapshot leaves both sides equal and the key present, so the no-drift return fired
+    while marker evaluation quietly disabled itself.
+    """
+    upstream, snapshot_dir = oracle
+    reformatted = "Python version 3.14\nR version 4.5.3\n"
+    upstream["os-info-gpu.txt"] = reformatted
+    (snapshot_dir / nv.COLAB_ORACLE_FILES["os-info-gpu.txt"]).write_text(
+        reformatted, encoding = "utf-8"
+    )
+    assert _diff(snapshot_dir, strict = True) == 1

