@@ -1195,10 +1195,15 @@ class TestInstallUvCacheRootParity:
 
         # Committing the environment commits the marker that came with it, so a failure
         # after the commit does not revert it.
-        assert "$script:StudioUvMarkerSaved = $false" in ps1[
-            ps1.index("function Complete-StudioVenvRollback") :
-            ps1.index("function Complete-StudioVenvRollback") + 900
-        ]
+        assert (
+            "$script:StudioUvMarkerSaved = $false"
+            in ps1[
+                ps1.index("function Complete-StudioVenvRollback") : ps1.index(
+                    "function Complete-StudioVenvRollback"
+                )
+                + 900
+            ]
+        )
         commit_start = sh.index("_commit_studio_venv_replacement() {")
         commit_body = sh[commit_start : sh.index("\n}", commit_start)]
         # Before the venv flag, not merely inside the function: a signal landing between
