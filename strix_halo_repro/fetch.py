@@ -29,8 +29,11 @@ def main() -> int:
     ap.add_argument("--url", required = True)
     ap.add_argument("--dest", required = True, help = "file path to write")
     ap.add_argument("--expect-sha256", default = "")
-    ap.add_argument("--zip-member", default = "",
-                    help = "extract this member from the download and write IT to --dest")
+    ap.add_argument(
+        "--zip-member",
+        default = "",
+        help = "extract this member from the download and write IT to --dest",
+    )
     ap.add_argument("--out", default = "")
     a = ap.parse_args()
 

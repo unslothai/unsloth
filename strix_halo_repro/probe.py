@@ -46,7 +46,7 @@ import sys
 import time
 from pathlib import Path
 
-GIB = 1024 ** 3
+GIB = 1024**3
 IS_WIN = os.name == "nt"
 
 # hipMemcpyKind; stable across every HIP release.
@@ -54,6 +54,7 @@ HIP_MEMCPY_DEVICE_TO_HOST = 2
 
 
 # --------------------------------------------------------------------------- utils
+
 
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -76,7 +77,8 @@ def file_version(path: Path) -> str:
         block = ctypes.c_void_p()
         length = ctypes.c_uint()
         if not ctypes.windll.version.VerQueryValueW(
-                buf, "\\", ctypes.byref(block), ctypes.byref(length)):
+            buf, "\\", ctypes.byref(block), ctypes.byref(length)
+        ):
             return ""
         ffi = ctypes.cast(block, ctypes.POINTER(ctypes.c_uint32 * 13)).contents
         ms, ls = ffi[2], ffi[3]
@@ -88,8 +90,12 @@ def file_version(path: Path) -> str:
 def describe_file(path: Path) -> dict:
     try:
         st = path.stat()
-        return {"path": str(path), "bytes": st.st_size, "sha256": sha256(path),
-                "file_version": file_version(path)}
+        return {
+            "path": str(path),
+            "bytes": st.st_size,
+            "sha256": sha256(path),
+            "file_version": file_version(path),
+        }
     except Exception as e:  # noqa: BLE001
         return {"path": str(path), "error": f"{type(e).__name__}: {e}"}
 
@@ -120,24 +126,46 @@ def find_lib(directory: Path, stem: str) -> Path | None:
     return None
 
 
-def run(cmd: list[str], timeout: int = 300, env: dict | None = None) -> dict:
+def run(
+    cmd: list[str],
+    timeout: int = 300,
+    env: dict | None = None,
+) -> dict:
     try:
-        r = subprocess.run(cmd, capture_output = True, text = True, timeout = timeout,
-                           encoding = "utf-8", errors = "replace", env = env)
-        return {"cmd": cmd, "rc": r.returncode,
-                "stdout": r.stdout[-20000:], "stderr": r.stderr[-8000:]}
+        r = subprocess.run(
+            cmd,
+            capture_output = True,
+            text = True,
+            timeout = timeout,
+            encoding = "utf-8",
+            errors = "replace",
+            env = env,
+        )
+        return {
+            "cmd": cmd,
+            "rc": r.returncode,
+            "stdout": r.stdout[-20000:],
+            "stderr": r.stderr[-8000:],
+        }
     except Exception as e:  # noqa: BLE001
         return {"cmd": cmd, "error": f"{type(e).__name__}: {e}"}
 
 
 # --------------------------------------------------------------------------- host
 
+
 class MEMORYSTATUSEX(ctypes.Structure):
-    _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32),
-                ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
-                ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
-                ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
-                ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+    _fields_ = [
+        ("dwLength", ctypes.c_uint32),
+        ("dwMemoryLoad", ctypes.c_uint32),
+        ("ullTotalPhys", ctypes.c_uint64),
+        ("ullAvailPhys", ctypes.c_uint64),
+        ("ullTotalPageFile", ctypes.c_uint64),
+        ("ullAvailPageFile", ctypes.c_uint64),
+        ("ullTotalVirtual", ctypes.c_uint64),
+        ("ullAvailVirtual", ctypes.c_uint64),
+        ("ullAvailExtendedVirtual", ctypes.c_uint64),
+    ]
 
 
 def read_host() -> dict:
@@ -153,9 +181,15 @@ def read_host() -> dict:
         # AdapterRAM is uint32 and cannot express more than 4 GiB. Recorded to
         # show the trap, never used as a capacity.
         out["wmi_adapter_ram_trap"] = run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_VideoController | "
-             "Select-Object Name,AdapterRAM,DriverVersion | ConvertTo-Json -Compress"], 120)
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_VideoController | "
+                "Select-Object Name,AdapterRAM,DriverVersion | ConvertTo-Json -Compress",
+            ],
+            120,
+        )
     else:
         try:
             meminfo = Path("/proc/meminfo").read_text(encoding = "utf-8")
@@ -192,10 +226,12 @@ def read_windows_adapters() -> list:
         row: dict = {"index": sub}
         try:
             with winreg.OpenKey(key, sub) as k:
-                for name, out_name in (("DriverDesc", "name"),
-                                       ("HardwareInformation.qwMemorySize", "qw_memory_size"),
-                                       ("HardwareInformation.MemorySize", "memory_size"),
-                                       ("DriverVersion", "driver_version")):
+                for name, out_name in (
+                    ("DriverDesc", "name"),
+                    ("HardwareInformation.qwMemorySize", "qw_memory_size"),
+                    ("HardwareInformation.MemorySize", "memory_size"),
+                    ("DriverVersion", "driver_version"),
+                ):
                     try:
                         value, kind = winreg.QueryValueEx(k, name)
                     except OSError:
@@ -212,6 +248,7 @@ def read_windows_adapters() -> list:
 
 
 # --------------------------------------------------------------------------- HIP
+
 
 class Hip:
     """The HIP runtime from one specific directory, with the loaded path proved."""
@@ -232,21 +269,20 @@ class Hip:
         self.lib = ctypes.CDLL(self.requested)
         self.loaded = loaded_module_path(self.lib._handle) or self.requested
         for fn, argtypes in (
-                ("hipInit", [ctypes.c_uint]),
-                ("hipGetDeviceCount", [ctypes.POINTER(ctypes.c_int)]),
-                ("hipSetDevice", [ctypes.c_int]),
-                ("hipDeviceGetName", [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]),
-                ("hipDeviceTotalMem", [ctypes.POINTER(ctypes.c_size_t), ctypes.c_int]),
-                ("hipMemGetInfo", [ctypes.POINTER(ctypes.c_size_t),
-                                   ctypes.POINTER(ctypes.c_size_t)]),
-                ("hipRuntimeGetVersion", [ctypes.POINTER(ctypes.c_int)]),
-                ("hipDriverGetVersion", [ctypes.POINTER(ctypes.c_int)]),
-                ("hipMalloc", [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]),
-                ("hipFree", [ctypes.c_void_p]),
-                ("hipMemset", [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t]),
-                ("hipMemcpy", [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]),
-                ("hipDeviceSynchronize", []),
-                ("hipGetLastError", []),
+            ("hipInit", [ctypes.c_uint]),
+            ("hipGetDeviceCount", [ctypes.POINTER(ctypes.c_int)]),
+            ("hipSetDevice", [ctypes.c_int]),
+            ("hipDeviceGetName", [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]),
+            ("hipDeviceTotalMem", [ctypes.POINTER(ctypes.c_size_t), ctypes.c_int]),
+            ("hipMemGetInfo", [ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]),
+            ("hipRuntimeGetVersion", [ctypes.POINTER(ctypes.c_int)]),
+            ("hipDriverGetVersion", [ctypes.POINTER(ctypes.c_int)]),
+            ("hipMalloc", [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]),
+            ("hipFree", [ctypes.c_void_p]),
+            ("hipMemset", [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t]),
+            ("hipMemcpy", [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]),
+            ("hipDeviceSynchronize", []),
+            ("hipGetLastError", []),
         ):
             f = getattr(self.lib, fn)
             f.argtypes = argtypes
@@ -261,15 +297,20 @@ class Hip:
             return f"hip error {code}"
 
     def inventory(self) -> dict:
-        out: dict = {"requested_dll": self.requested, "loaded_dll": self.loaded,
-                     "dll": describe_file(Path(self.loaded)) if self.loaded else {}}
+        out: dict = {
+            "requested_dll": self.requested,
+            "loaded_dll": self.loaded,
+            "dll": describe_file(Path(self.loaded)) if self.loaded else {},
+        }
         rc = self.lib.hipInit(0)
         out["hipInit_rc"] = rc
         if rc != 0:
             out["error"] = self.err(rc)
             return out
-        for fn, key in (("hipRuntimeGetVersion", "runtime_version"),
-                        ("hipDriverGetVersion", "driver_version")):
+        for fn, key in (
+            ("hipRuntimeGetVersion", "runtime_version"),
+            ("hipDriverGetVersion", "driver_version"),
+        ):
             v = ctypes.c_int(0)
             if getattr(self.lib, fn)(ctypes.byref(v)) == 0:
                 out[key] = v.value
@@ -297,7 +338,11 @@ class Hip:
         out["devices"] = devices
         return out
 
-    def try_alloc(self, nbytes: int, device: int = 0) -> dict:
+    def try_alloc(
+        self,
+        nbytes: int,
+        device: int = 0,
+    ) -> dict:
         """One allocation, written and read back. A hipMalloc that returns a
         pointer nothing was ever stored in is not evidence the memory exists."""
         res: dict = {"bytes": nbytes}
@@ -319,18 +364,32 @@ class Hip:
                 return {**res, "ok": False, "stage": "hipMemset", "rc": rc, "error": self.err(rc)}
             rc = self.lib.hipDeviceSynchronize()
             if rc != 0:
-                return {**res, "ok": False, "stage": "hipDeviceSynchronize", "rc": rc,
-                        "error": self.err(rc)}
+                return {
+                    **res,
+                    "ok": False,
+                    "stage": "hipDeviceSynchronize",
+                    "rc": rc,
+                    "error": self.err(rc),
+                }
             probe = ctypes.create_string_buffer(64)
             for offset in (0, nbytes // 2, nbytes - 64):
                 src = ctypes.c_void_p(ptr.value + max(0, offset))
                 rc = self.lib.hipMemcpy(probe, src, 64, HIP_MEMCPY_DEVICE_TO_HOST)
                 if rc != 0:
-                    return {**res, "ok": False, "stage": f"hipMemcpy@{offset}", "rc": rc,
-                            "error": self.err(rc)}
+                    return {
+                        **res,
+                        "ok": False,
+                        "stage": f"hipMemcpy@{offset}",
+                        "rc": rc,
+                        "error": self.err(rc),
+                    }
                 if probe.raw[:64] != b"\xa5" * 64:
-                    return {**res, "ok": False, "stage": f"readback@{offset}",
-                            "error": "buffer did not read back as written"}
+                    return {
+                        **res,
+                        "ok": False,
+                        "stage": f"readback@{offset}",
+                        "error": "buffer did not read back as written",
+                    }
             res["ok"] = True
             free_b, total_b = ctypes.c_size_t(0), ctypes.c_size_t(0)
             if self.lib.hipMemGetInfo(ctypes.byref(free_b), ctypes.byref(total_b)) == 0:
@@ -356,8 +415,14 @@ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT = 1000237000
 VK_MEMORY_HEAP_DEVICE_LOCAL_BIT = 0x1
 VK_MEMORY_HEAP_MULTI_INSTANCE_BIT = 0x2
 VK_DEVICE_TYPES = {0: "other", 1: "integrated", 2: "discrete", 3: "virtual", 4: "cpu"}
-MEMORY_PROPERTY_BITS = [(0x1, "DEVICE_LOCAL"), (0x2, "HOST_VISIBLE"), (0x4, "HOST_COHERENT"),
-                        (0x8, "HOST_CACHED"), (0x10, "LAZILY_ALLOCATED"), (0x20, "PROTECTED")]
+MEMORY_PROPERTY_BITS = [
+    (0x1, "DEVICE_LOCAL"),
+    (0x2, "HOST_VISIBLE"),
+    (0x4, "HOST_COHERENT"),
+    (0x8, "HOST_CACHED"),
+    (0x10, "LAZILY_ALLOCATED"),
+    (0x20, "PROTECTED"),
+]
 
 
 class VkMemoryType(ctypes.Structure):
@@ -369,50 +434,76 @@ class VkMemoryHeap(ctypes.Structure):
 
 
 class VkPhysicalDeviceMemoryProperties(ctypes.Structure):
-    _fields_ = [("memoryTypeCount", ctypes.c_uint32),
-                ("memoryTypes", VkMemoryType * VK_MAX_MEMORY_TYPES),
-                ("memoryHeapCount", ctypes.c_uint32),
-                ("memoryHeaps", VkMemoryHeap * VK_MAX_MEMORY_HEAPS)]
+    _fields_ = [
+        ("memoryTypeCount", ctypes.c_uint32),
+        ("memoryTypes", VkMemoryType * VK_MAX_MEMORY_TYPES),
+        ("memoryHeapCount", ctypes.c_uint32),
+        ("memoryHeaps", VkMemoryHeap * VK_MAX_MEMORY_HEAPS),
+    ]
 
 
 class VkPhysicalDeviceMemoryProperties2(ctypes.Structure):
-    _fields_ = [("sType", ctypes.c_uint32), ("pNext", ctypes.c_void_p),
-                ("memoryProperties", VkPhysicalDeviceMemoryProperties)]
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("memoryProperties", VkPhysicalDeviceMemoryProperties),
+    ]
 
 
 class VkPhysicalDeviceMemoryBudgetPropertiesEXT(ctypes.Structure):
-    _fields_ = [("sType", ctypes.c_uint32), ("pNext", ctypes.c_void_p),
-                ("heapBudget", ctypes.c_uint64 * VK_MAX_MEMORY_HEAPS),
-                ("heapUsage", ctypes.c_uint64 * VK_MAX_MEMORY_HEAPS)]
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("heapBudget", ctypes.c_uint64 * VK_MAX_MEMORY_HEAPS),
+        ("heapUsage", ctypes.c_uint64 * VK_MAX_MEMORY_HEAPS),
+    ]
 
 
 class VkPhysicalDeviceProperties(ctypes.Structure):
     # Only the head is parsed; the tail is spare room for limits and sparse
     # properties, which the driver writes and this probe does not read.
-    _fields_ = [("apiVersion", ctypes.c_uint32), ("driverVersion", ctypes.c_uint32),
-                ("vendorID", ctypes.c_uint32), ("deviceID", ctypes.c_uint32),
-                ("deviceType", ctypes.c_uint32), ("deviceName", ctypes.c_char * 256),
-                ("pipelineCacheUUID", ctypes.c_uint8 * 16), ("tail", ctypes.c_uint8 * 4096)]
+    _fields_ = [
+        ("apiVersion", ctypes.c_uint32),
+        ("driverVersion", ctypes.c_uint32),
+        ("vendorID", ctypes.c_uint32),
+        ("deviceID", ctypes.c_uint32),
+        ("deviceType", ctypes.c_uint32),
+        ("deviceName", ctypes.c_char * 256),
+        ("pipelineCacheUUID", ctypes.c_uint8 * 16),
+        ("tail", ctypes.c_uint8 * 4096),
+    ]
 
 
 class VkExtensionProperties(ctypes.Structure):
-    _fields_ = [("extensionName", ctypes.c_char * VK_MAX_EXTENSION_NAME_SIZE),
-                ("specVersion", ctypes.c_uint32)]
+    _fields_ = [
+        ("extensionName", ctypes.c_char * VK_MAX_EXTENSION_NAME_SIZE),
+        ("specVersion", ctypes.c_uint32),
+    ]
 
 
 class VkApplicationInfo(ctypes.Structure):
-    _fields_ = [("sType", ctypes.c_uint32), ("pNext", ctypes.c_void_p),
-                ("pApplicationName", ctypes.c_char_p), ("applicationVersion", ctypes.c_uint32),
-                ("pEngineName", ctypes.c_char_p), ("engineVersion", ctypes.c_uint32),
-                ("apiVersion", ctypes.c_uint32)]
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("pApplicationName", ctypes.c_char_p),
+        ("applicationVersion", ctypes.c_uint32),
+        ("pEngineName", ctypes.c_char_p),
+        ("engineVersion", ctypes.c_uint32),
+        ("apiVersion", ctypes.c_uint32),
+    ]
 
 
 class VkInstanceCreateInfo(ctypes.Structure):
-    _fields_ = [("sType", ctypes.c_uint32), ("pNext", ctypes.c_void_p),
-                ("flags", ctypes.c_uint32), ("pApplicationInfo", ctypes.c_void_p),
-                ("enabledLayerCount", ctypes.c_uint32), ("ppEnabledLayerNames", ctypes.c_void_p),
-                ("enabledExtensionCount", ctypes.c_uint32),
-                ("ppEnabledExtensionNames", ctypes.c_void_p)]
+    _fields_ = [
+        ("sType", ctypes.c_uint32),
+        ("pNext", ctypes.c_void_p),
+        ("flags", ctypes.c_uint32),
+        ("pApplicationInfo", ctypes.c_void_p),
+        ("enabledLayerCount", ctypes.c_uint32),
+        ("ppEnabledLayerNames", ctypes.c_void_p),
+        ("enabledExtensionCount", ctypes.c_uint32),
+        ("ppEnabledExtensionNames", ctypes.c_void_p),
+    ]
 
 
 def _flag_names(flags: int) -> list[str]:
@@ -435,18 +526,28 @@ def read_vulkan_raw() -> dict:
         vk.vkEnumerateInstanceVersion.restype = ctypes.c_int
         v = ctypes.c_uint32(0)
         if vk.vkEnumerateInstanceVersion(ctypes.byref(v)) == 0:
-            out["loader_api_version"] = f"{v.value >> 22}.{(v.value >> 12) & 0x3FF}.{v.value & 0xFFF}"
+            out["loader_api_version"] = (
+                f"{v.value >> 22}.{(v.value >> 12) & 0x3FF}.{v.value & 0xFFF}"
+            )
             api_version = min(api_version, v.value)
     except AttributeError:
         out["loader_api_version"] = "1.0"
 
-    app = VkApplicationInfo(sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                            pApplicationName = b"amd_ci_memory_report",
-                            pEngineName = b"amd_ci", apiVersion = api_version)
-    ci = VkInstanceCreateInfo(sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                              pApplicationInfo = ctypes.cast(ctypes.byref(app), ctypes.c_void_p))
-    vk.vkCreateInstance.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
-                                    ctypes.POINTER(ctypes.c_void_p)]
+    app = VkApplicationInfo(
+        sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        pApplicationName = b"amd_ci_memory_report",
+        pEngineName = b"amd_ci",
+        apiVersion = api_version,
+    )
+    ci = VkInstanceCreateInfo(
+        sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        pApplicationInfo = ctypes.cast(ctypes.byref(app), ctypes.c_void_p),
+    )
+    vk.vkCreateInstance.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
     vk.vkCreateInstance.restype = ctypes.c_int
     inst = ctypes.c_void_p()
     rc = vk.vkCreateInstance(ctypes.byref(ci), None, ctypes.byref(inst))
@@ -455,9 +556,11 @@ def read_vulkan_raw() -> dict:
         return out
 
     try:
-        vk.vkEnumeratePhysicalDevices.argtypes = [ctypes.c_void_p,
-                                                  ctypes.POINTER(ctypes.c_uint32),
-                                                  ctypes.POINTER(ctypes.c_void_p)]
+        vk.vkEnumeratePhysicalDevices.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
         vk.vkEnumeratePhysicalDevices.restype = ctypes.c_int
         count = ctypes.c_uint32(0)
         vk.vkEnumeratePhysicalDevices(inst, ctypes.byref(count), None)
@@ -469,7 +572,11 @@ def read_vulkan_raw() -> dict:
         vk.vkGetPhysicalDeviceMemoryProperties.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         vk.vkGetPhysicalDeviceMemoryProperties.restype = None
         vk.vkEnumerateDeviceExtensionProperties.argtypes = [
-            ctypes.c_void_p, ctypes.c_char_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_void_p,
+        ]
         vk.vkEnumerateDeviceExtensionProperties.restype = ctypes.c_int
         mem2 = _memory_properties2(vk, inst)
 
@@ -482,15 +589,18 @@ def read_vulkan_raw() -> dict:
             vk.vkEnumerateDeviceExtensionProperties(pd, None, ctypes.byref(ext_count), None)
             exts = (VkExtensionProperties * max(1, ext_count.value))()
             vk.vkEnumerateDeviceExtensionProperties(pd, None, ctypes.byref(ext_count), exts)
-            names = {e.extensionName.decode("utf-8", "replace") for e in exts[:ext_count.value]}
+            names = {e.extensionName.decode("utf-8", "replace") for e in exts[: ext_count.value]}
             has_budget = "VK_EXT_memory_budget" in names
 
             budget = VkPhysicalDeviceMemoryBudgetPropertiesEXT(
-                sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT)
+                sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT
+            )
             mp2 = VkPhysicalDeviceMemoryProperties2(
                 sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
-                pNext = ctypes.cast(ctypes.byref(budget), ctypes.c_void_p) if (
-                    has_budget and mem2) else None)
+                pNext = ctypes.cast(ctypes.byref(budget), ctypes.c_void_p)
+                if (has_budget and mem2)
+                else None,
+            )
             if mem2:
                 mem2(pd, ctypes.byref(mp2))
                 mp = mp2.memoryProperties
@@ -500,37 +610,49 @@ def read_vulkan_raw() -> dict:
 
             heaps = []
             for h in range(mp.memoryHeapCount):
-                row = {"index": h, "size_bytes": int(mp.memoryHeaps[h].size),
-                       "flags": int(mp.memoryHeaps[h].flags),
-                       "device_local": bool(mp.memoryHeaps[h].flags
-                                            & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT),
-                       "multi_instance": bool(mp.memoryHeaps[h].flags
-                                              & VK_MEMORY_HEAP_MULTI_INSTANCE_BIT)}
+                row = {
+                    "index": h,
+                    "size_bytes": int(mp.memoryHeaps[h].size),
+                    "flags": int(mp.memoryHeaps[h].flags),
+                    "device_local": bool(mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT),
+                    "multi_instance": bool(
+                        mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_MULTI_INSTANCE_BIT
+                    ),
+                }
                 if has_budget and mem2:
                     row["budget_bytes"] = int(budget.heapBudget[h])
                     row["usage_bytes"] = int(budget.heapUsage[h])
                 heaps.append(row)
-            types = [{"index": t, "heap": int(mp.memoryTypes[t].heapIndex),
-                      "flags": int(mp.memoryTypes[t].propertyFlags),
-                      "names": _flag_names(int(mp.memoryTypes[t].propertyFlags))}
-                     for t in range(mp.memoryTypeCount)]
+            types = [
+                {
+                    "index": t,
+                    "heap": int(mp.memoryTypes[t].heapIndex),
+                    "flags": int(mp.memoryTypes[t].propertyFlags),
+                    "names": _flag_names(int(mp.memoryTypes[t].propertyFlags)),
+                }
+                for t in range(mp.memoryTypeCount)
+            ]
             local = [h["size_bytes"] for h in heaps if h["device_local"]]
-            rows.append({
-                "index": i,
-                "name": props.deviceName.decode("utf-8", "replace"),
-                "type": VK_DEVICE_TYPES.get(int(props.deviceType), int(props.deviceType)),
-                "vendor_id": hex(int(props.vendorID)), "device_id": hex(int(props.deviceID)),
-                "api_version": f"{props.apiVersion >> 22}.{(props.apiVersion >> 12) & 0x3FF}"
-                               f".{props.apiVersion & 0xFFF}",
-                "driver_version": int(props.driverVersion),
-                "memory_budget_ext": has_budget,
-                "heaps": heaps, "memory_types": types,
-                # The two candidate readings, side by side, so the over-report is
-                # visible without recomputing anything downstream.
-                "device_local_sum_bytes": sum(local),
-                "device_local_max_bytes": max(local) if local else 0,
-                "all_heaps_sum_bytes": sum(h["size_bytes"] for h in heaps),
-            })
+            rows.append(
+                {
+                    "index": i,
+                    "name": props.deviceName.decode("utf-8", "replace"),
+                    "type": VK_DEVICE_TYPES.get(int(props.deviceType), int(props.deviceType)),
+                    "vendor_id": hex(int(props.vendorID)),
+                    "device_id": hex(int(props.deviceID)),
+                    "api_version": f"{props.apiVersion >> 22}.{(props.apiVersion >> 12) & 0x3FF}"
+                    f".{props.apiVersion & 0xFFF}",
+                    "driver_version": int(props.driverVersion),
+                    "memory_budget_ext": has_budget,
+                    "heaps": heaps,
+                    "memory_types": types,
+                    # The two candidate readings, side by side, so the over-report is
+                    # visible without recomputing anything downstream.
+                    "device_local_sum_bytes": sum(local),
+                    "device_local_max_bytes": max(local) if local else 0,
+                    "all_heaps_sum_bytes": sum(h["size_bytes"] for h in heaps),
+                }
+            )
         out["devices"] = rows
     finally:
         try:
@@ -543,8 +665,7 @@ def read_vulkan_raw() -> dict:
 
 def _memory_properties2(vk, inst):
     """vkGetPhysicalDeviceMemoryProperties2, statically or through the loader."""
-    for name in ("vkGetPhysicalDeviceMemoryProperties2",
-                 "vkGetPhysicalDeviceMemoryProperties2KHR"):
+    for name in ("vkGetPhysicalDeviceMemoryProperties2", "vkGetPhysicalDeviceMemoryProperties2KHR"):
         try:
             fn = getattr(vk, name)
             fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
@@ -555,8 +676,10 @@ def _memory_properties2(vk, inst):
     try:
         vk.vkGetInstanceProcAddr.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         vk.vkGetInstanceProcAddr.restype = ctypes.c_void_p
-        for name in (b"vkGetPhysicalDeviceMemoryProperties2",
-                     b"vkGetPhysicalDeviceMemoryProperties2KHR"):
+        for name in (
+            b"vkGetPhysicalDeviceMemoryProperties2",
+            b"vkGetPhysicalDeviceMemoryProperties2KHR",
+        ):
             addr = vk.vkGetInstanceProcAddr(inst, name)
             if addr:
                 proto = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
@@ -568,20 +691,23 @@ def _memory_properties2(vk, inst):
 
 # ------------------------------------------------------------------- ggml Vulkan
 
+
 def read_ggml_vulkan(bin_dir: Path) -> dict:
     """What ggml reports, which is what llama.cpp and Studio place against.
 
     Same load path as Studio's own `_vulkan_probe.py`, in a child process, so a
     driver that dies taking its instance with it does not take the rest of the
     report."""
-    r = run([sys.executable, str(Path(__file__).resolve()), "--ggml-vulkan-only", str(bin_dir)],
-            300)
+    r = run(
+        [sys.executable, str(Path(__file__).resolve()), "--ggml-vulkan-only", str(bin_dir)], 300
+    )
     out: dict = {"bin_dir": str(bin_dir), "rc": r.get("rc"), "stderr": r.get("stderr", "")}
     if r.get("rc") != 0:
         # A directory without the Vulkan backend is a wrong argument, not a
         # machine with no Vulkan memory; say so instead of returning no devices.
-        raise RuntimeError(f"ggml Vulkan child rc={r.get('rc')}: "
-                           f"{(r.get('stderr') or '').strip()[:300]}")
+        raise RuntimeError(
+            f"ggml Vulkan child rc={r.get('rc')}: " f"{(r.get('stderr') or '').strip()[:300]}"
+        )
     try:
         out["devices"] = json.loads(r.get("stdout") or "[]")
     except json.JSONDecodeError as e:
@@ -607,7 +733,10 @@ def ggml_vulkan_child(bin_dir: str) -> int:
     lib = ctypes.CDLL(str(vk_path), mode = mode)
     lib.ggml_backend_vk_get_device_count.restype = ctypes.c_int
     lib.ggml_backend_vk_get_device_memory.argtypes = [
-        ctypes.c_int, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
     lib.ggml_backend_vk_get_device_memory.restype = None
     count = lib.ggml_backend_vk_get_device_count()
 
@@ -635,16 +764,28 @@ def ggml_vulkan_child(bin_dir: str) -> int:
     for i in range(count):
         free_b, total_b = ctypes.c_size_t(0), ctypes.c_size_t(0)
         lib.ggml_backend_vk_get_device_memory(i, ctypes.byref(free_b), ctypes.byref(total_b))
-        rows.append({"index": i, "free_bytes": free_b.value, "total_bytes": total_b.value,
-                     "ggml_dev_type": types.get(i), "is_igpu": types.get(i) == 2,
-                     "name": names.get(i, "")})
+        rows.append(
+            {
+                "index": i,
+                "free_bytes": free_b.value,
+                "total_bytes": total_b.value,
+                "ggml_dev_type": types.get(i),
+                "is_igpu": types.get(i) == 2,
+                "name": names.get(i, ""),
+            }
+        )
     print(json.dumps(rows))
     return 0
 
 
 # --------------------------------------------------------------------------- fit
 
-def read_fit(bin_dir: Path, model: str | None, env_extra: dict | None = None) -> dict:
+
+def read_fit(
+    bin_dir: Path,
+    model: str | None,
+    env_extra: dict | None = None,
+) -> dict:
     exe = ".exe" if IS_WIN else ""
     env = dict(os.environ)
     if not IS_WIN:
@@ -662,13 +803,25 @@ def read_fit(bin_dir: Path, model: str | None, env_extra: dict | None = None) ->
 
 # ----------------------------------------------------------------- allocation cap
 
-def alloc_once_subprocess(hip_dir: Path | None, nbytes: int, device: int,
-                          timeout: int = 900, settle: float = 2.0) -> dict:
+
+def alloc_once_subprocess(
+    hip_dir: Path | None,
+    nbytes: int,
+    device: int,
+    timeout: int = 900,
+    settle: float = 2.0,
+) -> dict:
     """One candidate, one process. HIP's Windows free-memory accounting is
     process-scoped, so a stale allocator state would otherwise leak between
     candidates and turn a cap into a fragmentation measurement."""
-    cmd = [sys.executable, str(Path(__file__).resolve()), "--try-alloc", str(nbytes),
-           "--alloc-device", str(device)]
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--try-alloc",
+        str(nbytes),
+        "--alloc-device",
+        str(device),
+    ]
     if hip_dir:
         cmd += ["--hip-dir", str(hip_dir)]
     r = run(cmd, timeout)
@@ -678,13 +831,23 @@ def alloc_once_subprocess(hip_dir: Path | None, nbytes: int, device: int,
     try:
         return json.loads((r.get("stdout") or "").strip().splitlines()[-1])
     except Exception:  # noqa: BLE001
-        return {"bytes": nbytes, "ok": False, "stage": "child",
-                "error": f"rc={r.get('rc')} {(r.get('stderr') or '')[-400:]}"}
+        return {
+            "bytes": nbytes,
+            "ok": False,
+            "stage": "child",
+            "error": f"rc={r.get('rc')} {(r.get('stderr') or '')[-400:]}",
+        }
 
 
-def read_alloc_cap(hip_dir: Path | None, lo_gib: float, hi_gib: float,
-                   reps: int, device: int, resolution_gib: float,
-                   attempt_timeout: int = 900) -> dict:
+def read_alloc_cap(
+    hip_dir: Path | None,
+    lo_gib: float,
+    hi_gib: float,
+    reps: int,
+    device: int,
+    resolution_gib: float,
+    attempt_timeout: int = 900,
+) -> dict:
     """Bisect for the largest allocation that succeeds and reads back.
 
     Ascending and descending confirmation around the boundary, because an
@@ -698,12 +861,19 @@ def read_alloc_cap(hip_dir: Path | None, lo_gib: float, hi_gib: float,
         attempts.append(res)
         return bool(res.get("ok"))
 
-    out: dict = {"hip_dir": str(hip_dir) if hip_dir else None, "device": device,
-                 "search_lo_gib": lo_gib, "search_hi_gib": hi_gib,
-                 "resolution_gib": resolution_gib, "attempt_timeout_s": attempt_timeout}
+    out: dict = {
+        "hip_dir": str(hip_dir) if hip_dir else None,
+        "device": device,
+        "search_lo_gib": lo_gib,
+        "search_hi_gib": hi_gib,
+        "resolution_gib": resolution_gib,
+        "attempt_timeout_s": attempt_timeout,
+    }
     if not attempt(lo_gib):
-        out["error"] = (f"the {lo_gib} GiB floor already fails, so there is no interval to "
-                        f"bisect; this is a broken runtime, not a cap")
+        out["error"] = (
+            f"the {lo_gib} GiB floor already fails, so there is no interval to "
+            f"bisect; this is a broken runtime, not a cap"
+        )
         out["attempts"] = attempts
         return out
     if attempt(hi_gib):
@@ -745,10 +915,14 @@ def main() -> int:
     ap.add_argument("--state", default = "solo")
     ap.add_argument("--checkout", default = "", help = "directory holding the llama.cpp binaries")
     ap.add_argument("--out", default = "")
-    ap.add_argument("--hip-dir", default = "",
-                    help = "directory whose amdhip64_7.dll is loaded; defaults to --checkout")
-    ap.add_argument("--vulkan-dir", default = "",
-                    help = "directory holding ggml-vulkan (the vulkan release)")
+    ap.add_argument(
+        "--hip-dir",
+        default = "",
+        help = "directory whose amdhip64_7.dll is loaded; defaults to --checkout",
+    )
+    ap.add_argument(
+        "--vulkan-dir", default = "", help = "directory holding ggml-vulkan (the vulkan release)"
+    )
     ap.add_argument("--fit-model", default = "")
     ap.add_argument("--sections", default = "host,hip,vulkan_raw,ggml_vulkan,fit")
     ap.add_argument("--alloc-lo-gib", type = float, default = 1.0)
@@ -756,12 +930,23 @@ def main() -> int:
     ap.add_argument("--alloc-resolution-gib", type = float, default = 0.5)
     ap.add_argument("--alloc-reps", type = int, default = 2)
     ap.add_argument("--alloc-device", type = int, default = 0)
-    ap.add_argument("--alloc-attempt-timeout", type = int, default = 900,
-                    help = "seconds one candidate allocation may take before it is a failure")
-    ap.add_argument("--try-alloc", type = int, default = 0,
-                    help = "internal: attempt one allocation and print the JSON result")
-    ap.add_argument("--ggml-vulkan-only", default = "",
-                    help = "internal: print the ggml Vulkan inventory of this directory")
+    ap.add_argument(
+        "--alloc-attempt-timeout",
+        type = int,
+        default = 900,
+        help = "seconds one candidate allocation may take before it is a failure",
+    )
+    ap.add_argument(
+        "--try-alloc",
+        type = int,
+        default = 0,
+        help = "internal: attempt one allocation and print the JSON result",
+    )
+    ap.add_argument(
+        "--ggml-vulkan-only",
+        default = "",
+        help = "internal: print the ggml Vulkan inventory of this directory",
+    )
     a = ap.parse_args()
 
     if a.ggml_vulkan_only:
@@ -771,8 +956,12 @@ def main() -> int:
         try:
             res = Hip(hip_dir).try_alloc(a.try_alloc, a.alloc_device)
         except Exception as e:  # noqa: BLE001
-            res = {"bytes": a.try_alloc, "ok": False, "stage": "load",
-                   "error": f"{type(e).__name__}: {e}"}
+            res = {
+                "bytes": a.try_alloc,
+                "ok": False,
+                "stage": "load",
+                "error": f"{type(e).__name__}: {e}",
+            }
         print(json.dumps(res))
         return 0 if res.get("ok") else 3
 
@@ -784,13 +973,22 @@ def main() -> int:
     if unknown:
         raise SystemExit(f"unknown section(s) {unknown}; choose from {list(SECTIONS)}")
 
-    res: dict = {"state": a.state, "checkout": a.checkout, "hip_dir": str(hip_dir or ""),
-                 "vulkan_dir": a.vulkan_dir, "sections_requested": wanted,
-                 "platform": platform.platform(), "sections": {}, "errors": {}}
+    res: dict = {
+        "state": a.state,
+        "checkout": a.checkout,
+        "hip_dir": str(hip_dir or ""),
+        "vulkan_dir": a.vulkan_dir,
+        "sections_requested": wanted,
+        "platform": platform.platform(),
+        "sections": {},
+        "errors": {},
+    }
     if hip_dir:
         name = "amdhip64_7.dll" if IS_WIN else "libamdhip64.so"
         found = find_lib(hip_dir, name)
-        res["hip_dll_file"] = describe_file(found) if found else {"error": f"{name} not in {hip_dir}"}
+        res["hip_dll_file"] = (
+            describe_file(found) if found else {"error": f"{name} not in {hip_dir}"}
+        )
 
     todo = {
         "host": lambda: read_host(),
@@ -798,9 +996,15 @@ def main() -> int:
         "vulkan_raw": lambda: read_vulkan_raw(),
         "ggml_vulkan": lambda: read_ggml_vulkan(vulkan_dir or checkout),
         "fit": lambda: read_fit(checkout, a.fit_model or None),
-        "alloc_cap": lambda: read_alloc_cap(hip_dir, a.alloc_lo_gib, a.alloc_hi_gib,
-                                            a.alloc_reps, a.alloc_device, a.alloc_resolution_gib,
-                                            a.alloc_attempt_timeout),
+        "alloc_cap": lambda: read_alloc_cap(
+            hip_dir,
+            a.alloc_lo_gib,
+            a.alloc_hi_gib,
+            a.alloc_reps,
+            a.alloc_device,
+            a.alloc_resolution_gib,
+            a.alloc_attempt_timeout,
+        ),
     }
     for name in wanted:
         if name in ("ggml_vulkan", "fit") and not (vulkan_dir or checkout):
@@ -811,8 +1015,11 @@ def main() -> int:
             res["sections"][name] = todo[name]()
         except Exception as e:  # noqa: BLE001
             res["errors"][name] = f"{type(e).__name__}: {e}"
-        print(f"== {name}: {round(time.monotonic() - t0, 1)}s"
-              f"{' ERROR ' + res['errors'][name] if name in res['errors'] else ''}", flush = True)
+        print(
+            f"== {name}: {round(time.monotonic() - t0, 1)}s"
+            f"{' ERROR ' + res['errors'][name] if name in res['errors'] else ''}",
+            flush = True,
+        )
 
     res["ok"] = not res["errors"]
     text = json.dumps(res, indent = 2)

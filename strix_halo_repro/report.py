@@ -27,7 +27,7 @@ import argparse
 import json
 from pathlib import Path
 
-GIB = 1024 ** 3
+GIB = 1024**3
 # Two readings of the same pool never match to the byte: drivers round, reserve
 # and report at different moments. 2% is wide enough for that and far narrower
 # than the gaps being distinguished (a heap sum is 2x-3x a single heap).
@@ -53,35 +53,51 @@ def host_numbers(doc: dict) -> dict:
         size = adapter.get("qw_memory_size")
         if isinstance(size, int):
             vram = max(vram, size)
-    return {"ram_gib": gib(host.get("total_phys_bytes") or host.get("memtotal_bytes")),
-            "registry_vram_gib": gib(vram),
-            "pagefile_gib": gib(host.get("total_pagefile_bytes"))}
+    return {
+        "ram_gib": gib(host.get("total_phys_bytes") or host.get("memtotal_bytes")),
+        "registry_vram_gib": gib(vram),
+        "pagefile_gib": gib(host.get("total_pagefile_bytes")),
+    }
 
 
 def rows_for(name: str, doc: dict) -> list[str]:
     out = []
     h = host_numbers(doc)
     out.append(f"| {name} | host: physical RAM | {h['ram_gib']} GiB | GlobalMemoryStatusEx |")
-    out.append(f"| {name} | host: registry VRAM (carve-out) | {h['registry_vram_gib']} GiB | "
-               f"HardwareInformation.qwMemorySize |")
+    out.append(
+        f"| {name} | host: registry VRAM (carve-out) | {h['registry_vram_gib']} GiB | "
+        f"HardwareInformation.qwMemorySize |"
+    )
     for d in sec(doc, "hip").get("devices") or []:
-        out.append(f"| {name} | HIP device {d.get('index')} total | "
-                   f"{gib(d.get('total_bytes') or d.get('device_total_bytes'))} GiB | "
-                   f"hipMemGetInfo / hipDeviceTotalMem ({d.get('name', '')}) |")
-        out.append(f"| {name} | HIP device {d.get('index')} free | {gib(d.get('free_bytes'))} GiB "
-                   f"| process-scoped on Windows, an optimistic ceiling |")
+        out.append(
+            f"| {name} | HIP device {d.get('index')} total | "
+            f"{gib(d.get('total_bytes') or d.get('device_total_bytes'))} GiB | "
+            f"hipMemGetInfo / hipDeviceTotalMem ({d.get('name', '')}) |"
+        )
+        out.append(
+            f"| {name} | HIP device {d.get('index')} free | {gib(d.get('free_bytes'))} GiB "
+            f"| process-scoped on Windows, an optimistic ceiling |"
+        )
     for d in sec(doc, "vulkan_raw").get("devices") or []:
-        heaps = ", ".join(f"{gib(x['size_bytes'])}{'L' if x['device_local'] else ''}"
-                          for x in d.get("heaps") or [])
-        out.append(f"| {name} | Vulkan raw heaps ({d.get('type')}) | {heaps} GiB | "
-                   f"vkGetPhysicalDeviceMemoryProperties2, L = DEVICE_LOCAL |")
-        out.append(f"| {name} | Vulkan device-local sum / max | "
-                   f"{gib(d.get('device_local_sum_bytes'))} / "
-                   f"{gib(d.get('device_local_max_bytes'))} GiB | the two candidate readings |")
+        heaps = ", ".join(
+            f"{gib(x['size_bytes'])}{'L' if x['device_local'] else ''}"
+            for x in d.get("heaps") or []
+        )
+        out.append(
+            f"| {name} | Vulkan raw heaps ({d.get('type')}) | {heaps} GiB | "
+            f"vkGetPhysicalDeviceMemoryProperties2, L = DEVICE_LOCAL |"
+        )
+        out.append(
+            f"| {name} | Vulkan device-local sum / max | "
+            f"{gib(d.get('device_local_sum_bytes'))} / "
+            f"{gib(d.get('device_local_max_bytes'))} GiB | the two candidate readings |"
+        )
     for d in sec(doc, "ggml_vulkan").get("devices") or []:
-        out.append(f"| {name} | ggml Vulkan total (what llama.cpp places against) | "
-                   f"{gib(d.get('total_bytes'))} GiB | ggml_backend_vk_get_device_memory, "
-                   f"igpu={d.get('is_igpu')} |")
+        out.append(
+            f"| {name} | ggml Vulkan total (what llama.cpp places against) | "
+            f"{gib(d.get('total_bytes'))} GiB | ggml_backend_vk_get_device_memory, "
+            f"igpu={d.get('is_igpu')} |"
+        )
         out.append(f"| {name} | ggml Vulkan free | {gib(d.get('free_bytes'))} GiB | same call |")
     for line in (sec(doc, "fit").get("list_devices") or {}).get("stdout", "").splitlines():
         if "MiB" in line:
@@ -107,9 +123,14 @@ def statements(name: str, doc: dict) -> list[tuple[str, bool | None, str]]:
     if ggml_total is None or physical is None:
         out.append((f"{name}: over_report", None, "no ggml Vulkan total or no host RAM reading"))
     else:
-        out.append((f"{name}: over_report", ggml_total > physical,
-                    f"ggml reports {ggml_total} GiB where the machine holds {physical} GiB "
-                    f"({h['ram_gib']} GiB visible plus a {h['registry_vram_gib']} GiB carve-out)"))
+        out.append(
+            (
+                f"{name}: over_report",
+                ggml_total > physical,
+                f"ggml reports {ggml_total} GiB where the machine holds {physical} GiB "
+                f"({h['ram_gib']} GiB visible plus a {h['registry_vram_gib']} GiB carve-out)",
+            )
+        )
 
     local_sum = gib((vk_raw or {}).get("device_local_sum_bytes"))
     local_max = gib((vk_raw or {}).get("device_local_max_bytes"))
@@ -121,28 +142,43 @@ def statements(name: str, doc: dict) -> list[tuple[str, bool | None, str]]:
         # ones, and on Strix Halo the host-visible aperture is its own heap. An
         # earlier version compared against the device-local sum alone and so
         # answered NO on a machine where the summation was the whole mechanism.
-        which = ("all heaps" if close(ggml_total, all_sum)
-                 else "the device-local heaps" if close(ggml_total, local_sum) else None)
-        out.append((f"{name}: sums_heaps",
-                    bool(which) and not close(ggml_total, local_max),
-                    f"ggml {ggml_total} GiB against {all_sum} GiB over all heaps, "
-                    f"{local_sum} GiB device-local and {local_max} GiB largest"
-                    + (f": it is {which}" if which else ": it matches none of them")))
+        which = (
+            "all heaps"
+            if close(ggml_total, all_sum)
+            else "the device-local heaps"
+            if close(ggml_total, local_sum)
+            else None
+        )
+        out.append(
+            (
+                f"{name}: sums_heaps",
+                bool(which) and not close(ggml_total, local_max),
+                f"ggml {ggml_total} GiB against {all_sum} GiB over all heaps, "
+                f"{local_sum} GiB device-local and {local_max} GiB largest"
+                + (f": it is {which}" if which else ": it matches none of them"),
+            )
+        )
 
     hip_total = gib((hip or {}).get("total_bytes") or (hip or {}).get("device_total_bytes"))
     if hip_total is None or h["registry_vram_gib"] is None:
         out.append((f"{name}: hip_is_vgm_only", None, "no HIP total or no registry VRAM"))
     else:
-        out.append((f"{name}: hip_is_vgm_only", close(hip_total, h["registry_vram_gib"]),
-                    f"HIP {hip_total} GiB against a {h['registry_vram_gib']} GiB carve-out"))
+        out.append(
+            (
+                f"{name}: hip_is_vgm_only",
+                close(hip_total, h["registry_vram_gib"]),
+                f"HIP {hip_total} GiB against a {h['registry_vram_gib']} GiB carve-out",
+            )
+        )
     return out
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("reports", nargs = "+", help = "probe JSON files, name=path or path")
-    ap.add_argument("--require", default = "",
-                    help = "comma-separated statements that must be decidable (not None)")
+    ap.add_argument(
+        "--require", default = "", help = "comma-separated statements that must be decidable (not None)"
+    )
     a = ap.parse_args()
 
     docs: dict[str, dict] = {}
@@ -175,15 +211,19 @@ def main() -> int:
         if doc.get("_error"):
             continue
         for label, ok, why in statements(name, doc):
-            print(f"| {label} | {'yes' if ok else ('NO' if ok is False else 'undecided')} | {why} |")
+            print(
+                f"| {label} | {'yes' if ok else ('NO' if ok is False else 'undecided')} | {why} |"
+            )
             if ok is None:
                 undecided.append(label)
 
     required = [s.strip() for s in a.require.split(",") if s.strip()]
     blocking = [u for u in undecided if any(u.endswith(": " + r) for r in required)]
     if blocking:
-        print(f"\n**A required statement could not be decided: {blocking}.** An undecidable "
-              f"statement is a missing reading, not a negative result.")
+        print(
+            f"\n**A required statement could not be decided: {blocking}.** An undecidable "
+            f"statement is a missing reading, not a negative result."
+        )
         return 1
     return 0
 

@@ -62,6 +62,7 @@ def find_bin_dir(root: Path) -> Path | None:
             return h.parent
     return None
 
+
 def server_path(bin_dir: Path) -> Path:
     for m in MARKERS:
         if (bin_dir / m).is_file():
@@ -72,8 +73,7 @@ def server_path(bin_dir: Path) -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required = True)
-    ap.add_argument("--dest", required = True, type = Path,
-                    help = "directory to extract into")
+    ap.add_argument("--dest", required = True, type = Path, help = "directory to extract into")
     ap.add_argument("--out", type = Path, default = None)
     args = ap.parse_args()
 
@@ -95,13 +95,21 @@ def main() -> int:
         for f in bin_dir.iterdir():
             if f.is_file() and (f.name.startswith("llama-") or f.name.startswith("test-")):
                 f.chmod(f.stat().st_mode | 0o111)
-        info["binaries"] = sorted(p.name for p in bin_dir.iterdir()
-                                  if p.is_file() and p.name.startswith(("llama-", "test-")))
+        info["binaries"] = sorted(
+            p.name
+            for p in bin_dir.iterdir()
+            if p.is_file() and p.name.startswith(("llama-", "test-"))
+        )
         info["has_test_backend_ops"] = (bin_dir / "test-backend-ops").is_file()
         env = {"LD_LIBRARY_PATH": str(bin_dir)}
         try:
-            p = subprocess.run([str(server_path(bin_dir)), "--version"], capture_output = True,
-                               text = True, timeout = 300, env = env)
+            p = subprocess.run(
+                [str(server_path(bin_dir)), "--version"],
+                capture_output = True,
+                text = True,
+                timeout = 300,
+                env = env,
+            )
             info["version"] = ((p.stdout or "") + (p.stderr or "")).strip()[:400]
         except Exception as e:  # noqa: BLE001
             info["version_error"] = f"{type(e).__name__}: {e}"
