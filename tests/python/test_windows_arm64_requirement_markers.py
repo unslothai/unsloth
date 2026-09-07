@@ -133,9 +133,7 @@ def test_no_package_is_dropped_on_a_non_woa_platform(label, reqs):
             continue  # a constraints file may legitimately have no cap in force
         if len({tuple(sorted(r.extras)) for r in group}) > 1:
             continue
-        # Only the complement-pair shape: one row keyed ON win-ARM64 and one keyed OFF
-        # it. triton-windows is two disjoint Windows-only rows instead, and is correctly
-        # absent on Linux, so it is not what this invariant is about.
+        # Only the complement-pair shape; triton-windows is two disjoint Windows-only rows.
         markers = [str(r.marker).replace("'", '"') for r in group if r.marker is not None]
         if not (
             any('platform_machine == "ARM64"' in m for m in markers)
@@ -189,11 +187,8 @@ def test_no_row_is_dead_on_arrival(label, reqs):
 # Which packages carry a Windows-on-ARM row, PER SOURCE, and in which shape.
 #   "split"   -- a positive `platform_machine == "ARM64"` row giving a different version
 #   "dropped" -- only the negative row, so the package is absent on Windows on ARM
-# Checked per source rather than globally on purpose: studio.txt and pyproject[studio]
-# mirror each other, so a global check stays green when only one of them loses a row,
-# which is exactly the drift the mirroring exists to prevent. And the shape matters:
-# deleting a split's positive row leaves its negative twin behind, so "some row mentions
-# ARM64" would still be satisfied while Windows on ARM had quietly lost its pin.
+# Checked per source rather than globally: studio.txt and pyproject[studio] mirror each other, so
+# a global check stays green when one loses a row. The shape matters for the same reason.
 WOA_ROWS_BY_SOURCE = {
     "extras.txt": {"av": "split", "scikit-learn": "split"},
     "no-torch-runtime.txt": {"pymupdf": "split", "hf-transfer": "dropped"},
@@ -234,12 +229,8 @@ def test_the_woa_split_is_used_where_we_claim_it_is(label, expected):
             )
 
 
-# A package's OWN requires-python floor, for rows whose specifier pins into a range that
-# does not exist for every interpreter this project supports. Only entries where the floor
-# is above our own 3.9 are worth listing; the rest cannot make a row unsatisfiable.
-#
-# Verified against PyPI when added. pandas 3.x is >=3.11 and its win_arm64 wheels start at
-# cp311, which is exactly why the Windows-on-ARM row exists.
+# A package's OWN requires-python floor, for rows pinning into a range that does not exist for
+# every interpreter. Only floors above our own 3.9 can make a row unsatisfiable.
 PACKAGE_PYTHON_FLOORS = {
     "pandas": [(SpecifierSet(">=3.0"), (3, 11))],
 }
@@ -318,11 +309,8 @@ def _skip_list_module():
     return module
 
 
-# Scoped to `studio` deliberately. It is the extra a Windows-on-ARM user installs, the one
-# the installer's own path uses, and the only one whose rows are a claim about this
-# platform. The other 190-odd are x64 recipes -- `cu130onlytorch291` pins an explicit
-# win_amd64 wheel URL and an x64-only torch, `colab-*` targets x64 Linux -- so requiring an
-# ARM64 marker there would assert something those extras never promised.
+# Scoped to `studio` deliberately: it is the extra a Windows-on-ARM user installs. The other
+# 190-odd are x64 recipes, so an ARM64 marker there would assert what they never promised.
 WOA_INSTALLABLE_EXTRAS = ["studio"]
 
 

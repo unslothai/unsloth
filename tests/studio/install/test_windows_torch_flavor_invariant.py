@@ -624,9 +624,8 @@ class TestSetupPs1WindowsOnArmCudaPreservation:
         ), "a cu129 mirror pin is as much an instruction as a /cpu one"
 
     def test_the_exemption_reads_a_variable_that_is_always_assigned(self):
-        # Not $_pinLeaf: that is assigned only inside `if ($_pinnedIdx)`, so reading it
-        # here would be fatal under a caller's Set-StrictMode. $_pinnedIdx itself is
-        # assigned unconditionally above.
+        # Not $_pinLeaf: it is assigned only inside `if ($_pinnedIdx)`, so reading it here would
+        # be fatal under Set-StrictMode. $_pinnedIdx is assigned unconditionally above.
         block = _SETUP_SRC[: _SETUP_SRC.index(self._GUARD)]
         assert "$_pinnedIdx = Get-PinnedTorchIndexUrl" in block
         assert "$_pinLeaf" not in self._condition()

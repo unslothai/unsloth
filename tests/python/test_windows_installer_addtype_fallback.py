@@ -1612,20 +1612,10 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
     assert (data / "studio.port").exists()
 
 
-# Split-Path's -LiteralPath lives in its own parameter set in Windows PowerShell 5.1, the
-# interpreter the `irm ... | iex` one-liner runs under on a stock Windows box. That set carries
-# only -Resolve and -Credential; -Parent belongs to the -Path set, so the two named together
-# are an unresolvable parameter set and the call throws AmbiguousParameterSet at runtime
-# rather than at parse time -- which is why it reached a release.
-#
-# scripts/uninstall.ps1 had eight of these. Two sat outside a try/catch and printed a red
-# error while leaving the derived path $null, so the legacy sibling <parent>\stable-diffusion.cpp
-# was never removed; the rest were swallowed, which quietly killed studio.conf-based root
-# discovery (_RootFromConf) and the "parent of USERPROFILE" rule in the _IsUnsafeRoot deny list.
-#
-# -LiteralPath on its own already splits off the parent, so the fix is to drop -Parent, not to
-# switch to -Path: -Path globs, and an install root containing [ ] would be read as a wildcard.
-#
+# Split-Path's -LiteralPath lives in its own parameter set in Windows PowerShell 5.1, so naming
+# -Parent with it throws AmbiguousParameterSet at runtime rather than at parse time, which is why
+# eight of them reached a release in scripts/uninstall.ps1. -LiteralPath alone already splits off
+# the parent, and -Path globs, so an install root containing [ ] would be read as a wildcard.
 # Static, because CI has no Windows PowerShell 5.1 to run the scripts under.
 _SPLIT_PATH_LITERAL_PARENT = re.compile(
     r"Split-Path\b[^\r\n|;]*?-LiteralPath\b[^\r\n|;]*?-Parent\b"

@@ -795,10 +795,9 @@ def _run_flavor_invariant(
         patch.object(stack_mod, "_RECORDED_TORCH_TAG", recorded),
         patch.object(stack_mod.platform, "machine", return_value = "AMD64"),
         patch.object(stack_mod, "_is_windows_arm64", return_value = win_arm64),
-        # The interpreter's arch, which the CUDA-preservation shortcut reads. A native
-        # ARM64 venv is the only place both are true, and that is the host under test.
-        # They separate on an ARM64 machine running an emulated x64 python, which is
-        # every install predating native support; `win_arm64_interpreter` drives that.
+        # The interpreter's arch, which the CUDA-preservation shortcut reads.
+        # They separate on an ARM64 machine running an emulated x64 python, which is every
+        # install predating native support.
         patch.object(
             stack_mod,
             "_is_win_arm64_interpreter",
@@ -1337,8 +1336,8 @@ class TestWindowsOnArmPreservesCudaOnlyForAnInferredExpectation:
         mock_pip.assert_not_called()
 
     def test_a_probed_cpu_tag_with_no_pin_does_not_downgrade_it(self):
-        # setup.ps1 also publishes "cpu" when its nvidia-smi probe comes back empty; that
-        # is a probe result, so the shortcut keeps the CUDA build as it does off-ARM.
+        # setup.ps1 also publishes "cpu" when its nvidia-smi probe comes back empty, and a probe
+        # result is not evidence, so the shortcut keeps the CUDA build.
         ok, mock_pip = _run_flavor_invariant(
             installed = "2.11.0+cu134",
             expected_env = "cpu",
@@ -2138,8 +2137,7 @@ class TestTheDelegatedRocmRepairKeepsTheArm64Exception:
     def test_the_windows_rocm_install_drops_torchaudio_on_arm64(self):
         source = inspect.getsource(stack_mod._ensure_rocm_torch)
         block = source[source.index("_WINDOWS_ROCM_TORCH_PKG_SPECS.get") :][:1200]
-        # The interpreter's arch, not the machine's: wheel availability is a property of
-        # the venv, and an emulated x64 venv on an ARM64 box can install win_amd64 torchaudio.
+        # The interpreter's arch, not the machine's: an emulated x64 venv installs win_amd64.
         assert (
             "_is_win_arm64_interpreter()" in block
         ), "the delegated ROCm repair needs the same exception as the flavor repair"

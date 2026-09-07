@@ -46,13 +46,9 @@ STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 STACK_LLAMA = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 
 
-# PowerShell's Join-Path uses the HOST separator, so a POSIX literal home builds an owned
-# prefix of "C:\...\unsloth\woa" on Windows and the forward-slash entry it is compared against
-# can never match it. The purge is right either way -- both sides come from the same
-# Join-Path in a real run -- but a test that hardcodes "/" only ever exercises POSIX, and
-# fails on Windows for a reason that has nothing to do with the purge. These tests skip
-# silently where pwsh is absent, which is why that went unnoticed. Build both sides the way
-# the host does, so the same cases now cover the separator the machine actually uses.
+# PowerShell's Join-Path uses the HOST separator, so a hardcoded POSIX home only ever exercises
+# POSIX and fails on Windows for a reason that has nothing to do with the purge. Both sides are
+# built the way the host does, so the cases cover the separator the machine actually uses.
 FAKE_HOME = (
     "C:\\Users\\u\\AppData\\Local\\unsloth" if os.name == "nt" else "/home/u/AppData/Local/unsloth"
 )
@@ -328,9 +324,7 @@ class TestResolverEnvironmentRestore:
         overrides = self._stage(tmp_path)
         got = self._invoke(tmp_path, preset = f"$env:{held} = 'https://mirror.example/whl'")
         assert got["ov"] == str(overrides), f"{held} is unrelated to the overrides"
-        # Round 16: ours is PREPENDED rather than skipped, because standing down left the
-        # staged win_arm64 wheels out of the search entirely. The caller's entry still
-        # has to survive, which is what this test was written to protect.
+        # Ours is PREPENDED rather than skipped, and the caller's entry still has to survive.
         value = got[{"UV_FIND_LINKS": "uvfl", "PIP_FIND_LINKS": "pipfl"}[held]]
         assert "https://mirror.example/whl" in value, "the caller's own value survives"
         assert value.endswith("https://mirror.example/whl"), "and ours goes in front of it"
@@ -683,8 +677,7 @@ class TestTheOptOutBundleSurvivesTheKindCheck:
     @pytest.mark.parametrize(
         "value, expected",
         [
-            # Not opted out: CUDA is preferred, and the CPU bundle the selector falls
-            # back to when no ARM64 CUDA asset exists is valid too.
+            # Not opted out: CUDA is preferred, and the CPU fallback bundle is valid too.
             ("", "windows-arm64-cuda,windows-arm64"),
             ("1", "windows-arm64-cuda,windows-arm64"),
             ("true", "windows-arm64-cuda,windows-arm64"),
@@ -960,8 +953,7 @@ class TestTorchaudioIsOnlyTakenAsAMatchedPair:
 
     def test_the_probe_compares_versions_rather_than_existence(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        # rindex, not index: the first occurrence is the reset at the top of the probe,
-        # which must stay a plain $false so a re-probe cannot inherit an earlier answer.
+        # rindex, not index: the first occurrence is the reset at the top of the probe.
         block = text[text.rindex("$script:WoaTorchAudio = ") :][:400]
         assert "Test-WoaAudioMatchesTorch" in block, (
             "torchaudio was enabled on existence alone, which is how the mismatched "
@@ -1089,9 +1081,8 @@ class TestManifestWriterAndReaderAcceptTheSameSet:
 class TestTheSuppliedPyarrowWheelIsValidated:
     """install.ps1: UNSLOTH_PYARROW_WHEEL decides whether the native path is taken."""
 
-    # A REAL archive. The check opens the file rather than reading its first two bytes,
-    # because a PK header proves nothing about an interrupted download -- which is now
-    # one of the cases below.
+    # A REAL archive: the check opens the file, because a PK header proves nothing about an
+    # interrupted download.
     ZIP = "zip"
     HEADER_ONLY = b"PK\x03\x04" + b"\0" * 64
 
@@ -1145,16 +1136,14 @@ class TestTheSuppliedPyarrowWheelIsValidated:
                 "function Invoke-RestMethod { throw 'no network in this test' }",
                 "$script:WoaWheelhouse = 'https://example.test/wheels'",
                 _function_source(text, "Test-WoaWheelTags"),
-                # Test-WoaPyarrowWheelUsable gates on Test-WoaWheelTagsUsable now, and a
-                # helper the prelude does not lift is a command-not-found that aborts the
+                # A helper the prelude does not lift is a command-not-found that aborts the
                 # statement rather than answering false.
                 _function_source(text, "Test-WoaWheelTagsUsable"),
                 _function_source(text, "Test-WoaVersionAtLeast"),
                 # Every pyarrow candidate is floored against constraints.txt now.
                 '$script:WoaPyarrowFloor = "21.0.0"',
                 _function_source(text, "Test-WoaPyarrowWheelUsable"),
-                # The supplied-wheel branch opens the archive now, so its helper is
-                # needed too; PowerShell does not hoist.
+                # The supplied-wheel branch opens the archive, so its helper is needed too.
                 _function_source(text, "Test-ZipArchiveReadable"),
                 _function_source(text, "Get-WoaPyarrowSource"),
                 f"$env:UNSLOTH_PYARROW_WHEEL = '{wheel}'",
@@ -1307,8 +1296,7 @@ class TestTheProbeAsksForTheInterpretersAbi:
             in text
         )
         # Both re-probes know which interpreter was chosen, so both must answer for it.
-        # The flag is read into a variable first, so the guard can compare it as well as
-        # the minor -- a same-minor free-threaded build has to re-probe too.
+        # The flag is read into a variable first: a same-minor free-threaded build re-probes too.
         assert text.count("Test-PythonFreeThreaded -PythonExe $DetectedPython.Path") == 2
         assert "-FreeThreaded $WoaDetectedFreeThreaded" in text
         assert "-FreeThreaded $_woaNewFreeThreaded" in text
@@ -1527,8 +1515,7 @@ class TestTheRestoreMergesRatherThanStandsDown:
         """The regression: the whole restore used to sit under `if (-not $env:UV_OVERRIDE)`."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         body = _function_source(text, "Restore-WoaResolverEnvironment")
-        # The drop list is read whatever the caller set; only the LAST step -- assigning
-        # ours alone versus combining -- is allowed to look at UV_OVERRIDE.
+        # The drop list is read whatever the caller set; only the LAST step reads UV_OVERRIDE.
         overrides_at = body.index("$safeOverrides = Get-UvSafePath $overrides")
         head = body[:overrides_at]
         assert head.count("$env:UV_OVERRIDE") <= 1, (
@@ -1686,8 +1673,7 @@ class TestTheWheelTagsAreMatchedAsFields:
     def test_no_substring_match_is_left(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert "$tag-$AbiTag*" not in text, "every probe goes through the field parser"
-        # The six pyarrow sites now go through Test-WoaPyarrowWheelUsable, which is a floor
-        # check wrapped around this one, so they still reach the field parser.
+        # The six pyarrow sites go through Test-WoaPyarrowWheelUsable, a floor check around this.
         assert (text.count("Test-WoaWheelTags") + text.count("Test-WoaPyarrowWheelUsable")) >= 7, (
             "the pyarrow probe (supplied wheel, PyPI, local wheelhouse, remote index), "
             "the CUDA wheel scan, and both staging sites"
@@ -1742,8 +1728,7 @@ class TestTheWheelTagsAreMatchedAsFields:
         script = "\n".join(
             [
                 _function_source(text, "Test-WoaWheelTags"),
-                # Test-WoaPyarrowWheelUsable gates on Test-WoaWheelTagsUsable now, and a
-                # helper the prelude does not lift is a command-not-found that aborts the
+                # A helper the prelude does not lift is a command-not-found that aborts the
                 # statement rather than answering false.
                 _function_source(text, "Test-WoaWheelTagsUsable"),
                 f"Write-Output (Test-WoaWheelTags -Name '{name}' -PyTag '{py}' -AbiTag '{abi}')",
@@ -1952,8 +1937,7 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
                 f"function Invoke-RestMethod {{ param([Parameter(ValueFromRemainingArguments=$true)]$a) return @'\n{body}\n'@ }}",
                 "$script:WoaWheelhouse = $null",
                 _function_source(text, "Test-WoaWheelTags"),
-                # Test-WoaPyarrowWheelUsable gates on Test-WoaWheelTagsUsable now, and a
-                # helper the prelude does not lift is a command-not-found that aborts the
+                # A helper the prelude does not lift is a command-not-found that aborts the
                 # statement rather than answering false.
                 _function_source(text, "Test-WoaWheelTagsUsable"),
                 _function_source(text, "Test-WoaWheelTagsUsable"),
@@ -1981,8 +1965,7 @@ class TestAFreeThreadedInterpreterIsPreflightedForAv:
                 "function Invoke-RestMethod { param([Parameter(ValueFromRemainingArguments=$true)]$a) throw 'offline' }",
                 "$script:WoaWheelhouse = $null",
                 _function_source(text, "Test-WoaWheelTags"),
-                # Test-WoaPyarrowWheelUsable gates on Test-WoaWheelTagsUsable now, and a
-                # helper the prelude does not lift is a command-not-found that aborts the
+                # A helper the prelude does not lift is a command-not-found that aborts the
                 # statement rather than answering false.
                 _function_source(text, "Test-WoaWheelTagsUsable"),
                 _function_source(text, "Test-WoaWheelTagsUsable"),
@@ -2026,10 +2009,8 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
             '$env:UV_OVERRIDE = ($_woaOverrideValue -join " ")' in text
         ), "uv splits UV_OVERRIDE on whitespace and combines the files"
 
-    # The rewriter calls [System.IO.Path]::GetFullPath, so on Windows "/opt/corp/ov" comes
-    # back as "C:\\opt\\corp\\ov" with backslashes. os.path.abspath applies the same rule
-    # independently, which keeps the expected value right on every host instead of only on
-    # the POSIX one these were first written on.
+    # The rewriter calls [System.IO.Path]::GetFullPath, so on Windows "/opt/corp/ov" comes back
+    # as "C:\\opt\\corp\\ov". os.path.abspath applies the same rule, so the expectation travels.
     BASE = "/opt/corp/ov"
 
     @staticmethod
@@ -2145,9 +2126,8 @@ class TestACallerOverrideFileKeepsItsOwnDirectory:
         written = managed.read_text(encoding = "utf-8")
         if folded:
             assert value == [str(managed)], why
-            # The include is FLATTENED as it folds, not copied as an "-r" line: its contents
-            # arrive rebased against the directory the include was written in, which is the
-            # only way a conflict discovered one level down can also be removed.
+            # The include is FLATTENED as it folds, rebased against its own directory: the only
+            # way a conflict discovered one level down can also be removed.
             assert (
                 "idna==3.10" in written
             ), "the include's own lines did not come across, so folding dropped them"
@@ -2574,10 +2554,8 @@ class TestAWheelhousePyarrowMustClearTheFloor:
         [
             ("pyarrow-21.0.0-cp313-cp313-win_arm64.whl", "True", "at the floor"),
             ("pyarrow-23.0.1-cp313-cp313-win_arm64.whl", "True", "above it"),
-            # The shape upstream is actually going to ship. apache/arrow#48539 is held behind
-            # apache/arrow#50398, whose plan is an abi3 floor of 3.11, so the first win_arm64
-            # pyarrow on PyPI will be cp311-abi3. Rejecting it would keep us on our own
-            # 24.0.0.dev260 silently and forever.
+            # The shape upstream is going to ship: the first win_arm64 pyarrow on PyPI will be
+            # cp311-abi3 (apache/arrow#48539), and rejecting it would pin us to our own build.
             ("pyarrow-26.0.0-cp311-abi3-win_arm64.whl", "True", "abi3 from below this venv"),
             ("pyarrow-26.0.0-cp39-abi3-win_arm64.whl", "True", "abi3 from further below"),
             # abi3 reaches forward from what it was built against, never backward.
@@ -3221,9 +3199,8 @@ class TestTheTorchMergeRebasesWhatItFolds:
     @staticmethod
     def _merge(tmp_path, override_files):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        # A shebang script is not executable on Windows, so CreateProcess refuses it, the merge
-        # gets no pins back and returns nothing -- a failure about an empty path, not about
-        # rebasing. `&` runs a .cmd happily, and the stub ignores the -c argument either way.
+        # A shebang script is not executable on Windows, so the merge would fail about an empty
+        # path rather than about rebasing. `&` runs a .cmd happily.
         if os.name == "nt":
             fake_py = tmp_path / "fakepython.cmd"
             fake_py.write_text(
@@ -3574,9 +3551,7 @@ class TestARebasedOptionPathKeepsItsQuoting:
 
     @staticmethod
     def _rebase(source, line, base):
-        # Here-strings, because the values under test contain both quote characters and
-        # spaces -- interpolating them into a single-quoted argument is how a harness ends
-        # up testing its own escaping instead of the function.
+        # Here-strings, because the values under test contain both quote characters and spaces.
         script = "\n".join(
             [
                 _ps_function(source, "Resolve-WoaOverrideLine"),
@@ -3698,9 +3673,8 @@ class TestTheMarkerRecordsTheIndexActuallyUsed:
         assert "$_woaMarkerIndex = $_woaPinnedIndex" in text
         assert "else { $_woaMarkerIndex = $WinArm64TorchIndexUrl }" in text
         assert "Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex" in text
-        # The same value the marker gets, or the manifest shadows the marker on the next
-        # fresh shell: install_python_stack.py writes this export into woa_torch_index, and
-        # the read chain prefers the manifest.
+        # The same value the marker gets, or the manifest shadows the marker on the next fresh
+        # shell, since the read chain prefers the manifest.
         assert "$env:UNSLOTH_WOA_SELECTED_TORCH_INDEX = $_woaMarkerIndex" in text
 
     def test_the_pin_is_read_before_it_is_used(self):
@@ -3985,8 +3959,7 @@ class TestEveryPyarrowRouteOpensWhatItKeeps:
                 "$script:WoaNativeCudaTorch = $true",
                 "$script:WoaPyarrowWheelName = $null",
                 "$wheelName = 'pyarrow-24.0.0-cp313-cp313-win_arm64.whl'",
-                # The slice stops before the "} else {" that follows, so the brace closing
-                # `if ($wheelName) {` is not in it.
+                # The slice stops before the "} else {", so that closing brace is not in it.
                 text[start:end] + "\n                }",
                 "Write-Output ('[' + [bool]$script:WoaNativeCudaTorch + ']')",
             ]
@@ -4337,8 +4310,7 @@ class TestTheRepairPathPinsTheSameWayTheInstallDoes:
             for name in (
                 "torchvision-0.26.0.dev20260101%2Bcu134-cp313-cp313-win_arm64.whl",
                 "torchvision-0.26.0.dev20260102%2Bcu134-cp313-cp313-win_arm64.whl",
-                # NEWER, and tagged for another interpreter: it must lose on the tag alone,
-                # so dropping the tag filter cannot pass by picking the same version anyway.
+                # NEWER, and tagged for another interpreter: it must lose on the tag alone.
                 "torchvision-0.27.0.dev20260103%2Bcu134-cp312-cp312-win_arm64.whl",
             )
         )
@@ -4704,9 +4676,8 @@ class TestThePyPIProbeHonoursUvConfiguration:
                 f"Set-Location -LiteralPath '{tmp_path / 'proj'}'",
                 setenv,
                 _ps_function(INSTALL_PS1, "Test-WoaUrlIsPublicPyPI"),
-                # Read-WoaUvTomlIndexKeys scans for quotes now, so its two scanners come with
-                # it. Omitting one is a command-not-found, which aborts the statement instead
-                # of answering, and the caller then reports PyPI as reachable.
+                # Read-WoaUvTomlIndexKeys scans for quotes, so its two scanners come with it:
+                # omitting one aborts the statement and the caller reports PyPI as reachable.
                 _ps_function(INSTALL_PS1, "Remove-WoaTomlComment"),
                 _ps_function(INSTALL_PS1, "Split-WoaTomlKey"),
                 _ps_function(INSTALL_PS1, "Read-WoaUvTomlIndexKeys"),
@@ -4852,8 +4823,8 @@ class TestThePyPIProbeHonoursUvConfiguration:
                 "True",
                 "public PyPI named explicitly in a config file",
             ),
-            # uv pip: [pip] scalars outrank the top-level ones whatever their order in the file,
-            # and an [[index]] entry with default = true outranks [pip].index-url (uv 0.10.7).
+            # uv pip 0.10.7: [pip] scalars outrank top-level whatever the file order, and an
+            # [[index]] with default = true outranks [pip].index-url.
             (
                 {"proj/uv.toml": "no-index = false\n[pip]\nno-index = true\n"},
                 {},

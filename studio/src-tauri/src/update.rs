@@ -918,10 +918,8 @@ mod tests {
         let state = new_update_state();
         state.lock().unwrap().child = Some(child);
 
-        // Wait for a pid that PARSES, not merely for the path to appear. The shell above
-        // runs `echo $! > "$1"`, and the redirection creates the file before anything is
-        // written to it, so waiting on is_file() can win that race and read "" -- which
-        // panicked here as ParseIntError { kind: Empty } rather than failing an assertion.
+        // Wait for a pid that PARSES, not merely for the path to appear: the redirection above
+        // creates the file before anything is written, so is_file() can win that race and read "".
         let mut descendant = None;
         for _ in 0..100 {
             if let Ok(text) = std::fs::read_to_string(&child_pid_file) {

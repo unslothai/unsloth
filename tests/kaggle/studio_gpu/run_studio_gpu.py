@@ -203,8 +203,7 @@ def _scoped(cmd: list[str]) -> list[str] | None:
     if selector is None:
         return cmd
     if not selector:
-        # A deliberate empty CUDA_VISIBLE_DEVICES: no card is visible, so there is
-        # nothing to sample. Reading it as "every card" is the bug being fixed.
+        # An empty CUDA_VISIBLE_DEVICES means no card is visible, not every card.
         return None
     return [cmd[0], "-i", selector, *cmd[1:]]
 
@@ -303,12 +302,9 @@ def cli_run_gpu_failure(
         return None, detail
 
     before = apps_before or {}
-    # A pid that APPEARED but carries no figure is the mixed-listing case: a readable row
-    # on one GPU keeps the mapping nonempty, so the all-[N/A] guard in the probe does not
-    # fire, and the newly launched server is simply missing from it. Concluding "nothing
-    # appeared" there reports CPU for a process that is on the card and merely
-    # unattributable, so this defers to the device-wide delta exactly as the all-[N/A]
-    # case does.
+    # A pid that APPEARED but carries no figure is the mixed-listing case: a readable row on
+    # another GPU keeps the mapping nonempty, so the all-[N/A] guard never fires and the server
+    # is merely unattributable. Defer to the device-wide delta rather than reporting CPU.
     if listed_before is not None and listed_after is not None:
         appeared_unattributed = sorted((listed_after - set(listed_before)) - set(apps_after))
         if appeared_unattributed:
@@ -372,10 +368,8 @@ def attributed_apps(listing: tuple[dict[int, int], set[int]] | None) -> dict[int
         return None
     apps, listed = listing
     if not apps and listed:
-        # Processes were listed but none carried a readable figure: WDDM and
-        # unified-memory parts report [N/A] for every one, including a -ngl 0
-        # server. That cannot attribute anything, so it is the same as not
-        # enumerating, and the device-wide delta decides.
+        # Listed but none readable: WDDM and unified-memory parts report [N/A] for every
+        # process, which attributes nothing, so the device-wide delta decides.
         return None
     return apps
 
@@ -2881,10 +2875,8 @@ class Payload:
         # ends by stopping the server, so by here the port is free, the card is
         # empty, and the VRAM delta below measures this launch alone.
         # Stopped here, not only at the end of assert_chat_ui: with --skip-ui that driver never
-        # runs, so the Studio server and its llama-server were still alive when assert_cli_run
-        # took its before-launch listing. On parts that report [N/A] per process, that pid read
-        # as a co-tenant, the device-delta fallback was refused, and a GPU-backed run came back
-        # "unmeasured rather than proven". Idempotent when assert_chat_ui already stopped it.
+        # runs, so a live llama-server read as a co-tenant and the device-delta fallback was
+        # refused. Idempotent when assert_chat_ui already stopped it.
         self.stop_server()
         self.assert_cli_run()
 

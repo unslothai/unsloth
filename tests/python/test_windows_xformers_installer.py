@@ -233,13 +233,11 @@ def test_installer_never_installs_an_unpinned_xformers():
     necessarily built for the CUDA family the resident torch came from. The installer
     picks the exact version for (torch, cuda) instead, so every spec must be pinned."""
     source = _source()
-    # The Windows on ARM drop list names packages the installer REMOVES from the
-    # requirements, so a bare name there is the opposite of an install spec: pinning it
-    # would be meaningless, and the name has to match the requirement line exactly.
+    # The Windows on ARM drop list names packages the installer REMOVES, so a bare name there is
+    # the opposite of an install spec and has to match the requirement line exactly.
     drop_list = re.search(r"\$WoaDropCandidates = @\(.*?\n\s*\)\n", source, re.DOTALL)
     drop_span = drop_list.span() if drop_list else (-1, -1)
-    # Same for the floors that decide whether a wheelhouse wheel makes a drop
-    # unnecessary: the key is a package NAME being looked up, not something installed.
+    # Same for the drop floors: the key is a package NAME being looked up, not an install spec.
     floors = re.search(r"\$WoaDropFloors = @\{[^}]*\}", source, re.DOTALL)
     floor_span = floors.span() if floors else (-1, -1)
     for match in re.finditer(r'"xformers[^"]*"', source):

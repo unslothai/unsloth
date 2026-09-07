@@ -231,9 +231,8 @@ def test_the_before_sample_is_taken_before_the_launch():
     """An `apps_before` read after the server started would contain the server,
     so nothing would ever have `appeared` and every run would fail."""
     body = _body()
-    # Anchored on the sample itself rather than on one spelling of it: the reading is
-    # taken from a single nvidia_compute_apps_listing() call now, so the attributed
-    # mapping and the listed pids describe the same moment.
+    # Anchored on the sample, not one spelling of it: one nvidia_compute_apps_listing() call, so
+    # the attributed mapping and the listed pids describe the same moment.
     assert body.index("_listing_before = nvidia_compute_apps_listing()") < body.index(
         "subprocess.Popen"
     )

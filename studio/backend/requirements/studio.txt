@@ -41,7 +41,7 @@ ddgs==9.14.4; python_version >= "3.10"
 ddgs==9.8.0; python_version < "3.10"
 cryptography>=42.0.0; sys_platform != "win32" or platform_machine != "ARM64"
 # Windows on ARM: 46.0.7 has no win_arm64 wheel and its sdist needs Rust. Matches
-# constraints.txt, which a plain pip install of the extra does not reach.
+# constraints.txt, which a plain pip install of the extra never reaches.
 cryptography>=42.0.0,<=46.0.3; sys_platform == "win32" and platform_machine == "ARM64"
 boto3>=1.34.0                    # optional: S3 dataset loading
 httpx>=0.27.0
@@ -58,8 +58,8 @@ gguf==0.18.0; python_version < "3.10"
 av>=12.0.0
 # RAG (knowledge bases, hybrid retrieval). sentence-transformers lives in
 # extras-no-deps.txt; these add the lexical+dense store and document parsing.
-# sqlite-vec publishes win_amd64 only and no sdist, so there is no version to floor to
-# on win_arm64. The RAG store treats a missing sqlite_vec as "RAG unavailable".
+# sqlite-vec publishes win_amd64 only and no sdist, so there is nothing to floor to. The RAG
+# store treats a missing sqlite_vec as "RAG unavailable".
 sqlite-vec==0.1.9; sys_platform != "win32" or platform_machine != "ARM64"
 # pymupdf publishes a win_arm64 wheel from 1.28 only.
 pymupdf==1.27.2.3; sys_platform != "win32" or platform_machine != "ARM64"

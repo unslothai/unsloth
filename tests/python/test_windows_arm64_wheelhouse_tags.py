@@ -150,8 +150,7 @@ class TestBlockerMap:
         assert set(ips.WINDOWS_ARM64_SKIP_UNBLOCKED_BY) <= skipped
 
     def test_whisper_needs_tiktoken_as_well_as_the_numba_chain(self, ips):
-        # Whisper's metadata requires tiktoken unconditionally, so hosting llvmlite alone
-        # re-enables it straight into the tiktoken sdist.
+        # Whisper's metadata requires tiktoken, so hosting llvmlite alone re-enables the sdist.
         blockers = ips.WINDOWS_ARM64_SKIP_UNBLOCKED_BY[ips._canonical_dist_name("openai-whisper")]
         assert "tiktoken" in blockers
         assert "numba" in blockers
@@ -182,10 +181,8 @@ class TestInstallPs1Mirror:
 
     def test_uv_override_is_space_safe(self):
         source = INSTALL_PS1.read_text(encoding = "utf-8")
-        # uv reads UV_OVERRIDE as a space-separated list, and the default StudioHome sits
-        # under %USERPROFILE%, which routinely contains a space. The value is now built
-        # from more than one path -- ours plus any caller file kept in its own directory
-        # -- so what matters is that EVERY entry goes through the 8.3 helper.
+        # uv reads UV_OVERRIDE as a space-separated list, so EVERY entry has to go through the
+        # 8.3 helper, not just the first.
         assert re.search(r"\$_woaOverrideValue\s*=\s*@\(Get-UvSafePath\s+\$WoaOverrides\)", source)
         assert "$_woaOverrideValue += (Get-UvSafePath $_woaKeepFile)" in source
         assert re.search(r'\$env:UV_OVERRIDE\s*=\s*\(\$_woaOverrideValue -join " "\)', source)
@@ -202,8 +199,7 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
     """A package skipped for its DEPENDENCIES is not re-enabled by its own wheel."""
 
     def _wheelhouse(self, tmp_path, *specs):
-        # A spec may carry its own version, because a blocker with a stated floor is only
-        # hosted-and-usable at or above it.
+        # A spec may carry its own version: a blocker with a floor is only usable at or above it.
         for spec in specs:
             name, py, abi, plat = spec[:4]
             version = spec[4] if len(spec) > 4 else "1.0.0"
@@ -237,8 +233,7 @@ class TestBlockersDecideEvenWhenThePackageItselfIsHosted:
             tmp_path,
             monkeypatch,
             ("tensorboard", "py3", "none", "any"),
-            # At tensorboard's own floor: it requires grpcio>=1.74.0, so an older hosted
-            # grpcio would be rejected by its metadata after the skip had been dropped.
+            # At tensorboard's own floor: it requires grpcio>=1.74.0.
             ("grpcio", tag, tag, _this_platform(), "1.74.0"),
         )
         assert "tensorboard" not in skips
@@ -302,10 +297,8 @@ class TestFreeThreadedWheelsAreNotOfferedToTheRegularInterpreter:
         block = block[: block.index("$WoaDropCandidates")]
         first = block[block.index("foreach ($pyTag in") :]
         first = first[: first.index("$compatible = $true; break") + 30]
-        # $WoaWheelAbi, not $WoaWheelTag: the ABI a free-threaded venv can install is
-        # cp313t while its python tag is still cp313, so the two are only the same string
-        # on a GIL build. Requiring the python tag here would keep exactly the wheels such
-        # a venv cannot use.
+        # $WoaWheelAbi, not $WoaWheelTag: a free-threaded venv installs cp313t while its python
+        # tag is still cp313, so the python tag here would keep the wheels it cannot use.
         assert (
             "$abiTags -contains $WoaWheelAbi" in first
         ), "the exact-python-tag branch must also require a usable ABI"
@@ -456,9 +449,8 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
             ("1.0.0", "!=1.0.0", False),
             ("1.0.1", "!=1.0.0", True),
             ("1.0", "", True),
-            # packaging answers these now, and correctly: an epoch does not vanish, arbitrary
-            # equality matches, and a version it cannot parse is not one a resolver would take.
-            # None is still the contract when packaging is absent AND the numeric path applies.
+            # packaging answers these now: an epoch does not vanish, arbitrary equality matches,
+            # and an unparseable version is not one a resolver would take. None without packaging.
             ("1!2.0", "==2.0", False),
             ("1.0", "===1.0", True),
             ("not-a-version", "==1.0", False),
@@ -469,9 +461,8 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 
     def test_pins_are_read_canonically_and_markers_evaluated(self, ips, tmp_path):
         req = tmp_path / "r.txt"
-        # One marker that holds on every host and one that holds on none, so the answer
-        # does not depend on the box running the tests: `sys_platform != 'win32'` here
-        # would pass on Linux CI and fail on every Windows machine this file is about.
+        # One marker true on every host and one true on none, so the answer cannot depend on the
+        # box: `sys_platform != 'win32'` would pass on Linux CI and fail on Windows.
         req.write_text(
             "# comment\n"
             "-r other.txt\n"
@@ -492,10 +483,8 @@ class TestAHostedWheelMustAlsoSatisfyThePin:
 class TestDuplicateRequirementRowsAreSplitByMarker:
     """extras.txt states MeCab twice, once per marker."""
 
-    # One marker that holds on every host and one that holds on none. The real pair is
-    # `sys_platform != "darwin" or python_version < "3.14"` against its complement, which
-    # would make these tests answer differently on a macOS 3.14 box than on Linux CI --
-    # the same host dependence that had to be taken out of the pin-reading test above.
+    # One marker true on every host and one true on none. The real pair would answer differently
+    # on a macOS 3.14 box than on Linux CI, the host dependence taken out of the test above.
     ACTIVE = 'python_version >= "3"'
     INACTIVE = 'sys_platform == "nonesuch"'
 
@@ -807,8 +796,7 @@ class TestAHostedOptionalIsActuallyInstalled:
     def test_the_newest_clearing_wheel_wins(self, ips, monkeypatch, tmp_path):
         major, minor = sys.version_info[:2]
         tag = f"cp{major}{minor}"
-        # Both clear the floor, so the floor cannot decide this one: 0.0.100 is the newer
-        # release, and it is the SMALLER of the two as text.
+        # Both clear the floor: 0.0.100 is the newer release and the SMALLER of the two as text.
         for version in ("0.0.23", "0.0.100"):
             (tmp_path / _wheel("xformers", tag, tag, version = version)).write_text("")
         monkeypatch.setenv("UV_FIND_LINKS", str(tmp_path))
@@ -1027,14 +1015,8 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
         ):
             monkeypatch.delenv(var, raising = False)
         (tmp_path / "proj").mkdir()
-        # uv reads the user file from %APPDATA%\uv\uv.toml on Windows and
-        # $XDG_CONFIG_HOME/uv/uv.toml elsewhere, and _uv_config_files branches on exactly
-        # that. Pointing only XDG_CONFIG_HOME at a directory left the user-file case
-        # unsatisfiable on Windows -- APPDATA was deleted just above, so nothing was
-        # discovered and the assertion failed there while passing on the Linux row CI runs
-        # this file on. Both names point at one directory so the case is real on every
-        # platform, and `user_config` below names it so the parametrised row does not have
-        # to know which one is in play.
+        # uv reads the user file from %APPDATA%\uv\uv.toml on Windows and $XDG_CONFIG_HOME
+        # elsewhere, so both names point at one directory and the case is real on every platform.
         (tmp_path / "user").mkdir()
         monkeypatch.setenv("APPDATA", str(tmp_path / "user"))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "user"))
@@ -1098,8 +1080,7 @@ class TestUvConfigurationFilesDecideWherePyPIIs:
     def test_project_outranks_user_for_a_scalar(self, ips):
         self._write("proj/uv.toml", "no-index = false\n")
         self._write(self.user_config, "no-index = true\n")
-        # Vacuous unless the user file is somewhere uv would look: if it is not discovered,
-        # this passes on the project file alone and asserts nothing about precedence.
+        # Vacuous unless the user file is somewhere uv would look.
         assert (self.tmp / self.user_config) in [p for p, _ in ips._uv_config_files()]
         assert ips._public_pypi_is_reachable() is True
 

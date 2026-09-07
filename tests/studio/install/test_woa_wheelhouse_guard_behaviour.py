@@ -45,8 +45,8 @@ HELPERS = (
     "Test-WoaVersionAtLeast",
     "Test-WoaWheelTags",
     "Test-WoaWheelTagsUsable",
-    # Everything Test-WoaResolveReachesPyPI calls: a missing helper is a non-terminating
-    # error inside it, which answered True and let a lookalike index pass unnoticed.
+    # Everything Test-WoaResolveReachesPyPI calls: a missing helper answers True and lets a
+    # lookalike index pass unnoticed.
     "Test-WoaUrlIsPublicPyPI",
     "Remove-WoaTomlComment",
     "Split-WoaTomlKey",
@@ -189,18 +189,11 @@ def test_a_pypi_version_below_a_floor_keeps_the_drop(version, still_dropped):
     assert ("xformers" in dropped) is still_dropped
 
 
-# A uv config can take PyPI out of the resolve as decisively as UV_OFFLINE can, so the guard
-# reads one. install.ps1 parses it with a subset parser, because PowerShell 5.1 ships no TOML
-# reader, and every case below is one that parser got WRONG until it learned to scan for
-# quotes: each answered "PyPI is reachable" for a config that had replaced or disabled it.
-#
-# That direction is the damaging one. A false "reachable" lets
-# Test-WoaWheelhouseWheelIsRedundant delete the wheelhouse copy of a wheel the resolve can
-# never fetch, and makes Get-WoaPyarrowSource answer "pypi" and skip a usable local pyarrow,
-# which is the mandatory gate for the whole native path.
-#
-# The expectations are not hand-written. Each fixture was read with tomllib and the policy
-# derived from uv's documented precedence; these are the results of that comparison.
+# A uv config can take PyPI out of the resolve as decisively as UV_OFFLINE can. Every case below
+# is one install.ps1's subset parser got WRONG until it learned to scan for quotes, each
+# answering "PyPI is reachable" for a config that had replaced or disabled it: that direction
+# deletes wheelhouse copies of wheels the resolve can never fetch. Expectations were derived by
+# reading each fixture with tomllib against uv's documented precedence, not written by hand.
 UV_CONFIG_CASES = [
     # A comment needs no whitespace in front of it. `(^|\s)#` missed this one entirely.
     ("comment_nospace", "uv.toml", "no-index = true# offline lab\n", False),
@@ -211,8 +204,7 @@ UV_CONFIG_CASES = [
     ("dotted_no_index", "uv.toml", "pip.no-index = true\n", False),
     ("dotted_index_url", "uv.toml", 'pip.index-url = "https://corp.example/simple"\n', False),
     ("pyproject_dotted", "pyproject.toml", "[tool.uv]\npip.no-index = true\n", False),
-    # And the other side of the same scan: a `#` INSIDE a string is not a comment. Cutting at
-    # the first one would have turned both of these into a truncated URL or an empty value.
+    # The other side of the same scan: a `#` INSIDE a string is not a comment.
     ("fragment_kept", "uv.toml", 'index-url = "https://corp.example/simple#frag"\n', False),
     ("url_only_in_comment", "uv.toml", '# index-url = "https://corp.example/simple"\n', True),
     # Cases that must keep answering True, so the fix cannot be a blanket "not reachable".
@@ -267,8 +259,7 @@ def test_a_uv_config_decides_whether_pypi_is_in_the_resolve(
     work = tmp_path / name
     work.mkdir()
     (work / filename).write_text(text, encoding = "utf-8")
-    # The env vars outrank every file, and APPDATA/ProgramData would let the developer's own
-    # uv.toml decide the answer, so the fixture is the only config in play.
+    # APPDATA/ProgramData would let the developer's own uv.toml decide the answer.
     out = _run(f"""
 Remove-Item Env:UV_OFFLINE,Env:PIP_NO_INDEX,Env:UV_DEFAULT_INDEX,Env:UV_INDEX_URL,\
     Env:PIP_INDEX_URL,Env:UV_CONFIG_FILE,Env:UV_NO_CONFIG -ErrorAction SilentlyContinue

@@ -329,9 +329,8 @@ class TestPythonStackWindowsArm64:
         "registry,env,expected",
         [
             ("ARM64", {"PROCESSOR_ARCHITECTURE": "ARM64"}, True),
-            # What x64 emulation on an ARM64 box really looks like: the process copy says
-            # AMD64, ARCHITEW6432 is unset (a WOW64-only variable), platform.machine()
-            # follows the process. Only the machine-scope registry value tells the truth.
+            # x64 emulation on an ARM64 box: the process copy says AMD64 and ARCHITEW6432 is
+            # unset, so only the machine-scope registry value tells the truth.
             ("ARM64", {"PROCESSOR_ARCHITECTURE": "AMD64"}, True),
             # ARCHITEW6432 still counts on the builds that do set it.
             ("", {"PROCESSOR_ARCHITECTURE": "AMD64", "PROCESSOR_ARCHITEW6432": "ARM64"}, True),
