@@ -43,7 +43,7 @@ import os
 import re
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
@@ -461,6 +461,16 @@ MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
 # Highest device index a gpu_ids entry may name; also bounds how many ids one entry holds.
 MAX_GPU_ID = 1024
 
+# Which index space a stored gpu_ids belongs to. The same integers mean a ggml Vulkan
+# ordinal under a Vulkan build and a physical CUDA/ROCm device id everywhere else, and a
+# host can move between the two -- an AMD integrated GPU is routed to the Vulkan prebuilt
+# by preference, and any host can be switched by hand -- so the namespace has to travel
+# with the ids or the pin silently addresses a different card. Mirrors GpuIndexKind in the
+# UI (hooks/gpu-selection.ts), including its legacy rule: an ABSENT kind is "physical",
+# because every writer before this field only ever sent physical ids.
+VALID_GPU_INDEX_KINDS = frozenset({"physical", "vulkan"})
+LEGACY_GPU_INDEX_KIND = "physical"
+
 
 def _clean_str(value: Any, allowed: frozenset[str]) -> Optional[str]:
     if not isinstance(value, str):
@@ -621,8 +631,24 @@ def normalize_model_override(
                 cleaned_ids.append(parsed)
         if cleaned_ids:
             entry["gpu_ids"] = cleaned_ids
+            index_kind = _clean_str(payload.get("gpu_index_kind"), VALID_GPU_INDEX_KINDS)
+            # Stored only when it is not the legacy default, so existing rows stay
+            # byte-identical and no migration is needed to read them.
+            if index_kind and index_kind != LEGACY_GPU_INDEX_KIND:
+                entry["gpu_index_kind"] = index_kind
 
     return entry
+
+
+def stored_gpu_index_kind(override: Mapping[str, Any]) -> str:
+    """The index space ``override["gpu_ids"]`` was written in.
+
+    Absent means physical, which is the only thing any writer before the field could
+    have meant. Anything unrecognised means the same: a row this build cannot read is
+    not evidence of a Vulkan pin.
+    """
+    kind = override.get("gpu_index_kind")
+    return kind if kind in VALID_GPU_INDEX_KINDS else LEGACY_GPU_INDEX_KIND
 
 
 def resolve_fit_max_seq_length(override: dict[str, Any], *, is_gguf: bool) -> Optional[int]:
@@ -1085,6 +1111,9 @@ def set_model_override(
         model_id.strip(),
         entry or None,
         fill_absent_fields = fill_absent_fields,
+        # The pin and the index space it is written in are one value: filling the
+        # qualifier onto ids this browser did not write relabels them.
+        coupled_fields = (("gpu_ids", "gpu_index_kind"),),
     )
     _invalidate(MODEL_OVERRIDES_SETTING_KEY)
     return entry

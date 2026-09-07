@@ -545,8 +545,8 @@ test("an empty server argument list clears a local list rather than being ignore
 
 test("an empty server GPU list does not clear a local pin", () => {
   // Deliberate, and worth pinning next to the tombstone above so the two are not
-  // "fixed" into agreement: only a PHYSICAL pin travels, so a row without ids says
-  // nothing about placement and a Vulkan ordinal keeps its own namespace.
+  // "fixed" into agreement: a row without ids says nothing about placement, so the
+  // local pin keeps both its ids and its namespace.
   const local = fromApiOverride({});
   local.selectedGpuIds = [1];
   local.selectedGpuIndexKind = "vulkan";
@@ -555,9 +555,16 @@ test("an empty server GPU list does not clear a local pin", () => {
   const hydrated = fromApiOverride({ gpu_ids: [] }, local);
   assert.deepEqual(hydrated.selectedGpuIds, [1]);
   assert.equal(hydrated.selectedGpuIndexKind, "vulkan");
-  // And toApiOverride is why: a Vulkan pin is never sent, so a row that lacks ids is
-  // exactly what a browser holding one produces.
-  assert.equal(toApiOverride(local).gpu_ids, undefined);
+  // The pin now travels WITH its namespace rather than being dropped, so a Vulkan
+  // ordinal is never silently reread as a physical index on the other side.
+  const sent = toApiOverride(local);
+  assert.deepEqual(sent.gpu_ids, [1]);
+  assert.equal(sent.gpu_index_kind, "vulkan");
+  // A physical pin's payload is unchanged: the field is omitted at the legacy default.
+  assert.equal(
+    toApiOverride({ ...local, selectedGpuIndexKind: "physical" }).gpu_index_kind,
+    undefined,
+  );
 });
 
 // The identity table the panel's hydration now depends on, mirrored from

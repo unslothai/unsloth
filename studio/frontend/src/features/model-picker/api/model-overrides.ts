@@ -6,6 +6,7 @@
 // routes/inference.py reads this map and rebuilds the picker's LoadRequest.
 
 import { authFetch } from "@/features/auth";
+import type { GpuIndexKind } from "@/hooks/gpu-selection";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
   normalizeGgufVariantIdentity,
@@ -65,6 +66,10 @@ export interface ApiModelOverride {
   n_cpu_moe?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_ids?: number[];
+  // Which index space gpu_ids is in. Absent means "physical", which is the only thing a
+  // row written before this field could have meant.
+  // biome-ignore lint/style/useNamingConvention: API schema
+  gpu_index_kind?: GpuIndexKind;
 }
 
 export type ApiModelOverrides = Record<string, ApiModelOverride>;
@@ -278,8 +283,7 @@ export function fromApiOverride(
   const extraArgs = Array.isArray(override.llama_extra_args)
     ? override.llama_extra_args
     : local.llamaExtraArgs;
-  // Only a physical pin travels (toApiOverride drops the rest), so a row without ids says
-  // nothing about placement and a local Vulkan ordinal keeps its own namespace.
+  // A row without ids says nothing about placement, so the local pin keeps its namespace.
   const serverGpuIds = override.gpu_ids?.length ? override.gpu_ids : null;
   // The pin is ONE setting in one of two fields, and an edit clears the other
   // (contextPinPatch). Filling them from different sources mints a record that loads at
@@ -317,8 +321,11 @@ export function fromApiOverride(
     gpuLayers: override.gpu_layers ?? local.gpuLayers,
     nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,
     selectedGpuIds: serverGpuIds ?? local.selectedGpuIds ?? null,
+    // Read the row's own namespace rather than assuming one: absent is "physical", the
+    // legacy meaning, and reconcileGpuSelection then drops the pin if this host numbers
+    // its devices the other way.
     selectedGpuIndexKind: serverGpuIds
-      ? "physical"
+      ? (override.gpu_index_kind ?? "physical")
       : (local.selectedGpuIndexKind ?? null),
   });
   // normalizePerModelConfig collapses an empty list to null. The server uses [] as a tombstone
@@ -407,16 +414,18 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (typeof config.nCpuMoe === "number" && config.nCpuMoe > 0) {
     payload.n_cpu_moe = config.nCpuMoe;
   }
-  // Only a physical pin travels. The same integers are a Vulkan ordinal under Vulkan and a
-  // CUDA/ROCm index elsewhere, and the override carries no namespace, so after a backend
-  // change the server would pin a different device. An absent kind predates the field.
+  // The pin travels WITH its namespace. The same integers are a Vulkan ordinal under a
+  // Vulkan build and a CUDA/ROCm index elsewhere, so after a backend change -- an AMD
+  // integrated GPU is routed to the Vulkan prebuilt by preference -- the server would
+  // otherwise pin a different device. It drops the pin on a mismatch instead.
   const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
-  if (
-    config.selectedGpuIds &&
-    config.selectedGpuIds.length > 0 &&
-    gpuIndexKind === "physical"
-  ) {
+  if (config.selectedGpuIds && config.selectedGpuIds.length > 0) {
     payload.gpu_ids = config.selectedGpuIds;
+    // Sent only when it is not the legacy default, matching what the server stores, so a
+    // physical pin's payload is byte-identical to what it was before this field.
+    if (gpuIndexKind !== "physical") {
+      payload.gpu_index_kind = gpuIndexKind;
+    }
   }
   return payload;
 }

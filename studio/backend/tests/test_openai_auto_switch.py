@@ -1095,6 +1095,7 @@ def _mock_override_store(monkeypatch):
         entry_value,
         *,
         fill_absent_fields = False,
+        coupled_fields = (),
     ):
         current = dict(store.get(key) or {})
         if fill_absent_fields:
@@ -1103,7 +1104,11 @@ def _mock_override_store(monkeypatch):
                 return current
             stored = current.get(entry_key)
             if isinstance(stored, dict):
-                current[entry_key] = {**entry_value, **stored}
+                incoming = entry_value
+                for group in coupled_fields:
+                    if any(field in stored for field in group):
+                        incoming = {k: v for k, v in incoming.items() if k not in group}
+                current[entry_key] = {**incoming, **stored}
             else:
                 current[entry_key] = entry_value
         elif entry_value:
@@ -6222,6 +6227,33 @@ def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
     assert entry == {"max_seq_length": 8192, "speculative_type": "mtp", "gpu_ids": [1, 0, 2]}
 
 
+def test_gpu_index_kind_is_stored_only_when_it_is_not_the_legacy_default():
+    # Absent means physical, so writing it back would churn every existing row for no
+    # information. Only a Vulkan pin needs a marker.
+    physical = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "physical"})
+    assert physical == {"gpu_ids": [0]}
+    assert settings.normalize_model_override({"gpu_ids": [0]}) == {"gpu_ids": [0]}
+    vulkan = settings.normalize_model_override({"gpu_ids": [0], "gpu_index_kind": "vulkan"})
+    assert vulkan == {"gpu_ids": [0], "gpu_index_kind": "vulkan"}
+    # A kind with no ids is nothing to qualify.
+    assert settings.normalize_model_override({"gpu_index_kind": "vulkan"}) == {}
+
+
+@pytest.mark.parametrize(
+    "override, expected",
+    [
+        ({}, "physical"),
+        ({"gpu_ids": [0]}, "physical"),
+        ({"gpu_ids": [0], "gpu_index_kind": "vulkan"}, "vulkan"),
+        # A row this build cannot read is not evidence of a Vulkan pin.
+        ({"gpu_ids": [0], "gpu_index_kind": "metal"}, "physical"),
+        ({"gpu_ids": [0], "gpu_index_kind": None}, "physical"),
+    ],
+)
+def test_stored_gpu_index_kind_reads_absent_as_physical(override, expected):
+    assert settings.stored_gpu_index_kind(override) == expected
+
+
 def test_normalize_model_override_rejects_oversized_chat_template():
     small = settings.normalize_model_override({"chat_template_override": "{{ bos }}"})
     assert small["chat_template_override"] == "{{ bos }}"
@@ -6752,6 +6784,27 @@ def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
     assert resp.overrides[_LEGACY_SNAPSHOT]["max_seq_length"] == 4096
 
 
+def test_a_fill_never_labels_the_server_s_gpu_pin_with_this_browser_s_index_space(override_store):
+    # Two browsers against one server: the stored pin is physical ids from a ROCm-era
+    # save, and this one's one-time backfill offers Vulkan ordinals. The ids belong to
+    # the space they were written in, so the qualifier cannot arrive without them.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", gpu_ids = [0, 1])
+
+    resp = _put(
+        "unsloth/B-GGUF:Q4_K_M",
+        gpu_ids = [2],
+        gpu_index_kind = "vulkan",
+        max_seq_length = 32768,
+        fill_absent_fields = True,
+    )
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["gpu_ids"] == [0, 1]
+    assert "gpu_index_kind" not in entry
+    assert settings.stored_gpu_index_kind(entry) == "physical"
+    # Everything outside the group still fills.
+    assert entry["max_seq_length"] == 32768
+
+
 def test_the_one_time_fill_retires_nothing(override_store):
     # fill_absent_fields only adds what is missing; the migration mirroring both spellings
     # of one row must not have its own first write deleted by its second.
@@ -6799,7 +6852,7 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
         lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
     )
 
-    async def _unusable(ids):
+    async def _unusable(ids, index_kind = "physical"):
         return False
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _unusable)
@@ -6823,7 +6876,7 @@ def test_usable_gpu_ids_are_kept(monkeypatch):
     )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -6854,9 +6907,9 @@ def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
     )
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7])) is False
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1])) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "vulkan")) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7], "vulkan")) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1], "vulkan")) is False
 
 
 def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
@@ -6865,7 +6918,59 @@ def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
 
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: None))
-    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "vulkan")) is True
+
+
+def _pin_resolves_on_a_host_with_device_0(monkeypatch):
+    """Make device 0 exist, so the index-kind check is the only thing under test.
+
+    Without this the whole helper falls to its `except: return False` on a CPU-only
+    runner, which is how the mismatch cases below would pass for the wrong reason and
+    how the matching case failed on CI while passing on a GPU box.
+    """
+    import utils.hardware as hardware_pkg
+    from utils.hardware import DeviceType
+    from utils.hardware import hardware as hardware_mod
+
+    monkeypatch.setattr(hardware_pkg, "get_device", lambda: DeviceType.CUDA)
+    monkeypatch.setattr(
+        hardware_mod, "resolve_requested_gpu_ids", lambda ids, is_vulkan = False: list(ids)
+    )
+
+
+def test_a_pin_written_in_the_other_index_space_is_unusable(monkeypatch):
+    # The failure the availability checks cannot see: ordinal 0 exists on a Vulkan build and
+    # physical device 0 exists on a ROCm one, so a pin carried across a backend change passes
+    # every presence test while addressing a different card.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _pin_resolves_on_a_host_with_device_0(monkeypatch)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
+    )
+    for installed_is_vulkan, stored_kind in (
+        (True, "physical"),
+        (False, "vulkan"),
+    ):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: installed_is_vulkan)
+        )
+        assert (
+            asyncio.run(inference_route._override_gpu_ids_still_resolve([0], stored_kind)) is False
+        ), (installed_is_vulkan, stored_kind)
+
+
+def test_a_rocm_pin_survives_while_the_backend_is_still_rocm(monkeypatch):
+    # Negative control for the test above: the mismatch check must not reject a pin that
+    # never moved, or the flip would drop every stored pin on every host.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    _pin_resolves_on_a_host_with_device_0(monkeypatch)
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: False))
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0], "physical")) is True
 
 
 def test_default_save_preserves_flags_instead_of_removing(override_store):
@@ -7074,7 +7179,7 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
         settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
     )
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -7113,7 +7218,7 @@ def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
     )
     monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0]})
 
-    async def _usable(ids):
+    async def _usable(ids, index_kind = "physical"):
         return True
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -7779,6 +7884,42 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     db.upsert_app_setting_map_entry(key, "a", {"v": 9})
     db.upsert_app_setting_map_entry(key, "b", None)
     assert db.get_app_setting(key) == {"a": {"v": 9}}
+
+
+def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
+    tmp_path, monkeypatch
+):
+    """A pin and the index space it is written in are one value.
+
+    The server holds physical ids with no qualifier, which is what every writer
+    before the field meant; this browser's backfill offers Vulkan ordinals. Field
+    by field the ids would stay and the qualifier would land, and the row would
+    then name devices in a space it was never written in.
+    """
+    import storage.studio_db as db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", False)
+
+    key = "test_map_entry_coupled"
+    coupled = (("gpu_ids", "gpu_index_kind"),)
+    db.upsert_app_setting_map_entry(key, "m", {"gpu_ids": [0, 1]})
+    assert db.upsert_app_setting_map_entry(
+        key,
+        "m",
+        {"gpu_ids": [2], "gpu_index_kind": "vulkan", "max_seq_length": 4096},
+        fill_absent_fields = True,
+        coupled_fields = coupled,
+    ) == {"m": {"gpu_ids": [0, 1], "max_seq_length": 4096}}
+    # An entry holding no part of the group still takes the whole of it.
+    db.upsert_app_setting_map_entry(key, "n", {"max_seq_length": 2048})
+    assert db.upsert_app_setting_map_entry(
+        key,
+        "n",
+        {"gpu_ids": [2], "gpu_index_kind": "vulkan"},
+        fill_absent_fields = True,
+        coupled_fields = coupled,
+    )["n"] == {"max_seq_length": 2048, "gpu_ids": [2], "gpu_index_kind": "vulkan"}
 
 
 def test_gpu_ids_dedupe_is_not_a_scan_of_the_list_being_built():
