@@ -361,7 +361,13 @@ def _requires_hip_reader(mod):
         pytest.skip("_torch_hip_version_on_disk does not exist on this tree")
 
 
-def _fake_torch_on_path(monkeypatch, tmp_path, version_py, *, as_directory = False):
+def _fake_torch_on_path(
+    monkeypatch,
+    tmp_path,
+    version_py,
+    *,
+    as_directory = False,
+):
     """Put a stand-in torch package first on sys.path and make find_spec see it.
 
     importlib.util.find_spec returns sys.modules[name].__spec__ when the module is
