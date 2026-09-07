@@ -182,9 +182,7 @@ def _dedupe_bos_chat_template(tokenizer):
             continue
         if isinstance(template, dict):
             obj.chat_template = {
-                key: _strip_bos_from_chat_template_text(value)
-                if isinstance(value, str)
-                else value
+                key: _strip_bos_from_chat_template_text(value) if isinstance(value, str) else value
                 for key, value in template.items()
             }
         elif isinstance(template, str):
