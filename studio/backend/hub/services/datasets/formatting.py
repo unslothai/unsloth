@@ -160,11 +160,8 @@ def _serialize_preview_value(value):
             value.keys() - {"bytes", "path"}
         ):
             return _serialize_binary_value(raw)
-        # A decoded Audio cell is {"array", "sampling_rate", "path"}. torchcodec hands back
-        # an AudioDecoder, which falls through to str() below, but the soundfile fallback
-        # returns the waveform and the dataset formatter turns it into a plain list -- one
-        # float per sample, so ten preview rows of a few seconds each is tens of MB of JSON
-        # and the client dies rendering it.
+        # A decoded Audio cell becomes one float per sample under the soundfile fallback, so ten preview
+        # rows of a few seconds each are tens of MB of JSON and the client dies rendering it.
         if "sampling_rate" in value and isinstance(value.get("array"), (list, tuple)):
             return _serialize_decoded_audio(value)
         return {str(key): _serialize_preview_value(item) for key, item in value.items()}
@@ -441,7 +438,7 @@ def check_format_response(
                     )
 
             if preview_slice is None:
-                # Tier 2: full streaming (resolves all files — slow for large repos)
+                # Tier 2: full streaming (resolves all files - slow for large repos)
                 logger.info("Tier 2: falling back to full streaming load_dataset")
                 try:
                     load_kwargs = {

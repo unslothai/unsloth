@@ -6,10 +6,9 @@ os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 
 import transformers
 
-# Same accessor unsloth.tokenizer_utils uses. The legacy
-# `transformers.utils.sentencepiece_model_pb2` is generated against protobuf
-# 3.x and raises on protobuf >= 4 ("Descriptors cannot be created directly"),
-# or collides with sentencepiece's own copy ("duplicate file name
+# Same accessor unsloth.tokenizer_utils uses.
+# The legacy `transformers.utils.sentencepiece_model_pb2` is generated against protobuf 3.x and raises on protobuf >= 4
+# ("Descriptors cannot be created directly"), or collides with sentencepiece's own copy ("duplicate file name
 # sentencepiece_model.proto") once that one is loaded first.
 from transformers.convert_slow_tokenizer import import_protobuf
 
@@ -166,14 +165,12 @@ def test_each_call_uses_a_fresh_isolated_subdirectory(tmp_path, monkeypatch):
     location = str(tmp_path / "_unsloth_sentencepiece_temp")
     os.makedirs(location, exist_ok = True)
 
-    # A pre-existing artifact in the shared scratch location.
     marker = os.path.join(location, "leftover.json")
     with open(marker, "w") as f:
         f.write("{}")
 
     old1, new1 = _tokenizers()
     old2, new2 = _tokenizers()
-    # Hold both returned tokenizers so their scratch dirs stay alive.
     tok1 = fix_sentencepiece_tokenizer(
         old1, new1, {"</s>": "<|im_end|>"}, temporary_location = location
     )

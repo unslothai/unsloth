@@ -420,7 +420,8 @@ _GIB = 1024**3
 
 
 class TestTheUnifiedMemorySwapIsOnlyTakenWhenItPays:
-    """Managed allocation is enabled only when host RAM is the larger pool."""
+    """Managed allocation is enabled only when host RAM is the larger pool. Every arm
+    prices weights that outgrow the carve-out, so only the pools decide."""
 
     def _host(self, monkeypatch, specs, ram_mib):
         monkeypatch.setitem(sys.modules, "torch", _fake_torch_sized(specs))
@@ -430,23 +431,23 @@ class TestTheUnifiedMemorySwapIsOnlyTakenWhenItPays:
 
     def test_a_small_carve_out_still_gets_it(self, monkeypatch):
         self._host(monkeypatch, [("gfx1151", 16 * _GIB)], 117_000)
-        assert LlamaCppBackend._unified_memory_would_help() is True
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is True
 
     def test_a_carve_out_larger_than_host_ram_does_not(self, monkeypatch):
         self._host(monkeypatch, [("gfx1151", 64 * _GIB)], 58_880)
-        assert LlamaCppBackend._unified_memory_would_help() is False
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is False
 
     def test_an_exact_tie_does_not(self, monkeypatch):
         self._host(monkeypatch, [("gfx1151", 32 * _GIB)], 32 * 1024)
-        assert LlamaCppBackend._unified_memory_would_help() is False
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is False
 
     def test_a_discrete_card_is_never_offered_it(self, monkeypatch):
         self._host(monkeypatch, [("gfx1100", 16 * _GIB)], 117_000)
-        assert LlamaCppBackend._unified_memory_would_help() is False
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is False
 
     def test_unreadable_host_ram_fails_closed(self, monkeypatch):
         self._host(monkeypatch, [("gfx1151", 16 * _GIB)], None)
-        assert LlamaCppBackend._unified_memory_would_help() is False
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is False
 
     def test_an_unreported_pool_size_fails_closed(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1151"]))
@@ -454,41 +455,149 @@ class TestTheUnifiedMemorySwapIsOnlyTakenWhenItPays:
             LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 117_000)
         )
         assert LlamaCppBackend._rocm_selected_pool_mib() is None
-        assert LlamaCppBackend._unified_memory_would_help() is False
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is False
 
     def test_a_missing_torch_fails_closed(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "torch", None)
         assert LlamaCppBackend._rocm_selected_pool_mib() is None
-        assert LlamaCppBackend._unified_memory_would_help() is False
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is False
 
     def test_two_apus_are_weighed_together(self, monkeypatch):
         self._host(monkeypatch, [("gfx1151", 8 * _GIB), ("gfx1150", 24 * _GIB)], 40_000)
         assert LlamaCppBackend._rocm_selected_pool_mib() == 32 * 1024
-        assert LlamaCppBackend._unified_memory_would_help() is True
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is True
         self._host(monkeypatch, [("gfx1151", 8 * _GIB), ("gfx1150", 24 * _GIB)], 30_000)
-        assert LlamaCppBackend._unified_memory_would_help() is False
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is False
 
     def test_the_answer_is_scoped_to_the_selected_gpu(self, monkeypatch):
         self._host(monkeypatch, [("gfx1151", 8 * _GIB), ("gfx1150", 64 * _GIB)], 40_000)
-        assert LlamaCppBackend._unified_memory_would_help([0]) is True
-        assert LlamaCppBackend._unified_memory_would_help([1]) is False
+        assert LlamaCppBackend._unified_memory_would_help([0], need_bytes = 100 * _GIB) is True
+        assert LlamaCppBackend._unified_memory_would_help([1], need_bytes = 100 * _GIB) is False
 
     def test_a_discrete_card_in_the_selection_fails_closed(self, monkeypatch):
         self._host(monkeypatch, [("gfx1151", 8 * _GIB), ("gfx1100", 64 * _GIB)], 40_000)
         assert LlamaCppBackend._rocm_selected_pool_mib() is None
-        assert LlamaCppBackend._unified_memory_would_help() is False
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is False
 
     def test_the_same_mixed_host_pinned_to_the_apu_still_gains(self, monkeypatch):
         self._host(monkeypatch, [("gfx1151", 8 * _GIB), ("gfx1100", 64 * _GIB)], 40_000)
         assert LlamaCppBackend._rocm_selected_pool_mib([0]) == 8 * 1024
-        assert LlamaCppBackend._unified_memory_would_help([0]) is True
+        assert LlamaCppBackend._unified_memory_would_help([0], need_bytes = 100 * _GIB) is True
 
     def test_an_id_this_host_does_not_enumerate_fails_closed(self, monkeypatch):
         self._host(monkeypatch, [("gfx1151", 8 * _GIB)], 117_000)
         assert LlamaCppBackend._rocm_selected_pool_mib([0, 3]) is None
-        assert LlamaCppBackend._unified_memory_would_help([0, 3]) is False
+        assert LlamaCppBackend._unified_memory_would_help([0, 3], need_bytes = 100 * _GIB) is False
 
     def test_an_empty_selection_fails_closed(self, monkeypatch):
         self._host(monkeypatch, [("gfx1151", 8 * _GIB)], 117_000)
         assert LlamaCppBackend._rocm_selected_pool_mib([]) is None
-        assert LlamaCppBackend._unified_memory_would_help([]) is False
+        assert LlamaCppBackend._unified_memory_would_help([], need_bytes = 100 * _GIB) is False
+
+
+class TestManagedMemoryIsTakenOnlyWhenTheWeightsOutgrowTheCarveOut:
+    """The second condition: managed pages fault in k_set_rows on Linux ROCm gfx1151
+    (HF Qwen3.8-Flash-Next-GGUF discussion 30, #10330), so a fitting load never takes them."""
+
+    def _strix_halo(
+        self,
+        monkeypatch,
+        carve_out = 64 * _GIB,
+        ram_mib = 117_000,
+    ):
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch_sized([("gfx1151", carve_out)]))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: ram_mib)
+        )
+
+    def test_weights_that_fit_the_carve_out_do_not_get_it(self, monkeypatch):
+        self._strix_halo(monkeypatch)
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 45 * _GIB) is False
+
+    def test_weights_that_outgrow_it_do(self, monkeypatch):
+        self._strix_halo(monkeypatch)
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 100 * _GIB) is True
+
+    def test_weights_exactly_the_carve_out_do_not(self, monkeypatch):
+        self._strix_halo(monkeypatch)
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 64 * _GIB) is False
+
+    def test_one_byte_over_does(self, monkeypatch):
+        """Bytes against bytes: flooring the need to MiB hid a sub-MiB overrun."""
+        self._strix_halo(monkeypatch)
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 64 * _GIB + 1) is True
+
+    def test_unpriced_weights_fail_closed(self, monkeypatch):
+        self._strix_halo(monkeypatch)
+        assert LlamaCppBackend._unified_memory_would_help() is False
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = None) is False
+
+    def test_the_pool_comparison_still_comes_first(self, monkeypatch):
+        self._strix_halo(monkeypatch, carve_out = 96 * _GIB, ram_mib = 30_000)
+        assert LlamaCppBackend._unified_memory_would_help(need_bytes = 120 * _GIB) is False
+
+
+class TestTheEnableSwitch:
+    """UNSLOTH_ENABLE_UNIFIED_MEMORY=1 takes managed allocation even when weights fit."""
+
+    @pytest.mark.parametrize(
+        "env, expected",
+        [
+            ({"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"}, True),
+            ({"UNSLOTH_ENABLE_UNIFIED_MEMORY": " 1 "}, True),
+            ({"UNSLOTH_ENABLE_UNIFIED_MEMORY": "0"}, False),
+            ({"UNSLOTH_ENABLE_UNIFIED_MEMORY": "yes"}, False),
+            ({}, False),
+        ],
+    )
+    def test_opt_in_decisions(self, env, expected):
+        assert LlamaCppBackend._unified_memory_opted_in(env) is expected
+
+    def test_none_reads_the_process_env(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_ENABLE_UNIFIED_MEMORY", raising = False)
+        assert LlamaCppBackend._unified_memory_opted_in() is False
+        monkeypatch.setenv("UNSLOTH_ENABLE_UNIFIED_MEMORY", "1")
+        assert LlamaCppBackend._unified_memory_opted_in() is True
+
+    def test_a_hostile_env_fails_closed(self):
+        class _Exploding:
+            def get(self, *_a, **_k):
+                raise RuntimeError("no")
+
+        assert LlamaCppBackend._unified_memory_opted_in(_Exploding()) is False
+
+    def _strix_halo(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch_sized([("gfx1151", 64 * _GIB)]))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 117_000)
+        )
+
+    def test_the_switch_takes_it_for_weights_that_fit(self, monkeypatch):
+        self._strix_halo(monkeypatch)
+        assert LlamaCppBackend._unified_memory_for_launch([0], 45 * _GIB) is False
+        assert LlamaCppBackend._unified_memory_for_launch([0], 45 * _GIB, opted_in = True) is True
+
+    def test_the_switch_never_reaches_a_discrete_card(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch_sized([("gfx1100", 16 * _GIB)]))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 117_000)
+        )
+        assert LlamaCppBackend._unified_memory_for_launch([0], 45 * _GIB, opted_in = True) is False
+
+    def test_the_switch_refuses_a_mixed_selection(self, monkeypatch):
+        monkeypatch.setitem(
+            sys.modules,
+            "torch",
+            _fake_torch_sized([("gfx1151", 64 * _GIB), ("gfx1100", 16 * _GIB)]),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 117_000)
+        )
+        assert LlamaCppBackend._unified_memory_for_launch([0, 1], 45 * _GIB, opted_in = True) is False
+        assert LlamaCppBackend._unified_memory_for_launch(None, 45 * _GIB, opted_in = True) is False
+        assert LlamaCppBackend._unified_memory_for_launch([0], 45 * _GIB, opted_in = True) is True
+
+    def test_without_the_switch_the_priced_gate_decides(self, monkeypatch):
+        self._strix_halo(monkeypatch)
+        assert LlamaCppBackend._unified_memory_for_launch([0], 100 * _GIB) is True
+        assert LlamaCppBackend._unified_memory_for_launch([0], None) is False

@@ -421,6 +421,11 @@ function TauriUpdateLayer({
       // cards still land on 16px, since the box sits on the floor and the
       // bottom gutter carries them back up.
       className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+      // The rail is measured from the outside, per card, by
+      // tests/studio/playwright_update_banner_layout.py. Reaching it through
+      // whichever banner happens to be up finds nothing when none is, which is
+      // exactly the state the download panel has to be judged in.
+      data-testid="overlay-rail"
       // Block gutter in px, never a spacing utility: those are rem, and at any
       // root but 16px the cards would drift off the corner. Across stays a
       // utility, since px-3 and -mx-3 cancel whatever a rem is worth.
@@ -474,6 +479,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-mac-titlebar-height": "34px",
   "--studio-desktop-titlebar-height": "34px",
+  "--studio-titlebar-navigation-margin-top": "4px",
   "--studio-titlebar-navigation-offset-y": "4px",
   "--studio-mac-traffic-light-inset": "78px",
   "--studio-collapsed-chat-controls-inset": "188px",
@@ -736,6 +742,11 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           // padding. The cards still land on 16px, since the box sits on the
           // floor and the bottom gutter carries them back up.
           className="pointer-events-none fixed bottom-0 right-4 -mx-3 flex max-h-[calc(100dvh_-_8px)] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
+          // The rail is measured from the outside, per card, by
+          // tests/studio/playwright_update_banner_layout.py. Reaching it through
+          // whichever banner happens to be up finds nothing when none is, which is
+          // exactly the state the download panel has to be judged in.
+          data-testid="overlay-rail"
           // Block gutter in px, never a spacing utility: those are rem, and at
           // any root but 16px the cards would drift off the corner.
           style={{

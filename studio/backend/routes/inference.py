@@ -34,6 +34,7 @@ from typing import (
     Collection,
     Iterable,
     List,
+    Literal,
     NamedTuple,
     Optional,
     TYPE_CHECKING,
@@ -82,7 +83,11 @@ from core.inference.memory_contract import (
     build_memory_estimate,
     project_estimate_memory_response,
 )
-from core.inference.stream_errors import LlamaStreamError
+from core.inference.stream_errors import (
+    KV_STARVATION_MESSAGE,
+    LlamaStreamError,
+    is_kv_starvation,
+)
 from core.inference.runtime_registry import register_llama_cpp_backend
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
@@ -257,6 +262,11 @@ _LOST_CONNECTION_MSG = (
 )
 
 
+_OVERSIZE_TOKENS_RE = _re.compile(
+    r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)"
+)
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     if isinstance(exc, httpx.ReadTimeout):
@@ -279,10 +289,7 @@ def _friendly_error(exc: Exception) -> str:
     if isinstance(exc, httpx.RequestError):
         return _LOST_CONNECTION_MSG
     msg = str(exc)
-    m = _re.search(
-        r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)",
-        msg,
-    )
+    m = _OVERSIZE_TOKENS_RE.search(msg)
     if m:
         # llama-server knows only the prompt total, so its "shorten the conversation" is
         # wrong for a single oversized turn: let the fit's diagnosis pick the wording.
@@ -326,6 +333,46 @@ def _friendly_upstream_error(text: str) -> str:
             "constraints known to break it, and report the schemas if it still fails."
         )
     return f"llama-server error: {text}"
+
+
+def _oversize_counts(text: str):
+    """(prompt, context) for an oversize refusal, or None.
+
+    The prose counts first, then the structured `n_prompt_tokens`/`n_ctx` that an
+    `exceed_context_size_error` body carries: these paths are handed the whole body, so
+    when the message itself has no numbers the fields in it are still the real totals.
+    """
+    m = _OVERSIZE_TOKENS_RE.search(text)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return _parse_overflow_counts(text)
+
+
+def _anthropic_upstream_error(text: str, counts_source: Optional[str] = None) -> str:
+    """`text` is what the client is told; `counts_source` is the fuller body it came
+    from, used only to recover token counts the message itself does not spell out."""
+    # Starvation is a shared-cache capacity failure, not an oversized prompt: the right
+    # response is to retry, so it must not be reworded into "shorten the conversation".
+    if is_kv_starvation(text):
+        return KV_STARVATION_MESSAGE
+    if _classify_llama_generation_error(Exception(text)):
+        counts = _oversize_counts(text)
+        if counts is None and counts_source:
+            counts = _oversize_counts(counts_source)
+        if counts:
+            # Anthropic's own head wording, which its clients key on to compact, paired
+            # with the fit's remedy rather than a flat "shorten the conversation": when
+            # the latest turn or the system prompt is what does not fit, compacting the
+            # history cannot help and the client would just retry it.
+            return (
+                f"Prompt is too long: {counts[0]} tokens > {counts[1]} maximum. "
+                + context_refusal.oversize_advice(counts[1])
+            )
+        return (
+            "Prompt is too long. Try increasing the Context Length in Model settings, "
+            "or shorten the conversation."
+        )
+    return _friendly_upstream_error(text)
 
 
 def _clamp_finish_reason(value) -> str:
@@ -1040,6 +1087,35 @@ def _anthropic_stream_error_event(exc, *, force: bool = False):
     )
 
 
+def _json_dumps_safe(value) -> Optional[str]:
+    """`json.dumps` for count recovery only; never raises on an odd payload."""
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _anthropic_upstream_stream_error_event(text: str, counts_source: Optional[str] = None):
+    """In-band Anthropic error event for a 200 stream that later reports an upstream failure.
+
+    Same wording and status rule as the non-200 branch. Routing the raw body through
+    `_friendly_error` instead flattens the count-less oversize refusal ("the request
+    exceeds the available context size") to "An internal error occurred", so a streaming
+    client is told 400/invalid_request_error with nothing it can read or compact on.
+    """
+    from core.inference.llama_keepwarm import mark_current_response_failed
+
+    mark_current_response_failed()
+    over = bool(_classify_llama_generation_error(Exception(text)))
+    return build_anthropic_sse_event(
+        "error",
+        anthropic_error_body(
+            _anthropic_upstream_error(text, counts_source = counts_source),
+            status = 400 if over else 500,
+        ),
+    )
+
+
 def _drop_parallel_tool_call_deltas(chunk) -> bool:
     """In-place: drop tool_call deltas whose index >= 1 from a parsed OpenAI
     streaming chunk so only the first tool call survives (parallel_tool_calls=false
@@ -1465,6 +1541,11 @@ def _classify_llama_generation_error(exc: Exception) -> Optional[bool]:
         return True if exc.context_oversize else None
     msg = str(exc)
     msg_l = msg.lower()
+    # Same reasoning as the typed branch, which only reaches errors carrying the parsed
+    # flag. Raw upstream bodies arrive here as a plain Exception, and "Context size has
+    # been exceeded" trips the substring test below while meaning the opposite.
+    if is_kv_starvation(msg):
+        return None
     if "n_ctx" in msg_l or (
         "context" in msg_l and any(t in msg_l for t in ("exceed", "length", "window", "too long"))
     ):
@@ -5871,17 +5952,22 @@ def _monitor_anthropic_json_response(
     response,
     monitor_id: Optional[str],
     context_length = None,
+    cancel_event = None,
 ) -> None:
     if not monitor_id:
         return
+    # A cancelled non-streaming run still returns a normal 200 body built from the
+    # partial output, so the body alone cannot tell the two apart. The streaming
+    # sibling reads cancel_event for the same reason.
+    status = "cancelled" if cancel_event is not None and cancel_event.is_set() else "completed"
     body = getattr(response, "body", b"")
     try:
         data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
     except Exception:
-        api_monitor.finish(monitor_id)
+        api_monitor.finish(monitor_id, status)
         return
     if not isinstance(data, dict):
-        api_monitor.finish(monitor_id)
+        api_monitor.finish(monitor_id, status)
         return
     text = _monitor_anthropic_content_blocks(data.get("content"))
     if text:
@@ -5889,7 +5975,7 @@ def _monitor_anthropic_json_response(
     if data.get("stop_reason"):
         api_monitor.set_perf(monitor_id, stop_reason = str(data["stop_reason"]))
     _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
-    api_monitor.finish(monitor_id)
+    api_monitor.finish(monitor_id, status)
 
 
 def _monitor_anthropic_response(
@@ -5902,7 +5988,7 @@ def _monitor_anthropic_response(
         return response
     body_iterator = getattr(response, "body_iterator", None)
     if body_iterator is None:
-        _monitor_anthropic_json_response(response, monitor_id, context_length)
+        _monitor_anthropic_json_response(response, monitor_id, context_length, cancel_event)
         return response
 
     async def _monitored_body():
@@ -7066,6 +7152,14 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
             audio_preflight["prepared"] = await asyncio.to_thread(
                 _prepare_audio_for_llama, audio_preflight["b64"]
             )
+        except _DecodedAudioTooLongError:
+            # A limit the caller can act on. Reading as "could not be decoded"
+            # answered the same upload differently depending on whether a swap
+            # happened to be running.
+            raise HTTPException(
+                status_code = 413,
+                detail = _audio_too_long_detail(),
+            ) from None
         except Exception:
             raise HTTPException(
                 status_code = 400,
@@ -7099,6 +7193,11 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
         audio_preflight["decoded"] = await asyncio.to_thread(
             _decode_audio_base64, audio_preflight["b64"]
         )
+    except _DecodedAudioTooLongError:
+        raise HTTPException(
+            status_code = 413,
+            detail = _audio_too_long_detail(),
+        ) from None
     except Exception:
         raise HTTPException(
             status_code = 400,
@@ -11909,6 +12008,55 @@ async def _prepare_load_placement(
     return _LoadPlacement(requested, resolved, is_vulkan, diffusion_kind)
 
 
+def _native_audio_cpu_load(config, request) -> bool:
+    """True when this load is a native audio model the user placed in CPU RAM.
+
+    Gated on the audio type on purpose: audio_device is documented as ignored
+    for everything else, so a chat model cannot send it to skip the VRAM guards
+    that read this.
+    """
+    from core.inference.audio_device import audio_device_forces_cpu
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    return getattr(config, "audio_type", None) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(
+        getattr(request, "audio_device", None)
+    )
+
+
+def _resident_audio_placement_matches(backend, request) -> bool:
+    """False when the resident audio model is not where this request wants it.
+
+    Reads the resident entry, not the requested config: this runs ahead of config
+    resolution, and the question is about the model already loaded. Only native
+    audio records a placement, so everything else keeps the shortcut. An entry
+    from before this existed has no key and is read as GPU, which is what those
+    loads did.
+    """
+    from core.inference.audio_device import audio_device_forces_cpu
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    resident = backend.models.get(backend.active_model_name, {})
+    if resident.get("audio_type") not in NATIVE_AUDIO_TYPES:
+        return True
+    return bool(resident.get("audio_cpu", False)) == audio_device_forces_cpu(
+        getattr(request, "audio_device", None)
+    )
+
+
+def _resident_audio_holds_no_gpu(backend) -> bool:
+    """True when the resident model is a native audio model placed in CPU RAM.
+
+    Same audio-type gate as the writer, so only an entry that really recorded a
+    CPU placement can skip the arbiter.
+    """
+    from core.inference.native_audio import NATIVE_AUDIO_TYPES
+
+    resident = backend.models.get(backend.active_model_name, {})
+    return resident.get("audio_type") in NATIVE_AUDIO_TYPES and bool(
+        resident.get("audio_cpu", False)
+    )
+
+
 async def _preflight_native_audio_placement(
     config: ModelConfig, request: LoadRequest | ValidateModelRequest, placement: _LoadPlacement
 ) -> _LoadPlacement:
@@ -11931,6 +12079,20 @@ async def _preflight_native_audio_placement(
             status_code = 400,
             detail = "Higgs TTS requires Python 3.10 or newer in Studio.",
         )
+
+    # Before every VRAM question: sizing a CPU load refuses it on a full GPU.
+    if _native_audio_cpu_load(config, request):
+        if audio_type == "minimax_music3":
+            # The switch already evicted the resident model, so a doomed load costs it.
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "MiniMax Music 3 cannot be loaded into CPU RAM: its official local "
+                    "runtime requires an NVIDIA CUDA GPU. Set the audio device back to "
+                    "Auto to load this model."
+                ),
+            )
+        return placement
 
     automatic = not placement.requested_gpu_ids
     availability = (
@@ -12191,6 +12353,10 @@ def _guard_chat_load_against_training(
     """
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
+
+    # Ahead of the diffusion branch, which would 409 a load that takes no VRAM.
+    if _native_audio_cpu_load(config, request):
+        return
 
     requested_gpu_ids = placement.requested_gpu_ids
     gpu_ids_are_vulkan_ordinals = placement.gpu_ids_are_vulkan_ordinals
@@ -13381,6 +13547,8 @@ async def _load_model_impl(
                     backend.models.get(backend.active_model_name) or {},
                     request.max_seq_length,
                 )
+                # Without this the route reports already_loaded and nothing moves.
+                and _resident_audio_placement_matches(backend, request)
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
@@ -13401,7 +13569,9 @@ async def _load_model_impl(
                 _sf_supports_reasoning = _sf_flags["supports_reasoning"]
                 _sf_reasoning_style = _sf_flags["reasoning_style"]
                 # Requested chat model already resident: assert CHAT ownership (no-op when held) to correct a drifted owner.
-                await asyncio.to_thread(acquire_for, CHAT)
+                # Owns no GPU, so the arbiter would cancel a generation for nothing.
+                if not _resident_audio_holds_no_gpu(backend):
+                    await asyncio.to_thread(acquire_for, CHAT)
                 return LoadResponse(
                     status = "already_loaded",
                     model = model_log_label if native_grant_backed else backend.active_model_name,
@@ -13663,7 +13833,9 @@ async def _load_model_impl(
         # ...but only when this load will actually use the GPU, exactly as the image and video loaders gate on their device:
         # a manual gpu_layers=0 load runs on CPU, so taking the arbiter would cancel an image/video generation for nothing.
         chat_load_needs_gpu = not (
-            config.is_gguf
+            # The non-GGUF case of the same thing: no VRAM, so no arbiter.
+            _native_audio_cpu_load(config, request)
+            or config.is_gguf
             and await asyncio.to_thread(
                 zero_vram_chat_load,
                 request.gpu_memory_mode,
@@ -14010,11 +14182,12 @@ async def _load_model_impl(
             _restore_marker_if_prior_preview_still_resident()
             raise
 
-        # Shut down any export subprocess to free VRAM
+        # Free the export's VRAM, but only when this load wants VRAM: a CPU load masks
+        # the accelerators, so killing the user's export frees nothing it needs.
         try:
             from core.export import get_export_backend
             exp_backend = get_export_backend()
-            if exp_backend.current_checkpoint:
+            if chat_load_needs_gpu and exp_backend.current_checkpoint:
                 logger.info("Shutting down export subprocess to free GPU memory for inference")
                 exp_backend._shutdown_subprocess()
                 exp_backend.current_checkpoint = None
@@ -14034,6 +14207,11 @@ async def _load_model_impl(
         _prior_alias = getattr(backend, "_openai_advertised_id", None)
         _prior_active = getattr(backend, "active_model_name", None)
         backend._openai_advertised_id = None
+        # Not after the load (held across a long download, the chat evictor cancels
+        # this very load) and not before it (until the previous worker exits, this
+        # claim is all that stops a second pipeline allocating over a resident model).
+        # load_model fires it in between; the post-load release covers a re-taken claim.
+        _release_chat_after_teardown = (lambda: release(CHAT)) if not chat_load_needs_gpu else None
         try:
             success = await asyncio.to_thread(
                 backend.load_model,
@@ -14052,7 +14230,9 @@ async def _load_model_impl(
                 mlx_kv_bits = request.mlx_kv_bits,
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
+                on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
+                audio_device = request.audio_device,
             )
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
@@ -14080,7 +14260,8 @@ async def _load_model_impl(
             )
 
         # Same guard the GGUF branch runs above: an Images/Video acquire can land between this load's cancellation and its publish, so this load undoes itself.
-        if current_owner() != CHAT:
+        # On a clean server the owner is None, so ungated this unloads what it loaded.
+        if chat_load_needs_gpu and current_owner() != CHAT:
             await asyncio.to_thread(backend.unload_model, config.identifier)
             # The worker's base CUDA context outlives the model unload, so kill it too.
             await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
@@ -14091,6 +14272,10 @@ async def _load_model_impl(
                     "so the load was cancelled. Unload that model, then try again."
                 ),
             )
+        if not chat_load_needs_gpu:
+            # This load replaced whatever held CHAT; leaving the claim makes the next
+            # Images/Video acquire evict a model that never used the GPU.
+            await asyncio.to_thread(release, CHAT)
 
         # Stamped here, not in backend.load_model: that entry is built in the load
         # subprocess and only a fixed model_info mirror crosses back, so it would
@@ -16387,6 +16572,7 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
 
 
 # =====================================================================
+
 # Audio (TTS) Generation  (/audio/generate)
 # =====================================================================
 
@@ -16442,7 +16628,7 @@ async def _generate_tts_wav(
     _audio_cancel = threading.Event()
     prompt_for_budget = text
 
-    # Pick backend: both return (wav_bytes, sample_rate)
+    # Pick backend - both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
     # GGUF TTS goes straight to llama-server /completion, holding a slot with no
     # admission lease, so only the direct counter can show it in the slot readout.
@@ -17095,6 +17281,7 @@ async def openai_audio_transcriptions(
 
 
 # =====================================================================
+
 # Speech-to-text (STT) sidecar  (/audio/transcribe, /audio/stt/*)
 # =====================================================================
 
@@ -17398,7 +17585,9 @@ async def stt_load(
         _await_stt_disconnect_then_cancel(request, sidecar, cancel_event)
     )
     try:
-        await asyncio.to_thread(load_stt, payload.model, engine, cancel_event)
+        await asyncio.to_thread(
+            functools.partial(load_stt, payload.model, engine, cancel_event, device = payload.device)
+        )
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttUnavailableError as e:
@@ -17443,6 +17632,7 @@ async def stt_validate(
 async def stt_unload(
     engine: Optional[str] = None,
     model: Optional[str] = None,
+    wait: bool = True,
     current_subject: str = Depends(get_current_subject),
 ):
     """Release the local STT model when dictation is idle.
@@ -17452,7 +17642,9 @@ async def stt_unload(
     release to the model the caller claims: a surface owns one model, and another
     can switch the same engine between that ownership check and this request
     arriving, so the sidecar re-checks under its own lock rather than releasing
-    whatever happens to be resident by then.
+    whatever happens to be resident by then. ``wait=false`` skips a sidecar that
+    is mid-transcription instead of draining it: a caller freeing memory as a
+    convenience must not cost the user a recording that is still being decoded.
     """
     if engine is None:
         engines = None
@@ -17469,7 +17661,9 @@ async def stt_unload(
     # is not, and only the former takes it positionally. Registry-side it sits
     # behind a `*`, so passing it positionally raised TypeError, which is the
     # state a fresh process is in before anything has loaded.
-    failed: list[str] = await asyncio.to_thread(unload_stt, engines, expected_model = model)
+    failed: list[str] = await asyncio.to_thread(
+        unload_stt, engines, expected_model = model, wait = wait
+    )
     if failed:
         raise HTTPException(
             status_code = 500,
@@ -17485,10 +17679,11 @@ async def _transcribe_audio_bytes(
     fast: bool,
     engine: Optional[str] = None,
     request: Optional[Request] = None,
+    device: Optional[str] = None,
 ) -> JSONResponse:
     """Run STT for already-decoded request bytes."""
     return JSONResponse(
-        content = await _transcribe_audio_result(raw, model, language, fast, engine, request)
+        content = await _transcribe_audio_result(raw, model, language, fast, engine, request, device)
     )
 
 
@@ -17499,6 +17694,7 @@ async def _transcribe_audio_result(
     fast: bool,
     engine: Optional[str] = None,
     request: Optional[Request] = None,
+    device: Optional[str] = None,
 ) -> dict:
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
     Returns the sidecar's result dict so callers own the response shape."""
@@ -17542,7 +17738,9 @@ async def _transcribe_audio_result(
         # timers fired, which is what OOMs a device that fits either alone. A no-op once
         # the model is resident, so the steady state costs a residency check.
         load_stt, _ = _stt_lifecycle()
-        await asyncio.to_thread(load_stt, model, serving_engine, cancel_event)
+        await asyncio.to_thread(
+            functools.partial(load_stt, model, serving_engine, cancel_event, device = device)
+        )
         if cancel_event is None:
             result = await asyncio.to_thread(sidecar.transcribe, raw, model, language, fast)
         else:
@@ -17617,7 +17815,13 @@ async def transcribe_audio(
     # Same disconnect cancellation as the raw and OpenAI routes: without the request
     # a client that goes away leaves the sidecar transcribing under its lock.
     return await _transcribe_audio_bytes(
-        raw, payload.model, payload.language, payload.fast, payload.engine, request
+        raw,
+        payload.model,
+        payload.language,
+        payload.fast,
+        payload.engine,
+        request,
+        payload.device,
     )
 
 
@@ -17628,6 +17832,9 @@ async def transcribe_audio_raw(
     language: Optional[str] = None,
     fast: bool = False,
     engine: Optional[str] = None,
+    # Same literal as the JSON models: a misspelled "cpu" falling through to auto
+    # would silently put the model back on the GPU. 422 instead.
+    device: Optional[Literal["auto", "cpu", "gpu"]] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     """Transcribe a raw audio body without base64 or JSON conversion overhead."""
@@ -17640,12 +17847,13 @@ async def transcribe_audio_raw(
         chunks.append(chunk)
     return JSONResponse(
         content = await _transcribe_audio_result(
-            b"".join(chunks), model, language, fast, engine, request
+            b"".join(chunks), model, language, fast, engine, request, device
         )
     )
 
 
 # =====================================================================
+
 # OpenAI-Compatible Chat Completions  (/chat/completions)
 # =====================================================================
 
@@ -17678,9 +17886,68 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
         tmp.write(raw)
         tmp_path = tmp.name
     try:
-        waveform, sr = torchaudio.load(tmp_path)
+        # A small compressed file (amr/wma/opus) can hold hours of PCM, so bound
+        # the decode the same way the GGUF path does rather than materializing it
+        # and checking after.
+        try:
+            probe = torchaudio.info(tmp_path)
+            rate = int(getattr(probe, "sample_rate", 0) or 0)
+            frames = int(getattr(probe, "num_frames", 0) or 0)
+            channels = max(1, int(getattr(probe, "num_channels", 1) or 1))
+        except Exception:  # noqa: BLE001 - a container info cannot read is still loadable
+            rate, frames, channels = 0, 0, 1
+        limit = rate * _MAX_AUDIO_SECONDS
+        if limit and frames > limit:
+            raise _DecodedAudioTooLongError(
+                f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+            )
+        # load() materializes every channel at the native rate, so it is only safe
+        # when info said how long the file is and that fits the ceiling. Anything
+        # else -- an unreadable probe, an unreported length, a high rate or a
+        # multichannel file -- goes to the bounded reader, which downmixes as it
+        # goes and holds mono frames only. Streaming beats refusing: the file is
+        # inside the clock, it is just too wide to hold at once.
+        if limit and frames and frames * channels <= _MAX_DECODED_SAMPLES:
+            # One frame past the cap, so a container that misreports its length
+            # is still never fully read. Both caps apply: info() is the value
+            # being distrusted here, so an understated num_frames must not let
+            # the read run to the rate-relative limit, which at 192 kHz is four
+            # times the sample ceiling. A file that fits is unaffected: its
+            # length is under both.
+            read_frames = min(limit, _MAX_DECODED_SAMPLES // channels)
+            waveform, sr = torchaudio.load(tmp_path, num_frames = read_frames + 1)
+        else:
+            import torch
+            try:
+                samples, sr = _decode_audio_mono(raw)
+            except RuntimeError:
+                # No libsndfile, no PyAV, no librosa. This function used to call
+                # torchaudio.load() outright, so an environment carrying only
+                # torchaudio could decode audio, and an install predating PyAV
+                # as a base requirement must not lose that on upgrade.
+                #
+                # It cannot simply call load() again, though. What routes an
+                # install here is torchaudio 2.9 dropping info(), and 2.9's
+                # load() is an alias for load_with_torchcodec, which decodes the
+                # whole file with get_all_samples() and only then slices to
+                # num_frames -- so the argument bounds the return value and not
+                # the allocation, and a 25 MB Opus upload holding hours of audio
+                # exhausts the backend before any check below runs. Ask
+                # torchcodec what the file is first, and read only a bounded
+                # range of it.
+                waveform, sr = _decode_audio_with_torchcodec(tmp_path)
+            else:
+                waveform = torch.from_numpy(samples).unsqueeze(0)
     finally:
         os.unlink(tmp_path)
+
+    # Backstop for a container that reported neither rate nor length.
+    if (sr > 0 and waveform.shape[-1] > sr * _MAX_AUDIO_SECONDS) or (
+        waveform.shape[-1] * waveform.shape[0] > _MAX_DECODED_SAMPLES
+    ):
+        raise _DecodedAudioTooLongError(
+            f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+        )
 
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim = 0, keepdim = True)
@@ -17702,8 +17969,48 @@ _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
 # Flooring instead refused a file of exactly the size the composer allows.
 _MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
 _MAX_AUDIO_SECONDS = 30 * 60
+# The duration cap alone is rate-relative, so a high-rate container retains far
+# more memory for the same 30 minutes: at 48 kHz that is 86M float32 samples,
+# and np.concatenate doubles it. 48 kHz covers ordinary uploads, so this ceiling
+# only refuses rates above it, and never before the duration cap bites.
+_MAX_DECODED_SAMPLES = 48_000 * _MAX_AUDIO_SECONDS
+# One streamed block, every channel counted. 4 MB of float32, and the reader
+# holds a second copy of it, so this is the transient a decode may reach for
+# regardless of how many channels the container declares.
+_MAX_DECODE_BLOCK_SAMPLES = 1 << 20
+# How much of a resample is in flight at once, counted on the side that reads
+# the most samples. A few MB of float64, whatever the recording's length.
+_RESAMPLE_SLICE_SAMPLES = 1 << 18
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
+
+
+class _DecodedAudioTooLongError(ValueError):
+    """Decoded audio crossed the duration cap before it could be buffered."""
+
+
+def _audio_too_long_detail() -> str:
+    """The one answer an overlong upload gets, whichever path found it out."""
+    return f"Audio is too long (max {_MAX_AUDIO_SECONDS // 60} minutes)."
+
+
+def _id3_tag_length(raw: bytes) -> int:
+    """Bytes an ID3v2 tag occupies before the first MPEG frame.
+
+    An ID3v2 tag can prefix any MPEG audio layer (and occasionally AAC), so it
+    is skipped before anything reads a frame header. The four size bytes are
+    synchsafe: their top bit must be clear.
+    """
+    if len(raw) < 10 or raw[:3] != b"ID3" or any(byte & 0x80 for byte in raw[6:10]):
+        return 0
+    tag_size = 0
+    for byte in raw[6:10]:
+        tag_size = (tag_size << 7) | byte
+    length = 10 + tag_size
+    # ID3v2.4's optional footer is not included in the stored tag size.
+    if raw[3] == 4 and raw[5] & 0x10:
+        length += 10
+    return length
 
 
 def _sniff_audio_container(raw: bytes) -> Optional[str]:
@@ -17711,10 +18018,233 @@ def _sniff_audio_container(raw: bytes) -> Optional[str]:
     directly (so we can forward them untouched), else None (needs transcoding)."""
     if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WAVE":
         return "wav"
-    # mp3: ID3 tag, or an MPEG audio frame sync (no other accepted format leads
-    # with 0xFF, so the simple sync check doesn't collide).
-    if raw[:3] == b"ID3" or (len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0):
-        return "mp3"
+
+    frame_offset = _id3_tag_length(raw)
+
+    # MPEG audio frame header: the 11-bit sync is followed by version and layer
+    # bits. Layer III is binary 01; Layer II (MP2) is 10, while ADTS AAC uses
+    # the reserved MPEG layer value 00. Only Layer III is safe to pass as mp3.
+    if len(raw) >= frame_offset + 2:
+        first, second = raw[frame_offset : frame_offset + 2]
+        version = (second >> 3) & 0x03
+        layer = (second >> 1) & 0x03
+        is_mpeg_sync = first == 0xFF and (second & 0xE0) == 0xE0
+        if is_mpeg_sync and version != 0x01 and layer == 0x01:
+            return "mp3"
+
+    # ID3-only or malformed MPEG data must go through the decoder too; treating
+    # the tag itself as proof of MP3 would reintroduce the MP2/AAC collision.
+    return None
+
+
+# Layer III bitrates in kbps by MPEG version bits, and the sample rates that go
+# with them. Index 0 is "free" and index 15 is invalid; both read as 0 here.
+_MPEG_LAYER3_BITRATES = {
+    3: (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0),
+    2: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0),
+    0: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0),
+}
+_MPEG_SAMPLE_RATES = {
+    3: (44_100, 48_000, 32_000, 0),
+    2: (22_050, 24_000, 16_000, 0),
+    0: (11_025, 12_000, 8_000, 0),
+}
+
+
+def _decode_audio_with_torchcodec(path: str) -> "tuple[Any, int]":
+    """Read a bounded range of an audio file with torchcodec, or refuse.
+
+    The last resort for an install carrying torchaudio and no other decoder.
+    torchcodec is what torchaudio 2.9's own load() decodes through, so it is
+    present wherever that load() would have worked, and its metadata answers
+    the rate and duration without decoding anything.
+    """
+    try:
+        from torchcodec.decoders import AudioDecoder
+    except Exception as e:  # noqa: BLE001 - no bounded reader, so no read
+        raise RuntimeError(
+            "this audio format could not be decoded; run `unsloth studio update` "
+            "to install PyAV or convert it to wav, mp3, ogg or flac"
+        ) from e
+
+    decoder = AudioDecoder(path)
+    metadata = decoder.metadata
+    rate = int(getattr(metadata, "sample_rate", 0) or 0)
+    if rate <= 0:
+        raise RuntimeError(
+            "this audio file does not report a sample rate, so it cannot be "
+            "decoded within the size limit; convert it to wav or mp3"
+        )
+    duration = float(getattr(metadata, "duration_seconds", 0.0) or 0.0)
+    if duration > _MAX_AUDIO_SECONDS:
+        raise _DecodedAudioTooLongError(
+            f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+        )
+    # Both ceilings, and a second past the clock so a container understating its
+    # own duration is still cut rather than believed.
+    channels = max(1, int(getattr(metadata, "num_channels", 1) or 1))
+    seconds = min(_MAX_AUDIO_SECONDS + 1, _MAX_DECODED_SAMPLES / (rate * channels) + 1)
+    samples = decoder.get_samples_played_in_range(0.0, seconds)
+    return samples.data, rate
+
+
+_WAVE_FORMAT_PCM = 0x0001
+_WAVE_FORMAT_IEEE_FLOAT = 0x0003
+_WAVE_FORMAT_EXTENSIBLE = 0xFFFE
+
+
+def _wav_format_is_pcm(raw: bytes, body: int, size: int, format_tag: int) -> bool:
+    """Whether a fmt chunk describes uncompressed samples.
+
+    WAVE_FORMAT_EXTENSIBLE carries the real tag in the first two bytes of its
+    SubFormat GUID, 24 bytes into the extension. A file that claims the tag
+    without carrying the extension has not said what it holds.
+    """
+    if format_tag in (_WAVE_FORMAT_PCM, _WAVE_FORMAT_IEEE_FLOAT):
+        return True
+    if format_tag != _WAVE_FORMAT_EXTENSIBLE or size < 40 or body + 26 > len(raw):
+        return False
+    sub_format = int.from_bytes(raw[body + 24 : body + 26], "little")
+    return sub_format in (_WAVE_FORMAT_PCM, _WAVE_FORMAT_IEEE_FLOAT)
+
+
+def _wav_seconds(raw: bytes) -> Optional[float]:
+    """Seconds of PCM a RIFF/WAVE header describes, or None if it cannot say.
+
+    Header arithmetic only: the point is to bound a file that is forwarded
+    without ever being decoded here.
+    """
+    if len(raw) < 12 or raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
+        return None
+    byte_rate = 0
+    offset = 12
+    while offset + 8 <= len(raw):
+        chunk = raw[offset : offset + 4]
+        size = int.from_bytes(raw[offset + 4 : offset + 8], "little")
+        body = offset + 8
+        if chunk == b"fmt " and size >= 16 and body + 16 <= len(raw):
+            format_tag = int.from_bytes(raw[body : body + 2], "little")
+            channels = int.from_bytes(raw[body + 2 : body + 4], "little")
+            sample_rate = int.from_bytes(raw[body + 4 : body + 8], "little")
+            declared_rate = int.from_bytes(raw[body + 8 : body + 12], "little")
+            block_align = int.from_bytes(raw[body + 12 : body + 14], "little")
+            bits = int.from_bytes(raw[body + 14 : body + 16], "little")
+            if not _wav_format_is_pcm(raw, body, size, format_tag):
+                # Only WAVE_FORMAT_PCM fixes nBlockAlign as one sample frame and
+                # nAvgBytesPerSec as rate * blockAlign; for every other tag both
+                # are the codec's business (mmeapi WAVEFORMATEX). An IMA ADPCM
+                # block holds ~505 frames, so PCM arithmetic overstates its rate
+                # 505-fold and read three hours as twenty-one seconds. Nothing
+                # here can check a codec's own header, so say so and let the
+                # bounded decoder have it.
+                return None
+            # Among the PCM fields nAvgBytesPerSec is the redundant one, so it
+            # is the one that can be moved alone. Multiplied by ten thousand it
+            # made half an hour read as a quarter of a second, and a quarter of
+            # a second is forwarded untouched. Recompute it, and take the
+            # declaration only where it agrees.
+            computed = sample_rate * (block_align or channels * (bits // 8))
+            byte_rate = computed if computed > 0 and declared_rate != computed else declared_rate
+        elif chunk == b"data":
+            if byte_rate <= 0:
+                return None
+            # A streaming writer can declare a size the file does not carry, so
+            # the smaller of the two is what is really there.
+            carried = len(raw) - body
+            return (min(size, carried) if size else carried) / byte_rate
+        # Chunks are padded to an even length, and the padding is not counted.
+        offset = body + size + (size & 1)
+    return None
+
+
+def _mp3_trailer_length(raw: bytes, offset: int) -> int:
+    """Bytes the metadata trailer at `offset` occupies, or 0 if there is none.
+
+    Only the trailers whose length is written down are read, because the length
+    is the whole point: a trailer that is merely recognised by its first three
+    bytes proves nothing about what follows it. `cat one.mp3 two.mp3` leaves the
+    first file's 128-byte ID3v1 tag in the middle of the result, and matching on
+    the magic alone accepted that as the end of the recording and reported the
+    first file's duration for both. Lyrics3 has no fixed-size header, so it is
+    left unrecognised and the file gets decoded rather than measured.
+    """
+    tail = raw[offset:]
+    if tail[:3] == b"TAG":
+        # ID3v1 and ID3v1.1 are both exactly 128 bytes.
+        return 128 if len(tail) >= 128 else 0
+    if tail[:3] == b"ID3":
+        return _id3_tag_length(tail)
+    if tail[:8] == b"APETAGEX" and len(tail) >= 32:
+        # The size field covers the item data and the 32-byte footer but never
+        # the header. An APEv2 header is optional, and an APEv1 tag has none at
+        # all, but a tag reached from the front can only be showing its header,
+        # since a footer sits at the very end. A tag with neither begins with
+        # item data, does not match here, and the file is decoded instead.
+        return int.from_bytes(tail[12:16], "little") + 32
+    return 0
+
+
+def _mp3_seconds(raw: bytes, cap: float) -> Optional[float]:
+    """Seconds of audio an MPEG stream holds, walking frame headers only.
+
+    Returns as soon as the running total passes `cap`, so proving a file too long
+    costs a fraction of the walk.
+
+    None means "this walk established no length", and the caller has to bound the
+    file some other way rather than forward it. That covers a stream with no
+    readable frame, a free-format frame (bitrate index 0 carries no length), and
+    a walk that hit bytes it could not read partway through. The last one is what
+    matters: a decoder resynchronises past junk and plays the rest, so returning
+    only what was counted before it let four stray bytes present half an hour of
+    audio as two seconds. A known metadata trailer is not junk and still ends the
+    count cleanly.
+    """
+    offset = _id3_tag_length(raw)
+    seconds = 0.0
+    frames = 0
+    while offset + 4 <= len(raw):
+        first, second, third = raw[offset], raw[offset + 1], raw[offset + 2]
+        if first != 0xFF or (second & 0xE0) != 0xE0:
+            break
+        version = (second >> 3) & 0x03
+        layer = (second >> 1) & 0x03
+        if version == 0x01 or layer != 0x01:
+            break
+        bitrate = _MPEG_LAYER3_BITRATES[version][(third >> 4) & 0x0F] * 1000
+        rate = _MPEG_SAMPLE_RATES[version][(third >> 2) & 0x03]
+        if bitrate <= 0 or rate <= 0:
+            break
+        # MPEG-1 Layer III carries 1152 samples per frame, MPEG-2 and 2.5 half that.
+        samples = 1152 if version == 0x03 else 576
+        length = (samples // 8) * bitrate // rate + ((third >> 1) & 0x01)
+        if length <= 4:
+            break
+        seconds += samples / rate
+        frames += 1
+        if seconds > cap:
+            return seconds
+        offset += length
+    if not frames:
+        return None
+    # Fewer than four bytes cannot begin a frame, so a short tail is the end.
+    # Anything longer has to account for itself all the way to EOF: a trailer
+    # that stops short is followed by something this walk never read.
+    while offset < len(raw):
+        if len(raw) - offset < 4:
+            return seconds
+        length = _mp3_trailer_length(raw, offset)
+        if length <= 0:
+            return None
+        offset += length
+    return seconds
+
+
+def _passthrough_audio_seconds(raw: bytes, container: str, cap: float) -> Optional[float]:
+    """How long a container forwarded untouched runs, or None if unreadable."""
+    if container == "wav":
+        return _wav_seconds(raw)
+    if container == "mp3":
+        return _mp3_seconds(raw, cap)
     return None
 
 
@@ -17728,20 +18258,27 @@ def _mono_f32_to_wav_bytes(arr: "np.ndarray", sample_rate: int) -> bytes:
     import numpy as np
     import wave
 
-    arr = np.nan_to_num(np.asarray(arr, dtype = np.float32).flatten(), posinf = 0.0, neginf = 0.0)
-    if arr.size == 0:
+    if np.asarray(arr).size == 0:
         raise ValueError("decoded audio is empty")
-    peak = float(np.abs(arr).max())
+    # One copy, then every stage in place. Flatten, the nan scrub, abs, the
+    # normalise and the scale each used to allocate the whole recording again.
+    scratch = np.nan_to_num(np.asarray(arr, dtype = np.float32).ravel(), posinf = 0.0, neginf = 0.0)
+    # Every value is finite after the scrub, so the extremes carry the peak
+    # without an absolute copy of the array.
+    peak = max(abs(float(scratch.min())), abs(float(scratch.max())))
     if peak > 1.0:
-        arr = arr / peak
-    pcm = (arr * 32767.0).astype(np.int16)
+        np.divide(scratch, peak, out = scratch)
+    np.multiply(scratch, 32767.0, out = scratch)
+    pcm = scratch.astype(np.int16)
+    del scratch
 
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(int(sample_rate))
-        wf.writeframes(pcm.tobytes())
+        # The array itself, not a bytes copy of it: wave casts the buffer.
+        wf.writeframes(pcm)
     return buf.getvalue()
 
 
@@ -17751,13 +18288,37 @@ def _resample_mono_linear(arr: "np.ndarray", source_rate: int, target_rate: int)
 
     if source_rate <= 0 or target_rate <= 0 or source_rate == target_rate:
         return arr
-    duration = len(arr) / float(source_rate)
-    target_len = max(1, int(round(duration * target_rate)))
-    if target_len == len(arr):
+    count = len(arr)
+    if count == 0:
         return arr
-    source_x = np.linspace(0.0, duration, num = len(arr), endpoint = False)
-    target_x = np.linspace(0.0, duration, num = target_len, endpoint = False)
-    return np.interp(target_x, source_x, arr).astype(np.float32)
+    duration = count / float(source_rate)
+    target_len = max(1, int(round(duration * target_rate)))
+    if target_len == count:
+        return arr
+    # Both grids are uniform and start at zero, so a slice of either is
+    # `index * step` and can be built where it is needed. Materializing them
+    # whole cost two float64 arrays the length of the recording, 8 bytes per
+    # input sample each, on top of np.interp's own float64 result: the single
+    # largest transient in the transcode, and larger than the audio itself.
+    source_step = duration / count
+    target_step = duration / target_len
+    out = np.empty(target_len, dtype = np.float32)
+    # Sized from the source window a slice reads, not from the slice: at 3:1 a
+    # million outputs consult three million inputs, and it is the window that
+    # np.interp widens to float64.
+    ratio = max(1.0, count / target_len)
+    slice_len = max(1, int(_RESAMPLE_SLICE_SAMPLES / ratio))
+    for start in range(0, target_len, slice_len):
+        stop = min(start + slice_len, target_len)
+        target_x = np.arange(start, stop, dtype = np.float64) * target_step
+        # The window np.interp consults for this slice, widened by a sample at
+        # each end so the bracketing points, and the clamp past the last one,
+        # are the ones the whole-array pass would have found.
+        first = max(0, int(target_x[0] / source_step) - 1)
+        last = min(count, int(target_x[-1] / source_step) + 3)
+        source_x = np.arange(first, last, dtype = np.float64) * source_step
+        out[start:stop] = np.interp(target_x, source_x, arr[first:last])
+    return out
 
 
 def _fit_transcoded_audio_to_wav_cap(
@@ -17782,47 +18343,246 @@ def _fit_transcoded_audio_to_wav_cap(
     return fitted, target_rate
 
 
+def _decode_audio_mono_with_soundfile(raw: bytes) -> "tuple[np.ndarray, int]":
+    """Decode libsndfile-supported audio in bounded blocks."""
+    import io
+
+    import numpy as np
+    import soundfile as sf
+
+    sample_count = 0
+    joined = None
+    with sf.SoundFile(io.BytesIO(raw)) as source:
+        sample_rate = int(source.samplerate)
+        if sample_rate <= 0:
+            raise ValueError("decoded audio has an invalid sample rate")
+        # blocks() sizes its buffer as frames * channels and yields a copy of
+        # it, so a frame budget alone lets a many-channel container hold far
+        # more than the mono case it was chosen for: 48k frames of 255-channel
+        # Vorbis is 49 MB twice over, from an upload capped at 25. The samples
+        # kept are mono, since each block is downmixed below; this bounds the
+        # transient. Ordinary audio is unaffected, the divisor only biting past
+        # about 20 channels.
+        channels = max(1, int(getattr(source, "channels", 1) or 1))
+        block_frames = max(1, min(sample_rate, 65_536, _MAX_DECODE_BLOCK_SAMPLES // channels))
+        ceiling = _decoded_sample_ceiling(sample_rate)
+        # The length the header claims, kept only while it is one this decode is
+        # allowed to reach. It is a hint that saves growth copies, never a
+        # promise: a header that under-counts, over-counts or says nothing at all
+        # only changes how often the buffer is resized.
+        declared = int(getattr(source, "frames", 0) or 0)
+        if declared > ceiling:
+            declared = 0
+        for block in source.blocks(
+            blocksize = block_frames,
+            dtype = "float32",
+            always_2d = False,
+        ):
+            sample_count += len(block)
+            if sample_count > ceiling:
+                raise _DecodedAudioTooLongError(
+                    f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+                )
+            if block.ndim > 1:
+                block = block.mean(axis = 1)
+            if joined is None:
+                joined = np.empty(min(max(len(block), 1), ceiling), dtype = np.float32)
+            if sample_count > len(joined):
+                # Doubling keeps the resizes amortised when the header is absent
+                # or short. Adopting the declared length instead, once it is the
+                # larger target, spends one allocation on an honest header rather
+                # than a run of them; not before the decode has produced half of
+                # it, because sizing a buffer from an unread header is how a small
+                # file asks for a large allocation.
+                target = max(sample_count, 2 * len(joined))
+                if declared > target and sample_count * 2 >= declared:
+                    target = declared
+                grown = np.empty(min(target, ceiling), dtype = np.float32)
+                grown[: sample_count - len(block)] = joined[: sample_count - len(block)]
+                joined = grown
+            # One append-only buffer, so the samples are in decode order by
+            # construction. The previous shape kept overflow blocks in a separate
+            # list and re-tested the fit per block, which let a short final block
+            # drop back into the space left over and be emitted ahead of the
+            # blocks that overflowed before it: the audio was reordered while its
+            # length stayed right, so nothing downstream could notice.
+            joined[sample_count - len(block) : sample_count] = block
+    if not sample_count:
+        raise ValueError("audio container decoded to no samples")
+    # A slice keeps the whole allocation alive, which is free when the length was
+    # known and wasteful when the buffer had to be guessed at.
+    if sample_count * 2 < len(joined):
+        return joined[:sample_count].copy(), sample_rate
+    return joined[:sample_count], sample_rate
+
+
+def _decoded_sample_ceiling(sample_rate: int) -> int:
+    """The most samples a decode may produce, in one place.
+
+    Two limits apply at once and neither implies the other: the clock, and a
+    rate-independent sample count that keeps a high-rate file from spending
+    thirty minutes' worth of memory. Nothing may allocate past the smaller of
+    them, because that is the point at which the decode refuses anyway.
+    """
+    return min(sample_rate * _MAX_AUDIO_SECONDS, _MAX_DECODED_SAMPLES)
+
+
+def _av_expected_samples(container, sample_rate: int, ceiling: int) -> int:
+    """Samples to size the output buffer for, from the container's own duration.
+
+    The duration is a hint, not a promise: it can be absent, wrong, or a lie. It
+    only decides the first allocation, so being wrong costs a growth copy or some
+    untouched address space, never a wrong result. It is still clamped to the
+    ceiling, because a declared duration the decode would refuse must not be
+    allowed to size an allocation on the way to refusing it.
+    """
+    import av
+
+    micros = getattr(container, "duration", None) or 0
+    seconds = float(micros) / float(av.time_base) if micros > 0 else 0.0
+    if seconds <= 0.0:
+        stream = container.streams.audio[0]
+        if stream.duration and stream.time_base:
+            seconds = float(stream.duration * stream.time_base)
+    if not (seconds > 0.0):
+        # Nothing declared, so start at a minute and grow.
+        seconds = 60.0
+    return min(int(seconds * sample_rate) + 1, ceiling)
+
+
+def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
+    """Decode an audio container with PyAV's bundled FFmpeg libraries."""
+    import io
+
+    import av
+    import numpy as np
+
+    # Collecting every decoded block and joining at the end costs two copies of
+    # the recording at once, whether the join is np.concatenate or a fill loop
+    # that drops blocks as it copies: the blocks are small enough that freeing
+    # them returns them to the allocator's free lists rather than to the OS, so
+    # resident memory only ever grows. Measured at 2.0x either way for a
+    # 30-minute 48 kHz upload. Writing each block into one output buffer as it
+    # arrives is the only shape that keeps a single copy live.
+    joined = None
+    sample_rate = 0
+    sample_count = 0
+    ceiling = 0
+    resampler = None
+
+    def append_resampled(resampled) -> None:
+        nonlocal joined, sample_count
+        block = resampled.to_ndarray().reshape(-1)
+        sample_count += len(block)
+        if sample_count > ceiling:
+            raise _DecodedAudioTooLongError(
+                f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+            )
+        if sample_count > len(joined):
+            # The container under-reported its duration, or never declared one.
+            # Doubling makes the growth copies amortised, and the transient is
+            # the old buffer plus the new one rather than the whole decode. The
+            # doubling is clamped too: the count that survived the check above is
+            # within the ceiling, but twice the buffer holding it need not be.
+            grown = np.empty(min(max(sample_count, 2 * len(joined)), ceiling), dtype = np.float32)
+            grown[: sample_count - len(block)] = joined[: sample_count - len(block)]
+            joined = grown
+        joined[sample_count - len(block) : sample_count] = block
+
+    with av.open(io.BytesIO(raw), mode = "r", metadata_errors = "ignore") as container:
+        if not container.streams.audio:
+            raise ValueError("audio container has no audio stream")
+        for frame in container.decode(audio = 0):
+            if resampler is None:
+                sample_rate = int(frame.sample_rate or 0)
+                if sample_rate <= 0:
+                    raise ValueError("decoded audio has an invalid sample rate")
+                resampler = av.AudioResampler(
+                    format = "flt",
+                    layout = "mono",
+                    rate = sample_rate,
+                )
+                ceiling = _decoded_sample_ceiling(sample_rate)
+                joined = np.empty(
+                    _av_expected_samples(container, sample_rate, ceiling), dtype = np.float32
+                )
+            for resampled in resampler.resample(frame):
+                append_resampled(resampled)
+        if resampler is not None:
+            for resampled in resampler.resample(None):
+                append_resampled(resampled)
+    if not sample_count:
+        raise ValueError("audio container decoded to no samples")
+    # A slice keeps the whole allocation alive, which is free when the declared
+    # duration was honest and wasteful when it was not.
+    if sample_count * 2 < len(joined):
+        return joined[:sample_count].copy(), sample_rate
+    return joined[:sample_count], sample_rate
+
+
 def _decode_audio_mono(raw: bytes) -> "tuple[np.ndarray, int]":
     """Decode audio bytes to (mono float32 array, native sample_rate).
 
-    soundfile (libsndfile) reads wav/mp3/ogg/flac straight from memory. librosa
-    (ffmpeg-backed) additionally covers m4a/webm but needs a real path and is
-    absent on no-torch GGUF-only installs. Both imports are inside the fallback
-    so a missing decoder degrades to the next one (and finally a clear error)
-    rather than crashing.
+    soundfile (libsndfile) reads wav/mp3/ogg/flac in bounded blocks. PyAV is
+    installed in every Studio environment and uses its bundled FFmpeg libraries
+    for containers including m4a/webm/WMA/AMR. librosa remains the final fallback
+    in full ML environments, but is absent from no-torch GGUF-only installs.
     """
-    import io
-
     try:
-        import soundfile as sf
-        arr, sr = sf.read(io.BytesIO(raw), dtype = "float32")
+        arr, sr = _decode_audio_mono_with_soundfile(raw)
+    except _DecodedAudioTooLongError:
+        raise
     except Exception:
         try:
-            import librosa
-        except ModuleNotFoundError as e:
-            raise RuntimeError(
-                "this audio format needs librosa, which is not installed in "
-                "GGUF-only environments; use wav, mp3, ogg or flac"
-            ) from e
-        import os
-        import tempfile
-        from utils.paths import ensure_dir, tmp_root
+            arr, sr = _decode_audio_mono_with_av(raw)
+        except _DecodedAudioTooLongError:
+            raise
+        except Exception as av_error:
+            try:
+                import librosa
+            except ModuleNotFoundError:
+                raise RuntimeError(
+                    "this audio format could not be decoded; run `unsloth studio update` "
+                    "to install PyAV or convert it to wav, mp3, ogg or flac"
+                ) from av_error
+            import os
+            import tempfile
+            from utils.paths import ensure_dir, tmp_root
 
-        with tempfile.NamedTemporaryFile(
-            suffix = ".audio",
-            delete = False,
-            dir = str(ensure_dir(tmp_root())),
-        ) as tmp:
-            tmp.write(raw)
-            tmp_path = tmp.name
-        try:
-            arr, sr = librosa.load(tmp_path, sr = None, mono = True)
-        finally:
-            os.unlink(tmp_path)
+            with tempfile.NamedTemporaryFile(
+                suffix = ".audio",
+                delete = False,
+                dir = str(ensure_dir(tmp_root())),
+            ) as tmp:
+                tmp.write(raw)
+                tmp_path = tmp.name
+            try:
+                # audioread/FFmpeg would otherwise materialize the whole
+                # waveform before the check below. Ask for the native rate first
+                # so the window covers the sample ceiling as well as the clock.
+                try:
+                    probe_rate = int(librosa.get_samplerate(tmp_path) or 0)
+                except Exception:  # noqa: BLE001 - handled below
+                    probe_rate = 0
+                if probe_rate <= 0:
+                    # Without the rate there is no window that bounds the read:
+                    # 30 minutes is gigabytes at a high rate and nothing at a low
+                    # one. This is the last fallback, after soundfile and PyAV
+                    # both declined, so refusing costs a file nothing else reads.
+                    raise RuntimeError(
+                        "this audio file does not report a sample rate, so it cannot "
+                        "be decoded within the size limit; convert it to wav or mp3"
+                    )
+                window = min(float(_MAX_AUDIO_SECONDS + 1), _MAX_DECODED_SAMPLES / probe_rate + 1)
+                arr, sr = librosa.load(tmp_path, sr = None, mono = True, duration = window)
+            finally:
+                os.unlink(tmp_path)
     if arr.ndim > 1:
         arr = arr.mean(axis = 1)
-    if sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS:
-        raise ValueError(f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit")
+    if (sr > 0 and len(arr) > sr * _MAX_AUDIO_SECONDS) or len(arr) > _MAX_DECODED_SAMPLES:
+        raise _DecodedAudioTooLongError(
+            f"decoded audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+        )
     return arr, sr
 
 
@@ -17839,7 +18599,24 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     raw = base64.b64decode(b64)
     passthrough = _sniff_audio_container(raw)
     if passthrough is not None:
-        return b64, passthrough
+        # Forwarding skips every bounded decoder, so the duration cap has to be
+        # applied from the headers instead. A 16 kbps MP3 holds hours inside the
+        # 25 MB upload cap, and llama-server was left to decode all of it. A
+        # 25 MB upload cap, and llama-server was left to decode all of it.
+        seconds = _passthrough_audio_seconds(raw, passthrough, _MAX_AUDIO_SECONDS)
+        if seconds is not None and seconds > _MAX_AUDIO_SECONDS:
+            raise _DecodedAudioTooLongError(
+                f"audio exceeds the {_MAX_AUDIO_SECONDS // 60}-minute limit"
+            )
+        # Headers that cannot state a length do not earn a free pass. Forwarding
+        # them anyway meant the cap held only for containers honest enough to
+        # describe themselves, which is the wrong way round: four junk bytes in
+        # an MPEG stream, or a WAV with no data chunk, ended the header walk and
+        # took the whole recording through with it. Decoding costs a transcode
+        # and nothing else, and puts the file back under both ceilings, so it
+        # still reaches the model.
+        if seconds is not None:
+            return b64, passthrough
 
     arr, sr = _decode_audio_mono(raw)
     arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr)
@@ -17932,7 +18709,7 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         # ── User / assistant messages ─────────────────────────
         combined_text: Optional[str] = None
         if isinstance(msg.content, str):
-            # Plain string content: pass through
+            # Plain string content - pass through
             combined_text = msg.content
         elif isinstance(msg.content, list):
             # Multimodal content parts
@@ -20099,6 +20876,13 @@ async def produce_openai_chat_completions(
                 )
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
                 system_prompt = _apply_current_date_prompt(system_prompt, request)
+            except _DecodedAudioTooLongError as e:
+                # A limit the caller can act on, not a server fault.
+                api_monitor.fail(monitor_id, str(e))
+                raise HTTPException(
+                    status_code = 413,
+                    detail = _audio_too_long_detail(),
+                )
             except Exception as e:
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 raise
@@ -20380,7 +21164,7 @@ async def produce_openai_chat_completions(
     # verbatim so structured `tool_calls` flow back to the client. This
     # branch runs BEFORE `_extract_content_parts` because that helper is
     # unaware of `role="tool"` messages and assistant messages that only
-    # carry `tool_calls` (content=None): both of which are valid in
+    # carry `tool_calls` (content=None) - both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
 
@@ -20543,6 +21327,11 @@ async def produce_openai_chat_completions(
                     if _preprepared_audio is not None
                     else await asyncio.to_thread(_prepare_audio_for_llama, payload.audio_base64)
                 )
+            except _DecodedAudioTooLongError as e:
+                # A valid file that is simply too long reports the limit, as the
+                # non-GGUF path does, rather than reading as corrupt audio.
+                logger.info("Audio rejected at the duration limit: %s", e)
+                raise _reject(413, _audio_too_long_detail())
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
@@ -23599,6 +24388,7 @@ async def produce_openai_chat_completions(
 
 
 # =====================================================================
+
 # Sandbox file serving  (/sandbox/{session_id}/{filename})
 # =====================================================================
 
@@ -23609,6 +24399,11 @@ _SANDBOX_MEDIA_TYPES = {
     ".gif": "image/gif",
     ".webp": "image/webp",
     ".bmp": "image/bmp",
+    # A raster codec, not a document type: `nosniff` below pins the type either way, and a model
+    # that writes `photo.avif` should get an image rather than an attachment it cannot see.
+    ".avif": "image/avif",
+    # `.svg` stays OUT on purpose. The filename is model-chosen, so an inline SVG would be
+    # same-origin script execution; it stays octet-stream + attachment (a download card).
 }
 
 
@@ -23950,6 +24745,7 @@ async def serve_sandbox_file(
 
 
 # =====================================================================
+
 # OpenAI-Compatible Models Listing  (/models → /v1/models)
 # =====================================================================
 
@@ -24692,6 +25488,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
 
 
 # =====================================================================
+
 # OpenAI-Compatible Completions Proxy  (/completions → /v1/completions)
 # =====================================================================
 
@@ -24805,7 +25602,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         async def _stream():
             # Manual httpx client/response lifecycle AND explicit iterator
-            # close: see _anthropic_passthrough_stream for the full rationale.
+            # close - see _anthropic_passthrough_stream for the full rationale.
             # Saving the iterator and closing it in the finally block avoids the
             # Python 3.13 + httpcore 1.0.x "Exception ignored in:
             # <async_generator>" / anyio cancel-scope trace.
@@ -25015,8 +25812,418 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
 
 # =====================================================================
+
 # OpenAI-Compatible Embeddings Proxy  (/embeddings → /v1/embeddings)
 # =====================================================================
+
+
+_STUDIO_EMBED_CONCURRENCY = 4
+_STUDIO_EMBED_MAX_INPUTS = 2048
+_studio_embed_semaphores: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_studio_embed_semaphores_guard = threading.Lock()
+
+
+def _studio_embed_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _studio_embed_semaphores_guard:
+        semaphore = _studio_embed_semaphores.get(loop)
+        if semaphore is None:
+            semaphore = _studio_embed_semaphores[loop] = asyncio.Semaphore(
+                _STUDIO_EMBED_CONCURRENCY
+            )
+        return semaphore
+
+
+def _resident_serves_embeddings(llama_backend) -> bool:
+    return bool(llama_backend.is_loaded and getattr(llama_backend, "is_embedding_gguf", True))
+
+
+def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
+    value = body.get("input")
+    if isinstance(value, str):
+        items = [value]
+    # `type(...) is int`, not isinstance: bool subclasses int, so `[true]` would be read
+    # as a token array and could swap the resident GGUF for a body llama-server rejects.
+    elif (
+        tokens_ok
+        and isinstance(value, list)
+        and value
+        and all(type(token) is int for token in value)
+    ):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        items = []
+    if not items:
+        raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+    if not tokens_ok and len(items) > _STUDIO_EMBED_MAX_INPUTS:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"'input' may hold at most {_STUDIO_EMBED_MAX_INPUTS} items.",
+        )
+
+    def _ok(item) -> bool:
+        if isinstance(item, str):
+            return bool(item)
+        return (
+            tokens_ok
+            and isinstance(item, list)
+            and bool(item)
+            and all(type(token) is int for token in item)
+        )
+
+    if not all(_ok(item) for item in items):
+        raise HTTPException(
+            status_code = 400,
+            detail = "'input' must be a non-empty string or an array of non-empty strings.",
+        )
+    encoding_format = body.get("encoding_format")
+    if encoding_format is not None and encoding_format not in ("float", "base64"):
+        raise HTTPException(
+            status_code = 400, detail = "'encoding_format' must be 'float' or 'base64'."
+        )
+    return items
+
+
+def _embeddings_texts(body: dict) -> list[str]:
+    return _embeddings_items(body, tokens_ok = False)
+
+
+def _public_embedding_name(model_name: str) -> str:
+    """A name for a local checkpoint that leaks no path but still identifies it.
+
+    The basename alone is not enough: /checkpoints/run-a/model and
+    /checkpoints/run-b/model are different embedding spaces, and reporting both as
+    "model" lets a client file vectors from either under one identity -- the exact
+    confusion this route reports the identity to prevent.
+    """
+    from utils.paths import is_local_path
+
+    if not is_local_path(model_name):
+        return model_name
+    import hashlib
+
+    normalized = model_name.replace("\\", "/").rstrip("/")
+    base = normalized.rsplit("/", 1)[-1] or "model"
+    return f"{base}-{hashlib.sha256(normalized.encode('utf-8')).hexdigest()[:8]}"
+
+
+def _public_embedding_identity(identity: str, model_name: str, label: str) -> str:
+    """Redact the model and repo segments of ``backend:model[:gguf_repo]``, nothing else.
+
+    Segment-wise, not a substring replace: a model can be a relative directory named
+    `transformers`, and replacing that everywhere also rewrites the `sentence-transformers`
+    tag, leaving an identity no backend answers to and that _names_studio_embedder cannot
+    match on the next request.
+    """
+    from core.rag.config import (
+        EMBEDDING_IDENTITY_TAGS,
+        _escape_identity_segment,
+        _unescape_identity_segment,
+        effective_gguf_repo_for_embedding_model,
+    )
+    from utils.paths import is_local_path
+
+    tag = next((t for t in EMBEDDING_IDENTITY_TAGS if identity.startswith(f"{t}:")), None)
+    if tag is None:
+        return identity
+    repo = effective_gguf_repo_for_embedding_model(model_name)
+    # Both segments are checked: a hub model id can carry a GGUF companion that is a local path
+    # (RAG_EMBED_GGUF_REPO, or a stored repo), and that path is a segment of the identity too.
+    if not is_local_path(model_name) and not is_local_path(repo):
+        return identity
+    public = {model_name: label, repo: _public_embedding_name(repo)}
+    segments = [_unescape_identity_segment(s) for s in identity[len(tag) + 1 :].split(":")]
+    redacted = [_escape_identity_segment(public.get(s, s)) for s in segments]
+    return ":".join([tag, *redacted])
+
+
+def _embedding_payload(vector, encoding_format: str):
+    if encoding_format == "base64":
+        import base64
+        import numpy as np
+        return base64.b64encode(np.asarray(vector, dtype = np.float32).tobytes()).decode("ascii")
+    return [float(x) for x in vector]
+
+
+def _names_studio_embedder(requested: str) -> Optional[str]:
+    from core.rag import config as rag_config
+    from core.rag import embeddings as rag_embeddings
+    from utils.paths import is_local_path
+
+    model = rag_config.effective_embedding_model()
+    repo = rag_config.effective_gguf_repo_for_embedding_model(model)
+    label = _public_embedding_name(model)
+    wanted = requested.strip()
+    if rag_config.embedding_identity_model(wanted) is not None:
+        current = rag_embeddings.embedding_identity(model)
+        if wanted in (current, _public_embedding_identity(current, model, label)):
+            return model
+        return None
+    for name in (model, repo, label, _public_embedding_name(repo)):
+        if not name:
+            continue
+        if is_local_path(name) or is_local_path(wanted):
+            if wanted == name:
+                return model
+        elif wanted.casefold() == name.casefold():
+            return model
+    return None
+
+
+def _resident_absent(llama_backend) -> bool:
+    return not getattr(llama_backend, "is_loaded", False)
+
+
+def _stashed_gguf_embeds() -> bool:
+    from core.inference.llama_keepwarm import get_last_unloaded_model
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    last = get_last_unloaded_model()
+    if not last:
+        return False
+    target_id, variant = last[0], last[1]
+    try:
+        resolved = resolve_local_gguf(
+            f"{target_id}:{variant}" if variant else target_id, allow_scan = False
+        )
+        path = resolved[0] if resolved else None
+        if not path:
+            return False
+        probe = _probe_backend()
+        probe._read_gguf_metadata(path)
+        return bool(probe.is_embedding_gguf)
+    except Exception:  # noqa: BLE001 - an unreadable stash is not an embedding model
+        return False
+
+
+async def _default_embeddings_request_body(request: Request) -> Optional[dict]:
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    requested = body.get("model")
+    return body if requested is None or requested == "" else None
+
+
+async def _embeddings_client_gone(request: Request) -> bool:
+    is_disconnected = getattr(request, "is_disconnected", None)
+    if is_disconnected is None:
+        return False
+    try:
+        return bool(await is_disconnected())
+    except Exception:  # noqa: BLE001 - a broken transport reads as still connected
+        return False
+
+
+async def _resident_answers_embeddings(llama_backend, requested: str) -> bool:
+    if not _resident_serves_embeddings(llama_backend):
+        return False
+    return await asyncio.to_thread(_loaded_satisfies, requested)
+
+
+def _reference_is_decisive(requested: str) -> bool:
+    """Whether *requested* is evidence the caller meant a model held HERE.
+
+    The same positive-evidence rule `_reject_unservable_model` applies: an explicit
+    GGUF quant label, which no foreign id carries, or a repo actually on disk. A bare
+    vendor id like `text-embedding-3-small` is neither, and must keep falling through
+    rather than 404 -- that is what kept LiteLLM and OpenRouter style names working.
+    """
+    from core.inference.openai_auto_download import (
+        looks_like_gguf_hub_repo_id,
+        looks_like_quant,
+        split_model_ref,
+    )
+
+    from core.rag.config import embedding_identity_model
+
+    base, variant = split_model_ref(requested)
+    # Shape alone, no index needed: an explicit quant label and a GGUF hub repo id are
+    # references no vendor alias carries.
+    if looks_like_quant(variant) or looks_like_gguf_hub_repo_id(base):
+        return True
+    # A tag names one exact vector space, and this runs only once _names_studio_embedder has
+    # declined it -- so it is a space this server no longer holds. Answering from the current
+    # one files two spaces under the identity the client asked us to distinguish.
+    if embedding_identity_model(requested) is not None:
+        return True
+    try:
+        from core.inference.local_model_resolver import (
+            index_is_built,
+            resolve_local_gguf,
+            warm_index_soon,
+        )
+        from utils.paths import is_local_path
+
+        if resolve_local_gguf(requested, allow_scan = False) is not None:
+            return True
+        if not index_is_built():
+            # A cold index is missing evidence, not absence: warm it, and meanwhile do not
+            # wave a name shaped like a local model through to a different embedding space.
+            warm_index_soon()
+            return is_local_path(requested) or "/" in requested
+        return False
+    except Exception:  # noqa: BLE001 - a broken index cannot clear the name either
+        return True
+
+
+async def _studio_embedder_request_body(request: Request) -> Optional[tuple[dict, str]]:
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    requested = body.get("model")
+    if not isinstance(requested, str) or not requested.strip():
+        return None
+    model = await asyncio.to_thread(_names_studio_embedder, requested)
+    return (body, model) if model else None
+
+
+async def _studio_embeddings(
+    request: Request,
+    body: dict,
+    current_subject: str,
+    model_name: Optional[str] = None,
+) -> Response:
+    from core.inference.llama_keepwarm import (
+        untrack_admitted_inference,
+        untrack_current_request,
+    )
+    from core.rag import config as rag_config
+    from core.rag import embeddings as rag_embeddings
+
+    # /embeddings is an _INFERENCE_SUFFIXES path that is not slot-excluded, so untrack before the
+    # encode: a 2xx would otherwise claim the llama slot, block a preview swap for the whole
+    # encode, and stamp the idle-unload TTL for a model that did no work.
+    _scope = getattr(request, "scope", None)
+    untrack_current_request(_scope)
+    # The auto-switch hook admitted this request before the route knew it lands here, and the
+    # preview busy guard reads the admitted tally, not _inflight.
+    untrack_admitted_inference(_scope)
+
+    texts = _embeddings_texts(body)
+    encoding_format = body.get("encoding_format")
+    if encoding_format is None:
+        encoding_format = "float"
+    dimensions = body.get("dimensions")
+    model_name = model_name or rag_config.effective_embedding_model()
+    label = _public_embedding_name(model_name)
+
+    def _embed():
+        # Every helper takes the model captured above: left to default they re-read the live
+        # setting, mixing one model's limit and dimension with another's vectors.
+        limit = rag_embeddings.max_tokens(model_name)
+        count = rag_embeddings.token_counter(model_name)
+        token_counts = [count(text) for text in texts]
+        if limit and max(token_counts) > limit:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"'input' exceeds the {limit}-token limit of {label}.",
+            )
+        if dimensions is not None and dimensions != rag_embeddings.dim(model_name):
+            raise HTTPException(
+                status_code = 400, detail = f"'dimensions' is not supported by {label}."
+            )
+        # encode_with_identity: an ST failure swaps the process to llama-server mid-encode, and
+        # reporting the configured name anyway files two spaces under one label.
+        vectors, identity = rag_embeddings.encode_with_identity(
+            texts, model_name = model_name, normalize = True
+        )
+        return vectors, identity, sum(token_counts), limit
+
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            via_api_key = _request_used_api_key(request),
+            method = request.method,
+            model = label,
+            prompt = _flatten_monitor_prompt(body.get("input", "")),
+            subject = current_subject,
+        )
+    # The worker's lifetime, not the awaiting task's: cancelling does not stop the thread behind
+    # to_thread, so releasing there admits the next request mid-encode and the cap stops meaning
+    # anything. Same as _drain_pending_worker on the blocking-generation path.
+    semaphore = _studio_embed_semaphore()
+    acquire = asyncio.ensure_future(semaphore.acquire())
+    try:
+        while not acquire.done():
+            await asyncio.wait({acquire}, timeout = 0.25)
+            if not acquire.done() and await _embeddings_client_gone(request):
+                raise asyncio.CancelledError()
+    except asyncio.CancelledError:
+        if not acquire.done():
+            acquire.cancel()
+        elif not acquire.cancelled() and acquire.exception() is None:
+            semaphore.release()
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    try:
+        gone = await _embeddings_client_gone(request)
+    except asyncio.CancelledError:
+        semaphore.release()
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    if gone:
+        semaphore.release()
+        api_monitor.finish(monitor_id, "cancelled")
+        raise asyncio.CancelledError()
+    worker = asyncio.ensure_future(asyncio.to_thread(_embed))
+
+    def _release_embed_permit(finished) -> None:
+        if not finished.cancelled():
+            finished.exception()  # retrieved so a cancelled request logs no "never retrieved"
+        semaphore.release()
+
+    worker.add_done_callback(_release_embed_permit)
+    try:
+        vectors, identity, prompt_tokens, limit = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except HTTPException as exc:
+        api_monitor.fail(monitor_id, str(exc.detail))
+        raise
+    # The two conditions the caller can act on. _friendly_error, written for llama-server
+    # transport faults, flattens both to "An internal error occurred", which behind an agent's
+    # memory search is the whole diagnosis the user gets. 409: not wrong, not ready yet.
+    except (
+        rag_embeddings.EmbeddingModelDownloadRequiredError,
+        rag_embeddings.UnsafeEmbeddingModelError,
+    ) as exc:
+        # The configured model may be a local path, which every other field here hashes.
+        detail = str(exc).replace(repr(model_name), repr(label))
+        api_monitor.fail(monitor_id, detail)
+        raise HTTPException(status_code = 409, detail = detail) from exc
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise HTTPException(
+            status_code = 502, detail = f"Embedding model failed: {_friendly_error(exc)}"
+        ) from exc
+    payload = {
+        "object": "list",
+        "data": [
+            {
+                "object": "embedding",
+                "index": index,
+                "embedding": _embedding_payload(vector, encoding_format),
+            }
+            for index, vector in enumerate(vectors)
+        ],
+        "model": _public_embedding_identity(identity, model_name, label),
+        "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
+    }
+    # limit is per text, prompt_tokens is the batch sum, so the monitor's gauge only means
+    # anything for a single input; a batch would sit pinned at 100%.
+    _monitor_openai_chunk(monitor_id, payload, limit if len(texts) == 1 else None)
+    api_monitor.finish(monitor_id)
+    return Response(content = json.dumps(payload), media_type = "application/json")
 
 
 def _embeddings_input_present(body: dict) -> bool:
@@ -25031,14 +26238,8 @@ def _embeddings_input_present(body: dict) -> bool:
 
 @router.post("/embeddings")
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
-    """
-    OpenAI-compatible embeddings endpoint.
-
-    Proxies to the running llama-server's ``/v1/embeddings``. Only available
-    when a GGUF model is loaded.
-    Note: the loaded model must support pooling, else llama-server returns an
-    error (expected).
-    """
+    """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
+    else Studio's configured embedding model."""
     llama_backend = get_llama_cpp_backend()
     # Reject a request with no input before any automatic load so an invalid request never
     # swaps or reloads the resident model (as chat/responses/messages already validate before
@@ -25059,6 +26260,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
                 raise HTTPException(status_code = 400, detail = "'input' must be a string or array.")
             if not _embeddings_input_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'input' is required for embeddings.")
+            _embeddings_items(_pre, tokens_ok = True)
         elif _pre is not _UNPARSEABLE_BODY:
             # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
             # "Request body must be a JSON object"; reject it here, before the switch, so the
@@ -25070,21 +26272,48 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # no reliable pre-load probe -- is_embedding_model keys on a sentence-transformers
     # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
     # a non-embedding target switches, then llama-server returns a no-pooling error.
+    studio_request = await _studio_embedder_request_body(request)
+    if studio_request is not None and not await _resident_answers_embeddings(
+        llama_backend, studio_request[0]["model"]
+    ):
+        return await _studio_embeddings(
+            request, studio_request[0], current_subject, model_name = studio_request[1]
+        )
+    if studio_request is None and _resident_absent(llama_backend):
+        default_body = await _default_embeddings_request_body(request)
+        if default_body is not None and not await asyncio.to_thread(_stashed_gguf_embeds):
+            return await _studio_embeddings(request, default_body, current_subject)
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
     if not llama_backend.is_loaded:
-        _status, _detail = await _no_model_loaded_error(
-            "No GGUF model loaded. Load a GGUF model first.",
-            _raw_body_model(body),
-            request,
-            status = 503,
-        )
-        raise HTTPException(status_code = _status, detail = _detail)
+        # With the slot empty _reject_unservable_model defers to _no_model_loaded_error, so
+        # without this the fallback would answer a decisive repo:QUANT this server does not
+        # hold from the Settings embedder: another space under the caller's name (#7454).
+        # `{"model": 123}` gets this far: both pre-switch readers decline a non-string selector,
+        # and the alias lookup below strips whatever it is handed.
+        _named = _raw_body_model(body)
+        if not isinstance(_named, str):
+            _named = None
+        if _named and not await asyncio.to_thread(_names_studio_embedder, _named):
+            _decisive = await asyncio.to_thread(_reference_is_decisive, _named)
+        else:
+            _decisive = False
+        if _decisive or not isinstance(body, dict):
+            _status, _detail = await _no_model_loaded_error(
+                "No GGUF model loaded. Load a GGUF model first.",
+                _named,
+                request,
+                status = 503,
+            )
+            raise HTTPException(status_code = _status, detail = _detail)
     if not isinstance(body, dict):
         # Re-read to re-raise a malformed-body error (post-503, pre-feature behavior);
         # a valid non-dict body such as a list is a clean 400 rather than a 500.
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    if not _resident_serves_embeddings(llama_backend):
+        return await _studio_embeddings(request, body, current_subject)
 
     # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
     # 2xx, so no claim here: llama-server can still return a non-2xx for a valid body (e.g. a
@@ -25171,6 +26400,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 
 
 # =====================================================================
+
 # OpenAI Responses API  (/responses → /v1/responses)
 # =====================================================================
 
@@ -25538,9 +26768,13 @@ def _responses_should_parse_think_markers(
     return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
 
 
-def _responses_reasoning_output_item(reasoning_text: str, item_id: Optional[str] = None) -> dict:
+def _responses_reasoning_output_item(
+    reasoning_text: str,
+    item_id: Optional[str] = None,
+    status: Literal["completed", "incomplete"] = "completed",
+) -> dict:
     kwargs: dict[str, Any] = {
-        "status": "completed",
+        "status": status,
         "summary": [],
         "content": [ResponsesOutputReasoningContent(text = reasoning_text)],
     }
@@ -25833,7 +27067,9 @@ def _responses_custom_tool_input(arguments: Any) -> str:
 
 
 def _chat_tool_calls_to_responses_output(
-    tool_calls: list[dict], custom_tool_names: Optional[set[str]] = None
+    tool_calls: list[dict],
+    custom_tool_names: Optional[set[str]] = None,
+    status: Literal["completed", "incomplete"] = "completed",
 ) -> list[dict]:
     """Map local function calls back into their Responses output item types.
 
@@ -25855,7 +27091,7 @@ def _chat_tool_calls_to_responses_output(
                     call_id = tc.get("id", ""),
                     name = name,
                     input = _responses_custom_tool_input(arguments),
-                    status = "completed",
+                    status = status,
                 ).model_dump()
             )
             continue
@@ -25864,10 +27100,20 @@ def _chat_tool_calls_to_responses_output(
                 call_id = tc.get("id", ""),
                 name = name,
                 arguments = arguments,
-                status = "completed",
+                status = status,
             ).model_dump()
         )
     return items
+
+
+def _responses_incomplete_reason(
+    finish_reason: Any,
+) -> Optional[Literal["max_output_tokens", "content_filter"]]:
+    if finish_reason == "length":
+        return "max_output_tokens"
+    if finish_reason == "content_filter":
+        return "content_filter"
+    return None
 
 
 async def _responses_non_streaming(
@@ -25926,6 +27172,10 @@ async def _responses_non_streaming(
         text = ""
         reasoning_text = ""
         tool_calls: list[dict] = []
+        incomplete_reason = (
+            _responses_incomplete_reason(choices[0].get("finish_reason")) if choices else None
+        )
+        truncated = incomplete_reason is not None
         if choices:
             msg = choices[0].get("message", {}) or {}
             raw_content = msg.get("content", "") or ""
@@ -25949,28 +27199,34 @@ async def _responses_non_streaming(
         # the model produced content, so clients expecting a pure tool-call turn
         # (finish_reason="tool_calls") don't see a spurious empty message item.
         output_items: list[dict] = []
+        item_status = "incomplete" if truncated else "completed"
         if reasoning_text:
-            output_items.append(_responses_reasoning_output_item(reasoning_text))
+            output_items.append(
+                _responses_reasoning_output_item(reasoning_text, status = item_status)
+            )
         if text:
             msg_id = f"msg_{uuid.uuid4().hex[:12]}"
             output_items.append(
                 ResponsesOutputMessage(
                     id = msg_id,
-                    status = "completed",
+                    status = item_status,
                     role = "assistant",
                     content = [ResponsesOutputTextContent(text = text)],
                 ).model_dump()
             )
         output_items.extend(
             _chat_tool_calls_to_responses_output(
-                tool_calls, _responses_custom_tool_names(payload.tools)
+                tool_calls,
+                _responses_custom_tool_names(payload.tools),
+                status = item_status,
             )
         )
 
         response = ResponsesResponse(
             id = resp_id,
             created_at = int(time.time()),
-            status = "completed",
+            status = "incomplete" if truncated else "completed",
+            incomplete_details = ({"reason": incomplete_reason} if truncated else None),
             model = body.get("model", payload.model),
             output = output_items,
             usage = ResponsesUsage(
@@ -26437,8 +27693,8 @@ async def _responses_stream(
                     out.extend(_tool_call_delta_events(tc))
             return out
 
-        def _snapshot_output() -> list[dict]:
-            """Snapshot of all completed output items for response.completed."""
+        def _snapshot_output(active_item_status: str = "completed") -> list[dict]:
+            """Snapshot output items using the response's terminal state."""
             indexed_items: list[tuple[int, dict]] = []
             if reasoning_state["opened"]:
                 indexed_items.append(
@@ -26447,7 +27703,7 @@ async def _responses_stream(
                         {
                             "type": "reasoning",
                             "id": reasoning_state["item_id"],
-                            "status": "completed",
+                            "status": active_item_status,
                             "summary": [],
                             "content": [{"type": "reasoning_text", "text": full_reasoning}],
                         },
@@ -26464,7 +27720,9 @@ async def _responses_stream(
                         {
                             "type": "message",
                             "id": msg_st["item_id"],
-                            "status": "completed",
+                            "status": (
+                                "completed" if msg_st is not message_state else active_item_status
+                            ),
                             "role": "assistant",
                             "content": [
                                 {
@@ -26480,7 +27738,7 @@ async def _responses_stream(
                 if st["name"] in custom_tool_names:
                     item = {
                         "type": "custom_tool_call",
-                        "status": "completed",
+                        "status": active_item_status,
                         "call_id": st["call_id"],
                         "name": st["name"],
                         "input": _responses_custom_tool_input(st["arguments"]),
@@ -26489,7 +27747,7 @@ async def _responses_stream(
                     item = {
                         "type": "function_call",
                         "id": st["item_id"],
-                        "status": "completed",
+                        "status": active_item_status,
                         "call_id": st["call_id"],
                         "name": st["name"],
                         "arguments": st["arguments"],
@@ -26841,6 +28099,15 @@ async def _responses_stream(
                 },
             )
 
+        # Healing changes a natural stop into tool_calls, but it must not erase
+        # an authoritative truncation or failure reason from the upstream model.
+        if healer is not None and healer.healed and stream_finish_reason in (None, "stop"):
+            stream_finish_reason = "tool_calls"
+
+        incomplete_reason = _responses_incomplete_reason(stream_finish_reason)
+        truncated = incomplete_reason is not None
+        active_item_status = "incomplete" if truncated else "completed"
+
         close_items: list[tuple[int, str, dict[str, Any]]] = []
         if reasoning_state["opened"]:
             close_items.append((reasoning_state["output_index"], "reasoning", reasoning_state))
@@ -26878,7 +28145,7 @@ async def _responses_stream(
                         "item": {
                             "type": "reasoning",
                             "id": st["item_id"],
-                            "status": "completed",
+                            "status": active_item_status,
                             "summary": [],
                             "content": [{"type": "reasoning_text", "text": full_reasoning}],
                         },
@@ -26919,7 +28186,7 @@ async def _responses_stream(
                         "item": {
                             "type": "message",
                             "id": st["item_id"],
-                            "status": "completed",
+                            "status": active_item_status,
                             "role": "assistant",
                             "content": [
                                 {"type": "output_text", "text": _msg_text, "annotations": []}
@@ -26938,7 +28205,7 @@ async def _responses_stream(
                     "output_index": st["output_index"],
                     "item": {
                         "type": "custom_tool_call",
-                        "status": "completed",
+                        "status": active_item_status,
                         "call_id": st["call_id"],
                         "name": st["name"],
                         "input": custom_input,
@@ -26993,7 +28260,7 @@ async def _responses_stream(
                 "item": {
                     "type": "function_call",
                     "id": st["item_id"],
-                    "status": "completed",
+                    "status": active_item_status,
                     "call_id": st["call_id"],
                     "name": st["name"],
                     "arguments": st["arguments"],
@@ -27002,17 +28269,18 @@ async def _responses_stream(
             api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], st["arguments"]))
             yield _sse("response.output_item.done", item_done)
 
-        # response.completed
         total_tokens = input_tokens + output_tokens
-        completed_response = {
-            "type": "response.completed",
+        terminal_event = "response.incomplete" if truncated else "response.completed"
+        terminal_response = {
+            "type": terminal_event,
             "response": {
                 "id": resp_id,
                 "object": "response",
                 "created_at": created_at,
-                "status": "completed",
+                "status": "incomplete" if truncated else "completed",
+                "incomplete_details": ({"reason": incomplete_reason} if truncated else None),
                 "model": _clean_model,
-                "output": _snapshot_output(),
+                "output": _snapshot_output(active_item_status),
                 "usage": {
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
@@ -27020,15 +28288,10 @@ async def _responses_stream(
                 },
             },
         }
-        # A healed call reaches the client as a function_call item while the upstream chunk
-        # still says "stop", so report what this adapter emitted -- same rule the chat
-        # stream's synthetic finish line applies.
-        if healer is not None and healer.healed:
-            stream_finish_reason = "tool_calls"
         if stream_finish_reason:
             api_monitor.set_perf(monitor_id, stop_reason = stream_finish_reason)
         api_monitor.finish(monitor_id)
-        yield _sse("response.completed", completed_response)
+        yield _sse(terminal_event, terminal_response)
 
     async def admitted_event_generator():
         # Register for the body's whole lifetime, admission wait included: the run holds a decode
@@ -27253,6 +28516,7 @@ async def openai_responses(
 
 
 # =====================================================================
+
 # Anthropic-Compatible Messages API  (/messages → /v1/messages)
 # =====================================================================
 
@@ -27295,6 +28559,30 @@ def _anthropic_selects_server_tools(
     # that key does arrive, but nothing here loads MCP schemas. Treating it as intent would
     # answer an MCP-only request with ALL_TOOLS' built-ins, or reject it for holding terminal.
     return payload.enable_tools is True or bool(requested_studio_tools)
+
+
+def _guard_anthropic_client_tool_catalog(
+    openai_client_tools, openai_tool_choice, server_tools, llama_backend
+) -> None:
+    """400 a live client catalogue the loaded template would drop, else the caller gets prose
+    where it asked for a tool_use block. Narrower than the OpenAI gate, which also rejects
+    replayed history: _sanitize_anthropic_openai_messages already folded that history for this
+    same template, so a history-only turn has no catalogue to drop and still answers. Shared
+    with the token counter so a count never describes a request the completion rejects.
+    """
+    if server_tools or not openai_client_tools or openai_tool_choice == "none":
+        return
+    if getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools):
+        return
+    raise HTTPException(
+        status_code = 400,
+        detail = anthropic_error_body(
+            "Client-supplied tools require a GGUF chat template with tool-call support; "
+            "the current model/template does not advertise tools.",
+            status = 400,
+            err_type = "invalid_request_error",
+        ),
+    )
 
 
 def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
@@ -28212,12 +29500,20 @@ async def anthropic_count_tokens(
         and llama_backend.supports_tools
         and not _anthropic_request_has_image(payload)
     )
+    _count_openai_client_tools = [
+        tool
+        for tool in anthropic_tools_to_openai(payload.tools or [])
+        if tool.get("function", {}).get("name") not in _count_studio_tools
+    ]
+    _guard_anthropic_client_tool_catalog(
+        _count_openai_client_tools,
+        anthropic_tool_choice_to_openai(payload.tool_choice) or "auto",
+        _count_server_tools,
+        llama_backend,
+    )
     _count_client_tools = (
         not _count_server_tools
-        and any(
-            tool.get("function", {}).get("name") not in _count_studio_tools
-            for tool in anthropic_tools_to_openai(payload.tools or [])
-        )
+        and bool(_count_openai_client_tools)
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
     if not _count_client_tools:
@@ -28517,10 +29813,16 @@ async def anthropic_messages(
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
     server_tools = _selects_server_tools and llama_backend.supports_tools and not _has_image
+    # One short-circuiting chain: a backend whose supports_tools raises must not turn a plain
+    # no-tools turn into a 500.
     client_tools = (
         not server_tools
         and len(openai_client_tools) > 0
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
+    )
+
+    _guard_anthropic_client_tool_catalog(
+        openai_client_tools, openai_tool_choice, server_tools, llama_backend
     )
 
     # Studio composes the prompt on every branch but the client-tool passthrough, which forwards
@@ -29022,6 +30324,7 @@ async def anthropic_messages(
             )
         return await _admitted_anthropic(
             _anthropic_tool_non_streaming(
+                request,
                 _run_tool_gen,
                 message_id,
                 model_name,
@@ -29074,6 +30377,7 @@ async def anthropic_messages(
         )
     return await _admitted_anthropic(
         _anthropic_plain_non_streaming(
+            request,
             _run_plain_gen,
             message_id,
             model_name,
@@ -29638,6 +30942,7 @@ def _anthropic_tool_response_from_events(
 
 
 async def _anthropic_tool_non_streaming(
+    request,
     run_gen,
     message_id,
     model_name,
@@ -29660,12 +30965,21 @@ async def _anthropic_tool_non_streaming(
             think_provenance = think_provenance,
         )
 
-    return await _run_blocking_generation(
-        _drain_and_build,
-        cancel_event,
-        name = "anthropic-tool-nonstream",
-        daemon = True,
-    )
+    disconnect_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
+    try:
+        response = await _run_blocking_generation(
+            _drain_and_build,
+            cancel_event,
+            name = "anthropic-tool-nonstream",
+            daemon = True,
+        )
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    # The 200 is built from partial output, so unmarked the keepwarm middleware reads it
+    # as a clean completion and takes the resident model away from a preview.
+    if cancel_event is not None:
+        _mark_cancelled_json_response_failed(request, cancel_event)
+    return response
 
 
 def _anthropic_plain_response_from_events(
@@ -29715,6 +31029,7 @@ def _anthropic_plain_response_from_events(
 
 
 async def _anthropic_plain_non_streaming(
+    request,
     run_gen,
     message_id,
     model_name,
@@ -29733,14 +31048,24 @@ async def _anthropic_plain_non_streaming(
             think_provenance = think_provenance,
         )
 
-    return await _run_blocking_generation(
-        _drain_and_build,
-        cancel_event,
-        name = "anthropic-plain-nonstream",
-    )
+    disconnect_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
+    try:
+        response = await _run_blocking_generation(
+            _drain_and_build,
+            cancel_event,
+            name = "anthropic-plain-nonstream",
+        )
+    finally:
+        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    # The 200 is built from partial output, so unmarked the keepwarm middleware reads it
+    # as a clean completion and takes the resident model away from a preview.
+    if cancel_event is not None:
+        _mark_cancelled_json_response_failed(request, cancel_event)
+    return response
 
 
 # =====================================================================
+
 # Client-side tool pass-through (Anthropic-native tools field)
 # =====================================================================
 
@@ -30236,11 +31561,12 @@ async def _anthropic_passthrough_stream(
                 from core.inference.llama_keepwarm import mark_response_failed
 
                 mark_response_failed(getattr(request, "scope", None))
+                _over = bool(_classify_llama_generation_error(Exception(_err_text)))
                 yield build_anthropic_sse_event(
                     "error",
                     anthropic_error_body(
-                        _friendly_upstream_error(_err_text),
-                        status = resp.status_code,
+                        _anthropic_upstream_error(_err_text),
+                        status = 400 if _over else resp.status_code,
                     ),
                 )
                 return
@@ -30279,12 +31605,13 @@ async def _anthropic_passthrough_stream(
                         from core.inference.llama_keepwarm import mark_response_failed
 
                         mark_response_failed(getattr(request, "scope", None))
-                        event = _anthropic_stream_error_event(
-                            RuntimeError(error_message),
-                            force = True,
+                        # The message alone can be count-less while the chunk still
+                        # carries n_prompt_tokens/n_ctx; keep the clean message and let
+                        # the formatter recover the totals from the payload.
+                        yield _anthropic_upstream_stream_error_event(
+                            error_message,
+                            counts_source = _json_dumps_safe(chunk.get("error", chunk)),
                         )
-                        if event is not None:
-                            yield event
                         return
                 if disable_parallel_tool_use:
                     _drop_parallel_tool_call_deltas(chunk)
@@ -30446,9 +31773,11 @@ async def _anthropic_passthrough_non_streaming(
         resp = await _post(body)
 
         if resp.status_code != 200:
+            _err_text = resp.text[:500]
+            _over = bool(_classify_llama_generation_error(Exception(_err_text)))
             raise HTTPException(
-                status_code = resp.status_code,
-                detail = _friendly_upstream_error(resp.text[:500]),
+                status_code = 400 if _over else resp.status_code,
+                detail = _anthropic_upstream_error(_err_text),
             )
 
         data = resp.json()
@@ -30592,6 +31921,7 @@ async def _anthropic_passthrough_non_streaming(
 
 
 # =====================================================================
+
 # Client-side tool pass-through (OpenAI-native /v1/chat/completions)
 # =====================================================================
 
@@ -32508,6 +33838,7 @@ async def _openai_passthrough_non_streaming_upstream(
 
 
 # ──────────────────────────────────────────────────────────────────────────
+
 # Diffusion (local text-to-image). Unsloth-only routes (studio_router is not mounted under /v1); the backend is in-process and
 # synchronous, so blocking calls are offloaded with asyncio.to_thread. Single error boundary: the backend raises, we map to HTTP.
 # ──────────────────────────────────────────────────────────────────────────
@@ -33522,6 +34853,7 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
 
 
 # ──────────────────────────────────────────────────────────────────────────
+
 # OpenAI-compatible images API (POST /v1/images/generations). The inference router is mounted at both /api/inference and /v1, so this
 # also answers /v1/images/generations for OpenAI clients. The Unsloth Image tab uses the richer /images/generate above; this is the spec shape.
 # ──────────────────────────────────────────────────────────────────────────

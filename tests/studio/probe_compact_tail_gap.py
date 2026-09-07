@@ -52,8 +52,8 @@ window.__nextPaint = () => new Promise((resolve) =>
   requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 """
 
-# Re-open and sample the viewport every frame from the first painted row until the thread stops
-# growing, so the gap is a timeline rather than a single reading.
+# Re-open and sample the viewport every frame from the first painted row until the thread stops growing, so the gap is a
+# timeline rather than a single reading.
 RUN_JS = """
 async ([total, settleFrames]) => {
   const api = window.__heavyThread;
@@ -130,8 +130,8 @@ def run_engine(pw, engine: str) -> dict:
                 return max(0, s["gapBottom"] - baseline)
 
             gap0 = netgap(first)
-            # Time on screen, measured to the frame that CLOSES the gap rather than the last one
-            # showing it, so a single-frame gap reads as that frame's duration and not 0ms.
+            # Time on screen, measured to the frame that CLOSES the gap rather than the last one showing it, so a
+            # single-frame gap reads as that frame's duration and not 0ms.
             lingering = [s for s in samples if netgap(s) > 8]
             if lingering:
                 closed = next(

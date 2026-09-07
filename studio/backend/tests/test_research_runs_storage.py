@@ -213,31 +213,31 @@ def test_synthesis_evidence_budget_tracks_loaded_context(monkeypatch):
     from core import research_runs as worker
 
     # Unknown context keeps the full cap (backwards compatible).
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: None)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: None)
     assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
     # A small context shrinks the budget so evidence fits, and the rest of the prompt eats into
     # it, but the output reserve is capped at half the window so the budget never collapses to 0
     # and empties the prompt (which is worse than a truncated one).
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 2048)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 2048)
     small = worker._synthesis_evidence_budget()
     assert 0 < small < worker._MAX_SYNTHESIS_EVIDENCE_CHARS
     assert worker._synthesis_evidence_budget(small) == 0
 
     # The rest of the prompt counts against the same budget, not just the evidence.
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 16384)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 16384)
     roomy = worker._synthesis_evidence_budget()
     assert 0 < worker._synthesis_evidence_budget(8_000) < roomy
 
     # A large context uses (and clamps to) the full cap.
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 32768)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 32768)
     assert worker._synthesis_evidence_budget() == worker._MAX_SYNTHESIS_EVIDENCE_CHARS
 
 
 def test_synthesis_context_budgets_model_derived_json_with_evidence(monkeypatch):
     from core import research_runs as worker
 
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 8192)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 8192)
     notes = [f"### Step {index}\n" + "evidence " * 2_000 for index in range(6)]
     audit = {"thesis": "a" * 3_000}
     research_state = {"summary": "s" * 3_000}
@@ -2159,7 +2159,7 @@ def test_auto_scrape_skipped_on_small_context(research_home, monkeypatch):
     # grounding is skipped (snippet-only) even when maxAutoScrape is set.
     from core import research_runs as worker
 
-    monkeypatch.setattr(worker, "_loaded_context_length", lambda: 2048)
+    monkeypatch.setattr(worker, "_loaded_context_length", lambda _inf = None: 2048)
     _create(budgets = _SCRAPE_BUDGETS)
 
     def fake_tool(name, arguments, *args, **kwargs):
@@ -3280,6 +3280,15 @@ def test_sustained_heartbeat_errors_stop_before_lease_expiry(research_home, monk
     assert supervisor._cancel_event("run-1").is_set()
 
 
+# A hang guard, not a latency assertion. These three cancellation tests used a fixed
+# 50ms sleep to "wait" for the request to start and then gave cancellation one second to
+# land. CI runs this suite in parallel with tens of thousands of other tests, so a busy
+# runner blew the bound and reported cancellation as broken. The waits below are now
+# signalled by the fake itself, and this bound only exists so a genuine hang fails
+# instead of running until the suite timeout.
+_CANCEL_TIMEOUT_S = 30.0
+
+
 def test_completion_cancellation_closes_loopback_request(research_home, monkeypatch):
     from core import research_runs as worker
 
@@ -3287,6 +3296,7 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     run = research_db.claim_next(supervisor.worker_id)
     request_cancelled = {"value": False}
+    in_flight = asyncio.Event()
 
     class FakeClient:
         def __init__(self, **kwargs):
@@ -3302,6 +3312,7 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
             return object()
 
         async def send(self, request, *, stream):
+            in_flight.set()
             try:
                 await asyncio.Event().wait()
             finally:
@@ -3319,10 +3330,12 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
         task = asyncio.create_task(
             supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
         )
-        await asyncio.sleep(0.05)
+        # Wait for the request to actually be in flight rather than guessing how
+        # long that takes: cancelling before it starts tests nothing.
+        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = 1)
+            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert request_cancelled["value"] is True
@@ -3335,9 +3348,11 @@ def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     research_db.claim_next(supervisor.worker_id)
     iterator_cancelled = {"value": False}
+    in_flight = asyncio.Event()
 
     class FakeResponse:
         async def _lines(self):
+            in_flight.set()
             try:
                 await asyncio.Event().wait()
                 yield "unreachable"
@@ -3353,10 +3368,12 @@ def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
                 pass
 
         task = asyncio.create_task(consume())
-        await asyncio.sleep(0.05)
+        # Wait for the request to actually be in flight rather than guessing how
+        # long that takes: cancelling before it starts tests nothing.
+        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = 1)
+            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert iterator_cancelled["value"] is True
@@ -3369,6 +3386,7 @@ def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkey
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
     run = research_db.claim_next(supervisor.worker_id)
     request_cancelled = {"value": False}
+    in_flight = asyncio.Event()
 
     class FakeClient:
         def __init__(self, **kwargs):
@@ -3384,6 +3402,7 @@ def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkey
             return object()
 
         async def send(self, request, *, stream):
+            in_flight.set()
             try:
                 await asyncio.Event().wait()
             finally:
@@ -3401,10 +3420,12 @@ def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkey
         task = asyncio.create_task(
             supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
         )
-        await asyncio.sleep(0.05)
+        # Wait for the request to actually be in flight rather than guessing how
+        # long that takes: cancelling before it starts tests nothing.
+        await asyncio.wait_for(in_flight.wait(), timeout = _CANCEL_TIMEOUT_S)
         supervisor.cancel("run-1")
         with pytest.raises(worker.RunCancelled):
-            await asyncio.wait_for(task, timeout = 1)
+            await asyncio.wait_for(task, timeout = _CANCEL_TIMEOUT_S)
 
     asyncio.run(scenario())
     assert request_cancelled["value"] is True

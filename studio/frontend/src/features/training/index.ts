@@ -79,7 +79,6 @@ export {
   emitTrainingRunDeleted,
   emitTrainingRunsChanged,
 } from "./events";
-export { parseYamlConfig, serializeConfigToYaml } from "./lib/yaml-config";
 export {
   type StartValidationResult,
   validateTrainingConfig,

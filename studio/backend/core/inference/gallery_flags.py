@@ -34,8 +34,8 @@ logger = get_logger(__name__)
 
 _SCHEMA_VERSION = 1
 _STORE_NAME = ".flags.json"
-# Marks a store written over one whose ITEMS MAP was illegible: the old flags could not be carried
-# forward, so the new file is no proof that nothing is archived. See ``_carry_taint``.
+# Marks a store written over one whose ITEMS MAP was illegible: the old flags could not be carried forward, so the new
+# file is no proof that nothing is archived. See ``_carry_taint``.
 _TAINT_KEY = "unreadable"
 _lock = threading.RLock()
 
@@ -100,8 +100,9 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
     try:
         with open(_store_path(directory), encoding = "utf-8-sig") as f:
             data = json.load(f)
-        # Validate the shape, not just the version: a hand-edited ``items`` that is not a dict
-        # (e.g. ``[]``) would otherwise crash every lookup instead of failing safe.
+        # validate the shape, not just the version
+        # Validate the shape, not just the version: a hand-edited ``items`` that is not a dict (e.g. ``[]``) would
+        # otherwise crash every lookup instead of failing safe.
         if (
             isinstance(data, dict)
             and data.get("version") == _SCHEMA_VERSION
@@ -110,11 +111,11 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
             # Written over an illegible store, so what it does NOT say is not evidence.
             if data.get(_TAINT_KEY):
                 return data, False
-            # Every ENTRY has to be readable too, not just the container. A malformed value is
-            # dropped by the readers below, which reads as "this id is not archived" -- enough for
-            # clear() to delete an archived file. So one bad entry costs the store its trust, but
-            # the surviving entries are still returned: listing should keep the flags it can read,
-            # and only destructive callers need to refuse.
+            # every ENTRY must be readable too: a malformed value is dropped by the readers
+            # Every ENTRY has to be readable too, not just the container. A malformed value is dropped by the readers
+            # below, which reads as "this id is not archived" -- enough for clear() to delete an archived file. So one
+            # bad entry costs the store its trust, but the surviving entries are still returned: listing should keep the
+            # flags it can read, and only destructive callers need to refuse.
             if all(_valid_entry(v) for v in data["items"].values()):
                 return data, True
             logger.warning(
@@ -126,7 +127,7 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
         )
         return _empty(), False
     except FileNotFoundError:
-        return _empty(), True  # no store yet is a legitimate "nothing is flagged"
+        return _empty(), True
     except Exception as exc:
         logger.warning("gallery_flags.read_failed: %s", exc)
         return _empty(), False
@@ -192,10 +193,7 @@ def _file_lock(directory: Path):
             pass  # locking unavailable; the thread lock still applies
         yield locked
     finally:
-        # Release only what was taken, and never let the release be the thing that fails the call.
-        # A filesystem that cannot lock usually cannot unlock either, and by this point the body
-        # has already written the flags or deleted the media, so raising here reports a failure for
-        # work that landed.
+        # never let the release fail the call: a filesystem that cannot lock usually cannot unlock
         try:
             if locked:
                 with contextlib.suppress(Exception):
@@ -288,8 +286,8 @@ def flags_for(items: dict[str, dict[str, Any]], item_id: str) -> dict[str, Any]:
     """The public record fields for one id, from an already-read ``items`` map."""
     entry = _entry(items, item_id)
     return {
-        # Reported through the same conversion the sort uses, so a value the ordering cannot use
-        # never shows as a pin the user then cannot explain.
+        # Reported through the same conversion the sort uses, so a value the ordering cannot use never shows as a pin
+        # the user then cannot explain.
         "pinned": _pinned_at(entry) is not None,
         "archived": bool(entry.get("archived")),
     }
@@ -333,10 +331,11 @@ def set_flags_locked(
     write land as one step. Separate for the same per-descriptor lock reason as ``forget_locked``."""
     import time
 
-    # A write REPAIRS the store rather than preserving what made it untrusted. Merging the bad
-    # entry straight back would leave every later clear() refused until someone fixed the file by
-    # hand, and refusing here instead would leave the user unable to pin anything at all. Dropping
-    # only the unreadable entries keeps the flags that still mean something.
+    # a write REPAIRS the store: merging the bad entry back would leave every later clear() refused
+    # A write REPAIRS the store rather than preserving what made it untrusted. Merging the bad entry straight back would
+    # leave every later clear() refused until someone fixed the file by hand, and refusing here instead would leave the
+    # user unable to pin anything at all. Dropping only the unreadable entries keeps the flags that still mean
+    # something.
     data = _carry_taint(*_load(directory))
     items: dict[str, Any] = {}
     for key, value in data.get("items", {}).items():
@@ -347,20 +346,19 @@ def set_flags_locked(
     entry = dict(_entry(items, item_id))
     if pinned is not None:
         if pinned:
-            # Strictly ahead of every stamp stored, not just the wall clock: Windows advances
-            # time.time() in ~16 ms steps, so two pins a click apart landed on the same value and
-            # "most recently pinned leads" stopped holding for exactly the case the client
-            # serializes its PATCHes to preserve.
+            # strictly ahead of every stored stamp, not just the wall clock
+            # Strictly ahead of every stamp stored, not just the wall clock: Windows advances time.time() in ~16 ms
+            # steps, so two pins a click apart landed on the same value and "most recently pinned leads" stopped holding
+            # for exactly the case the client serializes its PATCHes to preserve.
             latest = max(
                 (_pinned_at(v) for v in items.values() if _pinned_at(v) is not None),
                 default = float("-inf"),
             )
             now = time.time()
             nudged = math.nextafter(latest, math.inf) if latest != float("-inf") else now
-            # A store holding the largest finite float nudges to infinity, which json writes and
-            # _pinned_at then refuses, so the pin just reported would read back unset AND take the
-            # store's trust with it. Tie instead: those two fall back to mtime, which costs an
-            # ordering rather than the store.
+            # A store holding the largest finite float nudges to infinity, which json writes and _pinned_at then
+            # refuses, so the pin just reported would read back unset AND take the store's trust with it. Tie instead:
+            # those two fall back to mtime, which costs an ordering rather than the store.
             entry["pinned_at"] = (
                 now if now > latest else (nudged if math.isfinite(nudged) else latest)
             )
@@ -396,7 +394,7 @@ def forget_locked(directory: Path, item_ids) -> None:
     data = _load(directory)[0]
     items = data.get("items", {})
     if not any(i in items for i in ids):
-        return  # nothing stored for these ids: skip the write entirely
+        return
     for item_id in ids:
         items.pop(item_id, None)
     try:

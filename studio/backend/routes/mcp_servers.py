@@ -346,16 +346,12 @@ async def update_mcp_server(
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
-    # Clear persisted OAuth tokens when the URL changes or OAuth is disabled;
-    # fastmcp keys tokens by URL and would otherwise let a re-pointed server
-    # silently inherit the old account's credentials.
+    # Clear persisted OAuth tokens when the URL changes or OAuth is disabled
     if bool(old.get("use_oauth")) and (
         ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
     ):
         await clear_oauth_tokens_async(old["url"])
-        # That await hands the loop to other requests, so re-read and re-gate
-        # before writing: a UI conversion to stdio landing in the window would
-        # otherwise let an API key's headers become the command's env.
+        # That await hands the loop to other requests.
         current = mcp_servers_db.get_server(server_id)
         if current is not None:
             _require_ui_for_stored_credentials(current, via_api_key)
@@ -363,10 +359,7 @@ async def update_mcp_server(
             is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
         ):
             require_ui_session_for_local_commands(via_api_key)
-    # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable, so drop
-    # them and let the next send re-probe; a rename leaves them valid. Live stdio sessions for the
-    # old endpoint close too. Gate on a real value change, not mere presence: the edit dialog
-    # resends url/headers/oauth unchanged on a rename, which must not drop the session.
+    # A new endpoint/auth makes cached tools wrong and disabling makes them unreachable.
     invalidates_tools = any(
         changes[k] != old.get(k) for k in changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS
     )
@@ -437,14 +430,12 @@ async def refresh_mcp_server_tools(
         if current is not None and not any(
             current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
         ):
-            # Start the cool-off so the next chat send doesn't immediately re-hang
-            # on this server's timeout. If the row changed while the probe was
-            # awaiting, the failure belongs to the old config and must not park
+            # Start the cool-off so the next chat send does not re-hang on this server's timeout. If the row
+            # changed while the probe was awaiting, the FAILURE belongs to the old config and must not park
             # the newly edited server.
             record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
-    # Warm the chat-path cache so the next send skips re-probing.
     current = mcp_servers_db.get_server(server_id)
     if current is not None and not any(
         current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
@@ -507,9 +498,8 @@ async def test_mcp_server(
     current_subject: str = Depends(get_current_subject),
     via_api_key: ViaApiKey = False,
 ):
-    # URL/header validation must surface as 400 like create/update so the
-    # frontend's create-form pre-flight gets the same error semantics as the
-    # save call. Only catch transport/timeout errors below.
+    # URL/header validation must surface as 400 like create/update so the frontend's create-form pre-flight gets the
+    # same error semantics as the save call. Only catch transport/timeout errors below.
     url = _validate_url(payload.url)
     # Caller-supplied and unstored, so the gate has to land before
     # list_tools_async -- after it the process has already started.

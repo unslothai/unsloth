@@ -27,8 +27,8 @@ class BearerTokenMiddleware:
             # A non-ASCII token cannot be sent in an HTTP header; reject it here.
             raise ValueError("Unsloth MCP bearer token must contain ASCII characters only")
         self.app = app
-        # Compare on raw header bytes: str hmac.compare_digest raises on non-ASCII
-        # input, which would surface as a 500 instead of a clean 401.
+        # Compare on raw header bytes: str hmac.compare_digest raises on non-ASCII input, which would
+        # surface as a 500 instead of a clean 401.
         self.expected = token.encode("utf-8")
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -168,9 +168,8 @@ def create_studio_mcp() -> FastMCP:
         from models.data_recipe import RecipePayload
         from routes.data_recipe.validate import validate
 
-        # Direct call, so the ViaApiKey dependency never runs and its `= False`
-        # default would read as a UI session. This surface is a remote static
-        # bearer, so say so explicitly.
+        # Direct call, so the ViaApiKey dependency never runs and its `= False` default would read as a UI
+        # session; this surface is a remote static bearer.
         return _dump(validate(RecipePayload(recipe = recipe), via_api_key = True))
 
     @mcp.tool
@@ -221,7 +220,7 @@ def create_studio_mcp() -> FastMCP:
             approved_remote_code_fingerprint = approved_remote_code_fingerprint,
             hf_token = hf_token,
         )
-        return _dump(await load(request, current_subject = "mcp"))
+        return _dump(await load(request, current_subject = "mcp", allow_ambient = False))
 
     @mcp.tool
     async def export_gguf(
@@ -256,7 +255,7 @@ def create_studio_mcp() -> FastMCP:
             private = private,
             gguf_shard_size = gguf_shard_size,
         )
-        return _dump(await export(request, current_subject = "mcp"))
+        return _dump(await export(request, current_subject = "mcp", allow_ambient = False))
 
     return mcp
 

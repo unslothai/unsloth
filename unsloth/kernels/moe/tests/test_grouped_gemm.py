@@ -43,8 +43,7 @@ from .common import (
 SEED = 0
 
 
-# Only certain (permute_x, permute_y, use_W1) combinations are valid; see the
-# module string below for the full rationale.
+# Only certain (permute_x, permute_y, use_W1) combinations are valid; see the module string below.
 def check_valid_config(
     permute_x,
     permute_y,
@@ -165,8 +164,8 @@ def _test_grouped_gemm_forward(
     topk_weights, topk_ids = calculate_topk(
         gating_output, topk, use_sigmoid = use_sigmoid, renormalize = renormalize
     )
-    topk_weights = topk_weights.view(-1)  # num_tokens * topk
-    topk_ids = topk_ids.view(-1)  # num_tokens * topk
+    topk_weights = topk_weights.view(-1)
+    topk_ids = topk_ids.view(-1)
 
     expert_token_counts, gather_indices = get_routing_indices(topk_ids, num_experts = E)
     assert len(gather_indices) == total_tokens
@@ -189,7 +188,7 @@ def _test_grouped_gemm_forward(
     else:
         X_test = Xperm
 
-    # No need to run all configs for tests, otherwise takes too long
+    # Running all configs would take too long.
     if autotune:
         from grouped_gemm.kernels.forward import _autotuned_grouped_gemm_forward_kernel
         if num_autotune_configs is not None:
@@ -197,7 +196,6 @@ def _test_grouped_gemm_forward(
                 _autotuned_grouped_gemm_forward_kernel.configs[:num_autotune_configs]
             )
 
-    # Use autograd.Function interface
     if use_autograd:
         from grouped_gemm.interface import grouped_gemm
         kernel_config_fwd = KernelConfigForward(
@@ -228,7 +226,6 @@ def _test_grouped_gemm_forward(
             autotune = autotune,
             is_first_gemm = use_W1,
         )
-    # Use manual interface
     else:
         test_output = grouped_gemm_forward(
             X = X_test,
@@ -257,8 +254,8 @@ def _test_grouped_gemm_forward(
     if permute_y:
         ref_output = unpermute(ref_output, gather_indices)
     if fuse_mul_post:
-        # if we don't permute_y, then test output is permuted with topk weights applied
-        # the ref output needs to be unpermuted before multiplying by topk weights since topk weights are in token order
+        # Without permute_y the test output is permuted with topk weights applied, so the reference output
+        # must be unpermuted before multiplying by topk weights, which are in token order.
         if not permute_y:
             ref_output = unpermute(ref_output, gather_indices)
             test_output = unpermute(test_output, gather_indices)
@@ -269,7 +266,7 @@ def _test_grouped_gemm_forward(
     ), f"Grouped gemm forward failed: {(ref_output - test_output).abs().max().item():.6f}"
 
 
-# NOTE: Fuse multiplication of topk weights is only supported for inference and not training, although this may change in the future; not currently tested.
+# Fusing the topk-weight multiplication is inference-only, not training, and is not tested.
 @pytest.mark.parametrize(
     "kernel_config",
     KERNEL_CONFIGS_FWD,
@@ -457,7 +454,7 @@ def _test_grouped_gemm_backward_dX(
     if autotune and model_config.intermediate_size <= 128 and model_config.hidden_size <= 128:
         pytest.skip("Skipping autotuning for small model configs")
 
-    # Prevent OOM for large intermediate sizes
+    # Prevent OOM for large intermediate sizes.
     if model_config.intermediate_size > 2048:
         model_config.intermediate_size = 1024
     if model_config.hidden_size > 2048:
@@ -502,8 +499,8 @@ def _test_grouped_gemm_backward_dX(
     topk_weights, topk_ids = calculate_topk(
         gating_output, topk, use_sigmoid = use_sigmoid, renormalize = renormalize
     )
-    topk_weights = topk_weights.view(-1)  # num_tokens * topk
-    topk_ids = topk_ids.view(-1)  # num_tokens * topk
+    topk_weights = topk_weights.view(-1)
+    topk_ids = topk_ids.view(-1)
 
     expert_token_counts, gather_indices = get_routing_indices(topk_ids, num_experts = E)
     assert len(gather_indices) == total_tokens
@@ -512,7 +509,7 @@ def _test_grouped_gemm_backward_dX(
     atol, rtol = TOLERANCE[X.dtype]
     Xperm = permute(X, gather_indices, topk)
 
-    # Need to retain grad otherwise grad is not propagated
+    # Grad is not propagated without retain_grad.
     X.retain_grad()
     W.retain_grad()
     Xperm.retain_grad()
@@ -607,10 +604,9 @@ def _test_grouped_gemm_backward_dX(
         test_output.backward(grad_output)
         assert X_.grad is not None
 
-        # NOTE:need to handle grad differenlty in this case due to errors arising to do how torch autograd handles unpermute and sum reduction
-        # the grad of Xperm unpermuted and reduced across topk should match X_.grad
-        # However, both will have a numerical difference with that of ref_grad
-        # This is due to the fact that torch autograd handles unpermute and sum reduction differently see: https://discuss.pytorch.org/t/permute-unpermute-gradient/219557    else:
+        # Grad needs different handling here: Xperm's grad unpermuted and reduced across topk matches
+        # X_.grad, but both differ numerically from ref_grad because autograd handles unpermute and sum
+        # reduction differently. See discuss.pytorch.org/t/permute-unpermute-gradient/219557
         if permute_x and use_W1:
             X_grad_unperm = unpermute(Xperm.grad, gather_indices)
             manual_grad_check = X_grad_unperm.view(num_tokens, topk, K).sum(dim = 1)
@@ -647,11 +643,10 @@ def _test_grouped_gemm_backward_dX(
             num_warps = num_warps,
             num_stages = num_stages,
             flatten = flatten,
-            # debug=True,
         )
 
-    # if permute_x and use_W1 (first grouped GEMM) then the kernel should have unpermuted the dX
-    # therefore we need to unpermute the ref_grad to compare to the output of the kernel
+    # With permute_x and use_W1 (first grouped GEMM) the kernel has already unpermuted dX, so unpermute
+    # ref_grad to compare.
     if permute_x and use_W1:
         ref_grad = unpermute(ref_grad, gather_indices)
 
@@ -665,12 +660,11 @@ def _test_grouped_gemm_backward_dX(
     ), f"Grouped gemm manual backward_dX outputs mismatch: {diff:.6f}"
 
     if permute_x and use_W1:
-        # Show that reduction results in diffs
-        # First calculate X.grad manually by backpropping through unpermuted ref_grad
+        # Show that reduction results in diffs First calculate X.grad manually by backpropping through
+        # unpermuted ref_grad
         dX_ref_check = ref_grad.view(num_tokens, topk, K).sum(dim = 1)
         # Do the same for the actual output of the kernel
         dX_test_check = dX_test.view(num_tokens, topk, K).sum(dim = 1)
-        # Show diffs for each combination
         diff_ref_check = (X.grad - dX_ref_check).abs().max().item()
         diff_test_check = (X.grad - dX_test_check).abs().max().item()
         diff_check_test = (dX_ref_check - dX_test_check).abs().max().item()
@@ -679,8 +673,8 @@ def _test_grouped_gemm_backward_dX(
         )
 
 
-# NOTE: We reduce the size of the Llama4 model configs to prevent OOM
-# Important to note that for the full model size (5120, 8192), the tests do result in diffs on the order of 1e-2.
+# The Llama4 model configs are shrunk to prevent OOM; at the full size (5120, 8192) the tests do
+# show diffs on the order of 1e-2.
 @pytest.mark.parametrize(
     "kernel_config",
     KERNEL_CONFIGS_BWD_dX,
@@ -759,7 +753,7 @@ def test_grouped_gemm_backward_dX_autotune(
     use_W1: bool,
     num_autotune_configs: int,
 ):
-    # TMA loads / stores will be autotuned
+    # TMA loads / stores are autotuned.
     _test_grouped_gemm_backward_dX(
         data_config = data_config,
         model_config = model_config,
@@ -792,7 +786,7 @@ def test_grouped_gemm_backward_dX_autotune_autograd(
     use_W1: bool,
     num_autotune_configs: int,
 ):
-    # TMA loads / stores will be autotuned
+    # TMA loads / stores are autotuned.
     _test_grouped_gemm_backward_dX(
         data_config = data_config,
         model_config = model_config,
@@ -881,8 +875,8 @@ def _test_grouped_gemm_backward_dW(
     topk_weights, topk_ids = calculate_topk(
         gating_output, topk, use_sigmoid = use_sigmoid, renormalize = renormalize
     )
-    topk_weights = topk_weights.view(-1)  # num_tokens * topk
-    topk_ids = topk_ids.view(-1)  # num_tokens * topk
+    topk_weights = topk_weights.view(-1)
+    topk_ids = topk_ids.view(-1)
 
     expert_token_counts, gather_indices = get_routing_indices(topk_ids, num_experts = E)
     assert len(gather_indices) == total_tokens
@@ -892,7 +886,7 @@ def _test_grouped_gemm_backward_dW(
     Xperm = permute(X, gather_indices, topk)
     Xperm_test = Xperm.detach().clone().requires_grad_(True)
 
-    # Need to retain grad otherwise grad is not propagated
+    # Grad is not propagated without retain_grad.
     X.retain_grad()
     W.retain_grad()
     Xperm.retain_grad()
@@ -903,8 +897,8 @@ def _test_grouped_gemm_backward_dW(
     ref_output = torch_grouped_gemm(X = Xperm, W = W, m_sizes = expert_token_counts)
     assert ref_output.shape == output_shape
 
-    # if permute_y then the assumption is that the output of grouped_gemm was unpermuted on store
-    # Therefore we have to unpermute before backpropping to ensure proper alignment
+    # With permute_y the grouped_gemm output was unpermuted on store, so unpermute before backpropping
+    # to keep the alignment.
     if permute_y:
         ref_output = unpermute(ref_output, gather_indices)
 
@@ -913,7 +907,6 @@ def _test_grouped_gemm_backward_dW(
     assert X.grad is not None
     assert W.grad is not None
 
-    # Test backward kernel directly
     X_ = X_test if permute_x else Xperm_test
 
     if debug:
