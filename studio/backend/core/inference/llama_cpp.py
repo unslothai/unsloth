@@ -23442,8 +23442,13 @@ class LlamaCppBackend:
                             return True
                         if getattr(self, "_health_wait_cancelled", False):
                             return False
+                        # `is not None` like every other post-wait read below: a
+                        # teardown clears the reference from the shutdown thread,
+                        # and no process is not a startup crash.
                         _startup_crashed = (
-                            self._process.poll() is not None and self._process.returncode != 0
+                            self._process is not None
+                            and self._process.poll() is not None
+                            and self._process.returncode != 0
                         )
                         # A split-axis abort (#6415) is fit-independent: skip the
                         # --fit off retry and let the caller latch it. So is a
@@ -27481,6 +27486,11 @@ class LlamaCppBackend:
             process = self._process
             if process is None:
                 logger.info("llama-server was torn down while waiting for it to become healthy")
+                # Terminal, like a cancel: the caller must not read the cleared
+                # reference for an exit code, and must not respawn. Shutdown has
+                # already killed this child, so a retry ladder here would leave a
+                # llama-server running after the app it belonged to is gone.
+                self._health_wait_cancelled = True
                 return False
             # Process crashed?
             if process.poll() is not None:

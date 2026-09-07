@@ -226,13 +226,20 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     async def body():
         for processed in (1024, 8192, 65536):
             yield f"data: {json.dumps(_progress(processed))}\n\n"
-        # Give the producer time to flush what it has, then look at the lease
-        # while the model still has not emitted a token.
-        await asyncio.sleep(0.35)
+        # Wait for the producer's idle flush, then look at the lease while the
+        # model still has not emitted a token. Polled rather than slept: the flush
+        # is on a 0.1s timer (_EVENT_BATCH_SECONDS) and a fixed sleep sized against
+        # it is a coin flip on a loaded CI runner. The deadline only bounds a
+        # failure, so a slow host waits instead of flaking.
+        _deadline = time.monotonic() + 10.0
+        while time.monotonic() < _deadline:
+            sampled["events"] = [
+                e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"
+            ]
+            if len(sampled["events"]) >= 3:
+                break
+            await asyncio.sleep(0.01)
         sampled["progress"] = runs_db.get_progress("run-1")
-        sampled["events"] = [
-            e["payload"] for e in runs_db.list_events("run-1") if e["type"] == "chunk"
-        ]
         released.set()
         yield f"data: {json.dumps({'choices': [{'delta': {'content': 'Hi'}, 'finish_reason': 'stop'}]})}\n\n"
         yield "data: [DONE]\n\n"
