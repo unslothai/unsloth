@@ -191,8 +191,8 @@ def _run_create_release(
     }
     env.update(kwargs.pop("extra_env", None) or {})
 
-    # Execute the production publish sequence in one shell so the notes and
-    # metadata files cross the same step boundaries as Actions.
+    # Execute the production publish sequence in one shell so the notes and metadata files cross the same step
+    # boundaries as Actions.
     names = (
         "Validate versioned release state",
         "Generate versioned updater metadata",
@@ -401,8 +401,8 @@ def test_the_build_uses_the_release_tag_not_the_dispatch_ref():
 
 
 def test_the_tag_is_validated_before_it_is_checked_out(tmp_path):
-    # actions/checkout resolves the free-text input, so a malformed tag would fail
-    # on a generic missing-ref error and none of the corrections would be printed.
+    # actions/checkout resolves the free-text input, so a malformed tag would fail on a generic missing-ref error and
+    # none of the corrections would be printed.
     steps = _workflow()["jobs"]["prepare-version"]["steps"]
     names = [step.get("name") or str(step.get("uses")) for step in steps]
     checkout = next(
@@ -449,7 +449,8 @@ def test_the_promotion_guard_orders_numbered_prereleases_by_number():
 
 def test_the_promotion_guard_fails_closed_on_a_failed_latest_lookup():
     guard = _step(_workflow(), "publish-release", "Promote normal release to GitHub latest")["run"]
-    # A 404 means no latest yet; anything else must stop before the PATCH.
+    # A 404 means no latest yet;
+    # anything else must stop before the PATCH.
     fallback = guard.split("elif grep -Fq '(HTTP 404)'", 1)[1].split("gh api --method PATCH", 1)[0]
     assert "refusing to promote" in fallback.lower()
     assert "exit 1" in fallback
@@ -498,11 +499,9 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "exit 0" not in before_control
     ), "unavailable cmdlets still short-circuit the scan before the positive control"
 
-    # The two cmdlets fail independently, so each probe must sit under its OWN
-    # guard, not merely some guard: pooling both bodies would accept
-    # $pref.MAPSReporting under `if ($status)`, where a dead status cmdlet again
-    # discards a readable MAPSReporting=0 and scans blind to the "!ml" cloud
-    # verdicts this gate exists to catch.
+    # The two cmdlets fail independently, so each probe must sit under its OWN guard, not merely some guard: pooling
+    # both bodies would accept $pref.MAPSReporting under `if ($status)`, where a dead status cmdlet again discards a
+    # readable MAPSReporting=0 and scans blind to the "!ml" cloud verdicts this gate exists to catch.
     guards = {
         "$status": _guarded_bodies(scan, "if ($status) {"),
         "$pref": _guarded_bodies(scan, "if ($pref) {"),
@@ -566,8 +565,8 @@ def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
     body = _guarded_bodies(scan, "if (Test-Path $eicarPath) {")[0]
     _, scanned, after = body.partition("-DisableRemediation")
     assert scanned, "the positive control no longer scans the sample with MpCmdRun"
-    # The re-check has to land after the scan and before this step's own cleanup,
-    # or it proves nothing about who removed the file.
+    # The re-check has to land after the scan and before this step's own cleanup, or it proves nothing about who removed
+    # the file.
     recheck, cleaned, _ = after.partition("Remove-Item $eicarPath")
     assert cleaned, "the positive control no longer removes the sample afterwards"
     assert "-not (Test-Path $eicarPath)" in recheck, (
@@ -578,8 +577,7 @@ def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
     assert (
         "$controlPassed = $true" in recheck
     ), "the vanished sample is noticed but still does not pass the control"
-    # Only a vanished sample may pass this way. -DisableRemediation stops the scan
-    # from deleting the file, so with no engine it survives and the skip applies.
+    # Only a vanished sample may pass this way.
     assert recheck.index("-not (Test-Path $eicarPath)") < recheck.index(
         "$controlPassed = $true"
     ), "the control passes without first confirming the sample is gone"

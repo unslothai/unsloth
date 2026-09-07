@@ -95,8 +95,8 @@ class TestSetupPs1NoWipeEscape:
             assert clause in condition, f"the escape must be gated on {clause!r}"
 
     def test_the_installed_tag_is_tested_before_the_variables_it_implies(self):
-        # $_pinnedIdx and $expectedTorchTag are assigned only inside `if (-not
-        # $shouldRebuild)`, so under Set-StrictMode the other -and order is a fatal read.
+        # $_pinnedIdx and $expectedTorchTag are assigned only inside `if (-not $shouldRebuild)`, so under
+        # Set-StrictMode the other -and order is a fatal read.
         start = _SETUP_SRC.index("if ($shouldRebuild -and -not $InstallerManagedSetup -and\n")
         condition = _SETUP_SRC[start : _SETUP_SRC.index("{", start)]
         assert condition.index("$installedTorchTag -and") < condition.index("$_pinnedIdx")
@@ -271,8 +271,7 @@ class TestStepThirteenWiring:
         )
 
     def test_the_existing_repair_set_is_untouched(self):
-        # Step 2b (which Windows enters; the four helpers return early there) and the
-        # Linux-only step 13.
+        # Step 2b (which Windows enters; the four helpers return early there) and the Linux-only step 13.
         guards = _guards_containing("_ensure_cuda_torch")
         assert [ast.unparse(guard.test) for guard in guards] == [
             "not IS_MACOS and (not NO_TORCH)",
@@ -351,8 +350,7 @@ class TestManifestRecordsTheFlavor:
         assert install_manifest.recorded_torch_flavor(tmp_path) == "cu128"
 
     def test_absent_reads_as_unknown_not_cpu(self, tmp_path):
-        # Claiming a flavor nobody selected would let a repair reinstall over a
-        # deliberate build.
+        # Claiming a flavor nobody selected would let a repair reinstall over a deliberate build.
         install_manifest.write_manifest(root = tmp_path, req_root = tmp_path)
         assert install_manifest.recorded_torch_flavor(tmp_path) is None
 

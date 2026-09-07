@@ -2372,7 +2372,8 @@ def _train_dit(
             retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
         elif not resumed_here:
             # A stop-with-save on a fresh retrain is a LOWER step than the earlier run's leftovers, and resume-
-            # by-directory picks the newest by step, so those would outrank the partial just saved.
+            # by-directory picks the newest by step, so those would outrank the partial just saved and continue
+            # the wrong training. A run that RESUMED here instead keeps what it found.
             discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)
     else:
         # save_steps writes bundles as the run goes, so without this a discard leaves up to

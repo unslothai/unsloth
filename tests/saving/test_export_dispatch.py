@@ -190,8 +190,8 @@ def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
     assert tokenizer.saved_to == [str(checkpoint)]
 
 
-# The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path
-# has to work; it is only ever exercised here.
+# The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path has to work; it is only ever
+# exercised here.
 
 
 def test_push_to_hub_gguf_lora_dispatches(monkeypatch):
