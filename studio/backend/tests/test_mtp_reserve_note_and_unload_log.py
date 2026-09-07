@@ -115,6 +115,29 @@ def test_a_single_slot_launch_still_probes_a_distinct_slot_count(backend, monkey
     assert "x 1 slots" in note
 
 
+def test_the_slot_probe_escapes_a_padding_plateau(backend, monkeypatch):
+    # Cells are padded per stream, so every slot count that divides the padded total
+    # reproduces it: at n_ctx 12288 the launched 2 slots and the neighbours 3 and 4 all
+    # price 12288 cells, and only 5 moves. A ladder of nearby steps therefore cannot
+    # see the dependency; the probe has to reach past the plateau.
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
+
+    def _cells(slots, _ub):
+        _, streams, per_stream = llama_cpp_module._kv_cache_cell_layout(12288, slots, False)
+        return streams * per_stream
+
+    assert [_cells(s, 0) for s in (2, 3, 4)] == [12288] * 3, "premise moved"
+    assert _cells(5, 0) != 12288
+
+    note = _note(backend, n_ctx = 12288, n_parallel = 2, reprice = _cells)
+    assert "x 2 slots" in note
+
+    # The control: a reserve that really is slot-independent stays unnamed however far
+    # the ladder reaches, so this is not a probe that names the axis unconditionally.
+    flat = _note(backend, n_ctx = 12288, n_parallel = 2, reprice = lambda slots, ub: 3 * 1024**3)
+    assert "slots" not in flat
+
+
 def test_an_estimator_that_cannot_answer_keeps_the_dimension_named(backend, monkeypatch):
     # Dropping a name on a raise would silently under-report a real dependency, which
     # is the failure this whole line is meant to prevent, pointing the other way.

@@ -12654,12 +12654,18 @@ class LlamaCppBackend:
                 return True
             return False
 
-        # Two perturbations per axis: cell counts are padded, so a single step can
-        # land inside the same bucket on a dimension the number does follow. The
-        # second slot candidate is kept distinct from the first at n_parallel 1,
-        # where doubling is also +1 and the pair would probe one point.
+        # Several perturbations per axis: cell counts are padded, so nearby steps can
+        # all land inside the same bucket on a dimension the number does follow. Cells
+        # are padded per stream, so every slot count that divides the padded total
+        # reproduces it exactly -- at 12288 cells, 2, 3 and 4 slots all price the same
+        # and only 5 moves. The last candidate is larger than the padded cell count
+        # itself, which therefore cannot divide it, so it escapes every such plateau.
+        _cells = _pad_kv_cells(max(1, n_ctx)) // 256
         slots_named = _moves(
-            (n_parallel + 1, ubatch), (max(n_parallel + 2, n_parallel * 2), ubatch)
+            (n_parallel + 1, ubatch),
+            (n_parallel + 2, ubatch),
+            (max(n_parallel + 3, n_parallel * 2), ubatch),
+            (max(n_parallel + 3, _cells + 1), ubatch),
         )
         ubatch_named = _moves((n_parallel, ubatch * 2), (n_parallel, max(1, ubatch // 2)))
         scales_with_n_max = bool(
