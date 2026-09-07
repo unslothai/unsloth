@@ -564,3 +564,35 @@ def test_the_powershell_probe_fails_closed_on_the_log_and_finishes_the_policy_re
     )
     # Defender detections are the probe window's only.
     assert "Where-Object { $_.InitialDetectionTime -ge $start }" in ps1
+
+
+def test_a_tool_end_the_loop_closed_without_running_is_not_an_execution():
+    """studio_tool_loop.py closes a truncated, cancelled, disabled or
+    budget-exhausted call with a non-empty result that is neither the refusal
+    nor an Error: string."""
+    s = _load_scenario()
+    for result in (
+        "Unsloth did not execute this tool call because the provider stopped mid-call at its output limit.",
+        "Unsloth stopped this tool call before it returned, so there is no result. The tool may have already done part of its work.",
+        "Unsloth did not execute this tool call because the tool is disabled.",
+        "Unsloth did not run this call because an identical one had already completed.",
+    ):
+        assert s.tool_end_failure(result) is not None, result
+    assert s.tool_end_failure("Unsloth Studio docs: https://docs.unsloth.ai") is None
+
+
+def test_the_powershell_probe_redacts_logs_rejects_empty_inventories_and_keeps_reverting():
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    # Studio logs reach the zip only through Redact-Secrets, never by a raw copy.
+    assert "Copy-Item -LiteralPath $studioLogs" not in ps1
+    assert "Redact-Secrets $text" in ps1 and "function Redact-Secrets" in ps1
+    for shape in ("hf_[A-Za-z0-9]{20,}", "Bearer", "AKIA|ASIA", "eyJ", "cookie"):
+        assert shape in ps1[ps1.index("function Redact-Secrets") : ps1.index("function Write-Section")], shape
+    # A runtime with no PE files is an invalid cell, not a clean one.
+    assert "no PE files found under $LLAMA_DIR" in ps1
+    # A policy failure in revert does not skip the log and Defender restores.
+    revert = ps1[ps1.index("function Invoke-Revert") :]
+    assert "$policyError = $_" in revert
+    assert revert.index("$policyError = $_") < revert.index("Write-Section 'Restore CodeIntegrity log'")
+    assert revert.index("Write-Section 'Restore Defender preferences'") < revert.index("if ($null -ne $policyError) {")
+    assert "the audit policy is still applied" in revert

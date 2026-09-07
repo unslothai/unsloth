@@ -354,16 +354,21 @@ class StatusPoller(threading.Thread):
 # studio/backend/state/tool_approvals.py; the loop puts it in `result` when a
 # call is declined before running.
 TOOL_REJECTED_MESSAGE = "The user declined to run this tool call."
+# studio_tool_loop.py closes a card it did not execute (budget exhausted,
+# disabled, truncated by the provider, cancelled, duplicate) with a result
+# that starts one of these ways.
+TOOL_NOT_RUN_PREFIXES = ("Unsloth did not ", "Unsloth stopped this tool call")
 
 
 def tool_end_failure(result: Any) -> Optional[str]:
     """Why a tool_end did not come from an executed tool, or None if it did."""
     if not isinstance(result, str) or not result.strip():
         return "empty result"
-    if result.strip() == TOOL_REJECTED_MESSAGE:
+    text = result.strip()
+    if text == TOOL_REJECTED_MESSAGE:
         return "declined before running"
-    if result.lstrip().startswith("Error:"):
-        return result.strip()[:160]
+    if text.startswith("Error:") or text.startswith(TOOL_NOT_RUN_PREFIXES):
+        return text[:160]
     return None
 
 

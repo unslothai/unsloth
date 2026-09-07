@@ -163,6 +163,30 @@ function Get-CiLogSettings {
     return [pscustomobject]@{ Enabled = $enabled; MaxSize = $maxSize }
 }
 
+# The shapes studio/backend/utils/log_redaction.py masks, so a log copied
+# into the evidence carries nothing its own reader would have hidden.
+function Redact-Secrets([string] $Text) {
+    if ($null -eq $Text) { return $Text }
+    $rules = @(
+        @('\bhf_[A-Za-z0-9]{20,}', 'hf_<redacted>'),
+        @('(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}', 'sk-<redacted>'),
+        @('\b(?:gsk_|xai-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|xox[abpsr]-|ya29\.)[A-Za-z0-9_.-]{16,}', '<redacted>'),
+        @('\bAIza[0-9A-Za-z_-]{30,}', '<redacted>'),
+        @('\b(?:AKIA|ASIA)[0-9A-Z]{16}\b', '<redacted>'),
+        @('\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}', '<redacted>'),
+        @('://[^/\s:@]+:[^/\s@]+@', '://<redacted>@'),
+        @('(?i)([?&](?:token|api[-_]key|apikey|sig|signature|x-amz-signature|x-amz-credential|x-amz-security-token|access_token)=)[^&\s"'']+', '$1<redacted>'),
+        @('(?i)((?:proxy-)?authorization["'']?\s*[:=]\s*["'']?(?:bearer|basic|digest|token|apikey))(\s+)([^\s"'',}\]]+)', '$1$2<redacted>'),
+        @('(?i)\b(Bearer)(\s+)([^\s"'',}\]]+)', '$1$2<redacted>'),
+        @('(?i)\b((?:api[-_]?key|access[-_]?token|refresh[-_]?token|secret|password|passwd|pwd|token|credential)s?["'']?\s*[:=]\s*["'']?)([^\s"'',}\]]{6,})', '$1<redacted>'),
+        @('(?im)\b((?:set-)?cookie["'']?\s*[:=]\s*)(\S.*)$', '$1<redacted>')
+    )
+    foreach ($rule in $rules) {
+        $Text = [regex]::Replace($Text, $rule[0], $rule[1])
+    }
+    return $Text
+}
+
 function Write-Section([string] $Text) {
     Write-Host ''
     Write-Host "=== $Text ===" -ForegroundColor Cyan
@@ -549,6 +573,12 @@ function Invoke-Run {
     $inventory | Export-Csv -LiteralPath (Join-Path $dir 'signature-inventory.csv') -NoTypeInformation -Encoding UTF8
 
     $total = $inventory.Count
+    if ($total -eq 0) {
+        # A runtime with no PE files is a stale UNSLOTH_LLAMA_CPP_PATH, an
+        # absent install or a failed enumeration; evidence from it would read
+        # as a bundle with nothing unsigned.
+        throw "no PE files found under $LLAMA_DIR; this is not a llama.cpp runtime, so the cell is invalid. Check UNSLOTH_LLAMA_CPP_PATH / UNSLOTH_STUDIO_HOME or install Studio first"
+    }
     $valid = @($inventory | Where-Object { $_.Status -eq 'Valid' }).Count
     Write-Host "$valid of $total PE files report a valid Authenticode signature"
     if ($total -gt 0 -and $valid -lt $total) {
@@ -669,9 +699,21 @@ function Invoke-Collect {
         Set-Content -LiteralPath (Join-Path $dir 'sac-state-after.json') -Encoding UTF8
 
     # Studio's own logs, which carry the request timings and the backend errors.
+    # Redacted on the way in, never raw: the zip is attached to an issue, and
+    # Studio's logs can carry tokens that its own log reader masks
+    # (studio/backend/utils/log_redaction.py, whose shapes these mirror).
     $studioLogs = Join-Path (Get-StudioHome) 'logs'
     if (Test-Path -LiteralPath $studioLogs) {
-        Copy-Item -LiteralPath $studioLogs -Destination (Join-Path $dir 'studio-logs') -Recurse -Force -ErrorAction SilentlyContinue
+        $dest = Join-Path $dir 'studio-logs'
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        foreach ($log in Get-ChildItem -LiteralPath $studioLogs -File -Recurse -ErrorAction SilentlyContinue) {
+            try {
+                $text = Get-Content -LiteralPath $log.FullName -Raw -ErrorAction Stop
+                Set-Content -LiteralPath (Join-Path $dest $log.Name) -Value (Redact-Secrets $text) -Encoding UTF8
+            } catch {
+                Write-Warning "could not copy $($log.FullName): $_"
+            }
+        }
     }
 
     $zip = Join-Path $WorkDir ("unsloth-sac-{0}-{1}-{2}.zip" -f $env:COMPUTERNAME, $Label, (Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -693,7 +735,12 @@ function Invoke-Revert {
     }
     $baseline = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
 
+    # The policy block may throw (mount, copy or CiTool). The log and Defender
+    # restorations below do not depend on it and must still run; the failure
+    # is re-raised at the end, with AuditPolicyApplied left set for a retry.
+    $policyError = $null
     if ($baseline.AuditPolicyApplied) {
+      try {
         Write-Section 'Remove audit policy'
         $saved = Join-Path $dir 'preexisting-policy.cip'
         $mounted = Mount-Efi
@@ -720,6 +767,10 @@ function Invoke-Revert {
         # still find AuditPolicyApplied set.
         $baseline.AuditPolicyApplied = $false
         $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $dir 'baseline.json') -Encoding UTF8
+      } catch {
+        $policyError = $_
+        Write-Warning "audit policy was not reverted: $_ (continuing with the other settings; run revert again)"
+      }
     }
 
     Write-Section 'Restore CodeIntegrity log'
@@ -762,6 +813,9 @@ function Invoke-Revert {
     if ($failed -eq 0) { Write-Host 'Defender preferences restored' }
     else { Write-Warning "$failed Defender preference(s) were not restored; see above" }
 
+    if ($null -ne $policyError) {
+        throw "revert restored the log and Defender settings but the audit policy is still applied: $policyError"
+    }
     Write-Host ''
     Write-Host 'revert complete. Smart App Control itself was never changed by this script.'
 }
