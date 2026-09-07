@@ -67,7 +67,7 @@ jobs:
           Write-Host "Smart App Control on this runner: $mode"
           & CiTool.exe -lp 2>&1 | Select-String -Pattern 'Friendly Name|Is Enforced' | Write-Host
 
-      - name: Download the Windows bundles
+      - name: Enumerate the Windows bundles
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -82,38 +82,51 @@ jobs:
           }
           Write-Host "auditing release $tag"
           Add-Content -Path $env:GITHUB_ENV -Value "AUDIT_TAG=$tag"
-          # One per backend family rather than all seventeen: the CUDA and
-          # ROCm profiles are hundreds of MB each and the signing state is per
-          # build, not per profile. Every family is here, though. ROCm and the
-          # arm64 CPU bundle are built and packaged separately from the x64
-          # ones, so each can fail to be signed on its own; a set that skipped
-          # them would pass under `enforce` while those users still got
-          # unsigned PEs.
-          foreach ($pattern in @(
-            '*windows-x64-cpu.zip',
-            '*windows-arm64-cpu.zip',
-            '*windows-x64-vulkan.zip',
-            '*windows-x64-cuda12-legacy.zip',
-            '*windows-x64-rocm-gfx110X.zip'
-          )) {
-            gh release download $tag --repo unslothai/llama.cpp --pattern $pattern --dir bundles --clobber
-            # A native exit code is not terminating under 'Stop', and a later
-            # successful download replaces $LASTEXITCODE, so a family whose
-            # asset is missing would be audited as absent and pass. Check each
-            # one, and that a file actually landed.
-            if ($LASTEXITCODE -ne 0) { throw "gh release download exited $LASTEXITCODE for $pattern" }
-            if (-not (Get-ChildItem bundles -Filter $pattern)) { throw "no asset of $tag matched $pattern" }
-          }
-          Get-ChildItem bundles | Format-Table Name, Length -AutoSize | Out-String | Write-Host
+          # Every published Windows asset, not a sample. Sampling one CUDA
+          # profile was wrong: tests/studio/install/test_selection_logic.py
+          # shows cuda12-newer and cuda13-newer are both reachable production
+          # selections, and each profile is packaged separately, so the audit
+          # (and eventually `enforce`) could pass green while the bundle a
+          # modern NVIDIA machine actually receives shipped unsigned. The same
+          # argument applies across the seven ROCm profiles.
+          #
+          # Enumerated from the release rather than hard coded, so a profile
+          # added later is audited without anyone remembering to list it here.
+          $assets = @(gh release view $tag --repo unslothai/llama.cpp --json assets -q '.assets[].name' |
+            Where-Object { $_ -like '*windows*' -and $_ -like '*.zip' })
+          if ($LASTEXITCODE -ne 0) { throw "gh release view exited $LASTEXITCODE" }
+          if ($assets.Count -eq 0) { throw "no Windows assets on $tag" }
+          Write-Host "auditing $($assets.Count) Windows asset(s):"
+          $assets | ForEach-Object { Write-Host "  $_" }
+          $assets -join "`n" | Set-Content -LiteralPath windows-assets.txt -Encoding UTF8
 
       - name: Inventory Authenticode signatures
         id: inventory
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Continue'
           $ext = @('.exe', '.dll', '.pyd', '.sys', '.ocx', '.cpl', '.scr')
           $rows = @()
-          foreach ($zip in Get-ChildItem bundles -Filter *.zip) {
+          New-Item -ItemType Directory -Force -Path bundles | Out-Null
+          $assets = @(Get-Content -LiteralPath windows-assets.txt | Where-Object { $_ })
+          # One bundle at a time, deleted after. The full Windows set is several
+          # GB across seventeen assets and the hosted runner does not have room
+          # for all of them at once, which is the practical reason the audit
+          # used to sample. Streaming makes auditing every profile affordable.
+          foreach ($asset in $assets) {
+            Write-Host "--- $asset"
+            gh release download $env:AUDIT_TAG --repo unslothai/llama.cpp --pattern $asset --dir bundles --clobber
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::gh release download exited $LASTEXITCODE for $asset"
+              exit 1
+            }
+            $zip = Get-Item (Join-Path 'bundles' $asset) -ErrorAction SilentlyContinue
+            if (-not $zip) {
+              Write-Host "::error::$asset did not download"
+              exit 1
+            }
             $dest = Join-Path $env:RUNNER_TEMP ("x-" + $zip.BaseName)
             Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
             Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dest -Force
@@ -134,6 +147,14 @@ jobs:
               }
             }
             Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $zip.FullName -Force -ErrorAction SilentlyContinue
+          }
+          # Every enumerated asset has to appear, or a download that produced a
+          # zip with no rows would shrink the audit silently.
+          $audited = @($rows | Group-Object Bundle).Count
+          if ($audited -ne $assets.Count) {
+            Write-Host "::error::enumerated $($assets.Count) Windows asset(s) but inventoried $audited"
+            exit 1
           }
 
           $rows | Export-Csv -LiteralPath signature-inventory.csv -NoTypeInformation -Encoding UTF8

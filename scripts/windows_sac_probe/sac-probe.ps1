@@ -429,10 +429,28 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
             return
         }
         Write-Host 'Studio is not installed on this machine.'
+        # Which of the trees the installer creates did not exist beforehand.
+        # revert repairs the ACLs on exactly these, because they are the ones
+        # this elevated run brought into being owned by Administrators; an
+        # existing tree is the operator's and is left alone.
+        $candidates = @(
+            (Join-Path $env:USERPROFILE '.unsloth'),
+            (Get-StudioHome),
+            (Get-LlamaDir)
+        ) | Where-Object { $_ } | Select-Object -Unique
+        $absentBefore = @($candidates | Where-Object { -not (Test-Path -LiteralPath $_) })
         $python = Install-Studio
         if (-not $python) {
             Write-Warning 'Studio still not found after the installer ran. Install it by hand, then re-run this stage.'
             return
+        }
+        $created = @($absentBefore | Where-Object { Test-Path -LiteralPath $_ })
+        $baselinePath = Join-Path $dir 'baseline.json'
+        if (Test-Path -LiteralPath $baselinePath) {
+            $b = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+            $b.StudioInstalledByProbe = $true
+            $b.StudioInstallRoots = $created
+            $b | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
         }
     }
     Write-Host "managed interpreter: $python"
@@ -445,10 +463,29 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
 
 function Save-Baseline([string] $dir) {
     $mp = $null
-    try { $mp = Get-MpPreference } catch { }
+    $mpError = $null
+    try { $mp = Get-MpPreference } catch { $mpError = $_ }
     $status = $null
     try { $status = Get-MpComputerStatus } catch { }
     $ciLog = Get-CiLogSettings
+
+    # Fail before mutating anything whose old value we could not read. revert
+    # skips a null Defender field and skips the log restore unless both channel
+    # settings are present, so a silent capture failure here does not produce a
+    # partial rollback later, it produces a machine that prepare changed and
+    # revert cannot put back. Only the settings prepare actually writes are
+    # required; AMProductVersion and the like are descriptive and may be null.
+    if (-not $mp) {
+        throw "could not read the Defender preferences that prepare changes, so revert would not be able to restore them. Refusing to modify this machine. Underlying error: $mpError"
+    }
+    $missing = @('DisableRealtimeMonitoring', 'MAPSReporting', 'SubmitSamplesConsent', 'CloudBlockLevel', 'PUAProtection') |
+        Where-Object { $null -eq $mp.$_ }
+    if ($missing.Count -gt 0) {
+        throw "Defender preference(s) $($missing -join ', ') read back as null, so revert could not restore them. Refusing to modify this machine."
+    }
+    if ($null -eq $ciLog.Enabled -or $null -eq $ciLog.MaxSize) {
+        throw "could not read the $CI_LOG channel settings (enabled=$($ciLog.Enabled), maxSize=$($ciLog.MaxSize)), which prepare raises and revert restores. Refusing to modify this machine."
+    }
 
     $baseline = [pscustomobject]@{
         CapturedAt              = (Get-Date).ToString('o')
@@ -465,6 +502,9 @@ function Save-Baseline([string] $dir) {
         AntivirusSignatureVersion = if ($status) { $status.AntivirusSignatureVersion } else { $null }
         CiLogEnabled            = $ciLog.Enabled
         CiLogMaxSize            = $ciLog.MaxSize
+        # revert repairs ACLs only on trees this run created; see Invoke-Revert.
+        StudioInstalledByProbe  = $false
+        StudioInstallRoots      = @()
         AuditPolicyApplied      = $false
         # A policy with the NoISG GUID that was there before prepare: kept
         # aside and put back by revert rather than deleted as ours.
@@ -826,6 +866,9 @@ function Invoke-Collect {
                 default { 'context' }
             }
             Scope       = $scope
+            # 'path' when the message named a file we own, 'correlation' when
+            # the scope came from a sibling event sharing the ActivityID.
+            ScopeFrom   = 'path'
             ActivityID  = $_.ActivityId
             Message     = $msg
             # 3089's rendered Message is the fixed string "Signature
@@ -838,6 +881,32 @@ function Invoke-Collect {
             EventData   = (Get-EventDataMap $_)
         }
     })
+    # 3089 carries no path: its rendered message is the fixed string
+    # "Signature information for another event. Match using the Correlation
+    # Id.", so classifying it from Message alone puts every one of them in
+    # 'other'. That is exactly the signature detail the README tells a reviewer
+    # to correlate to a block, and 'other' is documented as somebody else's
+    # binaries, so the scoping would have taught people to discard it. Take the
+    # scope from the event it is the detail for. Measured on one run: 278
+    # ActivityIDs, each holding exactly one 3076 and one 3089.
+    $scopeByActivity = @{}
+    foreach ($e in $shaped) {
+        if ($e.Scope -ne 'other' -and $e.ActivityID -and -not $scopeByActivity.ContainsKey($e.ActivityID)) {
+            $scopeByActivity[$e.ActivityID] = $e.Scope
+        }
+    }
+    $inherited = 0
+    foreach ($e in $shaped) {
+        if ($e.Scope -eq 'other' -and $e.ActivityID -and $scopeByActivity.ContainsKey($e.ActivityID)) {
+            $e.Scope = $scopeByActivity[$e.ActivityID]
+            $e.ScopeFrom = 'correlation'
+            $inherited++
+        }
+    }
+    if ($inherited -gt 0) {
+        Write-Host "$inherited event(s) scoped by ActivityID correlation rather than by path"
+    }
+
     # -InputObject: zero events is a normal and important result for an
     # allowed bundle, and piping an empty array writes an empty file that no
     # consumer can tell from a failed collection. This writes `[]`.
@@ -861,10 +930,16 @@ function Invoke-Collect {
     Write-Host "unrelated to Unsloth: $foreign event(s) (kept in the export, excluded from the counts)"
     Write-Host "$($shaped.Count) event(s) in the window overall"
 
-    # Whole-log export as well, since the shaped view drops fields and a
-    # reviewer may need the raw record.
+    # Raw export as well, since the shaped view drops fields and a reviewer may
+    # need the original record. Bounded to the same window as the JSON: an
+    # unfiltered `epl` copies the whole channel, which on an established machine
+    # is months of unrelated executable paths and policy history, up to the
+    # 64 MB prepare configures. The README asks operators to attach this zip, so
+    # the raw export has to carry the same scoping as everything else in it.
+    $windowStart = $start.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+    $query = "*[System[TimeCreated[@SystemTime>='$windowStart']]]"
     try {
-        Invoke-Native 'wevtutil.exe' @('epl', $CI_LOG, (Join-Path $dir 'CodeIntegrity-Operational.evtx'), '/ow:true')
+        Invoke-Native 'wevtutil.exe' @('epl', $CI_LOG, (Join-Path $dir 'CodeIntegrity-Operational.evtx'), "/q:$query", '/ow:true')
     } catch { Write-Warning "evtx export failed: $_" }
 
     try {
@@ -902,7 +977,10 @@ function Invoke-Collect {
             $redactor = Join-Path $PSScriptRoot 'redact_logs.py'
             foreach ($source in $sources) {
                 try {
-                    Invoke-Native $python @('-X', 'utf8', '-I', $redactor, $source, (Join-Path $dir 'studio-logs'))
+                    # Bounded to the probe window; the redactor also caps each
+                    # log family, so an established install does not drag its
+                    # whole history into the zip.
+                    Invoke-Native $python @('-X', 'utf8', '-I', $redactor, $source, (Join-Path $dir 'studio-logs'), '--since', $start.ToString('o'))
                 } catch {
                     Write-Warning "logs under $source were not copied (redaction failed): $_"
                     Remove-Item -LiteralPath (Join-Path $dir 'studio-logs') -Recurse -Force -ErrorAction SilentlyContinue
@@ -1096,14 +1174,33 @@ function Invoke-Revert {
     # they are a side effect of running elevated at all, so there is no baseline
     # value to restore. Measured on a machine where prepare installed Studio:
     # llama.cpp, whisper.cpp and node all denied Get-Acl to the owning user.
+    #
+    # Only the trees THIS run created, recorded by prepare. Granting Full
+    # Control over a tree the probe did not create is not a repair, it is a
+    # permission change to somebody else's directory: UNSLOTH_STUDIO_HOME and
+    # UNSLOTH_LLAMA_CPP_PATH may point at a shared or administrator-managed
+    # runtime, and revert has no business widening access there. Containment is
+    # re-checked here rather than trusted from the file, since baseline.json is
+    # editable between stages.
     $user = "$env:USERDOMAIN\$env:USERNAME"
-    $trees = @((Join-Path $env:USERPROFILE '.unsloth'), (Get-StudioHome), (Get-LlamaDir)) |
+    $profileRoot = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\') + '\'
+    $recorded = @()
+    if ($baseline.StudioInstalledByProbe) { $recorded = @($baseline.StudioInstallRoots) }
+    $trees = @($recorded |
         Where-Object { $_ -and (Test-Path -LiteralPath $_) } |
-        Select-Object -Unique
+        Where-Object {
+            $full = [IO.Path]::GetFullPath($_)
+            if ($full.StartsWith($profileRoot, [StringComparison]::OrdinalIgnoreCase)) { $true }
+            else { Write-Warning "not repairing ACLs on ${full}: outside $profileRoot"; $false }
+        } |
+        Select-Object -Unique)
+    if ($trees.Count -eq 0) {
+        Write-Host 'nothing to repair: this run did not install Studio'
+    }
     foreach ($tree in $trees) {
         try {
-            # Grants the invoking user only, on trees inside their own profile.
-            # Nothing here widens access for anyone else or touches ownership.
+            # Grants the invoking user only. Nothing here widens access for
+            # anyone else or touches ownership.
             & icacls.exe $tree /grant "${user}:(OI)(CI)F" /T /C /Q | Out-Null
             if ($LASTEXITCODE -eq 0) { Write-Host "restored $user access to $tree" }
             else { Write-Warning "icacls exited $LASTEXITCODE for $tree" }

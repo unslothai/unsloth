@@ -30,13 +30,53 @@ def load_redactor(backend: Path):
     return redact_log_text
 
 
-def copy_redacted(source: Path, destination: Path, redact) -> list[str]:
+# Studio does not prune its own log directory: debug_log_sources.py records a
+# measured installation carrying 11794 llama-server logs, and the log viewer
+# caps each family at ten rather than showing them all. Copying the lot into the
+# evidence makes redaction and compression take impractically long, produces a
+# zip too large to attach, and ships years of unrelated diagnostics to a public
+# issue. Bound it the same two ways the viewer does: the probe window first,
+# then a per-family cap.
+FAMILY_CAP = 10
+
+
+def family_of(log: Path) -> str:
+    # "backend-backend-1788737374062-2-s01.log" and
+    # "server-20260906-194759-pid1820.log" both collapse to their leading word,
+    # which is what the viewer groups on.
+    return log.parent.name + "/" + log.name.split("-", 1)[0].lower()
+
+
+def select(source: Path, since: float | None) -> list[Path]:
+    logs = sorted((p for p in source.rglob("*") if p.is_file()), key = lambda p: p.stat().st_mtime)
+    if since is not None:
+        in_window = [p for p in logs if p.stat().st_mtime >= since]
+        # A run that reused an already-running Studio can legitimately produce
+        # nothing inside the window. Falling back to the newest few is more
+        # useful than an empty studio-logs/, and is still bounded.
+        if in_window:
+            logs = in_window
+    kept: dict[str, list[Path]] = {}
+    for log in logs:
+        kept.setdefault(family_of(log), []).append(log)
+    out: list[Path] = []
+    for family in sorted(kept):
+        out.extend(kept[family][-FAMILY_CAP:])
+    return sorted(out)
+
+
+def copy_redacted(source: Path, destination: Path, redact, since: float | None = None) -> list[str]:
     destination.mkdir(parents = True, exist_ok = True)
     written: list[str] = []
-    for log in sorted(p for p in source.rglob("*") if p.is_file()):
+    for log in select(source, since):
         text = log.read_text(encoding = "utf-8", errors = "replace")
-        (destination / log.name).write_text(redact(text), encoding = "utf-8")
-        written.append(log.name)
+        # Relative path, not just the leaf: two log families can hold the same
+        # file name in different subdirectories, and flattening let the second
+        # silently overwrite the first.
+        target = destination / log.relative_to(source)
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_text(redact(text), encoding = "utf-8")
+        written.append(str(log.relative_to(source)))
     return written
 
 
@@ -47,9 +87,18 @@ def main() -> int:
     ap.add_argument(
         "--backend", default = None, help = "studio/backend directory (default: the installed one)"
     )
+    ap.add_argument(
+        "--since",
+        default = None,
+        help = "ISO 8601 start of the probe window; older logs are left out of the evidence",
+    )
     args = ap.parse_args()
+    since = None
+    if args.since:
+        from datetime import datetime
+        since = datetime.fromisoformat(args.since).timestamp()
     redact = load_redactor(backend_dir(args.backend))
-    for name in copy_redacted(Path(args.source), Path(args.destination), redact):
+    for name in copy_redacted(Path(args.source), Path(args.destination), redact, since):
         print(f"  {name}")
     return 0
 
