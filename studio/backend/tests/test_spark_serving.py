@@ -1726,6 +1726,69 @@ def test_the_layer_boundary_is_explicit_and_the_rows_table_is_consistent():
     assert "no speculation" in sc.SPLIT_GROUPS_ROWS_MEASUREMENT
 
 
+def test_rows_sizing_is_capped_by_ttft_and_never_rounds_the_slot_count_up():
+    sc = _load_spark_cluster()
+    # The throughput table on its own says "use 128 rows". Measured TTFT says that is
+    # unshippable, so the rows setting is capped, and the cap has to be the last point whose
+    # p90 TTFT is inside 14 s rather than a number somebody liked.
+    rows = sorted(sc.SPLIT_ROWS_TTFT)
+    assert rows == [8, 16, 32, 64, 128], "five points, the same five the throughput table has"
+    toks = [sc.SPLIT_ROWS_TTFT[r][0] for r in rows]
+    med = [sc.SPLIT_ROWS_TTFT[r][1] for r in rows]
+    p90 = [sc.SPLIT_ROWS_TTFT[r][2] for r in rows]
+    assert toks == sorted(toks), "throughput rises with rows"
+    assert med == sorted(med) and p90 == sorted(p90), "and so does TTFT"
+    # The trade gets WORSE with rows: that is the whole reason for a cap. Between 8 and 32 rows
+    # throughput grows faster than the median TTFT; between 32 and 128 it does not.
+    assert (toks[2] / toks[0]) / (med[2] / med[0]) > 0.7
+    assert (toks[4] / toks[2]) / (med[4] / med[2]) < 0.45, "above 32 rows TTFT wins the race"
+    assert sc.SPLIT_ROWS_INTERACTIVE_MAX == 64
+    assert sc.SPLIT_ROWS_TTFT[sc.SPLIT_ROWS_INTERACTIVE_MAX][2] < 14.0, "p90 inside 14 s"
+    assert sc.SPLIT_ROWS_TTFT[128][2] > 20.0, "and 128 is not, which is why it is not the cap"
+    assert sc.SPLIT_ROWS_THROUGHPUT_MAX == max(rows)
+    assert sc.SPLIT_ROWS_MIN == min(rows), "nothing below 8 rows has ever been run"
+
+    # Sizing tracks the offered load and is clamped at both ends. It must NOT round up: a
+    # 128-slot server driven at 32 concurrent measured 110.3 tok/s against 143.3 for one sized
+    # to 32, and a 38 percent worse median TTFT, so oversizing loses on both axes at once.
+    assert sc.split_rows_for_users(1) == sc.SPLIT_ROWS_MIN
+    assert sc.split_rows_for_users(32) == 32
+    assert sc.split_rows_for_users(64) == 64
+    assert sc.split_rows_for_users(128) == sc.SPLIT_ROWS_INTERACTIVE_MAX
+    assert sc.split_rows_for_users(128, interactive = False) == sc.SPLIT_ROWS_THROUGHPUT_MAX
+    assert sc.split_rows_for_users(4096, interactive = False) == sc.SPLIT_ROWS_THROUGHPUT_MAX
+    for offered, (tok_ratio, ttft_ratio) in sc.SPLIT_ROWS_OVERSIZED_SLOTS.items():
+        if offered < sc.SPLIT_ROWS_THROUGHPUT_MAX:
+            assert tok_ratio < 0.85 and ttft_ratio > 1.0, (
+                f"oversizing the slots at {offered} offered has to be recorded as a LOSS on "
+                "both axes, or the sizing rule reads as arbitrary"
+            )
+
+    # Nearest measured point at or below, no fitting. A five point curve was already fitted
+    # through two points once today and the fit was wrong by 13 percent at the far end.
+    assert sc.split_rows_ttft_s(64) == sc.SPLIT_ROWS_TTFT[64][2]
+    assert sc.split_rows_ttft_s(100) == sc.SPLIT_ROWS_TTFT[64][2]
+    assert sc.split_rows_ttft_s(2) == sc.SPLIT_ROWS_TTFT[8][2]
+
+    # The mirrors in spark_serving must not drift from the source of truth.
+    assert ss.SPLIT_ROWS_INTERACTIVE_MAX == sc.SPLIT_ROWS_INTERACTIVE_MAX, "mirror drifted"
+    assert ss.SPLIT_ROWS_THROUGHPUT_MAX == sc.SPLIT_ROWS_THROUGHPUT_MAX, "mirror drifted"
+
+    # The TTFT numbers are a saturating burst, not a steady state, and the measurement string
+    # has to say so: R clients arrive at once at a server with R slots, so the median request
+    # waits for half the prompt queue. Quoting them as steady-state latency would overstate the
+    # cost of every rows point.
+    assert "arriving at once" in sc.SPLIT_ROWS_TTFT_MEASUREMENT
+    assert "saturating burst" in sc.SPLIT_ROWS_TTFT_MEASUREMENT
+    assert "--kv-unified" in sc.SPLIT_ROWS_TTFT_MEASUREMENT
+    assert "512*R" in sc.SPLIT_ROWS_TTFT_MEASUREMENT
+    # No cell behind this block carried a drafter. Rows and MTP compete for the same mechanism,
+    # so this must not be read as having moved the speculation crossover.
+    assert "no speculation" in sc.SPLIT_ROWS_TTFT_MEASUREMENT
+    assert sc.GROUPS_X_MTP_CROSSOVER_ROWS == 16
+    assert ss.GROUPS_X_MTP_MIN_ROWS == sc.GROUPS_X_MTP_CROSSOVER_ROWS
+
+
 def test_before_load_leaves_the_callers_speculation_alone(cluster, monkeypatch, tmp_path):
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     model = write_gguf(tmp_path / "m.gguf", "qwen35", **{"qwen35.nextn_predict_layers": 1})

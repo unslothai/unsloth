@@ -221,6 +221,16 @@ GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alon
 # 33 -> 206.4, 34 (what the default chose that day) -> 201.2, 36 -> 192.5. The even split lands
 # on 33 and is the best of the five, worth about 2.6 percent, and it is reproducible.
 SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
+# Mirrors of spark_cluster.SPLIT_ROWS_INTERACTIVE_MAX and SPLIT_ROWS_THROUGHPUT_MAX. The rows a
+# split asks for track the OFFERED concurrency and are capped, because the throughput table on
+# its own says 128 and TTFT says that is unshippable. Measured 2026-09-06, two DGX Sparks pinned
+# at 1700 MHz, two groups, --parallel R with -c 512*R, slots sized to the offered load:
+# 8 rows 66.8 tok/s at 2.0 s p90 TTFT, 32 rows 143.3 at 5.6 s, 64 rows 182.7 at 13.2 s,
+# 128 rows 211.1 at 26.3 s. 64 is the last point inside 14 s of p90.
+# Oversizing is not a safe default either: one 128-slot server driven at 32 concurrent reads
+# 110.3 tok/s against 143.3 for a server sized to 32, and its median TTFT is 38 percent worse.
+SPLIT_ROWS_INTERACTIVE_MAX = 64
+SPLIT_ROWS_THROUGHPUT_MAX = 128
 # What a layer split was launched as, for the status surface beside ``mtp``.
 SPLIT_CONFIG_BOTH = "groups + speculation"
 SPLIT_CONFIG_SPEC = "one context + speculation"

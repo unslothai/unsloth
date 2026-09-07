@@ -3173,6 +3173,94 @@ SPLIT_GROUPS_MIN_ROWS = 8
 # every load, which is worth more.
 SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
 SPLIT_TENSOR_SPLIT_MEASURED_PEER_BLOCKS = {27: 192.1, 30: 199.7, 33: 206.4, 34: 201.2, 36: 192.5}
+
+# ---------------------------------------------------------------------------------------------
+# How many rows to ask for, once TIME TO FIRST TOKEN is written next to the throughput.
+#
+# SPLIT_GROUPS_ROWS_TOKS above is a throughput table and on its own it says "use 128 rows". That
+# is wrong, and it is wrong for two independent reasons, both measured 2026-09-06 in one
+# clock-pinned block on the pair with both nodes at 1700 MHz and no thermal-guard transition.
+#
+# 1. TTFT rises faster than throughput does. Slots sized to the offered concurrency, two groups,
+#    npp 128 / ntg 256, --parallel R with -c 512*R:
+#
+#      rows | decode tok/s | TTFT median | TTFT p90 | speedup over one context
+#         8 |     66.8     |    1.7 s    |   2.0 s  |  1.34x
+#        16 |    100.1     |    2.9 s    |   3.5 s  |  1.33x
+#        32 |    143.3     |    4.6 s    |   5.6 s  |  1.47x
+#        64 |    182.7     |    9.1 s    |  13.2 s  |  1.54x
+#       128 |    211.1     |   18.1 s    |  26.3 s  |  1.78x
+#
+#    8 to 32 rows is 2.1x the throughput for 2.7x the TTFT; 32 to 128 rows is 1.47x the
+#    throughput for 3.9x the TTFT. The knee is between 32 and 64. Above 64 the trade gets worse
+#    at every step, and 128 rows costs 18 seconds of median TTFT for 15 percent more throughput
+#    than 64. A 1.78x that costs 18 seconds to first token is not obviously better than a 1.47x
+#    that costs five.
+#
+# 2. Asking for MORE slots than the load offers is not free, which is the assumption that made
+#    "just set it to 128" look safe. One server at --parallel 128 driven at 8, 32 and 128
+#    concurrent, three replicates each, against servers sized to the offered load:
+#
+#      offered | slots = offered | slots = 128 | throughput | TTFT median
+#            8 |   66.8 tok/s    |  51.6 tok/s |   -22.7 %  |  1.73 -> 1.89 s  (+9 %)
+#           32 |  143.3          | 110.3       |   -23.0 %  |  4.60 -> 6.36 s  (+38 %)
+#          128 |  211.1          | 207.9       |    -1.5 %  | 18.11 -> 17.81 s
+#
+#    Oversizing costs about a quarter of the throughput AND a third of the median TTFT at a
+#    third of the offered load, so there is no safety in rounding the slot count up.
+#
+# Hence: track the offered concurrency, and cap it. The interactive cap is 64 because that is the
+# last point whose p90 TTFT is inside 14 s; 128 is reachable only when a caller says explicitly
+# that it wants aggregate throughput and nobody is waiting on a first token.
+#
+# This says nothing about speculation. No cell behind these numbers carried a drafter, rows and
+# MTP compete for the same mechanism, and GROUPS_X_MTP_CROSSOVER_ROWS is untouched.
+SPLIT_ROWS_TTFT_MEASUREMENT = (
+    "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --cache-ram 0 -fa on --device RPC0,CUDA0 "
+    "-sm layer --tensor-split 0.5,0.5 --pipeline-groups 2, --parallel R with -c 512*R, two DGX "
+    "Sparks both pinned at 1700 MHz, 2026-09-06, npp 128 / ntg 256, no speculation, R clients "
+    "arriving at once so the TTFT is a saturating burst and not a steady state"
+)
+# concurrent rows -> (decode tok/s, TTFT median seconds, TTFT p90 seconds), slots = offered load
+SPLIT_ROWS_TTFT = {
+    8: (66.8, 1.73, 2.00),
+    16: (100.1, 2.95, 3.51),
+    32: (143.3, 4.60, 5.61),
+    64: (182.7, 9.07, 13.17),
+    128: (211.1, 18.11, 26.33),
+}
+# Largest rows setting whose measured p90 TTFT a person waiting on a reply can be asked to accept.
+SPLIT_ROWS_INTERACTIVE_MAX = 64
+# Largest rows setting measured at all. Only for offline or batch work.
+SPLIT_ROWS_THROUGHPUT_MAX = 128
+# Smallest rows setting measured; below this nothing has been run.
+SPLIT_ROWS_MIN = 8
+# Measured cost of sizing the slots ABOVE the offered load: offered -> (tok/s ratio, TTFT
+# median ratio) of a 128-slot server against one sized to that offered load.
+SPLIT_ROWS_OVERSIZED_SLOTS = {8: (0.773, 1.09), 32: (0.770, 1.38), 128: (1.0, 1.0)}
+
+
+def split_rows_for_users(users: int, interactive: bool = True) -> int:
+    """Rows (``--parallel``) a layer split should ask for, for ``users`` offered concurrency.
+
+    Tracks the offered load rather than rounding up, because oversizing the slot count costs
+    about 23 percent of the throughput and up to 38 percent of the median TTFT
+    (``SPLIT_ROWS_OVERSIZED_SLOTS``). Clamped below at ``SPLIT_ROWS_MIN``, the lowest point
+    measured, and above at ``SPLIT_ROWS_INTERACTIVE_MAX`` unless the caller says it is not
+    serving anybody who is waiting, in which case the cap is ``SPLIT_ROWS_THROUGHPUT_MAX``.
+    """
+    cap = SPLIT_ROWS_INTERACTIVE_MAX if interactive else SPLIT_ROWS_THROUGHPUT_MAX
+    return max(SPLIT_ROWS_MIN, min(cap, int(users or 1)))
+
+
+def split_rows_ttft_s(rows: int) -> float:
+    """Measured p90 TTFT in seconds at the nearest measured rows point at or below ``rows``."""
+    points = sorted(SPLIT_ROWS_TTFT)
+    key = points[0]
+    for point in points:
+        if rows >= point:
+            key = point
+    return SPLIT_ROWS_TTFT[key][2]
 REPLICAS_MIN_USERS = 8
 REPLICAS_FEW_USERS_SPEEDUP = 1.13  # 2 to 4 users, prompt 512
 TOPOLOGIES = ("single", "replicas", "layer_split")
