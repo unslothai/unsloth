@@ -65,7 +65,12 @@ def select(source: Path, since: float | None) -> list[Path]:
     return sorted(out)
 
 
-def copy_redacted(source: Path, destination: Path, redact, since: float | None = None) -> list[str]:
+def copy_redacted(
+    source: Path,
+    destination: Path,
+    redact,
+    since: float | None = None,
+) -> list[str]:
     destination.mkdir(parents = True, exist_ok = True)
     written: list[str] = []
     for log in select(source, since):
