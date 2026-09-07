@@ -549,3 +549,44 @@ def test_a_tokenizer_that_is_unreadable_still_asks_the_hub(monkeypatch, tmp_path
 
     assert audio_type == "audio_vlm"
     assert len(reads) == 1
+
+
+def test_a_document_that_lists_no_files_cannot_answer_negatively(monkeypatch, tmp_path):
+    """The negative rests on having read every tokenizer path the repo lists. A document
+    that lists none satisfies that vacuously while proving nothing, and the answer here is
+    cached for the life of the process -- so the markers in LLM/tokenizer_config.json
+    would be missed for good. Nothing is answerable from it, so it answers nothing."""
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}
+    )
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(
+        monkeypatch,
+        repo_dir,
+        listed = (),
+        responses = [_Resp(200, json.loads(_tokenizer("<|audio|>"))), _Resp(404)],
+    )
+
+    assert audio_type == "audio_vlm"
+    assert definitive is True
+    assert len(reads) == 1
+
+
+def test_a_document_without_siblings_at_all_cannot_answer_negatively(monkeypatch, tmp_path):
+    """``siblings`` is optional on the hub's model, so absent is a shape a response takes
+    and not only an empty list."""
+    import types as _types
+
+    from utils.models import model_config as mc
+
+    repo_dir, _ = _cached_snapshot(
+        tmp_path, "acme/tts-model", {"tokenizer_config.json": _tokenizer("<bos>")}
+    )
+    monkeypatch.setattr(mc, "get_cache_path", lambda *a, **k: repo_dir)
+    monkeypatch.setattr(
+        mc,
+        "_hub_model_info",
+        lambda *a, **k: _types.SimpleNamespace(sha = "abc123", siblings = None),
+    )
+
+    assert mc._current_cached_snapshot("acme/tts-model") is None

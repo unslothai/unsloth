@@ -725,7 +725,8 @@ def _current_cached_snapshot(
 ):
     """This repo's cached snapshot for its current commit, with the files the repo lists.
 
-    Returns ``(snapshot, filenames)``, or None when there is no such snapshot. The commit
+    Returns ``(snapshot, filenames)``, or None when there is no such snapshot or the
+    document named no files, which is the same thing to a caller reading it. The commit
     and the file list both come from the repo document the request already reads, so a
     snapshot accepted here is as current as a revalidating fetch would be, and callers can
     tell a file the repo does not have from one that simply was not downloaded.
@@ -753,6 +754,14 @@ def _current_cached_snapshot(
             getattr(sibling, "rfilename", None)
             for sibling in (getattr(info, "siblings", None) or ())
         }
+        # A document that named no files cannot distinguish a file the repo does not have
+        # from one that was not downloaded, which is the whole reason a caller asks for the
+        # list. Read as complete it is worse than nothing: every membership test comes back
+        # false, so a caller looking for paths it has yet to read finds none and takes the
+        # answer it already holds for the repo's. ``siblings`` is optional on the hub's own
+        # model, so this is a shape a real response can take.
+        if not listed:
+            return None
         return snapshot, listed
     except Exception as exc:
         logger.debug("No current cached snapshot for '%s': %s", model_name, exc)
