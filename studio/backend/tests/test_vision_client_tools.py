@@ -897,13 +897,29 @@ def test_a_historical_image_stays_on_the_turn_that_sent_it_without_tools():
     assert later["content"] == "LATER_QUESTION unrelated to it"
 
 
-def test_no_image_marker_on_the_plain_route_when_the_render_is_text_only():
-    """A tokenizer text template takes strings, not part lists, whatever the
-    processor carries."""
+def test_no_image_marker_on_the_plain_route_when_renders_image_is_false():
+    """``renders_image`` is the whole gate, and it is read with ``.get``, so a model whose
+    capability probe never reported one leaves the thread as strings.
+
+    Named for the key it actually varies. As "..._when_the_render_is_text_only", carrying a
+    ``processor_template``, it read as a claim about the render target and asserted nothing
+    about it: the same dict without ``renders_image`` passes identically on the commit
+    before this one, so it could not have caught the marker firing on a text render.
+    """
     sent = _plain_route_messages(
         {"template": _CHATML_WITH_TOOLS, "processor_template": _CHATML_WITH_TOOLS}
     )
     assert all(isinstance(m.get("content"), str) for m in sent if m.get("role") == "user")
+
+    # And with the gate open, the same thread is marked: the assertion above is about
+    # renders_image, not about the processor_template sitting next to it.
+    marked = _plain_route_messages({
+        "template": _CHATML_WITH_TOOLS,
+        "processor_template": _CHATML_WITH_TOOLS,
+        "renders_image": True,
+    })
+    owning = [m for m in marked if m.get("role") == "user"][1]
+    assert [p.get("type") for p in owning["content"]] == ["image", "text"]
 
 
 def test_a_tool_loop_replay_is_wrapped_for_a_part_based_processor():
