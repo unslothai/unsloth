@@ -20292,9 +20292,7 @@ async def _proxy_to_external_provider(
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
     _min_p_explicit = payload.min_p if "min_p" in payload.model_fields_set else None
     _repetition_penalty_explicit = (
-        payload.repetition_penalty
-        if "repetition_penalty" in payload.model_fields_set
-        else None
+        payload.repetition_penalty if "repetition_penalty" in payload.model_fields_set else None
     )
 
     # Unsloth-owned tool loop for every non-Codex provider that declares the

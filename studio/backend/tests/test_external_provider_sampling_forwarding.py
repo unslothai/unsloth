@@ -137,8 +137,7 @@ def test_the_proxy_hands_the_client_explicit_values_not_schema_defaults():
     proxy = next(
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_proxy_to_external_provider"
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_proxy_to_external_provider"
     )
     kwargs = next(
         node
