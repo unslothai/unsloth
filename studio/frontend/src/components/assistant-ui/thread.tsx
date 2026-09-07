@@ -185,6 +185,7 @@ import {
   localPromptQueueModelBoundary,
   notifyPromptQueueRunFailed,
   planLocalPromptQueueStop,
+  planUserPromptQueueStop,
   registerQueuedChatRunSettings,
   releasePreStreamRunReservation,
   reservePreStreamRun,
@@ -382,6 +383,7 @@ type PromptQueueRun = {
   generation: number;
   prevStoreRunning: boolean;
   waitingForTargetIdle: boolean;
+  paused: boolean;
   retryTimer: ReturnType<typeof setTimeout> | null;
   deepResearchConsumed: boolean;
 };
@@ -649,6 +651,7 @@ function isPromptQueueRunReadyToDispatch(run: PromptQueueRun) {
       run.index >= 0 &&
       !item.dispatched &&
       !run.waitingForTargetIdle &&
+      !run.paused &&
       !run.retryTimer &&
       !promptQueueActiveRunIds.has(run.id) &&
       !promptQueueDispatchingRunIds.has(run.id),
@@ -1170,6 +1173,9 @@ function handlePromptQueueRunState(
   if (!wasRunning || isRunning) {
     return;
   }
+  if (run.paused) {
+    return;
+  }
   if (run.waitingForTargetIdle) {
     clearPromptQueueRetryTimer(run);
     run.waitingForTargetIdle = false;
@@ -1216,15 +1222,21 @@ function startPromptQueue(
   waitForCurrentRun = false,
 ) {
   const filtered = items.map((item) => item.trim()).filter(Boolean);
+  const existingRun = findPromptQueueRunByTarget(target);
   if (filtered.length === 0) {
+    if (existingRun?.paused) {
+      existingRun.paused = false;
+      syncPromptQueueUI();
+      requestPromptQueuePump();
+    }
     return;
   }
 
-  const existingRun = findPromptQueueRunByTarget(target);
   if (existingRun) {
     if (existingRun.deepResearchConsumed) {
       target.consumeDeepResearch();
     }
+    existingRun.paused = false;
     existingRun.items.push(
       ...filtered.map((prompt) => createQueuedPrompt(prompt, target)),
     );
@@ -1244,6 +1256,7 @@ function startPromptQueue(
     generation: 0,
     prevStoreRunning: shouldWaitForCurrentRun,
     waitingForTargetIdle: false,
+    paused: false,
     retryTimer: null,
     deepResearchConsumed: false,
   };
@@ -1280,14 +1293,34 @@ function getPromptQueueRunsForThreadIds(threadIds?: string[]) {
 function stopPromptQueueRun(threadIds?: string[]) {
   for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
     const activeItem = getActivePromptQueueItem(run);
-    const activeTarget = activeItem?.target;
-    const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
-    deletePromptQueueRun(run);
-    if (!shouldCancelActiveRun) {
+    const plan = planUserPromptQueueStop(
+      run.items.map((item) => ({ dispatched: item.dispatched })),
+      run.index,
+    );
+    if (plan.retainedItemIndexes.length === 0) {
+      deletePromptQueueRun(run);
+    } else {
+      run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
+      const nextIndex = run.items.findIndex((item) => !item.dispatched);
+      if (nextIndex < 0) {
+        deletePromptQueueRun(run);
+      } else {
+        run.generation += 1;
+        run.index = nextIndex;
+        run.paused = plan.pause;
+        run.waitingForTargetIdle = false;
+        run.prevStoreRunning = false;
+        clearPromptQueueRetryTimer(run);
+        promptQueueActiveRunIds.delete(run.id);
+        promptQueueDispatchingRunIds.delete(run.id);
+        syncPromptQueueUI();
+      }
+    }
+    if (!plan.cancelActiveItem) {
       continue;
     }
     try {
-      activeTarget?.cancel();
+      activeItem?.target.cancel();
     } catch {
       // The active run may have already ended.
     }
@@ -1376,6 +1409,9 @@ function stopLocalPromptQueueRunsForThreadIds(threadIds: string[]) {
 }
 
 function retainPendingPromptQueueItemsAfterFailure(run: PromptQueueRun) {
+  if (run.paused) {
+    return true;
+  }
   const activeIndex = Math.max(run.index, 0);
   const activeItem = run.items[activeIndex];
   if (run.index < 0 || !activeItem?.dispatched) {

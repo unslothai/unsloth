@@ -165,6 +165,7 @@ export {
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
 } from "./utils/prompt-queue-model-boundary";
+export { planUserPromptQueueStop } from "./utils/prompt-queue-user-stop";
 export { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 export { rangeBetween, toggleSelected } from "./utils/row-selection";
 export {
