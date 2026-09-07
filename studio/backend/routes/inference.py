@@ -33797,7 +33797,9 @@ def _splice_image_into_last_user(messages: list[dict], image_part: dict) -> None
 
 
 def _openai_messages_for_passthrough(
-    payload, vision: bool = False, normalize_images: bool = True
+    payload,
+    vision: bool = False,
+    normalize_images: bool = True,
 ) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.

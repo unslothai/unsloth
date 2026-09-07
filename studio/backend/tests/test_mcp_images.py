@@ -1624,7 +1624,11 @@ def test_admission_does_not_charge_an_envelope_a_non_mcp_call_produced():
 
     history = [
         _call("call_0", "read_file"),
-        {"role": "tool", "tool_call_id": "call_0", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": _envelope("[4]", *[_image() for _ in range(4)]),
+        },
     ]
 
     _, image_parts = _openai_llama_admission_messages_for_estimate(history)
@@ -1637,7 +1641,14 @@ def test_the_monitor_prompt_never_retains_envelope_bytes():
 
     payload = _png()
     text = _monitor_prompt_from_messages(
-        [{"role": "tool", "content": _envelope("[1 image returned]", {"data": payload, "mimeType": "image/png"})}]
+        [
+            {
+                "role": "tool",
+                "content": _envelope(
+                    "[1 image returned]", {"data": payload, "mimeType": "image/png"}
+                ),
+            }
+        ]
     )
 
     assert payload not in text
@@ -1651,11 +1662,23 @@ def test_eligibility_is_not_spent_on_results_a_non_mcp_call_produced():
     left an eligibility of zero -- nothing useful replayed with capacity to spare."""
     history = [
         _call("call_0", "mcp__shot__capture"),
-        {"role": "tool", "tool_call_id": "call_0", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "content": _envelope("[4]", *[_image() for _ in range(4)]),
+        },
         _call("call_1", "read_file"),
-        {"role": "tool", "tool_call_id": "call_1", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": _envelope("[4]", *[_image() for _ in range(4)]),
+        },
         _call("call_2", "read_file"),
-        {"role": "tool", "tool_call_id": "call_2", "content": _envelope("[4]", *[_image() for _ in range(4)])},
+        {
+            "role": "tool",
+            "tool_call_id": "call_2",
+            "content": _envelope("[4]", *[_image() for _ in range(4)]),
+        },
     ]
 
     eligible = mcp_images.eligible_replay_images(history)

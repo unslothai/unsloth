@@ -5314,7 +5314,9 @@ def test_repeated_anthropic_call_ids_are_paired_positionally():
         return {
             "role": "assistant",
             "content": "",
-            "tool_calls": [{"id": "call_0", "type": "function", "function": {"name": name, "arguments": "{}"}}],
+            "tool_calls": [
+                {"id": "call_0", "type": "function", "function": {"name": name, "arguments": "{}"}}
+            ],
         }
 
     named = _named_anthropic_tool_results(
