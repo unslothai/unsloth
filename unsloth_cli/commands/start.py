@@ -995,7 +995,7 @@ def _normalized_variant(value: object) -> str:
 
 
 class _UnmeasuredReading(Exception):
-    """A progress reading the server answered but could not actually measure."""
+    """A progress reading the server answered but could not measure well enough to use."""
 
 
 class _ModelDownloadProgress:
@@ -1085,12 +1085,15 @@ class _ModelDownloadProgress:
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
-            if reading.get("cache_measured") is False:
-                # A scan the server could not complete answers 200 with zero bytes. Taking
-                # that as the truth would drop the count to zero and make the next real
-                # reading of the same cached bytes look like fresh growth.
+            bytes_read = max(0, int(reading.get("downloaded_bytes") or 0))
+            if reading.get("cache_measured") is False and bytes_read <= self._downloaded_bytes:
+                # A reading taken while a cache root could not be listed is only ever a
+                # lower bound (see `snapshot_progress.py`), so it counts when it is
+                # strictly bigger and says nothing when it is not: believing a smaller
+                # one would drop the count and let the next real reading of the same
+                # cached bytes look like fresh growth.
                 raise _UnmeasuredReading
-            self._downloaded_bytes = max(0, int(reading.get("downloaded_bytes") or 0))
+            self._downloaded_bytes = bytes_read
             self._failures = 0
             self._retry_at = 0.0
             self._display.update(reading)

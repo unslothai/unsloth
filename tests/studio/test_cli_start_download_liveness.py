@@ -84,6 +84,7 @@ class Harness:
         fail_every = 0,
         fail_first = 0,
         unmeasured_every = 0,
+        unmeasured_grows = False,
         ready_at = None,
         tail = KEY_LINE,
     ):
@@ -94,6 +95,7 @@ class Harness:
         self.fail_first = fail_first
         self.failures = 0
         self.unmeasured_every = unmeasured_every
+        self.unmeasured_grows = unmeasured_grows
         self.unmeasured = 0
         self.downloaded_bytes = downloaded_bytes
         self.chunk_bytes = chunk_bytes
@@ -134,10 +136,14 @@ class Harness:
                 self.failures += 1
                 raise TimeoutError("the server took too long to answer")
             if self.unmeasured_every and self.polls % self.unmeasured_every == 0:
-                # A scan the server could not finish: 200, zero bytes, cache_measured false.
+                # A scan the server could not finish: 200, cache_measured false. Zero bytes
+                # is the unreadable-root case; a growing count is the readable-root one,
+                # which `snapshot_progress.py` documents as a real lower bound.
                 self.unmeasured += 1
+                if self.unmeasured_grows:
+                    self.downloaded_bytes += self.chunk_bytes
                 return {
-                    "downloaded_bytes": 0,
+                    "downloaded_bytes": self.downloaded_bytes if self.unmeasured_grows else 0,
                     "expected_bytes": EXPECTED_BYTES,
                     "progress": 0,
                     "cache_measured": False,
@@ -308,4 +314,24 @@ def test_polling_keeps_probing_after_a_long_burst_of_errors(monkeypatch):
     assert harness.shutdowns == []
     assert harness.failures >= 6
     assert harness.downloaded_bytes > 0  # it recovered and saw the transfer again
+    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_a_growing_unmeasured_reading_still_counts(monkeypatch):
+    # One cache root unreadable while the download lands in another: the backend answers
+    # `cache_measured: false` with the readable root's real, growing byte count. That is a
+    # lower bound, not an unknown, so rejecting it would kill a live transfer at the cap.
+    harness = Harness(
+        monkeypatch,
+        chunk_bytes = 1024**3,
+        unmeasured_every = 1,
+        unmeasured_grows = True,
+        ready_at = 40,
+    )
+
+    server = harness.start()
+
+    assert server is harness.server
+    assert harness.shutdowns == []
+    assert harness.unmeasured >= 40  # every reading came back unmeasured
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
