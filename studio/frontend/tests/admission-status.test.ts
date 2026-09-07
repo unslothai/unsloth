@@ -35,8 +35,8 @@ test("the keep-alive comment is left to its own reader", () => {
 });
 
 test("a data line is never an admission signal", () => {
-  // The two are told apart by the leading colon alone, so a payload that happens to spell
-  // one must not be mistaken for the comment.
+  // The two are told apart by the leading colon alone, so a payload that happens to spell one
+  // must not be mistaken for the comment.
   assert.equal(readAdmissionComment("data: admission-wait"), null);
   assert.equal(readAdmissionComment(""), null);
   assert.equal(readAdmissionComment("admission-wait"), null);
@@ -58,8 +58,7 @@ test("a run that is not generating gets a line, one that is gets none", () => {
 });
 
 test("queued and paused do not share one message", () => {
-  // Queued has produced nothing; paused has visible text above it. One line for both
-  // would put "waiting for a free slot" under a half-written answer.
+  // Queued has produced nothing; paused has visible text above it.
   assert.notEqual(
     admissionStatusLabel("waiting"),
     admissionStatusLabel("paused"),
@@ -67,7 +66,6 @@ test("queued and paused do not share one message", () => {
 });
 
 test("neither line uses failure vocabulary", () => {
-  // Neither state is an error, and the whole point of the indicator is to say so.
   for (const status of ["waiting", "paused"] as const) {
     const label = admissionStatusLabel(status) ?? "";
     assert.ok(label.length > 0);

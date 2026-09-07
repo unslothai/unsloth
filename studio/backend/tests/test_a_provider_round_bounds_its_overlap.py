@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""How many of one provider round's tool calls may be in flight at once.
-
-Overlapping a round's calls is worth having: a turn that asks for three searches should
-cost the longest of them and not the sum. What it cannot be is unbounded. Each overlapped
-call is a `stream_tool_execution` worker with a pump task on top of it, and every one of
-them starts its side effects at once, so a provider turn carrying dozens of distinct calls
--- prompt induced, or simply a model that fanned out -- multiplied threads and side
-effects with nothing bounding it.
-
-`max_tool_calls_per_message` does not bound it. At its unlimited value the budget check
-above the launch never refuses a call, which is exactly the configuration this was
-reported against, and the round's length is the model's choice rather than the user's.
-
-The local GGUF loop already caps it: a round past `_MAX_PARALLEL_TOOL_CALLS_PER_ROUND`
-runs single file, as every round did before overlapping existed. This is the same rule and
-the same figure on the provider loop.
-
-The bound is measured with a barrier rather than a sleep: two tools that must each see the
-other before either may return can only both return if they were running together, so a
-round that overlaps reports TOGETHER and one that does not reports ALONE. A machine that
-is merely slow cannot turn one into the other.
-"""
+"""How many of one provider round's tool calls may be in flight at once."""
 
 from __future__ import annotations
 
@@ -59,7 +38,6 @@ _UNLIMITED = 9999
 
 
 def _round_of(count: int) -> FakeTransport:
-    """One turn asking for `count` DISTINCT calls, the shape a fanned-out model emits."""
     return FakeTransport(
         [
             [
@@ -89,7 +67,6 @@ def _round_of(count: int) -> FakeTransport:
 
 class TestTheCapIsTheGgufLoopsCap:
     def test_the_two_loops_agree(self):
-        """One user-visible rule, so the two loops must not drift apart on it."""
         from core.inference.llama_cpp import _MAX_PARALLEL_TOOL_CALLS_PER_ROUND
         assert _CAP == _MAX_PARALLEL_TOOL_CALLS_PER_ROUND
 
@@ -118,7 +95,6 @@ class TestARoundPastTheCapRunsSingleFile:
 
 class TestARoundAtTheCapStillOverlaps:
     def test_the_bound_did_not_serialise_everything(self, rendezvous):
-        """The cap must not become "never overlap": the gain this exists for is real."""
         lines = _run(_round_of(_CAP), tools = [WEB], max_calls = _UNLIMITED)
         ends = _events(lines, "tool_end")
         assert len(ends) == _CAP

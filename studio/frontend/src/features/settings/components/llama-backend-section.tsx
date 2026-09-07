@@ -269,9 +269,8 @@ function ExactConcurrencyRow() {
     }
   };
 
-  // The environment pins the machine, so show what it pins rather than a stored value
-  // that is not being used. Nothing stored falls back to what the backend reports as its
-  // own default, which is `off`.
+  // The environment pins the machine, so show what it pins rather than a stored value that is
+  // not being used. Nothing stored falls back to the backend's own default.
   const shown =
     settings?.envOverride ?? settings?.stored ?? settings?.fallback ?? null;
   const value = shown !== null && isExactConcurrencySetting(shown) ? shown : "";

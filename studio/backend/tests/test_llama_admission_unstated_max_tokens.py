@@ -200,19 +200,6 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
             assert cost * 4 <= budget, f"{budget} cache admits only {budget // cost} of 4"
 
     def test_the_charge_does_not_scale_with_the_cache(self):
-        """A bigger cache does NOT buy a bigger charge. This has now flipped twice.
-
-        It first asserted no scaling, was changed to require scaling when the charge became
-        the share, and is back: the share may only LOWER the flat allowance, never raise it.
-
-        Raising it bought nothing. The point of charging a whole share was to keep
-        `charged >= permitted`, and the wire clamp permits the WINDOW, so that never held --
-        on a 262144 cache the charge was 65536 against a permitted 262144. All the larger
-        charge did was reserve cells for text nobody had generated, which is `pending` in
-        `_committed_locked` and therefore spurious preemption: measured with correct
-        accounting, real occupancy peaked at 12350 of a 16384 cache, never reached the 14312
-        ceiling, and the run still preempted 9 times and lost two turns.
-        """
         assert self._cost(262144, 4) == self._cost(
             32768, 4
         ), "a large cache must not be charged more for the same unstated request"

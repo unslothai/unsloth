@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What an aborted attempt produced has to be charged, on both surfaces.
-
-A pause aborts the upstream stream, so its terminal usage chunk never arrives, and
-``timings_per_token`` is opt-in -- the route only asks for it when a monitor row is open.
-For an ordinary chat both readings are therefore absent at exactly the moment the count
-is needed, and the count is needed for three separate things:
-
-  * ``note_replayed``, which tells the controller the resumed attempt carries the partial
-    BACK as prompt. Skipped, the ledger undercounts the resumed chat by the whole partial,
-    by more on every pause. That is the measured 2026-09-02 run: four pauses replaying
-    564, 59, 1079 and 507 tokens, the ledger saw none of them, and the run went from zero
-    context-exhaustion errors to four.
-  * the caller's ``max_tokens``, which bounds NEW tokens. Not spent down, a chat paused n
-    times may emit (n+1) times what it asked for.
-  * the ``usage`` the response reports, which is the client's own accounting.
-
-The plain path had the first two and estimated the third at four characters per token.
-The tool loop had none of them, and the estimate is wrong for token-dense text: CJK and
-emoji run nearer one character per token, so chars // 4 undercharges by a factor of
-several on exactly the text a Chinese or Japanese session produces.
-"""
+"""What an aborted attempt produced has to be charged, on both surfaces."""
 
 from __future__ import annotations
 
@@ -42,11 +22,6 @@ _TOOL = web_search_tool(required = True)
 
 
 def _Recorder(monkeypatch, streams, *, signal, pause_after = 1):
-    """Pauses the FIRST attempt after a set number of content deltas.
-
-    No usage and no timings anywhere, which is the ordinary case: the final chunk that
-    carries them is exactly the chunk a pause prevents.
-    """
     return PreemptRecorder(
         monkeypatch,
         streams,
@@ -76,9 +51,6 @@ class TestTheToolLoopChargesItsPausedAttempt:
         )
 
     def test_the_checkpoint_is_not_charged_zero(self, monkeypatch):
-        """Zero skips `note_replayed` entirely -- it is gated on a non-zero charge --
-        so the controller never learns the resumed attempt carries the partial as prompt.
-        """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _Recorder(
@@ -98,10 +70,6 @@ class TestTheToolLoopChargesItsPausedAttempt:
         )
 
     def test_the_resumed_attempt_does_not_get_a_fresh_output_cap(self, monkeypatch):
-        """The next iteration rebuilds `max_tokens` from the caller's figure, so without
-        an explicit continuation cap a request capped at 100 could emit 100 more after
-        every pause.
-        """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _Recorder(

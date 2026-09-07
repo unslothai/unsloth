@@ -4,8 +4,8 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-/** What the user can ask for. `auto` asks and accepts a refusal; `on` asks and fails the
- *  load if the server refuses; `off` never asks. */
+/** What the user can ask for. `auto` asks and accepts a refusal; `on` asks and fails the load
+ *  if the server refuses; `off` never asks. */
 export type ExactConcurrencySetting = "auto" | "off" | "on";
 
 export const EXACT_CONCURRENCY_SETTINGS: readonly ExactConcurrencySetting[] = [
@@ -28,8 +28,8 @@ export interface ExactConcurrencySettings {
   effective: string;
   /** What applies when nothing is stored. */
   fallback: string;
-  /** Set while UNSLOTH_LLAMA_EXACT_CONCURRENCY pins the machine, in which case saving
-   *  here changes nothing until the variable goes away. */
+  /** Set while UNSLOTH_LLAMA_EXACT_CONCURRENCY pins the machine, in which case saving here
+   *  changes nothing until the variable goes away. */
   envOverride: string | null;
   /** What the RUNNING server does: on, off or unavailable. */
   active: string;

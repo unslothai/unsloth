@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pausing a chat instead of killing four.
-
-On 2026-09-01 four tool chats on `-c 16384 --parallel 4 --kv-unified` were each admitted
-at their share, all generated into the one shared pool, and llama-server errored EVERY
-processing slot at once. These cover the half that decides who stops: the commitment
-really coming back, the epoch holding still, the starved chat being promoted, and a
-resume that does not charge twice.
-"""
+"""Pausing a chat instead of killing four."""
 
 import asyncio
 
@@ -38,12 +31,6 @@ def _controller(budget = 16384, kv_unified = True):
 
 
 def _ceiling(controller):
-    """The live watermark. Tests size themselves against this rather than a literal.
-
-    Hardcoded token counts broke every time the buffer changed, most recently when it
-    stopped being a fraction of the cache and became a per-slot reserve: fourteen tests
-    failed for one intended change, none of them because the behaviour was wrong.
-    """
     snapshot = controller.snapshot()
     return snapshot.budget - snapshot.buffer
 
@@ -54,7 +41,6 @@ def _fill(
     fraction,
     state = ParticipantState.DECODING,
 ):
-    """Register a participant holding `fraction` of the ceiling."""
     return _register(controller, gen_id, int(_ceiling(controller) * fraction), state = state)
 
 
@@ -103,11 +89,6 @@ class TestTheCommitmentActuallyComesBack:
 
     @pytest.mark.asyncio
     async def test_park_still_keeps_its_tokens(self):
-        """The contrast that makes preempt() a different method and not a flag.
-
-        A parked task is still alive at llama-server, so its cells are still resident and
-        its commitment must stay. Preemption ends the task, so the commitment goes.
-        """
         queue = LlamaAdmissionQueue("k")
         lease = await _lease(queue, tokens = 4000)
         assert lease.park() is True, "park budget should be available on a 1-slot queue"
@@ -133,7 +114,6 @@ class TestTheCommitmentActuallyComesBack:
 
     @pytest.mark.asyncio
     async def test_releasing_after_a_preempt_does_not_double_refund(self):
-        """Both give room back; together they must not invent any."""
         queue = LlamaAdmissionQueue("k")
         holder = await _lease(queue, tokens = 4000)
         victim = await _lease(queue, tokens = 4000)
@@ -143,7 +123,6 @@ class TestTheCommitmentActuallyComesBack:
 
     @pytest.mark.asyncio
     async def test_the_freed_room_admits_a_waiter(self):
-        """The point of preempting: someone else gets in."""
         queue = LlamaAdmissionQueue("k")
         big = await _lease(queue, tokens = 12000, capacity = 2)
         reservation = queue.reserve(
@@ -171,7 +150,6 @@ class TestResumeDoesNotChargeTwice:
 
     @pytest.mark.asyncio
     async def test_resume_may_take_a_larger_figure_than_it_gave_back(self):
-        """A resumed run carries the partial it already generated."""
         queue = LlamaAdmissionQueue("k")
         lease = await _lease(queue, tokens = 4000)
         lease.preempt()
@@ -197,8 +175,6 @@ class TestResumeDoesNotChargeTwice:
 
     @pytest.mark.asyncio
     async def test_a_resume_that_cannot_fit_gives_up_instead_of_freezing_the_queue(self):
-        """Unbounded, this holds room nobody else can plan against. `recost_waiting` is
-        bounded for the same reason."""
         queue = LlamaAdmissionQueue("k")
         blocker = await _lease(queue, tokens = 15000, capacity = 2)
         victim = await _lease(queue, tokens = 1000, capacity = 2)
@@ -210,13 +186,6 @@ class TestResumeDoesNotChargeTwice:
 
     @pytest.mark.asyncio
     async def test_a_draining_pool_buys_more_patience_than_the_wall_clock(self):
-        """The 2026-09-03 give-up the layer above could not explain.
-
-        `await_resume` had already confirmed the cache had room, then resume_async
-        refused anyway: its deadline was flat wall clock, and the wait was longer than
-        the answer it was queued behind. Room arriving late must extend the wait, not
-        arrive after it.
-        """
         import asyncio as _asyncio
 
         queue = LlamaAdmissionQueue("k")
@@ -249,7 +218,6 @@ class TestResumeDoesNotChargeTwice:
 
     @pytest.mark.asyncio
     async def test_a_pool_that_never_moves_still_times_out(self):
-        """The bound has to survive: a reparker holds the wait line shut for everyone."""
         queue = LlamaAdmissionQueue("k")
         blocker = await _lease(queue, tokens = 15000, capacity = 2)
         victim = await _lease(queue, tokens = 1000, capacity = 2)
@@ -259,8 +227,6 @@ class TestResumeDoesNotChargeTwice:
 
     @pytest.mark.asyncio
     async def test_a_parked_lease_never_takes_a_second_slot(self):
-        """Its slot belongs to the park machinery and comes back through unpark_async;
-        a ticket here would put one lease in two slots."""
         queue = LlamaAdmissionQueue("k")
         lease = await _lease(queue, tokens = 4000)
         assert lease.park() is True
@@ -285,12 +251,6 @@ class TestResumeDoesNotChargeTwice:
 
 class TestTheBufferArithmetic:
     def test_the_buffer_is_per_slot_with_a_floor(self):
-        """Pinned as a shape, not as a number.
-
-        This has now been a literal 820, a ratio of 5%, a ratio of 15%, and a per-slot
-        reserve. Each rewrite broke the tests that named the previous figure, so this
-        asserts the properties that must hold under any of them.
-        """
         # Per SLOT, not per cache. The reaction headroom the buffer buys is what can be
         # generated between a sweep and a victim's stream actually stopping, which scales
         # with how many chats decode at once and not with the size of the cache.
@@ -333,9 +293,6 @@ class TestTheBufferArithmetic:
         assert controller.plan_preemptions(needed = 1000), "a request for room must be counted"
 
     def test_a_lone_holder_is_not_preempted_for_a_newcomer(self):
-        """There is no victim but itself, and an in-flight conversation beats one that
-        has not started. The wait line already holds the newcomer, exactly as it does
-        for a reparker."""
         controller = _controller(budget = 16384)
         _register(controller, "alone", 15000)
         assert controller.plan_preemptions(needed = 4000) == []
@@ -343,15 +300,6 @@ class TestTheBufferArithmetic:
 
 class TestWhoStops:
     def test_the_newest_chat_stops_first(self):
-        """vLLM V1's rule: evict the most recently arrived, so work done is work kept.
-
-        This asserted the opposite until 2026-09-03, that the LONGEST chat keeps decoding
-        and the small one stops, on the reasoning that the fewest victims free the most
-        room. Simulated across nine load regimes at 60 seeds each, largest-first ranked
-        5th of 7 policies (mean rank 4.25) and last on fairness, because the largest chat
-        carries the most work to discard and the most tokens to replay on resume.
-        Newest-first ranked best overall at 2.89 and best of all on completions.
-        """
         controller = _controller(budget = 16384)
         _fill(controller, "older", 0.35)
         _fill(controller, "newer", 0.75)
@@ -360,7 +308,6 @@ class TestWhoStops:
         assert "older" not in victims
 
     def test_size_does_not_decide(self):
-        """Registration order does, so a big early chat outranks a small late one."""
         controller = _controller(budget = 16384)
         _fill(controller, "big_and_early", 0.75)
         _fill(controller, "small_and_late", 0.35)
@@ -368,7 +315,6 @@ class TestWhoStops:
         assert victims == {"small_and_late"}
 
     def test_a_parked_chat_is_taken_before_a_decoding_one(self):
-        """It holds KV and consumes no compute, so its room is the cheapest."""
         controller = _controller(budget = 16384)
         _register(controller, "winner", 9000)
         _register(controller, "decoding", 4000)
@@ -384,12 +330,6 @@ class TestWhoStops:
         assert "tools" not in victims, "nothing is decoding there, and it is the unsafe window"
 
     def test_only_as_many_as_needed_are_paused(self):
-        """'Pause all but one' is the worst case, not the first move.
-
-        Newest-first can need more victims than largest-first to free the same room, so
-        this asserts the stopping rule rather than a fixed victim list: the sweep must
-        stop as soon as the projection fits.
-        """
         controller = _controller(budget = 16384)
         _fill(controller, "first", 0.55)
         _register(controller, "second", 400)
@@ -402,15 +342,6 @@ class TestWhoStops:
         assert victims == ["fourth"], f"one victim was enough, got {victims}"
 
     def test_a_victim_is_marked_and_signalled_together(self):
-        """Marked PREEMPTING, not PAUSED.
-
-        This asserted PAUSED until a live run on 2026-09-01 showed why that is wrong:
-        PAUSED stops counting the victim's KV, so the room was treated as free the
-        instant a victim was chosen rather than when its stream actually stopped. Four
-        chats were then admitted against a cache the controller believed was half empty,
-        and the model ran out of context space exactly as it did before preemption
-        existed. A victim holds its cells until the pause is confirmed.
-        """
         controller = _controller(budget = 16384)
         _fill(controller, "winner", 0.75)
         victim = _fill(controller, "victim", 0.35)
@@ -431,18 +362,7 @@ class TestWhoStops:
 
 
 class TestNobodyIsExemptFromEviction:
-    """The epoch winner is gone, and this is what replaced it.
-
-    A single generation used to be crowned and held unpreemptable until it stopped
-    decoding, so that two chats could not trade places forever. Three things retired it.
-    It never measurably reduced thrash in simulation. It cost completions under tool load
-    (6.57 against 6.77 of eight chats over nine regimes). And in a live run the exempt
-    chat simply grew until it had filled the entire 16384 window, at which point
-    llama-server truncated its turn and the chat had nowhere left to continue.
-
-    Starvation is now handled by promotion after repeated preemptions, which protects a
-    loser without handing anyone the whole cache.
-    """
+    """The epoch winner is gone, and this is what replaced it."""
 
     def test_the_biggest_chat_is_still_preemptable(self):
         controller = _controller(budget = 16384)
@@ -464,7 +384,6 @@ class TestNobodyIsExemptFromEviction:
         assert controller.snapshot().winner is None
 
     def test_the_sweep_takes_everyone_when_the_room_demands_it(self):
-        """The worst case must remain reachable: all but one can stop."""
         controller = _controller(budget = 16384)
         for name in ("a", "b", "c"):
             _fill(controller, name, 0.33)
@@ -473,15 +392,9 @@ class TestNobodyIsExemptFromEviction:
 
 
 class TestStarvation:
-    """Losing repeatedly must not become never finishing.
-
-    The protection used to be a crown: the starved chat became the exempt epoch winner
-    and could not be touched. The crown is gone, so the debt now changes the eviction
-    ORDER instead, promoting a repeatedly-preempted chat behind everyone else.
-    """
+    """Losing repeatedly must not become never finishing."""
 
     def _starve(self, controller):
-        """Drive `starved` through three preemptions in a row."""
         _fill(controller, "hog", 0.82)
         starved = _fill(controller, "starved", 0.28)
         for _ in range(PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS):
@@ -495,11 +408,6 @@ class TestStarvation:
         assert starved.promoted, "three preemptions in a row must promote it"
 
     def test_a_promoted_chat_is_taken_last(self):
-        """The point of the promotion: newest-first no longer applies to it.
-
-        Without this the starved chat, being the newest registration, would keep being
-        chosen first and would never finish.
-        """
         controller = _controller(budget = 16384)
         starved = self._starve(controller)
         _fill(controller, "newcomer", 0.28)
@@ -518,7 +426,6 @@ class TestStarvation:
         assert starved.consecutive_preemptions <= PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS
 
     def test_a_preemption_after_a_reprieve_is_not_consecutive(self):
-        """The rule is three IN A ROW, so a clean stretch resets the count."""
         controller = _controller(budget = 16384)
         starved = self._starve(controller)
         controller.unregister("hog")
@@ -531,7 +438,6 @@ class TestStarvation:
 
 class TestTheSwitchesThatTurnItOff:
     def test_a_private_cache_per_slot_is_never_preempted(self):
-        """Without --kv-unified each slot owns its own cells; nobody can overrun anyone."""
         controller = _controller(budget = 16384, kv_unified = False)
         _register(controller, "a", 15000)
         _register(controller, "b", 15000)
@@ -555,9 +461,6 @@ class TestTheSwitchesThatTurnItOff:
         assert controller.active is False
 
     def test_it_is_not_gated_on_idle_slot_clearing(self):
-        """The reactive purge is gated on kv_unified ALONE (server-context.cpp:1656), so
-        gating here on --cache-idle-slots would disable preemption on Windows full GPU
-        offload (#5692), which is exactly where the clamp is the only other protection."""
         import inspect
 
         import core.inference.llama_preemption as module
@@ -626,7 +529,6 @@ class TestTheReclaimBarrier:
         )
 
     def test_it_never_claims_to_know_which_generation_finished(self):
-        """It is a barrier, not an attribution: the gauge cannot say who owns a slot."""
         import inspect
 
         from core.inference import llama_preemption
@@ -654,15 +556,7 @@ class TestTheRegistry:
 
 
 class TestAPauseMidThoughtKeepsTheThought:
-    """The measured livelock: ten pauses, `kept_chars=0` on every one.
-
-    Run of 2026-09-02, Qwen3 at a 16384 window with four chats. Every pause landed
-    inside the thought block, so `visible_text` was empty, `has_resume_point()` said
-    there was nothing to continue, and each resume re-issued the request whole. One chat
-    was paused five times, charged 551 then 29 then 829 then 4196 tokens, and was still
-    unfinished when the 1500s deadline cut the run. Preemption was not pausing that
-    chat, it was repeatedly destroying its work.
-    """
+    """The measured livelock: ten pauses, `kept_chars=0` on every one."""
 
     def test_a_thought_is_a_resume_point(self):
         from core.inference.llama_preemption import StreamCheckpoint
@@ -739,11 +633,6 @@ class TestTheWireCarriesAThoughtPartial:
         assert "if continue_final_message and trailing_assistant_resumable(conversation):" in source
 
     def test_the_splice_path_still_uses_visible_text_only(self):
-        """The manual splice appends its result as VISIBLE text.
-
-        Handing it a thought would paste the reasoning into the answer, which is why
-        this is a second predicate rather than a change to the first one.
-        """
         from pathlib import Path
 
         from core.inference import chat_template_helpers
@@ -755,15 +644,7 @@ class TestTheWireCarriesAThoughtPartial:
 
 
 class TestReplayedWorkIsStillCharged:
-    """Carrying a partial across a pause moves tokens from generated to prompt.
-
-    The run of 2026-09-02 that first kept thoughts across a pause: six pauses carrying
-    2001, 2510, 8019, 3017, 1743 and 121 characters, and the crash the whole feature
-    exists to prevent came back, four context-exhaustion errors and 38 KV retries where
-    the previous build had none. The resumed request replays the partial as prompt while
-    the stream's counter restarts at zero, so `base_tokens + generated` measured the
-    original prompt and missed everything replayed on top of it.
-    """
+    """Carrying a partial across a pause moves tokens from generated to prompt."""
 
     def _controller(self, budget = 16384):
         return _controller(budget = budget)
@@ -790,7 +671,6 @@ class TestReplayedWorkIsStillCharged:
         assert controller.participant("a").tokens == 1000 + 564 + 59 + 1079 + 507
 
     def test_a_pause_with_nothing_kept_is_not_charged(self):
-        """A pause before the first token replays nothing, so it costs nothing."""
         controller = self._controller()
         controller.register("a", tokens = 1000)
         controller.note_replayed("a", 0)
@@ -823,17 +703,7 @@ class TestReplayedWorkIsStillCharged:
 
 
 class TestAChatThatOutgrewTheSharedCeiling:
-    """No eviction can admit it, so waiting for room is a deadlock, not a delay.
-
-    The buffer holds back a proportional watermark plus the drafts of every slot. A chat
-    needing more than `budget - buffer` therefore cannot be admitted or resumed no matter
-    who is evicted, and the resume wait had no answer for that: it waited until its client
-    disconnected. Observed live as one chat of four open for a full 2400s deadline while
-    llama-server sat idle with every slot released and requests_processing at 0.
-
-    Simulated over the tool-heavy regime, letting such a chat take the cache alone moved
-    makespan from 166799 steps to 924 and starvation from 1.6 chats of eight to none.
-    """
+    """No eviction can admit it, so waiting for room is a deadlock, not a delay."""
 
     def _controller_with_drafts(
         self,
@@ -876,8 +746,6 @@ class TestAChatThatOutgrewTheSharedCeiling:
         assert not controller.cannot_ever_fit(10000)
 
     def test_the_solo_ceiling_beats_the_shared_one_by_more_than_a_rounding(self):
-        """Keeping the ratio in the solo case made this worth six tokens on a 16384
-        cache, so a chat needing 15915 still could not run and the deadlock stood."""
         controller = self._controller_with_drafts()
         snapshot = controller.snapshot()
         shared = snapshot.budget - snapshot.buffer

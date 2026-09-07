@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Doubles shared by the KV-preemption tests.
-
-Every file that drives a pause through ``LlamaCppBackend`` needs the same three things:
-raw SSE chunks to serve, a bare backend whose upstream stream is scripted, and a policy
-that records the handshake. Those were written out once per file, which meant a change to
-the fake stream signature had to be made in nine places and was twice made in eight.
-
-The parameters here are the differences the tests actually depend on -- which attempt
-pauses and after how many chunks, whether the pause raises pressure on the signal, whether
-the real cancel-aware reader is left in place. Anything a test does NOT vary is fixed, so
-a caller that says nothing gets the ordinary case.
-"""
+"""Doubles shared by the KV-preemption tests."""
 
 from __future__ import annotations
 
@@ -30,7 +19,6 @@ from core.inference.llama_cpp import LlamaCppBackend
 # ---------------------------------------------------------------- SSE builders
 
 def delta(content: str, *, terminator: str = "\n", **extra) -> str:
-    """One content delta. ``extra`` merges into the chunk, for usage riders and the like."""
     chunk = {"choices": [{"index": 0, "delta": {"content": content}}], **extra}
     return "data: " + json.dumps(chunk) + terminator
 
@@ -50,7 +38,6 @@ def done() -> str:
 
 
 def usage(prompt_tokens: int, completion_tokens: int) -> str:
-    """The usage-only chunk llama-server sends last, which a pause is what prevents."""
     chunk = {
         "choices": [],
         "usage": {
@@ -67,7 +54,6 @@ def tool_call_chunk(
     name: str = "web_search",
     arguments: dict | None = None,
 ) -> str:
-    """One streamed tool call, as a single delta carrying the whole argument string."""
     chunk = {
         "choices": [
             {
@@ -94,7 +80,6 @@ def tool_call_chunk(
 
 
 def tool_call(call_id: str = "call_search") -> list[str]:
-    """A whole tool-calling round: the call, then the terminator."""
     return [tool_call_chunk(call_id), done()]
 
 
@@ -137,11 +122,7 @@ class FakeResponse:
 # --------------------------------------------------------------------- policies
 
 class RecordingPolicy:
-    """Stands in for the admission side. Records the handshake order.
-
-    Deliberately has no ``on_declined``: it doubles as the "written against the older
-    protocol" case, which the decline path has to survive by way of ``getattr``.
-    """
+    """Stands in for the admission side. Records the handshake order."""
 
     def __init__(self, *, resume = True):
         self.events: list[str] = []
@@ -189,10 +170,6 @@ def bare_backend(
     reasoning_always_on: bool = False,
     **attributes,
 ) -> LlamaCppBackend:
-    """A backend with only the fields the streaming paths read, and no process behind it.
-
-    ``__new__`` rather than the constructor, which would try to launch llama-server.
-    """
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._process = object()
     backend._healthy = True
@@ -209,14 +186,7 @@ def bare_backend(
 
 
 class PreemptRecorder:
-    """A backend whose upstream stream is scripted and pauses itself where told.
-
-    ``streams`` is one list of raw SSE chunks per attempt, served in order; ``payloads``
-    records what each attempt sent, which is how the tests read what a resume carried
-    back. Which attempt pauses and after how many data chunks is ``pause_attempts`` plus
-    ``pause_after``: an int applies to every chosen attempt, a dict maps attempt index to
-    its own count and is the whole selection, and ``None`` means the first data chunk.
-    """
+    """A backend whose upstream stream is scripted and pauses itself where told."""
 
     def __init__(
         self,
@@ -304,7 +274,6 @@ class PreemptRecorder:
 # ----------------------------------------------------------------------- drivers
 
 def run_plain(backend, *, signal, policy, prompt: str = "write me a poem", **kwargs):
-    """Drain a plain streaming chat, which is where a pause has no tool ledger to keep."""
     return list(
         backend.generate_chat_completion(
             messages = [{"role": "user", "content": prompt}],
@@ -325,7 +294,6 @@ def run_tool_loop(
     prompt: str = "write me a poem",
     **kwargs,
 ):
-    """Drain the tool loop. Callers that want one round pass ``max_tool_iterations``."""
     return list(
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": prompt}],
@@ -341,13 +309,6 @@ def run_tool_loop(
 # ------------------------------------------------------------- tool loop fixtures
 
 def _patch_tool_loop(monkeypatch, execute, *, high_risk) -> None:
-    """Point the tool loop at a test double and shut its two other side doors.
-
-    ``build_rag_autoinject`` would reach for a real index and ``is_high_risk_tool_call``
-    decides whether a call needs confirmation, which would stall a round nobody is
-    answering. Imported here rather than at module scope so importing the SSE builders
-    does not drag the loop in.
-    """
     from core.inference import studio_tool_loop as loop_mod
 
     monkeypatch.setattr(loop_mod, "execute_tool", execute)
@@ -357,7 +318,6 @@ def _patch_tool_loop(monkeypatch, execute, *, high_risk) -> None:
 
 @pytest.fixture
 def executed(monkeypatch):
-    """Record every execute_tool call. Same shape as the loop's own fixture."""
     calls: list[dict] = []
 
     def _execute(name, arguments, **kwargs):
@@ -370,20 +330,6 @@ def executed(monkeypatch):
 
 @pytest.fixture
 def rendezvous(monkeypatch):
-    """A tool that cannot return until another call of it has also started.
-
-    This is the measurement. A sleep would pass on a machine that happens to be fast and
-    a timing assertion would be flaky on one that is loaded; a barrier can only be cleared
-    by genuine overlap, and the absence of overlap shows up as the timeout rather than as
-    a number that drifted.
-
-    Pairs, not the whole round: a barrier sized to the round would answer "did all of
-    them overlap", and what has to be answered is "did ANY two". A round that runs single
-    file breaks the barrier once on its timeout and every later call then returns at once,
-    so the sequential case costs one timeout rather than one per call.
-
-    Returns the queries in the order they STARTED.
-    """
     # Long enough that a loaded runner still meets it, short enough that the serialised
     # cases (where it can never be met) do not dominate the suite.
     barrier = threading.Barrier(2, timeout = 4)
@@ -408,12 +354,6 @@ def rendezvous(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def clean_preemption_registry():
-    """The controller registry is keyed per model load and lives for the process.
-
-    A test that registers a participant and does not clear it leaves the next test
-    planning against a ledger it never wrote, which is invisible until an unrelated file
-    is run in a different order.
-    """
     from core.inference.llama_preemption import reset_preemption_controllers
 
     reset_preemption_controllers()
@@ -423,7 +363,6 @@ def clean_preemption_registry():
 
 @pytest.fixture(autouse = True)
 def clean_admission_queues():
-    """The same for the admission queues, which are keyed on base_url and outlive a test."""
     from core.inference.llama_admission import reset_llama_admission_queues
 
     reset_llama_admission_queues()

@@ -353,19 +353,16 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
-# The pause comments, same origin. A durable follower never sees the SSE comments the
-# legacy stream shows the browser directly (`_SSEDecoder` keeps data lines only), so
-# a chat that was parked to make room, by Studio or by llama-server itself, showed a
-# durable run nothing at all: the text stopped and started minutes later with no
-# explanation, which is the hang this design replaced. Relayed as a chunk carrying the
-# frontend's own `_admissionStatus` field, which is what its comment parser produces.
+# The pause comments, same origin. A durable follower never sees SSE comments (`_SSEDecoder`
+# keeps data lines only), so a chat parked to make room showed a durable run nothing at all.
+# Relayed as a chunk carrying the frontend's own `_admissionStatus` field.
 _PREEMPT_PAUSED_MARKER = ": preempt-paused"
 _PREEMPT_RESUMED_MARKER = ": preempt-resumed"
 
 
 def _admission_status_chunks(text: str) -> list[dict]:
-    """The pause and resume comments in one piece of the upstream stream, as chunks a
-    durable follower renders the way the legacy stream renders the comments."""
+    """The pause and resume comments in one piece of the upstream stream, as chunks a durable
+    follower renders the way the legacy stream renders the comments."""
     chunks: list[dict] = []
     for line in text.replace("\r\n", "\n").split("\n"):
         stripped = line.strip()
@@ -766,10 +763,9 @@ class ChatGenerationSupervisor:
                         await self._try_touch_progress(run_id)
                 status_chunks = _admission_status_chunks(text)
                 if status_chunks:
-                    # Written at once, not batched: nothing follows a pause for as long
-                    # as it lasts, so a batched notice would reach the follower with the
-                    # resume, when it has nothing left to explain. The pause is also
-                    # progress for the lease, like the admission comments above.
+                    # Written at once, not batched: nothing follows a pause for as long as it
+                    # lasts, so a batched notice would reach the follower with the resume. The
+                    # pause is also progress for the lease.
                     now_ms = db.now_ms()
                     pending.extend(("chunk", chunk, now_ms) for chunk in status_chunks)
                     await asyncio.to_thread(db.append_events, run_id, worker_token, pending)

@@ -1,17 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The header indicator for llama.cpp's exact concurrency.
-//
-// The backend reports exact_concurrency on /api/inference/load and /api/inference/status
-// as "on", "off" or "unavailable". "off" is the default and the common case, so the chip
-// renders nothing for it; the other two each carry a sentence saying what the mode buys,
-// and "unavailable" has to name the server's refusal rather than read as a Studio fault.
-//
-// The mapping and the wording live in a plain .ts, so they are called here. The wiring
-// (the status type, the store field and the applier) is checked at the source, like the
-// llama-extra-args status hydration test next door: the applier is one large object
-// literal with no seam to call.
+// The header indicator for llama.cpp's exact concurrency. "off" is the default and the common
+// case, so the chip renders nothing for it, and "unavailable" has to name the server's refusal
+// rather than read as a Studio fault. The wiring is checked at the source: the applier is one
+// large object literal with no seam to call.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -44,8 +37,7 @@ test("the three reported states map to themselves", () => {
 });
 
 test("a backend that does not publish the field reads as off", () => {
-  // undefined is "this server predates the switch", not "the guarantee holds". Claiming
-  // it needs the server to have said so.
+  // undefined is "this server predates the switch", not "the guarantee holds".
   assert.equal(normalizeExactConcurrency(undefined), "off");
   assert.equal(normalizeExactConcurrency(null), "off");
   assert.equal(normalizeExactConcurrency("ON"), "off");
@@ -68,8 +60,6 @@ test("unavailable says so, and names the server as the one that refused", () => 
   assert.ok(chip);
   assert.equal(chip.label, "Exact unavailable");
   assert.match(chip.title, /llama-server refused it/);
-  // Same explanation as the on state: a user reading only this one still learns what was
-  // asked for.
   assert.match(
     chip.title,
     /identical output regardless of other chats sharing this model/,

@@ -1,42 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A quarter of the cache was held back for a prefill that was not happening.
-
-WHAT WENT WRONG
-
-`preemption_buffer_tokens` reserved a whole `--batch-size` at all times. At the shape
-Studio actually ships -- `-c 8192`, four slots, `--batch-size 2048`, MTP with two drafts
--- that is `max(192 * 4, 2048) + 2 * 4 = 2056`, so the shared ceiling sat at 6136 and
-2056 cells were unusable even when every chat was decoding one token at a time and
-nothing was prefilling at all. The user's requirement is the opposite: with a context of
-N and P chats, every chat may use N minus a buffer, and the buffer must be as small as
-possible.
-
-The batch term itself was right, and the run that forced it is on
-`TestTheBufferCanHoldOnePrefillChunk`: llama-server prefills in chunks and a chunk has to
-find its cells at once, so a buffer smaller than a chunk cannot keep the cache off the
-shrinking-batch retry where the speculative sub-batch bug lives. What was wrong was
-WHEN. Decoding submits one token per slot per step. Only a prompt submission needs a
-chunk, and there are exactly three of those, all of which pass through this module:
-
-  1. a freshly admitted prompt              -> `register`
-  2. a granted resume replaying its partial -> `try_grant_resume`
-  3. a tool round whose prompt grew         -> `note_tokens`
-
-THE RULES THIS PINS
-
-1. Nothing pending, no batch term: the buffer is reaction headroom plus drafts.
-2. A pending prompt SHORTER than a chunk reserves its own length, not a whole chunk.
-   llama-server fills its batch with `min(n_batch - batch.size(), remaining)` per slot
-   and a partial chunk is the normal case (`server-context.cpp`, `update_slots`).
-3. A pending resume LARGER than a chunk reserves one chunk, and no more.
-4. The reserve is up BEFORE the chunk is submitted, and a sweep fired by another chat's
-   tokens sees it. This is the race the whole design turns on.
-5. `UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH=1` restores the permanent term exactly.
-6. `plan_preemptions` uses the lower ceiling once nothing is pending, so the cells the
-   batch term used to hold are really handed out.
-"""
+"""A quarter of the cache was held back for a prefill that was not happening."""
 
 from __future__ import annotations
 
@@ -86,7 +51,6 @@ class TestTheBufferWithNothingPending:
         assert _buffer() == IDLE_BUFFER == 776
 
     def test_a_controller_of_pure_decoders_holds_the_same(self):
-        """The case the old formula charged 2056 for: four chats, all mid-answer."""
         c = _controller()
         for i in range(SLOTS):
             c.register(f"chat{i}", tokens = 800, signal = PreemptSignal())
@@ -96,7 +60,6 @@ class TestTheBufferWithNothingPending:
         assert c.snapshot().buffer == IDLE_BUFFER
 
     def test_that_is_1280_cells_the_old_policy_kept_from_the_chats(self):
-        """The whole point of the change, stated as the number the user asked about."""
         assert PREFILL_BUFFER - IDLE_BUFFER == 1280
         assert BUDGET - IDLE_BUFFER == 7416
         assert BUDGET - PREFILL_BUFFER == 6136
@@ -104,7 +67,6 @@ class TestTheBufferWithNothingPending:
 
 class TestOnePendingSmallPrompt:
     def test_a_short_prompt_reserves_its_own_length_not_a_chunk(self):
-        """Under the reaction headroom it costs nothing extra at all."""
         assert _buffer(pending_prefill = 300) == IDLE_BUFFER
 
     def test_a_prompt_between_the_headroom_and_a_chunk_reserves_itself(self):
@@ -126,11 +88,6 @@ class TestOnePendingSmallPrompt:
         assert c.snapshot().buffer == IDLE_BUFFER
 
     def test_a_round_boundary_sweep_does_not_retire_it(self):
-        """`_gguf_recost` calls `observe(gen_id, 0)` right after announcing the growth.
-
-        Zero generated is not proof of anything, and clearing on it would take the
-        reserve away in the very same call that asked for it.
-        """
         c = _controller()
         c.register("chat", tokens = 1000, signal = PreemptSignal())
         c.observe("chat", 40)
@@ -142,7 +99,6 @@ class TestOnePendingSmallPrompt:
         assert c.snapshot().prefilling == 1460
 
     def test_a_round_boundary_announces_only_the_growth(self):
-        """A 6000 token history that grew by 40 submits 40 tokens, not 6040."""
         c = _controller()
         c.register("chat", tokens = 6000, signal = PreemptSignal())
         c.observe("chat", 10)
@@ -164,7 +120,6 @@ class TestAPendingResumeLargerThanTheBatch:
         assert _buffer(pending_prefill = 5000) == PREFILL_BUFFER
 
     def test_granting_a_resume_announces_the_replay(self):
-        """A resumed chat replays its whole partial as prompt; see `try_grant_resume`."""
         c = _controller()
         paused = c.register("paused", tokens = 3000, signal = PreemptSignal())
         c.observe("paused", 10)
@@ -186,7 +141,6 @@ class TestAPendingResumeLargerThanTheBatch:
         assert c.snapshot().buffer == IDLE_BUFFER
 
     def test_several_prefills_at_once_still_share_one_chunk(self):
-        """llama-server builds ONE batch across every prompt slot, capped at n_batch."""
         c = _controller()
         c.register("a", tokens = 900, signal = PreemptSignal())
         c.register("b", tokens = 900, signal = PreemptSignal())
@@ -195,7 +149,6 @@ class TestAPendingResumeLargerThanTheBatch:
         assert c.snapshot().buffer == PREFILL_BUFFER
 
     def test_a_stale_announcement_expires(self):
-        """The backstop for a prefill that is announced and then never submitted."""
         c = _controller()
         chat = c.register("chat", tokens = 5000, signal = PreemptSignal())
         assert c.snapshot().buffer == PREFILL_BUFFER
@@ -205,12 +158,7 @@ class TestAPendingResumeLargerThanTheBatch:
 
 
 class TestTheRace:
-    """A pending participant must raise the buffer BEFORE its chunk is submitted.
-
-    The whole design rests on this ordering. `register` announces inside the same lock
-    that adds the participant, and `_openai_llama_preemption_arm` sweeps immediately
-    afterwards, so the arriving chat's own batch is already reserved when the sweep runs.
-    """
+    """A pending participant must raise the buffer BEFORE its chunk is submitted."""
 
     def test_the_sweep_that_arms_a_new_chat_plans_at_the_raised_ceiling(self):
         c = _controller()
@@ -225,7 +173,6 @@ class TestTheRace:
         assert victims, "the arriving chat's chunk was not reserved before the sweep"
 
     def test_another_chats_tokens_see_the_pending_reserve(self):
-        """The sweep runs on whoever generated, not on whoever is prefilling."""
         c = _controller()
         c.register("decoder", tokens = 5800, signal = PreemptSignal())
         c.observe("decoder", 100)
@@ -235,12 +182,6 @@ class TestTheRace:
         assert c.observe("decoder", 120), "a sweep on another chat missed the reserve"
 
     def test_room_for_charges_the_asker_for_the_batch_it_is_about_to_submit(self):
-        """Answering at the idle buffer and raising it on the grant is the same race.
-
-        A resume judged against a 7416 ceiling and then granted, which immediately puts
-        the ceiling at 6136, is a chat admitted into room that stops existing in the same
-        breath.
-        """
         c = _controller()
         c.register("holder", tokens = 4300, signal = PreemptSignal())
         c.observe("holder", 10)
@@ -286,13 +227,11 @@ class TestTheStaticOverride:
         assert _buffer() == 300 * SLOTS + DRAFTS * SLOTS
 
     def test_the_per_slot_override_and_the_static_batch_compose(self, monkeypatch):
-        """max(), as before: the larger of reaction headroom and the chunk."""
         monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_BUFFER_PER_SLOT", "800")
         monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH", "1")
         assert _buffer() == 800 * SLOTS + DRAFTS * SLOTS
 
     def test_the_floor_and_the_cap_survive(self):
-        """Neither the floor nor the half-budget cap moved with the batch term."""
         assert preemption_buffer_tokens(2048) >= DEFAULT_PREEMPT_BUFFER_MIN_TOKENS
         tiny = preemption_buffer_tokens(
             512, slots = 8, batch_tokens = 2048, draft_tokens = 64, pending_prefill = 2048
@@ -361,15 +300,7 @@ class TestTheResidentCaseIsUnchanged:
 
 
 class TestTheRouteReadsTheLaunchesBatchSize:
-    """A `--batch-size 512` load reserved for 2048, which is the whole cache's worth.
-
-    The llama.cpp backend keeps the flag on `_requested_n_batch` and publishes it as
-    `requested_n_batch`. `_openai_llama_effective_batch_tokens` tried `n_batch`,
-    `_n_batch`, `batch_size` and `_batch_size`, none of which that object has, so every
-    load fell through to llama.cpp's 2048 default however it was launched. Harmless while
-    the term was max()'d against a static 2048; not harmless once the term is what a
-    pending prefill is sized against.
-    """
+    """A `--batch-size 512` load reserved for 2048, which is the whole cache's worth."""
 
     def test_the_public_accessor_is_read(self):
         import routes.inference as inference
@@ -411,13 +342,7 @@ class TestTheRouteReadsTheLaunchesBatchSize:
 
 
 class TestNotReservingRoomTwiceForTheSameChunk:
-    """`UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED=1`, off by default.
-
-    `_committed_locked` adds an unmeasured holder's whole charge on top of the resident
-    figure, so the chunk it is about to submit is already inside room the ledger booked.
-    A measured holder's round-boundary growth is not: it lands inside
-    `max(resident, measured)`, where other chats' resident cells can mask it.
-    """
+    """`UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED=1`, off by default."""
 
     def test_an_admitted_prompt_stops_costing_a_batch(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED", "1")

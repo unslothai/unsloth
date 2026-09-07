@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A pause that lands mid tool call is worse than no pause at all.
-
-Four parallel chats died together on 2026-09-01 because llama.cpp errors EVERY
-processing slot when its one unified KV cache overflows. The fix is to pause a
-chat instead, but tool execution cannot be interrupted: between the point where
-calls materialise and the point where their results are appended, an abort would
-either discard the work of tools that already ran or run them twice on resume.
-
-So the signal defers. These pin the deferral semantics, because "the request is
-remembered while hidden" is the whole reason deferring is safe.
-"""
+"""A pause that lands mid tool call is worse than no pause at all."""
 
 import threading
 
@@ -56,8 +46,6 @@ class TestTheUnsafeWindow:
         assert signal.is_set()
 
     def test_a_request_made_before_the_window_is_hidden_too(self):
-        """It had not been acted on yet, so honouring it now would be the very
-        mid-execution abort the window exists to prevent."""
         signal = preemption.PreemptSignal()
         signal.request()
         assert signal.is_set()
@@ -100,8 +88,7 @@ class TestTheUnsafeWindow:
 
 
 class TestCancelAndPauseTogether:
-    """The stream plumbing takes one event; these two have to share it without
-    becoming each other."""
+    """The stream plumbing takes one event; these two have to share it without"""
 
     def test_either_one_interrupts(self):
         cancel = threading.Event()
@@ -119,7 +106,6 @@ class TestCancelAndPauseTogether:
         assert combined.is_set()
 
     def test_one_event_passes_straight_through(self):
-        """So a caller with no pause signal keeps exactly the object it had."""
         cancel = threading.Event()
         assert _interrupt_event(cancel, None) is cancel
         assert _interrupt_event(None, None) is None
@@ -149,14 +135,10 @@ class TestTheCheckpoint:
         assert preemption.StreamCheckpoint(visible_text = "Once upon").has_resume_point()
 
     def test_nothing_generated_is_not(self):
-        """`continue_final_message` refuses an empty assistant turn, so such an
-        attempt is re-issued whole rather than continued."""
         assert not preemption.StreamCheckpoint().has_resume_point()
         assert not preemption.StreamCheckpoint(visible_text = "   \n ").has_resume_point()
 
     def test_reasoning_alone_is_not_a_resume_point(self):
-        """Reasoning is not replayed as assistant content, so it cannot be the
-        prefix a continuation extends."""
         assert not preemption.StreamCheckpoint(reasoning_text = "hmm").has_resume_point()
 
 
@@ -177,7 +159,6 @@ class TestTheRolloutSwitch:
 
 class TestTheDefaultPolicy:
     def test_it_never_pauses(self):
-        """So every existing call site behaves exactly as it did."""
         policy = preemption.NullPreemptionPolicy()
         assert policy.should_preempt() is False
         assert policy.await_resume() is True

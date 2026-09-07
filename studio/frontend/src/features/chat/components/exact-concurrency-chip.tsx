@@ -6,11 +6,8 @@ import { exactConcurrencyChip } from "../lib/exact-concurrency";
 
 /**
  * Says, next to the model name, that this model's answers do not depend on what else is
- * decoding beside them. Renders nothing in the ordinary `off` case, so it costs the
- * header no room until there is something to report.
- *
- * The label/title pair lives in a plain `.ts` next door; the test runner strips types but
- * does not transform JSX, so wording asserted here would be untestable.
+ * decoding beside them. Renders nothing in the ordinary `off` case. The label/title pair lives
+ * in a plain `.ts` next door, the test runner not transforming JSX.
  */
 export function ExactConcurrencyChip() {
   const state = useChatRuntimeStore((s) => s.loadedExactConcurrency);

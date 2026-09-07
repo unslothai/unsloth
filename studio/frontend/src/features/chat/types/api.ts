@@ -381,12 +381,10 @@ export interface InferenceStatusResponse {
   requested_parallel_slots?: number | null;
   /** Slots llama-server actually runs, after any fit-time reduction. Null when no GGUF model is loaded. */
   parallel_slots?: number | null;
-  /** What the running llama-server does about exact concurrency: "on" it was launched with it
-   *  and came up, "off" it was not asked for, "unavailable" it was asked for under "auto" and
-   *  the server refused. Absent on a backend that predates the switch, which reads as "off". */
+    /** What the running llama-server does about exact concurrency: "on", "off", or
+     *  "unavailable". Absent on a backend that predates the switch, which reads as "off". */
   exact_concurrency?: string | null;
-  /** The exact-concurrency setting the load resolved to (auto/off/on) after the environment
-   *  override, the request field and the stored setting. What was ASKED for. */
+    /** The exact-concurrency setting the load resolved to (auto/off/on). What was ASKED for. */
   requested_exact_concurrency?: string | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
   requested_n_batch?: number | null;
@@ -725,10 +723,8 @@ export interface OpenAIChatChunk {
     // must fit inside. Not re-derived here: the formula lives in the fit.
     prompt_target?: number;
     // Why this event was sent, when it was not sent by a fit at all. Only value so far is
-    // "preempt_gave_up": the backend stopped waiting for room in the shared KV cache and
-    // finished the turn early, which is not a truncation and carries `fits: true` with
-    // `dropped_messages: 0`. It rides this event because this event already reaches the
-    // client on every surface, including a durable run's follower.
+    // "preempt_gave_up", which is not a truncation and carries `fits: true` with
+    // `dropped_messages: 0`. It rides this event because this event reaches every surface.
     reason?: string;
   };
 }

@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The usage a paused chat reports covers every attempt, not just the last one.
-
-A preemption closes the upstream request and re-opens it with the partial moved into the
-prompt (``continue_final_message``), so llama-server counts each attempt on its own and
-the final usage chunk the client receives described the LAST request alone: chats that
-streamed 8000 plus characters through the GUI reported 259, 151, 1 and 401 completion
-tokens, the last of which was whatever the tail happened to be. Every attempt decoded real
-tokens and the user saw all of them, so the reported ``completion_tokens`` is their sum.
-
-``prompt_tokens`` deliberately stays the last attempt's: each resume re-sends the same
-conversation with the partial appended, so the earlier prompts are prefixes of the final
-one and adding them would count the same conversation several times over.
-"""
+"""The usage a paused chat reports covers every attempt, not just the last one."""
 
 from __future__ import annotations
 
@@ -34,10 +22,6 @@ from .preempt_fakes import (
 
 
 def _Upstream(monkeypatch, streams, *, signal, pause_after):
-    """A fake llama-server that pauses partway through the attempts it is told to.
-
-    ``pause_after`` maps attempt index to how many data chunks it serves before pausing.
-    """
     return PreemptRecorder(monkeypatch, streams, signal = signal, pause_after = pause_after)
 
 
@@ -57,7 +41,6 @@ def _reported_usage(backend, *, signal):
 
 class TestOnePause:
     def test_the_paused_attempts_tokens_are_counted(self, monkeypatch):
-        """The attempt that was cut decoded 12 tokens and the client was shown them."""
         signal = preemption.PreemptSignal()
         upstream = _Upstream(
             monkeypatch,
@@ -103,9 +86,6 @@ class TestOnePause:
         assert usage["total_tokens"] == 40 + 19
 
     def test_without_timings_the_chunks_decoded_are_the_estimate(self, monkeypatch):
-        """A build that does not send per-chunk timings still must not report zero for the
-        aborted attempt: one chunk is about one token, which is what the rest of the
-        preemption path already assumes."""
         signal = preemption.PreemptSignal()
         upstream = _Upstream(
             monkeypatch,

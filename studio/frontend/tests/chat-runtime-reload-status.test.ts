@@ -50,10 +50,8 @@ test("first-token recovery ignores role and control chunks", () => {
       { context_truncated: { checkpoint: true } },
       { choices: [], usage: { completion_tokens: 1 } },
       { choices: [{ delta: { content: "token" } }] },
-      // A pause or resume notice relayed by the durable run's worker, written when the
-      // upstream stream carries ": preempt-paused" or ": preempt-resumed". It is a status
-      // line, not output, so it must neither start the first-chunk clock nor read as
-      // progress.
+      // A pause or resume notice relayed by the durable run's worker. It is a status line,
+      // not output, so it must neither start the first-chunk clock nor read as progress.
       { _admissionStatus: "paused" },
       { _admissionStatus: "resumed" },
     ].map(generationChunkCountsTowardTiming),

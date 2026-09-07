@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A parallel round attaches every call before any driver starts, and stays bounded.
-
-Starting a call's driver while the loop was still appending the later calls let a
-compaction inside that tool rebuild the transcript and detach the assistant message the
-loop was writing to; the later calls then went onto a dictionary the transcript no longer
-held. And a round overlapped every structured call it was given, so a response carrying
-dozens of them multiplied driver threads and side effects with nothing bounding it.
-"""
+"""A parallel round attaches every call before any driver starts, and stays bounded."""
 
 from __future__ import annotations
 
@@ -27,9 +20,6 @@ from .test_tool_calls_within_one_turn_overlap import _gguf_events  # noqa: E402
 
 
 def _fast_sizing(monkeypatch):
-    """The fake backend has no llama-server to count against, and every call's sizing
-    would otherwise wait out an HTTP failure; a flat estimate keeps the starts together so
-    the barriers below measure the round, not the harness."""
     monkeypatch.setattr(
         llama_mod.LlamaCppBackend,
         "count_chat_tokens",

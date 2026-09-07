@@ -1503,16 +1503,10 @@ _REEXEC_DEPTH_ENV = "UNSLOTH_STUDIO_REEXEC_DEPTH"
 
 
 def _running_inside_studio_venv(studio_venv_dir: Path) -> bool:
-    """Whether this interpreter is the Studio venv's, symlinks and all.
-
-    Compared on resolved paths. `sys.prefix` is the venv's REAL directory, while
-    `STUDIO_HOME / "unsloth_studio"` is whatever path the user gave, so a home whose venv
-    is a symlink (a shared venv between two homes, a relocated install) never matched. The
-    consequence was not an error but a loop: the parent re-executed the venv's own console
-    script, which made the same comparison, failed it the same way, and re-executed itself
-    again, at 100 percent CPU, forever, printing nothing. Measured at over seven minutes
-    before it was killed.
-    """
+    """Whether this interpreter is the Studio venv's, symlinks and all. Compared on resolved
+    paths: `sys.prefix` is the venv's REAL directory while `STUDIO_HOME / "unsloth_studio"` is
+    whatever path the user gave, so a symlinked venv never matched and the parent re-executed
+    the venv's console script forever at 100 percent CPU, printing nothing."""
     try:
         prefix = Path(sys.prefix).resolve()
         target = Path(studio_venv_dir).resolve()
@@ -1522,13 +1516,9 @@ def _running_inside_studio_venv(studio_venv_dir: Path) -> bool:
 
 
 def _guard_reexec_loop(target: str) -> None:
-    """Refuse the second hand-off rather than loop.
-
-    A child that still believes it is outside the venv would hand off again. One hand-off
-    is the design; a second means the venv check cannot succeed in this layout, and the
-    only useful outcome is to say so. The marker is inherited through `os.execvp` and
-    `subprocess.Popen` because both pass the environment on.
-    """
+    """Refuse the second hand-off rather than loop. One hand-off is the design; a second means
+    the venv check cannot succeed in this layout. The marker is inherited through `os.execvp`
+    and `subprocess.Popen` because both pass the environment on."""
     depth = os.environ.get(_REEXEC_DEPTH_ENV, "0")
     try:
         depth_n = int(depth)
@@ -2193,9 +2183,8 @@ def studio_default(
                 try:
                     os.execvp(str(studio_python), args)
                 finally:
-                    # exec does not return on success. On a failed launch, or under a
-                    # test double, this process continues and must not carry the
-                    # child's marker into its own next hand-off.
+                    # exec does not return on success. On a failed launch, or under a test
+                    # double, this process continues and must not carry the child's marker.
                     os.environ.pop(_REEXEC_DEPTH_ENV, None)
         else:
             typer.echo("Unsloth Studio not set up. Run install.sh first.")

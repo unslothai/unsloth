@@ -1,25 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio asks llama-server for byte-identical output, instead of the user asking llama.cpp.
-
-Exact concurrency (unslothai/llama.cpp#194) makes a chat's generated tokens the same whether
-it decodes alone or beside three others in one KV cache. It has no command-line flag, no
-``--help`` entry and nothing in ``/props``: the whole interface is ``LLAMA_EXACT_CONCURRENCY``
-on the server's environment. Today that means setting a llama.cpp variable on the STUDIO
-process, which is neither per-load nor discoverable, and which every child then inherits
-whether or not this load wanted it.
-
-These tests pin the switch that replaces it: three values, resolved from the environment, the
-load request and a stored setting in that order; a child environment that carries the
-variable exactly when the answer is yes; a launch line that never contradicts the mode; one
-relaunch without it when the server names it as the reason it would not start; and a load
-that says which of the three answers it ended up with.
-
-The one thing none of this can do is ask a server whether it HAS the mode. A build that
-predates #194 ignores the variable and starts perfectly, so it reports ``on``. That is
-recorded here as the behaviour it is, not fixed, because there is nothing to read it from.
-"""
+"""Studio asks llama-server for byte-identical output, instead of the user asking llama.cpp."""
 
 from __future__ import annotations
 
@@ -37,8 +19,6 @@ from models.inference import InferenceStatusResponse, LoadRequest
 
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
-    """No inherited answer from the machine the tests run on: both variables are read at
-    load time, and a developer with either one set would otherwise see a different suite."""
     monkeypatch.delenv(exact.EXACT_ENV, raising = False)
     monkeypatch.delenv(exact.CHILD_ENV, raising = False)
     reset_preemption_controllers()
@@ -126,16 +106,10 @@ class TestSetting:
 
     @pytest.mark.parametrize("spelling", ["yes", "true", "1", "", "exact", None])
     def test_an_unknown_spelling_is_not_a_setting(self, spelling):
-        """It falls through rather than becoming a fourth value: a typo in an environment
-        variable must not be the difference between a load that is byte-identical and one
-        that quietly is not."""
         assert exact.normalize_setting(spelling) is None
         assert exact.resolve_exact_setting(spelling, stored = "auto", environ = {}) == exact.EXACT_AUTO
 
     def test_an_inherited_llama_variable_is_the_default_rather_than_ignored(self):
-        """The workaround this switch replaces. Somebody running today with
-        LLAMA_EXACT_CONCURRENCY=1 on Studio is in exact mode; shipping a switch that
-        defaults to off would silently take it away from exactly the people who wanted it."""
         environ = {exact.CHILD_ENV: "1"}
         assert exact.resolve_exact_setting(None, stored = None, environ = environ) == exact.EXACT_ON
 
@@ -195,10 +169,6 @@ class TestChildEnvironment:
         assert exact.CHILD_ENV not in env
 
     def test_an_explicit_off_takes_an_inherited_variable_back_out(self):
-        """The child environment starts as a copy of Studio's, so leaving it alone would
-        let the inherited variable outvote a load that explicitly resolved to off, which is
-        the one answer that has to be obeyed exactly: it is what a user picks when the 9 per
-        cent is the thing they are trying to get rid of."""
         env = {exact.CHILD_ENV: "1"}
         assert exact.apply_child_env(env, on = False) is True
         assert exact.CHILD_ENV not in env
@@ -248,11 +218,6 @@ class TestLaunchArgs:
         assert exact.contradicting_args(extras) == ["--cache-reuse", "-nkvo"]
 
     def test_studio_never_emits_cache_reuse_itself(self):
-        """The mode cannot live with it and Studio has no reason to pass it, so the
-        guarantee is that no emitter can produce the token, rather than that something
-        strips it later. Over string literals, not the file text: a comment saying Studio
-        does not pass it is the opposite of a violation. A future launch flag that adds it
-        should fail here and be thought about."""
         import ast
         from pathlib import Path
 
@@ -267,8 +232,6 @@ class TestLaunchArgs:
             assert not [text for text in literals if text.strip() == "--cache-reuse"], name
 
     def test_a_single_slot_load_gets_the_unified_cache_the_mode_needs(self):
-        """--parallel 1 skips --kv-unified, and the paged pool needs it whether or not
-        anything else is decoding."""
         assert LlamaCppBackend._exact_missing_launch_flags(
             ["llama-server", "-m", "x.gguf", "--parallel", "1"],
             {"supports_kv_unified": True},
@@ -357,9 +320,6 @@ class TestAutoFallback:
         )
 
     def test_the_fallback_fires_once(self):
-        """Second call is a no-op without a second flag: the variable is already gone, and
-        a relaunch loop that kept answering yes would burn the attempt budget the ROCm and
-        fit recoveries share."""
         env = {exact.CHILD_ENV: "1"}
         assert (
             LlamaCppBackend._drop_exact_after_refusal(
@@ -425,8 +385,6 @@ class TestReportedState:
         )
 
     def test_unavailable_when_a_respawn_took_away_what_the_mode_needs(self):
-        """The no-flash retry is the live case: the variable is still there and the child
-        is healthy, but V is transposed again and the guarantee stopped holding."""
         no_flash = [a for a in _STUDIO_ARGV if a not in ("--flash-attn", "on")]
         assert (
             LlamaCppBackend._exact_state_after_launch(
@@ -453,10 +411,6 @@ class TestReportedState:
         )
 
     def test_a_build_that_ignores_the_variable_is_reported_as_on(self):
-        """Recorded, not endorsed. A llama-server from before unslothai/llama.cpp#194 reads
-        no such variable and starts normally, and there is no flag, no --help entry and
-        nothing in /props to ask instead. Trying it IS the probe, so a build that neither
-        implements nor refuses the mode is indistinguishable from one that granted it."""
         assert (
             LlamaCppBackend._exact_state_after_launch(
                 setting = "on", env = {exact.CHILD_ENV: "1"}, args = _STUDIO_ARGV
@@ -479,9 +433,6 @@ class TestBackendProperties:
         assert backend.requested_exact_concurrency == "auto"
 
     def test_the_status_schema_carries_both(self):
-        """`_llama_runtime_fields` reads every field of the runtime schema off the backend
-        by name and raises naming any it cannot resolve, so the schema and the properties
-        have to be added together."""
         for name in ("exact_concurrency", "requested_exact_concurrency"):
             assert name in InferenceStatusResponse.model_fields, name
             assert hasattr(LlamaCppBackend, name), name
@@ -542,8 +493,6 @@ class TestPreemptionSnapshot:
         assert controller.snapshot().exact == exact.EXACT_STATE_OFF
 
     def test_it_is_reported_and_never_acted_on(self):
-        """Exact mode changes what a pause RETURNS to, not who pauses. Turning it on must
-        not move a single victim, or the two knobs would silently interact."""
         controller = PreemptionController("exact-policy")
         controller.configure(budget = 8192, kv_unified = True, slots = 4, exact = "on")
         for index in range(4):
@@ -604,7 +553,6 @@ class TestStoredSetting:
         monkeypatch,
         initial = None,
     ):
-        """The app_settings row, without a database."""
         import storage.studio_db as studio_db
         import utils.exact_concurrency_settings as settings
 
@@ -618,9 +566,6 @@ class TestStoredSetting:
         return settings, rows
 
     def test_nothing_stored_reads_as_none_rather_than_off(self, monkeypatch):
-        """Not the same answer: nothing stored falls through to an inherited
-        LLAMA_EXACT_CONCURRENCY, which is the workaround this switch replaces and which has
-        to keep working; a stored off is a user saying no even there."""
         settings, _rows = self._store(monkeypatch)
         assert settings.get_exact_concurrency() is None
 

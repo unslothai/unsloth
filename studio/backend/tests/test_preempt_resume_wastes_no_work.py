@@ -1,32 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An evicted chat resumes from where it was, not from the last user message.
-
-THE REQUIREMENT
-
-A chat that had produced M tokens across T tool rounds when it was preempted must come
-back with all of that intact. Restarting it from the user's message throws the model's
-work away and repeats every tool's side effects, which is the "silly" outcome the goal
-names explicitly. The one concession is a pause that lands INSIDE a tool call: backing up
-to the start of that call is acceptable, because nothing has executed yet. Backing up
-further is not.
-
-WHAT THIS PINS, ONE SHAPE PER CLASS
-
-  * Mid-reasoning. On a thinking model the opening of a turn is all reasoning and no
-    prose, so this is the common case rather than the exotic one. The partial thought
-    must go back as `reasoning_content`, so the model re-opens it rather than restarts.
-  * After a completed tool round. The assistant's call, its result and the prose that
-    followed are all in the conversation the resumed request carries. Nothing is
-    re-executed: `execute_tool` runs exactly once for the round that ran.
-  * Inside a tool call. The prose before the call is kept; the fragment is what gets
-    replayed for the model to finish, and the tool does not run twice.
-
-These are the tests that were missing. `test_llama_tool_loop_preempt_resume.py` covers the
-handshake and the plain prose case; nothing covered the two shapes in which work is
-actually expensive to lose.
-"""
+"""An evicted chat resumes from where it was, not from the last user message."""
 
 from __future__ import annotations
 
@@ -53,12 +28,6 @@ from .test_llama_tool_loop_preempt_resume import _Recorder, _run  # noqa: E402
 
 class TestAPauseMidThoughtKeepsTheThought:
     def test_the_partial_reasoning_goes_back_as_reasoning(self, monkeypatch):
-        """Preempted with a half-formed thought and no prose yet.
-
-        Carried as `reasoning_content` the backend re-opens the thought. Carried as
-        `content` it would be rendered as the answer; dropped, the model starts thinking
-        again from nothing, which is the waste.
-        """
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
         recorder = _Recorder(
@@ -113,12 +82,6 @@ class TestACompletedToolRoundIsNotRepeated:
         return calls
 
     def test_the_tool_runs_once_and_its_result_travels_with_the_resume(self, monkeypatch):
-        """Round one calls a tool and completes. Round two is preempted mid-prose.
-
-        The resumed request must carry round one whole -- the assistant's call, the tool
-        result -- and round two's partial as the turn to extend. `execute_tool` must have
-        run exactly once, for round one, and not again on the resume.
-        """
         calls = self._executed(monkeypatch)
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
@@ -162,7 +125,6 @@ class TestACompletedToolRoundIsNotRepeated:
         assert resumed.get("continue_final_message") is True
 
     def test_nothing_before_the_pause_is_lost_when_it_lands_on_a_later_round(self, monkeypatch):
-        """Two completed rounds, then a pause. Both results must survive, in order."""
         calls = self._executed(monkeypatch)
         signal = preemption.PreemptSignal()
         policy = _RecordingPolicy()
@@ -196,12 +158,6 @@ class TestAPauseInsideAToolCallBacksUpToTheCall:
     """The one place backing up is allowed, and it must not back up further than that."""
 
     def test_the_prose_before_the_call_survives_and_the_tool_does_not_run_twice(self, monkeypatch):
-        """Text-form call, preempted after the markup has started but before it closes.
-
-        What is replayed is the visible prose plus whatever fragment had streamed; the
-        model finishes the call on the resume, and the tool then runs ONCE. Losing the
-        prose would be backing up to the user message, which is the outcome ruled out.
-        """
         calls: list = []
 
         def _execute(name, arguments, **_kwargs):

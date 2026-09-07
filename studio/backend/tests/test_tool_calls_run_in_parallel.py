@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool calls across concurrent chats must overlap, and nothing may quietly gate them.
-
-P users sharing one llama-server already contend for KV. If their tool calls also
-serialised, a chat parked on a ten second web search would hold its cells AND block
-everyone else's tools, which is the opposite of what parking is for: the preemptor takes
-a parked chat's room first precisely because it is holding cells while consuming no
-compute.
-
-Measured with `temp/overlap_probe.py`: four chats making three 0.3s calls each finish in
-0.90s against 3.60s if fully serialised, with 60 cross-chat overlapping pairs. That is the
-shape asserted here.
-
-The within-chat half of that measurement, 0 overlapping pairs, is no longer true and is no
-longer meant to be: a round's calls now run together as well. That is asserted in
-`test_tool_calls_within_one_turn_overlap.py`, which owns the behaviour; this file stays
-about the cross-chat property, which came first and must survive the other changing.
-"""
+"""Tool calls across concurrent chats must overlap, and nothing may quietly gate them."""
 
 import asyncio
 import time
@@ -56,11 +40,6 @@ class TestToolCallsOverlapAcrossChats:
         assert overlapping > 0, "no two chats ever had a tool running at the same time"
 
     def test_no_module_level_gate_around_tool_execution(self):
-        """A shared lock or semaphore here would serialise every user's tools.
-
-        Structural, because the timing test above would still pass if a gate were added
-        with a generous limit; this catches the gate itself.
-        """
         from pathlib import Path
 
         from core.inference import studio_tool_loop
@@ -75,7 +54,6 @@ class TestToolCallsOverlapAcrossChats:
             assert gate not in source, f"{gate} in the tool loop serialises all chats"
 
     def test_a_blocking_tool_is_never_run_on_the_event_loop(self):
-        """Running one inline would freeze every other chat's stream, not just its own."""
         from pathlib import Path
 
         from core.inference import studio_tool_loop
@@ -85,22 +63,7 @@ class TestToolCallsOverlapAcrossChats:
 
 
 class TestWithinOneChatCallsAlsoOverlapNow:
-    """A round's calls used to run one after another. They no longer do.
-
-    This class asserted the serial behaviour and described what changing it would take:
-    "gate and dispatch the auto-approved calls as tasks, pump them concurrently, and
-    interleave their events by card id, with confirmations still taken one at a time".
-    That is what `_pump_tool_stream` and `_settle_call` do, so the assertions here would
-    now be pinning the old shape in place.
-
-    Kept rather than deleted, because the STRUCTURE still matters: the per-call loop is
-    still a plain `for`, since preparing a call, gating it and recording its result are
-    all order sensitive, and only the waiting was ever worth overlapping. What changed is
-    that the loop starts a pump and moves on instead of draining inline.
-
-    The behaviour itself is measured in `test_tool_calls_within_one_turn_overlap.py`, with
-    a barrier rather than a timing assertion.
-    """
+    """A round's calls used to run one after another. They no longer do."""
 
     def test_preparing_and_recording_a_call_is_still_sequential(self):
         from pathlib import Path
@@ -114,12 +77,6 @@ class TestWithinOneChatCallsAlsoOverlapNow:
         assert "asyncio.gather(*(" not in source.split("for call in calls:", 1)[1][:2000]
 
     def test_the_calls_are_launched_before_they_are_drained(self):
-        """The one structural fact that makes the round overlap at all.
-
-        If `_settle_call` were awaited inside the loop for every call, the pumps would run
-        one at a time again and every behavioural test would still pass on a machine fast
-        enough to hide it.
-        """
         from pathlib import Path
 
         from core.inference import studio_tool_loop

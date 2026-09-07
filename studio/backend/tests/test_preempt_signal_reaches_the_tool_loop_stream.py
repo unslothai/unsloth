@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The pause signal reaches the client on the path the GUI actually takes.
-
-Every Studio chat carries tools, so every GUI chat streams through the tool-loop consumer of
-``openai_chat_completions``, not the plain one. The plain consumer had forwarded the
-generator's ``{"type": "preempt"}`` events as ``: preempt-paused`` / ``: preempt-resumed``
-since the signal was written. The tool-loop consumer had no branch for them, so they fell
-through to the content diff, which reads ``text`` off a dict that has none, and the client
-saw nothing.
-
-Measured with four browser sessions on the 4B model at ``-c 8192``: nine pauses and nine
-resumes in the server log, "Paused while another chat finishes" shown zero times, every chat
-finished. The feature worked; the user could not tell.
-
-These drive the real ASGI route with a fake backend, so a consumer that swallows the event
-fails here rather than in a browser.
-"""
+"""The pause signal reaches the client on the path the GUI actually takes."""
 
 from __future__ import annotations
 
@@ -109,7 +94,6 @@ class TestTheToolLoopStream:
         assert "data: [DONE]" in body
 
     def test_the_signal_is_a_comment_not_a_data_event(self, monkeypatch):
-        """Readers that predate the signal must see nothing new: no chunk schema change."""
         response = _client(monkeypatch, _PausingToolBackend(), tools = True).post(
             "/chat/completions", json = _payload(tools = True)
         )

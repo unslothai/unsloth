@@ -673,16 +673,15 @@ class ExactConcurrencyPayload(BaseModel):
 
 
 class ExactConcurrencyResponse(BaseModel):
-    # The stored value, or None when nothing is stored (which is not the same as a stored
-    # "off": see utils.exact_concurrency_settings).
+    # The stored value, or None when nothing is stored, which is not the same as a stored
+    # "off": see utils.exact_concurrency_settings.
     exact_concurrency: Optional[str] = None
-    # What the next load will actually resolve to, once the environment override, this
-    # stored value and an inherited LLAMA_EXACT_CONCURRENCY have all been read.
+    # What the next load will resolve to, once the environment override, this stored value and
+    # an inherited LLAMA_EXACT_CONCURRENCY have all been read.
     effective: str
     default: str = DEFAULT_EXACT_SETTING
-    # Set when UNSLOTH_LLAMA_EXACT_CONCURRENCY is pinning the machine, in which case
-    # saving here changes nothing until the variable goes away. The UI has to say so
-    # rather than accept a value that will not be used.
+    # Set when UNSLOTH_LLAMA_EXACT_CONCURRENCY is pinning the machine, in which case saving
+    # here changes nothing until the variable goes away.
     env_override: Optional[str] = None
     # What the RUNNING llama-server does: on, off, or unavailable.
     active: str
@@ -1281,7 +1280,6 @@ def update_model_memory(
 
 
 def _exact_concurrency_active() -> str:
-    """What the running child does, or `off` when nothing is loaded."""
     try:
         from routes.inference import get_llama_cpp_backend
         backend = get_llama_cpp_backend()
@@ -1293,12 +1291,9 @@ def _exact_concurrency_active() -> str:
 
 
 def _exact_concurrency_reload_required(effective: str) -> bool:
-    """True when a child is running under a setting the next load would not repeat.
-
-    Compared against what that child was ASKED for, not what it got: a load that resolved
-    to `auto` and came up `unavailable` is still the load this setting produces, and
-    nagging for a reload that would fall back again is advice with no action behind it.
-    """
+    """True when a child is running under a setting the next load would not repeat. Compared
+    against what that child was ASKED for, not what it got: a load that resolved to `auto` and
+    came up `unavailable` is still the load this setting produces."""
     try:
         from routes.inference import get_llama_cpp_backend
         backend = get_llama_cpp_backend()

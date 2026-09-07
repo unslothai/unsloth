@@ -5149,7 +5149,6 @@ export function createOpenAIStreamAdapter(
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
-      // The backend stopped waiting for room in the shared KV cache and finished the turn.
       // Latched here rather than read off the last chunk, because the notice arrives before
       // the terminal chunk and that chunk's `length` would otherwise be the last word.
       let preemptGaveUp = false;
@@ -6329,16 +6328,11 @@ export function createOpenAIStreamAdapter(
                 responseModelId = chunkModel;
               }
 
-              // Queued for a slot, or paused so another chat can finish. Neither is an
-              // error and neither produces a token, so without a line on screen both look
-              // exactly like the wedged backend we are here to stop shipping.
-              //
-              // Routed through setToolStatus rather than a slice of its own because that
-              // setter already solves the part that is easy to get wrong: two runs sharing
-              // the unresolved "__default" thread key, where a naive clear wipes the
-              // sibling's status. Admission precedes generation, so the queue line cannot
-              // overwrite a live tool status on the way in; a mid-loop re-admission does
-              // replace it, which is truthful, and clears back on the paired signal.
+              // Queued for a slot, or paused so another chat can finish. Neither is an error
+              // and neither produces a token, so without a line on screen both look exactly
+              // like a wedged backend. Routed through setToolStatus because that setter already
+              // handles two runs sharing the unresolved "__default" thread key, where a naive
+              // clear wipes the sibling's status.
               const admissionStatus = (
                 chunk as unknown as { _admissionStatus?: AdmissionStatus }
               )._admissionStatus;
@@ -6351,7 +6345,6 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
-              // Handle tool status events
               const toolStatusText = (
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
@@ -6920,13 +6913,10 @@ export function createOpenAIStreamAdapter(
               } else if (chunk.choices?.[0]?.finish_reason) {
                 incompleteReason = null;
                 if (completedAfterGivingUp(chunk.choices[0].finish_reason)) {
-                  // The give-up latch too, not just the reason it set. A tool run that
-                  // gave up breaks into the final answering pass and that pass can finish
-                  // normally, and the override below is unconditional: without this, a
-                  // completed answer was stamped paused, kept the "did not get it back"
-                  // notice and offered a Continue with nothing to continue. `length` is
-                  // the shape a give-up really does end on, so it is not success here and
-                  // does not reach this branch.
+                  // The give-up latch too, not just the reason it set. A tool run that gave up
+                  // breaks into the final answering pass, which can finish normally, and the
+                  // override below is unconditional: without this a completed answer was
+                  // stamped paused and offered a Continue with nothing to continue.
                   preemptGaveUp = false;
                 }
               }
@@ -7655,15 +7645,9 @@ export function createOpenAIStreamAdapter(
         }
 
         // A turn the backend gave up on is `paused`, not `length`. It ends on
-        // `finish_reason: "length"` because that is the shape a continuation resumes from,
-        // but the cause was contention for one KV cache and not the Max Tokens setting, and
-        // naming the wrong one sends the user to a setting that was never the constraint.
-        // `paused` also refuses the AUTOMATIC continuation, which is the point: the backend
-        // has just said it could not get the model back, so racing it with a second request
-        // asks for another slot in the cache that ran out. The manual Continue stays.
-        //
-        // Last, so it wins over both assignments above. The notice arrives before the
-        // terminal chunk, and that chunk latches `length`.
+        // `finish_reason: "length"` because that is the shape a continuation resumes from, but
+        // the cause was contention for one KV cache, and `paused` also refuses the AUTOMATIC
+        // continuation, which is the point. Last, so it wins over both assignments above.
         if (preemptGaveUp) {
           incompleteReason = "paused";
         }

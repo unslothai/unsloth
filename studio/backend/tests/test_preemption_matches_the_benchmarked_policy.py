@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The shipped controller must order victims the way the benchmark ranked best.
-
-`scripts/preempt_bench.py` chose newest-first (with parked holders taken first) over six
-alternatives across nine load regimes. That choice is only worth anything if the
-controller actually implements it, and nothing else in the suite compares the two: the
-policy tests assert individual cases, which a subtly different ordering can still pass.
-
-So this replays the simulator's own key function against the controller's real victim
-order on randomised populations. A divergence means either the implementation drifted or
-the benchmark measured a policy nobody ships.
-"""
+"""The shipped controller must order victims the way the benchmark ranked best."""
 
 import random
 import sys
@@ -109,11 +99,6 @@ class TestTheShippedOrderIsTheBenchmarkedOne:
         )
 
     def test_the_benchmark_still_prefers_what_is_shipped(self):
-        """Guards the other direction: if the ranking flips, the code should follow.
-
-        Cheap enough to run in CI at low seed counts, and it fails loudly if a future
-        change to the model makes a different policy win.
-        """
         rows = preempt_sim.sweep(
             ["newest_first", "largest_first", "oldest_first"],
             seeds = 12,
