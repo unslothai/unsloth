@@ -1221,5 +1221,3 @@ def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():
 
     # And the call site reads the tag rather than re-matching the URL.
     assert "_cuda_major_for_npp(_codec_torch_ver, _codec_index)" in source
-
-
