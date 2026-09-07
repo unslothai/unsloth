@@ -508,7 +508,13 @@ def _drive_tool_stream(stream, out_queue) -> None:
         out_queue.put(("error", exc))
 
 
-def _start_tool_call(decision, stream, budget_cell, starved_cell, compact_flag = False):
+def _start_tool_call(
+    decision,
+    stream,
+    budget_cell,
+    starved_cell,
+    compact_flag = False,
+):
     """Put one call's tool in flight and return the entry its turn will be read from.
 
     ``compact_flag`` is the gate's promise for THIS call, carried in the entry: the settle
@@ -528,7 +534,14 @@ def _start_tool_call(decision, stream, budget_cell, starved_cell, compact_flag =
     )
     driver.start()
     return (
-        decision, stream, out_queue, _TOOL_PRIME_PENDING, None, budget_cell, starved_cell, compact_flag,
+        decision,
+        stream,
+        out_queue,
+        _TOOL_PRIME_PENDING,
+        None,
+        budget_cell,
+        starved_cell,
+        compact_flag,
     )
 
 
@@ -32321,7 +32334,11 @@ class LlamaCppBackend:
                         if decision.tool_name in RAG_SEARCH_TOOLS:
                             _kb_search_count += 1
                     yield from _settle_tool_call(
-                        decision, result, _last_result_budget, _starved_call, _compact_after_execution
+                        decision,
+                        result,
+                        _last_result_budget,
+                        _starved_call,
+                        _compact_after_execution,
                     )
 
                 # The round's overlapped calls, read back in the order the model asked for.

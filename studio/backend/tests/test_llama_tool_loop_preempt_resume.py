@@ -246,7 +246,12 @@ class TestThePauseIsResumed:
         )
         backend = recorder.backend
 
-        def pause_after_the_dense_run(response, _cancel_event, first_token_deadline = None, preempt_event = None):
+        def pause_after_the_dense_run(
+            response,
+            _cancel_event,
+            first_token_deadline = None,
+            preempt_event = None,
+        ):
             attempt = len(recorder.payloads) - 1
             served = 0
             for chunk in response.chunks:
@@ -260,7 +265,9 @@ class TestThePauseIsResumed:
         monkeypatch.setattr(backend, "_iter_text_cancellable", pause_after_the_dense_run)
         _run(backend, signal = signal, policy = policy)
         assert policy.checkpoints[0].visible_text == "".join(dense)
-        assert policy.checkpoints[0].charged_tokens >= len(dense), policy.checkpoints[0].charged_tokens
+        assert policy.checkpoints[0].charged_tokens >= len(dense), policy.checkpoints[
+            0
+        ].charged_tokens
 
     def test_the_signal_is_cleared_so_the_resume_can_run(self, monkeypatch):
         """Left set, the resumed attempt would abort on its first read and spin."""

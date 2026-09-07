@@ -178,7 +178,9 @@ class TestTheContendedCaseStillReclaims:
         inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "leaving")
         assert erasures == [0], "somebody is queued for the room and the cells were kept"
 
-    def test_a_queue_that_cannot_be_read_does_not_fail_the_disarm(self, controller, erasures, monkeypatch):
+    def test_a_queue_that_cannot_be_read_does_not_fail_the_disarm(
+        self, controller, erasures, monkeypatch
+    ):
         def _boom(key):
             raise RuntimeError("no queue")
 
