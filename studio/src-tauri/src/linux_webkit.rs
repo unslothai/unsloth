@@ -228,8 +228,10 @@ fn rendering_plan(
     //            (bug 315436). It is also the switch reported to fix Error 71.
     //   X11      FORCE_SHM. The AppImage also turns compositing off: its accelerated
     //            path leaks a sync-file fd per redraw until WebKit hits its descriptor
-    //            limit, while the native 2.52.6 library releases them. That switch clears
-    //            the web preference too, so the null backing store below is unreachable.
+    //            limit. That switch clears the web preference too, so the null backing
+    //            store below is unreachable. The native library leaks the same way once
+    //            explicit sync is reachable; it is left alone here only because the
+    //            bundled runtime is the one we ship. See the note on the branch below.
     // The empty set is not just slower: DISABLE_DMABUF returns before the SharedMemory
     // add, so checkRequirements() is false, AcceleratedBackingStore::create() returns
     // nullptr, and webkitWebViewBaseEnterAcceleratedCompositingMode() dereferences it
@@ -261,7 +263,11 @@ fn rendering_plan(
         {
             RenderingWorkaround::DisableDmabuf
         } else if !is_appimage || requested("0") {
-            // Native WebKit releases its fences, and =0 puts an AppImage back here.
+            // Native packages keep compositing, and =0 puts an AppImage back here.
+            // Not because they are unaffected: the host 2.52.6 library was measured
+            // leaking the same fd per redraw once a render node makes explicit sync
+            // reachable. Narrowing to the AppImage is a deliberate first step, since the
+            // bundled runtime is ours to pin; native needs its own change.
             RenderingWorkaround::ForceSharedMemoryOnNvidia
         } else {
             RenderingWorkaround::DisableCompositingOnNvidiaX11
@@ -619,8 +625,9 @@ mod tests {
 
     #[test]
     fn native_nvidia_x11_keeps_the_crash_safe_accelerated_transport() {
-        // The system WebKit releases its sync files, so the native package keeps
-        // acceleration and only avoids the empty backing-store set.
+        // The native package keeps acceleration and only avoids the empty backing-store
+        // set. That is scope, not health: the host library leaks the same way when
+        // explicit sync is reachable, and covering it needs its own change.
         assert_eq!(
             plan_on_nvidia(&[]),
             RenderingPlan::Apply(
