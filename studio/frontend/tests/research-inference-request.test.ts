@@ -184,8 +184,7 @@ test("the published ceiling rides along, unfolded, when the model has one", () =
     clampReasoningEffort: clamp,
   });
 
-  // Both numbers survive: the backend needs the pair to tell a capped connection from a
-  // model that genuinely stops at 8192.
+  // The backend needs the pair to tell a capped connection from a 8192-token model.
   assert.equal(request.maxOutputTokens, 8192);
   assert.equal(request.maxOutputTokensPublished, 65536);
 });

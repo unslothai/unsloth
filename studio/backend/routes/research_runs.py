@@ -287,9 +287,8 @@ def _sanitize_config(
             if not 1 <= request["maxTokens"] <= 8192:
                 raise ValueError
         if "maxOutputTokens" in request:
-            # Strict, like the saved-connection schema this mirrors: bool is an int subclass,
-            # and int() would silently truncate a float or raise OverflowError on a non-finite
-            # one, which is a 500 rather than the 400 an invalid field deserves.
+            # Strict like the saved-connection schema: bool is an int subclass, and int()
+            # would truncate a float or raise OverflowError, turning a 400 into a 500.
             budget = request["maxOutputTokens"]
             if isinstance(budget, bool) or not isinstance(budget, int):
                 raise ValueError

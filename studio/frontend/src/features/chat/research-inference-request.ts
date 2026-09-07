@@ -64,11 +64,10 @@ export function buildResearchInferenceRequest(input: {
           input.external.maxOutputTokens > 0
             ? {
                 maxOutputTokens: Math.floor(input.external.maxOutputTokens),
-                // The run outlives the connection edit that grounded it, so the backend is
-                // told whether clearing the saved cap leaves this number standing on nothing.
+                // The run outlives the connection edit that grounded it.
                 maxOutputTokensFromSavedCap: input.external.maxOutputTokensFromSavedCap,
-                // The ceiling above already has the override folded in, so it cannot say
-                // whether the model itself stops there. The report floor turns on that.
+                // The ceiling above has the override folded in, so it cannot say whether the
+                // model itself stops there, which is what the report floor turns on.
                 ...(input.external.maxOutputTokensPublished != null &&
                 Number.isFinite(input.external.maxOutputTokensPublished) &&
                 input.external.maxOutputTokensPublished > 0

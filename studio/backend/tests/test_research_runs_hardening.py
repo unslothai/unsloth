@@ -342,14 +342,8 @@ def test_resolve_max_tokens_still_caps_a_thread_setting_at_8192(monkeypatch):
 
 
 def test_a_saved_connection_budget_ignores_the_resident_local_model(monkeypatch):
-    """A connection generates on the provider's hardware; the local window bounds nothing.
-
-    The synthesis prompt is already fitted to the local window, so clamping against it spends
-    the report's budget down to the leftover reserve and undoes the ceiling just resolved.
-    """
-    # main reads the window off the local backend only for a local run; a run carrying a
-    # providerType reports None. Model that contract rather than a flat value, or the stub
-    # itself would clamp what the real call never reaches.
+    """A connection generates on the provider's hardware; the local window bounds nothing."""
+    # Model _loaded_context_length's contract, not a flat value, or the stub itself clamps.
     monkeypatch.setattr(
         research_runs,
         "_loaded_context_length",
@@ -367,7 +361,6 @@ def test_a_local_run_still_clamps_to_the_loaded_context(monkeypatch):
 
 
 def test_a_lowered_connection_cap_bounds_a_stale_client_ceiling(monkeypatch):
-    """The run is durable, so the cap can have been lowered after the client resolved it."""
     monkeypatch.setattr(
         research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 20_000}
     )
@@ -392,8 +385,7 @@ def test_a_saved_cap_cannot_drop_a_connection_below_its_provider_floor(monkeypat
         research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
     )
     inference = {"providerType": "kimi", "providerId": "p1", "maxOutputTokens": 32_768}
-    # The report floor gets there first here; the provider floor is what holds a connection
-    # whose model genuinely publishes a lower limit.
+    # The report floor gets there first; the provider floor holds a lower published limit.
     assert _synthesis_max_tokens(inference) == 16_384
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
     published_low = {
@@ -405,15 +397,10 @@ def test_a_saved_cap_cannot_drop_a_connection_below_its_provider_floor(monkeypat
 
 
 def test_a_saved_cap_below_the_previous_default_does_not_shorten_the_report(monkeypatch):
-    """The cap sizes the chat slider. It may not make a report shorter than it used to be.
+    """A cap set for chat cost may not shorten a report the user was already getting.
 
-    Before the connection ceiling was read at all, every run got _SYNTHESIS_MAX_TOKENS, this
-    one included. A user who capped a connection at 8_192 to control chat cost did not ask
-    for a shorter report than the one Deep Research has been writing them all along.
-
-    The override arrives ALREADY FOLDED into maxOutputTokens -- getExternalMaxOutputTokens
-    sends min(published, override) -- so 8_192 here is what the client really sends for a
-    65_536 model on a connection capped at 8_192, not a hypothetical.
+    The override arrives ALREADY FOLDED into maxOutputTokens, so 8_192 here is what the client
+    really sends for a 65_536 model on a connection capped at 8_192, not a hypothetical.
     """
     monkeypatch.setattr(
         research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_192}
@@ -430,10 +417,7 @@ def test_a_saved_cap_below_the_previous_default_does_not_shorten_the_report(monk
 
 
 def test_a_model_that_genuinely_stops_low_still_lowers_the_report(monkeypatch):
-    """The one thing that may go below the old floor is the model's own published limit.
-
-    Asking a 4_096-token model for 16_384 is refused, so the floor cannot be blind to it.
-    """
+    """Asking a 4_096-token model for 16_384 is refused, so the floor cannot be blind to it."""
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
     inference = {
         "providerType": "openai",
@@ -447,7 +431,6 @@ def test_a_model_that_genuinely_stops_low_still_lowers_the_report(monkeypatch):
 
 
 def test_an_undocumented_model_capped_low_keeps_the_old_floor(monkeypatch):
-    """Same rule with nothing published: only a model's own limit may go below the floor."""
     monkeypatch.setattr(
         research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
     )
@@ -462,7 +445,6 @@ def test_an_undocumented_model_capped_low_keeps_the_old_floor(monkeypatch):
 
 
 def test_a_cap_between_the_floor_and_the_ceiling_still_binds(monkeypatch):
-    """The floor is a floor, not a bypass: a cap above it still lowers a stale ceiling."""
     monkeypatch.setattr(
         research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 20_000}
     )
@@ -480,9 +462,8 @@ def test_a_cap_between_the_floor_and_the_ceiling_still_binds(monkeypatch):
 def test_clearing_the_saved_cap_invalidates_a_ceiling_only_it_grounded(monkeypatch):
     """Blanking the Max Tokens limit is what that field is FOR on an undocumented model.
 
-    Nothing documents a self-hosted id, so the connection's own cap is the only thing holding
-    the run's ceiling up. Once it is cleared a run created now would not ask for that number,
-    and neither may this one.
+    It was the only thing holding the ceiling up, so once cleared this run must stop asking
+    for a number a run created now would not ask for either.
     """
     inference = {
         "providerType": "custom",
@@ -500,7 +481,6 @@ def test_clearing_the_saved_cap_invalidates_a_ceiling_only_it_grounded(monkeypat
 
 
 def test_clearing_the_saved_cap_leaves_a_published_ceiling_standing(monkeypatch):
-    """The table still documents this model, so the override was never what grounded it."""
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
     inference = {
         "providerType": "gemini",
@@ -513,7 +493,6 @@ def test_clearing_the_saved_cap_leaves_a_published_ceiling_standing(monkeypatch)
 
 
 def test_a_run_created_before_the_grounding_flag_is_unchanged(monkeypatch):
-    """A durable run from the release before this field keeps the ceiling it was given."""
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
     inference = {
         "providerType": "custom",
@@ -527,8 +506,7 @@ def test_a_run_created_before_the_grounding_flag_is_unchanged(monkeypatch):
 def test_a_client_ceiling_below_the_default_still_lowers_the_budget(monkeypatch):
     """A published limit is the model's own, not a preference: asking past it is refused.
 
-    It has to be the PUBLISHED one. maxOutputTokens alone cannot say whether 8_192 is the
-    model's limit or a connection the user capped, and only the first may go below the floor.
+    It has to be the PUBLISHED one; maxOutputTokens alone cannot say which of the two it is.
     """
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
     inference = {
@@ -541,7 +519,6 @@ def test_a_client_ceiling_below_the_default_still_lowers_the_budget(monkeypatch)
 
 
 def test_an_unreadable_cap_does_not_let_a_stale_client_ceiling_through(monkeypatch):
-    """A locked row is not an uncapped connection; the cap may have been lowered since."""
 
     def explode(_id):
         raise sqlite3.OperationalError("database is locked")
@@ -553,7 +530,6 @@ def test_an_unreadable_cap_does_not_let_a_stale_client_ceiling_through(monkeypat
 
 
 def test_an_unreadable_cap_still_honours_a_lower_client_ceiling(monkeypatch):
-    """Neither signal is confirmable, so the smaller of the two is what gets spent."""
 
     def explode(_id):
         raise sqlite3.OperationalError("database is locked")
@@ -565,7 +541,6 @@ def test_an_unreadable_cap_still_honours_a_lower_client_ceiling(monkeypatch):
 
 
 def test_a_transient_cap_lookup_failure_is_retried(monkeypatch):
-    """A read that lost the writer lock is transient; one retry beats guessing."""
     calls = {"n": 0}
 
     def flaky(_id):
@@ -582,7 +557,6 @@ def test_a_transient_cap_lookup_failure_is_retried(monkeypatch):
 
 
 def test_an_external_truncation_is_not_blamed_on_the_local_context(monkeypatch):
-    """The loaded local window explains nothing about a report a connection generated."""
     monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 8_192)
     usage = {"prompt_tokens": 5_000, "completion_tokens": 4_000, "total_tokens": 9_000}
     notice = _synthesis_length_limit_error(
@@ -628,22 +602,16 @@ def test_a_ceiling_below_the_default_is_respected(monkeypatch):
 
 
 def test_a_legacy_ceiling_below_the_default_keeps_the_old_budget(monkeypatch):
-    """Without a published limit the number is ambiguous, so it does not lower the report.
-
-    Such a run asked for _SYNTHESIS_MAX_TOKENS before any of this existed and the provider
-    took it, so keeping that is the no-regression answer.
-    """
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
     inference = {"providerType": "openai", "providerId": "p1", "maxOutputTokens": 8_192}
     assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
 
 
 def test_the_provider_floor_table_matches_the_client_one_it_mirrors():
-    """Two copies of the same table, in two languages, with nothing tying them together.
+    """A hand copy of the client's table, in another language, with nothing tying them together.
 
-    _EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER is a hand copy of the client's table, and drift
-    would be silent: the report would ask a provider for a budget its thinking answer is cut
-    off below, which is exactly what the floor exists to prevent.
+    Drift is silent: the report would ask for a budget the provider truncates a thinking answer
+    below, which is what the floor exists to prevent.
     """
     import re
 
@@ -681,14 +649,12 @@ def test_a_local_run_ignores_a_stray_ceiling():
 def test_a_budget_the_run_cannot_stream_in_time_is_bounded_by_its_wall_clock(monkeypatch):
     """A wall-clock stop loses the report; running out of budget only truncates it.
 
-    _stream_completion re-raises ModelWallClockTimeout without returning the text it has
-    already streamed, so a budget larger than the run's own deadline can deliver trades a
-    readable truncated report for a failed run at the last and most expensive step.
+    _stream_completion re-raises without returning the text it already streamed.
     """
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
     inference = {"providerType": "deepseek", "providerId": "p1", "maxOutputTokens": 384_000}
     assert _synthesis_max_tokens(inference, 900) == 900 * research_runs._SYNTHESIS_TOKENS_PER_SECOND
-    # Never below what the run would have got anyway, however short the deadline.
+    # Never below what the run would have got anyway.
     assert _synthesis_max_tokens(inference, 60) == research_runs._SYNTHESIS_MAX_TOKENS
     assert _synthesis_max_tokens({**inference, "maxOutputTokens": 32_768}, 120) == 16_384
 
@@ -719,7 +685,6 @@ def test_an_absurd_saved_ceiling_cannot_reach_the_provider(monkeypatch):
 
 
 def test_the_report_budget_never_falls_below_what_a_run_used_to_get(monkeypatch):
-    """The whole no-regression rule, over the combinations that reach it."""
     for saved in (None, 64, 8_000, 16_384, 32_768, 256_000):
         monkeypatch.setattr(
             research_runs.providers_db,
@@ -736,11 +701,7 @@ def test_the_report_budget_never_falls_below_what_a_run_used_to_get(monkeypatch)
 
 
 def test_a_cap_lowered_mid_run_bounds_the_request_that_actually_goes_out(monkeypatch):
-    """The budget is resolved once, but the loop re-sends after a queue or rate-limit wait.
-
-    Recovery and every transport retry rebuild the request minutes later, so what bounds the
-    body is the ceiling in force when it is built, not the one that was in force at the start.
-    """
+    """Recovery and every retry rebuild the request later, so the cap is re-read at build."""
     caps = iter([65_536, 32_768])
     monkeypatch.setattr(
         research_runs.providers_db,
@@ -749,26 +710,22 @@ def test_a_cap_lowered_mid_run_bounds_the_request_that_actually_goes_out(monkeyp
     )
     inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
     assert _synthesis_max_tokens(inference, 0) == 65_536
-    # The second call is the one the retry loop makes, and it sees the lowered row.
+    # The second call is the one the retry loop makes.
     assert _synthesis_max_tokens(inference, 0) == 32_768
 
 
 def test_the_flush_triggers_scale_from_the_same_written_length():
     """Both arms must start scaling together, or the character one never binds.
 
-    Every flush rewrites the whole report row through the shared SQLite writer, and the same
-    wake-ups drive a full-report read per follower, so a time arm whose knee sits at the END
-    of the range this change unlocks leaves the row being rewritten four times a second for
-    an entire 65_536-token report.
+    A time arm whose knee sits at the END of the unlocked range leaves the row rewritten four
+    times a second through the shared writer for an entire 65_536-token report.
     """
     knee = int(
         research_runs._PROGRESS_FLUSH_SECONDS * research_runs._PROGRESS_FLUSH_CHARS_PER_SECOND
     )
     assert knee == research_runs._PROGRESS_FLUSH_CHARS * 64
-    # A 65_536-token report is roughly 262_144 chars, and the time arm has to have started
-    # scaling well before it, not at it.
+    # A 65_536-token report is roughly 262_144 chars; the arm must scale well before it.
     assert knee < 262_144 // 2
-    # Short reports are untouched: both arms sit at the previous constants.
     assert max(research_runs._PROGRESS_FLUSH_CHARS, 1_000 // 64) == 512
     assert (
         max(
@@ -787,7 +744,6 @@ def test_an_explicit_zero_budget_is_never_put_on_the_wire(monkeypatch):
 
 
 def test_a_saved_connection_cap_does_not_shorten_a_legacy_run(monkeypatch):
-    """A run this old was written at the default before the cap was ever consulted."""
     monkeypatch.setattr(
         research_runs.providers_db,
         "get_provider",
@@ -808,7 +764,6 @@ def test_a_saved_cap_above_the_default_does_not_raise_a_legacy_run(monkeypatch):
 
 
 def test_a_client_ceiling_is_what_actually_raises_the_report_budget(monkeypatch):
-    """The mainstream path: the client resolved this against the run's own model."""
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
     inference = {
         "providerType": "ollama",
@@ -820,13 +775,8 @@ def test_a_client_ceiling_is_what_actually_raises_the_report_budget(monkeypatch)
 
 
 def test_a_legacy_run_keeps_the_default_rather_than_guessing_upwards(monkeypatch):
-    """The saved cap is connection-wide, so for this run's model it is a guess.
-
-    Only the client holds the table that bounds a connection by the selected model's
-    documented ceiling, so without a ceiling from the client this side cannot raise the
-    budget at all: claude-opus-4-1 stops at 32_000 while its connection may be saved at
-    32_768, and a provider that rejects an over-limit request fails the finished run.
-    """
+    """The saved cap is connection-wide, so for this run's model it is a guess: claude-opus-4-1
+    stops at 32_000 while its connection may be saved at 32_768."""
     monkeypatch.setattr(
         research_runs.providers_db,
         "get_provider",

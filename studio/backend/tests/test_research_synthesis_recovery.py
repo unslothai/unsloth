@@ -296,14 +296,8 @@ def test_a_recovery_padded_with_invented_citations_does_not_win_on_length(
 
 
 def test_a_refused_report_budget_falls_back_rather_than_losing_the_run(research_home, monkeypatch):
-    """A connection that refuses the raised budget must not discard finished research.
-
-    A per-endpoint limit below the model's published cap, a router fronting several of them,
-    or a self-hosted context window that has to hold the synthesis prompt as well: none of
-    those is knowable when the budget is resolved. Failing here would throw away every step
-    and source the run gathered, so the last attempt is made at the budget every run had
-    before the connection ceiling was read at all.
-    """
+    """None of the ways a connection can refuse are knowable when the budget is resolved, so
+    the last attempt is made at the budget every run had before the ceiling was read."""
     from core import research_runs as worker
 
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
@@ -356,12 +350,8 @@ def test_a_cancelled_run_is_not_retried_at_the_old_budget(research_home, monkeyp
 
 
 def test_a_failed_recovery_keeps_the_draft_it_was_called_to_rescue(research_home, monkeypatch):
-    """Recovery improves on a draft already in hand, so failing it must not discard that.
-
-    Its prompt carries instructions the first one did not, so an endpoint that counts prompt
-    plus requested output against a single window can refuse the second request at a budget
-    the first fit inside. Losing the run there would throw away a readable report.
-    """
+    """Its prompt carries instructions the first did not, so an endpoint counting prompt plus
+    output against one window can refuse it at a budget the first request fit inside."""
     from core import research_runs as worker
 
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
