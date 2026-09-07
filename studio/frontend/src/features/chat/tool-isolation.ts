@@ -127,7 +127,9 @@ export function toolIsolationPresentation(
       state: "preview",
       label: `Preview OS isolation · ${backendLabel(capability.backend, capability.environment, capability.profile_id)}`,
       description:
-        "Python and Terminal use a preview sandbox whose live enforcement probe passed.",
+        capability.backend === "srt"
+          ? "Python and Terminal use SRT. Runtime and filesystem checks passed; platform limitations are listed below."
+          : "Python and Terminal use a preview sandbox whose live enforcement probe passed.",
     };
   }
   return {

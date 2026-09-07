@@ -92,6 +92,7 @@ def test_extra_trust_alias_mounts_only_canonical_target(tmp_path, monkeypatch):
 
 
 def test_sysconfig_data_does_not_admit_entire_system_prefix(monkeypatch):
+    monkeypatch.setattr(srt_adapter.sys, "platform", "linux")
     monkeypatch.setattr(srt_adapter.sysconfig, "get_config_var", lambda name: "x86_64-linux-gnu")
     monkeypatch.setattr(
         srt_adapter.sysconfig, "get_paths", lambda: {"data": "/", "stdlib": "/usr/lib/python"}
@@ -105,6 +106,7 @@ def test_sysconfig_data_does_not_admit_entire_system_prefix(monkeypatch):
 
 
 def test_read_roots_exclude_unselected_sdk_and_interpreter_trees(monkeypatch):
+    monkeypatch.setattr(srt_adapter.sys, "platform", "linux")
     monkeypatch.setattr(
         srt_adapter.sysconfig,
         "get_paths",

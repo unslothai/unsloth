@@ -31,13 +31,78 @@ def installer(tmp_path, monkeypatch):
     return module, root
 
 
-def test_non_linux_setup_never_installs_or_changes_policy(installer, monkeypatch):
+def test_unsupported_setup_never_installs_or_changes_policy(installer, monkeypatch):
     module, _ = installer
-    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(module.sys, "platform", "freebsd")
     monkeypatch.setattr(
         module.subprocess, "run", lambda *a, **k: pytest.fail("Windows invoked a process")
     )
+    with pytest.raises(RuntimeError, match = "support"):
+        module.install()
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_native_setup_installs_verified_helper_without_privileged_action(
+    installer, monkeypatch, platform
+):
+    module, root = installer
+    monkeypatch.setattr(module.sys, "platform", platform)
+    npm_dir = root / "node tools"
+    npm_cli = npm_dir / "node_modules/npm/bin/npm-cli.js"
+    npm_cli.parent.mkdir(parents = True)
+    npm_cli.write_text("// npm fixture")
+    monkeypatch.setattr(module.shutil, "which", lambda name: str(npm_dir / name))
+    calls = []
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda argv, **kwargs: calls.append(argv) or SimpleNamespace(stdout = "v24.13.0"),
+    )
     assert module.install() == 0
+    assert len(calls) == 4
+    assert all("windows-install" not in call for call in calls)
+    if platform == "win32":
+        assert calls[1][:2] == [str(npm_dir / "node"), str(npm_cli)]
+    assert "--ignore-scripts" in calls[1]
+    assert "verifyInstallation" in calls[-1][-2]
+
+
+@pytest.mark.parametrize("integrity_ok", [True, False])
+def test_explicit_windows_install_runs_only_after_integrity(installer, monkeypatch, integrity_ok):
+    module, root = installer
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    npm_cli = root / "node_modules/npm/bin/npm-cli.js"
+    npm_cli.parent.mkdir(parents = True)
+    npm_cli.write_text("// npm fixture")
+    monkeypatch.setattr(module.shutil, "which", lambda name: str(root / name))
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if "--input-type=module" in argv and not integrity_ok:
+            raise module.subprocess.CalledProcessError(1, argv)
+        return SimpleNamespace(stdout = "v24.13.0")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    if not integrity_ok:
+        with pytest.raises(module.subprocess.CalledProcessError):
+            module.install(windows_install = True)
+        assert all("windows-install" not in call for call in calls)
+        return
+    assert module.install(windows_install = True) == 0
+    assert "verifyInstallation" in calls[-2][-2]
+    assert calls[-1] == [
+        str(root / "node"),
+        str(root / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js"),
+        "windows-install",
+    ]
+
+
+def test_windows_install_flag_rejects_other_platform_before_process(installer, monkeypatch):
+    module, _ = installer
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: pytest.fail("unexpected process"))
+    with pytest.raises(RuntimeError, match = "requires Windows"):
+        module.install(windows_install = True)
 
 
 def test_offline_install_uses_lock_and_verifies_without_lifecycle_scripts(installer, monkeypatch):

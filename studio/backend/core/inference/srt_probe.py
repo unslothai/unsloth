@@ -108,6 +108,10 @@ def probe(
 
 
 def _native_probe(*, execution_kind = None, selected_executable = None):
+    if sys.platform in ("win32", "darwin"):
+        return _supported_platform_probe(
+            execution_kind = execution_kind, selected_executable = selected_executable
+        )
     if sys.platform != "linux":
         return False, "SRT strict profile is unavailable on this platform"
     # Without working host controls a refused call inside the sandbox proves nothing.
@@ -189,6 +193,68 @@ def _native_probe(*, execution_kind = None, selected_executable = None):
         return (
             True,
             "Selected Python, shell children, private IPC/resource sharing, read confinement, DNS and host network checks passed.",
+        )
+
+
+def _supported_platform_probe(*, execution_kind = None, selected_executable = None):
+    """Check the upstream platform contract without requiring Linux-only isolation."""
+    from .tools import _build_safe_env
+    with tempfile.TemporaryDirectory(prefix = "unsloth-srt-probe-") as directory:
+        root = Path(directory)
+        work = root / "work"
+        work.mkdir()
+        sentinel = root / "write-denied.txt"
+        sentinel.write_text("unchanged")
+        env = _build_safe_env(str(work))
+        shell = (selected_executable if execution_kind == "terminal" else None) or shutil.which(
+            "bash", path = env.get("PATH")
+        )
+        if not shell:
+            return False, "Selected bash executable is unavailable"
+        python = (selected_executable if execution_kind == "python" else None) or sys.executable
+        code = """
+import pathlib, subprocess, sys
+pathlib.Path('private.txt').write_text('workdir write')
+assert pathlib.Path('private.txt').read_text() == 'workdir write'
+try:
+    pathlib.Path(sys.argv[1]).write_text('unexpected write')
+except OSError:
+    pass
+else:
+    raise RuntimeError('SRT denied path remained writable')
+assert subprocess.check_output([sys.argv[2], '--noprofile', '--norc', '-c', 'printf shell-ok'], text=True) == 'shell-ok'
+print('UNSLOTH_SRT_SUPPORTED_PROBE_OK')
+"""
+        request = srt_adapter.request_for(
+            [python, "-I", "-S", "-c", code, str(sentinel), shell],
+            str(work),
+            env,
+            30,
+            operation = "probe",
+        )
+        request["denyWriteRoots"] = [str(sentinel)]
+        proc = srt_adapter.spawn(
+            request, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, cwd = str(work)
+        )
+        try:
+            output, _ = proc.communicate(timeout = 35)
+            if proc.returncode == 0:
+                srt_adapter.verify_success(proc)
+        except Exception:
+            proc.kill()
+            proc.wait(timeout = 5)
+            raise
+        finally:
+            srt_adapter.release_control(proc)
+        if (
+            proc.returncode != 0
+            or b"UNSLOTH_SRT_SUPPORTED_PROBE_OK" not in output
+            or sentinel.read_text() != "unchanged"
+        ):
+            return False, "SRT platform probe refused: " + output.decode(errors = "replace")[-1500:]
+        return (
+            True,
+            "Selected Python, Terminal child, workdir write and filesystem deny checks passed.",
         )
 
 

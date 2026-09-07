@@ -242,8 +242,7 @@ function ToolIsolationMenuSection({
     capability?.protection_state === "unavailable";
   const osIsolated =
     presentation.state === "protected" || presentation.state === "preview";
-  // The toggle exists only where the backend can enforce it (Linux and macOS today); a Windows
-  // or older backend never advertises "allowlist" and shows nothing here.
+  // Offer the toggle only when this backend advertises allowlist enforcement.
   const offersAllowlist =
     osIsolated && capabilityOffersNetworkAllowlist(capability);
   const limitedBackend = limitedBackendLabel(

@@ -280,12 +280,35 @@ def capability_snapshot(
 ) -> SandboxCapability:
     """Describe the shipped backend without treating installed binaries as proof."""
     identity = _runtime_identity()
-    if sys.platform == "win32":
-        limitations = ("srt_windows_system_dns_unfenced", "srt_windows_shared_account_grants")
-        reason = "SRT cannot fence system DNS or isolate concurrent filesystem grants on Windows."
-    elif sys.platform == "darwin":
-        limitations = ("srt_macos_system_dns_unfenced",)
-        reason = "SRT system DNS and descendant ownership are not qualified on macOS."
+    if sys.platform in ("win32", "darwin"):
+        from .srt_probe import probe
+
+        available, reason = probe(
+            force = force, execution_kind = execution_kind, selected_executable = selected_executable
+        )
+        limitations = (
+            ("srt_windows_system_dns_unfenced", "srt_windows_shared_account_grants")
+            if sys.platform == "win32"
+            else ("srt_macos_system_dns_unfenced",)
+        )
+        return SandboxCapability(
+            backend = "srt",
+            qualified = False,
+            available = available,
+            reason = reason,
+            environment = sys.platform,
+            protection_state = "preview" if available else "unavailable",
+            profile_id = "srt-0.0.75-native-v1",
+            limitations = limitations,
+            probe_generation = hashlib.sha256((identity + str(available)).encode()).hexdigest(),
+            environment_fingerprint = identity,
+            remediation = (
+                "SRT uses the platform's supported filesystem and network restrictions; system DNS remains available."
+                if available
+                else "Run studio/install_srt_runtime.py with Studio's Python. On Windows, also run it with --windows-install for SRT's one-time setup, then retry."
+            ),
+            limited_limitations = ("unrestricted_network", "host_files_readable"),
+        )
     elif sys.platform == "linux":
         from .srt_probe import probe
 
@@ -441,13 +464,14 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 effective_mode = "os_isolation_required",
                 environment = capability.environment,
                 backend = "srt",
-                profile_id = SRT_PROFILE,
+                profile_id = capability.profile_id,
                 probe_generation = capability.probe_generation,
                 os_isolation = True,
                 retained_safeguards = tuple(
                     item
                     for item in (*_LIMITED_SAFEGUARDS, "os_isolation")
                     if item != "timeout" or canonical.timeout_seconds is not None
+                    if item != "resource_limits" or sys.platform != "win32"
                 ),
                 limitations = capability.limitations,
                 network_policy = canonical.network_policy,

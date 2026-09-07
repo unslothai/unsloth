@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Install the locked Linux tool helper during Studio setup, never during a tool call."""
+"""Install the locked native tool helper during setup, never during a tool call."""
 
 from __future__ import annotations
 
@@ -14,12 +14,11 @@ import subprocess
 import sys
 
 
-def install(*, offline: bool = False) -> int:
-    if sys.platform != "linux":
-        print(
-            "SRT Required unavailable on this platform; no sandbox account or host policy was installed."
-        )
-        return 0
+def install(*, offline: bool = False, windows_install: bool = False) -> int:
+    if sys.platform not in ("linux", "darwin", "win32"):
+        raise RuntimeError("SRT does not support this platform.")
+    if windows_install and sys.platform != "win32":
+        raise RuntimeError("--windows-install requires Windows.")
     root = Path(__file__).resolve().parent / "backend/core/inference/srt_runtime"
     node, npm = shutil.which("node"), shutil.which("npm")
     if not node or not npm:
@@ -42,7 +41,15 @@ def install(*, offline: bool = False) -> int:
     patch = root / "apply_patch.mjs"
     if not patch.is_file():
         raise RuntimeError("SRT reviewed empty-root and network-forwarder patch is missing.")
-    command = [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"]
+    # Invoke npm's JS entrypoint directly on Windows: npm.cmd otherwise needs
+    # command-shell parsing, including installation paths containing spaces.
+    npm_command = [npm]
+    if sys.platform == "win32":
+        npm_cli = Path(npm).parent / "node_modules/npm/bin/npm-cli.js"
+        if not npm_cli.is_file():
+            raise RuntimeError("Cannot locate the selected npm CLI; rerun Node setup.")
+        npm_command = [node, str(npm_cli)]
+    command = [*npm_command, "ci", "--ignore-scripts", "--no-audit", "--no-fund"]
     if offline:
         command.append("--offline")
     subprocess.run(command, cwd = root, check = True, timeout = 300)
@@ -59,7 +66,26 @@ def install(*, offline: bool = False) -> int:
         check = True,
         timeout = 30,
     )
-    if not shutil.which("bwrap"):
+    if sys.platform == "win32":
+        if windows_install:
+            print(
+                "Installing upstream SRT's local sandbox account, group, registry state and WFP filters; Windows may request elevation.",
+                flush = True,
+            )
+            cli = root / "node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js"
+            subprocess.run([node, str(cli), "windows-install"], cwd = root, check = True, timeout = 150)
+        else:
+            print(
+                "SRT helper verified. Complete one-time privileged setup with: python studio/install_srt_runtime.py --windows-install"
+            )
+        print(
+            "Windows SRT uses the upstream alpha account/ACL/WFP model; availability requires a live probe."
+        )
+    elif sys.platform == "darwin":
+        print(
+            "SRT helper verified. macOS uses native Seatbelt; install ripgrep if missing. Availability requires a live probe."
+        )
+    elif not shutil.which("bwrap"):
         print(
             "SRT dependencies verified; install bubblewrap through your OS package manager. Required remains unavailable until its live probe passes."
         )
@@ -75,9 +101,14 @@ def main() -> int:
     parser.add_argument(
         "--offline", action = "store_true", help = "Use only the existing npm cache; no registry access"
     )
+    parser.add_argument(
+        "--windows-install",
+        action = "store_true",
+        help = "Explicitly provision upstream Windows sandbox account and WFP filters (may request elevation)",
+    )
     args = parser.parse_args()
     try:
-        return install(offline = args.offline)
+        return install(offline = args.offline, windows_install = args.windows_install)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         print(
             f"SRT setup unavailable: {exc}. Required mode will not execute on the host.",

@@ -3578,8 +3578,6 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
-# Windows SRT needs privileged account/WFP setup and does not meet our DNS contract.
-substep "SRT Required is unavailable on Windows; no sandbox account or host policy was installed." "Yellow"
 
 Remove-AgentInstructionFiles -Roots @(
     (Join-Path $FrontendDir "node_modules"),
@@ -3660,6 +3658,13 @@ if (-not $PythonCmd) {
 }
 
 substep "Python found: $PythonCmd"
+
+# Install verified dependencies with the selected interpreter. The separate
+# account/WFP operation remains an explicit one-time setup command.
+$srtInstallExit = Invoke-SetupCommand { & $PythonCmd "$ScriptDir\install_srt_runtime.py" }
+if ($srtInstallExit -ne 0) {
+    substep "SRT helper setup failed; native tool isolation remains unavailable until setup succeeds." "Yellow"
+}
 
 # $StudioHome / $VenvDir are resolved and preflighted before phase 1, so only the
 # cache clear stays here. Venv-gated: a writable-but-empty override still fails the

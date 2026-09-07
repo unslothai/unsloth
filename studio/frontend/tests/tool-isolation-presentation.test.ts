@@ -7,6 +7,8 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 
 import {
   TOOL_ISOLATION_LIMITATION_TEXT,
@@ -14,6 +16,44 @@ import {
   limitedBackendLabel,
   networkAllowlistSummary,
 } from "../src/features/chat/tool-isolation-labels.ts";
+
+const isolationSource = readFileSync(new URL("../src/features/chat/tool-isolation.ts", import.meta.url), "utf8");
+const presentationSource = isolationSource.slice(
+  isolationSource.indexOf("export function isLimitedGrantCurrent("),
+  isolationSource.indexOf("export function createToolIsolationUiSessionId("),
+);
+const presentation = runInNewContext(
+  stripTypeScriptTypes(presentationSource).replace(/^export /gm, "") + "\ntoolIsolationPresentation;",
+  { backendLabel, limitedBackendLabel },
+);
+
+for (const [environment, limitations] of [
+  ["win32", ["srt_windows_system_dns_unfenced", "srt_windows_shared_account_grants"]],
+  ["darwin", ["srt_macos_system_dns_unfenced"]],
+  ["linux", ["srt_platform_qualification_incomplete"]],
+] as const) {
+  test(`${environment}: supported SRT limitations do not disable Required presentation`, () => {
+    const capability = {
+      environment, backend: "srt", available: true, qualified: false,
+      protection_state: "preview", profile_id: "srt-0.0.75-supported-v1",
+      limitations,
+    };
+    const result = presentation("os_isolation_required", capability);
+    assert.equal(result.state, "preview");
+    assert.match(result.label, /Sandbox Runtime/);
+    assert.match(result.description, /Runtime and filesystem checks passed/);
+    assert.doesNotMatch(result.description, /blocked|unavailable/);
+    for (const code of capability.limitations) {
+      assert.doesNotMatch(TOOL_ISOLATION_LIMITATION_TEXT[code], /Required.*unavailable/);
+    }
+    const unavailable = presentation("os_isolation_required", {
+      ...capability, available: false, protection_state: "unavailable",
+      limitations: ["srt_runtime_unavailable"],
+    });
+    assert.equal(unavailable.state, "unavailable");
+    assert.match(unavailable.description, /blocked/);
+  });
+}
 
 // The last two land with the network proxy and the Windows restricted token; a checkout
 // without them is scanned for the others only.

@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import select
+import secrets
+import socket
 import site
 import shutil
 import subprocess
@@ -16,6 +18,7 @@ import stat
 import sys
 import sysconfig
 import time
+import threading
 from .srt_seccomp import install as _install_srt_seccomp
 
 RUNTIME = Path(__file__).with_name("srt_runtime")
@@ -144,6 +147,20 @@ def socat_executable() -> str:
 
 
 def read_roots(executable: str) -> list[str]:
+    if sys.platform in ("win32", "darwin"):
+        roots = [
+            os.path.dirname(os.path.abspath(executable)),
+            sys.prefix,
+            sys.base_prefix,
+            str(Path(__file__).with_name("sandbox_site")),
+            *site.getsitepackages(),
+        ]
+        if sys.platform == "win32":
+            # Git Bash loads its runtime from the installation beside bin/bash.exe.
+            bash = shutil.which("bash")
+            if bash and "git" in bash.lower():
+                roots.append(str(Path(bash).parent.parent))
+        return sorted({os.path.realpath(root) for root in roots if os.path.exists(root)})
     roots = {
         "/usr/bin",
         "/usr/sbin",
@@ -226,7 +243,7 @@ def request_for(
     roots = sorted(set([*roots, *(os.path.realpath(path) for path in additional_read_roots)]))
     if any(os.path.realpath(root) == os.path.sep for root in roots):
         raise SrtError("Root filesystem read grant is forbidden")
-    denied = validate_roots(roots, os.path.realpath(cwd))
+    denied = validate_roots(roots, os.path.realpath(cwd)) if sys.platform == "linux" else []
     roots = [
         root
         for root in roots
@@ -242,7 +259,7 @@ def request_for(
         "readRoots": roots,
         "writeRoots": [os.path.realpath(cwd)],
         "denyReadRoots": denied,
-        "privateUnixSockets": True,
+        "privateUnixSockets": sys.platform == "linux",
         "timeoutMs": None if timeout is None else max(1, int(timeout * 1000)),
     }
 
@@ -254,8 +271,10 @@ def spawn(
     **kwargs,
 ):
     """Start one helper and require its bounded private control acknowledgement."""
-    if sys.platform != "linux":
-        raise SrtError("SRT strict launch is unavailable on this platform")
+    if sys.platform == "win32":
+        return _spawn_windows(request, cancel_event = cancel_event, **kwargs)
+    if sys.platform not in ("linux", "darwin"):
+        raise SrtError("SRT launch is unavailable on this platform")
     node = node_executable()
     read_fd, write_fd = os.pipe()
     proc = None
@@ -274,7 +293,8 @@ def spawn(
 
         def guarded_preexec():
             parent_preexec()
-            _install_srt_seccomp()
+            if sys.platform == "linux":
+                _install_srt_seccomp()
 
         options["preexec_fn"] = guarded_preexec
         options.update(stdin = subprocess.PIPE, close_fds = True, pass_fds = (write_fd,))
@@ -357,7 +377,149 @@ def spawn(
             os.close(write_fd)
 
 
+def _spawn_windows(
+    request,
+    *,
+    cancel_event = None,
+    **kwargs,
+):
+    """Authenticate a per-launch helper connection without Windows pass_fds."""
+    token = secrets.token_hex(32)
+    proc = None
+    connection = None
+    writer = None
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        listener.settimeout(0.1)
+        message = dict(request, controlSocket = {"port": listener.getsockname()[1], "token": token})
+        encoded = json.dumps(message, ensure_ascii = True, separators = (",", ":")).encode() + b"\n"
+        if len(encoded) > MAX_REQUEST:
+            raise SrtError("SRT launch request exceeds the protocol bound")
+        timeout_ms = request.get("timeoutMs")
+        deadline = time.monotonic() + (30 if timeout_ms is None else min(30, timeout_ms / 1000))
+
+        def check_wait():
+            if cancel_event is not None and cancel_event.is_set():
+                raise SrtError("SRT launch cancelled before acknowledgement")
+            if time.monotonic() >= deadline:
+                raise SrtError("SRT helper launch acknowledgement timed out")
+
+        try:
+            check_wait()
+            options = dict(kwargs)
+            options.pop("preexec_fn", None)
+            options.pop("pass_fds", None)
+            # The SRT native launcher owns its sandbox job. Suspending Node here
+            # would prevent the acknowledgement needed before tools resumes it.
+            options["creationflags"] = options.get("creationflags", 0) & ~0x00000004
+            options.update(stdin = subprocess.PIPE, close_fds = True)
+            options["env"] = {
+                key: value
+                for key, value in os.environ.items()
+                if key.upper()
+                in {
+                    "SYSTEMROOT",
+                    "WINDIR",
+                    "PATH",
+                    "TEMP",
+                    "TMP",
+                    "USERPROFILE",
+                    "LOCALAPPDATA",
+                    "APPDATA",
+                    "PROGRAMDATA",
+                    "PATHEXT",
+                }
+            }
+            proc = subprocess.Popen(
+                [node_executable(), str(RUNTIME / "bridge.mjs"), "--control-socket"], **options
+            )
+
+            def send_request():
+                stream = proc.stdin
+                try:
+                    offset = 0
+                    while offset < len(encoded):
+                        offset += os.write(stream.fileno(), encoded[offset:])
+                except (OSError, ValueError):
+                    pass
+                finally:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+
+            writer = threading.Thread(target = send_request, daemon = True)
+            writer.start()
+            pending = b""
+            authenticated = False
+            ready = False
+            while True:
+                check_wait()
+                if connection is None:
+                    try:
+                        connection, _ = listener.accept()
+                        connection.settimeout(0.1)
+                    except socket.timeout:
+                        if proc.poll() is not None:
+                            raise SrtError("SRT helper exited before launch acknowledgement")
+                        continue
+                try:
+                    chunk = connection.recv(MAX_CONTROL + 1)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    raise SrtError("SRT helper closed its control channel before launch")
+                pending += chunk
+                if len(pending) > MAX_CONTROL:
+                    raise SrtError("SRT control response exceeds the protocol bound")
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    try:
+                        event = json.loads(line)
+                    except (ValueError, UnicodeError) as exc:
+                        raise SrtError("Malformed SRT control response") from exc
+                    if not isinstance(event, dict) or event.get("v") != 1:
+                        raise SrtError("Unknown SRT control protocol")
+                    kind = event.get("event")
+                    if not authenticated:
+                        if kind != "hello" or not secrets.compare_digest(
+                            str(event.get("token", "")), token
+                        ):
+                            raise SrtError("SRT control authentication failed")
+                        authenticated = True
+                    elif kind == "error":
+                        raise SrtError(str(event.get("message", "SRT setup failed"))[:2000])
+                    elif kind == "ready" and not ready and event.get("version") == "0.0.75":
+                        ready = True
+                    elif kind == "spawned" and ready and type(event.get("pid")) is int:
+                        writer.join(timeout = 1)
+                        if writer.is_alive():
+                            raise SrtError("SRT request writer did not finish")
+                        proc.stdin = None
+                        proc._srt_control_socket = connection
+                        proc._srt_control_pending = pending
+                        connection = None
+                        return proc
+                    else:
+                        raise SrtError("Unexpected SRT launch control event")
+        except Exception:
+            if proc is not None:
+                proc.kill()
+                proc.wait(timeout = 5)
+            raise
+        finally:
+            if connection is not None:
+                connection.close()
+            if writer is not None:
+                writer.join(timeout = 1)
+
+
 def release_control(proc) -> None:
+    connection = getattr(proc, "_srt_control_socket", None)
+    if connection is not None:
+        proc._srt_control_socket = None
+        connection.close()
     descriptor = getattr(proc, "_srt_control_fd", None)
     if descriptor is not None:
         proc._srt_control_fd = None
@@ -367,13 +529,21 @@ def release_control(proc) -> None:
 def verify_success(proc) -> None:
     """Require the trusted completion receipt as well as successful process exit."""
     descriptor = getattr(proc, "_srt_control_fd", None)
-    if descriptor is None or proc.poll() != 0:
+    connection = getattr(proc, "_srt_control_socket", None)
+    if (descriptor is None and connection is None) or proc.poll() != 0:
         raise SrtError("SRT workload success has no completion receipt")
     data = getattr(proc, "_srt_control_pending", b"")
-    os.set_blocking(descriptor, False)
+    if connection is not None:
+        connection.setblocking(False)
+    else:
+        os.set_blocking(descriptor, False)
     while True:
         try:
-            chunk = os.read(descriptor, MAX_CONTROL + 1)
+            chunk = (
+                connection.recv(MAX_CONTROL + 1)
+                if connection is not None
+                else os.read(descriptor, MAX_CONTROL + 1)
+            )
         except BlockingIOError as exc:
             raise SrtError("SRT control channel remained open after helper exit") from exc
         if not chunk:

@@ -12,11 +12,11 @@ export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = 
   host_files_readable:
     "This execution can read files available to the Studio process, including private documents and credentials.",
   srt_windows_system_dns_unfenced:
-    "Windows system DNS requests are not confined by this runtime, so Required mode remains unavailable.",
+    "Windows system DNS requests are not confined by this runtime.",
   srt_windows_shared_account_grants:
     "Windows sandbox account permissions are shared across sessions and have not been qualified for isolated concurrent tool runs.",
   srt_macos_system_dns_unfenced:
-    "macOS system DNS requests are not confined by this runtime, so Required mode remains unavailable.",
+    "macOS system DNS requests are not confined by this runtime.",
   srt_private_unix_ipc_unqualified:
     "Private interprocess communication has not been qualified for Python workers or tensor sharing.",
   srt_runtime_unavailable:

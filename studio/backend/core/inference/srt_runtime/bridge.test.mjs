@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import net from 'node:net';
+import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { MAX_REQUEST, payloadCommand, quote, validateRequest, verifyInstallation } from './bridge.mjs';
+import { MAX_REQUEST, connectControl, executeSupported, payloadCommand, quote, supportedArgv, supportedConfig, validateRequest, verifyInstallation } from './bridge.mjs';
 import { applyPatch } from './apply_patch.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -140,4 +142,71 @@ test('host temp grants and symlink aliases fail before payload execution', {skip
       }
     }
   } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('authenticated control accepts only one bounded loopback transport',()=>{
+  const controlSocket={port:12345,token:'a'.repeat(64)};
+  assert.equal(validateRequest({...request(),controlSocket}).controlSocket,controlSocket);
+  for(const update of [{port:0},{port:65536},{token:'short'},{host:'0.0.0.0'}]) {
+    assert.throws(()=>validateRequest({...request(),controlSocket:{...controlSocket,...update}}));
+  }
+  assert.throws(()=>validateRequest({...request(),controlSocket,controlFd:3}));
+});
+
+test('TCP control authenticates before security records',async()=>{
+  const server=net.createServer();
+  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
+  const received=new Promise((resolve)=>server.once('connection',(peer)=>{let data='';peer.on('data',(part)=>{data+=part;if(data.includes('\n'))resolve({peer,hello:JSON.parse(data.trim())});});}));
+  const socket=await connectControl({port:server.address().port,token:'b'.repeat(64)});
+  const {peer,hello}=await received;
+  assert.deepEqual(hello,{v:1,event:'hello',token:'b'.repeat(64)});
+  socket.destroy();peer.destroy();await new Promise((resolve)=>server.close(resolve));
+});
+
+test('public Windows wrapper preserves argument data and upstream proxy authority',async()=>{
+  const calls=[];
+  const manager={wrapWithSandboxArgv:async(command,shell,_config,_signal,cwd)=>{
+    calls.push({command,shell,cwd});
+    return {argv:['srt-win.exe','exec','--env','HTTPS_PROXY=srt-owned','--',shell.exe,...shell.args,command],env:{BROKER_ONLY:'yes'}};
+  }};
+  for(const argv of [[],[''],['-c','quotes " & $(text)',"apostrophe'",'trailing\\','']]) {
+    const value={...request(),executable:'C:\\selected python\\python.exe',argv,env:{PATH:'selected',PYTHONIOENCODING:'utf-8',HTTPS_PROXY:'must-not-win',TEMP:'must-not-win'}};
+    const wrapped=await supportedArgv(manager,value,'win32');
+    const boundary=wrapped.argv.indexOf('--');
+    assert.deepEqual(wrapped.argv.slice(boundary+1),[value.executable,...argv]);
+    assert.ok(wrapped.argv.includes('PYTHONIOENCODING=utf-8'));
+    assert.ok(wrapped.argv.includes('HTTPS_PROXY=srt-owned'));
+    assert.equal(wrapped.argv.some((arg)=>arg.includes('must-not-win')),false);
+    assert.equal(calls.at(-1).cwd,value.cwd);
+  }
+});
+
+test('supported configuration uses session grants and never enables TLS interception',()=>{
+  const value={...request(),denyWriteRoots:['/denied'],nativeAllowedDomains:['pypi.org']};
+  const config=supportedConfig(value,'C:\\trusted\\srt-win.exe');
+  assert.deepEqual(config.filesystem.allowRead,value.readRoots);
+  assert.deepEqual(config.filesystem.denyWrite,['/denied']);
+  assert.deepEqual(config.network,{allowedDomains:['pypi.org'],deniedDomains:[]});
+  assert.equal(config.windows.srtWin.path,'C:\\trusted\\srt-win.exe');
+});
+
+test('supported lifecycle completes cleanup before attestation and refuses cleanup failure',async()=>{
+  const work=fs.mkdtempSync(path.join(os.tmpdir(),'unsloth-srt-supported-'));
+  try {
+    for(const cleanupFailure of [false,true]) {
+      const order=[];const records=[];
+      const manager={
+        initialize:async()=>{order.push('initialize');console.log('HOST_MANAGER_LOG');},
+        wrapWithSandboxArgv:async(command,shell)=>({argv:['broker','exec','--',shell.exe,...shell.args,command],env:{}}),
+        cleanupAfterCommand:()=>order.push('cleanup'),
+        reset:async()=>{order.push('reset');if(cleanupFailure)throw Error('cleanup refused');},
+      };
+      const run=executeSupported({...request(),executable:process.execPath,cwd:work,writeRoots:[work]},(event)=>{records.push(event);order.push(event.event);},{platform:'win32',loadManager:async()=>({SandboxManager:manager,VENDORED_SRT_WIN_EXE:'trusted-helper'}),spawnProcess:()=>{
+        const child=new EventEmitter();Object.assign(child,{pid:424242,exitCode:null,signalCode:null,kill:()=>true});
+        queueMicrotask(()=>{child.emit('spawn');child.exitCode=0;child.emit('exit',0,null);});return child;
+      }});
+      if(cleanupFailure){await assert.rejects(run,/cleanup refused/);assert.equal(records.some((r)=>r.event==='exit'),false);}
+      else {assert.equal(await run,0);assert.deepEqual(order,['initialize','ready','spawned','cleanup','reset','exit']);}
+    }
+  } finally {fs.rmSync(work,{recursive:true,force:true});}
 });

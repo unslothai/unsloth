@@ -60,11 +60,58 @@ jobs:
         run: |
           python -c 'from core.inference.os_sandbox import capability_snapshot; c = capability_snapshot(force=True); print(c); assert c.available, c.reason; assert not c.qualified'
       - name: Installer and proxy regressions
-        run: python -m pytest --noconftest studio/backend/tests/test_srt_install.py studio/backend/tests/test_srt_adapter.py studio/backend/tests/test_srt_seccomp.py studio/backend/tests/test_srt_launch_contract.py studio/backend/tests/test_srt_network.py studio/backend/tests/test_network_proxy.py -q --timeout=60
+        run: python -m pytest --noconftest studio/backend/tests/test_srt_install.py studio/backend/tests/test_srt_adapter.py studio/backend/tests/test_srt_seccomp.py studio/backend/tests/test_srt_launch_contract.py studio/backend/tests/test_srt_network.py studio/backend/tests/test_srt_platform_capability.py studio/backend/tests/test_srt_control.py studio/backend/tests/test_network_proxy.py -q --timeout=60
       - name: Actual Required tools, selected Pillow runtime and HTTPS allowlist
         env:
           UNSLOTH_SRT_NATIVE_TESTS: '1'
         run: python -m pytest --noconftest studio/backend/tests/test_srt_native_tools.py -q --timeout=120
+
+  desktop-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      OPENBLAS_NUM_THREADS: '1'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      PYTHONPATH: studio/backend
+      UNSLOTH_SRT_NATIVE_TESTS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Set isolated Studio state directory
+        shell: bash
+        run: echo "UNSLOTH_STUDIO_HOME=$RUNNER_TEMP/srt-studio-home" >> "$GITHUB_ENV"
+      - name: Install selected Python test dependencies
+        run: python -m pip install pytest pytest-timeout structlog psutil Pillow fastapi
+      - name: Install macOS prerequisite
+        if: runner.os == 'macOS'
+        run: command -v rg || brew install ripgrep
+      - name: Install verified helper without privileged setup
+        run: python studio/install_srt_runtime.py
+      - name: Reinstall from the populated offline cache
+        run: python studio/install_srt_runtime.py --offline
+      - name: Provision upstream sandbox account and WFP on disposable Windows runner
+        if: runner.os == 'Windows'
+        run: python studio/install_srt_runtime.py --offline --windows-install
+      - name: Native helper protocol and platform controls
+        working-directory: studio/backend/core/inference/srt_runtime
+        run: npm test
+      - name: Native selected runtime capability
+        run: python -c "from core.inference.os_sandbox import capability_snapshot; c=capability_snapshot(force=True); print(c); assert c.available, c.reason"
+      - name: Native Studio tool controls and installer regressions
+        run: python -m pytest --noconftest studio/backend/tests/test_srt_install.py studio/backend/tests/test_srt_platform_capability.py studio/backend/tests/test_srt_control.py studio/backend/tests/test_srt_native_platform.py -q --timeout=120
+      - name: Remove upstream sandbox account and WFP from disposable Windows runner
+        if: always() && runner.os == 'Windows'
+        run: node studio/backend/core/inference/srt_runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js windows-uninstall
 
   frontend-policy:
     runs-on: ubuntu-22.04

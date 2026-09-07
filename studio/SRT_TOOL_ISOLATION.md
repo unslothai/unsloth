@@ -1,20 +1,22 @@
 # Python and Terminal isolation
 
-Studio uses the pinned `@anthropic-ai/sandbox-runtime` **0.0.75** helper for its Linux Required mode. Availability depends on the actual selected runtime and a successful live confinement probe. Available Linux support is **Preview**, with `qualified=false`; this is not comprehensive security or compatibility qualification.
+Studio uses the pinned `@anthropic-ai/sandbox-runtime` **0.0.75** helper for native Required mode. Availability depends on the selected runtime, platform setup and a successful live probe. Support is **Preview**; Windows follows upstream's **alpha** model. These labels do not imply comprehensive security or compatibility qualification.
 
 | Platform | Required mode |
 |---|---|
 | Linux x86-64 / arm64 | Preview only after the live probe succeeds; otherwise execution is refused |
-| Windows | Unavailable: strict DNS/read isolation has not been established |
-| macOS | Unavailable: strict DNS/read isolation has not been established |
+| Windows x64 / arm64 | Upstream sandbox account, restricted token, job object, ACL grants and WFP; one-time elevated setup required |
+| macOS | Native Seatbelt profile and upstream proxy model; ripgrep required |
 
 Required never retries a refused or failed command on the host. Limited needs an authenticated, short-lived consent grant for the current page session and capability generation. Limited uses software safeguards without an OS isolation claim. Full is the separately confirmed unrestricted mode. Tool protection records originate from the backend; an SRT launch is labelled only after successful completion, because launching the wrapper alone does not prove confinement succeeded.
 
 ## Installation and offline use
 
-Normal Studio setup runs `studio/install_srt_runtime.py` on Linux, independently of the frontend build. It uses the setup-selected Node and npm, requires **Node >=20.11**, runs `npm ci --ignore-scripts --no-audit --no-fund` against the committed lock, applies the reviewed `apply_patch.mjs` changes to the exact pinned SRT source, then verifies the patched dependency contents against the reviewed integrity manifest. These changes provide an empty filesystem root and cap each network forwarder at 32 children. The patch rejects unknown source bytes; upgrades require renewed source review and integrity pins. Setup does not replace the selected Python environment or install packages into it. Missing Node/npm, failed downloads, a bad lock, missing patch or integrity failure leaves Required unavailable.
+Normal Studio setup runs `studio/install_srt_runtime.py` on Linux, macOS and Windows, independently of the frontend build. It uses the setup-selected Node and npm, requires **Node >=20.11**, runs `npm ci --ignore-scripts --no-audit --no-fund` against the committed lock, applies the reviewed `apply_patch.mjs` changes to the exact pinned SRT source, then verifies the patched dependency contents against the reviewed integrity manifest. The Linux changes provide an empty filesystem root and cap each network forwarder at 32 children. The patch rejects unknown source bytes; upgrades require renewed source review and integrity pins. Setup does not replace the selected Python environment or install packages into it. Missing Node/npm, failed downloads, a bad lock, missing patch or integrity failure leaves Required unavailable.
 
 Linux also needs `bubblewrap`, `socat`, `ripgrep` and usable OS confinement facilities. Install missing prerequisites with your distribution's package manager if the capability message requests them; Studio does not change host security policy to enable them. Existing Studio setup manages an isolated Node where supported; a desktop frontend bundle alone does not supply the backend helper.
+
+macOS uses the operating system's `sandbox-exec`/Seatbelt implementation. Install `ripgrep` with `brew install ripgrep` if it is missing; no separate account or WFP setup applies.
 
 For an explicit reinstall from an already populated npm cache:
 
@@ -22,19 +24,39 @@ For an explicit reinstall from an already populated npm cache:
 python studio/install_srt_runtime.py --offline
 ```
 
-This command fails if cached packages are missing. Normal tool calls perform no dependency installation and require no npm registry access. Preserve the installed `srt_runtime/node_modules` when preparing an offline image. After an upgrade, rerun setup so the lock and integrity manifest match. The helper lives inside the Studio installation and is removed with that installation; no global npm package, account, CA, WFP rule or filesystem grant is installed.
+This command fails if cached packages are missing. Normal tool calls perform no dependency installation and require no npm registry access. Preserve the installed `srt_runtime/node_modules` when preparing an offline image. After an upgrade, rerun setup so the lock and integrity manifest match. The helper lives inside the Studio installation; helper installation alone does not provision a sandbox account or machine policy.
 
-The live confinement probe requires working host DNS as a positive control. A host without DNS cannot establish that denial result and Required remains unavailable, even when the helper is installed from an offline cache.
+The Linux live confinement probe requires working host DNS as a positive control. A host without DNS cannot establish that denial result and Required remains unavailable, even when the helper is installed from an offline cache.
 
-Windows setup does not invoke SRT's privileged account/WFP installer. macOS and Windows users see the measured unavailable reason and may explicitly choose Limited or Full under their existing consent flow.
+## Windows machine setup
+
+After helper installation, explicitly run this command once per machine:
+
+```powershell
+python studio/install_srt_runtime.py --windows-install
+```
+
+The pinned upstream installer requests elevation through UAC. It creates the `srt-sandbox` local user and `sandbox-runtime-users` group, stores the encrypted credential and setup state in `HKLM\SOFTWARE\sandbox-runtime`, installs WFP rules keyed to the sandbox user SID, and stamps upstream's ambient write-deny ACLs. The default permitted proxy ports are loopback **60080–60089**. Re-running rotates the sandbox password and reconciles the filters; Studio does not pass `--force` to replace conflicting configuration. Declined elevation or incomplete setup leaves Required unavailable. No logout is required.
+
+Commands keep Studio's selected Python and shell. The sandbox account needs explicit read grants for per-user runtime installations; Studio does not replace them with a machine-wide Python or WSL. Runtime filesystem grants follow upstream's session ACL lifecycle. Windows system DNS resolution is not fenced, and the shared sandbox account is not a strict separation boundary between concurrent sessions. macOS system services can likewise resolve DNS outside the process network restrictions. These are upstream model limits, not failed Linux-denial tests.
+
+Windows TLS interception and sandbox-user CA trust are upstream features separate from account/WFP installation. The helper installer does not itself import a CA into a certificate store. If the runtime enables upstream TLS termination, its CA setup and trust requirements apply; this is not a claim that Windows networking uses Linux's non-intercepting transport.
+
+To remove upstream's machine setup using the already installed pinned helper:
+
+```powershell
+node studio/backend/core/inference/srt_runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js windows-uninstall
+```
+
+This elevated operation removes the upstream account/profile, group, WFP filters and registry state. Upstream leaves `%ProgramData%\sandbox-runtime` CA material and per-user `%LOCALAPPDATA%\sandbox-runtime` state behind. Removing Studio's files alone does not uninstall this machine setup. On a shared installation, coordinate uninstall with other users of SRT.
 
 ## Current limits
 
-Required denies networking by default. HTTPS allowlists become available only when the separate private-transport probe passes. The configured hosts come from `UNSLOTH_STUDIO_TOOL_NETWORK_ALLOWLIST`; each launch receives its own private proxy sockets. The proxy permits HTTPS CONNECT on port 443 with host, public-address and TLS SNI checks. It refuses cleartext HTTP and SOCKS, while direct host networking and system DNS remain blocked. No interception certificate or global proxy is installed. Native controls have exercised real HTTPS success and these network denials; this evidence does not establish full platform qualification.
+Linux Required denies networking by default. Linux HTTPS allowlists become available only when the separate private-transport probe passes. The configured hosts come from `UNSLOTH_STUDIO_TOOL_NETWORK_ALLOWLIST`; each launch receives its own private proxy sockets. The proxy permits HTTPS CONNECT on port 443 with host, public-address and TLS SNI checks. It refuses cleartext HTTP and SOCKS, while direct host networking and system DNS remain blocked. Linux installs no interception certificate or global proxy. Windows and macOS use upstream native platform enforcement and report measured capabilities of that model. Native controls have exercised real HTTPS success and these network denials; this evidence does not establish full platform qualification.
 
 HTTPS launches preserve the selected CA file and snapshot hashed certificate/revocation entries from a single selected certificate directory into private read-only storage. This preserves symlink-backed trust stores without exposing their target directories or changing global trust. Explicit empty or missing stores remain empty or missing. Multi-directory `SSL_CERT_DIR` configurations remain unqualified.
 
-Private Unix sockets and multiprocessing resource sharing are supported after live positive and negative controls pass. Host filesystem sockets are excluded by the filesystem boundary and host abstract sockets by the network namespace. A small inherited seccomp filter denies VSOCK and io_uring before starting the helper. Native tests exercise spawned Python workers and descriptor transfer. CUDA, broad native package compatibility and every platform's full confidentiality matrix remain unqualified. Do not interpret skipped or unavailable probes as successful denials.
+Private Unix sockets and multiprocessing resource sharing on Linux are supported after live positive and negative controls pass. Host filesystem sockets are excluded by the filesystem boundary and host abstract sockets by the network namespace. A small inherited seccomp filter denies VSOCK and io_uring before starting the helper. Native tests exercise spawned Python workers and descriptor transfer. CUDA, broad native package compatibility and every platform's full confidentiality matrix remain unqualified. Do not interpret skipped or unavailable probes as successful denials.
 
 The sandbox supplies an ephemeral private `/tmp`; its short path keeps multiprocessing sockets within Unix pathname limits even for long session directories. Native Studio tool runs exercised seven unmodified Pillow formats, NumPy 2.5.3 and CPU PyTorch 2.14.0 tensor sharing with spawned workers. These Linux measurements do not qualify Windows Python or CUDA.
 
