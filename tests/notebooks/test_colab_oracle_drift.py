@@ -501,3 +501,44 @@ def test_a_dry_run_install_does_not_undo_a_removal():
     assert not nv._removed_by_cell(
         "!pip uninstall -y tokenizers; pip install tokenizers", "tokenizers"
     )
+
+
+def test_an_unfetchable_rule_bearing_oracle_fails_strict(oracle, capsys):
+    """Not compared is not "no drift".
+
+    A transient fetch failure only warned and returned success, so the job reported a pass for
+    a check that never ran and the refresh after it fed the lint an oracle nothing had
+    compared.
+    """
+    upstream, snapshot_dir = oracle
+    real = nv.urllib.request.urlopen
+
+    def flaky(url, timeout = None):
+        if url.endswith("os-info-gpu.txt"):
+            raise urllib.error.URLError("boom")
+        return real(url, timeout = timeout)
+
+    nv.urllib.request.urlopen = flaky
+    try:
+        assert _diff(snapshot_dir, strict = True) == 1
+    finally:
+        nv.urllib.request.urlopen = real
+    assert "::error::" in capsys.readouterr().out
+
+
+def test_an_unfetchable_advisory_oracle_stays_a_warning(oracle, capsys):
+    """apt-list carries no rule-bearing key, so its absence must not redden the cron."""
+    upstream, snapshot_dir = oracle
+    real = nv.urllib.request.urlopen
+
+    def flaky(url, timeout = None):
+        if url.endswith("apt-list-gpu.txt"):
+            raise urllib.error.URLError("boom")
+        return real(url, timeout = timeout)
+
+    nv.urllib.request.urlopen = flaky
+    try:
+        assert _diff(snapshot_dir, strict = True) == 0
+    finally:
+        nv.urllib.request.urlopen = real
+    assert "::warning::" in capsys.readouterr().out

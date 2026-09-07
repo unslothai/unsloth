@@ -1427,9 +1427,17 @@ def _invoked_name(piece: str) -> str:
         text = text[header.end() :].lstrip().lstrip("({").lstrip()
     while True:
         word, rest = _split_first_word(text)
-        if word.lower() not in _SHELL_BODY_KEYWORDS:
-            return word
-        text = rest.lstrip()
+        # `A=1 f`, `2>/dev/null f` and the reserved word `time f` all still call the function;
+        # only the wrappers that go looking for an EXECUTABLE do not.
+        if (
+            word.lower() in _SHELL_BODY_KEYWORDS
+            or word == "time"
+            or _ENV_ASSIGNMENT_RE.match(word)
+            or _REDIRECTION_RE.match(word)
+        ):
+            text = rest.lstrip()
+            continue
+        return word
 
 
 def _leading_shell_keywords(piece: str) -> list[str]:
@@ -1493,6 +1501,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     def_names: list[str | None] = [None]
     owners: list[str | None] = []
     nodef: list[bool] = []
+    assumed: list[bool] = []
     # Each definition's exit status once its closing brace is reached. Bash requires the
     # definition to precede the call, so a single left-to-right pass always has it in hand.
     func_status: dict[str, bool | None] = {}
@@ -1528,6 +1537,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     closed_pending = False
     # Inside the empty parens of a function header, whose brackets open no group.
     func_parens = False
+    # Per level: was this tail made unconditional by the pip-succeeds assumption? Reporting an
+    # install on that basis is intended; cutting a path on it is not.
+    assumed_tail = [False]
     # An open legacy `` `...` `` substitution: its operators belong to the inner command, so
     # without this the `;` inside one split the line into an unreadable fragment.
     in_backtick = False
@@ -1550,6 +1562,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         # The same flag WITHOUT the definition. Calling a function makes its body reachable,
         # not unguarded: `setup() { false && pip install x; }; setup` still runs no pip.
         nodef.append(any(tails))
+        assumed.append(any(assumed_tail))
         buf = []
         closed_pending = False
 
@@ -1592,6 +1605,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 case_depths.pop()
             if len(tails) > 1:
                 tails.pop()
+                if len(assumed_tail) > 1:
+                    assumed_tail.pop()
                 if len(def_levels) > 1:
                     def_levels.pop()
                     closing = def_names.pop()
@@ -1645,6 +1660,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             )
             _fold_pending(list_has_pip, prev_ops, "".join(buf), not out)
             prev_ops[-1] = "&&"
+            # Reaching this tail rests on the replay's own model of pip succeeding, which is
+            # fine for reporting an install but must not make anything UNREACHABLE.
+            assumed_tail[-1] = assumed_tail[-1] or _piece_assumes_pip("".join(buf))
             flush("&&")
             # A left side modelled as CERTAIN success reaches the tail as surely as the pip
             # idiom does: `f() { pip install x; }; f && ...` and `true && ...` both run it.
@@ -1677,6 +1695,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             tails[-1] = False
             list_has_pip[-1] = False
             list_models[-1] = None
+            assumed_tail[-1] = False
             prev_ops[-1] = ""  # a new and-or list starts here
             buf_conditional = any(tails) or any(def_levels)
             i += 1
@@ -1707,6 +1726,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 # header sits in the piece that opens the brace, so flagging that piece alone
                 # left every LATER command in the body reading as unconditional.
                 tails.append(False)
+                assumed_tail.append(False)
                 header = _FUNCTION_DEF_RE.fullmatch("".join(buf).lstrip("!").strip())
                 def_levels.append(ch == "{" and header is not None)
                 if ch == "{" and header:
@@ -1737,6 +1757,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     # The command in hand belongs to the level being closed, so its flag stays
                     # what it was; the pop only affects what comes after.
                     tails.pop()
+                    if len(assumed_tail) > 1:
+                        assumed_tail.pop()
                     if len(def_levels) > 1:
                         def_levels.pop()
                         closing = def_names.pop()
@@ -1856,6 +1878,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                         if openers[-1] == "until" and model is not None:
                             model = not model
                         if not arm_reached[-1]:
+                            model = None
+                        elif model is False and cond_assumed[-1]:
+                            # The condition is only false because the replay assumes pip
+                            # succeeds; `if ! pip install x; then ...` really does run its
+                            # body when that install fails, and R-INST-001 has to see it.
                             model = None
                         if openers[-1] in ("if", "until", "while"):
                             arms_known[-1] = (
@@ -2000,7 +2027,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     body_invokes.setdefault(owner, set()).add((invoked, index))
                     if invoked == "return":
                         returned.add(owner)
-                    elif separator not in ("|", "&") and _command_ends_shell(
+                    elif not assumed[index] and separator not in ("|", "&") and _command_ends_shell(
                         # The header shares this piece, so it has to come off before the
                         # terminator behind it is visible. Still the RAW body, since the
                         # unwrap that produced `text` strips `exec` along with it.
@@ -2019,6 +2046,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # nothing over, so the body condition counts here as much as the separator one.
             handed_over = (
                 not piece_conditional
+                and not assumed[index]  # only certainly-reached terminators cut the list
                 and separator not in ("|", "&")  # a subshell; the parent shell carries on
                 and _command_ends_shell(piece)
             )
@@ -2065,9 +2093,16 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             if key is not None and key not in reached:
                 reached.add(key)
                 pending_calls.append(key)
-    for name in reached & body_entries.keys():
-        for position, entered in body_entries[name]:
-            ordered[position] = (ordered[position][0], entered)
+    # A body nobody calls is UNREACHABLE, not merely conditional: bash defines `f` and stops.
+    # The all-path rules deliberately read conditional commands, so leaving it in reported a
+    # source the cell can never install.
+    unreached: set[int] = set()
+    for name, entries in body_entries.items():
+        for position, entered in entries:
+            if name in reached:
+                ordered[position] = (ordered[position][0], entered)
+            else:
+                unreached.add(position)
     # The call itself hands the shell over, so nothing the caller writes after it can run.
     cut = min(
         (
@@ -2079,6 +2114,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     )
     if cut is not None:
         del ordered[cut + 1 :]
+        unreached = {position for position in unreached if position <= cut}
+    if unreached:
+        return [entry for n, entry in enumerate(ordered) if n not in unreached]
     return ordered
 
 
@@ -3667,7 +3705,15 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             with urllib.request.urlopen(url, timeout = 15) as r:
                 upstream_text = r.read().decode("utf-8", errors = "replace")
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
-            print(f"::warning::colab-diff: could not fetch {url}: {e}")
+            if upstream_name == COLAB_STRICT_ORACLE or upstream_name in COLAB_STRICT_ORACLE_KEYS:
+                # Not compared is not "no drift". Passing here reported success for a check
+                # that never ran, and the refresh below then fed the lint an oracle nothing
+                # had compared. An advisory file stays a warning, as its drift does.
+                any_diff = True
+                strict_diff = True
+                print(f"::error::colab-diff: could not fetch {url}: {e}")
+            else:
+                print(f"::warning::colab-diff: could not fetch {url}: {e}")
             continue
         if not snap_path.exists():
             # An absent snapshot is not "nothing to compare": the rules read it. Without
