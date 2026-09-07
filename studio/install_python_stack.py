@@ -5037,8 +5037,8 @@ def _torch_hip_version_on_disk() -> str:
     if spec is None or not spec.origin:
         return ""
     try:
-        text = Path(spec.origin).with_name("version.py").read_text(
-            encoding = "utf-8", errors = "replace"
+        text = (
+            Path(spec.origin).with_name("version.py").read_text(encoding = "utf-8", errors = "replace")
         )
     except OSError:
         return ""

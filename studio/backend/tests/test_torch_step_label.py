@@ -41,20 +41,22 @@ def _load_module(monkeypatch):
 # reported Strix Halo case: AMD's bundled-runtime wheels carry no rocminfo and no
 # amd-smi, so only torch's own version.py knows the build is ROCm.
 _HARDWARE = {
-    "nvidia":      dict(nvidia = True,  rocm_probe = False, hip = "",             label = "2.9.1+cu128"),
-    "amd_tooling": dict(nvidia = False, rocm_probe = True,  hip = "6.4.43483",    label = "2.8.0+rocm6.4"),
-    "amd_bundled": dict(nvidia = False, rocm_probe = False, hip = "6.4.43483-a1", label = "2.8.0a0+rocmsdk20250901"),
-    "xpu":         dict(nvidia = False, rocm_probe = False, hip = "",             label = "2.9.1+xpu"),
-    "cpu":         dict(nvidia = False, rocm_probe = False, hip = "",             label = "2.9.1+cpu"),
-    "no_torch":    dict(nvidia = False, rocm_probe = False, hip = "",             label = ""),
+    "nvidia": dict(nvidia = True, rocm_probe = False, hip = "", label = "2.9.1+cu128"),
+    "amd_tooling": dict(nvidia = False, rocm_probe = True, hip = "6.4.43483", label = "2.8.0+rocm6.4"),
+    "amd_bundled": dict(
+        nvidia = False, rocm_probe = False, hip = "6.4.43483-a1", label = "2.8.0a0+rocmsdk20250901"
+    ),
+    "xpu": dict(nvidia = False, rocm_probe = False, hip = "", label = "2.9.1+xpu"),
+    "cpu": dict(nvidia = False, rocm_probe = False, hip = "", label = "2.9.1+cpu"),
+    "no_torch": dict(nvidia = False, rocm_probe = False, hip = "", label = ""),
 }
 
 # -- the platform half ---------------------------------------------------------------
 _PLATFORMS = {
-    "windows": dict(is_windows = True,  is_macos = False, is_wsl = False),
-    "linux":   dict(is_windows = False, is_macos = False, is_wsl = False),
-    "wsl":     dict(is_windows = False, is_macos = False, is_wsl = True),
-    "macos":   dict(is_windows = False, is_macos = True,  is_wsl = False),
+    "windows": dict(is_windows = True, is_macos = False, is_wsl = False),
+    "linux": dict(is_windows = False, is_macos = False, is_wsl = False),
+    "wsl": dict(is_windows = False, is_macos = False, is_wsl = True),
+    "macos": dict(is_windows = False, is_macos = True, is_wsl = False),
 }
 
 
@@ -94,8 +96,10 @@ def _prepare(
     monkeypatch.setattr(mod, "_TORCH_RUNTIME_PROBE", warm_probe)
 
     probe_calls = []
-    probe_result = warm_probe if warm_probe is not None else (
-        True, bool(hw["label"]), hw["label"] or None, hw["hip"], ""
+    probe_result = (
+        warm_probe
+        if warm_probe is not None
+        else (True, bool(hw["label"]), hw["label"] or None, hw["hip"], "")
     )
 
     def _recording_probe():
@@ -125,13 +129,13 @@ def _prepare(
 _MATRIX = {
     ("windows", "nvidia"): "cuda",
     ("windows", "amd_tooling"): "rocm",
-    ("windows", "amd_bundled"): "rocm",   # the regression this PR fixes
+    ("windows", "amd_bundled"): "rocm",  # the regression this PR fixes
     ("windows", "xpu"): "cpu",
     ("windows", "cpu"): "cpu",
     ("windows", "no_torch"): "cpu",
     ("linux", "nvidia"): "cuda",
     ("linux", "amd_tooling"): "rocm",
-    ("linux", "amd_bundled"): "cpu",      # no rocminfo on Linux means no ROCm claim
+    ("linux", "amd_bundled"): "cpu",  # no rocminfo on Linux means no ROCm claim
     ("linux", "xpu"): "cpu",
     ("linux", "cpu"): "cpu",
     ("linux", "no_torch"): "cpu",
@@ -154,9 +158,7 @@ _MATRIX = {
 
 @pytest.mark.parametrize(("platform_name", "hardware_name"), sorted(_MATRIX))
 def test_label_over_the_platform_and_hardware_matrix(monkeypatch, platform_name, hardware_name):
-    mod, _calls = _prepare(
-        monkeypatch, platform_name = platform_name, hardware_name = hardware_name
-    )
+    mod, _calls = _prepare(monkeypatch, platform_name = platform_name, hardware_name = hardware_name)
     expected = _MATRIX[(platform_name, hardware_name)]
     assert mod._torch_step_label("check") == f"torch check ({expected})"
 
@@ -165,9 +167,7 @@ def test_label_over_the_platform_and_hardware_matrix(monkeypatch, platform_name,
 @pytest.mark.parametrize("suffix", ["check", "final", "flavor"])
 def test_every_suffix_keeps_the_same_backend(monkeypatch, platform_name, hardware_name, suffix):
     """All three call sites (:7166, :7371, :7383) share one backend verdict."""
-    mod, _calls = _prepare(
-        monkeypatch, platform_name = platform_name, hardware_name = hardware_name
-    )
+    mod, _calls = _prepare(monkeypatch, platform_name = platform_name, hardware_name = hardware_name)
     expected = _MATRIX[(platform_name, hardware_name)]
     assert mod._torch_step_label(suffix) == f"torch {suffix} ({expected})"
 
@@ -271,9 +271,7 @@ def test_the_label_leaves_the_probe_memo_cold(monkeypatch):
     _progress() had printed anything -- and pip_install invalidates that memo three
     statements later, so the cost was not even amortised.
     """
-    mod, probe_calls = _prepare(
-        monkeypatch, platform_name = "windows", hardware_name = "amd_bundled"
-    )
+    mod, probe_calls = _prepare(monkeypatch, platform_name = "windows", hardware_name = "amd_bundled")
     assert mod._TORCH_RUNTIME_PROBE is None
     assert mod._torch_step_label("check") == "torch check (rocm)"
     assert probe_calls == []
@@ -297,8 +295,8 @@ def test_the_label_reuses_a_warm_probe_instead_of_the_disk(monkeypatch):
         raising = False,
     )
     assert mod._torch_step_label("check") == "torch check (rocm)"
-    assert probe_calls == []    # a warm memo is reused, never re-probed
-    assert disk_reads == []     # and the disk is not consulted behind it
+    assert probe_calls == []  # a warm memo is reused, never re-probed
+    assert disk_reads == []  # and the disk is not consulted behind it
 
 
 def test_a_warm_negative_probe_is_believed(monkeypatch):
@@ -400,11 +398,11 @@ cuda = None
     [
         (_VERSION_PY_ROCM, "6.4.43483-a1b2c3d"),
         (_VERSION_PY_ROCM_UNANNOTATED, "6.3.42131"),
-        (_VERSION_PY_CUDA, ""),          # hip = None must not read as a HIP string
+        (_VERSION_PY_CUDA, ""),  # hip = None must not read as a HIP string
         ("", ""),
-        ("hip = \"6.9.0\"\n", "6.9.0"),   # double-quoted
+        ('hip = "6.9.0"\n', "6.9.0"),  # double-quoted
         ("__version__ = '2.9.1'\n", ""),
-        ("# hip = '1.0'\n", ""),          # not at the start of a line after ^ anchoring
+        ("# hip = '1.0'\n", ""),  # not at the start of a line after ^ anchoring
     ],
 )
 def test_the_hip_reader_matches_only_a_quoted_value(monkeypatch, tmp_path, text, expected):

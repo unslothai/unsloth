@@ -88,7 +88,11 @@ _CASES = [
     ("metal", _with_backend("metal"), _BASE_LINE + " -- metal backend"),
     # a name this build has never heard of still prints: no allowlist
     ("unknown_future_backend", _with_backend("sycl2"), _BASE_LINE + " -- sycl2 backend"),
-    ("backend_with_punctuation", _with_backend("cuda13.0+x-1"), _BASE_LINE + " -- cuda13.0+x-1 backend"),
+    (
+        "backend_with_punctuation",
+        _with_backend("cuda13.0+x-1"),
+        _BASE_LINE + " -- cuda13.0+x-1 backend",
+    ),
     ("backend_padded", _with_backend("  vulkan  "), _BASE_LINE + " -- vulkan backend"),
     ("backend_max_length", _with_backend("a" * 32), _BASE_LINE + " -- " + "a" * 32 + " backend"),
     # --- values that must be ignored, identically, by both printers -----------------
@@ -139,9 +143,7 @@ _CASES = [
     ),
     (
         "tag_equals_release_tag",
-        json.dumps(
-            {"published_repo": "r/l", "release_tag": "b1", "tag": "b1", "backend": "rocm"}
-        ),
+        json.dumps({"published_repo": "r/l", "release_tag": "b1", "tag": "b1", "backend": "rocm"}),
         "installed release: r/l@b1 -- rocm backend",
     ),
     (
@@ -161,7 +163,11 @@ _CASES = [
     ),
     ("missing_published_repo", json.dumps({"release_tag": "b1", "backend": "rocm"}), ""),
     ("missing_release_tag", json.dumps({"published_repo": "r/l", "backend": "rocm"}), ""),
-    ("extra_unknown_keys", _marker(backend = "rocm", future_key = {"a": [1, 2]}), _BASE_LINE + " -- rocm backend"),
+    (
+        "extra_unknown_keys",
+        _marker(backend = "rocm", future_key = {"a": [1, 2]}),
+        _BASE_LINE + " -- rocm backend",
+    ),
     # --- unreadable inputs: both printers stay silent -------------------------------
     ("malformed_json", "{not json at all", ""),
     ("truncated_json", '{"published_repo": "r/l", "release_ta', ""),
@@ -179,16 +185,12 @@ _IDS = [case[0] for case in _CASES]
 # differ, and the difference itself is asserted by
 # test_the_upstream_source_branch_is_a_known_pre_existing_divergence below.
 _PS1_EXPECTED_OVERRIDES = {
-    "upstream_binary_source":
-        "installed release: unslothai/unsloth@b10715-mix (tag b10715) -- cpu backend",
+    "upstream_binary_source": "installed release: unslothai/unsloth@b10715-mix (tag b10715) -- cpu backend",
 }
 _HISTORICAL_PS1_OVERRIDES = {
-    "2026_05_30_61df3aaef":
-        "installed release: unslothai/llama.cpp@b5300-mix (tag b5300)",
+    "2026_05_30_61df3aaef": "installed release: unslothai/llama.cpp@b5300-mix (tag b5300)",
 }
-_KNOWN_TWIN_DIVERGENCES = frozenset(_PS1_EXPECTED_OVERRIDES) | frozenset(
-    _HISTORICAL_PS1_OVERRIDES
-)
+_KNOWN_TWIN_DIVERGENCES = frozenset(_PS1_EXPECTED_OVERRIDES) | frozenset(_HISTORICAL_PS1_OVERRIDES)
 
 
 @pytest.fixture
@@ -239,10 +241,16 @@ def _run_ps1_printer(install_dir, strict_mode):
     script_path.write_text(script, encoding = "utf-8")
     proc = subprocess.run(
         [
-            "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive",
-            "-File", str(script_path),
-            "-InstallDir", str(install_dir),
-            "-StrictMode", strict_mode,
+            "pwsh",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(script_path),
+            "-InstallDir",
+            str(install_dir),
+            "-StrictMode",
+            strict_mode,
         ],
         stdout = subprocess.PIPE,
         stderr = subprocess.PIPE,
@@ -318,9 +326,9 @@ def test_ps1_printer(marker_dir, strict_mode, case_id, raw, expected):
     install_dir = marker_dir(raw)
     proc = _run_ps1_printer(install_dir, strict_mode)
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == expected, (
-        f"{case_id} under StrictMode {strict_mode}: {proc.stdout!r} != {expected!r}"
-    )
+    assert (
+        proc.stdout == expected
+    ), f"{case_id} under StrictMode {strict_mode}: {proc.stdout!r} != {expected!r}"
     assert proc.stderr == "", f"{case_id} wrote to the error stream: {proc.stderr!r}"
 
 
@@ -370,9 +378,7 @@ def test_sh_printer(marker_dir, tmp_path, case_id, raw, expected):
     install_dir = marker_dir(raw)
     proc = _run_sh_printer(install_dir, tmp_path)
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.rstrip("\n") == expected, (
-        f"{case_id}: {proc.stdout!r} != {expected!r}"
-    )
+    assert proc.stdout.rstrip("\n") == expected, f"{case_id}: {proc.stdout!r} != {expected!r}"
 
 
 @requires_bash
@@ -402,9 +408,9 @@ def test_the_two_printers_agree(marker_dir, tmp_path, case_id, raw, expected):
     sh = _run_sh_printer(install_dir, tmp_path)
     assert ps1.returncode == 0, ps1.stderr
     assert sh.returncode == 0, sh.stderr
-    assert ps1.stdout == sh.stdout.rstrip("\n"), (
-        f"{case_id}: setup.ps1 printed {ps1.stdout!r}, setup.sh printed {sh.stdout!r}"
-    )
+    assert ps1.stdout == sh.stdout.rstrip(
+        "\n"
+    ), f"{case_id}: setup.ps1 printed {ps1.stdout!r}, setup.sh printed {sh.stdout!r}"
 
 
 # ==== every historical marker shape =================================================
@@ -417,9 +423,14 @@ _HISTORICAL_MARKERS = {
     # printers correctly print nothing.
     "2026_03_25_f4d8a246b": (
         {
-            "requested_tag": "b4000", "tag": "b4000", "asset": "linux-cuda",
-            "source": "unsloth", "bundle_profile": "full", "runtime_line": "cuda",
-            "coverage_class": "broad", "prebuilt_fallback_used": False,
+            "requested_tag": "b4000",
+            "tag": "b4000",
+            "asset": "linux-cuda",
+            "source": "unsloth",
+            "bundle_profile": "full",
+            "runtime_line": "cuda",
+            "coverage_class": "broad",
+            "prebuilt_fallback_used": False,
             "installed_at_utc": "2026-03-25T00:00:00Z",
         },
         "",
@@ -427,33 +438,52 @@ _HISTORICAL_MARKERS = {
     # 428efc7d9, 2026-04-01: published_repo + release_tag arrive. No backend.
     "2026_04_01_428efc7d9": (
         {
-            "requested_tag": "b4100", "tag": "b4100", "release_tag": "b4100-mix",
-            "published_repo": "unslothai/llama.cpp", "asset": "linux-cuda",
-            "asset_sha256": "0" * 64, "source": "unsloth", "source_sha256": "1" * 64,
-            "source_commit": "a" * 40, "install_fingerprint": "fp",
-            "bundle_profile": "full", "runtime_line": "cuda", "coverage_class": "broad",
-            "prebuilt_fallback_used": False, "installed_at_utc": "2026-04-01T00:00:00Z",
+            "requested_tag": "b4100",
+            "tag": "b4100",
+            "release_tag": "b4100-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "asset": "linux-cuda",
+            "asset_sha256": "0" * 64,
+            "source": "unsloth",
+            "source_sha256": "1" * 64,
+            "source_commit": "a" * 40,
+            "install_fingerprint": "fp",
+            "bundle_profile": "full",
+            "runtime_line": "cuda",
+            "coverage_class": "broad",
+            "prebuilt_fallback_used": False,
+            "installed_at_utc": "2026-04-01T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b4100-mix (tag b4100)",
     ),
     # 1ce8a8e7c, 2026-04-02: the source_* block.
     "2026_04_02_1ce8a8e7c": (
         {
-            "requested_tag": "b4200", "tag": "b4200", "release_tag": "b4200-mix",
-            "published_repo": "unslothai/llama.cpp", "asset": "linux-vulkan",
-            "source_asset": "src.tar.gz", "source_commit_short": "aaaaaaa",
-            "source_repo": "ggml-org/llama.cpp", "source_repo_url": "https://x",
-            "source_ref_kind": "tag", "requested_source_ref": "b4200",
-            "resolved_source_ref": "b4200", "installed_at_utc": "2026-04-02T00:00:00Z",
+            "requested_tag": "b4200",
+            "tag": "b4200",
+            "release_tag": "b4200-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "asset": "linux-vulkan",
+            "source_asset": "src.tar.gz",
+            "source_commit_short": "aaaaaaa",
+            "source_repo": "ggml-org/llama.cpp",
+            "source_repo_url": "https://x",
+            "source_ref_kind": "tag",
+            "requested_source_ref": "b4200",
+            "resolved_source_ref": "b4200",
+            "installed_at_utc": "2026-04-02T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b4200-mix (tag b4200)",
     ),
     # 61df3aaef, 2026-05-30: binary_repo / binary_release_tag.
     "2026_05_30_61df3aaef": (
         {
-            "tag": "b5300", "release_tag": "b5300-mix",
-            "published_repo": "unslothai/llama.cpp", "source": "ggml-org",
-            "binary_repo": "ggml-org/llama.cpp", "binary_release_tag": "b5300",
+            "tag": "b5300",
+            "release_tag": "b5300-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "source": "ggml-org",
+            "binary_repo": "ggml-org/llama.cpp",
+            "binary_release_tag": "b5300",
             "installed_at_utc": "2026-05-30T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b5300-mix + ggml-org@b5300",
@@ -461,9 +491,12 @@ _HISTORICAL_MARKERS = {
     # cf912cbd8, 2026-07-20: force_cpu.
     "2026_07_20_cf912cbd8": (
         {
-            "tag": "b6900", "release_tag": "b6900-mix",
-            "published_repo": "unslothai/llama.cpp", "force_cpu": True,
-            "asset": "linux-cpu", "installed_at_utc": "2026-07-20T00:00:00Z",
+            "tag": "b6900",
+            "release_tag": "b6900-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "force_cpu": True,
+            "asset": "linux-cpu",
+            "installed_at_utc": "2026-07-20T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b6900-mix (tag b6900)",
     ),
@@ -471,8 +504,10 @@ _HISTORICAL_MARKERS = {
     # key the printer reads, so this marker still prints no suffix.
     "2026_07_27_7917c7828": (
         {
-            "tag": "b7100", "release_tag": "b7100-mix",
-            "published_repo": "unslothai/llama.cpp", "llama_backend": "vulkan",
+            "tag": "b7100",
+            "release_tag": "b7100-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "llama_backend": "vulkan",
             "installed_at_utc": "2026-07-27T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b7100-mix (tag b7100)",
@@ -480,8 +515,10 @@ _HISTORICAL_MARKERS = {
     # 9b452cb3b, 2026-08-04: ggml_tree.
     "2026_08_04_9b452cb3b": (
         {
-            "tag": "b7400", "release_tag": "b7400-mix",
-            "published_repo": "unslothai/llama.cpp", "ggml_tree": "abc123",
+            "tag": "b7400",
+            "release_tag": "b7400-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "ggml_tree": "abc123",
             "installed_at_utc": "2026-08-04T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b7400-mix (tag b7400)",
@@ -489,18 +526,24 @@ _HISTORICAL_MARKERS = {
     # 738413ab0, 2026-08-08: rocm_gfx, conditional. Last shape before backend existed.
     "2026_08_08_738413ab0": (
         {
-            "tag": "b7600", "release_tag": "b7600-mix",
-            "published_repo": "unslothai/llama.cpp", "llama_backend": "auto",
-            "rocm_gfx": "gfx1151", "installed_at_utc": "2026-08-08T00:00:00Z",
+            "tag": "b7600",
+            "release_tag": "b7600-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "llama_backend": "auto",
+            "rocm_gfx": "gfx1151",
+            "installed_at_utc": "2026-08-08T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b7600-mix (tag b7600)",
     ),
     # 5426a78c3, 2026-08-13 (#8520): backend + backend_request arrive.
     "2026_08_13_5426a78c3": (
         {
-            "tag": "b7900", "release_tag": "b7900-mix",
-            "published_repo": "unslothai/llama.cpp", "backend": "vulkan",
-            "backend_request": "auto", "installed_at_utc": "2026-08-13T00:00:00Z",
+            "tag": "b7900",
+            "release_tag": "b7900-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "backend": "vulkan",
+            "backend_request": "auto",
+            "installed_at_utc": "2026-08-13T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b7900-mix (tag b7900) -- vulkan backend",
     ),
@@ -508,18 +551,24 @@ _HISTORICAL_MARKERS = {
     # that lands in the marker as a JSON null.
     "backend_written_as_null": (
         {
-            "tag": "b7900", "release_tag": "b7900-mix",
-            "published_repo": "unslothai/llama.cpp", "backend": None,
-            "backend_request": "auto", "installed_at_utc": "2026-08-13T00:00:00Z",
+            "tag": "b7900",
+            "release_tag": "b7900-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "backend": None,
+            "backend_request": "auto",
+            "installed_at_utc": "2026-08-13T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b7900-mix (tag b7900)",
     ),
     # 5a3e9fc7a, 2026-08-13: gfx_target / mapped_targets.
     "2026_08_13_5a3e9fc7a": (
         {
-            "tag": "b8000", "release_tag": "b8000-mix",
-            "published_repo": "unslothai/llama.cpp", "backend": "rocm",
-            "gfx_target": "gfx1151", "mapped_targets": ["gfx1151", "gfx1200"],
+            "tag": "b8000",
+            "release_tag": "b8000-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "backend": "rocm",
+            "gfx_target": "gfx1151",
+            "mapped_targets": ["gfx1151", "gfx1200"],
             "installed_at_utc": "2026-08-13T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b8000-mix (tag b8000) -- rocm backend",
@@ -527,30 +576,51 @@ _HISTORICAL_MARKERS = {
     # 9d1dcfe58, 2026-08-18: supported_sms.
     "2026_08_18_9d1dcfe58": (
         {
-            "tag": "b8300", "release_tag": "b8300-mix",
-            "published_repo": "unslothai/llama.cpp", "backend": "cuda",
-            "supported_sms": ["90", "100"], "installed_at_utc": "2026-08-18T00:00:00Z",
+            "tag": "b8300",
+            "release_tag": "b8300-mix",
+            "published_repo": "unslothai/llama.cpp",
+            "backend": "cuda",
+            "supported_sms": ["90", "100"],
+            "installed_at_utc": "2026-08-18T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b8300-mix (tag b8300) -- cuda backend",
     ),
     # 1400031e2, 2026-08-31: runtime_asset. The current 34-key shape.
     "2026_08_31_1400031e2_current": (
         {
-            "requested_tag": "b10715", "tag": "b10715",
-            "release_tag": "b10715-mix-86bd2d3", "published_repo": "unslothai/llama.cpp",
-            "asset": "windows-vulkan", "force_cpu": False, "llama_backend": "vulkan",
-            "backend": "vulkan", "backend_request": "auto", "asset_sha256": "0" * 64,
-            "runtime_asset": "runtime.zip", "source": "unsloth",
-            "binary_repo": "unslothai/llama.cpp", "binary_release_tag": "b10715-mix",
-            "source_asset": "src.tar.gz", "source_sha256": "1" * 64,
-            "source_commit": "a" * 40, "source_commit_short": "aaaaaaa",
-            "source_repo": "ggml-org/llama.cpp", "source_repo_url": "https://x",
-            "source_ref_kind": "tag", "requested_source_ref": "b10715",
-            "resolved_source_ref": "b10715", "ggml_tree": "abc123",
-            "bundle_profile": "full", "runtime_line": "vulkan",
-            "coverage_class": "broad", "gfx_target": "", "mapped_targets": [],
-            "supported_sms": [], "install_fingerprint": "fp",
-            "prebuilt_fallback_used": False, "installed_at_utc": "2026-08-31T00:00:00Z",
+            "requested_tag": "b10715",
+            "tag": "b10715",
+            "release_tag": "b10715-mix-86bd2d3",
+            "published_repo": "unslothai/llama.cpp",
+            "asset": "windows-vulkan",
+            "force_cpu": False,
+            "llama_backend": "vulkan",
+            "backend": "vulkan",
+            "backend_request": "auto",
+            "asset_sha256": "0" * 64,
+            "runtime_asset": "runtime.zip",
+            "source": "unsloth",
+            "binary_repo": "unslothai/llama.cpp",
+            "binary_release_tag": "b10715-mix",
+            "source_asset": "src.tar.gz",
+            "source_sha256": "1" * 64,
+            "source_commit": "a" * 40,
+            "source_commit_short": "aaaaaaa",
+            "source_repo": "ggml-org/llama.cpp",
+            "source_repo_url": "https://x",
+            "source_ref_kind": "tag",
+            "requested_source_ref": "b10715",
+            "resolved_source_ref": "b10715",
+            "ggml_tree": "abc123",
+            "bundle_profile": "full",
+            "runtime_line": "vulkan",
+            "coverage_class": "broad",
+            "gfx_target": "",
+            "mapped_targets": [],
+            "supported_sms": [],
+            "install_fingerprint": "fp",
+            "prebuilt_fallback_used": False,
+            "installed_at_utc": "2026-08-31T00:00:00Z",
         },
         "installed release: unslothai/llama.cpp@b10715-mix-86bd2d3 (tag b10715) -- vulkan backend",
     ),
@@ -615,9 +685,9 @@ def test_both_printers_share_one_backend_shape_rule():
 
 def test_the_sh_printer_only_accepts_a_string():
     text = SETUP_SH.read_text(encoding = "utf-8")
-    assert "isinstance(_backend_raw, str)" in text, (
-        "str() on a non-string diverges from the PowerShell twin"
-    )
+    assert (
+        "isinstance(_backend_raw, str)" in text
+    ), "str() on a non-string diverges from the PowerShell twin"
 
 
 @requires_pwsh
