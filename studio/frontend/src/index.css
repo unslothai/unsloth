@@ -3330,9 +3330,7 @@ html[data-chat-font] .aui-root {
 		width: calc(var(--ui-icon-size) * 1.2);
 		height: calc(var(--ui-icon-size) * 1.2);
 	}
-	/* Send and stop glyphs are symmetric in their viewBoxes. Keep the button's
-	   flex centering: Retina-specific nudges shift them off-center at other
-	   display scales and zoom levels. */
+	/* Flex centers both symmetric glyphs; pixel offsets vary by display scale. */
 	& svg.unsloth-send-icon {
 		width: calc(var(--ui-icon-size) * 1.15);
 		height: calc(var(--ui-icon-size) * 1.15);

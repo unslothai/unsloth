@@ -15,9 +15,7 @@ function tags(source: string, component: string): string[] {
   return source.match(new RegExp(`<${component}\\b[^>]*\\/>`, "g")) ?? [];
 }
 
-// Rendered SVG/glyph centers across engines and display scales are checked by
-// tests/studio/playwright_composer_icons.py. These checks keep every call site
-// on the shared styling exercised by that harness.
+// Keep call sites on the styles tested by tests/studio/playwright_composer_icons.py.
 test("every composer send arrow uses the shared icon class", () => {
   const arrows = componentSources.flatMap((source) =>
     tags(source, "ArrowUpIcon"),

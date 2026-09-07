@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Measure composer SVG and glyph centers using the real frontend CSS/components.
+"""Check composer SVG and glyph centers across browsers and display settings.
 
-Run after npm ci in studio/frontend and python -m playwright install:
+Run after npm ci and Playwright browser installation:
     python tests/studio/playwright_composer_icons.py chromium webkit firefox
 
-Each engine is tested at six device scales, three UI font sizes, three page zooms,
-both themes and both text directions. Fractional layout origins are intentional.
-CSS geometry is the invariant: antialiasing can differ between physical screens.
-Missing engines or dependencies fail the run; they never count as passing coverage.
+Measures CSS geometry; screen antialiasing may differ.
 """
 
 from __future__ import annotations
@@ -102,8 +99,7 @@ def main() -> None:
                                         measure[key]
                                         for key in ("svgDx", "svgDy", "glyphDx", "glyphDy")
                                     ]
-                                    # Flex layout rounds to engine layout units (usually 1/64px).
-                                    # 0.02px permits that rounding but rejects either old offset.
+                                    # Allow layout rounding, but reject the old pixel offsets.
                                     if (
                                         max(map(abs, offsets)) > 0.02
                                         or min(measure["width"], measure["height"]) <= 0
