@@ -23351,9 +23351,7 @@ async def produce_openai_chat_completions(
     if payload.tool_choice == "none":
         _sf_tools_on = False
     _sf_mcp_allowed = (
-        payload.tool_choice != "none"
-        and bool(payload.mcp_enabled)
-        and _sf_cli_policy is not False
+        payload.tool_choice != "none" and bool(payload.mcp_enabled) and _sf_cli_policy is not False
     )
 
     # Named templates may expose native reasoning only in their ``tool_use``

@@ -611,10 +611,21 @@ def test_a_safetensors_stream_that_disabled_tool_calls_opens_no_loop(monkeypatch
 
     class _Backend:
         active_model_name = "sf-model"
-        models = {"sf-model": {"chat_template_info": {"template": "<tool_call> chatml"},
-                               "context_length": 2048}}
+        models = {
+            "sf-model": {
+                "chat_template_info": {"template": "<tool_call> chatml"},
+                "context_length": 2048,
+            }
+        }
 
-        def generate_chat_response(self, *, messages, tools = None, stats_holder = None, **kw):
+        def generate_chat_response(
+            self,
+            *,
+            messages,
+            tools = None,
+            stats_holder = None,
+            **kw,
+        ):
             yield "plain answer"
 
         def generate_chat_completion_with_tools(self, **kwargs):
@@ -637,7 +648,9 @@ def test_a_safetensors_stream_that_disabled_tool_calls_opens_no_loop(monkeypatch
         ),
     )
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _Backend())
-    monkeypatch.setattr(inf, "_detect_safetensors_features", lambda *a, **k: {"supports_tools": True})
+    monkeypatch.setattr(
+        inf, "_detect_safetensors_features", lambda *a, **k: {"supports_tools": True}
+    )
 
     payload = ChatCompletionRequest(
         model = "default",
@@ -653,9 +666,7 @@ def test_a_safetensors_stream_that_disabled_tool_calls_opens_no_loop(monkeypatch
         )
         return [chunk async for chunk in response.body_iterator]
 
-    body = "".join(
-        c.decode() if isinstance(c, bytes) else str(c) for c in asyncio.run(_run())
-    )
+    body = "".join(c.decode() if isinstance(c, bytes) else str(c) for c in asyncio.run(_run()))
     # No 400: the exemption still admits the request, which is the point of it.
     assert "invalid_request_error" not in body
     # And now it is telling the truth: no loop, so no prompt, so nothing to park on.
