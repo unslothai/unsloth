@@ -935,9 +935,7 @@ def test_sanitize_config_keeps_the_grounding_flag_and_refuses_a_non_boolean():
     for bad in (1, 0, "true", None, []):
         with pytest.raises(HTTPException):
             _sanitize_config(
-                _make_payload(
-                    inferenceRequest = {"model": "m", "maxOutputTokensFromSavedCap": bad}
-                ),
+                _make_payload(inferenceRequest = {"model": "m", "maxOutputTokensFromSavedCap": bad}),
                 {"modelId": "m"},
             )
 
