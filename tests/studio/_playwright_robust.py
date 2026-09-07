@@ -749,11 +749,7 @@ class _WallClockWatchdog:
     a `threading.Timer` gave. Timer has no reschedule, hence a thread over a live deadline.
     """
 
-    def __init__(
-        self,
-        deadline_s: float,
-        on_expiry: Callable[[], None],
-    ) -> None:
+    def __init__(self, deadline_s: float, on_expiry: Callable[[], None]) -> None:
         self._budget_s = float(deadline_s)
         self._on_expiry = on_expiry
         self._lock = threading.Lock()

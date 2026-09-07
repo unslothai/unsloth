@@ -25,7 +25,13 @@ CHAT_UI_SRC = CHAT_UI.read_text(encoding = "utf-8")
 CHAT_UI_TREE = ast.parse(CHAT_UI_SRC)
 
 
-def _fired(budget_s, *, kicks = (), cancel_after = None, run_for = None):
+def _fired(
+    budget_s,
+    *,
+    kicks = (),
+    cancel_after = None,
+    run_for = None,
+):
     """Run a watchdog for `run_for` seconds, kicking at each offset in `kicks`."""
     fired = threading.Event()
     watchdog = _WallClockWatchdog(budget_s, fired.set).start()
@@ -61,7 +67,8 @@ def _chat_ui_wall_timeout_s(turn_timeout_ms):
     """Evaluate the script's own WALL_TIMEOUT_S expression at a given turn timeout."""
     wanted = {"TURN_TIMEOUT_MS", "_WALL_FLOOR_S", "_LONGEST_WAIT_S", "WALL_TIMEOUT_S"}
     body = [
-        node for node in CHAT_UI_TREE.body
+        node
+        for node in CHAT_UI_TREE.body
         if isinstance(node, ast.Assign)
         and isinstance(node.targets[0], ast.Name)
         and node.targets[0].id in wanted
@@ -93,9 +100,7 @@ def _turn_scaled_wait_lines():
         for kw in node.keywords:
             if kw.arg != "timeout":
                 continue
-            names = {
-                n.id for n in ast.walk(kw.value) if isinstance(n, ast.Name)
-            }
+            names = {n.id for n in ast.walk(kw.value) if isinstance(n, ast.Name)}
             if "TURN_TIMEOUT_MS" in names:
                 lines.append(kw.value.lineno)
     return sorted(lines)
@@ -103,7 +108,8 @@ def _turn_scaled_wait_lines():
 
 def test_every_pair_of_turn_scaled_waits_is_separated_by_a_kick():
     kicks = sorted(
-        node.lineno for node in ast.walk(CHAT_UI_TREE)
+        node.lineno
+        for node in ast.walk(CHAT_UI_TREE)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "wall_kick"
@@ -111,6 +117,6 @@ def test_every_pair_of_turn_scaled_waits_is_separated_by_a_kick():
     waits = _turn_scaled_wait_lines()
     assert len(waits) >= 5, waits
     for first, second in zip(waits, waits[1:]):
-        assert any(first < k < second for k in kicks), (
-            f"the waits at lines {first} and {second} share one watchdog budget"
-        )
+        assert any(
+            first < k < second for k in kicks
+        ), f"the waits at lines {first} and {second} share one watchdog budget"
