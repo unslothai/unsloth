@@ -102,8 +102,11 @@ def test_the_message_names_what_actually_ran_out():
 def _chat_ui_wall_timeout_s(turn_timeout_ms, load_timeout_ms = 180_000):
     """Evaluate the script's own WALL_TIMEOUT_S expression at a given pair of budgets."""
     wanted = {
-        "TURN_TIMEOUT_MS", "LOAD_FETCH_TIMEOUT_MS",
-        "_WALL_FLOOR_S", "_LONGEST_WAIT_S", "WALL_TIMEOUT_S",
+        "TURN_TIMEOUT_MS",
+        "LOAD_FETCH_TIMEOUT_MS",
+        "_WALL_FLOOR_S",
+        "_LONGEST_WAIT_S",
+        "WALL_TIMEOUT_S",
     }
     body = [
         node
