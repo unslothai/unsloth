@@ -25,9 +25,9 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-import pytest  # noqa: E402
 
-from core.inference import studio_tool_loop as loop_mod  # noqa: E402
+
+from .preempt_fakes import executed  # noqa: E402, F401
 from test_studio_tool_loop import (  # noqa: E402
     WEB,
     FakeTransport,
@@ -36,21 +36,6 @@ from test_studio_tool_loop import (  # noqa: E402
     _run,
     _sse,
 )
-
-
-@pytest.fixture
-def executed(monkeypatch):
-    """Record every execute_tool call. Same shape as the loop's own fixture."""
-    calls: list[dict] = []
-
-    def _execute(name, arguments, **kwargs):
-        calls.append({"name": name, "arguments": arguments})
-        return f"RESULT<{name}>"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", _execute)
-    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
-    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
-    return calls
 
 
 def _calls_turn(calls):

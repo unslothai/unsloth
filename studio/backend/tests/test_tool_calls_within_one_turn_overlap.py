@@ -47,6 +47,8 @@ import pytest  # noqa: E402
 
 from core.inference import studio_tool_loop as loop_mod  # noqa: E402
 
+from .preempt_fakes import rendezvous  # noqa: E402, F401
+
 # The scripted transport and the SSE readers, rather than a second copy of them: a fake
 # that drifts from the one the rest of the loop is tested against would be testing a
 # different loop. Same sys.path dance as test_memory_contract.py.
@@ -99,37 +101,6 @@ def _two_calls(
         ],
         heals = False,
     )
-
-
-@pytest.fixture
-def rendezvous(monkeypatch):
-    """A tool that cannot return until another call of it has also started.
-
-    This is the measurement. A sleep would pass on a machine that happens to be fast and
-    a timing assertion would be flaky on one that is loaded; a barrier can only be cleared
-    by genuine overlap, and the absence of overlap shows up as the timeout rather than as
-    a number that drifted.
-    """
-    # Long enough that a loaded runner still meets it, short enough that the
-    # serialised cases (where it can never be met) do not dominate the suite.
-    barrier = threading.Barrier(2, timeout = 4)
-    order: list[str] = []
-    lock = threading.Lock()
-
-    def _execute(name, arguments, **kwargs):
-        query = (arguments or {}).get("query", "")
-        with lock:
-            order.append(query)
-        try:
-            barrier.wait()
-        except threading.BrokenBarrierError:
-            return f"ALONE<{query}>"
-        return f"TOGETHER<{query}>"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", _execute)
-    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
-    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: name == "python")
-    return order
 
 
 @pytest.fixture

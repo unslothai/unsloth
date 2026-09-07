@@ -19,10 +19,11 @@ import asyncio
 import json
 import threading
 
-import pytest
 
 from core.inference import llama_preemption as preemption
 from core.inference import studio_tool_loop as loop_mod
+
+from .preempt_fakes import executed  # noqa: F401
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
     ToolLoopRun,
@@ -130,20 +131,6 @@ class PausingTransport:
                 self.signal.request("kv_pressure")
 
         return _gen()
-
-
-@pytest.fixture
-def executed(monkeypatch):
-    calls: list[dict] = []
-
-    def _execute(name, arguments, **kwargs):
-        calls.append({"name": name, "arguments": arguments})
-        return f"RESULT<{name}>"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", _execute)
-    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
-    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: False)
-    return calls
 
 
 def _run(

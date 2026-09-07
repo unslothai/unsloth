@@ -17,28 +17,18 @@ import pytest
 from core.inference.llama_admission import (
     LlamaAdmissionConfig,
     LlamaAdmissionQueue,
-    reset_llama_admission_queues,
 )
 from core.inference.llama_preemption import (
     DEFAULT_PREEMPT_BUFFER_MIN_TOKENS,
-    DEFAULT_PREEMPT_BUFFER_RATIO,
     PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS,
     ParticipantState,
     PreemptionController,
     get_preemption_controller,
     preemption_buffer_tokens,
-    reset_preemption_controllers,
     wait_for_reclaim,
 )
 
-
-@pytest.fixture(autouse = True)
-def _clean_registries():
-    reset_llama_admission_queues()
-    reset_preemption_controllers()
-    yield
-    reset_llama_admission_queues()
-    reset_preemption_controllers()
+from .preempt_fakes import clean_admission_queues, clean_preemption_registry  # noqa: F401
 
 
 def _controller(budget = 16384, kv_unified = True):

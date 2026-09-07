@@ -41,15 +41,9 @@ from core.inference.llama_preemption import (
     ParticipantState,
     PreemptSignal,
     PreemptionController,
-    reset_preemption_controllers,
 )
 
-
-@pytest.fixture(autouse = True)
-def _clean_registry():
-    reset_preemption_controllers()
-    yield
-    reset_preemption_controllers()
+from .preempt_fakes import clean_preemption_registry  # noqa: F401
 
 
 def _full_cache() -> PreemptionController:

@@ -49,12 +49,7 @@ import routes.inference as inference_route
 from .asgi_stream_helpers import wait_for_frame
 from .llama_backend_double import FakeLlamaCppBackend
 
-
-@pytest.fixture(autouse = True)
-def _fresh_queues():
-    llama_admission.reset_llama_admission_queues()
-    yield
-    llama_admission.reset_llama_admission_queues()
+from .preempt_fakes import clean_admission_queues  # noqa: F401
 
 
 def _controller() -> PreemptionController:

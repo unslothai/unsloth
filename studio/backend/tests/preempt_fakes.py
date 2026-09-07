@@ -21,6 +21,8 @@ import copy
 import json
 import threading
 
+import pytest
+
 from core.inference import llama_preemption as preemption
 from core.inference.llama_cpp import LlamaCppBackend
 
@@ -334,3 +336,96 @@ def run_tool_loop(
             **kwargs,
         )
     )
+
+
+# ------------------------------------------------------------- tool loop fixtures
+
+def _patch_tool_loop(monkeypatch, execute, *, high_risk) -> None:
+    """Point the tool loop at a test double and shut its two other side doors.
+
+    ``build_rag_autoinject`` would reach for a real index and ``is_high_risk_tool_call``
+    decides whether a call needs confirmation, which would stall a round nobody is
+    answering. Imported here rather than at module scope so importing the SSE builders
+    does not drag the loop in.
+    """
+    from core.inference import studio_tool_loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "execute_tool", execute)
+    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
+    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", high_risk)
+
+
+@pytest.fixture
+def executed(monkeypatch):
+    """Record every execute_tool call. Same shape as the loop's own fixture."""
+    calls: list[dict] = []
+
+    def _execute(name, arguments, **kwargs):
+        calls.append({"name": name, "arguments": arguments})
+        return f"RESULT<{name}>"
+
+    _patch_tool_loop(monkeypatch, _execute, high_risk = lambda name, args: False)
+    return calls
+
+
+@pytest.fixture
+def rendezvous(monkeypatch):
+    """A tool that cannot return until another call of it has also started.
+
+    This is the measurement. A sleep would pass on a machine that happens to be fast and
+    a timing assertion would be flaky on one that is loaded; a barrier can only be cleared
+    by genuine overlap, and the absence of overlap shows up as the timeout rather than as
+    a number that drifted.
+
+    Pairs, not the whole round: a barrier sized to the round would answer "did all of
+    them overlap", and what has to be answered is "did ANY two". A round that runs single
+    file breaks the barrier once on its timeout and every later call then returns at once,
+    so the sequential case costs one timeout rather than one per call.
+
+    Returns the queries in the order they STARTED.
+    """
+    # Long enough that a loaded runner still meets it, short enough that the serialised
+    # cases (where it can never be met) do not dominate the suite.
+    barrier = threading.Barrier(2, timeout = 4)
+    order: list[str] = []
+    lock = threading.Lock()
+
+    def _execute(name, arguments, **kwargs):
+        query = (arguments or {}).get("query", "")
+        with lock:
+            order.append(query)
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            return f"ALONE<{query}>"
+        return f"TOGETHER<{query}>"
+
+    _patch_tool_loop(monkeypatch, _execute, high_risk = lambda name, args: name == "python")
+    return order
+
+
+# ------------------------------------------------------------- registry fixtures
+
+@pytest.fixture(autouse = True)
+def clean_preemption_registry():
+    """The controller registry is keyed per model load and lives for the process.
+
+    A test that registers a participant and does not clear it leaves the next test
+    planning against a ledger it never wrote, which is invisible until an unrelated file
+    is run in a different order.
+    """
+    from core.inference.llama_preemption import reset_preemption_controllers
+
+    reset_preemption_controllers()
+    yield
+    reset_preemption_controllers()
+
+
+@pytest.fixture(autouse = True)
+def clean_admission_queues():
+    """The same for the admission queues, which are keyed on base_url and outlive a test."""
+    from core.inference.llama_admission import reset_llama_admission_queues
+
+    reset_llama_admission_queues()
+    yield
+    reset_llama_admission_queues()

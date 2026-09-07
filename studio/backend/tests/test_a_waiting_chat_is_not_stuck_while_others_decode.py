@@ -25,7 +25,6 @@ all: no token anywhere, no tool call, no room returned, no holder leaving.
 import threading
 import time
 
-import pytest
 
 from core.inference.llama_preemption import (
     DEFAULT_RESUME_WAIT_TIMEOUT_S,
@@ -34,15 +33,9 @@ from core.inference.llama_preemption import (
     ParticipantState,
     PreemptSignal,
     PreemptionController,
-    reset_preemption_controllers,
 )
 
-
-@pytest.fixture(autouse = True)
-def _clean_registry():
-    reset_preemption_controllers()
-    yield
-    reset_preemption_controllers()
+from .preempt_fakes import clean_preemption_registry  # noqa: F401
 
 
 # The blocker's cells as llama-server reports them. Two things ride on this figure: it is

@@ -23,7 +23,7 @@ if _TESTS_DIR not in sys.path:
 from core.inference import llama_cpp as llama_mod  # noqa: E402
 from core.inference import tool_loop_controller as controller_mod  # noqa: E402
 
-from test_tool_calls_within_one_turn_overlap import _gguf_events  # noqa: E402
+from .test_tool_calls_within_one_turn_overlap import _gguf_events  # noqa: E402
 
 
 def _fast_sizing(monkeypatch):

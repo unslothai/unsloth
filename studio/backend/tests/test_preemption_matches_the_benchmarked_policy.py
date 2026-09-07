@@ -23,25 +23,19 @@ _SCRIPTS = Path(__file__).resolve().parents[4] / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
-from core.inference.llama_admission import reset_llama_admission_queues  # noqa: E402
 from core.inference.llama_preemption import (  # noqa: E402
     ParticipantState,
     PreemptionController,
-    reset_preemption_controllers,
+)
+
+from .preempt_fakes import (  # noqa: E402, F401
+    clean_admission_queues,
+    clean_preemption_registry,
 )
 
 preempt_sim = pytest.importorskip(
     "preempt_sim", reason = "the simulator lives beside the repo, not inside it"
 )
-
-
-@pytest.fixture(autouse = True)
-def _clean():
-    reset_llama_admission_queues()
-    reset_preemption_controllers()
-    yield
-    reset_llama_admission_queues()
-    reset_preemption_controllers()
 
 
 class _SimChat:

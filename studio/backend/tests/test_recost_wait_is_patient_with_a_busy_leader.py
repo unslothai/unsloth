@@ -26,12 +26,7 @@ import pytest
 from core.inference import llama_admission
 from core.inference.llama_admission import LlamaAdmissionConfig
 
-
-@pytest.fixture(autouse = True)
-def _fresh_queues():
-    llama_admission.reset_llama_admission_queues()
-    yield
-    llama_admission.reset_llama_admission_queues()
+from .preempt_fakes import clean_admission_queues  # noqa: F401
 
 
 def _two_leases(queue, *, leader: int, waiter: int, budget: int):

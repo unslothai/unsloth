@@ -28,16 +28,16 @@ from __future__ import annotations
 
 import json
 import sys
-import threading
 from pathlib import Path
 
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-import pytest  # noqa: E402
 
 from core.inference import studio_tool_loop as loop_mod  # noqa: E402
+
+from .preempt_fakes import rendezvous  # noqa: E402, F401
 
 # The scripted transport and the SSE readers the rest of the loop is tested against,
 # rather than a second copy of them.
@@ -85,37 +85,6 @@ def _round_of(count: int) -> FakeTransport:
         ],
         heals = False,
     )
-
-
-@pytest.fixture
-def rendezvous(monkeypatch):
-    """A tool that cannot return until another call of it has also started.
-
-    Pairs, not the whole round: a barrier sized to the round would answer "did all of
-    them overlap", and what has to be answered is "did ANY two". A round that runs single
-    file breaks the barrier once on its timeout and every later call then returns at once,
-    so the sequential case costs one timeout rather than one per call.
-    """
-    # Long enough that a loaded runner still meets it, short enough that the serialised
-    # case (where it can never be met) does not dominate the suite.
-    barrier = threading.Barrier(2, timeout = 4)
-    started: list[str] = []
-    lock = threading.Lock()
-
-    def _execute(name, arguments, **kwargs):
-        query = (arguments or {}).get("query", "")
-        with lock:
-            started.append(query)
-        try:
-            barrier.wait()
-        except threading.BrokenBarrierError:
-            return f"ALONE<{query}>"
-        return f"TOGETHER<{query}>"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", _execute)
-    monkeypatch.setattr(loop_mod, "build_rag_autoinject", lambda *a, **k: None)
-    monkeypatch.setattr(loop_mod, "is_high_risk_tool_call", lambda name, args: name == "python")
-    return started
 
 
 class TestTheCapIsTheGgufLoopsCap:

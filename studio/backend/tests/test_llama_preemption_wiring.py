@@ -9,7 +9,6 @@ the wiring itself: that the route arms a policy, that arming it charges the real
 figure rather than a silent zero, and that a finished generation stops counting.
 """
 
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -25,8 +24,9 @@ from core.inference.llama_preemption import (
     PreemptSignal,
     PreemptionController,
     get_preemption_controller,
-    reset_preemption_controllers,
 )
+
+from .preempt_fakes import clean_preemption_registry  # noqa: F401
 
 
 @pytest.fixture(autouse = True)
@@ -47,13 +47,6 @@ def _isolate_process_wide_admission_state():
     reset_llama_admission_queues()
     yield
     reset_llama_admission_queues()
-
-
-@pytest.fixture(autouse = True)
-def _clean_registry():
-    reset_preemption_controllers()
-    yield
-    reset_preemption_controllers()
 
 
 def _backend(
