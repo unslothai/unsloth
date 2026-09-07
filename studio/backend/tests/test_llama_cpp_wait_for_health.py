@@ -239,15 +239,42 @@ class TestWaitForHealthResilience:
 
     def test_a_started_shutdown_refuses_to_spawn(self, monkeypatch):
         """_start_llama_process is the chokepoint the mmproj text-only retry uses
-        without passing _spawn_and_wait's boundary check, so it refuses too."""
+        without passing _spawn_and_wait's boundary check, so it refuses too, and
+        says so: a silent refusal leaves the caller health-waiting on the previous
+        child and then reading a reference the teardown is clearing."""
         import subprocess
 
         b = _make_backend()
         b._shutting_down = True
         spawned = []
         monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: spawned.append(1))
-        b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None)
+        assert b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None) is False
         assert spawned == [], "started a server after shutdown had begun"
+
+    def test_a_new_server_lifecycle_clears_the_shutdown_state(self):
+        """The backend is a module singleton and an embedded host may call
+        run_server() again in the same process, so this state is scoped to a
+        lifecycle. Left latched, every launch of the second session is refused."""
+        b = _make_backend()
+        b._shutting_down = True
+        b._torn_down_process = b._process
+        b._begin_server_lifecycle()
+        assert b._shutting_down is False
+        assert b._torn_down_process is None
+
+    def test_a_healthy_probe_during_shutdown_is_not_a_healthy_server(self, monkeypatch):
+        """The probe blocks for up to 2s. A 200 arriving as teardown begins must not
+        publish a child the shutdown is already killing, exactly as for a cancel."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+
+        def probe(*a, **kw):
+            b._shutting_down = True
+            return mock.Mock(status_code = 200)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        assert b._wait_for_health(timeout = 5.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
 
     def test_a_teardown_during_the_last_probe_is_not_reported_as_a_timeout(self, monkeypatch):
         """The deadline is the other way out of the loop. A teardown landing in the

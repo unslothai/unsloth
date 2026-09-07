@@ -2431,6 +2431,17 @@ def run_server(
     """
     global _server, _server_thread, _shutdown_event
 
+    # A new server lifecycle. The llama-server backend is a module singleton, so an
+    # embedded host that stops and calls this again reuses the instance that
+    # _graceful_shutdown marked as shutting down; without this every launch in the
+    # second session would be refused.
+    try:
+        from routes.inference import _llama_cpp_backend
+        if _llama_cpp_backend is not None:
+            _llama_cpp_backend._begin_server_lifecycle()
+    except Exception as e:
+        logger.warning("Could not reset llama-server shutdown state: %s", e)
+
     if not isinstance(host, str) or not host.strip():
         raise SystemExit("--host cannot be empty; use 0.0.0.0 to bind every IPv4 interface.")
 
