@@ -1943,9 +1943,75 @@ def test_capacity_schedule_is_the_one_that_actually_ran_a_70b() -> None:
     # was only one bad allocation from the same fate.
     assert 0 < lo <= hi < sc.SPARK_USABLE_GIB
     # The V layout's selling point is a co-located hop that saves bandwidth. The link was
-    # nowhere near its limit, so that saving cannot pay for the memory it costs.
-    used_gbs = ev["link_mb_moved"] / 1000.0 / (ev["1f1b_s_per_step"] * 10)
+    # nowhere near its limit, so that saving cannot pay for the memory it costs. The step
+    # count and step time here are the ones the LINK figure was measured on, which is no
+    # longer the headline cell: it came from the M=8 run, while the headline is M=16. Bytes
+    # per step do not depend on M, so the conclusion carries, but the arithmetic must use the
+    # cell it was taken from rather than silently reusing whichever s/step is current.
+    used_gbs = (
+        ev["link_mb_moved"]
+        / 1000.0
+        / (ev["link_measured_s_per_step"] * ev["link_measured_over_steps"])
+    )
     assert used_gbs < ev["link_busbw_gbs"] / 100
+    # The microbatch count is measured, monotone, and ends at one row per microbatch. A later
+    # edit that lowers it has to break this rather than quietly cost 20 percent.
+    by_m = ev["1f1b_toks_by_microbatches"]
+    assert ev["1f1b_microbatches"] == max(by_m), ev
+    assert by_m[ev["1f1b_microbatches"]] == ev["1f1b_toks"] == max(by_m.values())
+    assert sorted(by_m) == sorted(by_m, key = lambda m: by_m[m]), by_m  # monotone in M
+    # ... and at this size the best M is also the CHEAPEST, so there is no trade-off to argue
+    # about. If that ever stops being true the recommendation text has to change with it.
+    peaks = ev["1f1b_peak_gib_by_microbatches"]
+    assert peaks[ev["1f1b_microbatches"]] == ev["1f1b_peak_gib"]
+    assert max(peaks[ev["1f1b_microbatches"]]) == min(max(v) for v in peaks.values())
+    # dualpipev is settled by exhaustion, not by two failed cells, so the record has to say
+    # that the smallest configuration the V layout admits was the one that failed.
+    assert "batch 4 with M=4" in ev["dualpipev_outcome"]
+    assert ev["dualpipev_rank0_weights_gib"] > ev["dualpipev_rank1_weights_gib"]
+
+
+def test_capacity_command_names_the_measured_microbatch_count() -> None:
+    """The planner used to emit no --microbatches at all, so a user got the trainer default of
+    4, which at 70B is the WORST point on the measured curve (133 tok/s against 161 at M=16).
+    A recommendation that silently costs 20 percent is a defect, not a default."""
+    sc = _load("studio/spark_cluster.py")
+    budget = sc.SPARK_USABLE_GIB - sc.SERVE_OVERHEAD_GIB
+    out = sc.plan_training(budget * 2, n_nodes = 2, model = "m")
+    cmd = " ".join(out["commands"])
+    m = sc.TRAIN_PP_70B["1f1b_microbatches"]
+    assert f"--microbatches {m}" in cmd
+    # One row per microbatch: the batch and the microbatch count are the same number.
+    assert f"--batch {m}" in cmd
+    assert "microbatch" in out["recommendation"]
+    assert "M=16" in out["recommendation"]
+
+
+def test_microbatch_sweep_constants_agree_with_the_rule() -> None:
+    """The rule is "one row per microbatch"; the tables that justify it must actually show it,
+    on every model swept, or the rule is being asserted rather than measured."""
+    sc = _load("studio/spark_cluster.py")
+    assert "one row per microbatch" in sc.TRAIN_PP_MICROBATCHES_RULE
+    for name, by_batch in sc.TRAIN_PP_MICROBATCHES_SWEPT.items():
+        for batch, by_m in by_batch.items():
+            assert max(by_m) <= batch, (name, batch)  # cannot cut B rows into more than B
+            best = max(by_m, key = lambda m: by_m[m])
+            assert best == max(by_m), (name, batch, by_m)  # the largest M is the best M
+            assert sorted(by_m) == sorted(by_m, key = lambda m: by_m[m]), (name, by_m)
+    # The global-batch axis saturates and the single-Spark control is flat, which is why the
+    # best speedup is barely above the one at batch 64 and why the control being bandwidth
+    # bound is the actual explanation.
+    g = sc.TRAIN_PP_GLOBAL_BATCH_SWEPT
+    pp = [g[b][0] for b in sorted(g)]
+    ctl = [g[b][1] for b in sorted(g)]
+    assert pp == sorted(pp) and max(pp) / min(pp) < 1.05
+    assert max(ctl) / min(ctl) < 1.01  # flat: a single Spark here is bandwidth bound
+    best_b = max(g, key = lambda b: g[b][0] / g[b][1])
+    assert abs(sc.TRAIN_PP_BEST_SPEEDUP - g[best_b][0] / g[best_b][1]) < 0.01
+    # The best PP speedup must still be BELOW the DDP numbers, or the size-gated rule that
+    # sends models which fit to data parallel would be wrong.
+    assert sc.TRAIN_PP_BEST_SPEEDUP < min(sc.TRAIN_DP_SPEEDUP.values())
+    assert 0 < sc.TRAIN_SPEEDUP_INFLATION_FROM_UNSWEPT_CONTROL < 0.05
 
 
 def test_training_planner_refuses_to_guess_and_handles_one_node() -> None:

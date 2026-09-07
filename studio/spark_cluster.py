@@ -3626,20 +3626,111 @@ TRAIN_FSDP_SPEEDUP = {"unsloth/Qwen3.5-2B": 1.25, "unsloth/Qwen3.5-9B": 1.09}
 # magnitude and the interconnect is idle.
 TRAIN_PP_SCHEDULE = "1f1b"
 TRAIN_PP_SCHEDULE_MARGIN = 0.005  # dualpipev over 1f1b ON MODELS THAT FIT; below noise
-# The capacity case, measured. `dualpipev_gib` is None because the arm never reached a step
-# it could report a peak for -- recording the number it died at would imply it ran.
+
+# ── How many microbatches per optimiser step, measured 2026-09-07 ────────────────────────
+# Every pipeline-parallel training number this project recorded before today was taken at ONE
+# microbatch configuration, inherited from a script default and never swept: global batch 64
+# with M=32 at 9B, global batch 16 with M=8 at 70B. M is not a free parameter. It sets the
+# fill/drain bubble, which shrinks as 2M/(M+1), and it sets the microbatch size B/M, which
+# decides how often a stage pays the batch-independent part of its work.
+#
+# Swept at a FIXED global batch so the arithmetic per step is constant and only the schedule's
+# shape changes. Both Sparks pinned at 1690 MHz for every cell, forward and reversed:
+#
+#   9B, batch 64, 1f1b     M=4 1073/1144   M=8 1197/1281   M=16 1337/1350
+#                          M=32 1438/1434  M=64 1462/1485 tok/s
+#   9B, batch 64, control  M=8 779/782  M=16 788  M=32 823/822  M=64 845 tok/s
+#   70B, batch 16, 1f1b    M=2 111  M=4 133  M=8 146/139  M=16 161 tok/s
+#
+# MONOTONE, with no interior knee, on both models. More microbatches is always better, right
+# up to one row per microbatch, which is where the axis ends because a batch of B rows cannot
+# be cut into more than B pieces. The bubble term dominates and the per-microbatch fixed cost
+# stays cheap, because even one row of 512 tokens is above the ~436-token compute/bandwidth
+# crossover. At 70B the best M is also the CHEAPEST in memory (68.45/68.61 GiB at M=16 against
+# 76.88/75.15 at M=2), because fewer rows per microbatch means less activation in flight.
+#
+# So the rule is: one row per microbatch, M = global batch. There is no trade-off to balance.
+# This matters because the harness default is `--microbatches 4`, which on the 70B is 133 tok/s
+# against 161 at M=16 - the planner's own command line was emitting the WORST point on the
+# curve, and now names M explicitly.
+TRAIN_PP_MICROBATCHES_RULE = "one row per microbatch: --microbatches equal to the global batch"
+TRAIN_PP_MICROBATCHES_SWEPT = {
+    # model -> global batch -> {M: tok/s}, best-of/mean where a point was measured twice
+    "unsloth/Qwen3.5-9B": {64: {4: 1108, 8: 1239, 16: 1343, 32: 1436, 64: 1473}},
+    "unsloth/Llama-3.3-70B-Instruct": {16: {2: 111, 4: 133, 8: 142, 16: 161}},
+}
+# Raising the GLOBAL batch while holding one row per microbatch - the direction that amortises
+# the per-optimiser-step cost rather than the per-microbatch one - saturates almost at once:
+# 1481, 1502, 1508 tok/s at batch 64/128/256 against a single-Spark control that is FLAT at
+# 847/849/849. The control not moving at all is the finding: a single Spark training the 9B is
+# bandwidth-bound, so neither the microbatch shape nor the SM clock changes it much.
+TRAIN_PP_GLOBAL_BATCH_SWEPT = {64: (1481, 847), 128: (1502, 849), 256: (1508, 849)}
+# Best pipeline-parallel training speedup measured on the pair, against a control swept over
+# the same axis rather than pinned at somebody else's M. 1508 / 849.
+TRAIN_PP_BEST_SPEEDUP = 1.776
+
+# A correction to the speedups recorded on 2026-09-06, which this sweep was run to check.
+# Those ratios divided by a single-Spark control that was ITSELF splitting batch 64 into 32
+# pieces and paying the per-microbatch cost 32 times, so the denominator was handicapped in
+# the same way the numerator was. Measured: the control does move with M, 779 to 845 tok/s,
+# 8.5 percent across the full range. But between the recorded M=32 and the best M=64 it moves
+# only 2.7 percent while the pipeline arm moves 1.7 percent, so the RATIO barely changes:
+# 1f1b over the control reads 1.537, 1.705, 1.746, 1.744 at M = 8, 16, 32, 64. The recorded
+# M=32 happens to sit at the top of that curve. So every training speedup on record is
+# inflated by roughly 2 to 3 percent at 9B, the ordering of the arms is untouched, and the
+# in-block 1.746 at M=32 reproduces the recorded 1.77 to within the clock difference. The
+# numbers below are NOT rewritten, because this block did not re-measure DDP or FSDP and a
+# table half at 1690 MHz and half uncapped would be worse than one that is consistent.
+TRAIN_SPEEDUP_INFLATION_FROM_UNSWEPT_CONTROL = 0.03
+# ... and a warning for whoever changes M next: M=32 was optimal by luck, not by design.
+# Moving off it in either direction costs speedup, and nobody chose it.
+
+# The capacity case, re-measured 2026-09-07 at the best M rather than at the script default.
+# `dualpipev_gib` is None because the arm never reached a step it could report a peak for --
+# recording the number it died at would imply it ran.
 TRAIN_PP_70B = {
     "model": "unsloth/Llama-3.3-70B-Instruct",
-    "settings": "seq 512, global batch 16, M=8, LoRA r=16, 10 steps, "
+    "settings": "seq 512, global batch 16, M=16 (one row per microbatch), LoRA r=16, 6 steps, "
     "--shard-load --grad-checkpoint, both Sparks pinned at 1690 MHz",
-    "1f1b_toks": 148,
-    "1f1b_s_per_step": 55.43,
-    "1f1b_loss_at_10": 11.9877,
-    "1f1b_peak_gib": (69.46, 69.80),
+    "1f1b_toks": 161,
+    "1f1b_s_per_step": 50.94,
+    "1f1b_steps": 6,
+    "1f1b_microbatches": 16,
+    "1f1b_loss_at_last_step": 12.1359,
+    "1f1b_peak_gib": (68.45, 68.61),
+    # The whole M sweep at this size, so the choice is visible and not just asserted. M=16 is
+    # both the fastest AND the smallest, so there is nothing to trade off.
+    "1f1b_toks_by_microbatches": {2: 111, 4: 133, 8: 142, 16: 161},
+    "1f1b_peak_gib_by_microbatches": {
+        2: (75.15, 76.88),
+        4: (71.49, 72.17),
+        8: (69.46, 69.80),
+        16: (68.45, 68.61),
+    },
     "dualpipev_toks": None,
     "dualpipev_peak_gib": None,
-    "dualpipev_outcome": "out of memory on rank 0 at batch 16 and again at batch 8",
+    # Settled by exhaustion on 2026-09-07 rather than inferred from two failed cells. The
+    # earlier retry at global batch 8 with M=8 was ALREADY one row per microbatch, the
+    # smallest microbatch that exists, so no reduction in microbatch size was left to try.
+    # The only remaining variable was M, and ScheduleDualPipeV at pp=2 has num_stages=4, so
+    # M>=4 is a hard refusal; raising M only puts more microbatches in flight. That leaves
+    # exactly one configuration that minimises both terms at once, global batch 4 with M=4,
+    # and no smaller dualpipev configuration exists anywhere in the parameter space. It was
+    # run: rank 0 fell from 12 to 4 GiB available in ten seconds at the first step, GPU
+    # utilisation 6 percent, while rank 1 sat at 45 GiB. Killed by a memory watchdog, not by
+    # the kernel. So the answer is no at ANY microbatch configuration, not just at the two
+    # that were tried before.
+    "dualpipev_outcome": "out of memory on rank 0 at global batch 16, at batch 8, and at "
+    "batch 4 with M=4 -- the smallest configuration the V layout admits, so no microbatch "
+    "setting makes it viable at this size",
+    "dualpipev_rank0_weights_gib": 68.06,
+    "dualpipev_rank1_weights_gib": 64.14,
     "link_mb_moved": 1386,
+    # Measured on the M=8 cell over 10 steps. Bytes per step do not depend on M: halving the
+    # microbatch halves each message and doubles the number of them, and the same total hidden
+    # state crosses the wire either way. So the bandwidth argument carries over to M=16.
+    "link_measured_over_steps": 10,
+    "link_measured_s_per_step": 55.96,
     "link_busbw_gbs": 20.31,
 }
 
@@ -3742,22 +3833,41 @@ def plan_training(
         schedule_evidence = TRAIN_PP_70B,
         commands = [
             env,
+            # --microbatches is NOT optional here. Leaving it off takes the trainer default of
+            # 4, which at 70B measured 133 tok/s against 161 at M=16: this command line was
+            # emitting the worst point on a curve nobody had swept. One row per microbatch is
+            # both the fastest and the cheapest in memory, so M is the global batch.
             f"unsloth spark train --layer-split {model} --shard-load --grad-checkpoint "
-            f"--schedule {TRAIN_PP_SCHEDULE} --run",
+            f"--schedule {TRAIN_PP_SCHEDULE} --batch {TRAIN_PP_70B['1f1b_microbatches']} "
+            f"--microbatches {TRAIN_PP_70B['1f1b_microbatches']} --run",
         ],
         recommendation = (
             f"{size_gib:.1f} GiB does NOT fit on one Spark ({budget:.0f} GiB budget): "
             f"layer-split it with --shard-load --grad-checkpoint, schedule "
             f"{TRAIN_PP_SCHEDULE}. A whole-model replica per node is impossible at this "
             f"size, so this is the only two-Spark axis -- it buys capacity, not speed. "
+            f"Use one row per microbatch: --microbatches equal to the global batch. That is "
+            f"measured, not a default -- at {TRAIN_PP_70B['model']} the M sweep at global "
+            f"batch 16 reads "
+            + ", ".join(
+                f"{t} tok/s at M={m}"
+                for m, t in sorted(TRAIN_PP_70B["1f1b_toks_by_microbatches"].items())
+            )
+            + f", so the trainer's default of 4 costs about 20 percent, and M=16 is also the "
+            f"smallest in memory. "
             f"Do NOT substitute dualpipev here: at {TRAIN_PP_70B['model']} it ran out of "
-            f"memory on rank 0 at global batch 16 and again at batch 8, while "
+            f"memory on rank 0 at global batch 16, again at batch 8, and again at batch 4 "
+            f"with M=4 -- the smallest configuration a 4-stage V layout admits, so there is "
+            f"no microbatch setting that rescues it, while "
             f"{TRAIN_PP_SCHEDULE} completed the same work at "
             f"{TRAIN_PP_70B['1f1b_peak_gib'][0]:.1f}/{TRAIN_PP_70B['1f1b_peak_gib'][1]:.1f} "
             f"GiB per rank and {TRAIN_PP_70B['1f1b_toks']} tok/s. The V layout co-locates the "
             f"first and last stages on one rank, so that rank carries the embedding, the LM "
-            f"head, the loss and the deepest in-flight set together, which is affordable at "
-            f"2B and 9B and is not at 70B. Run `unsloth spark estimate` first."
+            f"head, the loss and the deepest in-flight set together "
+            f"({TRAIN_PP_70B['dualpipev_rank0_weights_gib']:.2f} GiB of weights against rank "
+            f"1's {TRAIN_PP_70B['dualpipev_rank1_weights_gib']:.2f}, the difference being the "
+            f"LM head), which is affordable at 2B and 9B and is not at 70B. "
+            f"Run `unsloth spark estimate` first."
         ),
     )
     return out
