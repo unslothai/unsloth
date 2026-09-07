@@ -35,25 +35,27 @@ import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   SANDBOX_FILE_TOOLS,
-  extractCreatedFiles,
   isSandboxFileList,
   isSandboxToolResult,
-  type SandboxFile,
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
 import {
   answerTextFromParts,
-  extractSearchImages,
   isSearchImageEntry,
   isSearchImagesToolResult,
   missingListSubjects,
   SEARCH_IMAGE_TOOL,
   searchResultText,
   stripSearchImageTokens,
-  type SearchImageEntry,
-  type SearchImagesToolResult,
 } from "../search-images/search-images";
+// The frame -> part shaping a tool result gets, shared with the recovery replay so a reopened card is the same
+// object a watched one was.
+export { isMcpImageToolResult, type McpImageToolResult } from "../utils/tool-result-shape";
+import {
+  isMcpImageToolResult,
+  shapeToolResult,
+} from "../utils/tool-result-shape";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
@@ -311,7 +313,10 @@ import {
   followChatGenerationRun,
   supportsChatGenerationRuns,
 } from "./chat-generation-api";
-import { turnRequiresLegacyStream } from "./durable-gate";
+import {
+  isDurableRunCandidate,
+  turnRequiresLegacyStream,
+} from "./durable-gate";
 
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
@@ -1064,10 +1069,6 @@ function serializeAssistantToolCallPart(
   return entry;
 }
 
-export interface McpImageToolResult {
-  text: string;
-  images: { data: string; mimeType: string }[];
-}
 
 /** The text the model actually saw, for a result that may be wrapped. Exports feed fine-tuning
  *  datasets, so a serialized wrapper would train on the card's metadata. */
@@ -1086,33 +1087,15 @@ export function toolResultModelText(
 }
 
 /** A wrapper this app added, not a result merely shaped like one: unwrapping someone else's
- *  MCP result drops every other field it returned. */
+ *  MCP result drops every other field it returned. The predicate itself lives in
+ *  utils/tool-result-shape.ts, re-exported above, so the live stream and the recovery replay unwrap a
+ *  result with the same rules. */
 function isSandboxWrapper(
   result: unknown,
   toolName?: string,
 ): result is { text: string; sessionId: string } {
   if (toolName !== undefined && !SANDBOX_FILE_TOOLS.has(toolName)) return false;
   return isSandboxToolResult(result);
-}
-
-export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
-  if (typeof val !== "object" || val === null) {
-    return false;
-  }
-  const v = val as { text?: unknown; images?: unknown; sessionId?: unknown };
-  return (
-    typeof v.text === "string" &&
-    v.sessionId === undefined &&
-    Array.isArray(v.images) &&
-    v.images.length > 0 &&
-    v.images.every(
-      (img: unknown) =>
-        typeof img === "object" &&
-        img !== null &&
-        typeof (img as { data?: unknown }).data === "string" &&
-        typeof (img as { mimeType?: unknown }).mimeType === "string",
-    )
-  );
 }
 
 function serializeToolResultPart(
@@ -5008,20 +4991,25 @@ export function createOpenAIStreamAdapter(
           findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation) ||
           findLatestUserVideoBase64(currentTurnMessages),
       );
-      const generationCandidate = Boolean(
-        !isExternalRequest &&
-          !activeModel?.isAudio &&
-          !runtime.loadedIsDiffusion &&
-          // Turn-scoped, not thread-scoped: see currentTurnCarriesMedia above.
-          !currentTurnCarriesMedia &&
-          // Continue yields the seeded partial before the request starts so the autosave lands before
-          // admission, which 409s a substantive placeholder. Continuations keep the legacy stream.
-          !continuation &&
-          resolvedThreadId &&
-          !isThreadIncognito(resolvedThreadId) &&
-          unstable_assistantMessageId &&
-          generationUserMessage,
-      );
+      // The whole gate is `isDurableRunCandidate` (api/durable-gate.ts), over the plain values resolved above, so it
+      // reads as a truth table and tests as one: external provider, audio model, diffusion, THIS turn's media (see
+      // currentTurnCarriesMedia above - a stale blob from an earlier turn must not refuse this one), a continuation
+      // (its seeded partial is autosaved before the request starts, and admission 409s a placeholder that already
+      // has content, which is not one of the errors that falls back), no thread to reattach to, an incognito
+      // thread, or no message to write into - any one of those keeps the turn on the cancel-on-disconnect stream.
+      const generationCandidate = isDurableRunCandidate({
+        externalProvider: isExternalRequest,
+        modelIsAudio: activeModel?.isAudio,
+        loadedIsDiffusion: runtime.loadedIsDiffusion,
+        turnCarriesMedia: currentTurnCarriesMedia,
+        continuation,
+        threadId: resolvedThreadId,
+        incognito: resolvedThreadId
+          ? isThreadIncognito(resolvedThreadId)
+          : false,
+        assistantMessageId: unstable_assistantMessageId,
+        hasUserMessage: Boolean(generationUserMessage),
+      });
       let generationDecision: "pending" | "durable" | "legacy" =
         generationCandidate ? "pending" : "legacy";
       let generationRun: ChatGenerationRun | null = null;
@@ -6758,113 +6746,15 @@ export function createOpenAIStreamAdapter(
                     (p) => p.toolCallId === id,
                   );
                   if (idx !== -1) {
-                    const rawEvent = (toolEvent.result as string) ?? "";
-                    // Pulled out first, ahead of __IMAGES__, so the image slice below is unchanged. Only from the
-                    // tools that emit it: elsewhere that line is content.
-                    const { text: rawResult, files: createdFiles } =
-                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
-                        ? extractCreatedFiles(rawEvent)
-                        : { text: rawEvent, files: [] as SandboxFile[] };
-                    // Same rule: only from the tool that emits it.
-                    const { text: searchText, images: webImages } =
-                      toolCallParts[idx].toolName === SEARCH_IMAGE_TOOL
-                        ? extractSearchImages(rawResult)
-                        : { text: rawResult, images: [] as SearchImageEntry[] };
-                    const imgMarker = "\n__IMAGES__:";
-                    const imgIdx = rawResult.lastIndexOf(imgMarker);
-                    const mcpImgMarker = "\n__MCP_IMAGES__:";
-                    const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
-                    let parsedResult:
-                      | string
-                      | {
-                          text: string;
-                          images: string[];
-                          sessionId: string;
-                          files?: SandboxFile[];
-                        }
-                      | McpImageToolResult
-                      | SearchImagesToolResult
-                      | {
-                          image_b64: string;
-                          image_mime: string;
-                          size?: string;
-                          quality?: string;
-                          background?: string;
-                          prompt?: string;
-                        };
-                    const imageB64 = toolEvent.image_b64 as string | undefined;
-                    // A valid MCP image envelope wins; an invalid marker falls through so a sandbox __IMAGES__
-                    // suffix still renders.
-                    let mcpImages: McpImageToolResult | null = null;
-                    if (mcpImgIdx !== -1) {
-                      try {
-                        const images = JSON.parse(
-                          rawResult.slice(mcpImgIdx + mcpImgMarker.length),
-                        );
-                        const candidate = {
-                          text: rawResult.slice(0, mcpImgIdx),
-                          images,
-                        };
-                        if (isMcpImageToolResult(candidate))
-                          mcpImages = candidate;
-                      } catch {
-                        // Not a valid envelope; fall through below.
-                      }
-                    }
-                    if (
-                      toolCallParts[idx].toolName === "image_generation" &&
-                      typeof imageB64 === "string" &&
-                      imageB64
-                    ) {
-                      // The backend keeps base64 on separate image_b64 / image_mime fields to keep logs small.
-                      parsedResult = {
-                        image_b64: imageB64,
-                        image_mime:
-                          (toolEvent.image_mime as string | undefined) ??
-                          "image/png",
-                        size: toolEvent.size as string | undefined,
-                        quality: toolEvent.quality as string | undefined,
-                        background: toolEvent.background as string | undefined,
-                        prompt: toolEvent.prompt as string | undefined,
-                      };
-                    } else if (mcpImages !== null) {
-                      parsedResult = mcpImages;
-                    } else if (imgIdx !== -1) {
-                      const text = rawResult.slice(0, imgIdx);
-                      // Fall back to "_default", the backend sandbox dir used when there is no
-                      // session_id (see tools.py _get_workdir).
-                      const sessionId = sandboxSessionId || "_default";
-                      try {
-                        const images = JSON.parse(
-                          rawResult.slice(imgIdx + imgMarker.length),
-                        ) as string[];
-                        parsedResult = {
-                          text,
-                          images,
-                          sessionId,
-                          files: createdFiles,
-                        };
-                      } catch {
-                        parsedResult = rawResult;
-                      }
-                    } else if (
-                      createdFiles.length > 0 ||
-                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
-                    ) {
-                      // Structured even with neither files nor images, because the session is the only record of
-                      // WHERE this call ran: _created_file_sentinels emits nothing when a concurrent call shared
-                      // the directory, so a moved chat would name a folder from its current scope.
-                      parsedResult = {
-                        text: rawResult,
-                        images: [],
-                        sessionId: sandboxSessionId || "_default",
-                        files: createdFiles,
-                      };
-                    } else if (webImages.length > 0) {
-                      parsedResult = { text: searchText, webImages };
-                    } else {
-                      parsedResult = rawResult;
-                    }
+                    const parsedResult = shapeToolResult({
+                      // The wire's one string, shaped the same way the live stream shapes it - sandbox files, an MCP
+                      // image envelope, web-search images, an inline base64 image - so a replayed frame lands as the
+                      // same part value a watched one did. See utils/tool-result-shape.ts.
+                      toolName: toolCallParts[idx].toolName,
+                      raw: (toolEvent.result as string) ?? "",
+                      event: toolEvent as Record<string, unknown>,
+                      sandboxSessionId: sandboxSessionId || "_default",
+                    });
                     const nextArgs =
                       toolEvent.arguments &&
                       typeof toolEvent.arguments === "object"

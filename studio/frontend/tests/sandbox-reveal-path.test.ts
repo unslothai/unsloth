@@ -223,30 +223,36 @@ test("both the folder and the session id are answered from the same probe", () =
   assert.ok(!copy.includes("await recordedSandboxSessionIds("));
 });
 
-test("a sandbox tool result is wrapped even when it carries no envelope", () => {
-  // chat-adapter.ts reaches JSX barrels and cannot be imported, so this asserts
-  // on source. The session id is the only record of WHERE a call ran, and the
-  // backend suppresses __FILES__ when a concurrent call shared the directory,
-  // so a run that did write files can arrive bare and a moved chat would then
-  // name a folder from its current scope that it never wrote to.
-  const adapter = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    ),
-    "utf-8",
+test("a sandbox tool result is wrapped even when it carries no envelope", async () => {
+  // The rule moved out of chat-adapter.ts into the shaper the live stream and the recovery replay BOTH call,
+  // so this is now behaviour, not a grep: the session id is the only record of WHERE a call ran, and the backend
+  // suppresses __FILES__ when a concurrent call shared the directory, so a run that did write files can arrive
+  // bare - and a replayed tab would then name a folder from its current scope that it never wrote to.
+  const { shapeToolResult } = await import(
+    "../src/features/chat/utils/tool-result-shape.ts"
   );
-  const branch = adapter.slice(
-    adapter.indexOf(
-      "} else if (\n                      createdFiles.length > 0 ||",
-    ),
-    adapter.indexOf("// Merge tool_end args first"),
+  const shaped = shapeToolResult({
+    toolName: "python",
+    raw: "the model saw this",
+    event: {},
+    sandboxSessionId: "thread-1",
+  }) as { text: string; images: unknown[]; sessionId: string; files: unknown[] };
+  assert.equal(shaped.text, "the model saw this");
+  assert.deepEqual(shaped.images, []);
+  assert.deepEqual(shaped.files, []);
+  assert.equal(
+    shaped.sessionId,
+    "thread-1",
+    "a bare python result must still carry the session it ran in",
   );
-  assert.ok(branch.length > 0, "the sandbox result branch moved");
-  assert.ok(
-    branch.includes("SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName"),
-    "python and terminal results must be wrapped without an envelope too",
-  );
-  assert.ok(branch.includes("sessionId: sandboxSessionId"));
+  // And a chart keeps its image envelope instead of rendering the wire's marker as text.
+  const chart = shapeToolResult({
+    toolName: "python",
+    raw: 'saved\n__IMAGES__:["plot_0.png"]',
+    event: {},
+    sandboxSessionId: "thread-1",
+  }) as { images: string[] };
+  assert.deepEqual(chart.images, ["plot_0.png"]);
 });
 
 test("the sandbox reads stay off Promise.all, as the export contract requires", () => {

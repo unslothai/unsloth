@@ -17,6 +17,10 @@ import {
   lastReasoningGroupTextLength,
 } from "./reasoning-duration";
 import { preferFullToolOutput } from "./tool-output-preference";
+// The frame -> part shaping the live stream applies to a tool result, applied HERE too. A replay that copies
+// `event.result` verbatim renders the wire's marker (`__IMAGES__:...`) as content; shaped, a reopened chart card is
+// the same object a watched one was.
+import { shapeToolResult } from "./tool-result-shape";
 import {
   findStreamedToolCallPartIndex,
   mintStreamedToolCallId,
@@ -113,7 +117,12 @@ export type RecoveryReplay = {
 export function createRecoveryReplay(
   seed: unknown,
   seedDurations?: readonly number[],
+  options?: { sandboxSessionId?: string },
 ): RecoveryReplay {
+  // Read lazily, at the frame that needs it: a follower builds its accumulator before the stored run is fetched,
+  // then fills this in. A replayed python/terminal card that loses WHICH session ran names a folder from the
+  // reader's current scope instead of the run's.
+  const sandboxSessionId = () => options?.sandboxSessionId;
   const seeded = seededReplayState(seed);
   // The parse of everything replayed so far, extended by each delta rather than redone from
   // character zero: a publish costs one event, not the whole reply.
@@ -331,15 +340,24 @@ export function createRecoveryReplay(
     const part = parts[existingIndex];
     const streamed = liveOutput.get(String(part.toolCallId ?? id));
     const result = event.result;
-    const full =
+    // A longer captured stream beats the model-visible result, which is the live path's rule too.
+    const fuller =
       streamed !== undefined && typeof result === "string"
         ? preferFullToolOutput(streamed, result)
         : undefined;
-    return patchPart(id, {
-      ...(full !== undefined ? { result: full } : result !== undefined
-        ? { result }
-        : {}),
-    });
+    const chosen = fuller !== undefined ? fuller : result;
+    // And what lands on the card is what the live stream would have written there: a marker split into images and
+    // files, an MCP envelope unwrapped, an inline base64 image kept off `result`, all under the session that ran.
+    const shaped =
+      chosen === undefined
+        ? undefined
+        : shapeToolResult({
+            toolName: typeof part.toolName === "string" ? part.toolName : undefined,
+            raw: chosen,
+            event,
+            sandboxSessionId: sandboxSessionId(),
+          });
+    return patchPart(id, shaped !== undefined ? { result: shaped } : {});
   };
 
   const applyToolCallDeltas = (calls: unknown): boolean => {
