@@ -502,7 +502,7 @@ def test_the_text_only_checkpoint_refusal_precedes_the_branch_that_consumes_audi
     text alone, so the refusal has to sit in front of it. This pins that ordering; whether the
     refusal fires for a real checkpoint is covered by the GGUF/transformers suites, not here.
     """
-    source = Path(inference_route.__file__).read_text()
+    source = Path(inference_route.__file__).read_text(encoding = "utf-8")
     branch = source.index('if payload.audio_base64 and not model_info.get("has_audio_input"):')
     consume = source.index('if payload.audio_base64 and model_info.get("has_audio_input"):')
 
