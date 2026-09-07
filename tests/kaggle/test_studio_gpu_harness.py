@@ -1236,8 +1236,12 @@ def test_the_driver_subprocess_timeout_does_not_track_the_ui_wall_budget():
     assert "ui_wall_timeout" not in call, call
 
     module = _load_payload()
-    # Nine times the ~10 minute healthy pass, and inside the lane's 120 minute job.
-    assert module.UI_DRIVER_PROC_TIMEOUT_S >= 9 * 600
+    # The backstop is a sum, not a guess: the driver is handed a total that no progress
+    # report can move, and this waits out that total and then some.
+    assert "STUDIO_UI_TOTAL_TIMEOUT_S" in body, body
+    assert module.UI_DRIVER_PROC_TIMEOUT_S > module.UI_DRIVER_TOTAL_TIMEOUT_S
+    # Six times the ~10 minute healthy pass, and inside the lane's 120 minute job.
+    assert module.UI_DRIVER_TOTAL_TIMEOUT_S >= 6 * 600
     assert module.UI_DRIVER_PROC_TIMEOUT_S < 120 * 60
 
 

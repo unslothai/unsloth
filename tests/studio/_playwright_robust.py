@@ -749,14 +749,34 @@ class _WallClockWatchdog:
     a `threading.Timer` gave. Timer has no reschedule, hence a thread over a live deadline.
     """
 
-    def __init__(self, deadline_s: float, on_expiry: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        deadline_s: float,
+        on_expiry: Callable[[], None],
+        total_deadline_s: float | None = None,
+    ) -> None:
         self._budget_s = float(deadline_s)
         self._on_expiry = on_expiry
         self._lock = threading.Lock()
-        self._deadline = time.monotonic() + self._budget_s
+        started = time.monotonic()
+        # A kick can push the budget out forever, so a caller that has to SIZE something
+        # around this watchdog has nothing to size against. `total_deadline_s` gives it
+        # one: a ceiling no kick can move, so an outer bound is a sum and not a guess.
+        # Unset by default, because the ceiling is the very thing that cuts a wait off
+        # before it can name itself.
+        self._ceiling = started + float(total_deadline_s) if total_deadline_s else None
+        self._deadline = self._clamp(started + self._budget_s)
         self._cancelled = threading.Event()
         self._thread = threading.Thread(target = self._run, daemon = True)
         self.kicked = False
+
+    def at_ceiling(self) -> bool:
+        """Did the total cap, rather than the per-wait budget, decide the deadline?"""
+        with self._lock:
+            return self._ceiling is not None and self._deadline >= self._ceiling
+
+    def _clamp(self, deadline: float) -> float:
+        return deadline if self._ceiling is None else min(deadline, self._ceiling)
 
     def start(self) -> "_WallClockWatchdog":
         self._thread.start()
@@ -766,7 +786,7 @@ class _WallClockWatchdog:
         """Progress was made: restart the budget."""
         with self._lock:
             self.kicked = True
-            self._deadline = time.monotonic() + self._budget_s
+            self._deadline = self._clamp(time.monotonic() + self._budget_s)
 
     def cancel(self) -> None:
         self._cancelled.set()
@@ -791,18 +811,21 @@ def install_wall_clock_watchdog(
     *,
     label: str = "playwright",
     info: Callable[[str], None] | None = None,
+    total_deadline_s: float | None = None,
 ) -> _WallClockWatchdog:
-    """Hard-exit `deadline_s` after the last `kick()`; returned so the caller can `.cancel()`."""
+    """Hard-exit `deadline_s` after the last `kick()`, or at `total_deadline_s` from arming
+    if that comes first; returned so the caller can `.cancel()`."""
 
     def _kaboom() -> None:
         # A caller that kicks is measuring inactivity, one that does not is measuring the
         # whole run. Saying "no step" to a script that never reports one sends its reader
         # looking for a step that was never going to come.
-        spent = (
-            f"{deadline_s:.0f}s with no step reported"
-            if watchdog.kicked
-            else f"hit {deadline_s:.0f}s wall-clock deadline"
-        )
+        if total_deadline_s and watchdog.at_ceiling():
+            spent = f"hit the {total_deadline_s:.0f}s total cap"
+        elif watchdog.kicked:
+            spent = f"{deadline_s:.0f}s with no step reported"
+        else:
+            spent = f"hit {deadline_s:.0f}s wall-clock deadline"
         msg = (
             f"[{label}] WATCHDOG: {spent}; "
             f"forcing exit(2). The script wedged somewhere "
@@ -827,7 +850,7 @@ def install_wall_clock_watchdog(
     # Bound before started: at deadline_s <= 0 the thread reaches _kaboom during start(),
     # and a _kaboom that closed over an unbound name dies of NameError in that thread
     # instead of exiting, leaving the run with no watchdog at all.
-    watchdog = _WallClockWatchdog(deadline_s, _kaboom)
+    watchdog = _WallClockWatchdog(deadline_s, _kaboom, total_deadline_s)
     watchdog.start()
     if info is not None:
         info(f"watchdog armed: hard-exit {deadline_s:.0f}s after the last step")

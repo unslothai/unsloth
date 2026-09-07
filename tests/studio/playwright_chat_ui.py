@@ -74,17 +74,27 @@ LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"
 # longest, and both are configured per runner, so take the max of the pair rather than
 # whichever happens to win at today's values: the rapid-submit settle at 2x the turn timeout
 # (1080s where studio-mac-ui-smoke.yml sets STUDIO_UI_TURN_TIMEOUT_MS=540000, against the
-# 720s this was pinned at) and the /api/inference/load fetch (600s on the Kaggle lane).
-# Not a total: `send_and_wait` budgets 4x the turn timeout across seven turns. Linux, setting
-# neither, keeps its 720s floor.
+# 720s this was pinned at), the /api/inference/load fetch (600s on the Kaggle lane), and the
+# ordinary fetch budget. Every one of the three is an env var, so take the max of all three
+# rather than whichever wins at today's values. Not a total: `send_and_wait` budgets 4x the
+# turn timeout across seven turns. Linux, raising none of them, keeps its 720s floor.
 _WALL_FLOOR_S = 720.0
-_LONGEST_WAIT_S = max((TURN_TIMEOUT_MS / 1000) * 2, LOAD_FETCH_TIMEOUT_MS / 1000)
+_LONGEST_WAIT_S = max(
+    (TURN_TIMEOUT_MS / 1000) * 2,
+    LOAD_FETCH_TIMEOUT_MS / 1000,
+    FETCH_TIMEOUT_MS / 1000,
+)
 WALL_TIMEOUT_S = float(
     os.environ.get(
         "STUDIO_UI_WALL_TIMEOUT_S",
         max(_WALL_FLOOR_S, _LONGEST_WAIT_S + 120),
     )
 )
+# Unset by default, so the budget above stays per-wait and the run has no total. A caller
+# that must SIZE an outer bound around this process has nothing to size against otherwise,
+# since a kick moves the deadline; setting this trades a wait's right to finish for an
+# outer bound that is a sum rather than a guess. tests/kaggle/studio_gpu sets it.
+TOTAL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_TOTAL_TIMEOUT_S", "0")) or None
 
 _n = [0]
 
@@ -698,6 +708,7 @@ with sync_playwright() as p:
         WALL_TIMEOUT_S,
         label = "ui",
         info = info,
+        total_deadline_s = TOTAL_TIMEOUT_S,
     )
     # Pre-flight: macos-14 can surface a 200 /api/health while the auth DB is still migrating;
     # this 30s probe catches that gap before we sink 60s into a change-password timeout.
@@ -790,6 +801,10 @@ with sync_playwright() as p:
     # page/reload between tries so a mid-try rerender doesn't poison the next.
     form_err: Exception | None = None
     for _form_attempt in range(3):
+        # Each attempt is forward progress, but it reports itself with bare print(), so
+        # nothing here resets the budget: two failed attempts of goto/settle/fill spend
+        # the whole Linux 720s and the third is hard-exited part way through.
+        wall_kick()
         try:
             page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
             try:
@@ -879,6 +894,7 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     last_err: Exception | None = None
     for _attempt in range(2):
+        wall_kick()  # as in the change-password loop: the retry logs with bare print()
         try:
             composer.wait_for(state = "visible", timeout = 60_000)
             last_err = None

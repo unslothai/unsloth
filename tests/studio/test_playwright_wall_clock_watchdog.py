@@ -80,6 +80,30 @@ def test_a_watchdog_that_expires_during_start_still_exits():
     assert codes == [2], codes
 
 
+def test_a_total_cap_is_a_ceiling_no_kick_can_move():
+    """What makes an outer bound around this process a sum instead of a guess.
+
+    Without it a caller sizing a backstop has nothing to size against: every kick moves
+    the deadline, so the exit lands at a wall-clock time the caller cannot predict."""
+    fired = threading.Event()
+    watchdog = _WallClockWatchdog(10.0, fired.set, total_deadline_s = 0.7).start()
+    started = time.monotonic()
+    try:
+        while time.monotonic() - started < 1.4:
+            time.sleep(0.05)
+            watchdog.kick()  # kicking throughout must not push past the ceiling
+    finally:
+        watchdog.cancel()
+    assert fired.is_set()
+    assert watchdog.at_ceiling()
+
+
+def test_without_a_total_cap_nothing_is_at_the_ceiling():
+    watchdog = _WallClockWatchdog(10.0, lambda: None)
+    watchdog.kick()
+    assert not watchdog.at_ceiling()
+
+
 def _watchdog_message(kick):
     """The line a real `install_wall_clock_watchdog` prints on expiry, minus the exit."""
     watchdog = robust.install_wall_clock_watchdog(30.0, label = "ui")
@@ -99,11 +123,16 @@ def test_the_message_names_what_actually_ran_out():
     assert "30s with no step reported" in _watchdog_message(kick = True)
 
 
-def _chat_ui_wall_timeout_s(turn_timeout_ms, load_timeout_ms = 180_000):
-    """Evaluate the script's own WALL_TIMEOUT_S expression at a given pair of budgets."""
+def _chat_ui_wall_timeout_s(
+    turn_timeout_ms,
+    load_timeout_ms = 180_000,
+    fetch_timeout_ms = 30_000,
+):
+    """Evaluate the script's own WALL_TIMEOUT_S expression at a given set of budgets."""
     wanted = {
         "TURN_TIMEOUT_MS",
         "LOAD_FETCH_TIMEOUT_MS",
+        "FETCH_TIMEOUT_MS",
         "_WALL_FLOOR_S",
         "_LONGEST_WAIT_S",
         "WALL_TIMEOUT_S",
@@ -119,6 +148,7 @@ def _chat_ui_wall_timeout_s(turn_timeout_ms, load_timeout_ms = 180_000):
     env = {
         "STUDIO_UI_TURN_TIMEOUT_MS": str(turn_timeout_ms),
         "STUDIO_UI_LOAD_TIMEOUT_MS": str(load_timeout_ms),
+        "STUDIO_UI_FETCH_TIMEOUT_MS": str(fetch_timeout_ms),
     }
     ns = {"os": type("_os", (), {"environ": env})}
     exec(compile(ast.Module(body = body, type_ignores = []), str(CHAT_UI), "exec"), ns)
@@ -130,6 +160,14 @@ def test_the_wall_budget_outlasts_the_longest_single_wait():
     for turn_timeout_ms in (180_000, 540_000):
         wall, longest_wait = _chat_ui_wall_timeout_s(turn_timeout_ms)
         assert wall >= longest_wait + 120, (turn_timeout_ms, wall, longest_wait)
+
+
+def test_a_raised_fetch_budget_also_raises_the_wall():
+    # Every budget in the max is an env var, so none of them may be left out on the
+    # grounds that no lane raises it today.
+    wall, longest_wait = _chat_ui_wall_timeout_s(180_000, fetch_timeout_ms = 900_000)
+    assert longest_wait == 900.0
+    assert wall >= 900.0 + 120
 
 
 def test_a_raised_load_budget_also_raises_the_wall():

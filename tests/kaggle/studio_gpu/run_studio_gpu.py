@@ -126,14 +126,17 @@ MIN_FREE_GB = 25.0
 # once per session before anything needs it. Generous, because the cost of
 # being too tight is a red that reads like a selection bug.
 LLAMA_CPP_INSTALL_TIMEOUT_S = 900.0
-# Backstop for a chat-UI driver whose own watchdog never fired, and nothing tighter.
-# It cannot be derived from STUDIO_UI_WALL_TIMEOUT_S: that budget now measures silence
-# between progress reports, so the driver's exit lands one budget after its LAST step, at
-# a wall-clock time this side cannot predict. Winning the race costs the traceback and
-# thread dump the driver exits with, because SIGKILL leaves TimeoutExpired holding no
-# stderr to report. The enclosing job's timeout-minutes is the real bound; this only keeps
-# a hung driver from eating all of it. A healthy pass is ~10 min, so 90 is nine times over.
-UI_DRIVER_PROC_TIMEOUT_S = 5400.0
+# STUDIO_UI_WALL_TIMEOUT_S cannot size a backstop any more: it measures silence between
+# progress reports, so the driver's exit lands one budget after its LAST step, at a
+# wall-clock time this side cannot predict, and any fixed number here is a guess that a
+# still-progressing run can beat. Winning that race costs the traceback and thread dump
+# the driver exits with, since SIGKILL leaves TimeoutExpired holding no stderr.
+# So the driver is given a total instead. STUDIO_UI_TOTAL_TIMEOUT_S is a ceiling no kick
+# moves, which makes the backstop below a sum rather than a guess: the driver is out by
+# UI_DRIVER_TOTAL_TIMEOUT_S, always, and this waits 300s longer than that. Six times the
+# lane's ~10 minute healthy pass, and inside its 120 minute job.
+UI_DRIVER_TOTAL_TIMEOUT_S = 3600.0
+UI_DRIVER_PROC_TIMEOUT_S = UI_DRIVER_TOTAL_TIMEOUT_S + 300.0
 # How long to let VRAM fall after an unload before calling it the baseline.
 # 12 x 2.5s bounds the wait at 30s, which is well past the ~3s a llama-server
 # takes to exit on the models this harness loads, without stalling the run if
@@ -2531,6 +2534,7 @@ class Payload:
                 # a cached 270M model. Here the model is larger and the box is
                 # busier.
                 "STUDIO_UI_WALL_TIMEOUT_S": str(self.args.ui_wall_timeout),
+                "STUDIO_UI_TOTAL_TIMEOUT_S": str(UI_DRIVER_TOTAL_TIMEOUT_S),
                 "STUDIO_UI_LOAD_TIMEOUT_MS": "600000",
                 "STUDIO_UI_TURN_TIMEOUT_MS": "180000",
                 "PYTHONUNBUFFERED": "1",
