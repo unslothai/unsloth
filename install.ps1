@@ -1300,6 +1300,13 @@ public static class UnslothStudioFinalPathV2
         # points at, so a marker path someone has linked elsewhere would quietly destroy
         # an unrelated file.
         Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+        # And only write once it is gone. Remove-Item fails non-terminatingly here, and a
+        # link whose directory denies deletion while its target is writable is exactly the
+        # case Set-Content would follow and truncate. Get-Item -Force, not Test-Path: it
+        # reports the reparse point itself rather than following it to a missing target.
+        if ($null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)) {
+            return
+        }
         Set-Content -LiteralPath $markerFile -Value $Cache `
             -Encoding utf8 -ErrorAction SilentlyContinue
     }
@@ -1313,7 +1320,8 @@ public static class UnslothStudioFinalPathV2
         if ([string]::IsNullOrWhiteSpace($StudioRoot)) { return }
         $markerFile = Join-Path (Join-Path $StudioRoot "cache") "uv-cache-dir"
         Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
-        if ($script:StudioUvMarkerExisted -and $null -ne $script:StudioUvMarkerPrevious) {
+        $stillThere = $null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)
+        if (-not $stillThere -and $script:StudioUvMarkerExisted -and $null -ne $script:StudioUvMarkerPrevious) {
             Set-Content -LiteralPath $markerFile -Value ([string]$script:StudioUvMarkerPrevious).TrimEnd("`r", "`n") `
                 -Encoding utf8 -ErrorAction SilentlyContinue
         }
@@ -4374,14 +4382,15 @@ exit 0
     }
 
     function Complete-StudioVenvRollback {
+        # Above the early return, because a first install has no previous environment to
+        # roll back and still commits one. The marker came with that environment, so it is
+        # committed too: reverting it later would leave the installed environment pointing
+        # at the cache of the one before it.
+        $script:StudioUvMarkerSaved = $false
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         # The replacement is committed. Disable restoration before deleting the
         # backup so interruption cannot restore a partially deleted environment.
-        # The marker came with this environment, so it is committed too: a later failure
-        # rolls nothing back, and reverting the marker would leave the installed
-        # environment pointing at the cache of the one before it.
-        $script:StudioUvMarkerSaved = $false
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
         $script:StudioVenvRollbackPartial = $false

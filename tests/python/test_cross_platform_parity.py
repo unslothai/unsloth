@@ -36,6 +36,16 @@ def _fallback_range(lines):
     raise AssertionError("install.sh's GPU-detection fallback branch is never closed")
 
 
+def _all_indexes(haystack, needle):
+    """Every occurrence, so an assertion about "each write" cannot pass on the first one."""
+    found, at = [], haystack.find(needle)
+    while at != -1:
+        found.append(at)
+        at = haystack.find(needle, at + 1)
+    assert found, needle
+    return found
+
+
 class TestNoTorchBackendAutoInInstallSh:
     """install.sh primary paths must not use --torch-backend=auto (only the fallback else-branch may)."""
 
@@ -1215,6 +1225,38 @@ class TestInstallUvCacheRootParity:
         assert ps1_commit.index("$script:StudioUvMarkerSaved = $false") < ps1_commit.index(
             "$script:StudioVenvRollbackActive = $false"
         )
+        # And outside the rollback branch on both sides. A first install has no previous
+        # environment, so the branch is skipped and the marker would stay revertible under
+        # an environment that stays installed.
+        assert commit_body.index("_UV_MARKER_SAVED=false") < commit_body.index(
+            'if [ "$_VENV_ROLLBACK_ACTIVE" = true ]'
+        )
+        assert ps1_commit.index("$script:StudioUvMarkerSaved = $false") < ps1_commit.index(
+            "if (-not $script:StudioVenvRollbackActive) { return }"
+        )
+
+        # Both marker writes are gated on the old entry actually being gone. The unlink is
+        # what keeps a symlinked marker from truncating what it points at, and it can fail
+        # silently: the directory may deny deletion while the target stays writable.
+        for body in (
+            sh[sh.index("_record_uv_cache_choice() {") : sh.index("_restore_uv_cache_marker() {")],
+            sh[sh.index("_restore_uv_cache_marker() {") :][:600],
+        ):
+            unlink = body.index('rm -f "$_uv_marker_file"')
+            write = body.index("printf '%s\\n'", unlink)
+            assert '[ -L "$_uv_marker_file" ]' in body[unlink:write], body[unlink:write]
+        ps1_marker = ps1[
+            ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
+                "function Set-StudioUvCacheEnvironment"
+            )
+        ]
+        for start in _all_indexes(ps1_marker, "Remove-Item -LiteralPath $markerFile"):
+            # The call form, not the bare name: the comment above the gate names the
+            # cmdlet, and a window ending there would exclude the gate it is about.
+            window = ps1_marker[
+                start : ps1_marker.index("Set-Content -LiteralPath $markerFile", start)
+            ]
+            assert "Get-Item -LiteralPath $markerFile -Force" in window, window
 
         # A failed install restores the marker whether or not a venv replacement was ever
         # in flight: a first install has no previous venv, and the ownership guard can

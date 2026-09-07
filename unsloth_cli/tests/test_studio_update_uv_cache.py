@@ -15,6 +15,7 @@ fails outright when uv may read only what is cached.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -512,6 +513,29 @@ def test_the_backfill_replaces_a_symlink_rather_than_its_target(monkeypatch, tmp
     assert victim.read_text(encoding = "utf-8") == "do not clobber"
     assert not marker.is_symlink()
     assert marker.read_text(encoding = "utf-8").strip() == str(default_cache)
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "POSIX filesystem byte semantics")
+def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, tmp_path):
+    """A POSIX path is bytes, and an undecodable one reaches Python as surrogates.
+    Encoding those raises UnicodeEncodeError, which is not an OSError and so escaped the
+    best-effort handler entirely: an update whose setup had already succeeded then failed
+    at the very end, after unlinking the marker it was replacing."""
+    studio = _studio()
+    weird = (tmp_path / os.fsdecode(b"caf\xe9-cache")).resolve()
+    _fill(weird)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "StudioHome")
+    monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda: weird)
+    monkeypatch.delenv("UV_CACHE_DIR", raising = False)
+
+    studio._backfill_uv_cache_marker({"UV_CACHE_DIR": str(weird)})
+
+    assert _marker(tmp_path).read_bytes().strip() == os.fsencode(str(weird))
+    # And the reader gives back the path the filesystem uses, not one with U+FFFD in it.
+    assert studio._recorded_install_uv_cache() == weird
+    # Removed here rather than left to the tmp_path reaper, which cannot always delete a
+    # name it cannot decode and would report it as leaked garbage on every later run.
+    shutil.rmtree(weird, ignore_errors = True)
 
 
 # --- The uv probe ---------------------------------------------------------------------

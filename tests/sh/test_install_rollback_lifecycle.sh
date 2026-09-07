@@ -18,13 +18,17 @@ ROLLBACK_BLOCK=$(sed -n '/^_VENV_ROLLBACK_DIR=""/,/^trap '\''_on_install_signal 
 # rest of the uv cache selector. Splicing the block without it makes every signal case exit
 # 127 on a command that is present in the real installer.
 # printf, not $'\n': the workflow runs this file with `sh`, whatever the shebang says.
+# _record_uv_cache_choice comes along for the same reason: the marker cases below call it,
+# and without it they exit 127 before writing anything, which every expectation about a
+# marker that must not change would then satisfy vacuously.
 MARKER_HELPER=$(awk '
-    /^_restore_uv_cache_marker\(\) \{/ { grab = 1 }
+    /^(_restore_uv_cache_marker|_record_uv_cache_choice)\(\) \{/ { grab = 1 }
     grab { print }
     grab && /^}/ { grab = 0 }
 ' "$INSTALL_SH")
-if ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_restore_uv_cache_marker() {'; then
-    echo "  FAIL: could not extract _restore_uv_cache_marker from install.sh"
+if ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_restore_uv_cache_marker() {' \
+   || ! printf '%s\n' "$MARKER_HELPER" | grep -q '^_record_uv_cache_choice() {'; then
+    echo "  FAIL: could not extract the uv cache marker helpers from install.sh"
     exit 1
 fi
 ROLLBACK_BLOCK=$(printf '%s\n%s\n' "$MARKER_HELPER" "$ROLLBACK_BLOCK")
@@ -410,8 +414,8 @@ fi
 # A failed install restores the marker even when no venv replacement was ever in flight:
 # a first install has no previous venv, and the ownership guard can refuse the directory
 # before one starts. The marker must not outlive the attempt that wrote it.
-marker_case() {  # label, pre-existing marker value or empty, expect
-    _label="$1"; _pre="$2"; _expect="$3"
+marker_case() {  # label, pre-existing marker value or empty, expect, [commit]
+    _label="$1"; _pre="$2"; _expect="$3"; _commit="${4:-}"
     _dir="$WORK/marker-$_label"
     mkdir -p "$_dir/cache"
     [ -n "$_pre" ] && printf '%s\n' "$_pre" > "$_dir/cache/uv-cache-dir"
@@ -426,9 +430,14 @@ marker_case() {  # label, pre-existing marker value or empty, expect
         printf '%s\n' "$ROLLBACK_BLOCK"
         printf '%s\n' 'UV_CACHE_DIR="/tmp/this-attempt-cache"'
         printf '%s\n' '_record_uv_cache_choice'
+        [ -n "$_commit" ] && printf '%s\n' '_commit_studio_venv_replacement'
         printf '%s\n' 'exit 1'
     } > "$_h"
-    ( cd "$_dir" && sh "$_h" >/dev/null 2>&1 ) || true
+    ( cd "$_dir" && sh "$_h" >/dev/null 2>"$_dir/err" ) || _rc=$?
+    if [ "${_rc:-0}" = 127 ] || [ -s "$_dir/err" ]; then
+        bad "$_label (harness did not run: $(cat "$_dir/err"))"
+        return 0
+    fi
     if [ -f "$_dir/cache/uv-cache-dir" ]; then _got=$(cat "$_dir/cache/uv-cache-dir"); else _got="<gone>"; fi
     if [ "$_got" = "$_expect" ]; then
         ok "$_label"
@@ -441,6 +450,12 @@ echo "=== uv cache marker survives only a successful install ==="
 marker_case "a failed install with no venv replacement restores the previous marker" \
     "/previous/install/cache" "/previous/install/cache"
 marker_case "a failed first install leaves no marker behind" "" "<gone>"
+# A first install has no previous environment, so the commit takes no rollback branch. It
+# must still commit the marker: what follows the commit can fail, and the environment it
+# installed stays, so reverting the marker aims that environment's next offline update at
+# a cache it never filled.
+marker_case "a committed first install keeps its marker when a later step fails" \
+    "/previous/install/cache" "/tmp/this-attempt-cache" commit
 
 echo ""
 echo "  PASS: $PASS"

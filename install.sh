@@ -666,6 +666,10 @@ _record_uv_cache_choice() {
             # it points at, so a marker path someone has linked elsewhere would quietly
             # destroy an unrelated file.
             rm -f "$_uv_marker_file" 2>/dev/null &&
+            # And only write once it is gone: rm can fail on a link whose directory
+            # denies deletion while its target is writable, which is exactly the case
+            # the redirection would truncate.
+            ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; } &&
             printf '%s\n' "$_uv_marker_value" > "$_uv_marker_file" 2>/dev/null
     ) || true
 }
@@ -674,7 +678,8 @@ _restore_uv_cache_marker() {
     [ "$_UV_MARKER_SAVED" = true ] || return 0
     _uv_marker_file="$STUDIO_HOME/cache/uv-cache-dir"
     rm -f "$_uv_marker_file" 2>/dev/null || true
-    if [ "$_UV_MARKER_EXISTED" = true ]; then
+    if [ "$_UV_MARKER_EXISTED" = true ] \
+       && ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; }; then
         printf '%s\n' "$_UV_MARKER_PREVIOUS" > "$_uv_marker_file" 2>/dev/null || true
     fi
     _UV_MARKER_SAVED=false
@@ -923,13 +928,15 @@ _prune_stale_studio_venv_rollbacks() {
 }
 
 _commit_studio_venv_replacement() {
+    # Outside the rollback branch, because a first install has no previous environment to
+    # roll back and still commits one. Anything failing after this point (the shim-path
+    # guard, a signal) would otherwise revert the marker while leaving that environment
+    # installed, and send its next offline update to a cache it never filled.
+    _UV_MARKER_SAVED=false
     if [ "$_VENV_ROLLBACK_ACTIVE" = true ]; then
         _rollback_to_remove="$_VENV_ROLLBACK_DIR"
         # The new environment is already committed. Clear the restore state
         # before deletion so an interrupt cannot replace it with a half-deleted backup.
-        # The marker goes with it, and in the same breath: a signal landing between the
-        # two would keep the committed environment and revert the marker it came with.
-        _UV_MARKER_SAVED=false
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
         # Same shapes as the restore, or such a backup is never cleaned up.

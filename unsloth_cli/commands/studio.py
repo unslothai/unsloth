@@ -3740,8 +3740,11 @@ def _recorded_install_uv_cache() -> Optional[Path]:
     try:
         # utf-8-sig, not utf-8: Windows PowerShell 5.1 writes `-Encoding utf8` WITH a BOM,
         # which utf-8 would decode into the first character of the path.
+        # surrogateescape, not replace: a POSIX path may hold bytes that are not UTF-8 at
+        # all, and U+FFFD would name a directory that does not exist. This is the exact
+        # spelling os.fsdecode gives such a path, which is what the write below records.
         recorded = (STUDIO_HOME / "cache" / "uv-cache-dir").read_text(
-            encoding = "utf-8-sig", errors = "replace"
+            encoding = "utf-8-sig", errors = "surrogateescape"
         )
     except OSError:
         return None
@@ -3788,8 +3791,13 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         # points at, so a marker path someone has linked elsewhere would quietly destroy
         # an unrelated file.
         marker.unlink(missing_ok = True)
-        marker.write_text(f"{chosen}\n", encoding = "utf-8")
-    except OSError:
+        # fsencode, not write_text: an undecodable POSIX path reaches here as surrogates,
+        # and encoding those raises UnicodeEncodeError, which is not an OSError and so
+        # escaped this handler entirely, failing an update whose setup had already
+        # succeeded. Encoding it the way the filesystem gave it to us writes it instead.
+        marker.write_bytes(os.fsencode(f"{chosen}\n"))
+    except (OSError, ValueError):
+        # ValueError covers UnicodeError, for a path fsencode still cannot render.
         pass
 
 
