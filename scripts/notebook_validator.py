@@ -555,7 +555,7 @@ def _split_first_word(text: str) -> tuple[str, str]:
         index += 1
     word: list[str] = []
     quote = ""
-    depth = 0        # open `$(` nesting
+    depth = 0  # open `$(` nesting
     backtick = False
     while index < length:
         ch = text[index]
