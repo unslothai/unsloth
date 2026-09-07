@@ -205,6 +205,50 @@ class TestWaitForHealthResilience:
         assert b._health_wait_cancelled is True
         assert not any("exited with code" in str(c) for c in log.error.call_args_list)
 
+    def test_shutdown_is_terminal_however_late_it_lands(self, monkeypatch):
+        """The durable half of the guard. Every per-process snapshot has an instant
+        after it where teardown can still land, so this flag only goes false to
+        true and is re-read each iteration; a wait in flight when shutdown begins
+        ends terminally no matter where in the loop the flag was set."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+
+        def probe(*a, **kw):
+            b._shutting_down = True  # run.py's shutdown, at an arbitrary instant
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        assert b._wait_for_health(timeout = 30.0, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_kill_process_marks_shutdown_only_for_a_teardown(self):
+        """The flag must not be set by the retry ladder reaping its own child, or
+        the first crash retry would look like a shutdown and abort the load."""
+        for teardown in (True, False):
+            b = _make_backend()
+            b._stop_mtp_crash_watchdog = lambda *a, **kw: None
+            b._reset_effective_parallel_slots = lambda *a, **kw: None
+            b._leading_process_group = lambda *a, **kw: None
+            b._collect_descendants = lambda *a, **kw: []
+            b._kill_process_group = lambda *a, **kw: None
+            b._terminate_descendants = lambda *a, **kw: None
+            b._process.poll.return_value = 0
+            b._kill_process(teardown = teardown)
+            assert getattr(b, "_shutting_down", False) is teardown
+
+    def test_a_started_shutdown_refuses_to_spawn(self, monkeypatch):
+        """_start_llama_process is the chokepoint the mmproj text-only retry uses
+        without passing _spawn_and_wait's boundary check, so it refuses too."""
+        import subprocess
+
+        b = _make_backend()
+        b._shutting_down = True
+        spawned = []
+        monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: spawned.append(1))
+        b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None)
+        assert spawned == [], "started a server after shutdown had begun"
+
     def test_a_teardown_during_the_last_probe_is_not_reported_as_a_timeout(self, monkeypatch):
         """The deadline is the other way out of the loop. A teardown landing in the
         final probe leaves no iteration to notice it, so without a check here the

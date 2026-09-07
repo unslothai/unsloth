@@ -18279,7 +18279,14 @@ class LlamaCppBackend:
         Caller holds self._lock. Resets the stdout buffer, opens a fresh
         per-attempt tee log, launches the process, and starts the drain
         thread. Used for the initial start and the text-only mmproj retry.
+
+        Refuses once app teardown has begun: the mmproj retry reaches this without
+        passing _spawn_and_wait's boundary check, so the guard lives here too, at
+        the chokepoint, rather than at each caller.
         """
+        if getattr(self, "_shutting_down", False):
+            logger.info("app is shutting down; not starting llama-server")
+            return
         # Defensive kill: if a concurrent load slipped past Phase 1
         # (because its `self._process` was None at the time) and already
         # stored a Popen handle here, drop that orphan before we overwrite
@@ -23679,6 +23686,16 @@ class LlamaCppBackend:
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     for _spawn_attempt in (0, 1, 2):
+                        # The one check that closes the shutdown race for good. Every
+                        # snapshot taken inside the health wait has an instant after
+                        # it where teardown can still land, so the guarantee is made
+                        # here instead, at the boundary that actually starts a
+                        # server: the flag only ever goes false to true, so once
+                        # shutdown has begun no later reader can miss it.
+                        if getattr(self, "_shutting_down", False):
+                            logger.info("app is shutting down; not starting llama-server")
+                            self._health_wait_cancelled = True
+                            return False
                         # Defensive kill: drop an orphan Popen a concurrent load may
                         # have stored before we overwrite the reference (#5161).
                         # Also reaps the crashed first attempt on the retry pass.
@@ -26315,6 +26332,11 @@ class LlamaCppBackend:
         _pgid = self._leading_process_group(_pid)
         _descendants = self._collect_descendants(_pid)
         if teardown:
+            # Monotonic and never cleared: app teardown is terminal for this
+            # process, so no later spawn is legitimate. _spawn_and_wait reads it at
+            # the retry boundary, which is what makes the race unwinnable rather
+            # than merely narrow.
+            self._shutting_down = True
             # Before the signal, not in the finally: the reference stays set across
             # the waits below, so a racing _wait_for_health would read this
             # deliberate exit as a startup crash and respawn during shutdown.
@@ -27875,6 +27897,13 @@ class LlamaCppBackend:
         process = None  # the child this wait last looked at, read again after the loop
 
         while time.monotonic() < deadline:
+            # Durable and monotonic, so unlike the per-process marker below this
+            # cannot be missed by landing between two checks: once teardown has
+            # begun, every later iteration sees it and the wait ends terminally.
+            if getattr(self, "_shutting_down", False):
+                logger.info("llama-server was torn down while waiting for it to become healthy")
+                self._health_wait_cancelled = True
+                return False
             # unload_model() blocks on self._lock, which the load holds across this wait.
             if cancelled is not None and cancelled():
                 logger.info("llama-server startup cancelled before it became healthy")
