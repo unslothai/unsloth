@@ -12,6 +12,8 @@ FRONTEND = REPO / "studio/frontend/src"
 THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(encoding = "utf-8")
 APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding = "utf-8")
 CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
+DURABLE_GATE = (FRONTEND / "features/chat/api/durable-gate.ts").read_text(encoding = "utf-8")
+CHAT_GENERATION_API = (FRONTEND / "features/chat/api/chat-generation-api.ts").read_text(encoding = "utf-8")
 MODEL_RUNTIME = (FRONTEND / "features/chat/hooks/use-chat-model-runtime.ts").read_text(
     encoding = "utf-8"
 )
@@ -820,15 +822,52 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
 
 
-def test_base64_media_turns_stay_on_the_legacy_stream():
+def test_base64_media_turns_are_durable_and_their_attachments_stay_turn_scoped():
+    """A media turn is durable now, and the channel that made it look non-durable is turn-scoped.
+
+    The gate used to read the raw base64 fields off post-prune HISTORY, so one screenshot anywhere in a thread
+    pushed every later text-only turn onto the cancel-on-disconnect stream - and that stale blob went out as a
+    top-level payload field too, so the backend 400'd "Media chat runs use the legacy streaming path" on turns that
+    never carried media at all. Both halves are pinned here: the gate is now `isDurableRunCandidate({...})` over
+    resolved values (its own truth table lives in tests/durable-gate.test.ts), and the payload's attachment channel
+    scans THIS turn's message alone.
+    """
+    # The adapter delegates; it does not spell the rule out here anymore.
+    assert "const generationCandidate = isDurableRunCandidate({" in CHAT_ADAPTER
     candidate = _between(
         CHAT_ADAPTER,
-        "const generationCandidate = Boolean(",
-        ");",
+        "const generationCandidate = isDurableRunCandidate({",
+        "});",
     )
-    assert "!imageBase64" in candidate
-    assert "!audioBase64" in candidate
-    assert "!videoBase64" in candidate
+    # What reaches the gate is the turn-scoped scan, never a raw blob pulled off history: if a base64 field shows up
+    # in the gate again, a media turn is back on the subscriber-owned stream and closing the tab kills it mid-turn.
+    assert "turnCarriesMedia: currentTurnCarriesMedia," in candidate
+    # The rule itself lives in the pure module, where a truth table can pin it case by case.
+    assert "input.turnCarriesMedia !== true" in DURABLE_GATE
+    for token in ("imageBase64", "audioBase64", "videoBase64"):
+        assert token not in candidate, (
+            f"the durability gate reads {token} again, so a media turn is back on the subscriber-owned stream "
+            "and closing the tab kills it mid-generation. If a media turn must be refused again, do it behind a "
+            "backend toggle in studio/backend/routes/chat_generation_runs.py, not in the frontend gate"
+        )
+    # The channel that made a text-only follow-up look like a media turn: scanned out of THIS turn's message.
+    assert "const currentTurnMessages = [generationUserMessage]" in CHAT_ADAPTER
+    for field, argument in (
+        ("image_base64", "findLatestUserImageBase64(currentTurnMessages)"),
+        (
+            "audio_base64",
+            "findLatestUserAudioBase64(\n              currentTurnMessages,",
+        ),
+        ("video_base64", "findLatestUserVideoBase64(currentTurnMessages)"),
+    ):
+        assert f"{field}: {argument}" in CHAT_ADAPTER, (
+            f"{field} must be scanned out of currentTurnMessages, not thread history: a stale blob from an "
+            "earlier turn makes the backend refuse every later turn"
+        )
+    # A media-policy rejection is one of the policy rejections that degrade silently to the legacy stream, rather
+    # than surfacing as "An error occurred" - which is what made the refusal survivable in the first place.
+    assert '"Media chat runs use the legacy streaming path"' in CHAT_GENERATION_API
+    assert "isLegacyFallbackChatGenerationAdmissionError" in CHAT_ADAPTER
 
 
 def test_continuations_stay_on_the_legacy_stream():
@@ -840,10 +879,12 @@ def test_continuations_stay_on_the_legacy_stream():
     """
     candidate = _between(
         CHAT_ADAPTER,
-        "const generationCandidate = Boolean(",
-        ");",
+        "const generationCandidate = isDurableRunCandidate({",
+        "});",
     )
-    assert "!continuation" in candidate
+    # The gate itself is a truth table in api/durable-gate.ts; what is pinned here is that the adapter still hands
+    # it this turn's continuation flag, so a Continue keeps the stream it needs.
+    assert "continuation," in candidate
 
 
 def test_compare_prompt_list_resets_when_preflight_never_starts_a_run():
