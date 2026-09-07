@@ -1004,6 +1004,7 @@ class VariantsAnswer(NamedTuple):
 
     response: GgufVariantsResponse
     context_source: Optional[str]
+    variant_context_sources: Optional[dict[str, str]] = None
 
 
 def _default_variant_candidates(variants) -> list[str]:
@@ -1042,6 +1043,7 @@ async def get_gguf_variants_answer(
     # A repo-shaped id resolving to a directory is answered by that directory alone, not the HF cache
     # of the same-named repo, else a GGUF-less directory could evict the resident model.
     answered_locally = [False]
+    variant_context_sources: dict[str, str] = {}
 
     def _compute() -> GgufVariantsResponse:
         repo_cache_dir = (
@@ -1655,7 +1657,8 @@ async def get_gguf_variants_answer(
     def _compute_with_cleanables() -> VariantsAnswer:
         # Returned with the answer, not read from the closure afterwards: coalesced callers share one
         # computation and must all see the copy it answered from.
-        return VariantsAnswer(_compute_response(), answered_from[0])
+        response = _compute_response()
+        return VariantsAnswer(response, answered_from[0], variant_context_sources)
 
     def _compute_response() -> GgufVariantsResponse:
         skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
@@ -1696,7 +1699,9 @@ async def get_gguf_variants_answer(
                 ):
                     if previous.downloaded:
                         previous.cache_path = source.cache_path
+                        variant_context_sources[key] = str(source.snapshot / v.filename)
                     continue
+                variant_context_sources[key] = str(source.snapshot / v.filename)
                 variants[key] = GgufVariantDetail(
                     filename = v.filename,
                     quant = v.quant,

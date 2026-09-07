@@ -3684,8 +3684,8 @@ async def _read_native_context_length_bounded(model: str, is_local: bool) -> Opt
 def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     """Native max context from a downloaded GGUF for this repo, or None.
 
-    The value is identical across quants, so reading one non-mmproj shard's
-    header is enough. Only resolves once a file is on disk. Never raises.
+    A file path reads that exact quant; a directory reads one non-mmproj shard.
+    Only resolves once a file is on disk. Never raises.
 
     Bounded by ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a
     context field on an already selectable row, so a dragging walk reports None
@@ -3710,7 +3710,8 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
             if time.monotonic() >= deadline:
                 logger.debug("native context read for '%s' out of budget", repo_id)
                 return None
-            for f in _iter_gguf_paths(root, deadline):
+            paths = [root] if is_local and root.is_file() else _iter_gguf_paths(root, deadline)
+            for f in paths:
                 if time.monotonic() >= deadline:
                     logger.debug("native context read for '%s' out of budget", repo_id)
                     return None
@@ -4543,7 +4544,16 @@ async def get_gguf_variants(
             or hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path)
             or repo_id
         )
-        local = is_local_path(context_model)
+        variant_sources = getattr(answer, "variant_context_sources", None) or {}
+        context_models = list(dict.fromkeys([context_model, *variant_sources.values()]))
+        # Share the existing hard deadline and concurrency guard across all source reads.
+        context_values = await asyncio.gather(
+            *(
+                _read_native_context_length_bounded(model, is_local_path(model))
+                for model in context_models
+            )
+        )
+        context_lengths = dict(zip(context_models, context_values))
 
         return GgufVariantsResponse(
             repo_id = response.repo_id,
@@ -4552,6 +4562,9 @@ async def get_gguf_variants(
                     filename = v.filename,
                     quant = v.quant,
                     cache_path = getattr(v, "cache_path", None),
+                    context_length = context_lengths[
+                        variant_sources.get(v.quant.lower(), context_model)
+                    ],
                     # A path-qualified key is not a label a picker can show; without this
                     # the row reads as its whole relative path.
                     display_label = getattr(v, "display_label", None),
@@ -4569,7 +4582,7 @@ async def get_gguf_variants(
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
-            context_length = await _read_native_context_length_bounded(context_model, local),
+            context_length = context_lengths[context_model],
             resolved_locally = bool(getattr(response, "resolved_locally", False)),
             loadable_variants = getattr(response, "loadable_variants", None),
             loadable = getattr(response, "loadable", None),

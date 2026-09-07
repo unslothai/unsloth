@@ -219,6 +219,7 @@ import {
   ggufQuantChipLabel,
   ggufQuantDetailLabel,
   ggufVariantPickerLabel,
+  ggufVariantContextLength,
   groupGgufVariantsForPicker,
   h3PickerHasOnlyPrunedBuilds,
   preferredGgufVariantByGroup,
@@ -1673,6 +1674,7 @@ function GgufVariantExpander({
       filename: string,
       downloaded?: boolean,
       sizeBytes?: number,
+      contextLength: number | null = nativeContext,
     ) => {
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
@@ -1684,7 +1686,7 @@ function GgufVariantExpander({
         ggufFilename: filename,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
-        contextLength: isAvailable ? nativeContext : undefined,
+        contextLength: isAvailable ? contextLength : undefined,
         isGguf: true,
         pipelineTag,
       });
@@ -2031,6 +2033,7 @@ function GgufVariantExpander({
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const expectedBytes = ggufVariantExpectedBytes(v);
+        const variantContext = ggufVariantContextLength(v, nativeContext);
         // This row's own dependency group, never the listing's: see the footprintVariants comment above.
         const companionBytes =
           companionBytesByKey.get(v.dependency_key ?? "") ?? null;
@@ -2049,6 +2052,7 @@ function GgufVariantExpander({
                 v.filename,
                 v.downloaded,
                 expectedBytes,
+                variantContext,
               )
             }
             className={cn(
@@ -2155,7 +2159,7 @@ function GgufVariantExpander({
                     ggufVariant: v.quant,
                     isDownloaded: true,
                     expectedBytes,
-                    contextLength: nativeContext,
+                    contextLength: variantContext,
                     isGguf: true,
                   })
                 }

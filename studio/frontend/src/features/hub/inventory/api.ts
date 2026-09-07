@@ -176,6 +176,7 @@ export interface ScanFolderInfo {
 }
 
 export interface GgufVariantDetail {
+  context_length?: number | null;
   cache_path?: string | null;
   filename: string;
   quant: string;

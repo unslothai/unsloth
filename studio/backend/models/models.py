@@ -156,6 +156,9 @@ class GgufVariantDetail(BaseModel):
     cache_path: Optional[str] = Field(
         None, description = "Owning cache repository for this complete variant"
     )
+    context_length: Optional[int] = Field(
+        None, description = "Native context limit from this variant's cached source"
+    )
     # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field that
     # exists only on the hub twin is dropped by pydantic without a word and a qualified row falls back
     # to rendering its whole relative path.

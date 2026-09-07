@@ -235,3 +235,42 @@ def test_media_sources_do_not_enter_chat_resolution(cache_locations, monkeypatch
     assert cached_gguf_action_path(repo_id, "Q6_K") is None
     explicit = str(expected["Q6_K"][0])
     assert cached_gguf_action_path(repo_id, "Q6_K", explicit) == explicit
+
+
+@pytest.mark.parametrize("missing_context", [False, True])
+def test_cached_quant_keeps_its_own_context(cache_locations, cache_client, missing_context):
+    import struct
+
+    repo_id, expected = cache_locations
+    contexts = {"Q6_K": 131072, "Q8_0": None if missing_context else 32768}
+
+    def gguf_string(value):
+        encoded = value.encode()
+        return struct.pack("<Q", len(encoded)) + encoded
+
+    for quant, (_, path) in expected.items():
+        context = contexts[quant]
+        header = b"GGUF" + struct.pack("<IQQ", 3, 0, 1 if context is None else 2)
+        header += gguf_string("general.architecture") + struct.pack("<I", 8) + gguf_string("llama")
+        if context is not None:
+            header += gguf_string("llama.context_length") + struct.pack("<II", 4, context)
+        path.write_bytes(header.ljust(256, b"\0"))
+    inventory_scan.invalidate_hf_cache_scans()
+    response = cache_client.get(
+        "/api/models/gguf-variants",
+        params = {
+            "repo_id": repo_id,
+            "prefer_local_cache": True,
+            "offline": True,
+            "include_cache_locations": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    listing = response.json()
+    # This is the native limit the picker supplies when the user selects/configures a quant.
+    actual = {
+        v["quant"]: v.get("context_length", listing["context_length"])
+        for v in listing["variants"]
+        if v["downloaded"]
+    }
+    assert actual == contexts
