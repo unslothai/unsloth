@@ -312,3 +312,27 @@ def test_save_reload_shape_keeps_one_bos_in_chat_prompt():
     tu._fix_gemma4_base_bos_token(tok)
     assert tok.add_bos_token is True
     assert "{{ bos_token }}" not in tok.chat_template
+
+
+def test_dict_chat_template_strips_without_crash():
+    tok = _gemma4_base(
+        add_bos_token = True,
+        chat_template = {
+            "default": "{{ bos_token }}{% for m in messages %}{{ m }}{% endfor %}",
+            "tool_use": "{% for m in messages %}{{ m }}{% endfor %}",
+        },
+    )
+    tu._fix_gemma4_base_bos_token(tok)
+    assert "{{ bos_token }}" not in tok.chat_template["default"]
+    assert tok.chat_template["tool_use"].startswith("{% for m in messages %}")
+
+
+def test_instruct_template_is_not_stripped_when_tokenizer_does_not_add_bos():
+    tok = _gemma4_base(
+        add_bos_token = False,
+        chat_template = "{{- bos_token -}}{{ messages }}",
+        eos_token = "<turn|>",
+    )
+    tu._fix_gemma4_base_bos_token(tok)
+    assert tok.add_bos_token is False
+    assert "bos_token" in tok.chat_template

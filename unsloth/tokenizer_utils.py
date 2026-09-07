@@ -155,7 +155,7 @@ def _tokenizer_auto_adds_bos(tokenizer):
 
 
 def _strip_bos_from_chat_template_text(chat_template):
-    if not chat_template:
+    if not isinstance(chat_template, str) or not chat_template:
         return chat_template
     stripped = re.sub(
         r"\{[\s\-]*\{[\s\-]*bos\_token[\s\-]*\}[\s\-]*\}",

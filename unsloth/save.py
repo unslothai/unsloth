@@ -2879,7 +2879,7 @@ def upload_to_huggingface(
 def fix_tokenizer_bos_token(tokenizer):
     from .tokenizer_utils import (
         _chat_template_emits_bos,
-        _strip_bos_from_chat_template_text,
+        _dedupe_bos_chat_template,
         _tokenizer_auto_adds_bos,
     )
 
@@ -2893,7 +2893,7 @@ def fix_tokenizer_bos_token(tokenizer):
                 "Unsloth: ##### The current model auto adds a BOS token.\n"
                 "Unsloth: ##### Your chat template has a BOS token. We shall remove it temporarily."
             )
-            tokenizer.chat_template = _strip_bos_from_chat_template_text(chat_template)
+            _dedupe_bos_chat_template(tokenizer)
 
     return fix_bos_token, chat_template
 
