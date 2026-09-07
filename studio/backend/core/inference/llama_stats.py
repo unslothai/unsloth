@@ -72,22 +72,31 @@ class LlamaServerStatsLogger:
         return out
 
     @staticmethod
-    def _counter_rate(tokens, seconds):
+    def _counter_rate(base, tokens, seconds):
         """Tokens per second over the engine's OWN measure of the time they took.
 
-        Both llama-server counters are flushed together, from the same add_prompt() /
-        metrics_on_prediction() call, so tokens_predicted_seconds_total is exactly the
-        time tokens_predicted_total was produced in and the ratio cannot depend on when
-        the poll happened to land. Dividing by the poll interval instead reports the rate
-        of a window the work did not run in: neither counter moves until a generation is
-        released or a prompt batch produces output, so a 103.7 GB Q4 MoE whose measured
-        ceiling is 24.6 tok/s was logged at 150.6 and 183.7 tok/s, and a prefill spanning
-        several intervals lands all at once the same way.
+        Returns the rate and the baseline for the next tick. Both llama-server counters
+        are flushed together, from the same add_prompt() / metrics_on_prediction() call,
+        so tokens_predicted_seconds_total is exactly the time tokens_predicted_total was
+        produced in and the ratio cannot depend on when the poll happened to land.
+        Dividing by the poll interval instead reports the rate of a window the work did
+        not run in: neither counter moves until a generation is released or a prompt
+        batch produces output, so a 103.7 GB Q4 MoE whose measured ceiling is 24.6 tok/s
+        was logged at 150.6 and 183.7 tok/s, and a prefill spanning several intervals
+        lands all at once the same way.
 
-        A binary exposing the token counter without the seconds counter gets no rate
-        rather than an invented one.
+        Tokens that arrive with no time to divide by hold the baseline rather than being
+        dropped. /metrics renders doubles at six significant digits, so on a long-lived
+        server the seconds total can stop resolving a short request that the token total
+        still resolves; advancing here would lose those tokens and then charge them to
+        whatever seconds arrive next.
         """
-        return tokens / seconds if tokens > 0 and seconds > 0 else 0.0
+        if base is None or tokens < base[0] or seconds < base[1]:
+            return 0.0, (tokens, seconds)  # first reading, or counters that went backwards
+        d_seconds = seconds - base[1]
+        if d_seconds <= 0.0:
+            return 0.0, base
+        return (tokens - base[0]) / d_seconds, (tokens, seconds)
 
     def _stalled_for(self, now, running, decode_calls):
         """Seconds the engine has held a slot without calling llama_decode().
@@ -139,9 +148,9 @@ class LlamaServerStatsLogger:
 
     def _run(self):
         misses = 0
-        # (monotonic_t, tokens_predicted_total, prompt_tokens_total, n_decode_total,
-        #  tokens_predicted_seconds_total, prompt_seconds_total)
-        prev = None
+        prev = None  # (monotonic_t, n_decode_total)
+        # (tokens, seconds) at the last tick that carried both, per counter pair
+        gen_base = prompt_base = None
         while not self._stop.wait(self._interval):
             m = self._scrape()
             if not m:
@@ -166,28 +175,27 @@ class LlamaServerStatsLogger:
                 int(m.get("requests_processing", 0)),
                 int(m.get("requests_deferred", 0)),
             )
-            gen_delta = prompt_delta = 0.0
+            gen_delta, gen_base = self._counter_rate(gen_base, predicted, predicted_s)
+            prompt_delta, prompt_base = self._counter_rate(prompt_base, prompt, prompt_s)
             # Calls, not tokens, and never fed into tok/s: it is the only counter moving
             # on every llama_decode(), so it is the only sign of progress while a
-            # generation runs, where the token counters stay at 0 throughout.
-            decode_rate = 0.0
-            if prev is not None and now > prev[0]:
-                dt = now - prev[0]
-                gen_delta = self._counter_rate(
-                    max(0.0, predicted - prev[1]), max(0.0, predicted_s - prev[4])
-                )
-                prompt_delta = self._counter_rate(
-                    max(0.0, prompt - prev[2]), max(0.0, prompt_s - prev[5])
-                )
-                # This one is a rate over the tick, since it moves within the tick.
-                if decode_calls is not None and prev[3] is not None:
-                    decode_rate = max(0.0, (decode_calls - prev[3]) / dt)
-            prev = (now, predicted, prompt, decode_calls, predicted_s, prompt_s)
-            # Prefer llama.cpp's own throughput gauges. They are reset on every scrape, so
-            # they read 0 between generations and the counters answer far more often than
-            # "older binaries" suggests.
-            gen_tps = m.get("predicted_tokens_seconds") or gen_delta
-            prompt_tps = m.get("prompt_tokens_seconds") or prompt_delta
+            # generation runs, where the token counters stay at 0 throughout. A rate over
+            # the tick, since it does move within the tick.
+            decode_rate = None
+            if prev is not None and now > prev[0] and None not in (decode_calls, prev[1]):
+                decode_rate = max(0.0, (decode_calls - prev[1]) / (now - prev[0]))
+            prev = (now, decode_calls)
+            # llama.cpp's own gauges win when the build has them, and are averaged over
+            # the window between two scrapes (server-context.cpp resets the bucket on
+            # every /metrics read). A zero is therefore a reading, not a missing one: it
+            # says no generation decode step completed in this window, and its numerator
+            # excludes the first token of each generation, which comes from the prompt
+            # batch for free. Treating it as absent is what let a one-token completion be
+            # divided by a near-zero duration.
+            gen_tps = m["predicted_tokens_seconds"] if "predicted_tokens_seconds" in m else gen_delta
+            prompt_tps = (
+                m["prompt_tokens_seconds"] if "prompt_tokens_seconds" in m else prompt_delta
+            )
             stalled_for = self._stalled_for(now, running, decode_calls)
             if self._stall_timeout and stalled_for >= self._stall_timeout:
                 if decode_calls is None:
@@ -202,15 +210,20 @@ class LlamaServerStatsLogger:
                         )
                 elif not self._stall_reported:
                     self._report_stall(running, waiting, stalled_for, decode_calls)
-            # Gate on real activity this tick so a stale gauge never logs at idle.
-            if running or waiting or gen_delta or prompt_delta:
+            # Gate on real activity this tick, so an idle engine stays quiet.
+            if running or waiting or gen_tps or prompt_tps:
+                fields = {}
+                # Absent, not zero: a build without n_decode_total was never measured
+                # making no calls, which is what engine_progress_unmeasurable says too.
+                if decode_rate is not None:
+                    fields["decode_calls_s"] = round(float(decode_rate), 1)
                 self._log.info(
                     "engine_stats",
                     gen_tok_s = round(float(gen_tps), 1),
                     prompt_tok_s = round(float(prompt_tps), 1),
-                    decode_calls_s = round(float(decode_rate), 1),
                     running = running,
                     waiting = waiting,
+                    **fields,
                 )
 
 

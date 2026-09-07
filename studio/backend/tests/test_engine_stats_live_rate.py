@@ -193,7 +193,69 @@ def test_the_decode_counter_reports_while_the_token_counters_are_still(monkeypat
     stats = _drive(snaps, monkeypatch)
 
     assert all(s["gen_tok_s"] == 0.0 for s in stats)
-    assert [s["decode_calls_s"] for s in stats] == [0.0, 2.0, 2.0, 2.0]
+    # Nothing on the first line: one sample is not a rate.
+    assert [s.get("decode_calls_s") for s in stats] == [None, 2.0, 2.0, 2.0]
+
+
+def test_a_build_without_the_decode_counter_omits_the_field(monkeypatch):
+    """n_decode_total is not on every llama-server. Printing 0.0 there would state the
+    engine was measured making no calls, which is the opposite of what
+    engine_progress_unmeasurable says about the same build."""
+    snaps = [
+        {"tokens_predicted_total": 0.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
+        {"tokens_predicted_total": 50.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
+    ]
+    stats = _drive(snaps, monkeypatch)
+
+    assert stats and all("decode_calls_s" not in s for s in stats)
+
+
+def test_a_zero_gauge_is_a_reading_and_not_a_missing_one(monkeypatch):
+    """A one-token completion. llama-server's gauge numerator is the decode steps, which
+    excludes the token produced from the prompt batch, so it reports 0 for that request.
+    The counters include the free token and its generation time is near zero, so treating
+    the zero gauge as absent divides one token by a millisecond."""
+    snaps = [
+        {
+            "tokens_predicted_total": 0.0,
+            "tokens_predicted_seconds_total": 0.0,
+            "prompt_tokens_total": 0.0,
+            "prompt_seconds_total": 0.0,
+            "predicted_tokens_seconds": 0.0,
+            "requests_processing": 1.0,
+        },
+        {
+            "tokens_predicted_total": 1.0,
+            "tokens_predicted_seconds_total": 0.0001,
+            "prompt_tokens_total": 0.0,
+            "prompt_seconds_total": 0.0,
+            "predicted_tokens_seconds": 0.0,
+            "requests_processing": 1.0,
+        },
+    ]
+    stats = _drive(snaps, monkeypatch)
+
+    assert stats and all(s["gen_tok_s"] == 0.0 for s in stats)
+    # What reading the zero as absent would have said.
+    assert 1.0 / 0.0001 == 10000.0
+
+
+def test_tokens_with_no_seconds_yet_are_kept_for_the_tick_that_brings_them(monkeypatch):
+    """/metrics renders doubles at six significant digits, so a long-lived server can
+    resolve a short request in the token total while the seconds total still rounds to
+    the same value. Dropping the numerator there would charge those tokens to whatever
+    seconds arrive next; the baseline is held until a usable pair exists.
+
+    Trace: 100 tokens arrive against an unchanged seconds total, then 100 more with the
+    20 seconds that produced all 200."""
+    snaps = [
+        _busy(predicted = 100.0, predicted_s = 1000.0),
+        _busy(predicted = 200.0, predicted_s = 1000.0),
+        _busy(predicted = 300.0, predicted_s = 1020.0),
+    ]
+    stats = _drive(snaps, monkeypatch)
+
+    assert [s["gen_tok_s"] for s in stats] == [0.0, 0.0, 10.0]
 
 
 def test_a_build_without_the_seconds_counters_reports_no_rate_rather_than_one(monkeypatch):
