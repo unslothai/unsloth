@@ -75,23 +75,17 @@ class LlamaServerStatsLogger:
     def _prompt_rate(base, tokens, seconds):
         """Prompt tokens per second over the engine's OWN measure of the time they took.
 
-        Prompt only, and the asymmetry is the point. add_prompt(n, n, t_us) counts every
-        prompt token as a decode step, so prompt_tokens_total and prompt_seconds_total are
-        a matched pair and their ratio is a rate. metrics_on_prediction() passes n_gen and
-        n_gen - 1, because the first generated token comes from the prompt batch for free,
-        so the generation counters are NOT a pair: dividing them credits each generation
-        with a token the seconds never timed, and a one-token completion becomes hundreds
-        of tok/s. Nothing in /metrics exports the generation step count, so there is no
-        generation rate to compute from counters and none is reported.
+        Prompt only, and the asymmetry is the point: add_prompt(n, n, t_us) counts every
+        prompt token as a decode step, so those two totals are a matched pair, while
+        metrics_on_prediction() passes n_gen and n_gen - 1 and the generation counters are
+        not. Dividing those credits each generation with a token the seconds never timed.
+        Nothing in /metrics exports the generation step count, so no generation rate is
+        computed from counters.
 
-        Dividing by the poll interval instead reports the rate of a window the work did
-        not run in: the counter does not move until a batch produces output, so a prefill
-        spanning several intervals lands whole on one tick.
-
-        A delta is kept intact rather than split across ticks: /metrics renders doubles at
-        six significant digits, so on a long-lived server one total can cross a rounding
-        boundary a scrape before the other, and advancing the baseline on that scrape
-        pairs each half with the wrong side.
+        Dividing by the poll interval instead prices a window the work did not run in,
+        since the counter does not move until a batch produces output. A delta is kept
+        intact rather than split across ticks: /metrics renders six significant digits, so
+        one total can cross a rounding boundary a scrape before the other.
         """
         if base is None or tokens < base[0] or seconds < base[1]:
             return 0.0, (tokens, seconds)  # first reading, or counters that went backwards
@@ -170,8 +164,7 @@ class LlamaServerStatsLogger:
             prompt_s = m.get("prompt_seconds_total", 0.0)
             # A held slot not calling llama_decode() is a wedge whose only symptom is an
             # endless run of identical info lines. A build without n_decode_total reads
-            # None and never "changes", accumulating the same way, so the message is
-            # chosen at report time.
+            # None and never "changes", so the message is chosen at report time.
             decode_calls = m.get("n_decode_total")
             running, waiting = (
                 int(m.get("requests_processing", 0)),
@@ -180,23 +173,19 @@ class LlamaServerStatsLogger:
             prompt_delta, prompt_base = self._prompt_rate(prompt_base, prompt, prompt_s)
             gen_moved = gen_base is not None and (predicted, predicted_s) != gen_base
             gen_base = (predicted, predicted_s)
-            # Calls, not tokens, and never fed into tok/s: it is the only counter moving
-            # on every llama_decode(), so it is the only sign of progress while a
-            # generation runs, where the token counters stay at 0 throughout. A rate over
-            # the tick, since it does move within the tick.
+            # Calls, not tokens, and never fed into tok/s: the only counter moving on
+            # every llama_decode(), so the only sign of progress while a generation runs.
+            # A rate over the tick, since it does move within the tick.
             decode_rate = None
             if prev is not None and now > prev[0] and None not in (decode_calls, prev[1]):
                 decode_rate = max(0.0, (decode_calls - prev[1]) / (now - prev[0]))
             prev = (now, decode_calls)
-            # The gauges are averaged over the window between two /metrics reads, since
-            # server-context.cpp empties the bucket on every read. A zero is therefore a
-            # reading, not a missing one: a completion whose only token came from the
-            # prompt batch contributes no decode step and the engine reports 0 for it.
-            # Falling through to the counters there divided that one token by a
-            # millisecond. Another client scraping /metrics between polls empties the
-            # bucket too and reads the same way, so this understates rather than
-            # fabricates for the window it took; the two are not distinguishable from
-            # here, and a zero that is genuinely zero is the commoner of the two.
+            # The gauges average the window between two /metrics reads, since the bucket
+            # is emptied on every read. A zero is therefore a reading: a completion whose
+            # only token came from the prompt batch contributes no decode step, and
+            # falling through to the counters divided that token by a millisecond. Another
+            # client scraping between polls reads the same way, so this understates its
+            # window rather than fabricating one; the two are indistinguishable here.
             gen_tps = m.get("predicted_tokens_seconds")
             # The prompt pair is aligned, so it answers whenever its gauge does not.
             prompt_tps = m.get("prompt_tokens_seconds") or prompt_delta
@@ -216,10 +205,9 @@ class LlamaServerStatsLogger:
                     self._report_stall(running, waiting, stalled_for, decode_calls)
             # Gate on real activity this tick, so an idle engine stays quiet.
             if running or waiting or gen_tps or gen_moved or prompt_tps:
-                # Absent rather than zero, in both cases: a build with no throughput gauge
-                # and a build with no n_decode_total were never measured, which is what
-                # engine_progress_unmeasurable says about the same builds. Printing 0.0
-                # would state the opposite.
+                # Absent rather than zero in both cases: a build with no gauge and one
+                # with no n_decode_total were never measured, which is what
+                # engine_progress_unmeasurable says about them. 0.0 states the opposite.
                 fields = {}
                 if gen_tps is not None:
                     fields["gen_tok_s"] = round(float(gen_tps), 1)
