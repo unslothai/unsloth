@@ -759,6 +759,62 @@ def _slim_phase(**over):
     return phase
 
 
+def _llama_installed_as(monkeypatch, backend, asset, *, whisper_kind):
+    monkeypatch.setattr(wupd, "_installed_llama_bundle", lambda: (backend, asset))
+    monkeypatch.setattr(wupd, "_find_binary", lambda: "whisper-server")
+    monkeypatch.setattr(
+        wupd, "read_install_marker", lambda _b: {"install_kind": whisper_kind, "backend": "rocm"}
+    )
+
+
+def test_a_migrated_llama_re_pairs_the_chained_phase(monkeypatch):
+    """The plan named the backend whisper was installed against, and the llama phase has
+    since replaced it: a slim install would hardlink a ggml that is no longer there."""
+    seen = {}
+    monkeypatch.setattr(
+        wupd,
+        "_resolve_prebuilt_for_host",
+        lambda **kw: seen.update(kw) or {"prebuilt_available": True},
+    )
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: dict(phase))
+    _llama_installed_as(
+        monkeypatch, "vulkan", "llama-b1-bin-win-vulkan-x64.zip", whisper_kind = "slim"
+    )
+
+    installed = wupd.run_chained_phase_after_llama(_slim_phase(backend = "rocm"), lambda _f: None)
+    assert seen["backend"] == "vulkan"
+    assert installed["backend"] == "vulkan"
+    # And the asset with it: the old one carries the ROCm arch flags the installer derives.
+    assert installed["asset"] == "llama-b1-bin-win-vulkan-x64.zip"
+
+
+def test_a_self_contained_install_keeps_its_own_backend(monkeypatch):
+    """The control: only a slim install rides llama's ggml, so only it follows the
+    migration. A fat one carries its own and llama's backend is not its backend."""
+    monkeypatch.setattr(
+        wupd, "_resolve_prebuilt_for_host", lambda **_kw: {"prebuilt_available": True}
+    )
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: dict(phase))
+    _llama_installed_as(monkeypatch, "vulkan", "vulkan.zip", whisper_kind = "fat")
+
+    installed = wupd.run_chained_phase_after_llama(_slim_phase(backend = "rocm"), lambda _f: None)
+    assert installed["backend"] == "rocm"
+
+
+def test_an_ordinary_update_leaves_the_phase_alone(monkeypatch):
+    """No migration, no re-pair: the backend the plan named is the one llama still has."""
+    monkeypatch.setattr(
+        wupd, "_resolve_prebuilt_for_host", lambda **_kw: {"prebuilt_available": True}
+    )
+    monkeypatch.setattr(wupd, "run_chained_phase", lambda phase, _sp: dict(phase))
+    _llama_installed_as(monkeypatch, "rocm", "rocm-new.zip", whisper_kind = "slim")
+
+    installed = wupd.run_chained_phase_after_llama(
+        _slim_phase(backend = "rocm", asset = "rocm-old.zip"), lambda _f: None
+    )
+    assert (installed["backend"], installed["asset"]) == ("rocm", "rocm-old.zip")
+
+
 def test_a_slim_pairing_gap_skips_instead_of_failing_the_job(monkeypatch):
     """The state the pipeline was in for ten days: no whisper release paired to the
     llama being installed, so the phase exits 2 and fails a job llama already won."""

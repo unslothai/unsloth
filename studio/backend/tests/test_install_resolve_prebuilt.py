@@ -2679,8 +2679,37 @@ class _FakeIcdWinreg:
 
 def _icd_paths(monkeypatch, by_key):
     monkeypatch.setattr(ilp.sys, "platform", "win32")
+    # These would answer instead of the registry, which is the next test's subject.
+    for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        monkeypatch.delenv(name, raising = False)
     monkeypatch.setitem(sys.modules, "winreg", _FakeIcdWinreg(by_key))
     return ilp._amd_vulkan_icd_manifest_paths()
+
+
+def test_the_windows_registry_is_not_read_when_the_loader_is_forced(
+    monkeypatch, _present_manifest, tmp_path
+):
+    # VK_DRIVER_FILES overrides discovery on Windows too, so a registered AMD manifest is
+    # not evidence when the loader has been pointed elsewhere: routing on it would replace
+    # a working ROCm install with a Vulkan build that enumerates no device.
+    monkeypatch.setattr(ilp.sys, "platform", "win32")
+    registry = {_DRIVERS_KEY: [(_present_manifest, 0, _FakeIcdWinreg.REG_DWORD)]}
+    monkeypatch.setitem(sys.modules, "winreg", _FakeIcdWinreg(registry))
+    for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        monkeypatch.delenv(name, raising = False)
+    # The control: that registration does answer on its own, so a [] below is the override
+    # winning rather than a fake the walk cannot read.
+    assert ilp._amd_vulkan_icd_manifest_paths() == [_present_manifest]
+
+    intel = _icd(tmp_path / "intel_icd.json")
+    monkeypatch.setenv("VK_DRIVER_FILES", intel)
+    assert ilp._amd_vulkan_icd_manifest_paths() == [intel]
+    assert _REAL_AMD_VULKAN_ICD_PRESENT() is False
+    # VK_DRIVER_FILES supersedes the older name rather than joining it.
+    monkeypatch.setenv("VK_ICD_FILENAMES", _present_manifest)
+    assert ilp._amd_vulkan_icd_manifest_paths() == [intel]
+    monkeypatch.delenv("VK_DRIVER_FILES")
+    assert ilp._amd_vulkan_icd_manifest_paths() == [_present_manifest]
 
 
 _DRIVERS_KEY = r"SOFTWARE\Khronos\Vulkan\Drivers"

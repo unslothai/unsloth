@@ -7755,6 +7755,26 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
     both readable without running vulkaninfo (absent on most Windows hosts) or loading
     libvulkan (absent on a headless ROCm box, which is exactly the case being tested for).
     """
+    # Force lists, not hints, and they override discovery on EVERY platform including
+    # Windows: the loader reads only these and skips the registry and the directories, and
+    # VK_DRIVER_FILES supersedes VK_ICD_FILENAMES rather than joining it. So whichever is
+    # set answers alone, even naming nothing loadable. Windows ignores them under
+    # elevation, which can only make this stricter than the loader, so the install stays
+    # where it is. Present files only, as in the registry.
+    for env_name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        value = os.environ.get(env_name)
+        if not (value or "").strip():
+            continue
+        forced = []
+        for entry in value.split(os.pathsep):
+            if not entry:
+                continue
+            try:
+                if os.path.isfile(entry):
+                    forced.append(entry)
+            except OSError:
+                continue
+        return forced
     if sys.platform == "win32":
         try:
             import winreg
@@ -7785,24 +7805,6 @@ def _amd_vulkan_icd_manifest_paths() -> list[str]:
             except OSError:
                 continue
         return paths
-    # Force lists, not hints: the loader reads only these and skips the directories, and
-    # VK_DRIVER_FILES supersedes VK_ICD_FILENAMES rather than joining it. So whichever is
-    # set answers alone, even naming nothing loadable; falling through would judge the
-    # host on drivers the loader never reads. Present files only, as in the registry.
-    for _env in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
-        _value = os.environ.get(_env)
-        if not (_value or "").strip():
-            continue
-        _entries = []
-        for entry in _value.split(os.pathsep):
-            if not entry:
-                continue
-            try:
-                if os.path.isfile(entry):
-                    _entries.append(entry)
-            except OSError:
-                continue
-        return _entries
     paths = []
     for directory in _vulkan_icd_search_dirs():
         try:
