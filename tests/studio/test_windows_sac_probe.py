@@ -487,3 +487,70 @@ def test_the_signature_audit_fails_on_any_missing_bundle():
     block = body[download:loop_end]
     assert "if ($LASTEXITCODE -ne 0) { throw" in block
     assert "Get-ChildItem bundles -Filter $pattern" in block
+
+
+class _FakeStream:
+    """What urlopen hands back: an iterable of SSE lines with a status."""
+
+    def __init__(self, lines):
+        self.status = 200
+        self._lines = [line.encode() for line in lines]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+def _stream(monkeypatch, s, lines):
+    monkeypatch.setattr(s.urllib.request, "urlopen", lambda req, timeout = 0: _FakeStream(lines))
+    return s._stream_events("http://x", "/v1/chat/completions", {"stream": True}, "t")
+
+
+def test_a_stream_that_errors_after_the_tool_ran_is_not_a_success(monkeypatch):
+    """A failure after the status line went out arrives in band as an error
+    frame with the 200 kept, and the stream ends without [DONE]; the tool_end
+    before it must not carry the turn."""
+    s = _load_scenario()
+    tool_end = 'data: {"type": "tool_end", "tool_name": "web_search", "result": "found"}\n'
+    status, events, error = _stream(
+        monkeypatch,
+        s,
+        [tool_end, 'data: {"error": {"message": "llama-server exited", "type": "server_error"}}\n'],
+    )
+    assert status == 200 and error and "llama-server exited" in error
+    status, events, error = _stream(monkeypatch, s, [tool_end])
+    assert error and "without [DONE]" in error
+    status, events, error = _stream(monkeypatch, s, [tool_end, "data: [DONE]\n"])
+    assert error is None and len(events) == 1
+    monkeypatch.setattr(
+        s,
+        "_stream_events",
+        lambda *a, **k: (
+            200,
+            [{"type": "tool_end", "tool_name": "web_search", "result": "found"}],
+            "stream error: llama-server exited",
+        ),
+    )
+    turn = s.chat("http://x", "t", "m", "look it up", tools = True)
+    assert turn["ok"] is False and turn["tools_run"] == ["web_search"] and "exited" in turn["error"]
+
+
+def test_the_powershell_probe_fails_closed_on_the_log_and_finishes_the_policy_refresh():
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    # A channel that cannot be enabled fails prepare; there is no evidence without it.
+    assert "could not configure the CodeIntegrity log" not in ps1
+    assert "is still disabled after wevtutil sl" in ps1
+    # revert refreshes the policy set in every branch, absent file included, and
+    # clears AuditPolicyApplied only after the refresh succeeded.
+    block = ps1[ps1.index("Write-Section 'Remove audit policy'") : ps1.index("Write-Section 'Restore CodeIntegrity log'")]
+    assert block.count("Invoke-Native 'CiTool.exe' @('-r')") == 1
+    assert block.index("audit policy file already absent") < block.index("Invoke-Native 'CiTool.exe' @('-r')")
+    assert block.index("Invoke-Native 'CiTool.exe' @('-r')") < block.index("$baseline.AuditPolicyApplied = $false")
+    assert block.index("Dismount-Efi $mounted") < block.index("$baseline.AuditPolicyApplied = $false")
+    # Defender detections are the probe window's only.
+    assert "Where-Object { $_.InitialDetectionTime -ge $start }" in ps1

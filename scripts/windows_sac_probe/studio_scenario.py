@@ -164,6 +164,8 @@ def _stream_events(
     )
     start = time.monotonic()
     events: list[dict] = []
+    error: Optional[str] = None
+    done = False
     try:
         with urllib.request.urlopen(req, timeout = timeout) as response:
             for raw in response:
@@ -172,15 +174,26 @@ def _stream_events(
                     continue
                 data = line[5:].strip()
                 if data == "[DONE]":
+                    done = True
                     break
                 try:
                     parsed = json.loads(data)
                 except ValueError:
                     continue
-                if isinstance(parsed, dict):
-                    events.append(parsed)
+                if not isinstance(parsed, dict):
+                    continue
+                events.append(parsed)
+                # A failure after the status line went out arrives in band,
+                # as `{"error": ...}` with the 200 kept, and the stream ends
+                # there without [DONE].
+                if "error" in parsed and error is None:
+                    detail = parsed["error"]
+                    message = detail.get("message") if isinstance(detail, dict) else detail
+                    error = f"stream error: {str(message)[:300]}"
+            if error is None and not done:
+                error = "stream ended without [DONE]: the turn did not complete"
             TIMED.record("POST", path, (time.monotonic() - start) * 1000.0, response.status)
-            return response.status, events, None
+            return response.status, events, error
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         TIMED.record("POST", path, (time.monotonic() - start) * 1000.0, exc.code, body[:400])
@@ -413,7 +426,7 @@ def chat(
             reason = "no tool_end event: the turn executed no tool"
         return {
             "status": status,
-            "ok": status == 200 and bool(finished),
+            "ok": status == 200 and bool(finished) and error is None,
             "chars": len(text),
             "tool_calls": len(finished),
             "tools_started": started,

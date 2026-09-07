@@ -419,12 +419,19 @@ function Invoke-Prepare {
     Write-Section 'CodeIntegrity log'
     # The default 1 MB fills quickly once a policy is auditing every load, and a
     # wrapped log silently loses the events this whole exercise exists to catch.
+    # Not best effort: a channel that stays disabled records nothing, and
+    # collect would then export a clean-looking empty window for a bundle
+    # that was being refused.
     try {
         Invoke-Native 'wevtutil.exe' @('sl', $CI_LOG, '/e:true', '/ms:67108864')
-        Write-Host ("CodeIntegrity/Operational enabled, max size 64 MB (was enabled={0}, maxSize={1})" -f $baseline.CiLogEnabled, $baseline.CiLogMaxSize)
     } catch {
-        Write-Warning "could not configure the CodeIntegrity log: $_"
+        throw "could not enable $CI_LOG at 64 MB, so no code integrity event could be collected: $_"
     }
+    $ciNow = Get-CiLogSettings
+    if (-not $ciNow.Enabled) {
+        throw "$CI_LOG is still disabled after wevtutil sl (policy-controlled?); the probe cannot collect evidence here"
+    }
+    Write-Host ("CodeIntegrity/Operational enabled, max size {0} (was enabled={1}, maxSize={2})" -f $ciNow.MaxSize, $baseline.CiLogEnabled, $baseline.CiLogMaxSize)
 
     if ($AuditPolicy) {
         Write-Section 'Audit policy'
@@ -647,7 +654,11 @@ function Invoke-Collect {
     try {
         # Captured into an array first: a clean machine yields nothing, and a
         # pipeline with no input writes an empty file rather than [].
-        $detections = @(Get-MpThreatDetection -ErrorAction Stop | Select-Object InitialDetectionTime, ThreatID, Resources)
+        # The probe's window only: older detections are somebody else's
+        # history and their resource paths do not belong in the attached zip.
+        $detections = @(Get-MpThreatDetection -ErrorAction Stop |
+            Where-Object { $_.InitialDetectionTime -ge $start } |
+            Select-Object InitialDetectionTime, ThreatID, Resources)
         ConvertTo-Json -InputObject $detections -Depth 4 |
             Set-Content -LiteralPath (Join-Path $dir 'defender-detections.json') -Encoding UTF8
     } catch {
@@ -690,18 +701,25 @@ function Invoke-Revert {
             if ($baseline.AuditPolicyPreexisting -and (Test-Path -LiteralPath $saved)) {
                 # Not ours to delete: put back the policy prepare found.
                 Copy-Item -LiteralPath $saved -Destination $NOISG_DEST -Force
-                Invoke-Native 'CiTool.exe' @('-r')
-                Write-Host 'pre-existing audit policy restored and policy refreshed'
+                Write-Host 'pre-existing audit policy restored'
             } elseif (Test-Path -LiteralPath $NOISG_DEST) {
                 Remove-Item -LiteralPath $NOISG_DEST -Force
-                Invoke-Native 'CiTool.exe' @('-r')
-                Write-Host 'audit policy removed and policy refreshed'
+                Write-Host 'audit policy removed'
             } else {
-                Write-Host 'audit policy already absent'
+                Write-Host 'audit policy file already absent'
             }
+            # Refreshed in every branch: an earlier revert may have removed the
+            # file and then failed here, leaving the policy active in memory
+            # until reboot, and the rerun would otherwise skip the refresh.
+            Invoke-Native 'CiTool.exe' @('-r')
+            Write-Host 'policy refreshed'
         } finally {
             Dismount-Efi $mounted
         }
+        # Only once the refresh succeeded: a rerun after a failed one must
+        # still find AuditPolicyApplied set.
+        $baseline.AuditPolicyApplied = $false
+        $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $dir 'baseline.json') -Encoding UTF8
     }
 
     Write-Section 'Restore CodeIntegrity log'
