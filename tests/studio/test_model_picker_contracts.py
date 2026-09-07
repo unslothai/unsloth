@@ -815,16 +815,13 @@ def test_pinned_validation_uses_cached_local_variant_listing():
     assert "bumpInventoryVersion(" in delete_fn
 
 
-def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
-    """Autoload must probe the exact cache row it will load, including rows
-    retained from a previously selected Hugging Face cache."""
+def test_chat_autoload_probes_the_cached_load_identity():
+    """Logical chat targets retain quants across caches; explicit local rows stay scoped."""
     src = _read("features/chat/api/chat-adapter.ts")
-    # Both cache-backed sources scan the exact path they will load from, not the
-    # bare repo id.
     sources = src.split("function buildAutoLoadSources", 1)[1]
     sources = sources.split("function isRememberedSource", 1)[0]
     assert sources.count("preferLocalCache: true") == 2
-    assert "localPath: repo.cache_path" in sources
+    assert "localPath: repo.load_id || repo.cache_path" in sources
     assert "localPath: row.path" in sources
 
     # #7767 moved the query building out of chat-api into its own module, so the listing
