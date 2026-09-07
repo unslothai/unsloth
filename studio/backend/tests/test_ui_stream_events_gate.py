@@ -621,6 +621,31 @@ def test_a_withheld_call_always_leaves_the_caller_a_finish_reason():
     assert stripper.owed_terminal_chunk() is None
 
 
+def test_a_removed_reason_owes_a_terminal_even_with_no_call_to_latch_onto():
+    # A provider can report finish_reason "tool_calls" for a call its own parser failed to
+    # emit; llama.cpp and vLLM both have open bugs of that shape. Nothing is there for the
+    # withheld-call flag to latch onto, so the reason was blanked with no debt recorded and
+    # the stream ended carrying no finish_reason at all -- worse than the call being held
+    # back, and the exact openai-node failure the minting exists to prevent.
+    stripper = ServerToolCallStripper()
+    stripper.strip('data: {"id": "c", "choices": [{"index": 0, "delta": {"content": "hi"}}]}')
+    stripper.strip(
+        'data: {"id": "c", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}'
+    )
+    owed = stripper.owed_terminal_chunk()
+    assert owed is not None and '"finish_reason":"stop"' in owed
+
+    # The reasons the strip leaves alone are still genuinely final, so nothing is owed.
+    for reason in ("stop", "length", "content_filter"):
+        kept = ServerToolCallStripper()
+        kept.strip('data: {"id": "c", "choices": [{"index": 0, "delta": {"content": "hi"}}]}')
+        kept.strip(
+            'data: {"id": "c", "choices": [{"index": 0, "delta": {},'
+            ' "finish_reason": "%s"}]}' % reason
+        )
+        assert kept.owed_terminal_chunk() is None, reason
+
+
 def test_a_stream_that_kept_its_own_terminal_is_owed_nothing():
     # No spurious extra chunk when the caller already has a real finish_reason, whether or
     # not a call was withheld earlier in the stream.

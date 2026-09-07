@@ -295,11 +295,18 @@ class ServerToolCallStripper:
         # The turn the withheld call belonged to has closed. Whatever the loop does next
         # opens a turn of its own, whose finish_reason is the caller's to read.
         self._pending_call = pending and not ends_turn
-        if pending:
+        if pending or (ends_turn and (out is None or not _line_ends_turn(out))):
             # Armed as soon as a call is withheld, not only where a finish_reason was
             # removed: a provider that closes the turn on [DONE] alone never offers one to
             # remove, and the caller would be left holding a stream whose only chunk this
             # held back. The debt is settled below the moment a real terminal is relayed.
+            #
+            # The second clause covers the reverse: a reason removed without a call ever
+            # being seen. A provider that reports "tool_calls" for a call its own parser
+            # failed to emit (llama.cpp and vLLM both have open bugs of this shape) offers
+            # nothing for `pending` to latch onto, so the reason is blanked and, without
+            # this, no debt recorded -- leaving the stream with no finish_reason at all,
+            # which is worse than the call it was holding back.
             self._owes_finish = True
         if out is not None and _line_ends_turn(out):
             # A genuine terminal reason reached the caller; nothing is owed.

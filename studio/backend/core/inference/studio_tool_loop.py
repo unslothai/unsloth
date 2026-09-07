@@ -1403,17 +1403,22 @@ async def stream_with_studio_tools(
                     elif kind == "tool_call":
                         turn.healed.append(value)
 
+            # The turn ended in a call this loop is about to run, so the provider's reason, if it sent one, is not the end
+            # of the response. Arming blanks it for headerless callers and records the debt, so owed_terminal_chunk()
+            # still mints a terminal if the loop stops before a later turn supplies one. A truncated turn is the
+            # exception: it refuses to run the call, so its reason really is final and stands.
+            #
+            # Deliberately not conditioned on held_final. A provider is free to close a turn on [DONE] alone, and one
+            # that does while a healed call is promoted would otherwise leave the debt unarmed: the loop runs the tool,
+            # the client is sent no finish_reason for that turn, and if nothing later supplies one the stream ends on
+            # [DONE] with none at all, which openai-node rejects outright.
+            if (
+                turn.healed
+                and turn.finish_reason not in ("length", "content_filter")
+                and policy.on_withheld_tool_call is not None
+            ):
+                policy.on_withheld_tool_call()
             if held_final is not None:
-                # The turn ended in a call this loop is about to run, so the provider's reason is not the end of the
-                # response. Arming blanks it for headerless callers and records the debt, so owed_terminal_chunk() still
-                # mints a terminal if the loop stops before a later turn supplies one. A truncated turn is the exception:
-                # it refuses to run the call, so its reason really is final and stands.
-                if (
-                    turn.healed
-                    and turn.finish_reason not in ("length", "content_filter")
-                    and policy.on_withheld_tool_call is not None
-                ):
-                    policy.on_withheld_tool_call()
                 yield held_final
                 held_final = None
 

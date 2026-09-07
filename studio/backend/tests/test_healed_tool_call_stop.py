@@ -251,6 +251,26 @@ def test_a_turn_with_no_call_keeps_its_only_finish_reason(loop_env):
     assert _text(lines) == "Just an answer."
 
 
+def test_a_healed_call_owes_a_terminal_even_with_no_finish_chunk(loop_env):
+    """A provider may close a turn on [DONE] alone, sending no finish_reason at all.
+
+    Nothing is held back in that case, but the call is still promoted and run, so the debt
+    has to be armed anyway. Otherwise a loop that then ends without a genuine terminal --
+    here the second pass says nothing -- closes the stream on [DONE] carrying no
+    finish_reason, which openai-node rejects with "missing finish_reason for choice 0".
+    """
+    no_finish = [
+        _sse({"content": "Let me look that up. "}),
+        _sse({"content": '<tool_call>{"name": "web_search", '}),
+        _sse({"content": '"arguments": {"query": "42"}}</tool_call>'}),
+        _DONE,
+    ]
+    lines = _relay([no_finish, [_DONE]], ui_events = False)
+
+    assert loop_env == ["web_search"], "the tool must actually run"
+    assert _finish_reasons(lines) == ["stop"], "a terminal must be minted"
+
+
 def test_a_truncated_turn_keeps_its_reason(loop_env):
     """ "length" cut the call off half-written, so the loop refuses to run it.
 
