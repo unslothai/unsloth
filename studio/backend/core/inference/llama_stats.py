@@ -46,12 +46,11 @@ class LlamaServerStatsLogger:
         self._stall_since = None
         self._stall_reported = False
         self._unmeasurable_reported = False
-        # The busy window: seconds the engine has held a slot, and the generated
-        # tokens released in them. tokens_predicted_total moves once per generation,
-        # at slot release, so the tick it moves on is not the window the tokens were
-        # produced in, and with several slots in flight one release is not the whole
-        # of what the window produced. See _token_rate. prompt_tokens_total needs no
-        # such accumulator: llama-server flushes it every decode step.
+        # The busy window: seconds the engine has held a slot, and the generated tokens
+        # released in them. tokens_predicted_total moves once per generation, at slot
+        # release, so the tick it moves on is not the window the tokens were produced in,
+        # and with several slots in flight one release is not all the window produced.
+        # prompt_tokens_total needs no accumulator: it is flushed every decode step.
         self._gen_busy_s = 0.0
         self._gen_tokens = 0.0
 
@@ -175,44 +174,41 @@ class LlamaServerStatsLogger:
             now = time.monotonic()
             predicted = m.get("tokens_predicted_total", 0.0)
             prompt = m.get("prompt_tokens_total", 0.0)
-            # a build without n_decode_total reads None and never "changes", accumulating the same way
-            # A held slot not calling llama_decode() is a wedge, and its only symptom is an endless run of identical
-            # info lines. A build without n_decode_total reads None and never "changes", accumulating the same way, so
-            # the message is chosen at report time.
+            # A held slot not calling llama_decode() is a wedge whose only symptom is an
+            # endless run of identical info lines. A build without n_decode_total reads
+            # None and never "changes", accumulating the same way, so the message is
+            # chosen at report time.
             decode_calls = m.get("n_decode_total")
             running, waiting = (
                 int(m.get("requests_processing", 0)),
                 int(m.get("requests_deferred", 0)),
             )
             gen_delta = prompt_delta = 0.0
-            # Calls, not tokens, and never fed into tok/s. This is the one counter
-            # that moves on EVERY llama_decode(), so it is the only thing in the
-            # line that says "the engine is producing" while a generation is still
-            # running. The token counters are 0 for the whole of a healthy one.
+            # Calls, not tokens, and never fed into tok/s: it is the only counter moving
+            # on every llama_decode(), so it is the only sign of progress while a
+            # generation runs, where the token counters stay at 0 throughout.
             decode_rate = 0.0
             if prev is not None and now > prev[0]:
                 dt = now - prev[0]
                 released = max(0.0, predicted - prev[1])
-                # Only busy time counts toward a rate. A slot held is the engine
-                # working: tokens_predicted_total stays still through a healthy
-                # prefill and a healthy decode alike, so "not moving" is not "idle".
-                # A release counts too: the generation that produced it ran in this
-                # interval, and a single-slot server that finishes between scrapes
-                # reports 0 slots on the very tick the tokens arrive, so reading the
-                # gauges alone would drop the last interval and overstate the rate.
+                # Only busy time counts toward a rate, and a held slot is the engine
+                # working: tokens_predicted_total stays still through a healthy prefill
+                # and a healthy decode alike, so "not moving" is not "idle".
+                # A release counts too: a single-slot server finishing between scrapes
+                # reports 0 slots on the tick its tokens arrive, so the gauges alone
+                # would drop that interval and overstate the rate.
                 if running or waiting or released:
                     self._gen_busy_s += dt
                 self._gen_tokens += released
                 gen_delta = (
                     self._token_rate(self._gen_tokens, self._gen_busy_s, dt) if released else 0.0
                 )
-                # Plain delta: this counter moves on every decode step, so the tick
-                # it is read in IS the window it was produced in.
+                # Plain delta: this counter moves every decode step, so the tick it is
+                # read in is the window it was produced in.
                 prompt_delta = max(0.0, (prompt - prev[2]) / dt)
-                # The window closes when the engine does, never on a release: with a
-                # second generation still running, its tokens were produced in this
-                # window too and discarding the window here would divide them by the
-                # gap between the two releases.
+                # The window closes when the engine does, never on a release: a second
+                # generation still running produced its tokens in this window too, and
+                # discarding it here would divide them by the gap between releases.
                 if not (running or waiting):
                     self._gen_busy_s = 0.0
                     self._gen_tokens = 0.0
