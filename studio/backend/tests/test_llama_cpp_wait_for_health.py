@@ -216,7 +216,9 @@ class TestWaitForHealthResilience:
         b._process.poll.return_value = -15
         b._kill_process(teardown = teardown)
         assert seen["process_still_set"] is True, "the window this guards would not exist"
-        assert seen["flag_at_signal"] is teardown, "teardown published late, or a reap marked terminal"
+        assert (
+            seen["flag_at_signal"] is teardown
+        ), "teardown published late, or a reap marked terminal"
 
     def test_a_crash_still_reports_the_exit_code(self, monkeypatch):
         """The teardown guard must not swallow the crash branch: an exited
