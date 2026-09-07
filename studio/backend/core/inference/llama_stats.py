@@ -192,7 +192,9 @@ class LlamaServerStatsLogger:
             # excludes the first token of each generation, which comes from the prompt
             # batch for free. Treating it as absent is what let a one-token completion be
             # divided by a near-zero duration.
-            gen_tps = m["predicted_tokens_seconds"] if "predicted_tokens_seconds" in m else gen_delta
+            gen_tps = (
+                m["predicted_tokens_seconds"] if "predicted_tokens_seconds" in m else gen_delta
+            )
             prompt_tps = (
                 m["prompt_tokens_seconds"] if "prompt_tokens_seconds" in m else prompt_delta
             )
