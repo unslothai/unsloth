@@ -961,14 +961,18 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     definition = _FUNCTION_DEF_RE.match(stripped)
     if definition is not None:
         stripped = stripped[definition.end() :].lstrip()
-    while stripped:
-        if stripped[0] == "(":
-            stripped = stripped[1:].lstrip()
-        elif stripped[0] == "{" and (len(stripped) == 1 or stripped[1].isspace()):
-            stripped = stripped[1:].lstrip()
-        else:
-            break
-    stripped = stripped.strip()
+
+    def _open_groups(text: str) -> str:
+        while text:
+            if text[0] == "(":
+                text = text[1:].lstrip()
+            elif text[0] == "{" and (len(text) == 1 or text[1].isspace()):
+                text = text[1:].lstrip()
+            else:
+                break
+        return text.strip()
+
+    stripped = _open_groups(stripped)
     while stripped[-1:] in (")", "}") and not _final_bracket_closes_substitution(stripped):
         stripped = stripped[:-1].rstrip()
     conditional = definition is not None  # the body runs only when the function is called
@@ -979,7 +983,9 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
         if not parts or parts[0].lower() not in _SHELL_KEYWORDS:
             break
         conditional = conditional or parts[0].lower() in _SHELL_BODY_KEYWORDS
-        stripped = parts[1].strip() if len(parts) > 1 else ""
+        # A keyword can sit in front of a group: `if (pip install ...); then` exposes the `(`
+        # only once `if` comes off, and leaving it there hid the install from PIP_LINE_RE.
+        stripped = _open_groups(parts[1].strip()) if len(parts) > 1 else ""
     # A `case` arm label, quoted or bare. Only the matching arm runs, so the command is
     # conditional. The label ends at the first unquoted `)` with nothing open before it.
     close = _unquoted_arm_close(stripped)
@@ -1324,14 +1330,19 @@ def _fold_pending(
     prev_ops: list[str],
     pending: str,
     notebook_bang: bool = True,
+    spoken_for: bool = False,
 ) -> None:
     """Fold the command in hand into the list, unless a group already spoke for it.
 
     After `(pip install x)` closes, the level's state ALREADY carries the group's status and
     the text left in hand is the bare bracket. Folding that read as an unknown command and
     wiped what the group had just contributed.
+
+    `spoken_for` is the same case with the brackets still around a body: `_close_group` has
+    folded `(false && true)` as the FAILURE it is, and reprocessing the text read its last
+    lexical `true` and marked the `&&` tail unconditional.
     """
-    if not _unwrap_shell_group(pending)[0].strip():
+    if spoken_for or not _unwrap_shell_group(pending)[0].strip():
         return
     _fold_and_or(assured, prev_ops, _piece_success_model(pending, None, notebook_bang) is True)
 
@@ -1404,8 +1415,12 @@ def _for_list_is_nonempty(text: str) -> bool:
     and either would turn a guaranteed body into a guess. `for x in a b` runs, so its body is
     reached as surely as a bare command.
     """
-    _, _, rest = text.partition(" in ")
-    words = rest.split()
+    # Shell whitespace, not a literal `" in "`: `for x\tin\ta` is the same loop to bash,
+    # and finding no list there marked a body that certainly runs as conditional.
+    match = re.search(r"\sin\s", text)
+    if match is None:
+        return False
+    words = text[match.end() :].split()
     if not words or not any(words):
         return False
     return not any(ch in word for word in words for ch in ("$", "`", "*", "?", "["))
@@ -1636,7 +1651,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             left_model = _left_hand_status(
                 list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
             )
-            _fold_pending(list_has_pip, prev_ops, "".join(buf), not out)
+            _fold_pending(list_has_pip, prev_ops, "".join(buf), not out, closed_pending)
             prev_ops[-1] = "||"
             flush("||")
             tails[-1] = left_model is not False
@@ -1658,7 +1673,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             left_and = _left_hand_status(
                 list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
             )
-            _fold_pending(list_has_pip, prev_ops, "".join(buf), not out)
+            _fold_pending(list_has_pip, prev_ops, "".join(buf), not out, closed_pending)
             prev_ops[-1] = "&&"
             # Reaching this tail rests on the replay's own model of pip succeeding, which is
             # fine for reporting an install but must not make anything UNREACHABLE.
@@ -1825,6 +1840,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # once the body itself is, which is what makes the call graph transitive.
     body_invokes: dict[str, set[tuple[str, int]]] = {}
     called: set[tuple[str, int]] = set()
+    maybe_called: set[tuple[str, int]] = set()
     # Depth of open compounds at an unconditional `break`/`continue`. Bash jumps past `done`,
     # so the rest of that loop body never runs -- loop-local, unlike `exit`, which ends the
     # shell: `while true; do break; pip install x; done` installs nothing.
@@ -1961,14 +1977,23 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             flag or command_flag or any(model is not True for level, model in selector if level)
         )
         for inner in _substitution_bodies(piece):
-            ordered.extend(
-                (inner_text, sub_conditional or inner_flag)
-                for inner_text, inner_flag in _split_chained(f"!{inner}")
-            )
+            for inner_text, inner_flag in _split_chained(f"!{inner}"):
+                # A substitution runs in a shell that already has the parent's functions, so
+                # `f(){ pip install ...; }; echo $(f)` calls f. The recursive parse cannot see
+                # the definition, so the CALL is recorded out here, where the reachability walk
+                # resolves it against the definitions in force. A substitution the notebook may
+                # not expand reaches the body without making anything in it certain.
+                if sub_conditional or inner_flag:
+                    maybe_called.add((_invoked_name(inner_text), index))
+                else:
+                    called.add((_invoked_name(inner_text), index))
+                ordered.append((inner_text, sub_conditional or inner_flag))
         # `${READY:-$(pip install ...)}` expands its word only when READY is unset, so the
         # install inside it is a path the notebook MAY take, never one it certainly does.
         for inner in _substitution_bodies(piece, conditional = True):
-            ordered.extend((inner_text, True) for inner_text, _ in _split_chained(f"!{inner}"))
+            for inner_text, _ in _split_chained(f"!{inner}"):
+                maybe_called.add((_invoked_name(inner_text), index))
+                ordered.append((inner_text, True))
         if text:
             # `if false` / `while false` / `until true` can never reach their body, so what
             # follows is not merely conditional but unreachable, and reporting an install
@@ -2068,7 +2093,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 # the enclosing `if` dropped commands that really run.
                 loop = [n for n, word in enumerate(openers) if word in ("while", "until", "for")]
                 if loop:
-                    broke_at = loop[-1] + 1
+                    # `break n` jumps out of the n-th enclosing loop, so `break 2` in a nested
+                    # body leaves BOTH and the outer body stops too. Always taking the
+                    # innermost let the outer loop's remaining commands replay as reached. A
+                    # count past the nesting leaves every loop, which is what bash does.
+                    _, _, level = _strip_exec_prefixes(text.lstrip("!").strip())[0].strip().partition(" ")
+                    depth = int(level.strip()) if level.strip().isdigit() else 1
+                    broke_at = loop[max(len(loop) - depth, 0)] + 1
 
     # A defined body is conditional until something calls it. `setup() { pip install x; };
     # setup` definitely installs, and leaving the body conditional dropped it from the replay
@@ -2097,13 +2128,32 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             if key is not None and key not in reached:
                 reached.add(key)
                 pending_calls.append(key)
+    # A call the notebook MAY make -- inside `${READY:-$(f)}`, say -- reaches the body without
+    # making anything in it certain. Leaving those out pruned a body bash can run, and putting
+    # them in `called` would have replayed it as unconditional.
+    soft = {
+        key
+        for name, at in maybe_called
+        if (key := _definition_in_force(name, at)) is not None and key not in reached
+    }
+    soft_pending = list(soft)
+    reached |= soft
+    while soft_pending:
+        for callee, at in body_invokes.get(soft_pending.pop(), ()):
+            key = _definition_in_force(callee, at)
+            if key is not None and key not in reached:
+                reached.add(key)
+                soft.add(key)
+                soft_pending.append(key)
     # A body nobody calls is UNREACHABLE, not merely conditional: bash defines `f` and stops.
     # The all-path rules deliberately read conditional commands, so leaving it in reported a
     # source the cell can never install.
     unreached: set[int] = set()
     for name, entries in body_entries.items():
         for position, entered in entries:
-            if name in reached:
+            if name in soft:
+                ordered[position] = (ordered[position][0], True)
+            elif name in reached:
                 ordered[position] = (ordered[position][0], entered)
             else:
                 unreached.add(position)
@@ -2168,6 +2218,16 @@ def parse_spec(spec: str) -> SpecParts | None:
     rest = m.group("rest")
     pins = OP_VERSION_RE.findall(rest)
     return SpecParts(name = name, pins = pins, raw = spec)
+
+
+def _canonical_project(name: str) -> str:
+    """PEP 503 name normalization: any run of `-`, `_` or `.` is one `-`, lowercased.
+
+    `huggingface.hub`, `huggingface_hub` and `huggingface-hub` are one project to pip, and
+    the Colab snapshot is keyed the last way. Folding only `_` left the other spelling
+    judging a version the cell had removed.
+    """
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def explicit_pin(spec: SpecParts) -> str | None:
@@ -2281,7 +2341,7 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
                 # and the snapshot is keyed the second way. Popping the spelling as written
                 # left the removed package in place, and the rules then judged a version the
                 # cell had just deleted.
-                for key in {sp.name, sp.name.replace("_", "-")}:
+                for key in {sp.name, _canonical_project(sp.name)}:
                     out.pop(key, None)
                     pinned.discard(key)
                     upper_bounds.pop(key, None)
@@ -2414,12 +2474,12 @@ def _removed_by_cell(
     resolution data, say nothing". Removing the dependency an explicit `--no-deps` install
     needs is the broken state they exist to catch, so the two cases have to be told apart.
     """
-    wanted = name.replace("_", "-").lower()
+    wanted = _canonical_project(name)
     removed = False
     for inv in unconditional_pip_invocations(install_cell):
         for raw in inv.packages:
             sp = parse_spec(raw)
-            if sp is None or sp.name.replace("_", "-").lower() != wanted:
+            if sp is None or _canonical_project(sp.name) != wanted:
                 continue
             if _is_dry_run(inv):
                 continue  # `--dry-run` reports what pip WOULD do and changes nothing
