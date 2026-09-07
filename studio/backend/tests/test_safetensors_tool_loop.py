@@ -5123,9 +5123,10 @@ def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
     def _call(n):
         return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
 
-    # Two DISTINCT calls: an identical repeat is suppressed as a no-op and the sink
-    # never reaches the cap, so the test would prove nothing.
-    turns = [_call(1), _call(2), "done."]
+    # DISTINCT calls: an identical repeat is suppressed as a no-op. Eight of them,
+    # because a local placeholder turn carries one picture, and the cap has to be
+    # reached for the test to prove anything.
+    turns = [_call(n) for n in range(1, 9)] + ["done."]
     seen: list[list] = []
 
     def single_turn(conversation, *, active_tools = None):
@@ -5144,7 +5145,7 @@ def test_the_loop_cap_never_evicts_the_caller_s_own_attachment():
             ],
             tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
             execute_tool = lambda name, args, **kwargs: result,
-            max_tool_iterations = 3,
+            max_tool_iterations = 9,
             images_sink = sink,
             caller_image_indexes = (0,),
         )
@@ -5190,7 +5191,9 @@ def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
     def _call(n):
         return '<tool_call>{"name": "mcp__fs__shot", "arguments": {"n": %d}}</tool_call>' % n
 
-    turns = [_call(1), _call(2), _call(3), "done."]
+    # One picture per batch on a local path, so five batches on four replayed is
+    # nine against a cap of eight.
+    turns = [_call(n) for n in range(1, 6)] + ["done."]
     seen: list[list] = []
 
     def single_turn(conversation, *, active_tools = None):
@@ -5204,7 +5207,7 @@ def test_a_resumed_chat_s_replayed_images_still_count_against_the_cap():
             messages = [mcp_images.placeholder_turn(4, 4)],
             tools = [{"type": "function", "function": {"name": "mcp__fs__shot"}}],
             execute_tool = lambda name, args, **kwargs: result,
-            max_tool_iterations = 4,
+            max_tool_iterations = 6,
             images_sink = sink,
             # No attachment on this request; every seeded pixel is replay.
             caller_image_indexes = (),

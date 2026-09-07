@@ -14,6 +14,7 @@ import {
   boundMcpImageEnvelopes,
   mcpImagesEnvelope,
   splitMcpImages,
+  stripMcpImageEnvelopes,
 } from "../src/features/chat/api/mcp-images.ts";
 import { isMcpToolName } from "../src/features/chat/utils/mcp-tool-name.ts";
 
@@ -335,4 +336,22 @@ test("a named non-MCP result has its envelope stripped, not re-uploaded", () => 
     { role: "tool", name: "read_file", content: "here" + mcpImagesEnvelope([{ data: huge, mimeType: "image/png" }]) },
   ]);
   assert.equal(bounded.content, "here");
+});
+
+test("a text-only target is sent no envelopes at all", () => {
+  const messages = [
+    { role: "user", content: "what did it show" },
+    {
+      role: "tool",
+      name: "mcp__s__shot",
+      content: "[1 image returned]" + mcpImagesEnvelope([{ data: "A".repeat(50_000), mimeType: "image/png" }]),
+    },
+    { role: "tool", name: "read_file", content: "plain" },
+  ];
+
+  const stripped = stripMcpImageEnvelopes(messages);
+
+  assert.equal(stripped[1].content, "[1 image returned]");
+  assert.equal(stripped[0], messages[0], "non-tool messages are the same object");
+  assert.equal(stripped[2], messages[2], "a tool result with no envelope is untouched");
 });

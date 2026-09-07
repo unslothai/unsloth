@@ -46,6 +46,7 @@ import { apiUrl } from "@/lib/api-base";
 import { isMcpToolName } from "../utils/mcp-tool-name";
 import {
   boundMcpImageEnvelopes,
+  stripMcpImageEnvelopes,
   mcpImagesEnvelope,
   splitMcpImages,
 } from "./mcp-images";
@@ -4761,13 +4762,23 @@ export function createOpenAIStreamAdapter(
       );
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
-      const outboundMessages = boundMcpImageEnvelopes(
-        survivingMessages
-          .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
-          .filter((message): message is NonNullable<typeof message> =>
-            Boolean(message),
-          ),
-      );
+      // A target KNOWN to read no images gets no envelopes at all: the backend strips them
+      // without sending a pixel, so bounding them only re-uploaded megabytes of base64 on
+      // every text turn after a switch. Unknown (null) keeps them, and so does a vision target.
+      const targetReadsImages = isExternalRequest
+        ? providerModelSupportsVision(
+            externalProvider?.providerType,
+            externalSelection?.modelId,
+          ) !== false
+        : runtime.loadedIsMultimodal !== false;
+      const openaiMessages = survivingMessages
+        .flatMap((message) => toOpenAIMessages(message, !isExternalRequest))
+        .filter((message): message is NonNullable<typeof message> =>
+          Boolean(message),
+        );
+      const outboundMessages = targetReadsImages
+        ? boundMcpImageEnvelopes(openaiMessages)
+        : stripMcpImageEnvelopes(openaiMessages);
       if (selectedImageEditReference) {
         const referenceMessage = toOpenAIImageEditReferenceMessage(
           selectedImageEditReference,

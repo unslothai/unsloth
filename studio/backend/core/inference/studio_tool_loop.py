@@ -67,7 +67,7 @@ from core.inference.tool_call_parser import (
 from core.inference.mcp_images import append_image_turn as append_mcp_image_turn
 
 
-def _append_mcp_images_owned(conversation, results, owned):
+def _append_mcp_images_owned(conversation, results, owned, lead = None):
     """append_image_turn with the loop's own part list, for asyncio.to_thread.
 
     Reserving here and not on the GGUF loop: this one talks to a remote provider that
@@ -81,6 +81,7 @@ def _append_mcp_images_owned(conversation, results, owned):
         per_result = True,
         owned = owned,
         reserve_caller_images = True,
+        **({"lead": lead} if lead else {}),
     )
 
 
@@ -1920,9 +1921,19 @@ async def stream_with_studio_tools(
             "\n\n".join(dict.fromkeys(message["content"] for message in noop_messages)),
         )
         if turn_mcp_images and run.supports_vision:
+            # One block after the whole batch. With a single result "the tool call
+            # above" is exact; with several it names whichever ran last, which may
+            # have returned no picture at all, so the block says so instead.
+            from core.inference.mcp_images import DETACHED_IMAGE_TURN_TEXT
+
+            _lead = DETACHED_IMAGE_TURN_TEXT if len(tool_messages) != 1 else None
             # Off the event loop: each image is decoded and re-encoded.
             await asyncio.to_thread(
-                _append_mcp_images_owned, conversation, turn_mcp_images, loop_mcp_image_parts
+                _append_mcp_images_owned,
+                conversation,
+                turn_mcp_images,
+                loop_mcp_image_parts,
+                _lead,
             )
 
         if turn_executed_real_tool:

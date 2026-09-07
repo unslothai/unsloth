@@ -151,3 +151,18 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
   }
   return out;
 }
+
+// For a target known not to read images. The backend strips these envelopes without
+// sending a pixel, so leaving them on the wire re-uploaded up to 12 million characters
+// of base64 on every text turn after a switch to a text-only model. The stored
+// history keeps them, for a later switch back.
+export function stripMcpImageEnvelopes<T extends EnvelopeCarrier>(
+  messages: readonly T[],
+): T[] {
+  return messages.map((message) => {
+    if (!message || message.role !== "tool") return message;
+    if (typeof message.content !== "string") return message;
+    const { text, images } = splitMcpImages(message.content);
+    return images.length === 0 ? message : { ...message, content: text };
+  });
+}

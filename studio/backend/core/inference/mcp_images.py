@@ -27,6 +27,13 @@ DETACHED_IMAGE_TURN_TEXT = "Images returned by earlier tool calls in this conver
 
 MAX_MODEL_IMAGES = 4
 MAX_TOTAL_MODEL_IMAGES = 8
+# The local marker paths (safetensors, MLX). The route refuses a caller message
+# carrying more than one image on every non-GGUF target -- "This model takes one
+# image per message" -- because no processor is known to take several and some fail
+# on it. Promotion must not build the very shape the route refuses: a placeholder
+# turn is one message, so it carries one picture. GGUF replays image_url parts and
+# is not bound by this.
+LOCAL_MAX_IMAGES_PER_TURN = 1
 # Candidates carried past the cap when choosing what to decode, because which
 # entries a decoder accepts is not known until it has tried. Mirrors
 # DECODE_FAILURE_ALLOWANCE in studio/frontend/src/features/chat/api/mcp-images.ts.
@@ -225,7 +232,14 @@ def content_parts_per_result(results: Sequence[Sequence[dict]]) -> list[dict]:
 
 
 def png_payloads_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
-    return [url.split(",", 1)[1] for url in _decoded_urls_per_result(results)]
+    """For the local marker paths: at most LOCAL_MAX_IMAGES_PER_TURN pictures, taken
+    from the NEWEST result that decodes, since a batch lands as one turn and a
+    non-GGUF message takes one image."""
+    for images in reversed(list(results)):
+        urls = _decoded_urls(images, LOCAL_MAX_IMAGES_PER_TURN)
+        if urls:
+            return [url.split(",", 1)[1] for url in urls]
+    return []
 
 
 def flattened_rgb(image):
@@ -986,6 +1000,10 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
             # envelope is not one an MCP server served.
             name = message.get("name") or call_names.get(position)
             if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
+                # A non-MCP result sitting between the images and their turn makes
+                # "the tool call above" name web_search or read_file.
+                if pending:
+                    interrupted[0] = True
                 out.append(
                     {**message, "content": text or "[image returned]"} if images else message
                 )

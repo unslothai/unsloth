@@ -654,7 +654,9 @@ def test_the_local_replay_keeps_markers_and_payloads_in_step_across_results():
 
     messages, payloads = mcp_images.promote_history_local(history, vision = True)
 
-    assert len(payloads) == 2 * MAX_MODEL_IMAGES
+    # Both results flush as one batch, and a local placeholder turn is one message,
+    # which on a non-GGUF model takes one picture. Parity is the invariant.
+    assert len(payloads) == mcp_images.LOCAL_MAX_IMAGES_PER_TURN
     assert mcp_images.count_image_parts(messages, "image") == len(payloads)
 
 
@@ -1703,3 +1705,71 @@ def test_a_detached_image_turn_is_synthetic_too():
     assert isinstance(topped[2]["content"], list), topped
     assert any(part.get("type") == "image" for part in topped[2]["content"])
     assert isinstance(topped[0]["content"], str), "the first question gained no marker"
+
+
+def test_a_local_placeholder_turn_carries_one_picture():
+    """The route refuses a caller message with more than one image on every non-GGUF
+    target -- "This model takes one image per message" -- and no processor is known
+    to take several. Promotion was building exactly that shape, so a processor with
+    the limit failed mid-generation after the tool had already run."""
+    results = [[_image() for _ in range(4)], [_image() for _ in range(4)]]
+
+    payloads = mcp_images.png_payloads_per_result(results)
+    assert len(payloads) == mcp_images.LOCAL_MAX_IMAGES_PER_TURN == 1
+
+    out, replay = promote_history_local_for_test(
+        [{"role": "tool", "name": "mcp__s__shot", "content": _envelope("[4 images returned]", *results[0])}]
+    )
+    assert len(replay) == 1
+    turn = next(m for m in out if isinstance(m.get("content"), list))
+    assert sum(1 for p in turn["content"] if p.get("type") == "image") == 1
+    note = next(p["text"] for p in turn["content"] if p.get("type") == "text")
+    assert "(1 of 4)" in note, note
+
+
+def promote_history_local_for_test(messages):
+    return mcp_images.promote_history_local(messages, vision = True)
+
+
+def test_a_named_non_mcp_result_between_the_images_and_their_turn_detaches_the_note():
+    """The early continue for a named non-MCP result skipped the interruption flag, so
+    the block landed after web_search or read_file still saying 'the tool call above'."""
+    history = [
+        {"role": "tool", "name": "mcp__s__shot", "content": _envelope("[1]", _image())},
+        {"role": "tool", "name": "web_search", "content": "three results"},
+        {"role": "assistant", "content": "done"},
+    ]
+
+    out = promote_history(history, vision = True)
+
+    note = next(
+        part["text"]
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "text" and part["text"].startswith("Images returned by")
+    )
+    assert note.startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT), note
+
+
+def test_the_external_loop_detaches_the_note_for_a_multi_result_batch():
+    import inspect
+
+    from core.inference import studio_tool_loop
+
+    body = inspect.getsource(studio_tool_loop)
+    assert "_lead = DETACHED_IMAGE_TURN_TEXT if len(tool_messages) != 1 else None" in body
+
+    conversation: list = []
+    owned: list = []
+    studio_tool_loop._append_mcp_images_owned(
+        conversation, [[_image()]], owned, mcp_images.DETACHED_IMAGE_TURN_TEXT
+    )
+    note = next(
+        part["text"]
+        for message in conversation
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "text"
+    )
+    assert note.startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT)
