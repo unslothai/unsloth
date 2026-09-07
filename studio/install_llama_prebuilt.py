@@ -1572,14 +1572,9 @@ def parse_approved_release_checksums(
     )
 
 
-def load_approved_release_checksums(repo: str, release_tag: str) -> ApprovedReleaseChecksums:
-    try:
-        release = github_release(repo, release_tag)
-    except Exception as exc:
-        raise PrebuiltFallback(
-            f"approved prebuilt release {repo}@{release_tag} was not available"
-        ) from exc
-    assets = release_asset_map(release)
+def load_approved_release_checksums(
+    repo: str, release_tag: str, assets: dict[str, str]
+) -> ApprovedReleaseChecksums:
     checksum_url = assets.get(DEFAULT_PUBLISHED_SHA256_ASSET)
     if not checksum_url:
         raise PrebuiltFallback(
@@ -1966,7 +1961,7 @@ def _validate_checksums_against_bundle(
 def validated_checksums_for_bundle(
     repo: str, bundle: PublishedReleaseBundle
 ) -> ApprovedReleaseChecksums:
-    checksums = load_approved_release_checksums(repo, bundle.release_tag)
+    checksums = load_approved_release_checksums(repo, bundle.release_tag, bundle.assets)
     return _validate_checksums_against_bundle(repo, bundle, checksums)
 
 
