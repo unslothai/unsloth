@@ -1554,6 +1554,7 @@ def _prepare_environment(
     monkeypatch.setattr(windows_lpac, "_validate_workdir", lambda path: str(work))
     monkeypatch.setattr(windows_lpac, "_canonical_inner_argv", lambda argv, env: tuple(argv))
     monkeypatch.setattr(windows_lpac, "_process_identity", lambda pid = None: (os.getpid(), 5))
+
     def grant(path, sid):
         granted.append((path, sid.value))
         if sid.value == _USER_SID_VALUE:
@@ -2535,7 +2536,10 @@ def test_failed_claim_retirement_keeps_the_record_for_retry(tmp_path, monkeypatc
     assert any("manifest write failed" in error for error in first.cleanup_diagnostics)
     assert not identity.cleaned
     assert str(host.work) in identity.user_sid_roots
-    assert str(host.work) in token_launcher._parse_manifest(Path(identity.manifest_path))["user_sid_roots"]
+    assert (
+        str(host.work)
+        in token_launcher._parse_manifest(Path(identity.manifest_path))["user_sid_roots"]
+    )
     second.cleanup()
     assert (str(host.work), _USER_SID_VALUE) not in host.revoked
     monkeypatch.setattr(token_launcher, "_write_manifest", write)

@@ -698,7 +698,9 @@ def test_linux_runtime_beneath_tmp_is_mounted_after_private_tmpfs(monkeypatch, t
 
 
 @pytest.mark.parametrize("is_directory", [True, False])
-def test_tmp_runtime_nested_masks_follow_the_final_runtime_bind(monkeypatch, tmp_path, is_directory):
+def test_tmp_runtime_nested_masks_follow_the_final_runtime_bind(
+    monkeypatch, tmp_path, is_directory
+):
     runtime = "/tmp/studio-venv"
     nested = runtime + "/host-mount"
     mount = os_sandbox._LinuxMount("2", "1", "0:2", "/", nested, "rw", "tmpfs", "tmpfs", "rw")
@@ -709,6 +711,7 @@ def test_tmp_runtime_nested_masks_follow_the_final_runtime_bind(monkeypatch, tmp
     monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
     monkeypatch.setattr(os_sandbox, "_nested_exposed_mounts", lambda *a: [mount])
     real_stat = os.stat
+
     def mount_stat(path, *args, **kwargs):
         if os.fspath(path) == nested:
             return SimpleNamespace(st_mode = stat.S_IFDIR if is_directory else stat.S_IFREG)
@@ -728,7 +731,9 @@ def test_tmp_runtime_nested_masks_follow_the_final_runtime_bind(monkeypatch, tmp
             assert argv[mask - 1] == "--tmpfs"
         else:
             assert argv[mask - 2] == "--ro-bind"
-        private_tmp = next(i for i in range(len(argv) - 1) if argv[i:i + 2] == ("--tmpfs", "/tmp"))
+        private_tmp = next(
+            i for i in range(len(argv) - 1) if argv[i : i + 2] == ("--tmpfs", "/tmp")
+        )
         assert private_tmp < bind < mask
     finally:
         prepared.cleanup()
@@ -742,13 +747,23 @@ def test_wsl_probe_accepts_only_empty_private_masks(monkeypatch, tmp_path, host_
         (masked / "host-secret").write_text("must stay hidden", encoding = "utf-8")
     monkeypatch.setattr(os_sandbox, "_WSL_HIDDEN_PATHS", (str(masked),))
     payload = os_sandbox._probe_payload(
-        str(tmp_path), "unused", "unused", os.getpid(), None,
-        ("127.0.0.1", 1), None, ("127.0.0.1", 1), {}, (),
+        str(tmp_path),
+        "unused",
+        "unused",
+        os.getpid(),
+        None,
+        ("127.0.0.1", 1),
+        None,
+        ("127.0.0.1", 1),
+        {},
+        (),
     )
     # Execute the generated probe's actual mask check, not a profile-text assertion.
     check = next(
-        node for node in ast.parse(payload).body
-        if isinstance(node, ast.For) and isinstance(node.target, ast.Name)
+        node
+        for node in ast.parse(payload).body
+        if isinstance(node, ast.For)
+        and isinstance(node.target, ast.Name)
         and node.target.id == "masked"
     )
     code = compile(ast.Module(body = [check], type_ignores = []), "<mask-probe>", "exec")
@@ -2211,12 +2226,24 @@ print('NESTED_RUNTIME_ISOLATED_PRIVATE_IPC_OK')
 '''
     completed = subprocess.run(
         [
-            "/usr/bin/unshare", "--user", "--map-root-user", "--mount",
-            "--propagation", "private", "--fork", sys.executable, "-c", code,
-            str(Path(os_sandbox.__file__).resolve().parents[2]), find_digest,
+            "/usr/bin/unshare",
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "--propagation",
+            "private",
+            "--fork",
+            sys.executable,
+            "-c",
+            code,
+            str(Path(os_sandbox.__file__).resolve().parents[2]),
+            find_digest,
             os_sandbox._LINUX_BACKEND._bwrap,
         ],
-        capture_output = True, text = True, timeout = 180, close_fds = True,
+        capture_output = True,
+        text = True,
+        timeout = 180,
+        close_fds = True,
     )
     _assert_native_ok(completed)
     assert "NESTED_RUNTIME_ISOLATED_PRIVATE_IPC_OK" in completed.stdout

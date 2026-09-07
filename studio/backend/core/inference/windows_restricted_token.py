@@ -744,7 +744,8 @@ class _LaunchIdentity:
                                 # the temporary account ACE behind forever.
                                 previous_roots = self.user_sid_roots
                                 self.user_sid_roots = tuple(
-                                    root for root in previous_roots
+                                    root
+                                    for root in previous_roots
                                     if os.path.normcase(root) != os.path.normcase(path)
                                 )
                                 try:
@@ -1130,7 +1131,11 @@ def _root_acl_edit(path: str, *, destructive: bool = False) -> Iterator[None]:
 
 
 def _user_sid_root_is_claimed(
-    root: str, exclude_manifest: str, *, user_sid: str = "", include_stale: bool = False
+    root: str,
+    exclude_manifest: str,
+    *,
+    user_sid: str = "",
+    include_stale: bool = False,
 ) -> bool:
     """Whether another launch records a managed user-SID grant on ``root``.
 

@@ -170,7 +170,8 @@ def test_windows_shell_note_and_allowlist_note_compose(monkeypatch, fresh_bash):
     monkeypatch.setattr(tools_module.sys, "platform", "win32")
     monkeypatch.setattr(tools_module, "_windows_bash", lambda: r"C:\\Git\\bin\\bash.exe")
     monkeypatch.setattr(
-        os_sandbox, "_platform_backend",
+        os_sandbox,
+        "_platform_backend",
         lambda: SimpleNamespace(requires_fresh_qualification = fresh_bash),
     )
     bash_terminal = {
@@ -184,7 +185,9 @@ def test_windows_shell_note_and_allowlist_note_compose(monkeypatch, fresh_bash):
         [bash_terminal, tools_module.PYTHON_TOOL], network_allowlist = ["pypi.org"]
     )
     terminal = out[0]["function"]["description"]
-    expected_shell = "The shell is bash (Git for Windows)." if fresh_bash else "The shell is cmd, not bash"
+    expected_shell = (
+        "The shell is bash (Git for Windows)." if fresh_bash else "The shell is cmd, not bash"
+    )
     assert expected_shell in terminal
     assert ("The shell is cmd, not bash" in terminal) is not fresh_bash
     assert "admits only these hosts: pypi.org" in terminal
