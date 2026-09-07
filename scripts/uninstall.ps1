@@ -61,15 +61,9 @@ Environment:
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         if (-not (Test-Path -LiteralPath $Path)) { return }
-        # Escalating backoff rather than a flat 700ms x4. That old ~2.1s budget was
-        # shorter than the teardown of a Studio that had actually been used: torch
-        # inductor's compile workers keep handles on the .py files they wrote under
-        # <root>\TORCHINDUCTOR_CACHE_DIR for several seconds after the server is
-        # stopped. Those are plain data handles on files the worker did not load as a
-        # module, so neither the ExecutablePath pass nor the loaded-module pass in
-        # _StopProcessesLockingRoots can find a process to kill -- waiting is the only
-        # move. Giving up at 2.1s left the entire install tree, studio.db included, on
-        # disk while the summary told the user to go delete it by hand.
+        # Escalating backoff rather than a flat 700ms x4: torch inductor's compile workers keep
+        # plain data handles on files under TORCHINDUCTOR_CACHE_DIR for seconds after the server
+        # stops, and neither pass in _StopProcessesLockingRoots can attribute those to a process.
         $delays = @(250, 500, 1000, 2000, 4000, 4000, 4000, 4000)
         for ($attempt = 0; $attempt -le $delays.Count; $attempt++) {
             $lastTry = ($attempt -eq $delays.Count)
@@ -120,12 +114,8 @@ Environment:
         # Anchor a relative reparse-point target to the link's own parent, or Join-Path
         # resolves it from the uninstaller's working directory and the db test reads false.
         #
-        # Split-Path -LiteralPath takes no -Parent, here or anywhere else in this script.
-        # Windows PowerShell 5.1 puts -LiteralPath in its own parameter set, which carries
-        # only -Resolve and -Credential; -Parent belongs to the -Path set, so the two
-        # together are an unresolvable parameter set and the call throws. -LiteralPath on
-        # its own already splits off the parent, and it is the spelling we want: -Path
-        # globs, so a home containing [ ] would be read as a wildcard.
+        # Split-Path -LiteralPath takes no -Parent: 5.1 puts them in different parameter sets and
+        # the call throws. -LiteralPath alone already splits off the parent, and -Path globs.
         $resolveTarget = {
             param($Item, $Fallback)
             if (-not $Item -or -not $Item.Target) { return $Fallback }
@@ -406,20 +396,10 @@ Environment:
     # machines whose Application Control policy denies the generated console script. An
     # install whose .exe was removed by that policy's quarantine still owns its root.
     #
-    # Plus the venv shapes older installers left, because that list alone strands them.
-    # On Windows share\studio.conf is never written -- only install.sh writes it -- so the
-    # three that actually decide a Windows root all postdate the bin\ shim dir. An install
-    # from before it has no bin\ at all: the venv lived at <root>\.venv (install.ps1 still
-    # migrates exactly that, at "found legacy Unsloth environment"), and the venv's Scripts
-    # dir, not a shim dir, was what went on PATH. Older still, .unsloth-studio-owned did not
-    # exist, so neither venv layout carries it. Every one of those is a real install the
-    # ownership gate would refuse, leaving the user's tree and studio.db on disk with a
-    # message calling their own install a non-Unsloth path.
-    #
-    # So also accept the marker inside the legacy venv dir, and either venv dir carrying
-    # Scripts\unsloth.exe -- the console script pip generates for the unsloth distribution.
-    # Both are things Unsloth put there, which is the property the gate is actually testing;
-    # a bare .venv or a hand-made "studio" directory still has neither.
+    # Plus the venv shapes older installers left, or the gate strands them. On Windows
+    # share\studio.conf is never written, so the three sentinels that decide a Windows root all
+    # postdate the bin\ shim dir, while install.ps1 still migrates <root>\.venv. So also accept
+    # the marker inside the legacy venv dir, and either venv dir carrying Scripts\unsloth.exe.
     function _IsStudioRoot {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -895,14 +875,8 @@ Environment:
         }
     }
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present). Gated on the
-    # same ownership sentinels as a custom root above: this is a recursive delete of a path the
-    # user never named, and "studio" under ~/.unsloth is an ordinary thing for someone to create
-    # by hand (notes, a checkout, a scratch dir) on a machine where Unsloth was only ever
-    # installed in env mode. Without the gate a bare run -- the documented irm | iex, no
-    # UNSLOTH_STUDIO_HOME set -- takes that directory and then ~/.unsloth with it via the
-    # empty-dir prune below, having removed nothing of ours. Refusing leaves an interrupted
-    # install that lost all four sentinels on disk, which is the failure direction that does not
-    # destroy data, and it says so rather than doing it silently.
+    # same ownership sentinels as a custom root: "studio" under ~/.unsloth is an ordinary thing to
+    # create by hand, and an ungated bare run takes it and then ~/.unsloth with the prune below.
     if ($defaultStudioHome -and (Test-Path -LiteralPath $defaultStudioHome) -and
         -not (_IsStudioRoot $defaultStudioHome)) {
         _Substep "refusing to remove non-Unsloth path: $defaultStudioHome" "Yellow"

@@ -2,18 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # The ownership gate on ~/.unsloth/studio must still recognise the layouts older installers left.
-#
-# The gate exists so a bare `irm | iex` never recursively deletes a "studio" directory the user
-# made by hand. But on Windows share\studio.conf is never written -- only install.sh writes it --
-# so the sentinels that actually decide a Windows root (bin\unsloth.exe, bin\unsloth.cmd,
-# unsloth_studio\.unsloth-studio-owned) all postdate the bin\ shim dir and the unsloth_studio
-# rename. An install from before them is a real install with a real studio.db, and refusing it
-# leaves the whole tree on disk while telling the user their own install is "not an Unsloth path".
-# install.ps1 still migrates <root>\.venv at "found legacy Unsloth environment", so that layout is
-# not hypothetical.
-#
-# The uninstaller body kills processes and writes to the registry, so it cannot be executed here;
-# the helpers are lifted out by AST and exercised on their own.
+# On Windows share\studio.conf is never written, so the sentinels that decide a Windows root all
+# postdate the bin\ shim dir, while install.ps1 still migrates <root>\.venv. The uninstaller body
+# writes to the registry, so the helpers are lifted out by AST and exercised on their own.
 #
 # Run: pwsh -NoProfile -File tests/studio/test_uninstall_legacy_layout_gate.ps1
 
@@ -31,8 +22,8 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($ps1Path, [ref]$tokens, [ref]$errors)
 Check "uninstall.ps1 parses" ($null -eq $errors -or $errors.Count -eq 0)
 
-# _IsStudioRoot calls _IsUnslothCmdShim, so both have to come across. A silently empty
-# extraction is what makes a suite like this vacuous.
+# _IsStudioRoot calls _IsUnslothCmdShim, so both have to come across: an empty extraction
+# would make this suite vacuous.
 $allFns = $ast.FindAll({
         param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst]
     }, $true)
@@ -68,7 +59,6 @@ try {
         return $root
     }
 
-    # ── Owned: current layouts ──
     Check "current layout (venv owner marker)" `
         (_IsStudioRoot (Make "cur-marker" @("unsloth_studio\.unsloth-studio-owned")))
     Check "shim .exe" `
@@ -76,7 +66,6 @@ try {
     Check "shim .cmd alone, when a policy quarantined the .exe" `
         (_IsStudioRoot (Make "cur-cmd" @("bin\unsloth.cmd")))
 
-    # ── Owned: layouts older installers left ──
     Check "legacy .venv carrying our owner marker" `
         (_IsStudioRoot (Make "old-marker" @(".venv\.unsloth-studio-owned", ".venv\Scripts\python.exe")))
     Check "legacy .venv carrying the unsloth console script" `
@@ -84,7 +73,6 @@ try {
     Check "pre-marker unsloth_studio venv carrying the unsloth console script" `
         (_IsStudioRoot (Make "pre-marker" @("unsloth_studio\Scripts\python.exe", "unsloth_studio\Scripts\unsloth.exe")))
 
-    # ── Not ours: the whole reason the gate exists ──
     Check "a hand-made directory is refused" `
         (-not (_IsStudioRoot (Make "scratch" @("notes.md"))))
     Check "an ordinary project venv is refused" `

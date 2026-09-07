@@ -4,10 +4,7 @@
 # Unit test for install.ps1's New-UnslothTorchOverridesFile, the Windows twin of install.sh's
 # _build_unsloth_torch_overrides. It folds a caller's UV_OVERRIDE file into the frozen torch-trio
 # pins without corrupting it: non-ASCII lines must survive, and every relative reference must come
-# across REBASED, since uv resolves them against the file that contains them and the merge does not
-# live in that directory. It used to try to, by writing beside the caller's override when there was
-# exactly one -- but the native ARM64 path normally has two override files, so that fell through to
-# %TEMP% and the references pointed at nothing.
+# across REBASED, since uv resolves them against the file that contains them.
 # Run: pwsh -NoProfile -File tests/studio/test_torch_overrides_merge.ps1
 
 $ErrorActionPreference = "Stop"
@@ -127,8 +124,7 @@ try {
     # Get-Content decodes a BOM-less file with the ANSI code page on PS 5.1, which is where the
     # mojibake came from. pwsh on Linux defaults to UTF-8, so the round trip cannot fail here
     # even unfixed; the assertion holding the fix in place is the one on the reader.
-    # The reading moved into Get-WoaRequirementEntries, so that is where the encoding rule now
-    # lives. The behavioural non-ASCII check above is the one that actually holds it in place.
+    # The reading moved into Get-WoaRequirementEntries; the non-ASCII check above holds it.
     $scanSrc = ($ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $n.Name -eq "Get-WoaRequirementEntries"

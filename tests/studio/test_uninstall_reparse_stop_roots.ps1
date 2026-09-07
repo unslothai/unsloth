@@ -45,22 +45,14 @@ $ps1Text = Get-Content -LiteralPath $ps1Path -Raw
 Check "the stop scan is given the managed paths under the target" `
     ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$knownRoots\)\)')
 
-# Both reparse kinds, because the helper reads nothing but .Target and both supply one.
-# A directory SYMLINK needs elevation or Developer Mode; a JUNCTION never does. Creating only
-# symlinks made this file unrunnable unprivileged -- New-Item threw
-# NewItemSymbolicLinkElevationRequired before a single subtree check ran -- so the junction row
-# is the one that always executes, and CI, whose Windows runner is an administrator, still
-# covers both. A junction is the shape a Windows user is likelier to have anyway: mklink /J
-# needs no privilege, so it is what gets reached for when moving a studio home onto another
-# volume.
-# $IsWindows only exists on PowerShell 6+; on Windows PowerShell 5.1 it is $null, and 5.1
-# runs nowhere else.
+# Both reparse kinds, because the helper reads nothing but .Target. A directory SYMLINK needs
+# elevation or Developer Mode and a JUNCTION never does, so the junction row is the one that
+# always executes, and CI, whose Windows runner is an administrator, still covers both.
+# $IsWindows only exists on PowerShell 6+; on 5.1 it is $null, and 5.1 runs nowhere else.
 $onWindows = if ($null -ne $IsWindows) { $IsWindows } else { $true }
 
-# A junction is a Windows-only reparse type. New-Item -ItemType Junction does NOT throw on
-# Linux pwsh -- it quietly produces a plain directory with no .Target -- so asking for one
-# there yields a row that fails every positive assertion while looking like it ran. The
-# kinds are chosen by platform rather than by catching a failure that never comes.
+# New-Item -ItemType Junction does NOT throw on Linux pwsh: it quietly produces a plain directory
+# with no .Target, so the kinds are chosen by platform rather than by catching a failure.
 $kinds = if ($onWindows) { @("Junction", "SymbolicLink") } else { @("SymbolicLink") }
 
 $ran = 0
@@ -73,14 +65,12 @@ foreach ($kind in $kinds) {
         $link = Join-Path $tmp "studio-home"
         try { New-Item -ItemType $kind -Path $link -Target $target -ErrorAction Stop | Out-Null }
         catch {
-            # Not a failure: the other kind carries the assertions. Reported so a run that
-            # covered only one kind cannot be mistaken for a run that covered both.
+            # Not a failure: the other kind carries the assertions. Reported so one kind covered
+            # cannot be mistaken for both.
             Write-Host "  SKIP  $kind is not creatable here: $($_.Exception.Message)"
             continue
         }
-        # Created is not the same as usable. _ManagedPathsUnderReparseTargets reads nothing
-        # but .Target, so a link without one cannot exercise anything, and treating that as a
-        # failure would blame the helper for the filesystem's answer.
+        # Created is not the same as usable: a link with no .Target cannot exercise anything.
         $made = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
         if (-not $made -or [string]::IsNullOrWhiteSpace(@($made.Target)[0])) {
             Write-Host "  SKIP  $kind produced no reparse target here"
@@ -116,7 +106,7 @@ foreach ($kind in $kinds) {
 }
 
 # An environment that can make neither kind would otherwise report a clean pass having
-# asserted nothing about reparse points at all.
+# asserted nothing.
 Check "at least one reparse kind was exercised" ($ran -gt 0)
 
 Write-Host ""

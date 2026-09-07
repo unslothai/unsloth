@@ -1,24 +1,10 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# _is_studio_root decides whether ~/.unsloth/studio is recursively deleted.
-#
-# It exists because the default root used to be deleted with no ownership check at all, so
-# the documented one-liner destroyed whatever happened to sit there. The first version of
-# the gate then went too far the other way: it only knew the CURRENT layout, and refused
-# genuinely old installs, leaving the user's tree and studio.db on disk while printing
-# their own install as a non-Unsloth path. Before the unsloth_studio rename the venv was
-# <root>/.venv, and before .unsloth-studio-owned neither name carried a marker, so an old
-# install can reach the gate carrying none of the original three sentinels. install.sh
-# still migrates that layout, so it is not hypothetical.
-#
-# Both directions matter and both are checked here: everything Unsloth put there must be
-# removable, and everything else must be refused. The POSIX twin of
-# tests/studio/test_uninstall_legacy_layout_gate.ps1.
-#
-# The uninstaller body kills processes and deletes trees, so it is not executed: the gate
-# is extracted with sed and run against per-test fixtures, following
-# test_uninstall_shared_icon.sh.
+# _is_studio_root decides whether ~/.unsloth/studio is recursively deleted. Both directions are
+# checked: an old install must stay removable, and a directory that is not ours must be refused.
+# The first version of the gate knew only the CURRENT layout and refused installs install.sh
+# still migrates. The uninstaller body deletes trees, so the gate is extracted with sed.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -70,8 +56,7 @@ echo "Directories that are not ours, which must stay refused:"
 # The case the gate exists for: indistinguishable from a user's own project venv.
 check "a bare project venv" foreign ".venv/bin/python"
 check "a venv merely NAMED unsloth_studio" foreign "unsloth_studio/bin/python"
-# bin/unsloth is the console script pip generates for the unsloth distribution, so the
-# check has to be that name and not "a venv with any console script in it".
+# bin/unsloth is pip's console script for the unsloth distribution, not just any console script.
 check "a venv with an unrelated console script" foreign ".venv/bin/black" ".venv/bin/python"
 check "a hand-made scratch directory" foreign "notes.txt"
 check "an empty directory" foreign
