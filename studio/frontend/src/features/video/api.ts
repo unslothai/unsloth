@@ -382,9 +382,7 @@ export async function fetchGalleryVideoThumbnail(
   );
   if (!res.ok) throw new Error(await readFastApiError(res));
   const blob = await res.blob();
-  // A 200 carrying an empty or non-image body would still mint a URL, and a card that holds one
-  // renders a broken img forever: the cache hit short-circuits every later attempt. Treat it as a
-  // failed attempt instead, so the retry ladder gets a chance at it.
+  // An empty 200 would cache a card that can never render, and the cache hit ends every retry.
   if (blob.size === 0) throw new Error("The thumbnail response was empty.");
   return { url: URL.createObjectURL(blob), bytes: blob.size };
 }
