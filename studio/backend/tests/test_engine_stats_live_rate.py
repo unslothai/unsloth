@@ -173,9 +173,11 @@ def test_a_long_prefill_is_not_attributed_to_the_tick_it_flushed_on(monkeypatch)
     spanning many polls stays flat and then arrives whole: 130k tokens on one tick
     reads as 13,000 tok/s against a real 200. The seconds counter is flushed by the
     same call, so the pair is the prefill's own rate."""
-    snaps = [_busy(prompt = 0.0)] + [_busy() for _ in range(64)] + [
-        _busy(prompt = 130000.0, prompt_s = 650.0)
-    ]
+    snaps = (
+        [_busy(prompt = 0.0)]
+        + [_busy() for _ in range(64)]
+        + [_busy(prompt = 130000.0, prompt_s = 650.0)]
+    )
     stats = _drive(snaps, monkeypatch)
 
     assert max(s["prompt_tok_s"] for s in stats) == 200.0
