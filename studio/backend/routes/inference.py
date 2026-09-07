@@ -18633,34 +18633,22 @@ def _reject_unsupported_content_parts(payload) -> None:
                     "messages",
                     f"Message content parts of type '{part.type}' are not supported.",
                 )
+    _reject_misplaced_audio_parts(payload)
 
 
-def _messages_have_input_audio(messages) -> bool:
-    return any(
-        isinstance(getattr(msg, "content", None), list)
-        and any(isinstance(part, InputAudioContentPart) for part in msg.content)
-        for msg in messages
-    )
+def _reject_misplaced_audio_parts(payload) -> None:
+    """Refuse a recording the single ``audio_base64`` field cannot carry faithfully.
 
-
-def _normalise_chat_content_parts(payload) -> None:
-    """Lift the request's ``input_audio`` part onto ``audio_base64``, in place.
-
-    Everything that makes audio safe to serve reads that field: the capability check that keeps
-    a text-only target from being loaded for it, the size bound, the decoder, the duration limit,
-    and /chat/count_tokens' refusal. So the part is lifted rather than left standing -- a part the
-    field never sees is a recording none of those checks can act on.
-
-    The field holds one recording and ``_inject_audio_part`` appends it to the last user message,
-    so it cannot express which turn a recording was authored on. A request whose audio sits on an
-    earlier turn is therefore refused rather than replayed on the latest one: moving it changes
-    what the model is asked about, and answering a different question than the caller sent is
-    worse than declining. Two recordings are refused for the same reason. Carrying several with
-    their turn association intact needs the field to become a list, which is a larger change than
-    this. An explicit ``audio_base64`` still wins over a part.
+    Placement is decided here rather than in the lift because the lift runs behind routing --
+    the preview route reaches it only after taking the preview lock and loading a checkpoint,
+    so a request that was always going to 400 would evict the resident model first.
     """
-    # Only a user turn can carry a recording into the model, and the strip below clears the part
-    # from every role. Say so rather than deleting an assistant-history clip in silence.
+    last_user = None
+    for index, msg in enumerate(payload.messages):
+        if msg.role == "user":
+            last_user = index
+    # Only a user turn can carry a recording into the model, and the lift clears the part from
+    # every role. Say so rather than deleting an assistant-history clip in silence.
     for msg in payload.messages:
         if msg.role == "user" or not isinstance(msg.content, list):
             continue
@@ -18669,10 +18657,6 @@ def _normalise_chat_content_parts(payload) -> None:
                 "messages",
                 f"Audio input is supported on a user message, not on a '{msg.role}' one.",
             )
-    last_user = None
-    for index, msg in enumerate(payload.messages):
-        if msg.role == "user":
-            last_user = index
     parts = [
         (index, part)
         for index, msg in enumerate(payload.messages)
@@ -18692,11 +18676,39 @@ def _normalise_chat_content_parts(payload) -> None:
             "Audio input is supported on the latest user message, and this one carries it on an "
             "earlier turn. Re-send the recording on the current turn.",
         )
-    lifted = parts[0][1].input_audio.data if parts else None
+
+
+def _messages_have_input_audio(messages) -> bool:
+    return any(
+        isinstance(getattr(msg, "content", None), list)
+        and any(isinstance(part, InputAudioContentPart) for part in msg.content)
+        for msg in messages
+    )
+
+
+def _normalise_chat_content_parts(payload) -> None:
+    """Lift the request's ``input_audio`` part onto ``audio_base64``, in place.
+
+    Everything that makes audio safe to serve reads that field: the capability check that keeps
+    a text-only target from being loaded for it, the size bound, the decoder, the duration limit,
+    and /chat/count_tokens' refusal. So the part is lifted rather than left standing -- a part the
+    field never sees is a recording none of those checks can act on.
+
+    ``_reject_misplaced_audio_parts`` has already refused every shape the single field cannot
+    carry faithfully, so what reaches here is one recording on the latest user turn. An explicit
+    ``audio_base64`` still wins over a part.
+    """
+    lifted = None
     for msg in payload.messages:
         if not isinstance(msg.content, list):
             continue
-        kept = [part for part in msg.content if not isinstance(part, InputAudioContentPart)]
+        kept = []
+        for part in msg.content:
+            if isinstance(part, InputAudioContentPart):
+                if msg.role == "user" and part.input_audio.data:
+                    lifted = part.input_audio.data
+                continue
+            kept.append(part)
         if len(kept) != len(msg.content):
             msg.content = kept
     if lifted and not getattr(payload, "audio_base64", None):
@@ -20900,6 +20912,17 @@ async def produce_openai_chat_completions(
                 context_length = _monitor_context_length(),
                 subject = current_subject,
             )
+
+        # A recording the resident checkpoint cannot read. The capability check that would
+        # have caught this runs only when an automatic load could have fixed it, so with
+        # auto-switch off the branch below is simply skipped and the turn is answered from
+        # its text -- a plausible reply about audio nobody listened to.
+        if payload.audio_base64 and not model_info.get("has_audio_input"):
+            _audio_unsupported_detail = (
+                "The loaded model cannot read audio input. Load a model with audio support."
+            )
+            api_monitor.fail(monitor_id, _audio_unsupported_detail)
+            raise HTTPException(status_code = 400, detail = _audio_unsupported_detail)
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):

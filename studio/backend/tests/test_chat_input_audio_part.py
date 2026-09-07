@@ -77,7 +77,7 @@ def test_two_recordings_are_refused_rather_than_reduced_to_one():
     payload = _request(_audio_message(data = "Zmlyc3Q="), _audio_message(data = "c2Vjb25k"))
 
     with pytest.raises(HTTPException) as exc:
-        _normalise_chat_content_parts(payload)
+        _reject_unsupported_content_parts(payload)
     assert exc.value.status_code == 400
     assert "one audio recording" in str(exc.value.detail)
 
@@ -91,7 +91,7 @@ def test_an_audio_part_on_a_non_user_role_is_refused():
     payload = _request(_audio_message(role = "assistant"))
 
     with pytest.raises(HTTPException) as exc:
-        _normalise_chat_content_parts(payload)
+        _reject_unsupported_content_parts(payload)
     assert exc.value.status_code == 400
     assert "'assistant'" in str(exc.value.detail)
 
@@ -286,7 +286,7 @@ def test_a_recording_carried_on_an_earlier_turn_is_refused():
     )
 
     with pytest.raises(HTTPException) as exc:
-        _normalise_chat_content_parts(payload)
+        _reject_unsupported_content_parts(payload)
     assert exc.value.status_code == 400
     assert "latest user message" in str(exc.value.detail)
 
@@ -465,3 +465,47 @@ def test_the_preview_route_refuses_before_it_loads_a_checkpoint():
     assert exc.value.status_code == 400
     assert "'file'" in str(exc.value.detail)
     assert loads == []
+
+
+def test_the_preview_route_refuses_misplaced_audio_before_it_loads():
+    """The placement checks used to live behind routing, so preview reached them after the load.
+
+    A request that was always going to 400 would have taken the preview lock and swapped the
+    resident checkpoint on its way there.
+    """
+    import routes.preview as preview_route
+
+    payload = _request(
+        _audio_message(text = "transcribe this"),
+        {"role": "assistant", "content": "It says hello."},
+        {"role": "user", "content": [{"type": "text", "text": "who is in the background?"}]},
+    )
+    loads: list[int] = []
+    with mock.patch.object(preview_route, "_resolve_or_4xx", lambda run, cp: Path("/tmp")):
+        with mock.patch.object(
+            preview_route, "load_model_for_preview", lambda *a, **k: loads.append(1)
+        ):
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(preview_route._serve_chat("run-1", None, payload, None))
+
+    assert exc.value.status_code == 400
+    assert "latest user message" in str(exc.value.detail)
+    assert loads == []
+
+
+def test_the_text_only_checkpoint_refusal_precedes_the_branch_that_consumes_audio():
+    """A source-order guard, not an end-to-end one: reaching that branch needs the ML stack.
+
+    The transformers path consumes audio only when the checkpoint declares audio input, and the
+    capability check that would otherwise catch a text-only one runs only when an automatic load
+    could fix it. With auto-switch off the branch is skipped and the turn is answered from its
+    text alone, so the refusal has to sit in front of it. This pins that ordering; whether the
+    refusal fires for a real checkpoint is covered by the GGUF/transformers suites, not here.
+    """
+    source = Path(inference_route.__file__).read_text()
+    branch = source.index('if payload.audio_base64 and not model_info.get("has_audio_input"):')
+    consume = source.index('if payload.audio_base64 and model_info.get("has_audio_input"):')
+
+    # the refusal has to precede the consuming branch, or it never runs
+    assert branch < consume
+    assert "cannot read audio input" in source[branch:consume]
