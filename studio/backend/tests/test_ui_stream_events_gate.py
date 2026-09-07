@@ -24,7 +24,6 @@ from unittest import mock
 from core.inference.sse_control_frames import (
     ServerToolCallStripper,
     is_ui_control_sse_line,
-    ServerToolCallStripper,
     strip_server_executed_tool_call,
 )
 from routes.inference import (
