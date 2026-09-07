@@ -89,3 +89,43 @@ def test_bad_image_without_a_status_is_not_called_a_policy_block():
 
     # The same sentence WITH the status is a block, and still classified.
     assert code_integrity_block_reason(corrupt + " Error status 0xc0e90002.") is not None
+
+
+def test_a_blocked_start_is_explained_to_the_user_not_blamed_on_the_model():
+    """The classifier has to reach a user-facing message, not just a log line.
+
+    Every other branch of _classify_start_failure_text gives advice that is
+    actively wrong for a policy refusal: reinstall, free memory, install a
+    missing library. The file is present and Windows will not load it.
+    """
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    if str(backend) not in sys.path:
+        sys.path.insert(0, str(backend))
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    message = LlamaCppBackend._classify_start_failure_text(
+        output = (
+            r"C:\Users\x\.unsloth\llama.cpp\build\bin\Release\llama-common.dll is either "
+            r"not designed to run on Windows or it contains an error. Error status 0xc0e90002."
+        ),
+        gguf_path = "C:\\models\\qwen.gguf",
+        model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
+        binary = r"C:\Users\x\.unsloth\llama.cpp",
+    )
+    assert "Smart App Control" in message
+    assert "reinstalling" in message
+    # It must NOT fall through to the generic file-or-memory advice.
+    assert "out of memory" not in message.lower()
+
+    # The same refusal delivered as an exit status, with no output at all.
+    by_status = LlamaCppBackend._classify_start_failure_text(
+        output = "",
+        gguf_path = None,
+        model_identifier = None,
+        returncode = 0xC0E90002,
+        binary = r"C:\Users\x\.unsloth\llama.cpp",
+    )
+    assert "Smart App Control" in by_status

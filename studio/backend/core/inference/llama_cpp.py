@@ -440,7 +440,7 @@ from state.tool_approvals import (
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
-from utils.code_integrity import code_integrity_block_reason
+from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
 
 # The leaf module, not utils.models: importing anything from that package runs its __init__,
 # which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
@@ -16121,6 +16121,19 @@ class LlamaCppBackend:
         scrubbed for the same bytes without the heading).
         """
         lowered = (output or "").lower()
+
+        # Checked first, because it is the most specific thing that can be true
+        # and because every other branch here gives advice that is actively
+        # wrong for it. A code integrity refusal is not a bad GGUF, not memory,
+        # and not a missing library: the file is present and Windows will not
+        # load it. Reinstalling, freeing memory and running as administrator all
+        # fail, which is what users end up doing when the message does not say
+        # so. The status arrives either as the child's exit code or in its
+        # output, depending on whether the refused image was llama-server itself
+        # or one of its dependent DLLs, so both are offered.
+        blocked = code_integrity_block_reason(returncode) or code_integrity_block_reason(output)
+        if blocked is not None:
+            return code_integrity_user_message(binary or "the llama.cpp runtime", blocked)
 
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
