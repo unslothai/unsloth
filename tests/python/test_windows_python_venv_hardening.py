@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import locale
 import os
 import re
 import shlex
@@ -74,6 +73,8 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
 def test_powershell_helper_preserves_multilingual_output_under_a_non_utf8_locale(
     shell: str, monkeypatch: pytest.MonkeyPatch
 ):
+    import locale
+
     marker = "käffee 日本語 العربية 🚀"
     producer = (
         "$utf8 = [System.Text.UTF8Encoding]::new($false)\n"
