@@ -163,17 +163,13 @@ def test_built_wheel_has_no_frontend_source():
     if not wheels:
         pytest.skip("no built wheel in dist/, run `python -m build --wheel` first")
     names = zipfile.ZipFile(wheels[-1]).namelist()
-    leaked = [
-        n
-        for n in names
-        if n.startswith(("studio/frontend/public/", "studio/frontend/src/"))
-    ]
+    leaked = [n for n in names if n.startswith(("studio/frontend/public/", "studio/frontend/src/"))]
     assert not leaked, f"{wheels[-1].name} ships {len(leaked)} frontend source files"
     # The served frontend must still be there. Guarding the exclusion alone would
     # pass just as happily on a wheel with no UI in it at all.
-    assert any(n.startswith("studio/frontend/dist/") for n in names), (
-        f"{wheels[-1].name} ships no frontend/dist; the UI would 404"
-    )
+    assert any(
+        n.startswith("studio/frontend/dist/") for n in names
+    ), f"{wheels[-1].name} ships no frontend/dist; the UI would 404"
 
 
 def test_manifest_prunes_match_exclude_package_data():
@@ -191,9 +187,9 @@ def test_manifest_prunes_match_exclude_package_data():
         "studio/src-tauri/src",
     ):
         assert f"prune {path}\n" in manifest, f"MANIFEST.in must prune {path}"
-    assert "prune studio/src-tauri/icons" not in manifest, (
-        "src-tauri/icons is read from site-packages by install.sh; do not prune it"
-    )
+    assert (
+        "prune studio/src-tauri/icons" not in manifest
+    ), "src-tauri/icons is read from site-packages by install.sh; do not prune it"
 
 
 def test_backend_runtime_still_ships():
