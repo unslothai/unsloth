@@ -380,7 +380,13 @@ def check_lifetime(page, checks: Checks) -> None:
         " l.scrollTop = 8 * 40 - l.clientHeight + 20; }"
     )
     page.wait_for_timeout(300)
-    page.get_by_label("Row options 8", exact = True).click(force = True)
+    # Press the sliver the scroller leaves visible. Not click_forced: that scrolls the
+    # trigger into view first, which is the one thing this case must not do.
+    trigger = page.get_by_label("Row options 8", exact = True).bounding_box()
+    clip = page.locator("#list").bounding_box()
+    top = max(trigger["y"], clip["y"])
+    bottom = min(trigger["y"] + trigger["height"], clip["y"] + clip["height"])
+    page.mouse.click(trigger["x"] + trigger["width"] / 2, (top + bottom) / 2)
     page.wait_for_timeout(500)
     checks.record(
         "a partly visible trigger opens a menu that stays open",
