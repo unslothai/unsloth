@@ -3649,6 +3649,67 @@ class TestARebasedOptionPathKeepsItsQuoting:
         )
 
 
+class TestALocalDirectoryRequirementIsRebasedToo:
+    """The line forms the fold moved and left behind.
+
+    New-UnslothTorchOverridesFile used to write its merge beside the caller's override
+    file whenever there was exactly one, so every relative reference in it kept resolving
+    untouched. It writes to %TEMP% now and rebases each line on the way, which is the
+    better answer -- it also fixes the two-directory case, which was always broken -- but
+    only for the forms Resolve-WoaOverrideLine knows. ``-e ./pkg`` and a bare ``./pkg``
+    are both requirements pip and uv accept, and both pointed at nothing after the move.
+
+    This is not a Windows-on-ARM path: the fold runs for every Windows host that has
+    UV_OVERRIDE set, so the regression reached hosts this feature never touches.
+    """
+
+    @requires_pwsh
+    @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
+    @pytest.mark.parametrize(
+        "line, expected_suffix, why",
+        [
+            ("-e ./localproj", "ovdir/localproj", "editable, forward slashes"),
+            ("--editable ..\\sibling", "sibling", "the long spelling and a parent segment"),
+            ("./localproj", "ovdir/localproj", "a bare relative directory"),
+            (".", "ovdir", "the current directory, which is the commonest spelling of all"),
+            ("-e .[dev]", "ovdir[dev]", "extras stay outside the path"),
+            ("./localproj[dev]", "ovdir/localproj[dev]", "and on the bare form too"),
+        ],
+    )
+    def test_a_local_project_path_is_made_absolute(
+        self, install, line, expected_suffix, why, tmp_path
+    ):
+        source = INSTALL_PS1 if install else SETUP_PS1
+        base = tmp_path / "ovdir"
+        base.mkdir()
+        got = TestARebasedOptionPathKeepsItsQuoting._rebase(source, line, base.as_posix())
+        # The value, not the option token in front of it, and without any extras suffix.
+        value = got.split(None, 1)[1] if got.startswith("-") else got
+        assert os.path.isabs(re.sub(r"\[[^\]]*\]$", "", value.strip())), (
+            f"{why}: the line was left relative and now resolves against %TEMP%: {got!r}"
+        )
+        assert got.rstrip().replace(os.sep, "/").endswith(expected_suffix), f"{why}: {got!r}"
+
+    @requires_pwsh
+    @pytest.mark.parametrize("install", [True, False], ids = ["install.ps1", "setup.ps1"])
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "packaging>=20",
+            "torch==2.6.0",
+            "some-pkg",
+            "pkg ; python_version < '3.11'",
+            "-e git+https://example.test/p.git#egg=p",
+            "-e /already/absolute",
+        ],
+    )
+    def test_a_line_with_no_relative_path_is_untouched(self, install, line):
+        """A package name may not begin with a dot, which is the whole of the test above's
+        licence to rewrite one. Nothing else may move."""
+        source = INSTALL_PS1 if install else SETUP_PS1
+        assert TestARebasedOptionPathKeepsItsQuoting._rebase(source, line, "/opt/corp") == line
+
+
 class TestTheMarkerRecordsTheIndexActuallyUsed:
     """A generic pin never reached the marker, only the WoA chain did.
 

@@ -3968,6 +3968,17 @@ function Resolve-WoaOverrideLine {
         if ($rebased -match '\s') { $rebased = '"' + $rebased + '"' }
         return "$lead$opt$sep$rebased$tail"
     }
+    # -e / --editable names a path too. Extras split off first: GetFullPath would fold
+    # ".[dev]" into the parent and leave a directory nobody has.
+    if ($Line -match '^(\s*)(-e|--editable)([=\s]+)(.+?)(\s*)$') {
+        $lead = $Matches[1]; $opt = $Matches[2]; $sep = $Matches[3]
+        $bare = $Matches[4].Trim('"').Trim("'"); $tail = $Matches[5]
+        $extras = ""
+        if ($bare -match '^(.*?)(\[[^\]]*\])$') { $bare = $Matches[1]; $extras = $Matches[2] }
+        $rebased = (& $abs $bare) + $extras
+        if ($rebased -match '\s') { $rebased = '"' + $rebased + '"' }
+        return "$lead$opt$sep$rebased$tail"
+    }
     if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {
         $head = $Matches[1]; $target = $Matches[2]; $tail = $Matches[3]
         if ($target -match '^file:(?!//)(.*)$') { return "$head" + "file:" + (& $abs $Matches[1]) + "$tail" }
@@ -3976,6 +3987,14 @@ function Resolve-WoaOverrideLine {
     if ($Line -match '^(\s*)([^\s#;]+\.(?:whl|tar\.gz|zip))(\s*.*)$') {
         $lead = $Matches[1]; $path = $Matches[2]; $rest = $Matches[3]
         if ($path -match '[\\/]') { return "$lead" + (& $abs $path) + "$rest" }
+    }
+    # A bare local directory: pip and uv both take one as a requirement, and a leading dot
+    # segment is what tells it from a package name, which may not start with one.
+    if ($Line -match '^(\s*)(\.{1,2}[^\s#;]*)(\s*(?:[;#].*)?)$') {
+        $lead = $Matches[1]; $path = $Matches[2]; $rest = $Matches[3]
+        $extras = ""
+        if ($path -match '^(.*?)(\[[^\]]*\])$') { $path = $Matches[1]; $extras = $Matches[2] }
+        return "$lead" + (& $abs $path) + "$extras$rest"
     }
     return $Line
 }
