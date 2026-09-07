@@ -35,7 +35,13 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import notebook_validator as nv  # noqa: E402
 
-PIP = "torch==2.10.0\naccelerate==1.13.0\n"
+# A real pin file, not a stub: _oracle_payload_is_usable refuses a rule-bearing oracle that
+# has lost the packages R-INST-002/003/004/005 seed on, and a fixture missing them would be
+# testing the refusal rather than the drift.
+PIP = (
+    "torch==2.10.0\ntorchcodec==0.10.0\npeft==0.19.0\ntorchao==0.16.0\n"
+    "transformers==5.1.0\ntokenizers==0.23.0\naccelerate==1.13.0\n"
+)
 APT = "curl/jammy,now 7.81.0-1ubuntu1.24 amd64 [installed]\n"
 # The real os-info carries a `Python 3.x.y` line, and COLAB_STRICT_ORACLE_KEYS makes it
 # rule-bearing: `_marker_environment` reads it. A fixture without one is the very drift
@@ -76,13 +82,13 @@ def test_no_drift_is_clean(oracle):
 
 def test_pip_drift_fails_strict(oracle):
     upstream, snapshot_dir = oracle
-    upstream["pip-freeze.gpu.txt"] = "torch==2.10.0\naccelerate==1.14.0\n"
+    upstream["pip-freeze.gpu.txt"] = PIP.replace("accelerate==1.13.0", "accelerate==1.14.0")
     assert _diff(snapshot_dir, strict = True) == 1
 
 
 def test_pip_drift_is_advisory_without_strict(oracle):
     upstream, snapshot_dir = oracle
-    upstream["pip-freeze.gpu.txt"] = "torch==2.10.0\naccelerate==1.14.0\n"
+    upstream["pip-freeze.gpu.txt"] = PIP.replace("accelerate==1.13.0", "accelerate==1.14.0")
     assert _diff(snapshot_dir, strict = False) == 0
 
 
@@ -419,3 +425,66 @@ def test_a_write_failure_removes_a_file_that_was_not_there_before(oracle, tmp_pa
     rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
     assert rc == 2
     assert list(out_dir.iterdir()) == []
+
+
+# Spelled out rather than read off the module: a decorator that reaches into the code under
+# test fails COLLECTION when the symbol moves, which hides every other test in the file.
+SEED_PACKAGES = ("torch", "torchcodec", "peft", "torchao", "transformers", "tokenizers")
+
+
+def test_the_seed_list_is_the_one_the_rules_use():
+    assert set(SEED_PACKAGES) == set(nv._COLAB_PIP_REQUIRED)
+
+
+@pytest.mark.parametrize("dropped", SEED_PACKAGES)
+def test_a_pin_file_missing_a_seed_package_is_not_acknowledged(oracle, tmp_path, dropped):
+    """A truncated 200 parses fine and resolves every R-INST rule against nothing.
+
+    Accepting any payload with one readable pin let `refresh-colab --all` overwrite the
+    committed snapshot with it, and the lint that follows then returns early on every rule
+    whose seed package is gone.
+    """
+    upstream, _ = oracle
+    upstream["pip-freeze.gpu.txt"] = "\n".join(
+        line for line in PIP.splitlines() if not line.startswith(f"{dropped}==")
+    )
+    out_dir = tmp_path / f"missing_{dropped}"
+    rc = nv.cmd_refresh_colab(
+        argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
+    )
+    assert rc == 2
+    assert not out_dir.exists()
+
+
+def test_a_rollback_survives_a_filesystem_that_is_still_full(oracle, tmp_path, monkeypatch):
+    """Restoring by rewriting the bytes needs the room the failure just proved is missing.
+
+    A second raise mid-rollback left the files written before the failure fresh beside stale
+    ones, which is the mixed generation the rollback exists to prevent.
+    """
+    upstream, snapshot_dir = oracle
+    committed = {
+        name: (snapshot_dir / name).read_bytes() for name in nv.COLAB_ORACLE_FILES.values()
+    }
+    for key in upstream:
+        upstream[key] = upstream[key].replace("2.10.0", "2.11.0").replace("3.13.15", "3.14.1")
+
+    real_write = nv._atomic_write_bytes
+    calls: list[str] = []
+
+    def full_disk(path, data):
+        calls.append(path.name)
+        if len(calls) > 1:
+            raise OSError("no space left on device")  # every write from here on, rollback too
+        return real_write(path, data)
+
+    monkeypatch.setattr(nv, "_atomic_write_bytes", full_disk)
+    rc = nv.cmd_refresh_colab(
+        argparse.Namespace(all = True, snapshot_dir = str(snapshot_dir), out = None)
+    )
+    assert rc == 2
+    monkeypatch.setattr(nv, "_atomic_write_bytes", real_write)
+    for name, data in committed.items():
+        assert (snapshot_dir / name).read_bytes() == data, name
+    # No rollback scratch left behind.
+    assert not [p for p in snapshot_dir.iterdir() if p.name.endswith(".rollback")]

