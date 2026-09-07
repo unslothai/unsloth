@@ -68,29 +68,39 @@ def test_apple_silicon_with_incomplete_mlx_stack_stays_chat_only(monkeypatch):
     assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
 
 
-def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatch):
+def test_apple_silicon_no_torch_install_without_usable_mlx_is_off_by_request(monkeypatch):
     # GGUF-only by request: not a broken stack, so the UI must not send the user to
-    # `unsloth studio update`, which keeps no-torch and cannot enable Train.
+    # `unsloth studio update`, which keeps no-torch and cannot enable Train. The same
+    # verdict whether mlx is absent or present but partial: the self-heal declines both.
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
-    monkeypatch.setattr(hw, "_mlx_distribution_installed", lambda: False)
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
-    assert hw.detect_hardware() == hw.DeviceType.CPU
-    assert hw.CHAT_ONLY is True
-    assert hw.CHAT_ONLY_REASON == "no_torch"
-    assert hw.CHAT_ONLY_DETAIL is None
+    for mlx_on_disk in (False, True):
+        monkeypatch.setattr(hw, "_has_mlx", lambda v = mlx_on_disk: v)
+        assert hw.detect_hardware() == hw.DeviceType.CPU
+        assert hw.CHAT_ONLY is True
+        assert hw.CHAT_ONLY_REASON == "no_torch"
+        assert hw.CHAT_ONLY_DETAIL is None
 
 
-def test_apple_silicon_no_torch_install_with_a_broken_mlx_stays_mlx_unavailable(monkeypatch):
-    # MLX on disk but unusable is a broken stack whichever way the venv was installed, and
-    # keeping the reason keeps the post-warm overturn for a stack that only lost the import race.
-    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
-    monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
-    monkeypatch.setattr(hw, "_mlx_distribution_installed", lambda: True)
-    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
-    hw.detect_hardware()
-    assert hw.CHAT_ONLY is True
-    assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
+def test_a_no_torch_verdict_is_still_overturned_by_a_usable_stack(monkeypatch):
+    # The warm's first stage can lose the import race on a healthy hand-installed stack
+    # (#9120); the post-warm probe must be able to overturn no_torch like mlx_unavailable.
+    hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = hw.DeviceType.CPU, True, "no_torch"
+    assert hw.verdict_blames_the_mlx_stack() is True
+
+    def _usable_after_the_warm():
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = hw.DeviceType.MLX, False, None
+        return hw.DEVICE
+
+    monkeypatch.setattr(hw, "_detect_hardware_locked", _usable_after_the_warm)
+    was_complete = hw.DETECTION_COMPLETE.is_set()
+    hw.DETECTION_COMPLETE.set()
+    try:
+        assert hw.overturn_the_mlx_verdict(hw.current_detection_epoch()) is True
+    finally:
+        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
+    assert hw.CHAT_ONLY is False
 
 
 def test_apple_silicon_no_torch_install_with_usable_mlx_enables_training(monkeypatch):

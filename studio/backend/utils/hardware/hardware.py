@@ -80,8 +80,9 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 # Why CHAT_ONLY is True (Train/Export disabled). None when training is enabled.
 # "mlx_unavailable": Apple Silicon but the MLX stack is missing, too old, or broken
 # (the usual cause of "Train/Export greyed out" on Macs after a reinstall dropped MLX);
-# "no_torch": Apple Silicon installed --no-torch with no MLX on disk, GGUF-only by
-# request, so nothing is broken and `unsloth studio update` cannot change it;
+# "no_torch": Apple Silicon installed --no-torch without a usable MLX stack, GGUF-only
+# by request, so nothing is broken and `unsloth studio update` cannot change it. Still
+# overturned like "mlx_unavailable" when the post-warm probe finds the stack usable;
 # "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host;
 # "torch_cpu_build" / "torch_cuda_unavailable": the host HAS GPUs, this PyTorch cannot
 # use them -- see classify_torch_build(). Those two must not read as "no_gpu": the fix
@@ -1004,18 +1005,6 @@ def _installed_without_torch() -> bool:
         return False
 
 
-def _mlx_distribution_installed() -> bool:
-    # Absent on disk is what a --no-torch install looks like; present but unusable is a
-    # broken stack, which keeps the mlx_unavailable verdict and its overturn path.
-    try:
-        pkg_version("mlx")
-    except PackageNotFoundError:
-        return False
-    except Exception:
-        return True
-    return True
-
-
 def _recorded_install_flavor() -> "tuple[str, bool]":
     """``(expected_torch_tag, expected_torch_tag_pinned)`` from the venv's manifest.
 
@@ -1589,11 +1578,15 @@ def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
         return False
 
 
+# Both name a measured-unusable MLX stack; a usable one after the warm overturns either.
+_MLX_OVERTURNABLE_REASONS = ("mlx_unavailable", "no_torch")
+
+
 def verdict_blames_the_mlx_stack() -> bool:
     """Unlocked deliberately: _DETECT_LOCK spans a whole detection pass, imports included, so
     taking it would park the post-warm worker behind an early request's first import. The
     overturn re-reads under the lock, so a straddling read costs one needless measurement."""
-    return bool(CHAT_ONLY) and CHAT_ONLY_REASON == "mlx_unavailable"
+    return bool(CHAT_ONLY) and CHAT_ONLY_REASON in _MLX_OVERTURNABLE_REASONS
 
 
 def overturn_the_mlx_verdict(epoch: Optional[int] = None) -> bool:
@@ -1605,7 +1598,7 @@ def overturn_the_mlx_verdict(epoch: Optional[int] = None) -> bool:
     settled read, not "a re-detect ran": callers announce it, and shutdown clears DEVICE
     before the event and the verdict."""
     with _DETECT_LOCK:
-        if not CHAT_ONLY or CHAT_ONLY_REASON != "mlx_unavailable":
+        if not CHAT_ONLY or CHAT_ONLY_REASON not in _MLX_OVERTURNABLE_REASONS:
             return False
         with owning_detection_epoch(epoch):
             detect_hardware()
@@ -1885,9 +1878,10 @@ def _detect_hardware_locked() -> DeviceType:
     # CHAT_ONLY is still True here (every training-capable branch returned early),
     # so record WHY so the UI can explain the greyed-out Train/Export instead of
     # silently disabling them.
-    if is_apple_silicon() and _installed_without_torch() and not _mlx_distribution_installed():
-        # GGUF-only by request: no MLX on disk and the self-heal declines, so this is
-        # not a broken stack and `unsloth studio update` cannot change it.
+    if is_apple_silicon() and _installed_without_torch():
+        # GGUF-only by request: the self-heal declines whatever is on disk, so this is
+        # not a broken stack and `unsloth studio update` cannot change it. A stack that
+        # only lost the warm's import race is still overturned after it.
         CHAT_ONLY_REASON = "no_torch"
         _MLX_BLOCKERS_MEASURED = None
         logger.info(
