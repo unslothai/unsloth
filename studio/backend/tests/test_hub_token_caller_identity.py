@@ -312,9 +312,7 @@ def test_a_local_path_is_not_probed_against_the_hub(monkeypatch, path):
     reset_repo_access_cache()
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
     probes = []
-    monkeypatch.setattr(
-        hf_tokens, "_probe_repo_access", lambda *a, **k: probes.append(a) or True
-    )
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *a, **k: probes.append(a) or True)
 
     assert cache_reads_authorized("hf_dummy", repo_id = path) is False
     assert probes == []
@@ -334,7 +332,12 @@ def test_the_local_config_probe_stays_local_for_an_explicit_token(monkeypatch, t
     (local_dir / "config.json").write_text("{}", encoding = "utf-8")
     seen = {}
 
-    def _is_vision(target, hf_token = None, local_files_only = False, **kwargs):
+    def _is_vision(
+        target,
+        hf_token = None,
+        local_files_only = False,
+        **kwargs,
+    ):
         seen["local_files_only"] = local_files_only
         return False
 
@@ -399,9 +402,7 @@ def test_the_unreachable_hub_does_not_hand_back_the_template_the_walk_refused(mo
     assert downloads == []
 
 
-def test_an_uncached_public_template_is_still_fetched_when_paths_info_blips(
-    monkeypatch, tmp_path
-):
+def test_an_uncached_public_template_is_still_fetched_when_paths_info_blips(monkeypatch, tmp_path):
     """Fail-closed on the inconclusive lookup must not cost the ordinary public fetch.
 
     With nothing cached for the repo the fallback has nothing to hand back, so the branch

@@ -216,9 +216,7 @@ def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bo
         # credential. Read off the clock because the probe answers in bool, which is the
         # shape every caller and test stub expects.
         timed_out = not allowed and (finished - started) >= _REPO_ACCESS_PROBE_TIMEOUT_S
-        expiry = finished + (
-            _REPO_ACCESS_UNREACHABLE_TTL_S if timed_out else _REPO_ACCESS_TTL_S
-        )
+        expiry = finished + (_REPO_ACCESS_UNREACHABLE_TTL_S if timed_out else _REPO_ACCESS_TTL_S)
         with _repo_access_lock:
             if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
                 _evict_repo_access_locked()

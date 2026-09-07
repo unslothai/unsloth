@@ -2438,8 +2438,7 @@ async def get_model_config(
             # this the route would send a user's filesystem path to the Hub only to be
             # told no, and then probe a local model over the wire.
             probe_local_only = prefer_local_cache and (
-                is_local_path(model_name)
-                or cache_reads_authorized(hf_token, repo_id = model_name)
+                is_local_path(model_name) or cache_reads_authorized(hf_token, repo_id = model_name)
             )
             is_vision = is_vision_model(
                 inspection_target,
