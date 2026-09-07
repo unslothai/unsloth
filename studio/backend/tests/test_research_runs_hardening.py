@@ -369,7 +369,7 @@ def test_a_local_run_still_clamps_to_the_loaded_context(monkeypatch):
 def test_a_lowered_connection_cap_bounds_a_stale_client_ceiling(monkeypatch):
     """The run is durable, so the cap can have been lowered after the client resolved it."""
     monkeypatch.setattr(
-        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_192}
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 20_000}
     )
     inference = {
         "providerType": "gemini",
@@ -377,7 +377,7 @@ def test_a_lowered_connection_cap_bounds_a_stale_client_ceiling(monkeypatch):
         "externalModel": "gemini-3.6-flash",
         "maxOutputTokens": 65_536,
     }
-    assert _synthesis_max_tokens(inference) == 8_192
+    assert _synthesis_max_tokens(inference) == 20_000
 
 
 def test_a_client_ceiling_stands_when_the_connection_has_no_cap(monkeypatch):
@@ -392,15 +392,32 @@ def test_a_saved_cap_cannot_drop_a_connection_below_its_provider_floor(monkeypat
         research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
     )
     inference = {"providerType": "kimi", "providerId": "p1", "maxOutputTokens": 32_768}
-    assert _synthesis_max_tokens(inference) == 16_000
+    # The default floor gets there first here; the provider floor is what holds a connection
+    # whose own client ceiling is below it.
+    assert _synthesis_max_tokens(inference) == 16_384
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    assert _synthesis_max_tokens({**inference, "maxOutputTokens": 4_096}) == 16_000
 
 
-def test_a_provider_without_a_floor_keeps_the_saved_cap(monkeypatch):
+def test_a_saved_cap_below_the_previous_default_does_not_shorten_the_report(monkeypatch):
+    """The cap sizes the chat slider. It may not make a report shorter than it used to be.
+
+    Before the connection ceiling was read at all, every run got _SYNTHESIS_MAX_TOKENS, this
+    one included. A user who capped a connection at 8_000 to control chat cost did not ask
+    for a shorter report than the one Deep Research has been writing them all along.
+    """
     monkeypatch.setattr(
         research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
     )
     inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 32_768}
-    assert _synthesis_max_tokens(inference) == 8_000
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_client_ceiling_below_the_default_still_lowers_the_budget(monkeypatch):
+    """That one is the model's documented limit, not a preference: asking past it is refused."""
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "openai", "providerId": "p1", "maxOutputTokens": 8_192}
+    assert _synthesis_max_tokens(inference) == 8_192
 
 
 def test_an_unreadable_cap_does_not_let_a_stale_client_ceiling_through(monkeypatch):
@@ -485,18 +502,137 @@ def test_a_ceiling_below_the_default_is_respected(monkeypatch):
     assert _synthesis_max_tokens(inference) == 8_192
 
 
+def test_the_provider_floor_table_matches_the_client_one_it_mirrors():
+    """Two copies of the same table, in two languages, with nothing tying them together.
+
+    _EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER is a hand copy of the client's table, and drift
+    would be silent: the report would ask a provider for a budget its thinking answer is cut
+    off below, which is exactly what the floor exists to prevent.
+    """
+    import re
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "src"
+        / "features"
+        / "chat"
+        / "provider-capabilities.ts"
+    ).read_text(encoding = "utf-8")
+    table = re.search(
+        r"const EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER: Record<string, number> = \{(.*?)\};",
+        source,
+        re.S,
+    )
+    assert table, "the client table was renamed; the copy in research_runs.py needs the same"
+    assert research_runs._EXTERNAL_MIN_OUTPUT_TOKENS_BY_PROVIDER == {
+        name: int(value.replace("_", ""))
+        for name, value in re.findall(r"(\w+)\s*:\s*([\d_]+)", table.group(1))
+    }
+    default = re.search(
+        r"export function getExternalMinOutputTokens\(.*?\)\s*:\s*number\s*\{.*?"
+        r"if \(!providerType\) return (\d+);",
+        source,
+        re.S,
+    )
+    assert default and research_runs._EXTERNAL_MIN_OUTPUT_TOKENS == int(default.group(1))
+
+
 def test_a_local_run_ignores_a_stray_ceiling():
     assert _synthesis_max_tokens({"maxOutputTokens": 65_536}) == research_runs._SYNTHESIS_MAX_TOKENS
 
 
-def test_a_saved_connection_cap_below_the_default_is_honoured(monkeypatch):
+def test_a_budget_the_run_cannot_stream_in_time_is_bounded_by_its_wall_clock(monkeypatch):
+    """A wall-clock stop loses the report; running out of budget only truncates it.
+
+    _stream_completion re-raises ModelWallClockTimeout without returning the text it has
+    already streamed, so a budget larger than the run's own deadline can deliver trades a
+    readable truncated report for a failed run at the last and most expensive step.
+    """
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "deepseek", "providerId": "p1", "maxOutputTokens": 384_000}
+    assert _synthesis_max_tokens(inference, 900) == 900 * research_runs._SYNTHESIS_TOKENS_PER_SECOND
+    # Never below what the run would have got anyway, however short the deadline.
+    assert _synthesis_max_tokens(inference, 60) == research_runs._SYNTHESIS_MAX_TOKENS
+    assert _synthesis_max_tokens({**inference, "maxOutputTokens": 32_768}, 120) == 16_384
+
+
+def test_a_ceiling_bounds_a_budget_even_without_a_wall_clock(monkeypatch):
+    """0 is unlimited in the budgets schema, and a documented cap can still be wrong."""
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "deepseek", "providerId": "p1", "maxOutputTokens": 384_000}
+    for unlimited in (0, None):
+        assert _synthesis_max_tokens(inference, unlimited) == (
+            research_runs._SYNTHESIS_MAX_TOKENS_CEILING
+        )
+
+
+def test_an_absurd_saved_ceiling_cannot_reach_the_provider(monkeypatch):
+    """The route accepts up to MAX_JSON_SAFE_INTEGER, and nothing downstream bounds it."""
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": 9_007_199_254_740_991},
+    )
+    inference = {
+        "providerType": "openai",
+        "providerId": "p1",
+        "maxOutputTokens": 9_007_199_254_740_991,
+    }
+    assert _synthesis_max_tokens(inference, 900) <= research_runs._SYNTHESIS_MAX_TOKENS_CEILING
+
+
+def test_the_report_budget_never_falls_below_what_a_run_used_to_get(monkeypatch):
+    """The whole no-regression rule, over the combinations that reach it."""
+    for saved in (None, 64, 8_000, 16_384, 32_768, 256_000):
+        monkeypatch.setattr(
+            research_runs.providers_db,
+            "get_provider",
+            lambda _id, cap = saved: {"max_output_tokens": cap} if cap else None,
+        )
+        for client in (None, 32_768, 65_536, 384_000):
+            inference = {"providerType": "gemini", "providerId": "p1"}
+            if client:
+                inference["maxOutputTokens"] = client
+            budget = _synthesis_max_tokens(inference, 900)
+            assert budget >= research_runs._SYNTHESIS_MAX_TOKENS, (saved, client, budget)
+            assert budget <= research_runs._SYNTHESIS_MAX_TOKENS_CEILING, (saved, client, budget)
+
+
+def test_a_cap_lowered_mid_run_bounds_the_request_that_actually_goes_out(monkeypatch):
+    """The budget is resolved once, but the loop re-sends after a queue or rate-limit wait.
+
+    Recovery and every transport retry rebuild the request minutes later, so what bounds the
+    body is the ceiling in force when it is built, not the one that was in force at the start.
+    """
+    caps = iter([65_536, 32_768])
+    monkeypatch.setattr(
+        research_runs.providers_db,
+        "get_provider",
+        lambda _id: {"max_output_tokens": next(caps, 32_768)},
+    )
+    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 65_536}
+    assert _synthesis_max_tokens(inference, 0) == 65_536
+    # The second call is the one the retry loop makes, and it sees the lowered row.
+    assert _synthesis_max_tokens(inference, 0) == 32_768
+
+
+def test_an_explicit_zero_budget_is_never_put_on_the_wire(monkeypatch):
+    """main's `max_tokens or ...` made 0 impossible; the route rejects a request for one."""
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda *a, **k: None)
+    assert _resolve_max_tokens(0, {}, [{"role": "user", "content": "x"}]) == 1
+    assert _resolve_max_tokens(-5, {}, [{"role": "user", "content": "x"}]) == 1
+
+
+def test_a_saved_connection_cap_does_not_shorten_a_legacy_run(monkeypatch):
+    """A run this old was written at the default before the cap was ever consulted."""
     monkeypatch.setattr(
         research_runs.providers_db,
         "get_provider",
         lambda _id: {"max_output_tokens": 8_192},
     )
     inference = {"providerType": "ollama", "providerId": "p1", "externalModel": "glm-5.3-flash"}
-    assert _synthesis_max_tokens(inference) == 8_192
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
 
 
 def test_a_saved_cap_above_the_default_does_not_raise_a_legacy_run(monkeypatch):

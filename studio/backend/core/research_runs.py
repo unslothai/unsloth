@@ -84,6 +84,13 @@ _MIN_QUESTION_CHARS = 800
 _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN = 3.0
 _SYNTHESIS_CONTEXT_RESERVE_TOKENS = 4_096
 _SYNTHESIS_MAX_TOKENS = 16_384
+# The most the report may ask for however large a ceiling the connection reports. The
+# documented per-model caps reach 384_000, nothing between here and the provider bounds what
+# is sent, and a request the connection refuses or cannot finish in time costs the whole run.
+_SYNTHESIS_MAX_TOKENS_CEILING = 65_536
+# Conservative sustained decode rate for a saved connection, used only to keep the report
+# budget inside the run's own wall clock. Deliberately low: overshooting here loses the run.
+_SYNTHESIS_TOKENS_PER_SECOND = 50
 # Streaming progress is persisted as a full row snapshot; these bound how often that happens.
 _CAP_UNREADABLE = object()
 _CAP_LOOKUP_ATTEMPTS = 3
@@ -424,8 +431,10 @@ def _resolve_max_tokens(
         requested = min(int(inference.get("maxTokens") or 4096), 8192)
     else:
         # No second ceiling on an explicit budget: the caller already resolved one the
-        # connection accepts, and re-capping it here is what truncated the report.
-        requested = int(max_tokens)
+        # connection accepts, and re-capping it here is what truncated the report. The floor
+        # stays, though: main's `max_tokens or ...` made a 0 impossible to send, and the
+        # route rejects a request that asks for one.
+        requested = max(1, int(max_tokens))
     # A saved connection generates on the provider's own hardware, so the resident local model
     # bounds nothing about it. main's clamp already makes that exemption -- _loaded_context_length
     # returns None for a run carrying a providerType -- so this defers to it rather than
@@ -433,13 +442,19 @@ def _resolve_max_tokens(
     return _clamp_max_tokens_for_context(requested, messages, inference = inference)
 
 
-def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
-    """The report's output budget: what the connection actually accepts, else the default.
+def _synthesis_max_tokens(inference: dict[str, Any], model_timeout_seconds: Any = None) -> int:
+    """The report's output budget: what the connection accepts, bounded, else the default.
 
-    The client resolves the same per-model ceiling the chat path already sends to this
-    connection, so the value is one the provider is known to take. Nothing is raised on a
-    guess, because a provider that rejects an over-limit max_output_tokens rather than
-    clamping it would fail the run outright.
+    The client resolves the selected model's documented output limit, or the ceiling the user
+    saved on the connection itself. That is a limit the provider publishes rather than one any
+    request has been observed to survive, so nothing here treats it as unconditionally safe:
+    `_synthesis_budget_ceiling` bounds it, and the value is never raised on a guess, because a
+    provider that rejects an over-limit max_output_tokens rather than clamping it would fail
+    the run outright at its most expensive step.
+
+    The budget never falls below `_SYNTHESIS_MAX_TOKENS`, which is what every run spent before
+    any of this existed, unless the client's own ceiling is lower -- that one is the model's
+    documented limit, so asking past it would be refused.
     """
     if not inference.get("providerType"):
         return _SYNTHESIS_MAX_TOKENS
@@ -458,20 +473,48 @@ def _synthesis_max_tokens(inference: dict[str, Any]) -> int:
         # The client resolved this against the run's own model, but the run is durable: the
         # connection's cap can have been lowered since it was created, and the saved row is
         # the current truth about what the user allows this connection to spend.
-        budget = min(resolved, saved) if saved else resolved
+        #
+        # It lowers the budget only as far as the previous default. That column caps the chat
+        # Max Tokens slider, and a user who set it to 4_096 for cost was not asking for a
+        # report shorter than the one Deep Research already wrote them at 16_384 -- a PR that
+        # exists to make reports longer must not shorten anybody's.
+        budget = min(resolved, max(saved, _SYNTHESIS_MAX_TOKENS)) if saved else resolved
     else:
         # A run created before the client sent its resolved ceiling falls back to here. The
         # saved cap belongs to the connection, not to this run's model -- one connection
         # fronts many models, and only the client has the table that bounds it by the
         # selected model's documented ceiling (claude-opus-4-1 stops at 32_000 while a
         # connection may be saved at 32_768). Without that table this side cannot raise the
-        # budget safely at all, so a legacy run keeps the default it already had; the saved
-        # cap may still lower it.
-        budget = min(saved, _SYNTHESIS_MAX_TOKENS) if saved else _SYNTHESIS_MAX_TOKENS
+        # budget safely at all, so a legacy run keeps exactly the default it already had.
+        budget = _SYNTHESIS_MAX_TOKENS
     # The chat path never hands a connection less than its provider's floor, because below it
     # a thinking answer is cut off before the report starts. A saved cap is allowed to lower
     # the budget, but not past that.
-    return max(budget, floor)
+    return max(min(budget, _synthesis_budget_ceiling(model_timeout_seconds)), floor)
+
+
+def _synthesis_budget_ceiling(model_timeout_seconds: Any = None) -> int:
+    """The most this run can usefully ask the connection for, whatever ceiling it reports.
+
+    Two bounds, neither of which may pull the budget below the previous default:
+
+    - The run's own wall clock. `_stream_completion` aborts the synthesis call at
+      `modelTimeoutSeconds` and does NOT return the report it has already streamed, while a
+      report that merely runs out of budget comes back truncated under a notice. Handing a
+      connection more tokens than it can decode inside that window therefore trades a report
+      the user can read for a failed run at the last and most expensive step.
+    - An absolute ceiling, for a run whose wall clock is unlimited and for a documented cap
+      or connection override that is simply too large: nothing between here and the provider
+      bounds what is sent, and the published caps go as high as 384_000.
+    """
+    ceiling = _SYNTHESIS_MAX_TOKENS_CEILING
+    timeout = model_timeout_seconds
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        timeout = None
+    # 0 is "unlimited" in the budgets schema, so only a positive one bounds anything.
+    if timeout and timeout > 0:
+        ceiling = min(ceiling, int(timeout * _SYNTHESIS_TOKENS_PER_SECOND))
+    return max(ceiling, _SYNTHESIS_MAX_TOKENS)
 
 
 def _provider_output_floor(provider_type: object) -> int:
@@ -1603,6 +1646,23 @@ class ResearchSupervisor:
                 attempt = 0
                 try:
                     while True:
+                        if (
+                            max_tokens is not None
+                            and inference.get("providerType")
+                            and phase in ("synthesis", "synthesis_recovery")
+                        ):
+                            # The run is durable and this loop re-sends after a queue or a
+                            # rate-limit wait, so the budget the caller resolved can be
+                            # minutes old by now. Re-read the saved cap here, where the
+                            # request is actually built: the recovery pass and every retry
+                            # are bounded by the ceiling in force when they go out, not by
+                            # the one that was in force when synthesis started.
+                            max_tokens = min(
+                                max_tokens,
+                                await asyncio.to_thread(
+                                    _synthesis_max_tokens, inference, model_timeout
+                                ),
+                            )
                         payload["max_tokens"] = _resolve_max_tokens(
                             max_tokens,
                             inference,
@@ -2661,19 +2721,53 @@ class ResearchSupervisor:
             },
         ]
         synthesis_max_tokens = await asyncio.to_thread(
-            _synthesis_max_tokens, run["config"].get("inferenceRequest") or {}
+            _synthesis_max_tokens,
+            run["config"].get("inferenceRequest") or {},
+            (run["config"].get("budgets") or {}).get("modelTimeoutSeconds"),
         )
-        (
-            report,
-            synthesis_reasoning,
-            synthesis_finish_reason,
-            synthesis_usage,
-        ) = await self._stream_completion(
-            run,
-            synthesis_messages,
-            phase = "synthesis",
-            max_tokens = synthesis_max_tokens,
-        )
+        try:
+            (
+                report,
+                synthesis_reasoning,
+                synthesis_finish_reason,
+                synthesis_usage,
+            ) = await self._stream_completion(
+                run,
+                synthesis_messages,
+                phase = "synthesis",
+                max_tokens = synthesis_max_tokens,
+            )
+        except (RunCancelled, LeaseLost, httpx.ReadTimeout):
+            raise
+        except Exception:
+            if synthesis_max_tokens <= _SYNTHESIS_MAX_TOKENS:
+                raise
+            # The raised budget is the only thing this call does differently from the one
+            # every run made before it, and the ways a connection can refuse it are not all
+            # knowable from here: a per-endpoint limit below the model's published cap, a
+            # router fronting several of them, or a self-hosted server whose context window
+            # has to hold the synthesis prompt as well. Failing here would discard a run
+            # that has already done all of its research, so the last attempt is made at the
+            # budget that has always worked.
+            logger.warning(
+                "research.synthesis_budget_refused run_id=%s budget=%s",
+                run["id"],
+                synthesis_max_tokens,
+                exc_info = True,
+            )
+            await self._check_active(run["id"])
+            synthesis_max_tokens = _SYNTHESIS_MAX_TOKENS
+            (
+                report,
+                synthesis_reasoning,
+                synthesis_finish_reason,
+                synthesis_usage,
+            ) = await self._stream_completion(
+                run,
+                synthesis_messages,
+                phase = "synthesis",
+                max_tokens = synthesis_max_tokens,
+            )
         await self._check_active(run["id"])
         report = _select_synthesis_report(report, synthesis_reasoning)
         truncation_notice = ""
