@@ -979,8 +979,9 @@ def test_the_picker_describes_the_same_host_the_update_check_does(monkeypatch, t
                 {
                     "backend": backend,
                     "available": bool(gfx) or backend in ("auto", "cpu", "vulkan"),
-                    "resolved_backend": (("vulkan" if gfx else "cpu")
-                                         if backend == "auto" else backend),
+                    "resolved_backend": (
+                        ("vulkan" if gfx else "cpu") if backend == "auto" else backend
+                    ),
                 }
                 for backend in ("auto", "cpu", "rocm", "vulkan")
             ]
