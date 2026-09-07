@@ -105,7 +105,8 @@ def test_research_mode_is_single_chat_and_detaches_without_cancel() -> None:
     assert "modelId:" not in create_block
     assert "prompt," not in create_block
     assert "instructions: researchInstructions" in create_block
-    assert "resolveChatInstructions" in adapter
+    assert "resolveUserSystemPrompt" in adapter
+    assert "The backend owns project instruction and goal context" in adapter
 
 
 def test_research_handoff_transition_honors_the_original_run_stop() -> None:

@@ -156,16 +156,26 @@ pub fn note_progress(watch: &WatchState, text: &str) -> bool {
 /// `poll` yields the exit status and whether the stop was asked for, or None while running.
 pub fn wait_with_watchdog(
     watch: &std::sync::Mutex<ProgressWatch>,
+    poll: impl FnMut() -> Result<Option<(std::process::ExitStatus, bool)>, String>,
+    report: impl FnMut(&str),
+    stop: impl FnMut(),
+) -> Result<(std::process::ExitStatus, bool), String> {
+    wait_with_watchdog_clock(watch, poll, report, stop, Instant::now)
+}
+
+fn wait_with_watchdog_clock(
+    watch: &std::sync::Mutex<ProgressWatch>,
     mut poll: impl FnMut() -> Result<Option<(std::process::ExitStatus, bool)>, String>,
     mut report: impl FnMut(&str),
     mut stop: impl FnMut(),
+    mut clock: impl FnMut() -> Instant,
 ) -> Result<(std::process::ExitStatus, bool), String> {
     loop {
         if let Some(exit) = poll()? {
             return Ok(exit);
         }
 
-        let now = Instant::now();
+        let now = clock();
         let (due, expired) = {
             let mut watch = watch.lock().map_err(|e| e.to_string())?;
             (watch.due_report(now), watch.expired(now))
@@ -288,13 +298,17 @@ mod tests {
 
     #[test]
     fn the_wait_loop_reports_a_silence_then_stops_the_child_at_the_backstop() {
-        let watch = Mutex::new(ProgressWatch::with_backstop(Instant::now() - 13 * HOUR, 12 * HOUR));
+        // A fresh Windows runner may not have thirteen hours of representable
+        // monotonic history. Advance an injected clock instead of subtracting.
+        let started = Instant::now();
+        let watch = Mutex::new(ProgressWatch::with_backstop(started, 12 * HOUR));
         let (mut reports, mut stops) = (Vec::new(), 0);
-        let error = wait_with_watchdog(
+        let error = wait_with_watchdog_clock(
             &watch,
             || Ok(None),
             |line| reports.push(line.to_string()),
             || stops += 1,
+            || started + 13 * HOUR,
         )
         .expect_err("the backstop must end the wait");
         assert!(error.contains("12 h"), "{error}");

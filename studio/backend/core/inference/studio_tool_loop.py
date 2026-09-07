@@ -78,7 +78,12 @@ from core.inference.tool_stream_exec import (
     search_images_kwargs,
     stream_tool_execution,
 )
-from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
+from core.inference.tools import (
+    build_rag_autoinject,
+    execute_tool,
+    is_high_risk_tool_call,
+    project_rule_for_tool_call,
+)
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
     abort_tool_decision,
@@ -1590,11 +1595,17 @@ async def stream_with_studio_tools(
             call_id = decision.tool_call_id
             # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
+            project_rule = project_rule_for_tool_call(session_id, name, arguments)
+            project_effect = str((project_rule or {}).get("effect") or "")
             needs_confirmation = (
                 confirm_tool_calls and not bypass_permissions and permission_mode != "off"
             )
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
+            if project_effect == "allow":
+                needs_confirmation = False
+            elif project_effect == "prompt" and confirm_tool_calls:
+                needs_confirmation = True
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None
@@ -1696,6 +1707,11 @@ async def stream_with_studio_tools(
                         pass
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
+                if accepts_kwarg(execute_tool, "project_rule_approved"):
+                    kwargs["project_rule_approved"] = project_effect != "prompt" or verdict not in {
+                        None,
+                        "deny",
+                    }
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 

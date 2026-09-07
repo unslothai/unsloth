@@ -7,11 +7,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  parseYamlConfig,
-  serializeConfigToYaml,
-  useTrainingConfigStore,
-} from "@/features/training";
+import { useTrainingConfigStore } from "@/features/training";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
@@ -38,8 +34,14 @@ export function ConfigActions() {
   const selectedModel = useTrainingConfigStore((s) => s.selectedModel);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const applyYamlConfig = (content: string, filename: string) => {
+  const applyYamlConfig = async (content: string, filename: string) => {
+    const observed = useTrainingConfigStore.getState();
     try {
+      const { parseYamlConfig } = await import("@/features/training/lib/yaml-config");
+      // Chunk loading must not overwrite edits made since this import began.
+      if (useTrainingConfigStore.getState() !== observed) {
+        throw new Error("Training configuration changed while loading. Import the file again.");
+      }
       const config = parseYamlConfig(content);
       useTrainingConfigStore.getState().applyConfigPatch(config);
       toast.success(t("studio.training.configLoaded"), {
@@ -83,7 +85,7 @@ export function ConfigActions() {
     try {
       const selected = await pickNativeTrainingConfig();
       if (selected) {
-        applyYamlConfig(selected.content, selected.name);
+        await applyYamlConfig(selected.content, selected.name);
       }
     } catch (error) {
       toast.error(t("studio.training.failedToReadFile"), {
@@ -100,9 +102,12 @@ export function ConfigActions() {
     }
   };
 
-  const handleSaveConfig = () => {
+  const handleSaveConfig = async () => {
     try {
+      // Snapshot before loading the optional codec, so a later store edit
+      // cannot change which configuration this save request exports.
       const state = useTrainingConfigStore.getState();
+      const { serializeConfigToYaml } = await import("@/features/training/lib/yaml-config");
       const includeVisionFields =
         state.isVisionModel && state.isDatasetImage !== false;
       const selectedModelLower = (state.selectedModel ?? "").toLowerCase();

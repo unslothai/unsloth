@@ -166,6 +166,35 @@ def test_create_allows_http_from_api_key(tmp_path, monkeypatch, stdio_on):
     assert resp.url == "https://example.com/mcp"
 
 
+@pytest.mark.parametrize(
+    "payload_kwargs",
+    [
+        {"headers": {"Authorization": "Bearer caller-secret"}},
+        {"use_oauth": True},
+        {"url": "https://example.com/mcp?access_token=caller-secret"},
+    ],
+)
+def test_create_refuses_persisted_http_credentials_from_api_key(
+    tmp_path, monkeypatch, stdio_on, payload_kwargs
+):
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpServerCreate
+
+    _reset_db(tmp_path, monkeypatch)
+    values = {"display_name": "Remote", "url": "https://example.com/mcp"}
+    values.update(payload_kwargs)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            routes_mcp.create_mcp_server(
+                McpServerCreate(**values),
+                current_subject = "api-key-user",
+                via_api_key = True,
+            )
+        )
+    assert exc.value.status_code == 403
+    assert mcp_servers_db.list_servers() == []
+
+
 def test_update_refuses_http_to_stdio_conversion_from_api_key(tmp_path, monkeypatch, stdio_on):
     import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
@@ -246,9 +275,7 @@ def test_update_regates_after_the_oauth_clear_await(tmp_path, monkeypatch, stdio
     assert mcp_servers_db.get_server("s1")["headers_json"] is None
 
 
-def test_update_allows_http_row_but_redacts_saved_headers_from_keyless(
-    tmp_path, monkeypatch, stdio_on
-):
+def test_update_refuses_secret_bearing_http_row_from_api_key(tmp_path, monkeypatch, stdio_on):
     import routes.mcp_servers as routes_mcp
     from models.mcp_servers import McpServerUpdate
 
@@ -259,17 +286,17 @@ def test_update_allows_http_row_but_redacts_saved_headers_from_keyless(
         url = "https://a/mcp",
         headers_json = '{"Authorization": "Bearer t"}',
     )
-    resp = asyncio.run(
-        routes_mcp.update_mcp_server(
-            "s1",
-            McpServerUpdate(display_name = "B"),
-            current_subject = "api-key-user",
-            via_api_key = True,
-            no_credential = True,
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            routes_mcp.update_mcp_server(
+                "s1",
+                McpServerUpdate(display_name = "B"),
+                current_subject = "api-key-user",
+                via_api_key = True,
+            )
         )
-    )
-    assert resp.display_name == "B"
-    assert resp.headers == {}
+    assert exc.value.status_code == 403
+    assert mcp_servers_db.get_server("s1")["display_name"] == "A"
 
 
 # ── refresh ─────────────────────────────────────────────────────────
@@ -303,6 +330,45 @@ def test_refresh_allows_http_from_api_key(tmp_path, monkeypatch, stdio_on):
         routes_mcp.refresh_mcp_server_tools("s1", current_subject = "api-key-user", via_api_key = True)
     )
     assert res.ok is True
+
+
+def test_refresh_refuses_saved_http_headers_from_api_key(tmp_path, monkeypatch, stdio_on, no_probe):
+    import routes.mcp_servers as routes_mcp
+
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(
+        id = "s1",
+        display_name = "A",
+        url = "https://a/mcp",
+        headers_json = '{"Authorization":"Bearer installation-secret"}',
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            routes_mcp.refresh_mcp_server_tools(
+                "s1", current_subject = "api-key-user", via_api_key = True
+            )
+        )
+    assert exc.value.status_code == 403
+
+
+def test_http_mcp_dispatch_rechecks_approved_configuration(monkeypatch):
+    entered = False
+
+    def _never_client(*_args, **_kwargs):
+        nonlocal entered
+        entered = True
+        raise AssertionError("HTTP connector must not open after approval drift")
+
+    monkeypatch.setattr(mcp_client, "_client", _never_client)
+    result = mcp_client.call_tool_sync(
+        url = "https://example.com/mcp",
+        headers = {"Authorization": "Bearer installation-secret"},
+        name = "create_pull_request",
+        args = {},
+        config_check = lambda: False,
+    )
+    assert result.startswith("Error:")
+    assert entered is False
 
 
 # ── import: per-entry, so a mixed config still lands its http rows ──
@@ -485,8 +551,7 @@ def test_list_hides_stdio_rows_from_api_keys(tmp_path, monkeypatch, stdio_on):
     serialized = repr([row.model_dump() for row in keyed])
     assert "sk-argv-secret" not in serialized
     assert "sk-env-secret" not in serialized
-    # http(s) MCP stays fully usable from a key, headers included.
-    assert keyed[0].headers == {"Authorization": "Bearer t"}
+    assert keyed[0].headers == {}
 
     keyless = routes_mcp.list_mcp_servers(
         current_subject = "u", via_api_key = False, no_credential = True
@@ -511,14 +576,49 @@ def test_list_shows_stdio_rows_to_a_ui_session(tmp_path, monkeypatch, stdio_on):
     assert rows[0].headers == {"API_KEY": "sk-env-secret"}
 
 
-def test_studio_mcp_surface_refuses_stdio_recipes():
+def test_studio_mcp_surface_refuses_stdio_recipes(monkeypatch):
     """mcp_server.py calls the validate route function directly, so the ViaApiKey
     dependency never runs and its `= False` default would read as a UI session.
     That remote static bearer surface must pass True itself or the gate is dead."""
-    import inspect
+    import importlib
+    import sys
+    from types import ModuleType
 
-    import mcp_server
+    class FakeFastMCP:
+        def __init__(self, *_args, **_kwargs):
+            self.tools = {}
 
-    assert "validate(RecipePayload(recipe = recipe), via_api_key = True)" in inspect.getsource(
-        mcp_server
-    )
+        def tool(self, function):
+            self.tools[function.__name__] = function
+            return function
+
+    fastmcp = ModuleType("fastmcp")
+    fastmcp.FastMCP = FakeFastMCP
+    monkeypatch.setitem(sys.modules, "fastmcp", fastmcp)
+    monkeypatch.delitem(sys.modules, "mcp_server", raising = False)
+
+    mcp_server = importlib.import_module("mcp_server")
+    server = mcp_server.create_studio_mcp()
+    seen = {}
+
+    class RecipePayload:
+        def __init__(self, *, recipe):
+            self.recipe = recipe
+
+    data_recipe_model = ModuleType("models.data_recipe")
+    data_recipe_model.RecipePayload = RecipePayload
+    validate_route = ModuleType("routes.data_recipe.validate")
+
+    def validate(payload, *, via_api_key = False):
+        seen.update(payload = payload, via_api_key = via_api_key)
+        return {"valid": True}
+
+    validate_route.validate = validate
+    monkeypatch.setitem(sys.modules, "models.data_recipe", data_recipe_model)
+    monkeypatch.setitem(sys.modules, "routes.data_recipe.validate", validate_route)
+
+    result = server.tools["validate_recipe"]({"steps": []})
+
+    assert result == {"valid": True}
+    assert seen["via_api_key"] is True
+    assert seen["payload"].recipe == {"steps": []}

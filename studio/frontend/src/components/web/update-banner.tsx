@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
+import { ReleaseNotesPanel } from "@/components/update/release-notes-panel-mount";
 import { type DeviceType, usePlatformStore } from "@/config/env";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { isTauri } from "@/lib/api-base";

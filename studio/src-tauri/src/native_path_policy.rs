@@ -628,7 +628,10 @@ pub fn classify_native_document_folder(path: &Path) -> Result<ClassifiedPath, St
     reject_sensitive_document_folder(&classified.canonical_path)?;
     Ok(ClassifiedPath {
         path_kind: NativePathKind::DocumentFolder,
-        allowed_operations: vec![NativePathOperation::LinkDocuments],
+        allowed_operations: vec![
+            NativePathOperation::LinkDocuments,
+            NativePathOperation::OpenProject,
+        ],
         ..classified
     })
 }
@@ -1369,7 +1372,7 @@ mod tests {
     }
 
     #[test]
-    fn document_folder_is_directory_with_link_only_capability() {
+    fn document_folder_is_directory_with_link_and_project_capabilities() {
         let path = temp_path("documents");
         fs::create_dir(&path).unwrap();
         let classified = classify_native_document_folder(&path).unwrap();
@@ -1377,7 +1380,10 @@ mod tests {
         assert_eq!(classified.path_type, NativePathType::Directory);
         assert_eq!(
             classified.allowed_operations,
-            vec![NativePathOperation::LinkDocuments]
+            vec![
+                NativePathOperation::LinkDocuments,
+                NativePathOperation::OpenProject,
+            ]
         );
         let _ = fs::remove_dir(path);
     }

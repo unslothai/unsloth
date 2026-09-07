@@ -48,6 +48,7 @@ from models.mcp_servers import (
     McpStdioEncodeResponse,
 )
 from storage import mcp_servers_db
+from routes.provider_credentials import require_ui_session
 from utils.utils import safe_curated_detail, log_and_http_error
 
 logger = structlog.get_logger(__name__)
@@ -149,6 +150,31 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     return out or None
 
 
+def _url_carries_credentials(url: str) -> bool:
+    """Treat every non-path URL component as installation credential material.
+
+    Query strings and fragments are opaque to Studio. Even an innocently named
+    parameter can contain a bearer chosen by a connector, so a programmatic
+    caller must not read or reuse an endpoint containing either one.
+    """
+    parsed = urlparse(url or "")
+    return bool(parsed.username or parsed.password or parsed.query or parsed.fragment)
+
+
+def _uses_installation_credentials(row: dict) -> bool:
+    return bool(
+        is_stdio(str(row.get("url") or ""))
+        or parse_server_headers(row)
+        or row.get("use_oauth")
+        or _url_carries_credentials(str(row.get("url") or ""))
+    )
+
+
+def _require_ui_for_stored_credentials(row: dict, via_api_key: bool) -> None:
+    if via_api_key and _uses_installation_credentials(row):
+        require_ui_session(via_api_key)
+
+
 def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
@@ -208,8 +234,18 @@ def list_mcp_servers(
         # Drop the row, not just its fields: `url` is the argv (carries
         # credentials), `headers` is the subprocess env, and a blanked url would
         # round-trip into update as a bogus command.
-        rows = [row for row in rows if not is_stdio(row["url"])]
-    return [_row_to_response(row, include_headers = not no_credential) for row in rows]
+        rows = [
+            row
+            for row in rows
+            if not is_stdio(row["url"]) and not _url_carries_credentials(row["url"])
+        ]
+    return [
+        _row_to_response(
+            row,
+            include_headers = not (via_api_key or no_credential),
+        )
+        for row in rows
+    ]
 
 
 @router.post("/", response_model = McpServerResponse, status_code = 201)
@@ -228,6 +264,8 @@ async def create_mcp_server(
     # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
     # push the probe onto the 305s OAuth timeout. Backend enforces this.
     use_oauth = payload.use_oauth and not is_stdio(url)
+    if via_api_key and (headers or use_oauth or _url_carries_credentials(url)):
+        require_ui_session(via_api_key)
 
     server_id = uuid.uuid4().hex[:16]
     mcp_servers_db.create_server(
@@ -238,7 +276,10 @@ async def create_mcp_server(
         is_enabled = payload.is_enabled,
         use_oauth = use_oauth,
     )
-    return _row_to_response(mcp_servers_db.get_server(server_id))
+    return _row_to_response(
+        mcp_servers_db.get_server(server_id),
+        include_headers = not via_api_key,
+    )
 
 
 def _changes_from_payload(payload: McpServerUpdate) -> dict:
@@ -289,6 +330,13 @@ async def update_mcp_server(
     # refusal leaves the row, its OAuth tokens, cache and sessions untouched.
     if is_stdio(old["url"]) or is_stdio(changes.get("url", old["url"])):
         require_ui_session_for_local_commands(via_api_key)
+    _require_ui_for_stored_credentials(old, via_api_key)
+    if via_api_key and (
+        changes.get("headers_json")
+        or changes.get("use_oauth") is True
+        or _url_carries_credentials(str(changes.get("url") or ""))
+    ):
+        require_ui_session(via_api_key)
     # headers == HTTP headers (remote) or env vars (stdio). On a transport-type
     # switch with no new headers, drop the old ones so env secrets aren't
     # re-sent as HTTP headers (or vice versa).
@@ -305,6 +353,8 @@ async def update_mcp_server(
         await clear_oauth_tokens_async(old["url"])
         # That await hands the loop to other requests.
         current = mcp_servers_db.get_server(server_id)
+        if current is not None:
+            _require_ui_for_stored_credentials(current, via_api_key)
         if current is not None and (
             is_stdio(current["url"]) or is_stdio(changes.get("url", current["url"]))
         ):
@@ -320,15 +370,23 @@ async def update_mcp_server(
         # Narrow to this row's env: another server row sharing the command but
         # with a different env keeps its live sessions.
         await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
-    return _row_to_response(mcp_servers_db.get_server(server_id), include_headers = not no_credential)
+    return _row_to_response(
+        mcp_servers_db.get_server(server_id),
+        include_headers = not (via_api_key or no_credential),
+    )
 
 
 @router.delete("/{server_id}", status_code = 204)
 @serialize_mcp_server_mutation
-async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_current_subject)):
+async def delete_mcp_server(
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
     old = mcp_servers_db.get_server(server_id)
     if not old:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
+    _require_ui_for_stored_credentials(old, via_api_key)
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)
@@ -345,7 +403,9 @@ async def refresh_mcp_server_tools(
     server = mcp_servers_db.get_server(server_id)
     if not server:
         raise HTTPException(status_code = 404, detail = "MCP server not found")
-    # Refresh uses the stored address.
+    _require_ui_for_stored_credentials(server, via_api_key)
+    # Refresh uses the stored address, so re-check the stdio gate here too: a
+    # stdio row from a desktop DB must not spawn on a hosted/network host.
     if is_stdio(server["url"]):
         require_ui_session_for_local_commands(via_api_key)
         if not stdio_mcp_enabled():
@@ -359,7 +419,7 @@ async def refresh_mcp_server_tools(
             timeout = probe_timeout(server["url"], use_oauth),
             use_oauth = use_oauth,
         )
-    except Exception as exc:  # noqa: BLE001 - surface transport+timeout errors to UI
+    except Exception as exc:  # noqa: BLE001  # Surface transport and timeout errors to UI.
         logger.error(
             "mcp_servers.refresh_failed",
             server_id = server_id,
@@ -404,11 +464,13 @@ async def import_mcp_servers(
     for entry in entries:
         try:
             url = _validate_url(entry.url)
+            headers = _normalize_headers(entry.headers)
             # Per entry, so an API-key import of a mixed config still creates its
             # http entries and reports the stdio ones.
             if is_stdio(url):
                 require_ui_session_for_local_commands(via_api_key)
-            headers = _normalize_headers(entry.headers)
+            if via_api_key and (entry.headers or entry.use_oauth or _url_carries_credentials(url)):
+                require_ui_session(via_api_key)
         except HTTPException as exc:
             errors.append(f"{entry.display_name}: {exc.detail}")
             continue
@@ -444,7 +506,9 @@ async def test_mcp_server(
     if is_stdio(url):
         require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
-    use_oauth = payload.use_oauth and not is_stdio(url)
+    use_oauth = bool(payload.use_oauth and not is_stdio(url))
+    if via_api_key and payload.use_oauth:
+        require_ui_session(via_api_key)
     try:
         tools = await list_tools_async(
             url = url,

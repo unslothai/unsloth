@@ -41,7 +41,7 @@ import {
   usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
-import { NewProjectDialog } from "./components/new-project-dialog";
+import { NewProjectDialog } from "./components/new-project-dialog-mount";
 import {
   Delete02Icon,
   Download01Icon,

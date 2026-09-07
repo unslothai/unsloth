@@ -277,7 +277,7 @@ export { ResearchMessage } from "./components/research-message";
 export {
   ResearchActivityPanel,
   ResearchActivitySheet,
-} from "./components/research-activity-panel";
+} from "./components/research-activity-mount";
 export {
   useChatArtifactsStore,
   useSelectedChatArtifact,

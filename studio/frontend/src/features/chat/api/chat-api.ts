@@ -24,6 +24,8 @@ import type {
   MessageRecord,
   ModelType,
   ProjectRecord,
+  ProjectCreateRecord,
+  ProjectPatch,
   ThreadRecord,
 } from "../types";
 import type {
@@ -49,6 +51,7 @@ import {
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
 import { maxTokensIsTheLimit } from "./generation-length.ts";
+import { buildOpenProjectFolderRequestFromToken } from "./project-folder-request";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches they built
@@ -300,6 +303,9 @@ export async function loadModel(
 export async function countChatInputTokens(payload: {
   model: string;
   messages: OpenAIChatCompletionsRequest["messages"];
+  session_id?: string;
+  project_context_snapshot_id?: string;
+  deep_research_armed?: boolean;
   enable_thinking?: boolean;
   reasoning_effort?: OpenAIChatCompletionsRequest["reasoning_effort"];
   preserve_thinking?: boolean;
@@ -998,7 +1004,7 @@ export async function getChatProject(
 }
 
 export async function saveChatProject(
-  project: ProjectRecord,
+  project: ProjectCreateRecord,
 ): Promise<ProjectRecord> {
   const response = await authFetch("/api/chat/projects", {
     method: "POST",
@@ -1010,9 +1016,24 @@ export async function saveChatProject(
   return saved;
 }
 
+export async function openChatProjectFolder(
+  nativePathToken: string,
+  name: string,
+): Promise<ProjectRecord> {
+  const request = await buildOpenProjectFolderRequestFromToken(
+    nativePathToken,
+    name,
+    consumeNativePathToken,
+  );
+  const response = await authFetch(request.input, request.init);
+  const project = await parseJsonOrThrow<ProjectRecord>(response);
+  notifyChatProjectsUpdated();
+  return project;
+}
+
 export async function updateChatProject(
   projectId: string,
-  patch: Partial<ProjectRecord>,
+  patch: Partial<ProjectPatch>,
 ): Promise<ProjectRecord> {
   const response = await authFetch(
     `/api/chat/projects/${encodeURIComponent(projectId)}`,

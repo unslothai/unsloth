@@ -595,6 +595,8 @@ export interface OpenAIChatCompletionsRequest {
   mcp_enabled?: boolean;
   /** The replayed tool calls came from Studio's own local tool loop. */
   studio_tool_history?: boolean;
+  /** Indicates that Deep Research is armed for the current composer turn. */
+  deep_research_armed?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;
   /** Local models plus enable_tools only. Gate level for local tool calls: "ask" prompts on every
@@ -629,6 +631,9 @@ export interface OpenAIChatCompletionsRequest {
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
+  /** Opaque server-owned snapshot used to keep project context stable for one run. */
+  project_context_snapshot_id?: string;
+  thread_id?: string;
   cancel_id?: string;
   provider_id?: string;
   provider_type?: string;

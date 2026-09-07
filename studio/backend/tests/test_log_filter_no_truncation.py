@@ -79,6 +79,16 @@ class TestNativePathLeaseRedactionStillWorks:
         assert "AAAAAA.BBBBBB" not in out["event"]
         assert "<redacted native path lease>" in out["event"]
 
+    def test_inline_encrypted_native_path_lease_value_redacted(self):
+        out = _run({"event": ("rejected request: native_path_lease=2.AAAAAA.BBBBBB extra context")})
+        assert "2.AAAAAA.BBBBBB" not in out["event"]
+        assert "<redacted native path lease>" in out["event"]
+
+    def test_inline_malformed_native_path_lease_value_is_fully_redacted(self):
+        out = _run({"event": ("rejected request: native_path_lease=2.AA!AAA.BBBBBB extra context")})
+        assert "2.AA!AAA.BBBBBB" not in out["event"]
+        assert "<redacted native path lease>" in out["event"]
+
     def test_camelcase_native_path_lease_dict_key_redacted(self):
         out = _run({"event": "load", "nativePathLease": "AAAAAA.BBBBBB"})
         assert out["nativePathLease"] == "<redacted native path lease>"

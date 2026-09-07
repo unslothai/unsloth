@@ -33,7 +33,7 @@ import {
   listMcpServers,
   updateMcpServer,
 } from "./api/mcp-servers-api";
-import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
+import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog-mount";
 import { useChatActive } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";

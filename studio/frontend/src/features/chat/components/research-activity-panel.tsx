@@ -71,6 +71,8 @@ import {
   useResearchRunStore,
 } from "../stores/research-run-store";
 import type { ResearchRunStatus } from "../types/research";
+import { researchStatusLabel } from "./research-status-label";
+export { researchStatusLabel } from "./research-status-label";
 
 const terminalStatuses = new Set<ResearchRunStatus>([
   "completed",
@@ -279,28 +281,6 @@ function useResearchActivityScroll(runId: string) {
   return { viewportRef, isAtBottom, scrollToLatest };
 }
 
-export function researchStatusLabel(status: ResearchRunStatus): string {
-  switch (status) {
-    case "planning":
-      return "Planning";
-    case "awaiting_approval":
-      return "Review plan";
-    case "queued":
-      return "Queued";
-    case "running":
-      return "Researching";
-    case "paused":
-      return "Paused";
-    case "cancelling":
-      return "Stopping";
-    case "cancelled":
-      return "Cancelled";
-    case "completed":
-      return "Complete";
-    case "failed":
-      return "Failed";
-  }
-}
 
 function formatElapsed(start: number, end = Date.now()): string {
   const seconds = Math.max(0, Math.round((end - start) / 1000));

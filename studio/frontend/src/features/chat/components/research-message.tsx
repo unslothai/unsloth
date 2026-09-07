@@ -23,7 +23,7 @@ import {
 } from "../stores/research-run-store";
 import type { ResearchMessageMetadata } from "../types/research";
 import { researchReplyOwnsRun } from "../utils/research-run-binding";
-import { researchStatusLabel } from "./research-activity-panel";
+import { researchStatusLabel } from "./research-status-label";
 
 export function ResearchMessage(): ReactElement | null {
   const metadata = useAuiState(

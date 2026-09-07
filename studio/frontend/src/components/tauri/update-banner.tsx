@@ -3,7 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { ReleaseNotesPanel } from "@/components/update/release-notes-panel";
+import { ReleaseNotesPanel } from "@/components/update/release-notes-panel-mount";
 import type {
   DesktopUpdatePolicyMode,
   RetainedUpdateFailure,

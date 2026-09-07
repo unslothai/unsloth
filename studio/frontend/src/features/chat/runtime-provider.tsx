@@ -2186,7 +2186,7 @@ function useStudioRuntimeAdapters(
             threadId: remoteId,
             parentId: parentId ?? null,
             role: message.role,
-            content,
+            content: content,
             ...(attachments.length > 0 && { attachments }),
             ...(incomingMetadata && { metadata: incomingMetadata }),
             createdAt,
