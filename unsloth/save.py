@@ -1883,6 +1883,9 @@ def _split_main_gguf(initial_files, gguf_shard_size: str, quantizer_location: st
                 check = True,
                 capture_output = True,
                 text = True,
+                # Windows defaults to cp1252 and crashes on the child's output (#2660).
+                encoding = "utf-8",
+                errors = "replace",
             )
         except subprocess.CalledProcessError as exception:
             details = (exception.stderr or exception.stdout or "").strip()
@@ -4549,7 +4552,9 @@ def unsloth_save_pretrained_gguf(
                     f"Valid LoRA outtypes: {_LORA_GGUF_OUTTYPES}."
                 )
             _outtype = "f16"
-        return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = _outtype)
+        return _unsloth_save_lora_gguf(
+            self, tokenizer, save_directory, outtype = _outtype, token = token
+        )
 
     # base_model_name keeps the full id for create_ollama_modelfile's mapper lookup; only the filename stem is
     # trimmed.
@@ -5567,6 +5572,62 @@ def save_lora_to_custom_dir(model, tokenizer, save_directory):
 # Valid output float types for llama.cpp's convert_lora_to_gguf.py.
 _LORA_GGUF_OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
 
+# get_token() reads only the first two; the rest are third-party. HF_OIDC_* mint one, ahead of
+# HF_TOKEN, on hub >= 1.19.
+_HF_TOKEN_ENV_KEYS = (
+    "HF_TOKEN",
+    "HF_HUB_TOKEN",
+    "HUGGING_FACE_HUB_TOKEN",
+    "HUGGINGFACE_HUB_TOKEN",
+    "HUGGINGFACEHUB_API_TOKEN",
+    "HF_OIDC_RESOURCE",
+    "HF_OIDC_ID_TOKEN",
+)
+
+
+def _clean_save_token(token):
+    """Trim a token, keeping huggingface_hub's forced-anonymous ``False`` out of ``None``.
+
+    Blank is not a credential: it reaches the Hub as a literal ``Bearer `` header, which 1.x
+    rejects outright. It means "I passed nothing", which is ``None``.
+    """
+    if token is False or token is True:
+        return token
+    if isinstance(token, str):
+        return token.strip() or None
+    return token
+
+
+def _apply_token_to_child_env(env, token, *, explicit):
+    """Hand a spawned converter exactly one credential, or none.
+
+    The child inherits our env, so withholding a token is not denying one: the deny branch has to
+    scrub, token file included. Only an *explicit* token may clear the operator's
+    HF_HUB_DISABLE_IMPLICIT_TOKEN, since a token we resolved ourselves is the very implicit one
+    that flag suppresses.
+    """
+    if token is False:
+        for key in _HF_TOKEN_ENV_KEYS:
+            env.pop(key, None)
+        # The flag blocks the header; this blocks the read.
+        env["HF_TOKEN_PATH"] = os.devnull
+        env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+        return
+    if not (isinstance(token, str) and token):
+        return
+    if not explicit:
+        # Ambient: promote as before, scrub nothing.
+        env["HF_TOKEN"] = token
+        env["HUGGING_FACE_HUB_TOKEN"] = token
+        return
+    # Scrub first, or granting HF_TOKEN leaves ours in an alias and the child holds two.
+    for key in _HF_TOKEN_ENV_KEYS:
+        env.pop(key, None)
+    env["HF_TOKEN"] = token
+    env["HUGGING_FACE_HUB_TOKEN"] = token
+    # An inherited =1 would make the child ignore what we just granted.
+    env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
+
 
 def _lora_base_model_id(model):
     """Base model id for a PEFT model: prefer the active adapter's recorded base, else the
@@ -5659,8 +5720,9 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
     # (save.py top); hf_hub_download is imported here since nothing else needs it.
     from huggingface_hub import hf_hub_download
 
-    if token is None:
-        token = get_token()
+    # As-is: pre-resolving made an ambient token look explicit, and only the header builder
+    # honours HF_HUB_DISABLE_IMPLICIT_TOKEN.
+    token = _clean_save_token(token)
     api = HfApi(token = token)
     repos = _gguf_repo_candidates(model)
     for repo in repos:
@@ -5711,7 +5773,11 @@ def _unsloth_save_lora_gguf(
             f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."
         )
     # Resolve a token even for local saves: the converter may fetch a gated/private base config.
-    if token is None:
+    # False must not resolve one. Explicitness BEFORE the fallback: get_token() ignores the flag,
+    # so what it returns is the implicit token itself.
+    token = _clean_save_token(token)
+    token_is_explicit = token is not None
+    if token is None or token is True:
         token = get_token()
 
     # Resolve the dequantized base id, since the adapter usually references a 4bit repo.
@@ -5772,9 +5838,7 @@ def _unsloth_save_lora_gguf(
 
         # Expose the token to the converter so it can fetch a gated/private base config from the Hub.
         env = os.environ.copy()
-        if isinstance(token, str) and token:
-            env["HF_TOKEN"] = token
-            env["HUGGING_FACE_HUB_TOKEN"] = token
+        _apply_token_to_child_env(env, token, explicit = token_is_explicit)
 
         print(f"Unsloth: Converting LoRA adapter at '{lora_dir}' to GGUF -> '{out_gguf}'")
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen constants: a runtime
@@ -7050,8 +7114,10 @@ def _unsloth_save_compressed_tensors(
 
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
-    # Resolve a token for the hub push and/or loading a gated calibration dataset in the subprocess.
-    if token is None:
+    # For the hub push and/or a gated calibration dataset, as in the LoRA GGUF converter.
+    token = _clean_save_token(token)
+    token_is_explicit = token is not None
+    if token is None or token is True:
         token = get_token()
 
     # Only the main process installs deps, merges, quantizes and uploads, mirroring the non-PEFT save path;
@@ -7248,11 +7314,9 @@ def _unsloth_save_compressed_tensors(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # Expose the token so the subprocess can load a gated/private calibration dataset.
+        # Same boundary as the LoRA GGUF converter: False scrubs, it does not merely withhold.
         env = os.environ.copy()
-        if isinstance(token, str) and token:
-            env["HF_TOKEN"] = token
-            env["HUGGING_FACE_HUB_TOKEN"] = token
+        _apply_token_to_child_env(env, token, explicit = token_is_explicit)
 
         # Clean PYTHONPATH means shadow only: torch still comes from site-packages while transformers 5.x and
         # llm-compressor main come from the shadow, and dropping the inherited PYTHONPATH removes any parent
