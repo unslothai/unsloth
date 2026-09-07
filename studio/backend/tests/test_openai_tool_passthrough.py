@@ -10451,6 +10451,24 @@ class TestPassthroughImageNormalization:
         row = [Image.open(BytesIO(out)).getpixel((x, 0))[0] for x in range(256)]
         assert len(set(row)) == 256, f"collapsed to {len(set(row))} levels"
 
+    def test_plain_int_mode_is_not_scaled(self):
+        # "I" and "F" declare no range. A 32-bit TIFF whose samples already sit
+        # in 0..255 must keep them: scaling it by 1/257 would black the picture
+        # out, which is worse than the clipping the scaling was added to fix.
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("I", (256, 2))
+        img.putdata([x % 256 for _ in range(2) for x in range(256)])
+        buf = BytesIO()
+        img.save(buf, format = "TIFF")
+        assert Image.open(BytesIO(buf.getvalue())).mode == "I"
+
+        out = base64.b64decode(_image_bytes_to_png_b64(buf.getvalue()))
+        row = [Image.open(BytesIO(out)).getpixel((x, 0))[0] for x in range(256)]
+        assert row == list(range(256)), f"0..255 ramp altered: max={max(row)}"
+
     def test_eight_bit_images_are_unchanged_by_the_scaling_branch(self):
         from io import BytesIO
 

@@ -27012,13 +27012,18 @@ def _image_bytes_to_png_b64(raw: bytes) -> str:
     from PIL import Image
 
     img = Image.open(io.BytesIO(raw))
-    # A 16-bit source (grayscale PNG, scientific TIFF) carries 0..65535, but
-    # convert("RGB") reads those as 8-bit and clips everything above 255, which
-    # turns the picture nearly all white. Scale to 8 bits first, the way
-    # stb_image does when llama-server reads the same file itself. I;16B / I;16L
-    # reject point() outright, so normalise them to "I" before scaling.
-    if img.mode.startswith("I;16") or img.mode in ("I", "F"):
-        if img.mode not in ("I", "F"):
+    # A 16-bit source carries 0..65535, but convert("RGB") reads those as 8-bit
+    # and clips everything above 255, which turns the picture nearly all white.
+    # Scale to 8 bits first, the way stb_image does when llama-server reads the
+    # same file itself. I;16B / I;16L reject point(), so normalise them to "I".
+    #
+    # Only the I;16 family: plain "I" and "F" declare no range, and a 32-bit or
+    # float TIFF whose samples already sit in 0..255 (or 0..1) would be scaled
+    # to black. Those keep the straight convert("RGB"). A 16-bit PNG -- the
+    # reachable case here, since this decodes pasted images -- opens as I;16 on
+    # every Pillow this repo pins.
+    if img.mode.startswith("I;16"):
+        if img.mode != "I;16":
             img = img.convert("I")
         img = img.point(lambda v: v * (1.0 / 257), mode = "L")
     img = img.convert("RGB")
