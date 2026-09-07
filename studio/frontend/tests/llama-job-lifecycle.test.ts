@@ -8,6 +8,7 @@ import {
   llamaReleaseChanged,
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
+  llamaUpdateToastMessage,
   ownedLlamaSwitchOutcome,
 } from "../src/lib/llama-job-lifecycle.ts";
 
@@ -136,4 +137,71 @@ test("the banner asks the helper rather than comparing the two tags itself", () 
   );
   assert.match(banner, /const versionChanged = llamaReleaseChanged\(/);
   assert.doesNotMatch(banner, /installedTag !== latestTag/);
+});
+
+test("a backend migration is reported by what the job did, not by the version fields", () => {
+  // The migration runs at the release already installed, so composing the toast from
+  // the tags announces an update that did not happen -- and when a whisper update is
+  // pending it is that component's name beside the llama tag.
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "whisper.cpp",
+      migrating: true,
+      jobMessage: "llama.cpp is now running on vulkan.",
+      updatedTag: "b9596-mix-abc",
+      reloadRequired: false,
+    }),
+    "llama.cpp is now running on vulkan.",
+  );
+
+  // The fallback case: the install ended on the backend it started from, and the job
+  // says so rather than naming it as the new one.
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "llama.cpp",
+      migrating: true,
+      jobMessage:
+        "llama.cpp could not be moved to vulkan right now, so the existing rocm build was kept. Try again later.",
+      updatedTag: "b9596-mix-abc",
+      reloadRequired: false,
+    }),
+    "llama.cpp could not be moved to vulkan right now, so the existing rocm build was kept. Try again later.",
+  );
+
+  // The reload hint is still appended when the job did not carry one of its own.
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "llama.cpp",
+      migrating: true,
+      jobMessage: "llama.cpp is now running on vulkan.",
+      updatedTag: "b9596-mix-abc",
+      reloadRequired: true,
+    }),
+    "llama.cpp is now running on vulkan. Reload your model to use it.",
+  );
+});
+
+test("an ordinary update still reports the release it moved to", () => {
+  // The control: without it a message that always deferred to the job would drop the
+  // tag from every real update, and a migration with nothing to say would print blank.
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "llama.cpp",
+      migrating: false,
+      jobMessage: "llama.cpp is now running on vulkan.",
+      updatedTag: "b9600-mix-def",
+      reloadRequired: true,
+    }),
+    "llama.cpp updated to b9600-mix-def. Reload your model to use it.",
+  );
+  assert.equal(
+    llamaUpdateToastMessage({
+      component: "llama.cpp",
+      migrating: true,
+      jobMessage: "  ",
+      updatedTag: "b9600-mix-def",
+      reloadRequired: false,
+    }),
+    "llama.cpp updated to b9600-mix-def.",
+  );
 });

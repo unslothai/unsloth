@@ -1865,6 +1865,20 @@ def test_integrated_route_declines_beside_a_physical_nvidia_card(amd_vulkan_icd)
     assert ilp._should_prefer_vulkan_for_amd_igpu(host) is False
 
 
+def test_integrated_route_declines_under_a_vulkan_device_mask(amd_vulkan_icd, monkeypatch):
+    # An ICD proves a driver is installed, not that this process would be shown the
+    # device through it: ggml honours GGML_VK_VISIBLE_DEVICES and Studio forwards it, so
+    # a mask that excludes the APU leaves the Vulkan bundle enumerating nothing while the
+    # ROCm build it replaced worked.
+    host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
+    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
+    assert ilp._should_prefer_vulkan_for_amd_igpu(host) is False
+
+    # The control: the same host without the mask is exactly the routed case.
+    monkeypatch.delenv("GGML_VK_VISIBLE_DEVICES")
+    assert ilp._should_prefer_vulkan_for_amd_igpu(host) is True
+
+
 @pytest.mark.parametrize(
     "mask_env", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"]
 )

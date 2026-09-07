@@ -9,7 +9,10 @@ import {
   useLlamaUpdateCheck,
 } from "@/hooks/use-llama-update-check";
 import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
-import { llamaReleaseChanged } from "@/lib/llama-job-lifecycle";
+import {
+  llamaReleaseChanged,
+  llamaUpdateToastMessage,
+} from "@/lib/llama-job-lifecycle";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Download } from "lucide-react";
@@ -119,13 +122,20 @@ export function LlamaUpdateBanner({
 
   async function handleUpdate() {
     const component = status?.component ?? "llama.cpp";
+    // Read before applying: the status refreshes as the job runs.
+    const migrating = Boolean(status?.backend_migration_available);
     const result = await apply();
     if (result?.ok) {
       const updatedTag = result.tag ?? status?.latest_tag ?? "the latest build";
-      const reloadHint = result.reloadRequired
-        ? " Reload your model to use it."
-        : "";
-      toast.success(`${component} updated to ${updatedTag}.${reloadHint}`);
+      toast.success(
+        llamaUpdateToastMessage({
+          component,
+          migrating,
+          jobMessage: result.message,
+          updatedTag,
+          reloadRequired: result.reloadRequired,
+        }),
+      );
     } else if (result) {
       toast.error(
         `${component} update failed: ${result.error ?? "unknown error"}`,

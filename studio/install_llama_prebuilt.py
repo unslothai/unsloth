@@ -7608,6 +7608,20 @@ def _hip_visible_device_mask_set() -> bool:
     )
 
 
+def _vulkan_visible_device_mask_set() -> bool:
+    """Whether a Vulkan visible-device mask is in force for this process.
+
+    ggml reads GGML_VK_VISIBLE_DEVICES and Studio forwards it to the child, so a mask
+    that excludes the integrated GPU leaves the Vulkan bundle with nothing to enumerate
+    and the load falls to CPU. Presence is the whole test, as for the HIP masks: the
+    ordinals are the Vulkan enumeration's, not the physical inventory's, so which device
+    a given index names is not knowable here, and a mask is only ever set deliberately.
+    A preference declined this way keeps the working ROCm build, which is the direction
+    to fail in.
+    """
+    return os.environ.get("GGML_VK_VISIBLE_DEVICES") is not None
+
+
 def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
     """gfx targets the Windows HIP bundle of ``published_repo`` is actually built for.
 
@@ -7859,14 +7873,16 @@ def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
     is not routed, a physical NVIDIA card is not handed to a backend that ignores
     CUDA_VISIBLE_DEVICES, a HIP device mask makes the physical inventory unknowable, and
     the judgement is over every PHYSICAL AMD gfx rather than the active one, so a box with
-    a discrete card masked off does not move that card onto Vulkan.
+    a discrete card masked off does not move that card onto Vulkan. A Vulkan mask is
+    declined too: an ICD proves a driver is installed, not that this process would be
+    shown the device through it.
     """
     active = _active_rocm_gfx_target(host)
     if not active:
         return False
     if not (host.has_rocm and not host.has_physical_nvidia):
         return False
-    if _hip_visible_device_mask_set():
+    if _hip_visible_device_mask_set() or _vulkan_visible_device_mask_set():
         return False
     targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
     if not all(target in VULKAN_PREFERRED_GFX_TARGETS for target in targets):

@@ -186,6 +186,10 @@ export interface LlamaApplyResult {
   tag?: string | null;
   reloadRequired?: boolean | null;
   error?: string | null;
+  // What the job itself says it did. A migration can finish at the release it
+  // started from, and can end on the backend it started from, so a caller that
+  // composes "updated to <tag>" from the version fields describes neither.
+  message?: string;
 }
 
 /** Tracks llama.cpp update visibility and apply progress. */
@@ -268,6 +272,7 @@ export function useLlamaUpdateCheck({
             ok: true,
             tag: s.job.to_tag,
             reloadRequired: s.job.reload_required,
+            message: s.job.message,
           });
         } else if (s.job.state === "error") {
           // Keep the banner visible so retry is available. A partial chained

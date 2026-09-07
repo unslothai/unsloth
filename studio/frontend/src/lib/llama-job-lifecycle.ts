@@ -88,3 +88,35 @@ export function llamaReleaseChanged(
     updateAvailable && installedTag && latestTag && installedTag !== latestTag,
   );
 }
+
+/** What to tell the user a finished Update actually did.
+ *
+ * A backend migration re-applies the install's own automatic choice, so it runs
+ * at the release already installed and can end on the backend already installed
+ * -- "updated to <tag>" describes neither, and the tag is the llama one even when
+ * a pending whisper update named the toast. The job's own message names the
+ * backend it landed on, or says the old one was kept, so it is preferred there.
+ */
+export function llamaUpdateToastMessage({
+  component,
+  migrating,
+  jobMessage,
+  updatedTag,
+  reloadRequired,
+}: {
+  component: string;
+  migrating: boolean;
+  jobMessage: string | null | undefined;
+  updatedTag: string;
+  reloadRequired: boolean | null | undefined;
+}): string {
+  const reloadHint = reloadRequired ? " Reload your model to use it." : "";
+  const migrationMessage = migrating ? (jobMessage ?? "").trim() : "";
+  if (!migrationMessage) {
+    return `${component} updated to ${updatedTag}.${reloadHint}`;
+  }
+  // The phase appends its own reload hint when it has one to give.
+  return migrationMessage.includes("Reload")
+    ? migrationMessage
+    : `${migrationMessage}${reloadHint}`;
+}
