@@ -2327,7 +2327,6 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert "--model" not in command
     parent_home = tmp_path / "agents" / "codex-subagent" / "parent"
     _assert_env_set(result.output, "CODEX_HOME", str(parent_home))
-    # The parent is the user's own cloud Codex, so its credentials must survive.
     for name in start._CODEX_ENV_UNSET:
         _assert_env_kept(result.output, name)
     assert start._CODEX_ENV_KEY not in result.output
@@ -8792,7 +8791,6 @@ def test_openclaw_state_dir_is_a_real_path_not_a_blank(fake_studio, monkeypatch)
 
 
 def test_openclaw_config_pins_the_shell_env_fallback_off(fake_studio, tmp_path, monkeypatch):
-    # ORed with OPENCLAW_LOAD_SHELL_ENV, so a persisted true survives the env guard.
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
     config_path.parent.mkdir(parents = True)
