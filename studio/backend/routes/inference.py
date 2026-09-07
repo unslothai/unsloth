@@ -11295,7 +11295,11 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
     """The window a load naming no Context Length would be fitted to, and the KV width it runs
     at -- the load's own fit, asked of the files instead of a resident model. ``(None, kv_bits)``
     where nothing is fitted: the ceiling is served, carrying no bound to spend the request on."""
-    from core.inference.mlx_inference import mlx_fit_to_memory, mlx_kv_quant_is_refused
+    from core.inference.mlx_inference import (
+        mlx_fit_to_memory,
+        mlx_kv_quant_is_refused,
+        mlx_vlm_snapshot_store_available,
+    )
 
     ceiling = _mlx_estimate_ceiling(model_dir)
     if not ceiling:
@@ -11304,9 +11308,11 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
         model_dir,
         ceiling,
         load_in_4bit = load_in_4bit,
-        # Only the text path keeps a prompt history between turns, and the fit reserves room
-        # for one that will be kept.
-        retains_history = not getattr(config, "is_vision", False),
+        # The fit reserves room for a history that will be kept: the text one between turns,
+        # or the vision snapshot store, which is the same allowance under another name.
+        retains_history = (
+            not getattr(config, "is_vision", False) or mlx_vlm_snapshot_store_available()
+        ),
         kv_bits = kv_bits,
         # Asked only where the answer matters: it builds the architecture.
         applies = lambda: not mlx_kv_quant_is_refused(model_dir),

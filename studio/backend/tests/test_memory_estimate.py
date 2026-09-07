@@ -1293,11 +1293,16 @@ class TestEstimateMemoryRoute:
         _estimate(model_path = "org/model")
         assert seen["n_ctx"] == ri._DEFAULT_MLX_ESTIMATE_CTX
 
-        # Only the text path keeps a prompt cache between turns.
+        # A vision load keeps the snapshot store where it can build one, and that is the same
+        # allowance the text history occupies, so the panel reserves it on the load's terms.
         write(json.dumps({"max_position_embeddings": 262_144}))
         self._mlx_target(monkeypatch, str(tmp_path), is_vision = True)
-        _estimate(model_path = "org/model")
-        assert asked["retains_history"] is False
+        for available in (True, False):
+            monkeypatch.setattr(
+                mlx_inference, "mlx_vlm_snapshot_store_available", lambda a = available: a
+            )
+            _estimate(model_path = "org/model")
+            assert asked["retains_history"] is available
 
     def test_gguf_not_on_disk_is_not_downloaded(self, monkeypatch):
         # No header to read and no reaching for the network on a slider drag.
@@ -3894,6 +3899,25 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 192, 128), 2, 4, 64, 2048) is None
         # Stating the width the keys already have changes nothing.
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 128), 2, 4, 64, 2048) == (
+            mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
+        )
+
+    def test_a_tower_that_states_nothing_is_still_priced_from_its_checkpoint(self):
+        # The two width sources are merged field by field, so a shorter one silently drops the
+        # tail and the route then cannot read the geometry the checkpoint did state.
+        assert len(mm._tower_widths(object())) == len(mm._config_widths({}))
+        config = {
+            "hidden_size": 3584,
+            "intermediate_size": 18944,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+        }
+        merged = tuple(
+            tower or checkpoint
+            for tower, checkpoint in zip(mm._tower_widths(object()), mm._config_widths(config))
+        )
+        assert mm._dequantized_row_bytes(merged, 2, 4, 64, 2048) == (
             mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
         )
 

@@ -633,7 +633,8 @@ def _tower_layers(model) -> Optional[int]:
 
 
 def _tower_widths(model):
-    """``(hidden, intermediate, heads, kv heads, head width)`` as the tower was BUILT, or zeros."""
+    """The widths in ``_config_widths``' order as the tower was BUILT, or zeros. The two are
+    merged field by field, so they answer with the same shape or the merge drops the tail."""
     node, depth = model, 0
     while node is not None and depth < 3:
         for name in ("args", "config"):
@@ -655,7 +656,7 @@ def _tower_widths(model):
                 )
         node = getattr(node, "model", None) or getattr(node, "language_model", None)
         depth += 1
-    return 0, 0, 0
+    return (0,) * len(_config_widths({}))
 
 
 def _config_widths(config: dict):
@@ -679,7 +680,7 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits, kv_group_size):
     cache = None
     whole_prompt = False
     layers = None
-    widths = (0, 0, 0, 0, 0, 0)
+    widths = (0,) * len(_config_widths({}))
     failure = ValueError("no architecture module could build this config")
     for build, make_prompt_cache, model_class in _probe_models(config, dtype):
         # Construction stays OUTSIDE the guard: retrying a rejected config builds a full tower.
