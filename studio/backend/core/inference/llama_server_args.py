@@ -35,8 +35,8 @@ BATCH_MAX = 65536
 CTX_CHECKPOINTS_MAX = 256
 CACHE_RAM_MAX_MIB = 1024 * 1024
 
-# Slot-count aliases, in one place: the denial below, its #9510 hint, and the single-sequence retry in llama_cpp.py all
-# have to cover the same set, or a spelling one of them misses reaches llama-server unnoticed.
+# Slot-count aliases in one place: the denial below, its #9510 hint and the single-sequence retry must cover the same
+# set, or a spelling one of them misses reaches llama-server unnoticed.
 _PARALLEL_FLAGS: frozenset[str] = frozenset({"-np", "--parallel", "--n-parallel"})
 
 # Each group = every alias (short + long) of one hard-denied flag. Extend the matching group when llama.cpp adds a new

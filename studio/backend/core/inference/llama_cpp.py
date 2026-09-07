@@ -17514,13 +17514,8 @@ class LlamaCppBackend:
         """
         return env.pop("LLAMA_ARG_FLASH_ATTN", None) is not None
 
-    # llama.cpp refusing a unified KV cache because this architecture needs one
-    # sequence per stream. Matched on llama.cpp's own wording rather than on an
-    # architecture name, so a second model with the same constraint is covered
-    # without a list to keep current. What glm5next actually emits is the
-    # GGML_ASSERT in ggml-org/llama.cpp#27754, whose stringified expression
-    # carries the second marker; the first is the same refusal worded as a
-    # context-init error, which is how the field report quoted it.
+    # On the wording, not an architecture name, so the next model needs no list.
+    # glm5next spells it as the GGML_ASSERT of ggml-org/llama.cpp#27754.
     _KV_UNIFIED_REFUSED_MARKERS = (
         "a unified kv cache is only supported with a single sequence",
         "needs one sequence per stream",
@@ -17528,7 +17523,6 @@ class LlamaCppBackend:
 
     @staticmethod
     def _is_kv_unified_refused(output: str) -> bool:
-        """Did the child refuse to build a context because of --kv-unified?"""
         low = (output or "").lower()
         return any(marker in low for marker in LlamaCppBackend._KV_UNIFIED_REFUSED_MARKERS)
 
@@ -17536,18 +17530,9 @@ class LlamaCppBackend:
     def _with_single_sequence(cmd: list[str]) -> Optional[list[str]]:
         """Return cmd re-run as one sequence, or None when it already is one.
 
-        Studio appends --kv-unified whenever it asks for more than one slot, to
-        stop llama.cpp splitting -c into per-slot windows. Some architectures
-        reject that pairing outright and the model then cannot load at all, so
-        the retry reverses Studio's own choice rather than the user's context:
-        drop --kv-unified and pin --parallel to 1, which is the configuration
-        that would never have added the flag in the first place.
-
-        Every occurrence and every alias is rewritten, not just the emitted one.
-        Extras are appended after Unsloth's flags and llama.cpp is last-wins, so
-        one slot count surviving in the tail would put the rejected geometry
-        straight back. _PARALLEL_FLAGS is the set the denylist uses, so the two
-        cannot drift apart.
+        Studio adds --kv-unified itself above one slot, so this reverses Studio's
+        choice, not the user's. Every alias goes, from _PARALLEL_FLAGS so it cannot
+        drift from the denylist; llama.cpp is last-wins.
         """
         out: list[str] = []
         saw_kv_unified = False
@@ -17560,13 +17545,11 @@ class LlamaCppBackend:
             name = _flag_name(tok)
             if name in ("--kv-unified", "-kvu"):
                 saw_kv_unified = True
-                # llama.cpp's own form is bare, but an inline "=1" and a separate
-                # "1" both reach us through user extras.
+                # The flag is bare, but an inline "=1" or a separate "1" reach us.
                 if (
                     "=" not in tok
                     and cmd[i + 1 : i + 2]
-                    # Case-sensitive, like llama.cpp's own bool parse and the
-                    # flash-attn helpers: "ON" is not a value it would accept.
+                    # Case-sensitive, like llama.cpp's own bool parse.
                     and cmd[i + 1] in _LLAMA_ARG_TRUE_FALSE_AUTO_VALUES
                 ):
                     skip_value = True
@@ -17578,8 +17561,7 @@ class LlamaCppBackend:
                     # The attached short, -np8, which _flag_name peels to -np.
                     value = tok[len(name) :]
                 else:
-                    # Only a real value is consumed: a valueless --parallel is
-                    # malformed, and swallowing the next token would delete a flag.
+                    # Valueless --parallel: eating the next token would delete a flag.
                     value = cmd[i + 1] if i + 1 < len(cmd) else ""
                     skip_value = _flag_name(value) is None
                 try:
@@ -17599,10 +17581,8 @@ class LlamaCppBackend:
     def _drop_env_single_sequence(env: MutableMapping[str, str]) -> bool:
         """Drop inherited unified-cache and slot-count env before that retry.
 
-        llama.cpp applies the environment before parsing argv, so the argv wins
-        on --parallel. Dropped rather than negated with --no-kv-unified: the drop
-        needs nothing of the binary, while emitting a flag needs every build that
-        reaches here to know it, and one that does not never starts at all.
+        llama.cpp reads its environment before argv. Dropped, not negated with
+        --no-kv-unified, which needs every build reaching here to know it.
         """
         dropped = env.pop("LLAMA_ARG_KV_UNIFIED", None) is not None
         return env.pop("LLAMA_ARG_N_PARALLEL", None) is not None or dropped
@@ -23550,11 +23530,8 @@ class LlamaCppBackend:
                             _startup_output
                         ) or self._is_tensor_quant_kv_unsupported(_startup_output)
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
-                        # The unified-cache refusal is the same shape: an architecture
-                        # constraint no fit retry can reach, and the caller's
-                        # single-sequence rung reads the argv and the output of the
-                        # launch that refused, which a fit retry would have replaced.
-                        # Whole buffer, not the tail: this one arrives with a backtrace.
+                        # No fit retry reaches it, and the rung below needs this
+                        # launch's argv. Whole buffer: it arrives with a backtrace.
                         _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
                             "\n".join(self._stdout_lines)
                         )
@@ -24346,16 +24323,10 @@ class LlamaCppBackend:
                             self._memory_state = resolve_effective_memory_state(cmd, env)
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
 
-                # Some architectures need one sequence per stream and refuse to
-                # build a context under --kv-unified, which Studio appends on its
-                # own whenever it asks for more than one slot. The model is then
-                # unloadable no matter what the user changes, so reverse Studio's
-                # choice rather than theirs: one slot, no unified cache, the
-                # requested context intact. glm5next spells the refusal as a
-                # GGML_ASSERT, so the child aborts: this MUST stay ahead of the
-                # flash-attn rung, which takes any signal crash and would spend
-                # the retry disabling a flag that was never the cause. Matched on
-                # the message, not the exit, so the Windows abort lands here too.
+                # Studio adds --kv-unified itself above one slot, so nothing the user
+                # changes reaches it: retry at one slot, context intact. It aborts, so
+                # this MUST stay ahead of the flash-attn rung, which takes any signal
+                # crash; on the message, not the exit, so Windows lands here too.
                 if not healthy and not _load_cancelled():
                     _kvu_cmd = (
                         self._with_single_sequence(_last_spawn_cmd)
@@ -24369,17 +24340,13 @@ class LlamaCppBackend:
                             "dropped. Concurrent requests will queue."
                         )
                         self._kill_process()
-                        # llama.cpp reads the environment before argv, and
-                        # LLAMA_ARG_KV_UNIFIED has no negated flag to emit against it.
                         if self._drop_env_single_sequence(env):
                             logger.info(
                                 "Dropped inherited LLAMA_ARG_KV_UNIFIED / "
                                 "LLAMA_ARG_N_PARALLEL for the single-sequence retry."
                             )
                         cmd = _kvu_cmd
-                        # Committed below (_commit_effective_parallel_slots,
-                        # _kv_cache_unified) and read by admission control; left at the
-                        # rejected values Studio would admit several requests at once.
+                        # Read by admission control; left as-is Studio over-admits.
                         n_parallel = 1  # allow-slot-clamp: llama-server refused more
                         kv_cache_unified = False
                         healthy = _spawn_and_wait(_kvu_cmd, label = "-single-seq")

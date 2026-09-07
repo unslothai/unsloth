@@ -617,13 +617,10 @@ def test_fit_off_retry_skipped_on_a_tensor_capability_crash():
     """The fit-independent --fit off retry is skipped on the split-axis marker, else
     the model crashes a second time before the latch records it (reviewer.py, #6659).
 
-    The same skip now also covers the pre-b9455 refusal of a quantized KV cache in
-    tensor mode (ggml-org/llama.cpp#23792) and the unified-cache refusal an
-    architecture needing one sequence per stream raises: none of the three is
-    something a second spawn to let it offload can help, and each costs a full
-    model load. Hence _capability_crash, wider than the split-axis guard it
-    started as, with _tensor_capability_crash left as the tensor-only half the
-    ROCm rung still gates on.
+    It now also covers the pre-b9455 quantized-KV refusal in tensor mode
+    (ggml-org/llama.cpp#23792) and the unified-cache refusal: no second spawn helps
+    any of the three, and each costs a full model load. Hence _capability_crash,
+    with _tensor_capability_crash left as the half the ROCm rung gates on.
     """
     src = inspect.getsource(LlamaCppBackend.load_model)
     retry = src.find('run_cmd = [*run_cmd, "--fit", "off"]')

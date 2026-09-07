@@ -3,12 +3,8 @@
 
 """The single-sequence retry for architectures that refuse a unified KV cache.
 
-Studio appends ``--kv-unified`` on its own whenever it asks for more than one
-slot, to stop llama.cpp splitting ``-c`` into per-slot windows. Some
-architectures need one sequence per stream and refuse to build a context that
-way, so the model cannot load at all and nothing the user changes in the UI
-reaches the flag that caused it. The retry reverses Studio's choice, not the
-user's context.
+Studio appends ``--kv-unified`` itself above one slot, so nothing the user changes
+in the UI reaches the flag that stops the model loading.
 """
 
 from __future__ import annotations
@@ -28,9 +24,7 @@ _REFUSAL = (
 )
 
 
-# What the binary actually prints: the GGML_ASSERT of ggml-org/llama.cpp#27754,
-# stringified expression and all, then a backtrace and abort(). The full buffer
-# is scanned, not its tail, so the backtrace cannot push the marker out of view.
+# What the binary prints: the full buffer is scanned, so the backtrace cannot bury it.
 _ASSERT = (
     "/build/llama.cpp/src/models/glm5next.cpp:1018: GGML_ASSERT(n_ps == 1 && "
     '"the per-cell pool view needs one sequence per stream") failed\n'
@@ -51,8 +45,7 @@ def test_an_unrelated_failure_is_not():
         "error loading model: unknown model architecture: 'qwen4exp'"
     )
     assert not LlamaCppBackend._is_kv_unified_refused("")
-    # Upstream's minimax-m3 warning degrades to dense attention and still loads;
-    # retrying it as one slot would cost three slots for nothing.
+    # minimax-m3 still loads: retrying it would cost three slots for nothing.
     assert not LlamaCppBackend._is_kv_unified_refused(
         "minimax_m3: unified KV cache with n_seq_max > 1; MSA needs per-sequence "
         "streams -> running DENSE attention. Drop --kv-unified to enable MSA."
@@ -60,7 +53,6 @@ def test_an_unrelated_failure_is_not():
 
 
 def test_the_reported_launch_becomes_one_slot_with_no_unified_cache():
-    """The argv is the one in the report, trimmed to the flags that matter."""
     cmd = [
         "llama-server",
         "-m",
@@ -85,7 +77,6 @@ def test_the_reported_launch_becomes_one_slot_with_no_unified_cache():
     assert out is not None
     assert "--kv-unified" not in out
     assert out[out.index("--parallel") + 1] == "1"
-    # The user's context is theirs; only Studio's own choice is reversed.
     assert out[out.index("-c") + 1] == "128000"
     assert out[out.index("--gpu-layers") + 1] == "47"
     assert "--jinja" in out and "--no-context-shift" in out
@@ -110,13 +101,12 @@ def test_every_spelling_of_the_two_flags_is_handled():
         "m",
     ]
 
-    # -np8 is llama.cpp's attached short form, which _flag_name peels to -np.
     cmd = ["llama-server", "-np8", "--kv-unified", "1"]
     assert LlamaCppBackend._with_single_sequence(cmd) == ["llama-server", "-np", "1"]
 
 
 def test_every_alias_of_the_slot_count_is_rewritten():
-    """--n-parallel is in the denylist group too, and llama.cpp is last-wins."""
+    """--n-parallel is in the denylist group too."""
     out = LlamaCppBackend._with_single_sequence(
         ["llama-server", "--parallel", "4", "--kv-unified", "--n-parallel", "8"]
     )
@@ -160,23 +150,18 @@ def test_a_clean_environment_reports_nothing_dropped():
 
 
 def test_the_fit_recovery_rungs_stand_down_for_this_refusal():
-    """The abort is a startup crash, so _spawn_and_wait's --fit rungs would take
-    it first: a second full model load on a theory unrelated to the failure, and
-    the argv this retry then reads would be the fit-rewritten one, not the one
-    that refused. They are excluded the same way the tensor-capability crash is."""
+    """A startup crash, so the --fit rungs would take it first and waste a load."""
     import inspect
 
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "_capability_crash = _tensor_capability_crash or self._is_kv_unified_refused" in src
-    # Every --fit rung, and only those: the HIP rung keeps its own narrower gate.
+    # Every --fit rung, and only those: the HIP rung keeps its narrower gate.
     assert src.count("and not _capability_crash") == 3
     assert src.count("and not _tensor_capability_crash") == 1
 
 
 def test_the_retry_commits_the_one_slot_geometry_it_launched():
-    # The launch commits n_parallel and kv_cache_unified after the ladder, so the
-    # retry has to overwrite the locals it reverses, or Studio would advertise and
-    # admit the multi-slot geometry that llama-server just refused.
+    # Committed after the ladder, so the retry must overwrite what it reverses.
     import inspect
 
     src = inspect.getsource(LlamaCppBackend.load_model)
