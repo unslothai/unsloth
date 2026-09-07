@@ -1327,6 +1327,7 @@ def test_the_replay_trim_runs_before_the_attachment_marker_exists():
     With the attachment's turn AHEAD of the replayed pictures, running it after the
     mark deleted ordinal 0 -- the attachment's own marker -- while charging replay
     payload 0, and every later pixel shifted onto the marker before it."""
+
     def _scene():
         return [
             {"role": "user", "content": "here is my diagram"},
@@ -1339,17 +1340,15 @@ def test_the_replay_trim_runs_before_the_attachment_marker_exists():
 
     # The order the route now uses: trim, snapshot, then mark.
     conversation, payloads = _scene(), list(replay)
-    mcp_images.trim_image_turns(
-        conversation, payloads, limit = mcp_images.MAX_TOTAL_MODEL_IMAGES - 1
-    )
+    mcp_images.trim_image_turns(conversation, payloads, limit = mcp_images.MAX_TOTAL_MODEL_IMAGES - 1)
     prior = mcp_images.image_marker_parts(conversation)
     conversation = mcp_images.mark_last_user_turn(conversation, 1, ordinal = 0)
     ordered = mcp_images.pixels_in_marker_order(conversation, prior, payloads, "ATTACHMENT")
 
     owner = conversation[0]["content"]
-    assert isinstance(owner, list) and any(part.get("type") == "image" for part in owner), (
-        "the attachment's own marker was trimmed away"
-    )
+    assert isinstance(owner, list) and any(
+        part.get("type") == "image" for part in owner
+    ), "the attachment's own marker was trimmed away"
     assert ordered[0] == "ATTACHMENT", ordered
     assert len(mcp_images.image_marker_parts(conversation)) == len(ordered)
 
@@ -1407,8 +1406,7 @@ def test_a_live_result_leaves_room_for_the_pictures_the_caller_attached():
     )
     # And the caller's own picture is not what made room.
     assert any(
-        part.get("type") == "image_url"
-        for part in conversation[0]["content"]
+        part.get("type") == "image_url" for part in conversation[0]["content"]
     ), "the attachment was trimmed to fit the tool's results"
 
 

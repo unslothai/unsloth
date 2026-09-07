@@ -5201,9 +5201,9 @@ def test_the_anthropic_envelope_is_promoted_before_tool_roles_are_folded_away():
     ):
         promote = source.index("_promote_mcp_history_images_async(")
         sanitize = source.index("_sanitize_anthropic_openai_messages(openai_messages")
-        assert promote < sanitize, (
-            f"{name}: the fold runs first and the envelope never reaches promotion"
-        )
+        assert (
+            promote < sanitize
+        ), f"{name}: the fold runs first and the envelope never reaches promotion"
         named = source.index("_named_anthropic_tool_results(openai_messages)")
         assert named < promote, f"{name}: provenance has to be restored first"
 
@@ -5250,9 +5250,9 @@ def test_an_anthropic_client_tool_is_not_trusted_as_an_mcp_image_source():
     assert named[1]["name"] == "read_file", "the result was not correlated to its call"
 
     out = mcp_images.promote_history(named, vision = True)
-    assert not any(isinstance(m.get("content"), list) for m in out), (
-        "a non-mcp__ tool was promoted as trusted image input"
-    )
+    assert not any(
+        isinstance(m.get("content"), list) for m in out
+    ), "a non-mcp__ tool was promoted as trusted image input"
     # The suffix still comes off the text for everyone, MCP or not.
     assert mcp_images.SENTINEL not in json.dumps(out)
 
@@ -5293,10 +5293,13 @@ def test_a_real_mcp_tool_still_promotes_through_the_anthropic_naming():
 
     out = mcp_images.promote_history(_named_anthropic_tool_results(translated), vision = True)
 
-    assert sum(
-        1
-        for message in out
-        if isinstance(message.get("content"), list)
-        for part in message["content"]
-        if part.get("type") == "image_url"
-    ) == 1
+    assert (
+        sum(
+            1
+            for message in out
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if part.get("type") == "image_url"
+        )
+        == 1
+    )
