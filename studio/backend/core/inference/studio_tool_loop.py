@@ -1005,9 +1005,7 @@ def _rewrite_content(payload: dict[str, Any], choice: dict[str, Any], text: str)
 
 
 def _split_turn_end(
-    payload: dict[str, Any],
-    choice: dict[str, Any],
-    delta: dict[str, Any],
+    payload: dict[str, Any], choice: dict[str, Any], delta: dict[str, Any]
 ) -> tuple[str | None, str]:
     """Separate a turn-ending chunk into what can be sent now and the reason to hold.
 

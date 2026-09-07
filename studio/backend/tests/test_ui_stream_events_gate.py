@@ -652,10 +652,7 @@ def test_a_legacy_finish_after_a_structured_call_is_withheld_too():
     # litellm relays it verbatim. The loop runs such a call (only "length" and
     # "content_filter" stop it), so relaying the reason ends the caller's turn early.
     stripper = ServerToolCallStripper()
-    call = (
-        'data: {"id": "c", "choices": [{"index": 0, "delta": {"tool_calls":'
-        ' [{"id": "x"}]}}]}'
-    )
+    call = 'data: {"id": "c", "choices": [{"index": 0, "delta": {"tool_calls": [{"id": "x"}]}}]}'
     assert stripper.strip(call) is None
     out = stripper.strip(
         'data: {"id": "c", "choices": [{"index": 0, "delta": {},'

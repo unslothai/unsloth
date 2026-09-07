@@ -186,9 +186,7 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
     if not isinstance(choices, list) or not choices:
         return line
 
-    not_really_final = (
-        ("tool_calls", "stop", "function_call") if pending_call else ("tool_calls",)
-    )
+    not_really_final = ("tool_calls", "stop", "function_call") if pending_call else ("tool_calls",)
     changed = False
     kept_choices = []
     for choice in choices:
