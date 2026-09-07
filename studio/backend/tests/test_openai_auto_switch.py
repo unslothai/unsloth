@@ -2109,9 +2109,12 @@ def test_snapshot_selection_preserves_legacy_alias_companion_scope(
     assert resolver.local_gguf_companion_roots(
         entry.load_path, repo_level = entry.repo_level_companions
     ) == ((str(old), str(newer)) if repo_level else ())
-    assert resolver._local_gguf_entry(
-        "org/alias-scope", SimpleNamespace(path = str(newer)), exact_snapshot = True
-    ) is None
+    assert (
+        resolver._local_gguf_entry(
+            "org/alias-scope", SimpleNamespace(path = str(newer)), exact_snapshot = True
+        )
+        is None
+    )
 
 
 def test_hf_cache_entry_keeps_newer_companions_for_auto_switch(tmp_path, monkeypatch):
