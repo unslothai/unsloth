@@ -413,7 +413,9 @@ def test_a_relative_marker_is_resolved_before_it_is_handed_over(monkeypatch, tmp
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
 
 
-def test_a_recorded_path_containing_a_newline_survives_the_round_trip(monkeypatch, tmp_path, caches):
+def test_a_recorded_path_containing_a_newline_survives_the_round_trip(
+    monkeypatch, tmp_path, caches
+):
     """A newline is legal in a POSIX path and uv reports one verbatim. Read line by line,
     the record looked like several and only the last fragment survived, so the update
     treated a warm cache as absent and redirected uv somewhere else."""
@@ -563,7 +565,11 @@ def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, t
 # --- The uv probe ---------------------------------------------------------------------
 
 
-def _probe_kwargs(monkeypatch, stdout: str = "/cache/uv\n", cwd = None) -> dict:
+def _probe_kwargs(
+    monkeypatch,
+    stdout: str = "/cache/uv\n",
+    cwd = None,
+) -> dict:
     studio = _studio()
     monkeypatch.setattr(studio.shutil, "which", lambda name: "/usr/bin/uv")
     seen: dict = {}
