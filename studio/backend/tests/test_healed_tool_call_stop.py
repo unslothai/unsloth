@@ -252,7 +252,7 @@ def test_a_turn_with_no_call_keeps_its_only_finish_reason(loop_env):
 
 
 def test_a_truncated_turn_keeps_its_reason(loop_env):
-    """"length" cut the call off half-written, so the loop refuses to run it.
+    """ "length" cut the call off half-written, so the loop refuses to run it.
 
     Nothing follows, so that reason is genuinely the end of the response and withholding it
     would leave the caller with none at all.

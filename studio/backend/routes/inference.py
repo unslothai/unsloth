@@ -20182,9 +20182,7 @@ async def _proxy_to_external_provider(
                     # Matches the strip below: only a headerless caller has its tool calls
                     # withheld, and only it needs the loop to flag a healed one the wire
                     # never carried. The opt-in stream keeps every frame, so it arms nothing.
-                    on_withheld_tool_call = (
-                        None if _ui_events else _tool_call_stripper.arm
-                    ),
+                    on_withheld_tool_call = (None if _ui_events else _tool_call_stripper.arm),
                 ),
                 cancel_event = cancel_event,
             )
