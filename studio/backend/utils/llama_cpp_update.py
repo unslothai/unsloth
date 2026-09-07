@@ -642,7 +642,6 @@ def _selection_applied(
     return resolved is None or installed_backend is None or resolved == installed_backend
 
 
-
 def _remembered_rocm_gfx(marker: Optional[dict]) -> Optional[str]:
     """The arch to replay when re-resolving, falling back to the installed asset's name.
 
@@ -657,6 +656,7 @@ def _remembered_rocm_gfx(marker: Optional[dict]) -> Optional[str]:
         return recorded
     args = _flow.rocm_install_args((marker or {}).get("asset"))
     return args[1] if len(args) == 2 and args[0] == "--rocm-gfx" else None
+
 
 def _pending_backend_migration(
     binary: Optional[str],
