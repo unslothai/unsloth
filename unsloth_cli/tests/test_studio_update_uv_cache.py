@@ -477,16 +477,33 @@ def test_a_caller_supplied_cache_is_never_promoted_to_the_marker(monkeypatch, tm
     assert not _marker(tmp_path).exists()
 
 
-def test_a_staged_update_does_not_write_the_live_marker(monkeypatch, tmp_path, caches):
-    """STUDIO_HOME names the LIVE install even in a staged child, and the stage can
-    still be rejected, so writing now would aim it at an environment never activated."""
+def test_a_staged_update_parks_its_choice_in_the_stage(monkeypatch, tmp_path, caches):
+    """STUDIO_HOME names the LIVE install even in a staged child, and the stage can still
+    be rejected, so the choice waits in the stage for _studio_stage.stage to promote it.
+    Dropping it instead left desktop-only installs on the content fallback forever."""
     studio = _studio()
     _studio_cache, default_cache = caches
     _fill(default_cache)
-    monkeypatch.setenv(studio._studio_stage.STAGE_ROOT_ENV, str(tmp_path / "stage"))
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    monkeypatch.setenv(studio._studio_stage.STAGE_ROOT_ENV, str(stage))
     _run_posix(monkeypatch, tmp_path)
 
     assert not _marker(tmp_path).exists()
+    assert (stage / "uv-cache-dir").read_text(encoding = "utf-8").strip() == str(default_cache)
+
+
+def test_a_marker_holding_a_null_byte_reads_as_a_cold_cache(monkeypatch, tmp_path, caches):
+    """Path takes an embedded NUL and scandir then raises ValueError, not OSError, so a
+    corrupted or hand-edited marker aborted every update before setup ran."""
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    _record(tmp_path / "StudioHome", "/nul\x00cache")
+
+    env = studio._with_studio_uv_cache({})
+
+    assert env["UV_CACHE_DIR"] == str(studio_cache)
 
 
 def test_the_backfill_replaces_a_symlink_rather_than_its_target(monkeypatch, tmp_path, caches):

@@ -3663,7 +3663,10 @@ def _uv_cache_has_packages(cache_dir: Path) -> bool:
             for entry in cache_dir.iterdir()
             if entry.name.startswith(_UV_CACHE_BUCKETS) and entry.is_dir()
         ]
-    except OSError:
+    except (OSError, ValueError):
+        # ValueError, not just OSError: a marker someone edited to hold an embedded NUL
+        # builds a Path fine and then raises out of scandir, which would abort an update
+        # over a file this code is meant to treat as advisory.
         return False
     for bucket in buckets:
         for _root, _dirs, files in os.walk(bucket):
@@ -3755,16 +3758,22 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
         # One run's value. Only an installer's own choice becomes a marker.
         return
-    if (os.environ.get(_studio_stage.STAGE_ROOT_ENV) or "").strip():
-        # STUDIO_HOME names the LIVE install here, and the stage can still be rejected.
-        return
     chosen = (env or {}).get("UV_CACHE_DIR")
     if not chosen:
         return
     live = _recorded_install_uv_cache()
     if live is not None and _uv_cache_has_packages(live):
         return
-    marker = STUDIO_HOME / "cache" / "uv-cache-dir"
+    stage_root = (os.environ.get(_studio_stage.STAGE_ROOT_ENV) or "").strip()
+    if stage_root:
+        # STUDIO_HOME names the LIVE install here and the stage can still be rejected, so
+        # the choice is parked in the stage and _studio_stage.stage promotes it once the
+        # stage is accepted. Writing the live marker now would record an update that may
+        # never activate; not writing at all left desktop-only installs, which never take
+        # the direct path, permanently on the content fallback this exists to replace.
+        marker = Path(stage_root) / _studio_stage.UV_CACHE_MARKER
+    else:
+        marker = STUDIO_HOME / "cache" / "uv-cache-dir"
     try:
         marker.parent.mkdir(parents = True, exist_ok = True)
         # Unlinked first: a write follows a symlink and truncates its target.
