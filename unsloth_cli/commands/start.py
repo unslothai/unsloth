@@ -1156,11 +1156,43 @@ def _log_tail(path: Path, lines: int = 20) -> str:
         return "(no server log)"
 
 
-def _log_size(path: Path) -> int:
-    try:
-        return path.stat().st_size
-    except OSError:
-        return 0
+# structlog events the server writes for a request it served. The readiness loop is the
+# only client during startup, so these lines say the CLI polled, not that the model moved.
+_SERVER_POLL_LOG_EVENTS = ("request_completed", "request_failed")
+
+
+def _is_server_poll_line(line: str) -> bool:
+    return any(event in line for event in _SERVER_POLL_LOG_EVENTS)
+
+
+class _ServerLogProgress:
+    """New log bytes that are not the CLI's own polling heartbeat.
+
+    The wait loop below calls `_studio_healthy` on every pass, and the server logs
+    that request, so raw file growth is not evidence the model is moving: it would
+    keep resetting the deadline for a server that is up but permanently wedged.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._offset = 0
+        self._partial = ""
+
+    def poll(self) -> int:
+        try:
+            with self._path.open("rb") as handle:
+                size = handle.seek(0, os.SEEK_END)
+                if size < self._offset:  # log replaced under us; start over
+                    self._offset, self._partial = 0, ""
+                handle.seek(self._offset)
+                chunk = handle.read()
+                self._offset = handle.tell()
+        except OSError:
+            return 0
+        # Progress bars redraw with \r and never emit \n, so both end a line here.
+        parts = re.split(r"[\r\n]", self._partial + chunk.decode("utf-8", errors = "replace"))
+        self._partial = parts.pop()
+        return sum(len(part) for part in parts if not _is_server_poll_line(part))
 
 
 def _redacted_log_tail(path: Path, lines: int = 20) -> str:
@@ -1333,8 +1365,8 @@ def _start_studio_server(
 
     deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
     progress: Optional[_ModelDownloadProgress] = None
+    log_progress = _ServerLogProgress(log_path)
     downloaded_bytes = 0
-    log_size = 0
     early_key_seen = False
     try:
         while time.monotonic() < deadline:
@@ -1360,13 +1392,12 @@ def _start_studio_server(
                     )
             if progress is not None:
                 progress.poll()
-            # Fresh bytes or a growing log mean the child is alive, so the cap measures
-            # idle time rather than the whole download plus load.
-            log_size_now = _log_size(log_path)
+            # Fresh bytes or new log output of its own mean the child is alive, so the
+            # cap measures idle time rather than the whole download plus load.
             bytes_now = progress.downloaded_bytes if progress is not None else 0
-            if bytes_now > downloaded_bytes or log_size_now > log_size:
+            if bytes_now > downloaded_bytes or log_progress.poll() > 0:
                 deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
-            downloaded_bytes, log_size = bytes_now, log_size_now
+            downloaded_bytes = bytes_now
             # New children emit an early key marker, so wait for the final model banner;
             # older children only print the key after load, so fall back to that.
             ready_signal = "Model loaded:" in tail if early_key_seen else "sk-unsloth-" in tail

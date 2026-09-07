@@ -16,6 +16,9 @@ MODEL = "unsloth/Qwen3-Coder-480B-A35B-Instruct-GGUF"
 KEY_LINE = f"{start_cli._START_API_KEY_PREFIX}sk-unsloth-test\n"
 EXPECTED_BYTES = 500 * 1024**3
 STEP_S = 120.0
+# A loop that keeps resetting its deadline never returns, so stop it and say so rather
+# than hanging the suite. At STEP_S this is ~7 days of fake wall clock.
+MAX_ITERATIONS = 5000
 
 
 class FakeClock:
@@ -50,12 +53,14 @@ class Harness:
         downloaded_bytes = 0,
         chunk_bytes = 0,
         log_chunk = 0,
+        poll_log = False,
         ready_at = None,
         tail = KEY_LINE,
     ):
         self.clock = FakeClock(STEP_S)
         self.log_path = None
         self.log_chunk = log_chunk
+        self.poll_log = poll_log
         self.downloaded_bytes = downloaded_bytes
         self.chunk_bytes = chunk_bytes
         self.ready_at = ready_at
@@ -102,7 +107,7 @@ class Harness:
         path,
         lines = 20,
     ):
-        # The real file the child writes to, so `_log_size` runs its own stat().
+        # The real file the child writes to, so `_ServerLogProgress` reads it for real.
         self.log_path = path
         return self.tail
 
@@ -112,9 +117,22 @@ class Harness:
         timeout = 3.0,
     ):
         self.iterations += 1
+        assert self.iterations <= MAX_ITERATIONS, (
+            f"readiness loop still running after {self.iterations} passes "
+            f"({self.clock.elapsed:.0f}s of fake clock); its deadline never expires"
+        )
         if self.log_chunk and self.log_path is not None:
             with open(self.log_path, "ab") as handle:
-                handle.write(b"." * self.log_chunk)
+                handle.write(b"." * self.log_chunk + b"\n")
+        if self.poll_log and self.log_path is not None:
+            # Byte-for-byte the line `LoggingMiddleware` writes for the `/api/health`
+            # GET this loop just made, timestamp included so every line is new bytes.
+            with open(self.log_path, "ab") as handle:
+                handle.write(
+                    f"2026-09-08 03:{self.iterations // 60:02d}:{self.iterations % 60:02d}"
+                    " [info     ] request_completed              method=GET"
+                    " path=/api/health process_time_ms=0.4 status_code=200\n".encode()
+                )
         if self.ready_at is not None and self.iterations >= self.ready_at:
             self.tail = f"{KEY_LINE}Model loaded: {MODEL}\n"
             return True
@@ -182,3 +200,21 @@ def test_a_load_that_keeps_logging_survives_past_the_idle_cap(monkeypatch):
     assert server is harness.server
     assert harness.shutdowns == []
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_the_cli_s_own_health_poll_does_not_keep_a_wedged_server_alive(monkeypatch, capsys):
+    # The loop calls `_studio_healthy` every pass and the server logs that request, so
+    # the log grows on its own. Counting that as progress would make the cap unreachable.
+    harness = Harness(
+        monkeypatch,
+        downloaded_bytes = EXPECTED_BYTES,
+        chunk_bytes = 0,
+        poll_log = True,
+    )
+
+    with pytest.raises(typer.Exit):
+        harness.start()
+
+    assert harness.shutdowns == [harness.server]
+    assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
+    assert harness.clock.elapsed < 2 * start_cli._SERVER_START_TIMEOUT_S
