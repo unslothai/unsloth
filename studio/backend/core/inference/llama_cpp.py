@@ -26315,11 +26315,9 @@ class LlamaCppBackend:
         _pgid = self._leading_process_group(_pid)
         _descendants = self._collect_descendants(_pid)
         if teardown:
-            # Published BEFORE the signal, not in the finally: the reference stays
-            # set across the waits below, so a concurrent _wait_for_health would
-            # read this deliberate exit as a startup crash and let the caller
-            # respawn during app shutdown. Only the teardown callers set this; the
-            # retry ladder's own reaping must stay recoverable.
+            # Before the signal, not in the finally: the reference stays set
+            # across the waits below, so a racing _wait_for_health would read this
+            # deliberate exit as a startup crash and respawn during shutdown.
             self._health_wait_torn_down = True
         try:
             if terminable:
@@ -27891,9 +27889,8 @@ class LlamaCppBackend:
                 return False
             # Process crashed?
             if process.poll() is not None:
-                # A teardown publishes itself before it signals and holds the
-                # reference across its waits, so an exit seen while that flag
-                # stands is deliberate: not a crash, and nothing may respawn.
+                # A teardown publishes before it signals and holds the reference
+                # across its waits, so an exit under that flag is deliberate.
                 if getattr(self, "_health_wait_torn_down", False):
                     logger.info("llama-server was torn down while waiting for it to become healthy")
                     self._health_wait_cancelled = True

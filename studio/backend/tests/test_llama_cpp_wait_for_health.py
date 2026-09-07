@@ -175,9 +175,8 @@ class TestWaitForHealthResilience:
         b._process.poll.return_value = None
 
         def probe(*a, **kw):
-            # The shutdown thread arriving mid-wait: publish, then signal. The
-            # reference stays set, which is the whole point of the window. Done
-            # here rather than before the call because the wait resets the flag on
+            # The shutdown thread mid-wait: publish, then signal, reference still
+            # set. Here rather than before the call because the wait resets on
             # entry, so only a teardown landing DURING a wait is this case.
             b._health_wait_torn_down = True
             b._process.poll.return_value = -15
