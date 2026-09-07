@@ -109,12 +109,7 @@ def classify_audio_tokens(tok_config: dict) -> Optional[str]:
     return None
 
 
-# What llama.cpp will actually serve is decided after the load by
-# LlamaCppBackend._detect_audio_type_strict, which probes the live vocabulary with these
-# exact codec tokens in this exact order. A preflight that is any looser accepts a target
-# the loader then refuses, and the switch has already evicted the resident speech model by
-# then -- OuteTTS 0.2 carries the four delimiters below but none of DAC's codebook tokens.
-# Keep the two in step; the GGUF gate reads this from the header instead of a live server.
+# Keep token order and strictness aligned with LlamaCppBackend._detect_audio_type_strict.
 SNAC_PROBE_TOKEN_IDS = (128258, 128259)
 
 GGUF_AUDIO_CLASSIFIER_TOKENS = frozenset(
@@ -133,15 +128,13 @@ GGUF_AUDIO_CLASSIFIER_TOKENS = frozenset(
 
 
 def classify_gguf_vocab_audio_type(tokens: set, snac_probe_is_codes: bool) -> Optional[str]:
-    """The audio_type llama.cpp will report for a GGUF whose vocabulary is *tokens*."""
     if snac_probe_is_codes:
         return "snac"
     if "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens:
         return "csm"
     if "<|startoftranscript|>" in tokens:
         return "whisper"
-    # Before the codecs, as in the serving detector: a model carrying both an audio-in
-    # marker and codec tokens takes audio input, and is not something to switch to here.
+    # Match the serving detector: audio-input markers take precedence over codecs.
     if "<audio_soft_token>" in tokens or "<|audio|>" in tokens:
         return "audio_vlm"
     if "<|bicodec_semantic_0|>" in tokens and "<|bicodec_global_0|>" in tokens:

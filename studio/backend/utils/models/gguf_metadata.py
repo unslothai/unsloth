@@ -624,7 +624,6 @@ _MAX_GGUF_VOCAB_ENTRIES = 2_000_000
 
 
 def _parse_gguf_marker_tokens_stream(f: BinaryIO) -> Optional[Tuple[list[str], bool]]:
-    """Parse speech markers from a GGUF stream positioned at byte zero."""
     from utils.audio_tokens import GGUF_AUDIO_CLASSIFIER_TOKENS, SNAC_PROBE_TOKEN_IDS
 
     marker_bytes = {token.encode("utf-8"): token for token in GGUF_AUDIO_CLASSIFIER_TOKENS}
@@ -673,8 +672,7 @@ def _parse_gguf_marker_tokens_stream(f: BinaryIO) -> Optional[Tuple[list[str], b
             atype, alen = struct.unpack("<IQ", raw_header)
             if atype != 8 or alen > _MAX_GGUF_VOCAB_ENTRIES:
                 return None
-            # The serving detector asks what these two ids detokenize to, so the
-            # vocabulary has to be read positionally, not just as a set of markers.
+            # SNAC classification depends on the tokens at these exact IDs.
             snac_probe = dict.fromkeys(SNAC_PROBE_TOKEN_IDS, False)
             for index in range(alen):
                 raw_length = f.read(8)
@@ -687,8 +685,6 @@ def _parse_gguf_marker_tokens_stream(f: BinaryIO) -> Optional[Tuple[list[str], b
                 if len(raw) != slen:
                     return None
                 if index in snac_probe:
-                    # Substring, not prefix: the detector asks what the id decodes
-                    # to, and a tokenizer decoration would sit in front of the marker.
                     snac_probe[index] = b"<custom_token_" in raw
                 marker = marker_bytes.get(raw)
                 if marker is not None:
@@ -697,8 +693,7 @@ def _parse_gguf_marker_tokens_stream(f: BinaryIO) -> Optional[Tuple[list[str], b
                     marker_tokens[marker] = index
         if snac_probe is None:
             return None
-        # llama.cpp's parse-special path does not treat plain NORMAL
-        # vocabulary membership as a one-token capability marker.
+        # llama.cpp does not parse NORMAL vocabulary entries as special markers.
         markers = [
             token
             for token, index in marker_tokens.items()
@@ -713,7 +708,6 @@ def _parse_gguf_marker_tokens_stream(f: BinaryIO) -> Optional[Tuple[list[str], b
 
 
 def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
-    """(marker tokens, whether the ids the SNAC probe detokenizes are codec codes)."""
     try:
         with open(path, "rb") as f:
             return _parse_gguf_marker_tokens_stream(f)
@@ -723,7 +717,6 @@ def _parse_gguf_marker_tokens(path: str) -> Optional[Tuple[list[str], bool]]:
 
 
 def classify_gguf_tts_audio_prefix(data: bytes) -> Tuple[Optional[str], bool]:
-    """Classify a bounded GGUF prefix and report whether the parse was complete."""
     from io import BytesIO
     from utils.audio_tokens import classify_gguf_vocab_audio_type, is_tts_audio_type
 

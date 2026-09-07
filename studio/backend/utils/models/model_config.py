@@ -1208,7 +1208,6 @@ _audio_offline_miss_cache: Dict[_CapabilityCacheKey, float] = {}
 
 
 def _local_audio_metadata_fingerprint(model_name: str) -> tuple:
-    """Identity of every local file that can decide the cached audio verdict."""
     try:
         root = Path(normalize_path(model_name)).expanduser()
         if root.is_file():
@@ -1234,8 +1233,7 @@ def _local_audio_metadata_fingerprint(model_name: str) -> tuple:
             identities.append((relative, identity))
         return tuple(identities)
     except Exception:
-        # The probe below will decide whether the path is readable. A stable failure
-        # sentinel avoids turning cache-key construction into a request failure.
+        # Keep cache-key construction from turning an unreadable path into a request failure.
         return (("unreadable", None),)
 
 

@@ -117,7 +117,6 @@ _MAX_MINIMAX_TOKENIZER_BYTES = 32 * 1024 * 1024
 
 
 def _minimax_component_has_weights(directory: Path, weight_stem: str) -> bool:
-    """Whether a component has one whole tensor file or a complete shard index."""
     try:
         index_path = directory / f"{weight_stem}.safetensors.index.json"
         indexes = (index_path,) if index_path.is_file() else ()
@@ -168,7 +167,6 @@ def _minimax_component_has_weights(directory: Path, weight_stem: str) -> bool:
 
 
 def higgs_tts2_codec_local_complete(codec_path: str) -> bool:
-    """Whether a staged Higgs tokenizer has the files its Transformers load needs."""
     try:
         root = Path(codec_path).expanduser()
         if root.is_file():
@@ -182,7 +180,6 @@ def higgs_tts2_codec_local_complete(codec_path: str) -> bool:
 
 
 def minimax_music3_local_components_complete(model_path) -> bool:
-    """Whether a MiniMax modular snapshot contains every load-time component."""
     try:
         root = Path(model_path).expanduser()
         if root.is_file():

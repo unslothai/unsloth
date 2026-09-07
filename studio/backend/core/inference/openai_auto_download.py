@@ -54,9 +54,7 @@ _RETRY_AFTER_S = 30
 # cannot hold the slot
 _FAILED_HOLD_S = 3 * _RETRY_AFTER_S
 _MAX_LISTED_VARIANTS = 8
-# Real speech GGUFs can publish no tokenizer sidecars. Their vocabulary lives near the
-# start of the selected weight, so a bounded range read can answer without staging the
-# multi-GB checkpoint first.
+# Probe the selected weight because speech GGUFs need not publish tokenizer sidecars.
 _REMOTE_GGUF_SPEECH_PROBE_BYTES = 32 * 1024**2
 _REMOTE_GGUF_SPEECH_PROBE_TIMEOUT_S = _CODE_PROBE_TIMEOUT_S - 2.0
 
@@ -263,7 +261,6 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
 def _probe_remote_gguf_audio_type(
     repo_id: str, gguf_filename: str, hf_token: Optional[str], revision: Optional[str]
 ) -> tuple[Optional[str], bool]:
-    """Read enough of one Hub GGUF to classify its vocabulary, without downloading it."""
     try:
         from core.inference.diffusion_compat import _read_gguf_header
         from utils.models.gguf_metadata import classify_gguf_tts_audio_prefix
@@ -783,10 +780,7 @@ async def _admit_and_start(
             default = (None, False),
         )
         if definitive and (audio_type is None or audio_type in GGUF_TTS_AUDIO_TYPES):
-            # The selected GGUF vocabulary is the capability source the eventual
-            # llama.cpp load will use. A supported JSON sidecar is only a fallback
-            # when that bounded weight probe is inconclusive; an unsupported sidecar
-            # can still reject early without touching the weight.
+            # Prefer the selected weight; use a supported sidecar only when it is inconclusive.
             sidecar_audio_type = audio_type
             main_files = sorted(getattr(plan, "main_filenames", ()) or ())
             probed_audio_type, probed_definitive = await _bounded_probe(

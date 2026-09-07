@@ -88,7 +88,6 @@ def _advertised_loader_id(info) -> Optional[str]:
 
 
 def _resolve_load_dir(p, loader_id: Optional[str] = None):
-    """The concrete directory the selected backend loads from disk."""
     from pathlib import Path
 
     load_dir = p
@@ -312,7 +311,6 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
 
 
 def _host_can_serve_minimax_music3() -> bool:
-    """Mirror the native loader's fail-fast platform and dependency gates."""
     import sys
     from importlib.util import find_spec
     from importlib.metadata import version
@@ -334,7 +332,6 @@ def _host_can_serve_minimax_music3() -> bool:
 
 
 def _native_audio_pipeline_is_servable_here(load_dir) -> bool:
-    """Whether a local modular pipeline is a supported built-in native-audio model."""
     from core.inference.native_audio import (
         _MINIMAX_DOWNLOAD_COMPONENTS,
         minimax_music3_local_components_complete,

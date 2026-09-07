@@ -56,7 +56,6 @@ def resolve_bicodec_repo_path(
     local_files_only: Optional[bool] = None,
     cache_dir: Optional[str] = None,
 ) -> str:
-    """Resolve and stage the Spark repository that owns the BiCodec assets."""
     from huggingface_hub import snapshot_download
     from utils.hf_cache_settings import active_hf_hub_cache
     from utils.utils import canonical_model_repo_id, hf_env_offline

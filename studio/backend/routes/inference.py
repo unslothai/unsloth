@@ -550,13 +550,10 @@ def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
         )
 
 
-# The only codecs whose generator reads instructions/language; every other backend
-# drops them, so folding them into a budget would refuse a request they never see.
 _EXTRA_PROMPT_FIELD_AUDIO_TYPES = ("higgs_tts2", "moss_tts_local")
 
 
 def _speech_prompt_for_budget(audio_type: Optional[str], budget: dict) -> str:
-    """The string the post-load guard will measure for *audio_type*."""
     text = budget.get("text") or ""
     if audio_type not in _EXTRA_PROMPT_FIELD_AUDIO_TYPES:
         return text
@@ -600,12 +597,7 @@ def _prompt_token_estimate(prompt: str) -> int:
 
 
 def _byte_fallback_prompt_tokens(prompt: str) -> int:
-    """The count used when no tokenizer is reachable.
-
-    subprocess and llama-server tokenizers are not reachable here. UTF-8 bytes are a
-    conservative upper bound for their byte-level fallbacks; under-counting can overflow
-    the loaded context, while over-counting only shortens the requested clip.
-    """
+    # UTF-8 bytes conservatively bound the unreachable subprocess/llama-server tokenizers.
     return max(1, len(prompt.encode("utf-8")))
 
 
@@ -7114,7 +7106,6 @@ def _target_accepts_request_input(
 
 
 def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Optional[str]:
-    """The .gguf the load would open, so a probe reads the same file."""
     from utils.models.model_config import _find_local_gguf_by_variant, detect_gguf_model
 
     local_path = os.path.expanduser(load_path)
@@ -7123,10 +7114,7 @@ def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Op
     return detect_gguf_model(local_path)
 
 
-# The sub-configs and field names NativeAudioBackend._context_length walks, in its
-# order: a nested window wins over a top-level one, and the first positive field wins.
-# Kept in step with that method; a shorter lookup here reads a different limit than the
-# guard that runs after the switch, and the difference is paid for with the resident model.
+# Keep this order aligned with NativeAudioBackend._context_length.
 _NATIVE_CONTEXT_SUBCONFIGS = ("language_config", "qwen3_config", "text_config")
 _NATIVE_CONTEXT_FIELDS = (
     "max_position_embeddings",
@@ -7138,10 +7126,6 @@ _NATIVE_CONTEXT_FIELDS = (
 
 
 def _local_config_context_length(load_path: str) -> Optional[int]:
-    """The window a local checkpoint declares in config.json, or None.
-
-    The resolver only yields downloaded targets, so this is a local file read.
-    """
     import json
 
     config_path = Path(os.path.expanduser(load_path))
@@ -7168,11 +7152,6 @@ def _target_native_context_length(
     is_gguf: bool,
     gguf_variant: Optional[str] = None,
 ) -> Optional[int]:
-    """The target's own declared context, or None when it cannot be read cheaply.
-
-    GGUF carries it in the header, which the staged UI already reads before a load;
-    a non-GGUF checkpoint declares it in config.json next to the weights.
-    """
     try:
         if not is_gguf:
             return _local_config_context_length(load_path)
@@ -7194,19 +7173,7 @@ def _target_effective_context_length(
     resolved_override: Optional[dict] = None,
     override_is_resolved: bool = False,
 ) -> Optional[int]:
-    """The context the switch will actually ask this target to load with.
-
-    A saved per-model override is reconciled with the target the same way the loader
-    applies it; reading the declared window alone would refuse prompts a larger saved
-    context accepts, while trusting an unclamped native override would admit prompts the
-    model cannot hold. A non-positive resolution means the loader decides, which is not
-    something to refuse on, so it falls back to the declared window.
-    """
-    # NativeAudioBackend._context_length discards the requested value for both MOSS
-    # types and runs at the model's own window, so a saved override is not the limit
-    # there and reading it would refuse or admit against a number nothing applies.
-    # _context_length returns 0 for MiniMax, i.e. no window to measure against, so a
-    # saved override is not a limit there either.
+    # MiniMax has no measurable window; MOSS ignores saved context overrides.
     if audio_type == "minimax_music3":
         return None
     if audio_type in _CONTEXT_OVERRIDE_IGNORED_AUDIO_TYPES:
@@ -7225,9 +7192,6 @@ def _target_effective_context_length(
             resolve_fit_max_seq_length(override, is_gguf = is_gguf) if override else None
         )
         if configured is None and override and is_gguf:
-            # A saved context can also arrive only as a pass-through flag; the mapper
-            # forwards llama_extra_args untouched and resolve_requested_ctx makes that
-            # flag the loader's window. Same parser, so the two read one value.
             from core.inference.llama_server_args import parse_ctx_override
             configured = _positive_int_or_none(parse_ctx_override(override.get("llama_extra_args")))
         if configured is not None:
@@ -7241,11 +7205,7 @@ def _target_effective_context_length(
     from core.inference.native_audio import NATIVE_AUDIO_TYPES
 
     if not is_gguf and audio_type not in NATIVE_AUDIO_TYPES:
-        # No override, so the switch sends LoadRequest's max_seq_length default of 0, and
-        # InferenceBackend.load_model turns that into 2048 rather than the declared window
-        # (Unsloth crashes on 0). The checkpoint's own number is not what will be loaded:
-        # Orpheus declares 131072 and would run at 2048. llama.cpp and the native-audio
-        # backend both do take the model's default, so this applies to neither.
+        # The generic loader converts its zero default to 2048, not the declared window.
         return _STANDARD_LOAD_DEFAULT_CONTEXT
     return _target_native_context_length(load_path, is_gguf, gguf_variant)
 
@@ -7255,12 +7215,6 @@ def _target_speech_audio_type(
     is_gguf: bool,
     gguf_variant: Optional[str] = None,
 ) -> Optional[str]:
-    """The codec this target would serve speech with, or None if it would not.
-
-    Returns the audio_type rather than a yes/no so the caller can also apply the
-    request-specific rules the post-load path enforces, and reject before the swap
-    instead of after it.
-    """
     from core.inference.local_model_resolver import _host_serves_mlx
     from utils.models.model_config import (
         _find_local_gguf_by_variant,
@@ -7275,19 +7229,13 @@ def _target_speech_audio_type(
                 is_native_audio_model,
             )
 
-            # Non-GGUF weights go to the worker the device picks. The worker selects the
-            # native-audio backend before the MLX fast path, so those checkpoints still
-            # serve on Apple Silicon (NativeAudioBackend has an MPS path); an ordinary
-            # codec checkpoint does reach MLX, which answers generate_audio with
-            # "not supported", so only that shape is refused here.
+            # Native audio precedes MLX and has an MPS path; ordinary codecs cannot serve there.
             if _host_serves_mlx() and not is_native_audio_model(load_path):
                 return None
             audio_type = detect_audio_type(
                 load_path, hf_token = os.environ.get("HF_TOKEN"), local_files_only = True
             )
-            # The switch builds its LoadRequest from the stored override, which carries no
-            # trust_remote_code, and NativeAudioBackend.load_model refuses these three
-            # without it -- after the resident model is already gone. Never accept one.
+            # Auto-switch never grants trust_remote_code; reject before evicting the resident.
             if audio_type in REMOTE_CODE_AUDIO_TYPES:
                 return None
             return audio_type if audio_type in _TRANSFORMERS_TTS_AUDIO_TYPES else None
@@ -7313,7 +7261,6 @@ def _preflight_speech_codec_for_switch(
     is_gguf: bool,
     hf_token: Optional[str] = None,
 ) -> _SpeechCodecPreflightResult:
-    """Stage codec assets that the post-load speech path otherwise fetches too late."""
     from utils.utils import hf_env_offline
 
     offline = hf_env_offline()
@@ -7388,9 +7335,7 @@ def _preflight_speech_codec_for_switch(
                 raise RuntimeError(security.reason)
             if not higgs_tts2_codec_local_complete(staged):
                 raise RuntimeError(f"Higgs TTS 2 companion '{companion}' is incomplete.")
-        # The worker must read from the cache proven complete above. Settings can
-        # change while this request waits for the lifecycle gate, so do not let
-        # spawn re-read the mutable active cache after the resident worker exits.
+        # Pin the verified cache across the lifecycle wait; settings may change meanwhile.
         return _SpeechCodecPreflightResult(cache_paths.child_env({}))
     return _SpeechCodecPreflightResult()
 
@@ -8594,12 +8539,7 @@ async def _maybe_auto_switch_model(
                         param = "model",
                     ),
                 )
-            # Same rule as the post-load check below, applied before the swap: MiniMax
-            # needs a description, and finding that out afterwards costs the resident model.
             if speech_budget is not None:
-                # The same prompt the post-load guard measures: Higgs and MOSS fold
-                # instructions (and MOSS the language) in with the text, so counting the
-                # text alone would pass a request that then 400s with the model gone.
                 target_context = await asyncio.to_thread(
                     _target_effective_context_length,
                     target_id,
@@ -8660,8 +8600,6 @@ async def _maybe_auto_switch_model(
                     speech_cache_environment = speech_preflight_result.cache_environment
                     speech_codec_path = speech_preflight_result.codec_path
                 elif isinstance(speech_preflight_result, dict):
-                    # Compatibility for narrow test/plugin seams that returned the
-                    # original cache-environment mapping before codec paths were pinned.
                     speech_cache_environment = speech_preflight_result
             except Exception:
                 raise HTTPException(
@@ -17017,9 +16955,7 @@ async def _generate_tts_wav(
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate and /audio/speech. Returns
     (wav_bytes, sample_rate, model_name, audio_type)."""
-    # Only when the loaded model is the one that will answer: the budget reads the loaded
-    # context, so judging a request that names a different target measures the wrong model
-    # and would 400 a prompt that fits the target's larger context.
+    # A named target must be budgeted against its own context after preflight.
     if requested_model == _RELOAD_ONLY_MODEL:
         _raise_if_prompt_leaves_no_speech_budget(text)
     await _maybe_auto_switch_model(
@@ -17028,9 +16964,6 @@ async def _generate_tts_wav(
         current_subject,
         claim_resident = False,
         require_speech = True,
-        # The fields the preflight needs to rebuild the prompt the target will be
-        # measured by; it cannot be counted here, because the codec that decides which
-        # fields count is only known once the target has been probed.
         speech_budget = (
             None
             if requested_model == _RELOAD_ONLY_MODEL
@@ -17405,11 +17338,10 @@ async def openai_audio_speech(
 ) -> Response:
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
-    With ``provider_id`` the request is proxied to that connection, forwarding
-    model/voice/speed/instructions. Otherwise a downloaded local model named in ``model``
-    is loaded first when model auto-switch is on, else the loaded model is used;
-    ``voice``/``speed`` are ignored, and only WAV exists, so another ``response_format`` is
-    a 400 rather than a silent container mismatch."""
+    With ``provider_id`` the request is proxied. Otherwise an omitted ``model`` serves the
+    resident model. A named downloaded local model is loaded when auto-switch is on; when
+    it is off, the shared switch guard rejects a different recognized local model.
+    Local ``voice``/``speed`` are ignored and only WAV is supported."""
     if body.provider_id:
         fmt = (body.response_format or "wav").strip().lower()
         if fmt != "wav":

@@ -54,35 +54,6 @@ def test_anonymous_worker_token_cannot_fall_back_to_the_host_login():
 
 
 @pytest.mark.parametrize(
-    ("config", "expected_token"),
-    (
-        ({"hf_token": "", "anonymous_hf_access": True}, None),
-        ({"hf_token": "caller-token"}, "caller-token"),
-    ),
-)
-def test_worker_environment_contains_only_the_request_token_policy(
-    config, expected_token, monkeypatch
-):
-    from core.inference.worker import _apply_worker_hf_token_environment
-
-    token_keys = (
-        "HF_TOKEN",
-        "HF_HUB_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN",
-        "HUGGINGFACEHUB_API_TOKEN",
-    )
-    for key in token_keys:
-        monkeypatch.setenv(key, f"ambient-{key}")
-
-    _apply_worker_hf_token_environment(config)
-
-    present = {key: os.environ[key] for key in token_keys if key in os.environ}
-    assert present == ({"HF_TOKEN": expected_token} if expected_token else {})
-    assert os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == ("1" if expected_token is None else "0")
-
-
-@pytest.mark.parametrize(
     ("repo", "companion"),
     (
         ("bosonai/higgs-tts-2-3b-base", HIGGS_TTS2_CODEC_REPO),

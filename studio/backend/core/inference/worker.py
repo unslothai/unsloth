@@ -158,14 +158,12 @@ def _clean_token(value: str | None) -> str | None:
 
 
 def _config_hf_token(config: dict) -> str | bool | None:
-    """Preserve explicit anonymous access instead of falling back to the host login."""
     if config.get("anonymous_hf_access"):
         return False
     return _clean_token(config.get("hf_token"))
 
 
 def _apply_worker_hf_token_environment(config: dict) -> None:
-    """Apply the request credential policy to this spawned worker's environment."""
     from hub.utils.hf_tokens import apply_token_to_child_env
     apply_token_to_child_env(os.environ, _config_hf_token(config))
 
@@ -1060,8 +1058,7 @@ def run_inference_process(
             here, so a generate still queued behind a cancelled one is skipped rather
             than run — the cancel survives the queue handoff.
     """
-    # A spawned worker inherits the API process environment. Apply the request's
-    # credential policy before any Hugging Face import can snapshot it.
+    # Apply request credentials before a Hugging Face import snapshots the environment.
     _apply_worker_hf_token_environment(config)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
