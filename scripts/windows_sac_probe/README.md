@@ -80,7 +80,7 @@ have refused. That is exactly the half of the verdict that signing changes.
 ## Getting it onto the machine
 
 ```powershell
-git clone --branch windows-sac-probe --depth 1 https://github.com/unslothai/unsloth C:\unsloth-probe
+git clone --depth 1 https://github.com/unslothai/unsloth C:\unsloth-probe
 cd C:\unsloth-probe\scripts\windows_sac_probe
 ```
 
@@ -152,7 +152,14 @@ Studio actually writes.
 `prepare` runs `Update-MpSignature`; add `-SkipUpdates` to skip it. It does not
 upgrade packages unless you pass `-UpgradePackages`: `winget upgrade --all` changes
 every managed package on the machine and `revert` cannot put them back, so it is
-not part of the reversible run.
+not part of the reversible run. The same goes for Defender's sample submission:
+`prepare` raises real-time protection, MAPS and the cloud block level, all of
+which `revert` restores, but sets `SubmitSamplesConsent` only with `-SendSamples`,
+since a sample uploaded during the probe cannot be recalled.
+
+`prepare` restarts a Studio that is already running. Studio's startup is where the
+venv's native modules load, and those loads have to happen inside the event window
+and under the audit policy to be measured.
 
 Running `prepare` again with the same label (after a failure, or to add
 `-AuditPolicy`) keeps the baseline the first pass captured, so `revert` still
@@ -254,6 +261,7 @@ what says which build a cell actually exercised, not the label.
 - `code-integrity-events.json` and `.txt`: events 3033, 3076, 3077, 3089 and 3090 to 3099 in the run window, each tagged with a `Scope` of `llama.cpp`, `venv` or `other`. The channel is machine-wide, so unrelated software lands in the same window: one run picked up seven 3076 events from a Git Bash session (`msys-2.0.dll`, `head.exe`, `tail.exe`). `collect` counts only the Unsloth scopes in its headline and reports the rest separately; nothing is dropped from the export
 - `CodeIntegrity-Operational.evtx`: the raw log
 - `scenario-results.json`: every HTTP call with its duration, plus the status-poll summary
+- `studio-logs\`: Studio's own logs, the redirected Studio stdout from a start the probe did, and the scenario's console output, all passed through Studio's log redactor. The raw copies stay in `raw-logs\` on the machine and are not archived
 - `studio-logs\`: Studio's own backend and llama-server logs
 - `baseline.json`, `sac-state-after.json`: what the machine looked like before and after
 

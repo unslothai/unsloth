@@ -67,6 +67,11 @@ param(
     # prepare only: do not install Unsloth Studio when it is missing.
     [switch] $SkipInstall,
 
+    # prepare only: also set Defender's sample submission to SendAllSamples.
+    # Off by default: a file Defender uploads during the probe cannot be
+    # recalled by revert, so this is not part of the reversible run.
+    [switch] $SendSamples,
+
     # Port the probe expects Studio on.
     [int] $Port = 8888
 )
@@ -337,17 +342,47 @@ function Start-Studio([string] $python, [int] $port, [string] $logPath) {
     return $false
 }
 
+function Stop-Studio([int] $port) {
+    <# Stop the Studio answering on $port, children (llama-server, workers) first. #>
+    $owners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique)
+    if (-not $owners) {
+        Write-Warning "Studio answers on port $port but no local process listens there; it cannot be restarted from here"
+        return $false
+    }
+    foreach ($owner in $owners) {
+        Get-CimInstance Win32_Process -Filter "ParentProcessId = $owner" -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($i in 1..30) {
+        Start-Sleep -Seconds 1
+        if (-not (Test-StudioResponding $port)) { return $true }
+    }
+    Write-Warning "Studio is still answering on port $port after being stopped"
+    return $false
+}
+
 function Initialize-Studio([string] $dir, [bool] $allowInstall) {
     <#
         Ensure a Studio exists and is answering. Installing is allowed only
         from prepare: the run stage restarts an existing Studio and never
         installs one, so a prepare -SkipInstall is honoured without the
         operator having to repeat the switch.
+
+        prepare also restarts a Studio that is already up. Its startup is
+        where the venv's native modules load, and those loads have to happen
+        inside the event window and under the audit policy; a process that
+        was already running loaded them before either existed.
     #>
     Write-Section 'Unsloth Studio'
     if (Test-StudioResponding $Port) {
-        Write-Host "Studio already answering on port $Port"
-        return
+        if (-not $allowInstall) {
+            Write-Host "Studio already answering on port $Port"
+            return
+        }
+        Write-Host "Studio is already answering on port $Port; restarting it so its startup loads land inside the window"
+        if (-not (Stop-Studio $Port)) { return }
     }
 
     $python = Get-StudioPython
@@ -368,7 +403,11 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
         }
     }
     Write-Host "managed interpreter: $python"
-    Start-Studio $python $Port (Join-Path $dir 'studio-start.log') | Out-Null
+    # Under raw-logs\, which collect redacts into studio-logs\ and never
+    # archives as is: the backend's stdout can carry the same tokens its log
+    # files can.
+    New-Item -ItemType Directory -Force -Path (Join-Path $dir 'raw-logs') | Out-Null
+    Start-Studio $python $Port (Join-Path (Join-Path $dir 'raw-logs') 'studio-start.log') | Out-Null
 }
 
 function Save-Baseline([string] $dir) {
@@ -448,10 +487,15 @@ function Invoke-Prepare {
     try {
         Set-MpPreference -DisableRealtimeMonitoring $false
         Set-MpPreference -MAPSReporting Advanced
-        Set-MpPreference -SubmitSamplesConsent SendAllSamples
         Set-MpPreference -CloudBlockLevel High
         Set-MpPreference -PUAProtection Enabled
         Write-Host 'Defender: real-time on, MAPS advanced, cloud block level high, PUA on'
+        if ($SendSamples) {
+            # Opt-in only: revert puts the setting back but cannot recall a
+            # sample Defender uploaded in the meantime.
+            Set-MpPreference -SubmitSamplesConsent SendAllSamples
+            Write-Host 'Defender: sample submission set to SendAllSamples (-SendSamples)'
+        }
     } catch {
         Write-Warning "could not set Defender preferences: $_"
     }
@@ -587,12 +631,21 @@ function Invoke-Run {
     # The venv, separately. See $VENV_DIR: this is where the native code
     # actually lives, and where the only enforced block seen so far landed.
     Write-Section 'Venv signature inventory'
-    Write-Host "venv: $VENV_DIR"
-    $venvInventory = @(Get-SignatureInventory $VENV_DIR)
+    # From the interpreter that actually runs Studio when there is one, so a
+    # custom home or an older layout is inventoried rather than guessed at.
+    $studioPython = Get-StudioPython
+    $venvDir = if ($studioPython) { Split-Path -Parent (Split-Path -Parent $studioPython) } else { $VENV_DIR }
+    Write-Host "venv: $venvDir"
+    $venvInventory = @(Get-SignatureInventory $venvDir)
     ConvertTo-Json -InputObject @($venvInventory) -Depth 4 |
         Set-Content -LiteralPath (Join-Path $dir 'venv-signature-inventory.json') -Encoding UTF8
     $venvInventory | Export-Csv -LiteralPath (Join-Path $dir 'venv-signature-inventory.csv') -NoTypeInformation -Encoding UTF8
     $venvTotal = $venvInventory.Count
+    if ($venvTotal -eq 0) {
+        # The venv is where the only enforced block so far landed; a zip
+        # without it would read as a machine with nothing to block.
+        throw "no PE files found under $venvDir; Studio's environment was not found, so the cell is invalid. Check UNSLOTH_STUDIO_HOME or install Studio first"
+    }
     $venvValid = @($venvInventory | Where-Object { $_.Status -eq 'Valid' }).Count
     Write-Host "$venvValid of $venvTotal PE files in the venv report a valid Authenticode signature"
     if ($venvTotal -gt 0) {
@@ -610,7 +663,8 @@ function Invoke-Run {
     } else {
         Write-Section 'Studio scenario'
         $scenario = Join-Path $PSScriptRoot 'studio_scenario.py'
-        $log = Join-Path $dir 'studio-scenario.log'
+        New-Item -ItemType Directory -Force -Path (Join-Path $dir 'raw-logs') | Out-Null
+        $log = Join-Path (Join-Path $dir 'raw-logs') 'studio-scenario.log'
         if (-not $STUDIO_PASSWORD) {
             Write-Warning 'UNSLOTH_STUDIO_PASSWORD is not set; the scenario needs it (see README) and will stop at login'
         }
@@ -794,16 +848,25 @@ function Invoke-Collect {
     # tokens. They are copied through Studio's own redactor
     # (studio/backend/utils/log_redaction.py) by the managed interpreter that
     # ships it; without that interpreter the logs are left out, not copied.
+    # raw-logs\ (the redirected Studio stdout and the scenario's console
+    # output) goes through the same redactor and is never archived as is.
+    $sources = @()
     $studioLogs = Join-Path (Get-StudioHome) 'logs'
-    if (Test-Path -LiteralPath $studioLogs) {
+    if (Test-Path -LiteralPath $studioLogs) { $sources += $studioLogs }
+    $rawLogs = Join-Path $dir 'raw-logs'
+    if (Test-Path -LiteralPath $rawLogs) { $sources += $rawLogs }
+    if ($sources.Count -gt 0) {
         $python = Get-StudioPython
         if ($python) {
             $redactor = Join-Path $PSScriptRoot 'redact_logs.py'
-            try {
-                Invoke-Native $python @('-X', 'utf8', '-I', $redactor, $studioLogs, (Join-Path $dir 'studio-logs'))
-            } catch {
-                Write-Warning "Studio logs were not copied (redaction failed): $_"
-                Remove-Item -LiteralPath (Join-Path $dir 'studio-logs') -Recurse -Force -ErrorAction SilentlyContinue
+            foreach ($source in $sources) {
+                try {
+                    Invoke-Native $python @('-X', 'utf8', '-I', $redactor, $source, (Join-Path $dir 'studio-logs'))
+                } catch {
+                    Write-Warning "logs under $source were not copied (redaction failed): $_"
+                    Remove-Item -LiteralPath (Join-Path $dir 'studio-logs') -Recurse -Force -ErrorAction SilentlyContinue
+                    break
+                }
             }
         } else {
             Write-Warning 'Studio logs were not copied: no managed interpreter to run the redactor'
@@ -821,8 +884,9 @@ function Invoke-Collect {
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     foreach ($item in Get-ChildItem -LiteralPath $dir -Recurse -File) {
         $rel = $item.FullName.Substring($dir.Length).TrimStart('\')
-        # rollback\ holds the administrator's own policy; it stays out of the zip.
-        if ($rel -like 'rollback\*') { continue }
+        # rollback\ holds the administrator's own policy and raw-logs\ the
+        # unredacted output; neither goes into the zip.
+        if ($rel -like 'rollback\*' -or $rel -like 'raw-logs\*') { continue }
         $target = Join-Path $stage $rel
         New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
         try {
@@ -865,8 +929,23 @@ function Invoke-Collect {
         if ($status.Reason -eq 'skipped') {
             Write-Warning 'The Studio scenario was skipped (-SkipStudio), so this zip is a signature inventory only. It does not show whether anything was blocked at load time.'
         } elseif ($status.ExitCode -ne 0) {
-            Write-Warning "The Studio scenario did NOT complete (exit $($status.ExitCode): $($status.Reason))."
-            Write-Warning 'No model was loaded, so an empty event list here is a NULL result, not a negative one. Do not report this cell as "not blocked".'
+            # A non-zero exit also covers a failed search, chat or unload
+            # after a load that worked; the load is what the events are
+            # about, so read that step rather than the aggregate.
+            $loadOk = $false
+            $failedSteps = @()
+            $resultsPath = Join-Path $dir 'scenario-results.json'
+            if (Test-Path -LiteralPath $resultsPath) {
+                $results = Get-Content -LiteralPath $resultsPath -Raw | ConvertFrom-Json
+                $loadOk = [bool]$results.steps.load.ok
+                $failedSteps = @($results.steps.PSObject.Properties | Where-Object { -not $_.Value.ok } | ForEach-Object { $_.Name })
+            }
+            if ($loadOk) {
+                Write-Warning "The model loaded, so the load-time events are valid; later scenario step(s) failed: $($failedSteps -join ', ') (exit $($status.ExitCode))."
+            } else {
+                Write-Warning "The Studio scenario did NOT load a model (exit $($status.ExitCode): $($status.Reason); failed steps: $($failedSteps -join ', '))."
+                Write-Warning 'An empty event list here is a NULL result, not a negative one. Do not report this cell as "not blocked".'
+            }
         }
     } else {
         Write-Warning 'No scenario-status.json: the run stage did not complete for this label, so the event window may cover nothing.'

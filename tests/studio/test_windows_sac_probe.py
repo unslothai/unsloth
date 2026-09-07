@@ -663,7 +663,7 @@ def test_rollback_state_is_persisted_before_the_efi_partition_changes_and_stays_
     )
     assert "Join-Path (Join-Path $dir 'rollback') 'preexisting-policy.cip'" in ps1
     assert "Compress-Archive -Path (Join-Path $dir '*')" not in ps1
-    assert "if ($rel -like 'rollback\\*') { continue }" in ps1
+    assert "if ($rel -like 'rollback\\*' -or $rel -like 'raw-logs\\*') { continue }" in ps1
     assert "$saved = $ROLLBACK_POLICY" in ps1[ps1.index("function Invoke-Revert") :]
 
 
@@ -725,3 +725,55 @@ def test_the_inventory_is_of_the_runtime_studio_resolved(tmp_path, monkeypatch):
     sel = json.loads((tmp_path / "runtime-selection.json").read_text(encoding = "utf-8"))
     assert sel["resolved_binary"].endswith("llama-server.exe") and sel["source"] == "studio"
     assert seen.index("/api/settings/llama-cpp-path") < seen.index("/api/inference/load")
+
+
+def test_prepare_restarts_a_running_studio_and_only_prepare_may():
+    """Studio's startup is where the venv's native modules load; a process that
+    was already up loaded them before the window and the policy existed."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "function Stop-Studio" in ps1
+    init = ps1[ps1.index("function Initialize-Studio") : ps1.index("function Save-Baseline")]
+    answering = init.index("if (Test-StudioResponding $Port) {")
+    assert init.index("if (-not $allowInstall) {", answering) < init.index("Stop-Studio $Port", answering)
+    stop = ps1[ps1.index("function Stop-Studio") : ps1.index("function Initialize-Studio")]
+    assert "ParentProcessId = $owner" in stop, "children (llama-server, workers) are stopped first"
+
+
+def test_redirected_studio_output_and_the_scenario_console_are_redacted_too():
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "Start-Studio $python $Port (Join-Path (Join-Path $dir 'raw-logs') 'studio-start.log')" in ps1
+    assert "$log = Join-Path (Join-Path $dir 'raw-logs') 'studio-scenario.log'" in ps1
+    assert "if ($rel -like 'rollback\\*' -or $rel -like 'raw-logs\\*') { continue }" in ps1
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$rawLogs = Join-Path $dir 'raw-logs'" in collect and "foreach ($source in $sources)" in collect
+
+
+def test_sample_submission_is_opt_in():
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "[switch] $SendSamples" in ps1
+    raise_block = ps1[ps1.index("Write-Section 'Raise security settings'") : ps1.index("Write-Section 'CodeIntegrity log'")]
+    assert raise_block.index("if ($SendSamples) {") < raise_block.index("Set-MpPreference -SubmitSamplesConsent SendAllSamples")
+    assert raise_block.count("SubmitSamplesConsent") == 1
+
+
+def test_collect_judges_the_load_step_not_the_exit_code():
+    """A failed search, chat or unload after a working load is still a valid
+    load-time measurement; calling it a null result throws the evidence away."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$loadOk = [bool]$results.steps.load.ok" in collect
+    assert "if ($loadOk) {" in collect and "later scenario step(s) failed" in collect
+    assert "did NOT load a model" in collect
+
+
+def test_the_venv_inventory_comes_from_the_running_interpreter_and_cannot_be_empty():
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "$venvDir = if ($studioPython) { Split-Path -Parent (Split-Path -Parent $studioPython) } else { $VENV_DIR }" in ps1
+    assert "no PE files found under $venvDir" in ps1
+
+
+def test_the_readme_clones_a_durable_ref():
+    body = (PROBE_DIR / "README.md").read_text(encoding = "utf-8")
+    assert "--branch windows-sac-probe" not in body
+    assert "git clone --depth 1 https://github.com/unslothai/unsloth" in body
+    assert "-SendSamples" in body
