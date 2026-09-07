@@ -131,6 +131,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [deadlineAt, setDeadlineAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const reloadReadySent = useRef(false);
+  const setupExchangeStarted = useRef(false);
 
   useEffect(() => {
     if (deadlineAt === null) {
@@ -240,16 +241,21 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   useEffect(() => {
     const token = window.__UNSLOTH_BOOTSTRAP__?.link_token;
     if (!token || isLoginMode) return;
-    let cancelled = false;
+    // Claimed in setup and never released, which a local flag cannot do:
+    // StrictMode replays setup, cleanup, setup, and this token is SINGLE USE.
+    // Exchanging on the second setup would spend a token the first setup had
+    // already burned, and the first setup's session went out with its own
+    // cleanup, so the operator would be left holding a 401 that no reload can
+    // clear (the reload mints a fresh token and burns that one the same way).
+    if (setupExchangeStarted.current) return;
+    setupExchangeStarted.current = true;
     void (async () => {
       const { access, status } = await exchangeSetupToken(token);
-      if (cancelled) return;
+      // No cancelled check: the session belongs to the page, not to this mount,
+      // and dropping it on unmount is what made the replay unrecoverable.
       if (access) setSetupSession(access);
       else setSetupError(status);
     })();
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   const blockedByState =
