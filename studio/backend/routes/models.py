@@ -2433,8 +2433,13 @@ async def get_model_config(
 
             # The bare repo id above only helps if the probes then go over the wire:
             # local_files_only resolves config.json out of the cache, unauthorized.
-            probe_local_only = prefer_local_cache and cache_reads_authorized(
-                hf_token, repo_id = model_name
+            # A local folder is not the Hub cache, so it keeps the local-only probe the
+            # way _model_config_inspection_target keeps the whole branch for it. Without
+            # this the route would send a user's filesystem path to the Hub only to be
+            # told no, and then probe a local model over the wire.
+            probe_local_only = prefer_local_cache and (
+                is_local_path(model_name)
+                or cache_reads_authorized(hf_token, repo_id = model_name)
             )
             is_vision = is_vision_model(
                 inspection_target,

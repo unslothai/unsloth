@@ -35,7 +35,11 @@ _HF_TOKEN_ENV_KEYS = (
 )
 
 # auth_check has no timeout in the pinned Hub client; a stalled connection must not
-# hang Studio while cache_reads_authorized probes a gated repo.
+# hang Studio while cache_reads_authorized probes a gated repo. Neither does the session
+# under it: 0.x hands requests no timeout at all and 1.30's httpx client carries
+# Timeout(timeout=None), so against a listener that accepts and never replies the call
+# does not come back. Measured: no return in 40s, and 16 concurrent callers opened 16
+# separate connections.
 _REPO_ACCESS_PROBE_TIMEOUT_S = 10.0
 
 
@@ -75,15 +79,27 @@ def is_anonymous(hf_token: HfTokenArg) -> bool:
 # Positive and negative answers share this TTL: a revoked token must not keep
 # reading the host cache, and a flapping Hub must not be hit on every request.
 _REPO_ACCESS_TTL_S = 60.0
+# A probe that timed out never got an answer *about the credential*, so it is not worth a
+# minute. Short enough that one stalled connection does not deny a valid token for the
+# whole TTL, long enough that a Hub which is hanging for everyone is not re-dialled per
+# request. The request in hand is still denied: fail closed, just not for long.
+_REPO_ACCESS_UNREACHABLE_TTL_S = 5.0
 _REPO_ACCESS_CACHE_MAX = 1024
 _repo_access_cache: dict[tuple[str, str, str], tuple[float, bool]] = {}
 _repo_access_lock = threading.Lock()
+# One probe per key, not one per caller. The probe runs outside ``_repo_access_lock`` (it
+# is a network call and must not hold a lock every reader needs), so without this a cold
+# key with N concurrent callers opens N connections -- measured at 32/32, and 16/16 TCP
+# connections against a stalled Hub. Callers that arrive during a probe wait for its
+# answer.
+_repo_access_inflight: dict[tuple[str, str, str], threading.Lock] = {}
 
 
 def reset_repo_access_cache() -> None:
     """Drop memoized Hub access answers. Tests only."""
     with _repo_access_lock:
         _repo_access_cache.clear()
+        _repo_access_inflight.clear()
 
 
 def cache_reads_authorized(
@@ -107,15 +123,44 @@ def cache_reads_authorized(
     intentional fail-closed: without wire proof, the cache must not answer for a
     credential that might be a token-shaped string from an API key. UI sessions
     keep ``None`` and still read the cache offline.
+
+    A local filesystem path is not a repo id and is denied without a probe. Only
+    ``None`` and the empty string mean ambient; every other non-``str`` is denied,
+    so a value that reaches here untyped cannot fall through to the ambient answer.
     """
     if is_anonymous(hf_token):
         return False
-    if not isinstance(hf_token, str) or not hf_token:
+    # Deny-by-default on the type, not allow-by-default: ``not isinstance(str)`` would
+    # hand the ambient answer to True, 1, b"...", or any object a future untyped
+    # ``payload.get("hf_token")`` puts here. Nothing reaches this today -- every HTTP
+    # boundary is a pydantic ``Optional[str]``, which rejects rather than coerces -- and
+    # this keeps it that way.
+    if hf_token is None:
+        return True
+    if not isinstance(hf_token, str):
+        return False
+    if not hf_token:
         return True
     repo = (repo_id or "").strip()
     if not repo:
         return False
+    if _is_local_path(repo):
+        # ``auth_check`` does not validate its argument, it interpolates it into
+        # ``{endpoint}/api/{repo_type}s/{repo_id}/auth-check``. Probing a local path would
+        # put that path on the wire to the Hub with the caller's bearer token attached,
+        # for a round trip whose only possible answer is "no". The host Hub cache is not
+        # what a local path names, so there is nothing here to authorize.
+        return False
     return _explicit_token_reaches_repo(repo, hf_token, repo_type)
+
+
+def _is_local_path(repo_id: str) -> bool:
+    """Lazy: hub.utils.paths pulls in the path stack, this module is imported beneath it."""
+    try:
+        from hub.utils.paths import is_local_path
+        return is_local_path(repo_id)
+    except Exception:
+        return False
 
 
 def _hub_offline() -> bool:
@@ -123,7 +168,21 @@ def _hub_offline() -> bool:
         from utils.utils import hf_env_offline
         return hf_env_offline()
     except Exception:
+        # Fail-open on the *offline question* only: authorization still needs a probe to
+        # succeed. Logged because deciding "online" inside an air-gapped install means
+        # every explicit-token request pays the full probe timeout.
+        import logging
+        logging.getLogger(__name__).debug(
+            "Could not determine Hub offline state; assuming online", exc_info = True
+        )
         return False
+
+
+def _cached_repo_access(key: tuple[str, str, str], now: float) -> Optional[bool]:
+    cached = _repo_access_cache.get(key)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    return None
 
 
 def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bool:
@@ -132,19 +191,63 @@ def _explicit_token_reaches_repo(repo_id: str, token: str, repo_type: str) -> bo
         repo_type,
         hashlib.sha256(token.encode()).hexdigest()[:16],
     )
-    now = time.monotonic()
-    cached = _repo_access_cache.get(key)
-    if cached is not None and cached[0] > now:
-        return cached[1]
+    cached = _cached_repo_access(key, time.monotonic())
+    if cached is not None:
+        return cached
     if _hub_offline():
         # No wire to verify against; only a memo from a recent online probe counts.
         return False
-    allowed = _probe_repo_access(repo_id, token, repo_type)
-    with _repo_access_lock:
-        if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
-            _repo_access_cache.clear()
-        _repo_access_cache[key] = (now + _REPO_ACCESS_TTL_S, allowed)
+
+    with _inflight_lock(key):
+        # Filled while this caller waited for whoever held the lock: take their answer
+        # rather than dialling the Hub a second time for the same question.
+        cached = _cached_repo_access(key, time.monotonic())
+        if cached is not None:
+            return cached
+        started = time.monotonic()
+        allowed = _probe_repo_access(repo_id, token, repo_type)
+        # AFTER the probe, not before it. Reading the clock first and storing
+        # ``start + TTL`` means a probe slower than the TTL memoizes an entry that is
+        # already expired, so every later request re-probes and the memo never takes
+        # effect -- exactly the regime a stalled Hub creates.
+        finished = time.monotonic()
+        # A probe that spent its whole budget hit the timeout inside _probe_repo_access
+        # rather than hearing "no" from the Hub, and a timeout says nothing about the
+        # credential. Read off the clock because the probe answers in bool, which is the
+        # shape every caller and test stub expects.
+        timed_out = not allowed and (finished - started) >= _REPO_ACCESS_PROBE_TIMEOUT_S
+        expiry = finished + (
+            _REPO_ACCESS_UNREACHABLE_TTL_S if timed_out else _REPO_ACCESS_TTL_S
+        )
+        with _repo_access_lock:
+            if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
+                _evict_repo_access_locked()
+            _repo_access_cache[key] = (expiry, allowed)
     return allowed
+
+
+def _evict_repo_access_locked() -> None:
+    """Caller holds ``_repo_access_lock``. Drop what has expired before anything live."""
+    now = time.monotonic()
+    for expired in [k for k, (deadline, _) in _repo_access_cache.items() if deadline <= now]:
+        _repo_access_cache.pop(expired, None)
+    if len(_repo_access_cache) >= _REPO_ACCESS_CACHE_MAX:
+        # Still full of live entries: clear rather than grow without bound. Dropping a
+        # valid answer costs one probe; keeping every answer costs memory forever.
+        _repo_access_cache.clear()
+
+
+def _inflight_lock(key: tuple[str, str, str]) -> threading.Lock:
+    with _repo_access_lock:
+        lock = _repo_access_inflight.get(key)
+        if lock is None:
+            if len(_repo_access_inflight) >= _REPO_ACCESS_CACHE_MAX:
+                # Waiters already hold their own reference, so clearing the registry only
+                # risks an extra probe, never a lost wakeup.
+                _repo_access_inflight.clear()
+            lock = threading.Lock()
+            _repo_access_inflight[key] = lock
+        return lock
 
 
 def _probe_repo_access(repo_id: str, token: str, repo_type: str) -> bool:

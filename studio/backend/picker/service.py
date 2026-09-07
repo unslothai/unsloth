@@ -29,6 +29,7 @@ from utils.models.model_config import (
 from utils.hf_cache_settings import active_hf_hub_cache
 from utils.utils import hf_env_offline
 from utils.paths.path_utils import (
+    get_cache_path,
     is_local_path,
     normalize_path,
     resolve_cached_repo_id_case,
@@ -395,8 +396,25 @@ def read_default_chat_template(
             try:
                 infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
-                # An inconclusive lookup preserves the existing download behavior.
-                return True
+                # An inconclusive lookup preserves the existing download behavior for a
+                # caller already authorized for the cache. For anyone else it must fail
+                # closed: hf_hub_download below serves the cached copy when the Hub is
+                # unreachable, without consulting the credential, which hands back the
+                # very template the walk above refused. The offline gate does not cover
+                # that -- "hub unreachable" is not "env offline", and an explicit
+                # HF_HUB_OFFLINE=0 keeps the route from forcing offline at all.
+                # get_paths_info is network-only, so its success is the wire proof the
+                # cache fallback otherwise never asks for.
+                #
+                # The second leg keeps the ordinary public fetch: the fallback can only
+                # hand back what is already cached, so with nothing cached for this repo
+                # there is nothing to leak, and an unreachable Hub makes the download
+                # raise on its own. Without it the anonymous sentinel would lose a public
+                # template whenever the paths-info lookup blipped.
+                return (
+                    cache_reads_authorized(hf_token, repo_id = resolved)
+                    or get_cache_path(resolved) is None
+                )
             matched = [info for info in infos if getattr(info, "path", None) == rel]
             if not matched:
                 return False
