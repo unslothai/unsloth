@@ -3788,20 +3788,14 @@ function Get-PersistedWoaTorchIndex {
     }
     if ($null -eq $payload -or -not $payload.woa_torch_index) { return "" }
     $value = "$($payload.woa_torch_index)".Trim().TrimEnd('/')
-    # Re-checked on read, anchored at both ends with no `?` or `#`: a hand-edited manifest must not
-    # redirect the torch install.
+    # Re-checked on read, anchored, no `?` or `#`: a hand-edited manifest must not redirect torch.
     if ($value -notmatch '^https://pypi\.nvidia\.com(/[A-Za-z0-9._~/-]*)?$') { return "" }
     return $value
 }
 
-# The dependency pass deletes the manifest before rebuilding it, so a run that dies in between
-# leaves the next update with no handover and no manifest, falling to a cu130 with no win_arm64
-# wheel on every retry. This marker lives in the woa directory, which that pass never removes.
-# The SAME set the manifest persists, checked on write AND on read: only NVIDIA's own channels.
-# Parity copies of install.ps1's index probe: the forced repair below carries the same
-# unsafe-best-match and PyPI extra index, so an open-ended spec lets a PyPI CPU release one ahead
-# of this channel replace the CUDA stack. Re-probed, not remembered, because a repair can run in a
-# fresh shell long after the install. Kept identical to install.ps1 by a parity test.
+# The dependency pass drops the manifest before rebuilding it, so this marker lives outside it.
+# Parity copies of install.ps1's index probe, kept identical by a parity test: the forced repair
+# below carries the same unsafe-best-match, so an open-ended spec lets a PyPI CPU release win.
 function Test-WoaWheelTagsParity {
     param([string]$Name, [string]$PyTag, [string]$AbiTag)
     if (-not $Name) { return $false }
@@ -3829,10 +3823,7 @@ function Test-WoaPairsWithTorchParity {
     if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
     if ((& $local $TorchVersion) -ne (& $local $OtherVersion)) { return $false }
     if (& $stamp $TorchVersion) { return $true }
-    # Stable: every release has an empty stamp, so the tag alone would pair a companion from
-    # any release the index still serves. Release lines pair by a fixed offset instead:
-    # torchvision 0.(M+15) requires torch 2.M exactly (PyPI: 0.25.0 -> torch==2.10.0,
-    # 0.19.0 -> torch==2.4.0), and torchaudio agrees with torch on major.minor.
+    # Stable releases share an empty stamp, so they pair by offset: torchvision 0.(M+15) to torch 2.M.
     $rel = {
         param($v)
         $m = [regex]::Match($v, '^(\d+)\.(\d+)')
@@ -3847,11 +3838,7 @@ function Test-WoaPairsWithTorchParity {
     }
 }
 
-# The same swap install.ps1 makes around its torch command, for the same reason: uv's overrides
-# replace a version even for a requirement named on the command line, and by the time the CUDA
-# trio is installed below Restore-WoaResolverEnvironment has put the generated overrides.txt,
-# with its torch and torchvision floors, back into UV_OVERRIDE. Drop only the trio, only for that
-# command, under the WoA directory (already uv-safe), and delete the copy afterwards.
+# The same swap install.ps1 makes: overrides.txt, with its torch floors, is back in UV_OVERRIDE.
 function New-WoaTorchStepOverrideValueParity {
     param([string]$Value, [string]$Dir = "")
     $result = @{ Value = $null; Temps = @() }
@@ -3925,8 +3912,7 @@ function Save-WoaTorchIndexMarker {
     param([string]$IndexUrl)
     $value = "$IndexUrl".Trim().TrimEnd('/')
     if (-not (Test-WoaPersistableIndex $value)) {
-        # CLEARED, not just skipped: an unrecordable index must inherit nothing. Leaving the old
-        # marker sent a host that moved to a corporate mirror back to the public NVIDIA channel.
+        # CLEARED, not just skipped: a stale marker sent a corporate-mirror host back to NVIDIA's.
         Remove-Item -LiteralPath (Get-WoaTorchIndexMarkerPath) -Force -ErrorAction SilentlyContinue
         return
     }
@@ -3935,7 +3921,6 @@ function Save-WoaTorchIndexMarker {
         if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
-        # No BOM, and written whole: a partial line would fail the read-side check anyway.
         [System.IO.File]::WriteAllText(
             (Get-WoaTorchIndexMarkerPath), $value, (New-Object System.Text.UTF8Encoding($false)))
     } catch {}
@@ -3949,7 +3934,7 @@ function Get-WoaTorchIndexMarker {
     return $value
 }
 
-# A path with a space has to reach uv by its 8.3 short name. Parity copy of install.ps1's.
+# A path with a space has to reach uv by its 8.3 short name.
 function Get-UvSafePath {
     param([string]$Path)
     if (-not $Path -or -not $Path.Contains(" ")) { return $Path }
@@ -3979,13 +3964,10 @@ function Resolve-WoaOverrideLine {
         $lead = $Matches[1]; $opt = $Matches[2]; $sep = $Matches[3]
         $bare = $Matches[4].Trim('"').Trim("'"); $tail = $Matches[5]
         $rebased = & $abs $bare
-        # Re-quoted when needed: these options take ONE file argument, so an unquoted space
-        # truncates the path. Reached by stripping a caller's quotes and by rebasing onto a
-        # directory that has one.
+        # Re-quoted when needed: these options take ONE file argument.
         if ($rebased -match '\s') { $rebased = '"' + $rebased + '"' }
         return "$lead$opt$sep$rebased$tail"
     }
-    # Groups copied out before the next -match, which replaces $Matches.
     if ($Line -match '^(\s*[^\s@]+\s*@\s*)(.+?)(\s*)$') {
         $head = $Matches[1]; $target = $Matches[2]; $tail = $Matches[3]
         if ($target -match '^file:(?!//)(.*)$') { return "$head" + "file:" + (& $abs $Matches[1]) + "$tail" }
@@ -4007,9 +3989,7 @@ function Get-RequirementName {
     return ($name -replace '[-_.]+', '-').ToLowerInvariant()
 }
 
-# Missing or unreadable reads as empty, so the caller sees a file declaring nothing.
-# Includes followed: a conflict can sit one level down where a top-file scan finds nothing, and two
-# override files naming one package is an error. Each line carries the directory it was READ from.
+# Includes followed: a conflict can sit a level down, and two files naming one package is an error.
 function Get-RequirementEntries {
     param([string]$Path, $Seen = $null, [int]$Depth = 0)
     if ($Depth -gt 8) { return @() }
@@ -4023,8 +4003,7 @@ function Get-RequirementEntries {
     foreach ($line in $lines) {
         # Comments and blanks come across as entries: a fold should carry the file faithfully.
         if ($line -match '^\s*(?:-r|--requirement)[=\s]+(.+?)\s*$') {
-            # An inline comment is not part of the path, and pip needs whitespace before the "#":
-            # "-r a#b.txt" keeps its hash, "-r nested.txt # pins" does not.
+            # pip needs whitespace before an inline "#": "-r a#b.txt" keeps its hash.
             $nested = ($Matches[1] -replace '\s+#.*$', '').Trim().Trim('"', "'")
             if (-not [System.IO.Path]::IsPathRooted($nested)) { $nested = Join-Path $dir $nested }
             $entries += @(Get-RequirementEntries -Path $nested -Seen $Seen -Depth ($Depth + 1))
@@ -4045,8 +4024,7 @@ function Get-RequirementNames {
     return @($names | Sort-Object -Unique)
 }
 
-# Put back what install.ps1 exported: those are process-scoped, so a direct update starts without
-# them and reaches the win_arm64 sdists the generated file suppresses. One variable at a time.
+# Put back what install.ps1 exported: process-scoped, so a direct update starts without them.
 function Restore-WoaResolverEnvironment {
     if (-not (Test-WinArm64Venv)) { return }
     $woaDir = Join-Path $StudioHome "woa"
@@ -4066,8 +4044,7 @@ function Restore-WoaResolverEnvironment {
             $env:UV_OVERRIDE = $safeOverrides
             substep "windows on arm: restored requirement overrides from $overrides"
         } else {
-            # uv COMBINES override files and errors on a duplicate, so disjoint files are both handed
-            # over and only a conflict is merged, ours winning.
+            # uv COMBINES override files and errors on a duplicate, so only a conflict is merged.
             $_woaOursNames = Get-RequirementNames -Path $overrides
             $_woaCallerFiles = @($env:UV_OVERRIDE -split '\s+' | Where-Object { $_ })
             $_woaConflict = $false
@@ -4105,8 +4082,7 @@ function Restore-WoaResolverEnvironment {
         }
     }
     if (Test-Path -LiteralPath $wheels -PathType Container) {
-        # PREPENDED, never skipped: find-links are additive, and standing down left the staged
-        # win_arm64 wheels out of the search entirely.
+        # PREPENDED, never skipped: standing down left the staged win_arm64 wheels out entirely.
         $_woaSafeWheels = Get-UvSafePath $wheels
         if (-not $env:UV_FIND_LINKS) { $env:UV_FIND_LINKS = $wheels }
         elseif (($env:UV_FIND_LINKS -split '[,\s]+') -notcontains $wheels) {
@@ -4180,8 +4156,7 @@ function Test-WinArm64Venv {
         $script:_winArm64Venv = $false
         return $false
     }
-    # By path first: `python` may not be the venv's own yet, and a wrong answer "repairs" a
-    # working CUDA torch into one with no wheel.
+    # By path first: `python` may not be the venv's own, and a wrong answer "repairs" a good torch.
     $candidates = @()
     $managed = Join-Path $VenvDir "Scripts\python.exe"
     if (Test-Path -LiteralPath $managed) { $candidates += $managed }
@@ -4346,8 +4321,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     }
 
     # Keep a CUDA torch already here: its family tag is not one download.pytorch.org publishes, so
-    # the comparison can only disagree and would "repair" it into a cu130 with no win_arm64 wheel.
-    # ANY explicit pin is exempt: what this distrusts is the INFERRED expectation.
+    # the comparison can only disagree. ANY explicit pin is exempt; this distrusts the INFERRED one.
     if ((Test-WinArm64Venv) -and $installedTorchTag -and (Test-CudaFamilyLeaf $installedTorchTag) -and
         -not $_pinnedIdx) {
         if ($shouldRebuild) {
@@ -4633,7 +4607,6 @@ $UvPinnedAssets = @{
 function Get-UvHostArch {
     $osArch = ""
     try { $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() } catch { $osArch = "" }
-    # The same machine-scope signal Get-HostMachineArch leads with, whatever terminal each ran from.
     $machineArch = ""
     try { $machineArch = [string][Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Machine") } catch { $machineArch = "" }
     $signals = @($machineArch, [string]$env:PROCESSOR_ARCHITEW6432, [string]$env:PROCESSOR_ARCHITECTURE, $osArch)
@@ -5171,39 +5144,33 @@ if ($script:PinChangedForceReinstall -or $script:TorchImportDefinitivelyFailed) 
 
 if (-not $SkipPythonDeps) {
 
-# Recover what a fresh shell lost, BEFORE the manifest is dropped below: the recovery reads that
-# very file. Outside the no-torch guard, which still installs studio.txt and rewrites the manifest.
+# Recover what a fresh shell lost, BEFORE the manifest is dropped below: recovery reads that file.
 $WinArm64Venv = Test-WinArm64Venv
 # Read BEFORE the re-export overwrites it: the flags install.ps1 left describe THAT index.
 $_woaHandoffIndex = if ($env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) { $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/') } else { "" }
-# The index install.ps1 probed. Without it the CUDA branch takes the driver-derived family, which
-# has no win_arm64 CUDA wheel.
+# The index install.ps1 probed, or the CUDA branch takes a driver-derived family with no wheel.
 $WinArm64TorchIndexUrl = if ($WinArm64Venv -and $env:UNSLOTH_WOA_TORCH_INDEX_URL) {
     # The user's own channel, ahead of both records: only NVIDIA's channels are ever persisted.
     $env:UNSLOTH_WOA_TORCH_INDEX_URL.Trim().TrimEnd('/')
 } elseif ($WinArm64Venv -and $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX) {
     $env:UNSLOTH_WOA_SELECTED_TORCH_INDEX.Trim().TrimEnd('/')
 } elseif ($WinArm64Venv) {
-    # A fresh shell has no handover: the manifest carries the answer across runs, and the marker
-    # carries it when a run died after the manifest was dropped.
+    # A fresh shell has no handover: the manifest carries the answer, the marker when a run died.
     $_woaFromManifest = Get-PersistedWoaTorchIndex -VenvPath $VenvDir
     if ($_woaFromManifest) { $_woaFromManifest } else { Get-WoaTorchIndexMarker }
 } else { "" }
 # Re-exported, not just held locally: the manifest rewrite reads it, so a fresh-shell update would
-# erase the index for good. Either record opens the block -- gating on the WoA chain alone lost the
-# pin on a venv installed through a credentialed mirror, which neither record keeps.
+# erase the index for good. Either record opens the block: the WoA chain alone lost a mirror pin.
 $_woaPinnedIndex = if ($WinArm64Venv) { Get-PinnedTorchIndexUrl } else { $null }
 if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {
-    # RECORD the index the torch steps will USE, which is the generic pin when there is one:
-    # recording the WoA chain named a channel the run had not installed from. BOTH records, since
-    # the manifest is written from this variable and the read chain prefers it over the marker.
+    # RECORD the index the torch steps will USE, the generic pin when there is one: the WoA chain
+    # named a channel the run had not installed from. BOTH, since the read chain prefers the manifest.
     # An unpersistable pin is refused at each end rather than leaving a stale answer.
     $_woaMarkerIndex = $_woaPinnedIndex
     if ($_woaMarkerIndex) { $_woaMarkerIndex = $_woaMarkerIndex.Trim().TrimEnd('/') }
     else { $_woaMarkerIndex = $WinArm64TorchIndexUrl }
-    # install.ps1's torchaudio and prerelease answers were measured on the index it probed, so a
-    # moved pin makes them describe a different channel. This is for the NEXT run in the same shell;
-    # within this one $WinArm64HandoffApplies already refuses them.
+    # install.ps1's flags were measured on the index it probed; a moved pin makes them describe
+    # another channel. For the NEXT run in the same shell.
     if ($_woaMarkerIndex -ne $_woaHandoffIndex) {
         Remove-Item Env:UNSLOTH_WOA_HAS_TORCHAUDIO -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_WOA_TORCH_PRERELEASE -ErrorAction SilentlyContinue
@@ -5361,16 +5328,12 @@ $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($Pi
 # no-torch mode never reaches the assignment below.
 $XpuIndexUrl = $null
 
-# The index torch was installed from: $TorchInstallIndexUrl except on the native WoA path.
 $_effectiveTorchIndexUrl = $TorchInstallIndexUrl
 
 if (-not $NoTorchMode) {
 # Windows on ARM has win_arm64 torch and torchvision wheels but no torchaudio on any index,
-# install.ps1 reports which way its index went; absent that assume none, since asking for a wheel
-# that does not exist makes the trio unresolvable while skipping one costs only audio.
-# Which index the torch steps will ACTUALLY use: an explicit pin outranks the handover and the
-# manifest. Neither flag applies unless the index they were measured on is still in force -- a
-# stale "1" fails an otherwise valid update, a stale "0" suppresses audio the index does have.
+# Absent install.ps1's answer assume no torchaudio: an absent wheel makes the trio unresolvable.
+# Which index the torch steps ACTUALLY use; neither flag applies unless that index still stands.
 $WinArm64EffectiveTorchIndexUrl = if ($PinnedTorchIndexUrl) { ([string]$PinnedTorchIndexUrl).Trim().TrimEnd('/') }
                                   elseif ($WinArm64TorchIndexUrl) { $WinArm64TorchIndexUrl }
                                   else { "" }
@@ -5379,13 +5342,11 @@ $WinArm64HandoffApplies = [bool]($WinArm64EffectiveTorchIndexUrl -and $_woaHando
 $WinArm64NoAudio = $WinArm64Venv -and -not ($WinArm64HandoffApplies -and $env:UNSLOTH_WOA_HAS_TORCHAUDIO -eq "1")
 if ($WinArm64NoAudio) { substep "windows on arm: skipping torchaudio (no win_arm64 wheel on this index)" }
 elseif ($WinArm64Venv) { substep "windows on arm: this index publishes torchaudio; keeping it in the torch trio" }
-# The ceilings below are for download.pytorch.org's x64 wheels; the only win_arm64 CUDA build sits
-# above them, and triton-windows' first win_arm64 wheel is above its pin. Floors without ceilings.
+# The ceilings below are for x64 wheels; every win_arm64 build sits above them, so floors only.
 $WinArm64TorchSpec = "torch>=2.4"
 $WinArm64VisionSpec = "torchvision>=0.19"
 $WinArm64AudioSpec = "torchaudio>=2.4"
-# Pinned to what this index publishes, for the reason above the parity probe: under best-match a
-# floor asks for whichever index has the higher number. Best effort; no answer leaves the specs.
+# Pinned to what this index publishes: under best-match a floor asks the higher-numbered index.
 if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
     $_woaTags = ""
     try {
@@ -5396,8 +5357,7 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
         $_woaTorchV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi
         if ($_woaTorchV) {
             $WinArm64TorchSpec = "torch==$_woaTorchV"
-            # Paired with that torch, never merely newest: nightly torchvision pins its exact
-            # torch, so two independently maximized pins can name an unsatisfiable pair.
+            # Paired with that torch, never merely newest: two maximized pins can be unsatisfiable.
             $_woaVisionV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchvision" -PairWith $_woaTorchV
             if ($_woaVisionV) { $WinArm64VisionSpec = "torchvision==$_woaVisionV" }
             $_woaAudioV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchaudio" -PairWith $_woaTorchV
@@ -5408,10 +5368,8 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
 }
 # <3.7 everywhere except Windows on ARM, whose first win_arm64 wheel is 3.8.0.post28.
 $_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
-# The win_arm64 index publishes only the trio, so PyPI must stay reachable for their shared
-# dependencies, and best-match comes with it because uv's first-index default would take PyPI's
-# wheel-less torch. Not gated on $UseUv: pip needs the extra index just as much, and
-# Remove-UvOnlyResolverFlags makes that safe by translating the uv-only flags.
+# The win_arm64 index publishes only the trio, so PyPI must stay reachable for the shared
+# dependencies, and best-match comes with it. Not gated on $UseUv: pip needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
     $_woaIndexArgs = @("--index-strategy", "unsafe-best-match", "--extra-index-url", "https://pypi.org/simple")
     # install.ps1 read this off the wheel it selected; the URL spelling is only a second signal.
@@ -5655,8 +5613,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         Exit-SetupFailure "PyTorch CUDA installation failed (exit code $torchInstallExit)"
     }
 
-    # torchaudio left out of the trio: uv upgrades the pair without touching an audio wheel it was
-    # not asked about, leaving it linked against the previous libtorch. On a mismatch only.
+    # torchaudio left out of the trio: uv would leave it linked against the previous libtorch.
     if ($WinArm64Venv -and $WinArm64NoAudio) {
         $_woaAudioCode = "import importlib.metadata as m; " +
             "print('T=' + next((d.version for d in m.distributions() " +
@@ -5712,9 +5669,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # Windows wheel is 2.11.0+cpu, and only install.ps1 -- never on the updater's path -- repaired
 # that. Vocabulary is Get-InstalledTorchTag's; an unknown leaf publishes nothing.
 if (-not $NoTorchMode) {
-    # $_effectiveTorchIndexUrl, so a native run does not publish the driver-derived family and send
-    # the repair to an index with no win_arm64 wheel. That leaf is no CUDA family, so nothing
-    # publishes -- the honest answer.
+    # $_effectiveTorchIndexUrl, so a native run does not publish the driver-derived family.
     $_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl
     # $ROCmIndexUrl first: on the AMD path $TorchInstallIndexUrl still points at /cpu.
     $_expectedTag = if ($ROCmIndexUrl) { "rocm" }
@@ -6322,26 +6277,16 @@ if ($LocalLlamaCppLinked) {
                 $existingMeta = Get-Content -LiteralPath $existingMetaPath -Raw | ConvertFrom-Json
                 $existingKind = $existingMeta.install_kind
                 # ROCm hosts carry windows-rocm or -hip; CPU covers -cpu and -arm64. Inert for now.
-                # The VENV's arch, not the machine's: a WoA host on the x64 fallback installs
-                # windows-cuda, and asking the machine would discard that working runtime. Under the
-                # opt-out expect the CPU bundle INSTEAD, not as well, or it is deleted every run.
+                # The VENV's arch, not the machine's: a WoA host on the x64 fallback wants windows-cuda.
                 $_arm64CudaOptOut = ("$env:UNSLOTH_LLAMA_ARM64_CUDA").Trim().ToLowerInvariant() -in @("0", "false", "no", "off")
-                # Not opted out, the CPU bundle is still valid: the selector falls back to it when no
-                # ARM64 CUDA asset exists, and CUDA is attempted first on every run.
+                # Still valid unopted: the selector falls back to it when no ARM64 CUDA asset exists.
                 $_nvidiaKinds = if (Test-WinArm64Venv) {
                     if ($_arm64CudaOptOut) { @("windows-arm64") } else { @("windows-arm64-cuda", "windows-arm64") }
                 } else { @("windows-cuda") }
-                # nvidia-smi is a probe, and a probe that did not answer is not evidence the GPU
-                # is gone: a transient failure during a direct update dropped windows-arm64-cuda
-                # from the expected set, deleted a working install three lines down, and then ran
-                # the selector with no NVIDIA evidence, which installs the CPU bundle. The WoA CUDA
-                # index this venv is on says the same thing nvidia-smi would have, and only
-                # NVIDIA's own channels are ever persisted, so it cannot be a CPU pin.
-                # Read here, not taken from the dependency pass: when the manifest verifies,
-                # $SkipPythonDeps skips that whole block and $WinArm64EffectiveTorchIndexUrl is
-                # never set, which read as "no evidence" and deleted a working CUDA install on
-                # exactly the no-op update that should touch nothing. Same order as the pass:
-                # pin, then manifest, then marker.
+                # A probe that did not answer is not evidence the GPU is gone: a transient
+                # nvidia-smi failure used to delete a working install for the CPU bundle.
+                # Read here, not from the dependency pass, which $SkipPythonDeps skips whole: that
+                # read as "no evidence" and deleted a working CUDA install on a no-op update.
                 $_woaEvidenceIndex = if ($WinArm64EffectiveTorchIndexUrl) { $WinArm64EffectiveTorchIndexUrl }
                     else {
                         $_p = Get-PinnedTorchIndexUrl
