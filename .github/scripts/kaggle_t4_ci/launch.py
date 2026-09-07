@@ -1160,11 +1160,24 @@ def extract_reports(outdir: Path) -> list[dict]:
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
-        for cell in nb.get("cells", []):
-            for output in cell.get("outputs", []):
+        # Valid JSON is not necessarily a notebook, and one malformed file must
+        # not take the reports already read from its neighbours with it: an
+        # exception here used to reach the collector, which replaced every
+        # parsed report with none, judged the kernel infra, posted success and
+        # released it, hiding a real failure behind a mangled sibling.
+        if not isinstance(nb, dict):
+            continue
+        for cell in nb.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            for output in cell.get("outputs") or []:
+                if not isinstance(output, dict):
+                    continue
                 text = output.get("text") or ""
                 if isinstance(text, list):
-                    text = "".join(text)
+                    text = "".join(str(t) for t in text)
+                if not isinstance(text, str):
+                    continue
                 _consume(text)
     for log_path in sorted(outdir.rglob("kernel.log")):
         raw = log_path.read_text(encoding = "utf-8", errors = "replace")

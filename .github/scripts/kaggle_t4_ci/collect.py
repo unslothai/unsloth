@@ -682,6 +682,21 @@ def main() -> int:
         _out("pending", str(sum(1 for k in result["kernels"] if k.get("verdict") == "pending")))
         return code
 
+    if args.require_auth and not os.environ.get("KAGGLE_API_TOKEN"):
+        # Not configured is not broken. The scheduled collector's matrix is
+        # static and a repository with one Kaggle account leaves the second
+        # secret unset, so an empty token here is an absent account, not an
+        # expired credential: a warning so the absence is visible on the run,
+        # and a green pass. A token that is present and refused is still red.
+        print(
+            "::warning title=Kaggle account not configured::KAGGLE_API_TOKEN is empty in "
+            "this job, so nothing was collected for this account. A repository with one "
+            "Kaggle account leaves the second secret unset; if this account is meant to "
+            "be configured, set its secret."
+        )
+        _log("no token in this job; nothing collected")
+        return finish()
+
     try:
         api = launch._api()
     except BaseException as exc:  # noqa: BLE001

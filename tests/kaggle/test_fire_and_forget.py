@@ -1195,6 +1195,33 @@ def test_a_reaped_kernel_is_not_reported_deleted_before_it_is(tmp_path, monkeypa
     assert "was deleted" not in record["reason"] and record["deleted"] is False
 
 
+def test_a_malformed_neighbour_notebook_does_not_hide_a_failing_report(tmp_path, monkeypatch):
+    """One kernel, several executed notebooks. One of them is valid JSON but
+    not a notebook, or has a cell or output that is not an object; the reader
+    used to raise on it, and the collector then replaced EVERY report already
+    read with none, judged the kernel infra, posted success and released it.
+    The failing report in the well-formed neighbour must survive."""
+    slug = _ENTRY["slug"]
+    dest = tmp_path / slug.rsplit("/", 1)[-1]
+    dest.mkdir()
+    failing = launch.RESULT_PREFIX + json.dumps({"label": "control", "passed": False, "model": "m"})
+    (dest / f"a{launch.OUTPUT_SUFFIX}").write_text(
+        json.dumps({"cells": [{"outputs": [{"text": failing + "\n"}]}]}), encoding = "utf-8"
+    )
+    (dest / f"b{launch.OUTPUT_SUFFIX}").write_text("[]", encoding = "utf-8")
+    (dest / f"c{launch.OUTPUT_SUFFIX}").write_text(
+        json.dumps({"cells": ["not a cell", {"outputs": ["not an output", {"text": 7}, {"text": ["x", 1]}]}]}),
+        encoding = "utf-8",
+    )
+    assert launch.extract_reports(dest) == [{"label": "control", "passed": False, "model": "m"}]
+    monkeypatch.setattr(launch, "fetch_evidence", lambda slug, dest, deadline = None: {})
+    monkeypatch.setattr(launch, "delete_kernel", lambda slug, deadline = None: True)
+    api = _StubApi([], {slug: "COMPLETE"})
+    record = collect.collect_one(api, dict(_ENTRY), tmp_path, expect = 1, max_age_hours = 3.0)
+    assert record["verdict"] == "fail", record
+    assert "report_error" not in record
+
+
 # ------------------------------------------------------- who is allowed to be quiet
 
 
@@ -1209,11 +1236,37 @@ def test_the_scheduled_collector_fails_loudly_when_it_cannot_authenticate(
         raise OSError("Could not find kaggle.json")
 
     monkeypatch.setattr(launch, "_api", _no)
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "a-token-kaggle-refused")
     monkeypatch.setattr(sys, "argv", ["collect", "--outdir", str(tmp_path), "--require-auth"])
     assert collect.main() == 1
     assert "Kaggle authentication failed" in capsys.readouterr().out
     monkeypatch.setattr(sys, "argv", ["collect", "--outdir", str(tmp_path)])
     assert collect.main() == 0, "a fork job with the secret withheld is still a skip"
+
+
+def test_an_unconfigured_collector_account_warns_and_passes(tmp_path, monkeypatch, capsys):
+    """The scheduled collector's matrix is static and a repository with one
+    Kaggle account leaves the second secret unset. That leg used to hand an
+    empty token to --require-auth and go red every ten minutes, for an account
+    that does not exist; an empty token is an absent account, warned about and
+    green, while a token that is present and refused is still red."""
+
+    def _no(*a, **k):
+        raise OSError("Could not find kaggle.json")
+
+    monkeypatch.setattr(launch, "_api", _no)
+    monkeypatch.delenv("KAGGLE_API_TOKEN", raising = False)
+    monkeypatch.setattr(sys, "argv", ["collect", "--outdir", str(tmp_path), "--require-auth"])
+    assert collect.main() == 0
+    out = capsys.readouterr().out
+    assert "::warning title=Kaggle account not configured" in out
+    assert "::error" not in out
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "")
+    assert collect.main() == 0
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "present")
+    assert collect.main() == 1
+    body = COLLECT_WF.read_text(encoding = "utf-8")
+    assert "EMPTY token" in body
 
 
 def test_the_scheduled_workflow_asks_for_that():
@@ -1269,12 +1322,22 @@ def test_the_studio_workflow_resolves_its_ref_to_a_commit_before_dispatching():
     """workflow_dispatch accepts any `unsloth_ref`; the notebook workflow
     already resolved it, the Studio one passed it straight through."""
     for path in (NOTEBOOK_WF, STUDIO_WF):
-        step = next(s for _j, n, s in _steps(_wf(path)) if n == "Resolve the ref under test")
-        run = step["run"]
+        wf = _wf(path)
+        gate_ref = next(s for s in wf["jobs"]["gate"]["steps"] if s.get("id") == "ref")
         assert (
-            "git ls-remote" in run and "[0-9a-f]{40}" in run
-        ), f"{path.name} does not resolve refs"
-        assert "exit 1" in run, f"{path.name} dispatches on an unresolved ref"
+            "git ls-remote" in gate_ref["run"] and "[0-9a-f]{40}" in gate_ref["run"]
+        ), f"{path.name}: the gate does not resolve refs"
+        step = next(s for _j, n, s in _steps(wf) if n == "Resolve the ref under test")
+        run = step["run"]
+        # Resolved ONCE, by the gate, and reused: a moving branch re-resolved
+        # after the job queued can name a commit the gate never keyed the
+        # account draw or the in-flight check on.
+        assert step["env"]["GATE_SHA"] == "${{ needs.gate.outputs.head_sha }}"
+        assert 'RESOLVED="$GATE_SHA"' in run and "$(git ls-remote" not in run, (
+            f"{path.name}: the GPU job resolves the ref a second time"
+        )
+        assert wf["jobs"]["gate"]["outputs"]["head_sha"] == "${{ steps.ref.outputs.head_sha }}"
+        assert "exit 1" in run or "stand_down=true" in run, f"{path.name} dispatches on an unresolved ref"
         # A full SHA passes the shape test whether or not the repository has
         # it; only fetching the object says it is there. Without this the
         # Studio leg spent a session on a commit no status could be posted to.

@@ -122,7 +122,10 @@ jobs:
           KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
         # --require-auth: this job holds the repository's own secrets, so an
         # auth failure is a broken token and must be red, not the quiet green a
-        # fork pull request gets. --no-delete always; the kernels are released
+        # fork pull request gets. An EMPTY token is different: the matrix is
+        # static and a repository with one Kaggle account leaves the second
+        # secret unset, so that leg warns and passes rather than reporting a
+        # missing account as a broken one. --no-delete always; the kernels are released
         # by the last step once their statuses posted. The expected report count
         # comes from each kernel's own evidence, so a five-payload kernel that
         # lost four is judged against five rather than a flat guess.

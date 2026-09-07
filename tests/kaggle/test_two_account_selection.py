@@ -722,3 +722,13 @@ def test_the_gate_is_keyed_on_the_commit_the_gpu_job_will_test():
             "--head-sha '${{ steps.ref.outputs.head_sha }}'" in decide["run"]
         ), f"{path.name}: the gate is keyed on a commit the GPU job may not test"
         assert "github.sha" not in decide["run"]
+        # And the GPU job tests exactly that commit: it takes the gate's answer
+        # rather than resolving a moving ref a second time.
+        assert gate_job["outputs"]["head_sha"] == "${{ steps.ref.outputs.head_sha }}"
+        gpu = next(
+            s
+            for _j, _n, s in _steps(_wf(path))
+            if s.get("id") == "ref" and "GATE_SHA" in (s.get("env") or {})
+        )
+        assert gpu["env"]["GATE_SHA"] == "${{ needs.gate.outputs.head_sha }}"
+        assert "$(git ls-remote" not in gpu["run"]

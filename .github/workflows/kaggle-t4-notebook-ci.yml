@@ -387,6 +387,9 @@ jobs:
       # NAME, and the GPU job indexes the secrets context with it.
       account: ${{ steps.decide.outputs.account }}
       account_user: ${{ steps.decide.outputs.account_user }}
+      # The commit under test, resolved once. The GPU job tests THIS and
+      # never re-resolves a moving ref.
+      head_sha: ${{ steps.ref.outputs.head_sha }}
       matrix: ${{ steps.decide.outputs.matrix }}
     steps:
       - name: Harden runner (audit)
@@ -792,31 +795,20 @@ jobs:
         env:
           UNSLOTH_REF: ${{ inputs.unsloth_ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GATE_SHA: ${{ needs.gate.outputs.head_sha }}
         run: |
           if [ -z "$UNSLOTH_REF" ]; then
             echo "ref=$HEAD_SHA" >> "$GITHUB_OUTPUT"
             echo "testing unslothai/unsloth@$HEAD_SHA"
             exit 0
           fi
-          if printf '%s' "$UNSLOTH_REF" | grep -Eq '^[0-9a-f]{40}$'; then
-            RESOLVED="$UNSLOTH_REF"
-          else
-            RESOLVED=''
-            for attempt in 1 2 3; do
-              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" || true)"
-              # An annotated tag lists the tag OBJECT first and the commit it
-              # points at on the `^{}` line, which is what pip can check out.
-              PEELED="$(printf '%s\n' "$LS" | grep '\^{}$' | head -n1 | cut -f1)"
-              if [ -n "$PEELED" ]; then
-                RESOLVED="$PEELED"
-              else
-                RESOLVED="$(printf '%s\n' "$LS" | head -n1 | cut -f1)"
-              fi
-              if [ -n "$RESOLVED" ]; then break; fi
-              echo "ls-remote attempt $attempt resolved nothing"
-              sleep 10
-            done
-          fi
+          # RESOLVED ONCE, by the gate job, and reused here rather than asked
+          # again. A branch or tag can move while this job queues; resolving it
+          # a second time could name a commit the gate never keyed the account
+          # draw or the in-flight check on, and that commit's own run may
+          # already be out on the other account, which is a duplicate session.
+          # The reachability fetch below still applies to what the gate said.
+          RESOLVED="$GATE_SHA"
           # Every branch above ends here, including the 40-character one. That
           # branch used to be its own exit: a SHA is immutable, so it was
           # accepted on shape alone and nothing asked whether unslothai/unsloth
