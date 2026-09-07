@@ -297,6 +297,32 @@ def test_the_retry_does_not_overrule_a_cache_flag_the_command_already_states():
     )
 
 
+def test_the_retry_reads_the_short_spellings_as_the_same_settings():
+    # -cram and -ctxcp are aliases llama.cpp accepts and the extras panel offers, so a
+    # command that states one has stated the setting; appending the long form after it
+    # would silently zero the user's value.
+    assert LlamaCppBackend._retry_cache_tuning_flags(
+        ["llama-server", "-cram", "8192", "-ctxcp", "4"],
+        cache_ram = None,
+        ctx_checkpoints = None,
+        server_caps = _CAPS,
+    ) == []
+
+    # One at a time, so a single alias cannot stand in for the pair.
+    assert LlamaCppBackend._retry_cache_tuning_flags(
+        ["llama-server", "-cram", "8192"],
+        cache_ram = None,
+        ctx_checkpoints = None,
+        server_caps = _CAPS,
+    ) == ["--ctx-checkpoints", "0"]
+    assert LlamaCppBackend._retry_cache_tuning_flags(
+        ["llama-server", "-ctxcp=4"],
+        cache_ram = None,
+        ctx_checkpoints = None,
+        server_caps = _CAPS,
+    ) == ["--cache-ram", "0"]
+
+
 def test_the_retry_reads_the_other_checkpoint_alias_as_the_same_setting():
     # A build advertising --ctx-checkpoints can still be handed --swa-checkpoints.
     assert LlamaCppBackend._retry_cache_tuning_flags(

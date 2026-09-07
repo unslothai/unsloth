@@ -71,6 +71,8 @@ from core.inference.context_window import (
 )
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.llama_server_args import (
+    _CACHE_RAM_FLAGS,
+    _CTX_CHECKPOINTS_FLAGS,
     _DEVICE_FLAGS,
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
@@ -17261,22 +17263,20 @@ class LlamaCppBackend:
         panel still shows. An explicit field is handled by the caller's own
         None checks, exactly as at launch.
         """
+        # Every spelling llama.cpp accepts, from the sets the arg layer already keeps:
+        # a short -cram or -ctxcp in the extras states the setting exactly as the long
+        # form does, and appending the tuning after one silently zeroes a value the
+        # user typed and the panel still shows.
         stated = {_flag_name(str(token)) for token in cmd}
         flags: list[str] = []
         if (
             cache_ram is None
             and server_caps.get("supports_cache_ram")
-            and "--cache-ram" not in stated
+            and not (_CACHE_RAM_FLAGS & stated)
         ):
             flags.extend(["--cache-ram", "0"])
         checkpoints_flag = server_caps.get("ctx_checkpoints_flag")
-        # Both aliases, since a build that accepts one may still be handed the other
-        # in the extras.
-        if (
-            ctx_checkpoints is None
-            and checkpoints_flag
-            and not ({"--ctx-checkpoints", "--swa-checkpoints"} & stated)
-        ):
+        if ctx_checkpoints is None and checkpoints_flag and not (_CTX_CHECKPOINTS_FLAGS & stated):
             flags.extend([str(checkpoints_flag), "0"])
         return flags
 
