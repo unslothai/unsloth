@@ -2,18 +2,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """Guards Vulkan routing for Linux AMD GPUs with no usable ROCm.
 
-History: every AMD branch in the selector is gated on has_rocm and the Vulkan branch
-required has_intel_gpu, so an AMD GPU without working ROCm was indistinguishable from a
-headless CPU-only box and fell all the way through to the CPU llama.cpp bundle. ROCm does
-not support most AMD parts -- APUs least of all -- and plenty of distros ship Mesa/RADV
-without ROCm ever being installed, so that population is large and was getting a CPU-only
-binary on a GPU host.
+Every AMD branch in the selector was gated on has_rocm and the Vulkan branch required
+has_intel_gpu, so an AMD GPU without working ROCm looked like a headless CPU-only box and
+fell through to the CPU llama.cpp bundle. ROCm does not support most AMD parts, APUs least
+of all, and many distros ship Mesa/RADV without it, so that population is large.
 
-Why widening this is safe: the Vulkan bundle is a SUPERSET of the CPU bundle. It ships
-the same libggml-cpu-*.so variants alongside libggml-vulkan.so, and with no usable Vulkan
-device it enumerates zero devices and runs on the CPU backend -- verified by running
-`--list-devices` with the Vulkan ICD removed, which lists nothing and exits 0. A host that
-turns out to have no working Vulkan therefore lands exactly where it does today.
+Widening is safe because the Vulkan bundle is a SUPERSET of the CPU one: it ships the same
+libggml-cpu-*.so variants alongside libggml-vulkan.so, and with no usable Vulkan device it
+enumerates zero devices and runs on the CPU backend (verified with `--list-devices` and the
+Vulkan ICD removed: nothing listed, exit 0).
 
 Measured on a Steam Deck (Van Gogh gfx1033, Qwen2.5-0.5B Q4_0, llama-bench, pp128/tg64):
 
@@ -90,15 +87,11 @@ _HOST_GPU_TOOLS = frozenset(
 def _patch_no_nvidia_no_rocm(monkeypatch):
     """Hide the REAL host's NVIDIA/ROCm from detect_host().
 
-    The DRM vendor pass is gated on `not has_usable_nvidia and not has_rocm`, so on any
-    machine with a GPU the fake sysfs above is never read and every case below collapses
-    to False. Stub the two probes that see through to the host: nvidia-smi/rocminfo on
-    PATH, and the /proc/driver/nvidia/gpus fallback.
-
-    os.access is stubbed alongside them because detect_host() falls back to
-    os.access("/opt/rocm/bin/rocminfo", os.X_OK) when rocminfo is not on PATH. A
-    developer or CI machine with ROCm installed but unexported would otherwise run the
-    real probe, set has_rocm=True, and take these cases off the path they exist to cover.
+    The DRM vendor pass is gated on `not has_usable_nvidia and not has_rocm`, so on any GPU
+    machine the fake sysfs is never read and every case collapses to False. Stubs the probes
+    that see through to the host: nvidia-smi/rocminfo on PATH, the /proc/driver/nvidia/gpus
+    fallback, and os.access, which detect_host() uses for /opt/rocm/bin/rocminfo when
+    rocminfo is not on PATH.
     """
     _which = ilp.shutil.which
     monkeypatch.setattr(
@@ -157,16 +150,15 @@ def test_drm_vendor_detection(monkeypatch, tmp_path, vendor_ids, expect_amd, exp
     "env, expect_amd",
     [
         ({}, True),  # the target host: driver-only AMD, no mask
-        # ROCR_VISIBLE_DEVICES is a request for GPU isolation and Vulkan honours no HIP
-        # mask, so auto-routing would hand llama.cpp the card that request hid. Honoured
-        # on its own terms: no ROCm inventory tool has to be installed for it to be real.
+        # ROCR_VISIBLE_DEVICES is a GPU isolation request and Vulkan honours no HIP mask, so
+        # auto-routing would hand llama.cpp the card it hid. Honoured on its own terms: no
+        # ROCm inventory tool need be installed for it to be real.
         ({"ROCR_VISIBLE_DEVICES": ""}, False),
         ({"ROCR_VISIBLE_DEVICES": "-1"}, False),
         ({"ROCR_VISIBLE_DEVICES": "0"}, False),
-        # Only ROCR_VISIBLE_DEVICES empties an HSA agent list; HIP_VISIBLE_DEVICES and its
-        # CUDA_VISIBLE_DEVICES alias filter the HIP runtime, which rocminfo is not a client
-        # of. Counting them denied the Vulkan bundle to any host that merely exported
-        # CUDA_VISIBLE_DEVICES, a common shell default.
+        # Only ROCR_VISIBLE_DEVICES empties an HSA agent list. HIP_VISIBLE_DEVICES and its
+        # CUDA_VISIBLE_DEVICES alias filter the HIP runtime, which rocminfo is no client of;
+        # counting them denied Vulkan to any host merely exporting CUDA_VISIBLE_DEVICES.
         ({"HIP_VISIBLE_DEVICES": "-1"}, True),
         ({"CUDA_VISIBLE_DEVICES": ""}, True),
         ({"CUDA_VISIBLE_DEVICES": "0"}, True),
@@ -189,10 +181,9 @@ def test_the_host_stub_also_hides_an_unexported_opt_rocm(monkeypatch, tmp_path):
     """rocminfo off PATH but present under /opt/rocm must not reach these cases.
 
     detect_host() falls back to os.access("/opt/rocm/bin/rocminfo", os.X_OK) when
-    shutil.which finds nothing, which os.path.exists and os.path.isdir do not cover.
-    Simulate that machine: the stub has to answer for it, or the cases above set
-    has_rocm from the real host, skip the fake DRM scan, and stop testing the
-    AMD-without-ROCm path they exist for.
+    shutil.which finds nothing, which os.path.exists and os.path.isdir do not cover. The stub
+    has to answer for that machine, or the cases above take has_rocm from the real host and
+    stop testing the AMD-without-ROCm path.
     """
     _patch_drm(monkeypatch, tmp_path, ["0x1002"])
     monkeypatch.setattr(ilp.platform, "system", lambda: "Linux")
@@ -206,9 +197,8 @@ def test_the_host_stub_also_hides_an_unexported_opt_rocm(monkeypatch, tmp_path):
     )
     assert ilp.os.access("/opt/rocm/bin/rocminfo", ilp.os.X_OK) is True
     _patch_no_nvidia_no_rocm(monkeypatch)
-    # The direct assertion, not just the outcome: with the fallback left reachable the
-    # probe below merely fails to EXECUTE a binary this runner does not have, so the
-    # end-to-end result would be green for the wrong reason on most machines.
+    # Asserted directly, not just via the outcome: with the fallback reachable the probe below
+    # only fails to execute a binary this runner lacks, so it would be green for the wrong reason.
     assert ilp.os.access("/opt/rocm/bin/rocminfo", ilp.os.X_OK) is False
     assert ilp.detect_host().has_amd_gpu_without_rocm is True
 
@@ -259,10 +249,9 @@ def test_rocm_host_keeps_the_rocm_branch():
 
 
 def test_vendor_probe_is_gated_off_rocm_in_source():
-    """Belt and braces on the above, without a monkeypatch that could pass vacuously:
-    assert in the source that the DRM vendor scan sits inside the
-    `not has_usable_nvidia and not has_rocm` guard. If it ever moves out, a working-ROCm
-    host would start setting the flag and could be diverted off the ROCm branches."""
+    """Belt and braces on the above, in the source rather than a monkeypatch that could pass
+    vacuously: the DRM vendor scan must sit inside the `not has_usable_nvidia and not has_rocm`
+    guard, or a working-ROCm host starts setting the flag and can leave the ROCm branches."""
     src = Path(ilp.__file__).read_text(encoding = "utf-8")
     guard = "if not has_usable_nvidia and not has_rocm:"
     assert guard in src

@@ -2715,10 +2715,9 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         CPU bundle.
 
         The Vulkan preference was stated in direct_upstream_release_plan and in
-        resolve_upstream_asset_choice, but NOT here -- and this is the branch that runs
-        whenever a published bundle exists, which is the normal case. So a Steam Deck
-        installed the CPU llama.cpp while both upstream paths said Vulkan, and the only
-        way to get Vulkan was to set UNSLOTH_LLAMA_CPP_BACKEND by hand.
+        resolve_upstream_asset_choice, but NOT here, and this is the branch that runs whenever a
+        published bundle exists. So a Steam Deck installed the CPU llama.cpp while both upstream
+        paths said Vulkan, reachable only by setting UNSLOTH_LLAMA_CPP_BACKEND by hand.
         """
         host = self._gpu_host(has_amd_gpu_without_rocm = True)
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(

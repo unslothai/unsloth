@@ -7277,11 +7277,10 @@ class TestRocmWslSupplyChainPins:
 class TestRocmMiscomputingArchDemotion:
     """A gfx1033 venv that ALREADY holds ROCm torch must be demoted, not just declined.
 
-    _amd_arch_index_url() returning None only blocks a fresh ROCm install. On an upgrade
-    the existing build survived every gate: install.sh resolves UNSLOTH_TORCH_BACKEND=cpu,
-    which returns _ensure_rocm_torch at its first line; _ensure_cpu_torch fired only for an
-    explicit pin; and the base update does not reinstall an already-satisfied torch. The
-    host most in need of the gate therefore kept the wheels the gate exists to remove.
+    _amd_arch_index_url() returning None only blocks a fresh ROCm install. On an upgrade the
+    existing build survived every gate: install.sh resolves UNSLOTH_TORCH_BACKEND=cpu, which
+    returns _ensure_rocm_torch at its first line; _ensure_cpu_torch fired only for an explicit
+    pin; and the base update does not reinstall an already-satisfied torch.
     """
 
     def _demotion_calls(
@@ -7361,11 +7360,10 @@ class TestRocmMiscomputingArchDemotion:
         assert calls == [], "a mask shrank the host to its miscomputing GPU"
 
     def test_kfd_topology_names_the_arch_when_no_runtime_does(self, monkeypatch):
-        """A Deck with ROCm torch but no working rocminfo is the host that most needs the
-        demotion, and it is the one where both runtime sources answer nothing:
-        _detect_amd_gfx_codes() has no probe to run and no Van Gogh product name maps
-        through _infer_linux_amd_gfx_arch(). amdkfd is in the kernel and still answers.
-        """
+        """A Deck with ROCm torch but no working rocminfo most needs the demotion, and is where
+        both runtime sources answer nothing: _detect_amd_gfx_codes() has no probe to run and no
+        Van Gogh product name maps through _infer_linux_amd_gfx_arch(). amdkfd is in the kernel
+        and still answers."""
         calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", [], kfd = ["gfx1033"])
         assert len(calls) == 1, "gfx1033 kept its ROCm torch with only KFD to name it"
         assert "--force-reinstall" in calls[0][0]
@@ -7389,10 +7387,10 @@ class TestRocmMiscomputingArchDemotion:
     def test_a_declared_arch_does_not_outrank_the_silicon(self, monkeypatch):
         """UNSLOTH_ROCM_GFX_ARCH is a routing hint, not an answer about the hardware.
 
-        A stale gfx1030 on a real Van Gogh -- the value HSA_OVERRIDE_GFX_VERSION=10.3.0
-        also spoofs to -- used to be taken first and skip the demotion outright, so a
-        standalone `studio update` left the miscomputing wheels in place. The probes are
-        asked first now, and the declared arch only answers when none of them can.
+        A stale gfx1030 on a real Van Gogh, which HSA_OVERRIDE_GFX_VERSION=10.3.0 also spoofs
+        to, used to be taken first and skip the demotion outright, so a standalone
+        `studio update` left the miscomputing wheels in place. The probes are asked first now,
+        and the declared arch only answers when none of them can.
         """
         calls = self._demotion_calls(
             monkeypatch,
@@ -7461,12 +7459,11 @@ class TestRocmMiscomputingArchDemotion:
         self, monkeypatch, codes, expect_install
     ):
         """`studio update` run standalone has no UNSLOTH_TORCH_BACKEND to read, so the
-        early `cpu` return in _ensure_rocm_torch does not fire and a gfx1033 host walks
-        into the missing-kernel reroute. gfx1033 is not in _GENERIC_ROCM_WHEEL_GFX but
-        does map to gfx103X-all, so `_leaf` is set while _amd_arch_index_url() returns
-        None by design: the reroute printed that None through
-        _strip_index_url_credentials (AttributeError), and merely guarding the print
-        would drop through to the generic pytorch.org wheels the gate exists to remove.
+        early `cpu` return in _ensure_rocm_torch does not fire and a gfx1033 host walks into
+        the missing-kernel reroute. gfx1033 is not in _GENERIC_ROCM_WHEEL_GFX but does map to
+        gfx103X-all, so `_leaf` is set while _amd_arch_index_url() returns None by design: the
+        reroute printed that None through _strip_index_url_credentials (AttributeError), and
+        guarding the print alone would drop through to the generic pytorch.org wheels.
         """
         calls = []
         monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
@@ -7497,12 +7494,12 @@ class TestRocmMiscomputingArchDemotion:
 
     def test_a_stale_override_does_not_start_a_rocm_to_cpu_cycle(self, monkeypatch):
         """The thrash this ordering caused: a real Deck exporting a stale
-        UNSLOTH_ROCM_GFX_ARCH=gfx1030 took the inferred-arch path, which resolves its
-        index from _infer_linux_amd_gfx_arch() and so believed the override, force-
-        installed the multi-GB gfx103X-all stack, and set _inferred_arch_installed --
-        which skips the runtime-target check below it. _ensure_cpu_torch() then saw the
-        real gfx1033 and force-reinstalled CPU torch, so every `studio update` paid for
-        both installs in turn instead of settling.
+        UNSLOTH_ROCM_GFX_ARCH=gfx1030 took the inferred-arch path, which resolves its index
+        from _infer_linux_amd_gfx_arch() and so believed the override, force-installed the
+        multi-GB gfx103X-all stack, and set _inferred_arch_installed, which skips the
+        runtime-target check below it. _ensure_cpu_torch() then saw the real gfx1033 and
+        force-reinstalled CPU torch, so every `studio update` paid for both installs instead
+        of settling.
         """
         calls = []
         monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)

@@ -474,10 +474,9 @@ assert_eq "a real gfx1100 corroborated by the kernel keeps its own family" \
     "$_AMD/gfx110X-all/" "$(HSA_OVERRIDE_GFX_VERSION=11.0.0 run_index)"
 
 
-# gfx1033 (Van Gogh) shares gfx103X-all with gfx1030-gfx1036, so a mixed 103X host is the
-# one shape where _amd_agreed_index_family AGREES while _amd_sole_index_arch declines --
-# and the shared-family arm then rewrote the cpu index the miscomputing gate had just
-# chosen back to ROCm wheels, for a host containing the arch that must never receive them.
+# gfx1033 (Van Gogh) shares gfx103X-all with gfx1030-gfx1036, so a mixed 103X host is the one
+# shape where _amd_agreed_index_family AGREES while _amd_sole_index_arch declines, and the
+# shared-family arm then rewrote the cpu index the gate had just chosen back to ROCm wheels.
 fedora_no_version_host gfx1033 gfx1030
 assert_eq "a mixed gfx1033 + gfx1030 host does not reroute to the shared family" \
     "$_BASE/cpu" "$(run_index)"
@@ -493,10 +492,10 @@ assert_eq "gfx1030 + gfx1032 still take the shared gfx103X-all index" \
 fedora_no_version_host gfx1033
 assert_eq "a lone gfx1033 does not reroute" "$_BASE/cpu" "$(run_index)"
 
-# A stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Deck: _infer_linux_amd_gfx_arch returns
-# the override, so an arm testing only the inferred value walked the gate's cpu index back
-# to gfx103X-all. A READABLE ROCm version makes this take the plain inferred-gfx arm,
-# which never consults the probe.
+# A stale UNSLOTH_ROCM_GFX_ARCH=gfx1030 on a real Deck: _infer_linux_amd_gfx_arch returns the
+# override, so an arm testing only the inferred value walked the gate's cpu index back to
+# gfx103X-all. A READABLE ROCm version takes the plain inferred-gfx arm, which never consults
+# the probe.
 readable_version_host() {   # $@ = gfx arches
     reset_host
     mock_rocminfo "$@"
@@ -515,8 +514,8 @@ assert_eq "and the rejected override is not forwarded to setup.sh" \
 # A declared arch on hardware that really is that arch still routes normally, so this
 # stays a gfx1033 veto rather than a blanket distrust of the override.
 readable_version_host gfx1030
-# A readable ROCm version means get_torch_index_url returns the version-keyed index and
-# never reaches the */cpu reroute at all, so the override is simply not consulted here.
+# A readable ROCm version means get_torch_index_url returns the version-keyed index and never
+# reaches the */cpu reroute, so the override is simply not consulted here.
 assert_eq "a gfx1030 override on real gfx1030 keeps the version index" \
     "$_BASE/rocm7.2" "$(run_index_env UNSLOTH_ROCM_GFX_ARCH=gfx1030)"
 # The no-version path stays covered too, since it reaches the family arm instead.
