@@ -290,6 +290,26 @@ def check_focus_return(page, checks: Checks) -> None:
         page.evaluate(active),
     )
 
+    # The content stays mounted for the exit animation, so the user can click into something
+    # else before the close-autofocus runs. Radix's own restore checks for that; the
+    # scroll-close path prevents its default, so it has to make the same check itself or it
+    # takes the caret back out of whatever was clicked.
+    reset_list(page)
+    open_row(page, 14)
+    page.evaluate("() => { document.getElementById('list').scrollTop = 40; }")
+    page.wait_for_timeout(20)
+    raw_click(page, "#outside-input")
+    page.wait_for_timeout(900)
+    landed = page.evaluate(
+        "() => document.activeElement?.getAttribute('data-slot')"
+        " ?? document.activeElement?.id ?? null"
+    )
+    checks.record(
+        "an input clicked while a scroll-closed menu animates out keeps the caret",
+        landed == "outside-input",
+        landed,
+    )
+
     reset_list(page)
     open_row(page, 13)
     page.evaluate("() => { document.getElementById('list').scrollTop = 600; }")

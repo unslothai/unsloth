@@ -56,6 +56,16 @@ export function NonModalDropdownMenu({
           closedByScroll.current = false;
           if (event.defaultPrevented) return;
           event.preventDefault();
+          // The content stays mounted for the exit animation, so the user can click into
+          // something else before this runs. Radix's own restore checks that; preventing
+          // its default skips the check, so make it here or the trigger steals the caret.
+          const active = document.activeElement;
+          const claimedByTheUser =
+            active !== null &&
+            active !== document.body &&
+            active !== document.documentElement &&
+            active.closest("[data-slot='dropdown-menu-content']") === null;
+          if (claimedByTheUser) return;
           triggerRef.current?.focus({ preventScroll: true });
         }}
       >
