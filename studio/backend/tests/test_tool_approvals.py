@@ -283,6 +283,26 @@ def test_durable_approval_parks_past_timeout():
 
 def test_durable_cancel_still_denies():
     """An explicit Stop (cancel_event set) denies even when the run is durable."""
+
+
+def test_an_unanswered_park_is_released_by_the_settles_cancel_not_a_ceiling():
+    """What releases an approval nobody answers is the lease sweeper, not a timeout.
+
+    The sweeper settles a run whose progress lease expired (parking does not renew it) and
+    ``supervisor.cancel()`` sets this very event; the parked gate must then deny and pop its own
+    slot, so the reservation unwinds. Pinned past the ceiling on purpose: the timeout elapsing
+    alone must release nothing — only the settle's cancel does.
+    """
+    cancel = threading.Event()
+    cancel.durable = True
+    aid = new_approval_id()
+    w = _Waiter("sess", aid, cancel_event = cancel, timeout = 0.2).start()
+    # The short ceiling has long passed; only what comes next releases anything.
+    time.sleep(0.6)
+    assert _has_pending(aid), "the elapsed ceiling must not release the park"
+    cancel.set()  # what reconcile_runs' settle does to a lease-expired run
+    assert w.join(timeout = 3.0) == "deny", "the settle's cancel must read as deny"
+    assert _wait_until(lambda: not _has_pending(aid)), "the slot must be popped on release"
     cancel = threading.Event()
     cancel.durable = True
     aid = new_approval_id()
