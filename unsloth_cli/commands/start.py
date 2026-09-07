@@ -5417,7 +5417,15 @@ def openclaw(
             embedding_model = _studio_embedding_model(base, key),
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
-        env = {"OPENCLAW_CONFIG_PATH": str(config_path), "OPENCLAW_STATE_DIR": str(cfg)}
+        # OPENCLAW_LOAD_SHELL_ENV makes OpenClaw re-read a login shell for any provider
+        # key it does not already hold, which would import the keys just dropped below
+        # straight back out of the user's profile. It treats a key it can see as an
+        # intentional override, so turning the fallback off is what keeps them gone.
+        env = {
+            "OPENCLAW_CONFIG_PATH": str(config_path),
+            "OPENCLAW_STATE_DIR": str(cfg),
+            "OPENCLAW_LOAD_SHELL_ENV": "0",
+        }
         _run(
             base,
             entry,

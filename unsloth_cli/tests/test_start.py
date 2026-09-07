@@ -8770,6 +8770,34 @@ def test_launch_drops_provider_credentials(agent, unset, fake_studio, monkeypatc
         assert name not in captured["env"]
 
 
+@pytest.mark.parametrize("enabled", ["1", "true", "yes", "on"])
+def test_openclaw_launch_disables_the_login_shell_key_fallback(
+    enabled, fake_studio, monkeypatch
+):
+    # OPENCLAW_LOAD_SHELL_ENV makes OpenClaw run a login shell and import any
+    # provider key it cannot see, so dropping the keys above is not enough on its
+    # own: openclaw 2026.9.2 reads both of them straight back out of the user's
+    # profile (src/infra/shell-env.ts, keys from src/secrets/provider-env-vars.ts).
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/openclaw")
+    monkeypatch.setenv("OPENCLAW_LOAD_SHELL_ENV", enabled)
+    captured = _capture_launch(monkeypatch, ["openclaw"])
+    assert captured["env"]["OPENCLAW_LOAD_SHELL_ENV"] == "0"
+
+
+def test_openclaw_no_launch_recipe_disables_the_login_shell_key_fallback(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "OPENCLAW_LOAD_SHELL_ENV", "0")
+
+
+def test_openclaw_state_dir_is_a_real_path_not_a_blank(fake_studio, monkeypatch):
+    # OpenClaw falls back to the user's real home when the state dir is empty,
+    # which would undo the scoping the two vars beside it are there to provide.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/openclaw")
+    captured = _capture_launch(monkeypatch, ["openclaw"])
+    assert captured["env"]["OPENCLAW_STATE_DIR"].strip()
+
+
 def _openclaw_without_the_settings_route(monkeypatch, exc = RuntimeError("404")):
     real = start._http_json
 
