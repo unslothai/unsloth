@@ -447,7 +447,6 @@ def effective_embedding_model() -> str:
     Settings change applies without a restart."""
     try:
         from utils.embedding_model_settings import get_rag_embedding_model
-
         return get_rag_embedding_model()
     except Exception:  # noqa: BLE001 - settings store unavailable (tests, early boot)
         return EMBEDDING_MODEL
@@ -520,7 +519,6 @@ def effective_gguf_repo_for_embedding_model(model: str) -> str:
         return EMBED_GGUF_REPO
     try:
         from utils.embedding_model_settings import get_stored_gguf_repo, remembered_gguf_repo
-
         stored = get_stored_gguf_repo(model)
         if stored is None:
             # One stored record, so saving another model would move a pinned job's derived identity mid-run and
