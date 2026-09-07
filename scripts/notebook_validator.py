@@ -1216,7 +1216,9 @@ def _piece_always_succeeds(piece: str) -> bool:
     return _piece_success_model(piece) is True
 
 
-def _piece_success_model(piece: str, functions: "dict[str, bool | None] | None" = None) -> bool | None:
+def _piece_success_model(
+    piece: str, functions: "dict[str, bool | None] | None" = None
+) -> bool | None:
     """True when the piece certainly succeeds, False when it certainly fails, else None.
 
     `!` inverts the status of the pipeline after it, so `! false` is reached-and-succeeded and
@@ -1383,9 +1385,7 @@ def _for_list_is_nonempty(text: str) -> bool:
     words = rest.split()
     if not words or not any(words):
         return False
-    return not any(
-        ch in word for word in words for ch in ("$", "`", "*", "?", "[")
-    )
+    return not any(ch in word for word in words for ch in ("$", "`", "*", "?", "["))
 
 
 def _leading_shell_keywords(piece: str) -> list[str]:
