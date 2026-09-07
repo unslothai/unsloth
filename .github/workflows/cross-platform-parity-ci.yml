@@ -62,6 +62,7 @@ on:
       # trigger surface: the run happened and asserted nothing about the uninstaller.
       - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
       - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - 'tests/sh/test_uninstall_legacy_layout_gate.sh'
       - 'scripts/build_whisper_cpp.sh'
       - 'studio/setup*.bat'
       - 'setup*.sh'
@@ -130,6 +131,7 @@ on:
       # trigger surface: the run happened and asserted nothing about the uninstaller.
       - 'tests/studio/test_uninstall_prebuilt_parity.ps1'
       - 'tests/studio/test_uninstall_reparse_stop_roots.ps1'
+      - 'tests/sh/test_uninstall_legacy_layout_gate.sh'
       - 'scripts/build_whisper_cpp.sh'
       - 'studio/setup*.bat'
       - 'setup*.sh'
@@ -295,6 +297,15 @@ jobs:
       - name: POSIX rollback lifecycle tests
         if: runner.os == 'Linux'
         run: sh tests/sh/test_install_rollback_lifecycle.sh
+      # The POSIX half of the uninstaller's ownership gate, which decides whether
+      # ~/.unsloth/studio is recursively deleted. Both directions are asserted: a real old
+      # install must stay removable, and a directory that is not ours must stay refused.
+      # This ran on no row at all until now, and the gate had regressed in the first
+      # direction on Linux and macOS as well as on Windows -- three layouts install.sh
+      # itself still migrates were being refused.
+      - name: POSIX uninstaller ownership gate tests
+        if: runner.os == 'Linux'
+        run: bash tests/sh/test_uninstall_legacy_layout_gate.sh
       # bash, not sh: the helper under test is extracted from install.sh, which is bash.
       - name: install.sh XPU flavor probe tests
         if: runner.os != 'Windows'
