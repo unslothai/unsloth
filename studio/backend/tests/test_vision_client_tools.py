@@ -913,11 +913,13 @@ def test_no_image_marker_on_the_plain_route_when_renders_image_is_false():
 
     # And with the gate open, the same thread is marked: the assertion above is about
     # renders_image, not about the processor_template sitting next to it.
-    marked = _plain_route_messages({
-        "template": _CHATML_WITH_TOOLS,
-        "processor_template": _CHATML_WITH_TOOLS,
-        "renders_image": True,
-    })
+    marked = _plain_route_messages(
+        {
+            "template": _CHATML_WITH_TOOLS,
+            "processor_template": _CHATML_WITH_TOOLS,
+            "renders_image": True,
+        }
+    )
     owning = [m for m in marked if m.get("role") == "user"][1]
     assert [p.get("type") for p in owning["content"]] == ["image", "text"]
 
