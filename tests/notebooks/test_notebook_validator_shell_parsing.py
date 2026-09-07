@@ -4022,7 +4022,9 @@ def test_fallback_reachability_folds_the_whole_left_hand_list():
     nv = _load_notebook_validator_module()
 
     # `(true || false)` succeeded, so the second `||` skips its tail.
-    assert list(nv.unconditional_pip_invocations("!true || false || pip install torch==2.12.0")) == []
+    assert (
+        list(nv.unconditional_pip_invocations("!true || false || pip install torch==2.12.0")) == []
+    )
     # `(false && true)` failed, so the tail always runs.
     assert [
         (inv.action, inv.packages)
@@ -4037,9 +4039,9 @@ def test_fallback_reachability_folds_the_whole_left_hand_list():
         "!false && maybe || pip install a",
         "!maybe && false || pip install a",
     ):
-        assert [
-            (inv.action, inv.packages) for inv in nv.unconditional_pip_invocations(cell)
-        ] == [("install", ["a"])], cell
+        assert [(inv.action, inv.packages) for inv in nv.unconditional_pip_invocations(cell)] == [
+            ("install", ["a"])
+        ], cell
     # An unknown the fold cannot resolve keeps the tail conditional.
     for cell in ("!true && maybe || pip install a", "!maybe || false || pip install a"):
         assert list(nv.unconditional_pip_invocations(cell)) == [], cell

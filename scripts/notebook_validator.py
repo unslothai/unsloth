@@ -1259,9 +1259,7 @@ def _fold_status(left: bool | None, op: str, right: bool | None) -> bool | None:
     return True if left else right  # a succeeded left skips right and keeps the success
 
 
-def _left_hand_status(
-    models: list[bool | None], prev_ops: list[str], pending: str
-) -> bool | None:
+def _left_hand_status(models: list[bool | None], prev_ops: list[str], pending: str) -> bool | None:
     """Fold the piece in hand into its level's running status and return the result.
 
     Called at each `&&`/`||` so the operator sees the status of everything to its left, not
