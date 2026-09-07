@@ -36,6 +36,7 @@ on:
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      - 'scripts/lockfile_supply_chain_audit.py'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
@@ -81,6 +82,7 @@ on:
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      - 'scripts/lockfile_supply_chain_audit.py'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
@@ -290,6 +292,15 @@ jobs:
               open(path, "w").write(patched)
               print(f"pipeTransport.js: patched JSON.parse calls in {path}")
           PY
+
+      - name: Composer icon alignment
+        timeout-minutes: 5
+        run: |
+          if [ ! -x studio/frontend/node_modules/.bin/vite ]; then
+            python scripts/lockfile_supply_chain_audit.py
+            npm ci --prefix studio/frontend --ignore-scripts --no-fund --no-audit
+          fi
+          python tests/studio/playwright_composer_icons.py chromium webkit
 
       - name: Reset auth + boot Unsloth
         run: |
@@ -1754,6 +1765,7 @@ jobs:
             logs/uninstall.log
             logs/install.log
             logs/playwright
+            logs/playwright-composer-icons
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/playwright_update_banner
