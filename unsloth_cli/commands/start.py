@@ -1086,12 +1086,15 @@ class _ModelDownloadProgress:
                 self.poll()
                 return
             bytes_read = max(0, int(reading.get("downloaded_bytes") or 0))
-            if reading.get("cache_measured") is False and bytes_read <= self._downloaded_bytes:
-                # A reading taken while a cache root could not be listed is only ever a
-                # lower bound (see `snapshot_progress.py`), so it counts when it is
-                # strictly bigger and says nothing when it is not: believing a smaller
-                # one would drop the count and let the next real reading of the same
-                # cached bytes look like fresh growth.
+            if reading.get("cache_measured") is False and bytes_read == 0:
+                # An unreadable root reports zero, and that is unknown rather than empty
+                # (`snapshot_progress.py`), so believing it would drop the count and let
+                # the next real reading of the same cached bytes look like fresh growth.
+                # Only zero is ignored: any positive reading is a real change and counts
+                # in either direction, the same rule the download manager reconciles on
+                # (`hub/download-manager/progress-reconcile.ts`). A high-water floor would
+                # hide the restart when an XET run falls back to HTTP and re-fetches from
+                # a lower count -- a live transfer this loop must not shut down.
                 raise _UnmeasuredReading
             self._downloaded_bytes = bytes_read
             self._failures = 0

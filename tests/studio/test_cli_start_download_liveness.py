@@ -85,6 +85,7 @@ class Harness:
         fail_first = 0,
         unmeasured_every = 0,
         unmeasured_grows = False,
+        reset_at = 0,
         ready_at = None,
         tail = KEY_LINE,
     ):
@@ -97,6 +98,8 @@ class Harness:
         self.unmeasured_every = unmeasured_every
         self.unmeasured_grows = unmeasured_grows
         self.unmeasured = 0
+        self.reset_at = reset_at
+        self.reset_seen = False
         self.downloaded_bytes = downloaded_bytes
         self.chunk_bytes = chunk_bytes
         self.ready_at = ready_at
@@ -135,6 +138,17 @@ class Harness:
             ):
                 self.failures += 1
                 raise TimeoutError("the server took too long to answer")
+            if self.reset_at and self.polls == self.reset_at:
+                # An XET run falling back to HTTP purges the partial and re-fetches, so
+                # the counter legitimately restarts from a lower figure.
+                self.downloaded_bytes = self.chunk_bytes
+                self.reset_seen = True
+                return {
+                    "downloaded_bytes": self.downloaded_bytes,
+                    "expected_bytes": EXPECTED_BYTES,
+                    "progress": 0,
+                    "cache_measured": False,
+                }
             if self.unmeasured_every and self.polls % self.unmeasured_every == 0:
                 # A scan the server could not finish: 200, cache_measured false. Zero bytes
                 # is the unreadable-root case; a growing count is the readable-root one,
@@ -334,4 +348,26 @@ def test_a_growing_unmeasured_reading_still_counts(monkeypatch):
     assert server is harness.server
     assert harness.shutdowns == []
     assert harness.unmeasured >= 40  # every reading came back unmeasured
+    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_a_restarted_transfer_is_not_held_to_its_old_high_water_mark(monkeypatch):
+    # An unmeasured reading is not a floor. When an XET transfer falls back to HTTP the
+    # partial is purged and the count restarts lower, and requiring it to beat the old
+    # figure first would shut down a download that is running the whole time.
+    harness = Harness(
+        monkeypatch,
+        chunk_bytes = 1024**3,
+        unmeasured_every = 1,
+        unmeasured_grows = True,
+        # Far enough in that re-fetching past the old figure takes longer than the cap.
+        reset_at = 20,
+        ready_at = 45,
+    )
+
+    server = harness.start()
+
+    assert harness.reset_seen
+    assert server is harness.server
+    assert harness.shutdowns == []
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
