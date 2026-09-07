@@ -8833,13 +8833,11 @@ class LlamaCppBackend:
         if is_vulkan_backend:
             shared = set(shared_gpu_ids or ())
             return bool(shared) and all(idx in shared for idx in devices)
-        # ROCm only, deliberately. The one caller is the Windows full-offload
-        # branch, and an integrated CUDA part (Jetson, DGX Spark, Tegra) is
-        # Linux-only, so _integrated_cuda_gpu_ids() could only ever answer False
-        # here -- at the price of a torch.cuda.get_device_properties() call, which
-        # creates a CUDA primary context in the backend process that it never gives
-        # back (~700 MiB measured, see _get_gpu_memory). _rocm_unified_memory_gpu_ids
-        # returns an empty set on a CUDA torch without touching the device.
+        # ROCm only, deliberately. The one caller is the Windows full-offload branch and
+        # every integrated CUDA part is Linux-only, so _integrated_cuda_gpu_ids() could
+        # only answer False here -- at the price of a get_device_properties() call, which
+        # leaks a ~700 MiB primary context (see _get_gpu_memory). The ROCm helper answers
+        # empty on a CUDA torch without touching the device.
         try:
             unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
         except Exception:
@@ -17263,10 +17261,9 @@ class LlamaCppBackend:
         panel still shows. An explicit field is handled by the caller's own
         None checks, exactly as at launch.
         """
-        # Every spelling llama.cpp accepts, from the sets the arg layer already keeps:
-        # a short -cram or -ctxcp in the extras states the setting exactly as the long
-        # form does, and appending the tuning after one silently zeroes a value the
-        # user typed and the panel still shows.
+        # Every spelling llama.cpp accepts, from the sets the arg layer already keeps: a
+        # short -cram or -ctxcp states the setting exactly as the long form does, so
+        # appending after one would zero a value the user typed and the panel shows.
         stated = {_flag_name(str(token)) for token in cmd}
         flags: list[str] = []
         if (
@@ -22521,38 +22518,29 @@ class LlamaCppBackend:
                 # Windows + full offload: drop the host-RAM KV checkpoints that cause
                 # WDDM/PCI-E overhead, but keep prompt caching (in-VRAM prefix reuse) so
                 # a repeated prompt is not re-prefilled on every request. #5692.
-                # ... unless the offload target IS system RAM. #5692 is a discrete
-                # card: its host-RAM checkpoints cross PCI-E under WDDM, so dropping
-                # them is a saving. An iGPU or APU has one pool and no bus, so the
-                # same flags buy nothing and only remove the prompt cache, and with
-                # it every chance of reusing a prefix. --cache-ram 0 silently takes
-                # --cache-idle-slots down too ("requires --cache-ram, disabling").
-                # Measured cost of getting it wrong on a Strix Halo: one 48.8 h
-                # session spent 44.3 h re-ingesting prompts, 3.38 M prompt tokens
-                # against 72 k generated, on a context it re-read every turn.
-                # Short-circuited behind the platform gate on purpose. The helper
-                # reads torch on the non-Vulkan path, and a Linux, macOS or
-                # partial-offload launch never reaches this block, so asking would
-                # spend a device probe to answer a question with no consumer.
+                # ... unless the offload target IS system RAM. #5692 is a discrete card,
+                # whose host-RAM checkpoints cross PCI-E under WDDM, so dropping them is
+                # a saving. An iGPU has one pool and no bus, so the flags only remove the
+                # prompt cache and every chance of reusing a prefix; --cache-ram 0 takes
+                # --cache-idle-slots down with it. Measured on a Strix Halo: a 48.8 h
+                # session spent 44.3 h re-ingesting, 3.38 M prompt against 72 k generated.
+                # Behind the platform gate on purpose: the helper reads torch, and a
+                # launch that never reaches this block would spend a device probe on a
+                # question with no consumer.
                 #
-                # gpu_indices is the picker's answer, not always the child's. When
-                # gpu_ids is None the picker does not own placement, so a user
-                # --device in the extras is NOT stripped and is appended after the
-                # generated pin, where llama.cpp's last-wins parsing makes it the real
-                # target. Rather than re-derive that target from argv, decline: the
-                # failure that matters is emitting --cache-ram 0 against a shared pool,
-                # and keeping the prompt cache on a discrete card only forgoes a
-                # tuning. Same direction as the helper's own fail-closed contract.
+                # gpu_indices is the picker's answer, not always the child's: with no
+                # gpu_ids a user --device survives in the extras and wins last-wins over
+                # the generated pin. Decline rather than re-derive the target from argv --
+                # the failure that matters is --cache-ram 0 against a shared pool, and
+                # keeping the prompt cache on a discrete card only forgoes a tuning.
                 # The exact tokens the tuning appended, so the arch-crash respawn can
                 # take them back off when it lands on a different device class.
                 _cache_flags_emitted: list[str] = []
-                # extra_args, not the memory policy's list: that one is built later,
-                # and a gpu_ids pin is exactly the case _strip_device_extra_args
-                # removes the flag in, which is the case this does not ask about.
-                # The env twin counts for the same reason the flag does: only an
-                # explicit gpu_ids clears LLAMA_ARG_DEVICE, so on an automatic load
-                # the child inherits it verbatim and llama.cpp reads it BEFORE argv,
-                # leaving a target the generated pin never names.
+                # extra_args, not the memory policy's list: that one is built later, and
+                # a gpu_ids pin is the case _strip_device_extra_args removes the flag in.
+                # The env twin counts too: only an explicit gpu_ids clears
+                # LLAMA_ARG_DEVICE, and llama.cpp reads it before argv, so an automatic
+                # load can place against a target the generated pin never names.
                 _cache_target_unknown = self._cache_tuning_target_unknown(
                     extra_args, gpu_ids, os.environ
                 )
@@ -24229,12 +24217,10 @@ class LlamaCppBackend:
                         self._kill_process()
                         gpu_indices = _remaining
                         _unified_gpu_indices = _remaining
-                        # The Windows full-offload cache tuning was decided against the
-                        # devices that just crashed. This respawn reuses `cmd`, so a
-                        # discrete-to-APU retry would carry --cache-ram 0 onto a shared
-                        # pool -- the prefix-reprocessing regression this tuning exists
-                        # to avoid -- and the reverse retry would reach a discrete card
-                        # without it. Re-decide against the devices actually retried.
+                        # The tuning was decided against the devices that just crashed,
+                        # and this respawn reuses `cmd`, so a discrete-to-APU retry would
+                        # carry --cache-ram 0 onto a shared pool and the reverse would
+                        # reach a discrete card without it. Re-decide against the retry.
                         if sys.platform == "win32" and full_offload_tuning_active:
                             _retry_shared = _cache_target_unknown or (
                                 self._offload_target_shares_system_memory(
@@ -24246,8 +24232,7 @@ class LlamaCppBackend:
                             )
                             if _retry_shared and _cache_flags_emitted:
                                 # Exactly the tokens this policy appended, each a flag
-                                # with its value, so the strip cannot eat a user extra
-                                # the way a valueless flag would.
+                                # with its value, so the strip cannot eat a user extra.
                                 cmd = self._without_flag_pairs(cmd, _cache_flags_emitted)
                                 _cache_flags_emitted = []
                                 logger.info(

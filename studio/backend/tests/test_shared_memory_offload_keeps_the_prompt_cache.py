@@ -243,12 +243,10 @@ def test_a_user_device_flag_makes_the_target_unknown():
 
 
 def test_an_inherited_device_env_makes_the_target_unknown():
-    # The env twin survives an automatic load verbatim -- only an explicit gpu_ids
-    # clears it -- and llama.cpp reads it before argv, so the generated pin is not
-    # what the child places against. Reading argv alone emitted --cache-ram 0 at an
-    # APU the picker had paired with a discrete card.
+    # Only an explicit gpu_ids clears the env twin, and llama.cpp reads it before argv, so
+    # the generated pin is not what the child places against. Reading argv alone emitted
+    # --cache-ram 0 at an APU the picker had paired with a discrete card.
     assert LlamaCppBackend._cache_tuning_target_unknown(None, None, {"LLAMA_ARG_DEVICE": "ROCm0"})
-    # Set but empty is not a selection.
     assert not LlamaCppBackend._cache_tuning_target_unknown(None, None, {"LLAMA_ARG_DEVICE": "  "})
 
 
@@ -275,8 +273,8 @@ def test_the_retry_applies_the_tuning_when_nothing_states_it():
 
 
 def test_the_retry_does_not_overrule_a_cache_flag_the_command_already_states():
-    # The extras sit in cmd already, so appending here wins last-wins and would zero a
-    # value the panel still shows -- the reverse of the launch, where extras win.
+    # The extras sit in cmd already, so appending here wins last-wins and zeroes a value
+    # the panel still shows -- the reverse of the launch, where the extras win.
     flags = LlamaCppBackend._retry_cache_tuning_flags(
         ["llama-server", "-m", "x.gguf", "--cache-ram", "8192"],
         cache_ram = None,
@@ -285,7 +283,6 @@ def test_the_retry_does_not_overrule_a_cache_flag_the_command_already_states():
     )
     assert flags == ["--ctx-checkpoints", "0"]
 
-    # The attached spelling is the same setting.
     assert (
         LlamaCppBackend._retry_cache_tuning_flags(
             ["llama-server", "--cache-ram=8192", "--ctx-checkpoints=4"],
@@ -298,9 +295,8 @@ def test_the_retry_does_not_overrule_a_cache_flag_the_command_already_states():
 
 
 def test_the_retry_reads_the_short_spellings_as_the_same_settings():
-    # -cram and -ctxcp are aliases llama.cpp accepts and the extras panel offers, so a
-    # command that states one has stated the setting; appending the long form after it
-    # would silently zero the user's value.
+    # -cram and -ctxcp are aliases llama.cpp accepts and the panel offers, so appending
+    # the long form after one would silently zero the user's value.
     assert (
         LlamaCppBackend._retry_cache_tuning_flags(
             ["llama-server", "-cram", "8192", "-ctxcp", "4"],
