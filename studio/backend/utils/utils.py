@@ -349,9 +349,18 @@ def hf_unreachable(timeout: int = 3) -> bool:
     reachable and the load decides as it does today.
     """
     if hf_probe_disabled():
-        # Pins like any other verdict: the opt-out is what the rest of the request should
-        # see, and leaving the pin empty sends every later guard back to its own DNS probe.
-        return _pin_reachability(False)
+        # Not pinned, because this is not a verdict: the opt-out declines to answer rather
+        # than finding the hub reachable, and pinning the decline answers for the DNS
+        # shortcut as well. UNSLOTH_OFFLINE_PROBE turns off the TCP probe, not DNS, so that
+        # shortcut is the only detector the opt-out leaves standing and every guard has to
+        # reach it. Pinned, guards 2..N of a request read "reachable" from the pin and never
+        # look again -- a link dropping mid-request goes unnoticed for the whole request,
+        # where an unpinned decline catches it on the next guard.
+        #
+        # It costs no probe to leave it open: a dead lookup returns before the caller ever
+        # gets here, so the repeat only happens while DNS is answering, which is a resolver
+        # cache hit.
+        return False
 
     pinned = _hf_reachability_pin.get()
     if pinned:

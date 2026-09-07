@@ -3726,16 +3726,36 @@ class TestPinnedReachability:
         uu.reset_hf_reachability_cache()
         return state
 
-    def test_the_opt_out_verdict_pins_like_any_other(self, probe, monkeypatch):
-        """Disabling the probe answers before it runs, and that answer is still this
-        request's verdict. An empty pin sends every later guard to its own DNS lookup, which
-        is most of what the opt-out exists to avoid."""
+    def test_the_opt_out_leaves_the_pin_open(self, probe, monkeypatch):
+        """Disabling the probe declines to answer rather than finding the hub reachable,
+        so it is not this request's verdict and the pin stays empty for one that is."""
         import utils.utils as uu
 
         monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
         with uu.pinned_hf_reachability():
             assert uu.hf_unreachable() is False
-            assert uu.hf_reachability_memo() is False
+            assert uu.hf_reachability_memo() is None
+        assert probe.calls == 0
+
+    def test_the_opt_out_leaves_the_dns_shortcut_to_every_guard(self, probe, monkeypatch):
+        """UNSLOTH_OFFLINE_PROBE turns off the TCP probe, not DNS, so the shortcut is the
+        only detector left and the pin must not answer for it. A link that drops after the
+        guard admitting the request has to be seen by the guards that follow."""
+        import utils.utils as uu
+        from core.inference.llama_cpp import _hf_unreachable
+
+        monkeypatch.setenv("UNSLOTH_OFFLINE_PROBE", "0")
+        lookups = []
+
+        def _dns_dead(*_a, **_k):
+            lookups.append(1)
+            return len(lookups) > 1  # alive for the first guard, then the link drops
+
+        monkeypatch.setattr(uu, "hf_dns_dead", _dns_dead)
+        with uu.pinned_hf_reachability():
+            verdicts = [_hf_unreachable() for _ in range(3)]
+
+        assert verdicts == [False, True, True]
         assert probe.calls == 0
 
     @pytest.mark.parametrize("verdict", [False, True])
