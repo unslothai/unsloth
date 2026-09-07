@@ -4014,11 +4014,19 @@ class TestGenerationSettingsComeFromTheLoader:
 
         vlm_default = mi._generation_default("prefill_step_size", 0, vision = True, drafted = False)
         assert vlm_default != mi.VLM_PROMPT_CACHE_PREFILL_STEP
-        for pinned, expected in ((True, mi.VLM_PROMPT_CACHE_PREFILL_STEP), (False, vlm_default)):
-            monkeypatch.setattr(mi, "mlx_vlm_snapshot_store_available", lambda p = pinned: p)
-            assert mi.mlx_prefill_chunk(vision = True) == expected
+        # A session needs the store AND the media ids; an image request missing either prefills
+        # at the runtime's own step, so only a load whose every request is served takes the pin.
+        media, bare = {"image_token_id": 151655}, {"model_type": "vlm"}
+        for store, config, expected in (
+            (True, media, mi.VLM_PROMPT_CACHE_PREFILL_STEP),
+            (True, bare, vlm_default),
+            (False, media, vlm_default),
+            (True, None, vlm_default),
+        ):
+            monkeypatch.setattr(mi, "mlx_vlm_snapshot_store_available", lambda p = store: p)
+            assert mi.mlx_prefill_chunk(vision = True, config = config) == expected
             # Only the vision path is pinned, and the group size never is.
-            assert mi.mlx_prefill_chunk() == mi.MLX_PREFILL_CHUNK_FALLBACK
+            assert mi.mlx_prefill_chunk(config = media) == mi.MLX_PREFILL_CHUNK_FALLBACK
             assert mi.mlx_kv_group_size(vision = True) == mi.MLX_KV_GROUP_SIZE_FALLBACK
 
     def test_the_step_priced_and_the_store_that_pins_it_answer_together(self, monkeypatch):
@@ -4585,7 +4593,7 @@ class TestShardsTheLoaderReads:
             None,
             2_099_712_075,
             267_386_880,
-            701_760_143,
+            803_717_775,
             12,
             "bf16",
         ),
@@ -4638,7 +4646,7 @@ class TestShardsTheLoaderReads:
             None,
             5_298_715_127,
             249_561_088,
-            761_512_591,
+            1_281_737_359,
             28,
             "bf16",
         ),

@@ -1032,9 +1032,28 @@ def mlx_vlm_snapshot_store_available() -> bool:
     return hasattr(GenerationResult, "cached_tokens")
 
 
-def mlx_prefill_chunk(*, vision: bool = False, drafted: bool = False) -> int:
+def mlx_vlm_pins_the_prefill_step(config) -> bool:
+    """Whether EVERY request to this vision load prefills on the pinned grid.
+
+    A session needs the store and the media token ids both: an image request without them gets
+    none, and prefills at mlx-vlm's own step instead. The step is a property of the load, so a
+    checkpoint that states no ids is priced at the wider one its image requests will use. The ids
+    are read from the checkpoint where the session reads them off the built model, so the two can
+    in principle disagree; stating none here prices the wider step, which is the safe way round.
+    """
+    if not mlx_vlm_snapshot_store_available():
+        return False
+    return bool(MLXInferenceBackend._vlm_media_token_ids(config))
+
+
+def mlx_prefill_chunk(
+    *,
+    vision: bool = False,
+    drafted: bool = False,
+    config = None,
+) -> int:
     """Most tokens one prefill step takes; the last step of a prompt may be shorter."""
-    if vision and mlx_vlm_snapshot_store_available():
+    if vision and mlx_vlm_pins_the_prefill_step(config):
         return VLM_PROMPT_CACHE_PREFILL_STEP
     return _generation_default(
         "prefill_step_size", MLX_PREFILL_CHUNK_FALLBACK, vision = vision, drafted = drafted

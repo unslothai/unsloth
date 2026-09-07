@@ -318,7 +318,10 @@ def _generation_settings(config: dict) -> tuple:
     vision = _loads_as_vision(config)
     if vision and _routes_to_diffusion(config):
         raise ValueError("mlx-vlm would divert this to a diffusion generator")
-    return mlx_prefill_chunk(vision = vision), mlx_kv_group_size(vision = vision)
+    return (
+        mlx_prefill_chunk(vision = vision, config = config if vision else None),
+        mlx_kv_group_size(vision = vision),
+    )
 
 
 def _vlm_quant_start() -> int:
