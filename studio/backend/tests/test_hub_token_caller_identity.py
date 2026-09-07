@@ -144,7 +144,14 @@ class _FakeHubSession:
         self._handler = handler
         self.calls: list[dict] = []
 
-    def get(self, url, *, headers = None, timeout = None, **kwargs):
+    def get(
+        self,
+        url,
+        *,
+        headers = None,
+        timeout = None,
+        **kwargs,
+    ):
         self.calls.append({"url": url, "headers": headers, "timeout": timeout, **kwargs})
         return self._handler(url, headers = headers, timeout = timeout, **kwargs)
 
@@ -181,7 +188,13 @@ def test_a_hanging_auth_check_probe_times_out(monkeypatch):
     monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
     monkeypatch.setattr("hub.utils.hf_tokens._REPO_ACCESS_PROBE_TIMEOUT_S", 0.2)
 
-    def _hang(url, *, headers = None, timeout = None, **_k):
+    def _hang(
+        url,
+        *,
+        headers = None,
+        timeout = None,
+        **_k,
+    ):
         assert timeout == 0.2
         raise requests.exceptions.Timeout("auth-check timed out")
 
@@ -201,7 +214,13 @@ def test_twenty_distinct_cold_keys_leave_no_probe_workers_after_timeout(monkeypa
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
     monkeypatch.setattr(hf_tokens, "_REPO_ACCESS_PROBE_TIMEOUT_S", 0.05)
 
-    def _hang(url, *, headers = None, timeout = None, **_k):
+    def _hang(
+        url,
+        *,
+        headers = None,
+        timeout = None,
+        **_k,
+    ):
         raise requests.exceptions.Timeout("auth-check timed out")
 
     _patch_auth_check_get(monkeypatch, _hang)
@@ -226,7 +245,13 @@ def test_a_gated_repo_denies_cache_reads_for_an_invalid_token(monkeypatch, repo_
     monkeypatch.setattr("hub.utils.hf_tokens._hub_offline", lambda: False)
     seen = {}
 
-    def _auth_check(url, *, headers = None, timeout = None, **_k):
+    def _auth_check(
+        url,
+        *,
+        headers = None,
+        timeout = None,
+        **_k,
+    ):
         seen["args"] = (url, headers, timeout)
         raise _gated_hub_error()
 
