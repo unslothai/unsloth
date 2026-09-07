@@ -227,6 +227,7 @@ def _push_ok(slug: str):
         kernel_timeout_sec,
         accelerator = "NvidiaTeslaT4",
         attempted = None,
+        **kwargs,
     ):
         attempted = [] if attempted is None else attempted
         attempted.append(slug)
@@ -481,7 +482,7 @@ def _waiting_launcher(outdir: Path) -> str:
             "        launch._api = lambda *a, **k: _Api()",
             "        launch.sweep_orphans = lambda *a, **k: []",
             "        def _push(notebook, user, kernel_timeout_sec,",
-            "                  accelerator='NvidiaTeslaT4', attempted=None):",
+            "                  accelerator='NvidiaTeslaT4', attempted=None, **kwargs):",
             "            attempted = [] if attempted is None else attempted",
             "            attempted.append('me/k-1')",
             "            launch._inflight_add('me/k-1')",
@@ -1063,7 +1064,7 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
             "        launch.sweep_orphans = lambda *a, **k: []",
             "        calls = []",
             "        def _push(notebook, user, kernel_timeout_sec,",
-            "                  accelerator='NvidiaTeslaT4', attempted=None):",
+            "                  accelerator='NvidiaTeslaT4', attempted=None, **kwargs):",
             "            calls.append(notebook)",
             "            attempted = [] if attempted is None else attempted",
             "            slug = 'me/k-%d' % len(calls)",

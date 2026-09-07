@@ -589,8 +589,13 @@ def build_driver(
     shared_wheel_specs: tuple[str, ...] = (),
     overlays: dict[str, tuple[str, ...]] | None = None,
     all_card: tuple[str, ...] = (),
+    expected_reports: int | None = None,
 ) -> dict:
     """Kernel notebook that runs the payloads across the session's GPUs.
+
+    ``expected_reports`` is how many T4_SMOKE_REPORT lines to expect, echoed
+    into the kernel log so collect.py can judge the kernel days later. Defaults
+    to one per payload, less the report-less Studio install half.
 
     ``isolation`` maps a payload to whether its virtualenv may see the Kaggle
     image's site-packages. Per payload, not per kernel, because legs sharing a
@@ -649,6 +654,8 @@ def build_driver(
             _prefetch_builder().prefetch_cell(list(prefetch_repos)).encode("utf-8")
         )
 
+    if expected_reports is None:
+        expected_reports = len(payloads) - (1 if cpu_lane else 0)
     setup = f"""import base64, gzip, json, os, pathlib, subprocess, sys, threading, time
 print("{DRIVER_SENTINEL} start", flush=True)
 
@@ -811,6 +818,7 @@ if N_GPU < EXPECTED_GPUS:
 for name, blob in PAYLOADS.items():
     (WORK / name).write_bytes(gzip.decompress(base64.b64decode(blob)))
 print("{DRIVER_SENTINEL}_PAYLOADS " + json.dumps(sorted(PAYLOADS)), flush=True)
+print("{DRIVER_SENTINEL}_EXPECT " + json.dumps({{"reports": {expected_reports}}}), flush=True)
 """
 
     runner = f'''results = {{}}
