@@ -739,7 +739,6 @@ def checkout_friendly_ref(ref_kind: str | None, ref: str | None) -> str | None:
 
 
 # Upstream names these llama-<tag>-bin-win-cuda-<runtime>-<arch>.zip, arch in {x64, arm64}.
-# Everything below takes the arch as a parameter defaulting to x64, so x64 selection is unchanged.
 WINDOWS_CUDA_ARCHS = ("x64", "arm64")
 # Both Windows CUDA kinds, for the checks that must treat them alike.
 _WINDOWS_CUDA_INSTALL_KINDS = ("windows-cuda", "windows-arm64-cuda")
@@ -1128,9 +1127,7 @@ def direct_upstream_release_plan(
                 )
             )
     elif host.is_windows and host.is_arm64:
-        # Upstream ships -arm64 CUDA bundles for these parts; try them first as the x64 branch does, with
-        # the CPU bundle still appended as the fallback. The opt-out is honoured here as well as in the
-        # fork resolver.
+        # Upstream ships -arm64 CUDA bundles for these parts; try them first, CPU bundle still last.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             torch_preference = detect_torch_cuda_runtime_preference(host)
             attempts.extend(
@@ -3208,7 +3205,6 @@ def published_windows_cuda_attempts(
     selection_preamble: Iterable[str] = (),
     arch: str | None = None,
 ) -> list[AssetChoice]:
-    # arch defaults to the host's own, so x64 callers are unchanged.
     if arch is None:
         arch = windows_cuda_arch_for_host(host)
     install_kind = windows_cuda_install_kind_for_arch(arch)
@@ -3229,8 +3225,7 @@ def published_windows_cuda_attempts(
     # actually provides on the host, preferring the torch line. Routing them
     # through the synthetic-minor path wrongly dropped cuda13 on a 13.0 driver.
     legacy_minors: list[str] = []
-    # Scoped to the arch being resolved: hardcoding x64 was harmless only while no arm64
-    # CUDA artifact existed, and would mis-order the runtime lines the day one does.
+    # Scoped to the arch being resolved: hardcoded x64 would mis-order the arm64 runtime lines.
     _legacy_pattern = rf"-bin-win-cuda-(\d+\.\d+)-{re.escape(arch)}\.zip$"
     for artifact in published_artifacts:
         m = re.search(_legacy_pattern, artifact.asset_name)
@@ -3731,9 +3726,8 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         )
 
     if host.is_windows and host.is_arm64:
-        # CUDA first on an NVIDIA host, then the CPU bundle. Without this branch the function fell through
-        # to the "no prebuilt policy" raise and sent every Windows ARM64 host to a source build. Gated on
-        # the opt-out like every other ARM64 CUDA branch.
+        # CUDA first on an NVIDIA host, then the CPU bundle; without this branch every Windows
+        # ARM64 host fell through to a source build.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             attempts = _drop_blackwell_incapable_windows_cuda(
                 host,
@@ -3847,12 +3841,8 @@ def resolve_release_asset_choice(
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_windows and host.is_arm64:
         # Prefer a CUDA bundle, as x64 does: the published windows-arm64-cuda artifact first, then
-        # upstream's -arm64 zip, both hash-gated against the release's approved checksums. Neither
-        # available falls through to the CPU bundle.
-        #
-        # The opt-out gates the WHOLE branch: gated only on the upstream tail, it would stop delivering a
-        # CPU bundle the day the fork publishes an approved artifact, because the published branch returns
-        # before the tail is reached.
+        # upstream's -arm64 zip, both hash-gated. The opt-out gates the WHOLE branch, since the
+        # published half returns before the upstream tail is reached.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             torch_preference = detect_torch_cuda_runtime_preference(host)
             published_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
@@ -3886,10 +3876,8 @@ def resolve_release_asset_choice(
                 try:
                     return apply_approved_hashes(upstream_arm64_cuda, checksums)
                 except PrebuiltFallback as exc:
-                    # The fork publishes no windows-arm64-cuda bundle yet, so its manifest lists none and the gate
-                    # above drops these. The alternative is a CPU-only llama.cpp on a machine bought for its GPU, so
-                    # take upstream ggml-org's -- the same release this fork repackages, over HTTPS, the same
-                    # provenance `--published-repo ggml-org/llama.cpp` installs on every other host.
+                    # The fork publishes no windows-arm64-cuda bundle yet, so take upstream
+                    # ggml-org's: the same release this fork repackages, over HTTPS.
                     log(
                         "no approved checksum covers a Windows ARM64 CUDA bundle "
                         f"({exc}); installing the upstream {UPSTREAM_REPO} bundle "

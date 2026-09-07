@@ -309,15 +309,12 @@ def write_manifest(
     # eGPU with no repair offered. Absent means unknown, as with every other additive key.
     if expected_torch_tag_pinned is not None:
         payload["expected_torch_tag_pinned"] = bool(expected_torch_tag_pinned)
-    # Windows on ARM has no CUDA wheels on download.pytorch.org, so a fresh-shell update
-    # cannot re-derive the index from the driver. Recorded so a repair can resolve.
-    # The rule above still holds: only NVIDIA's own channels, with no userinfo, query or
-    # fragment, so a pinned mirror is deliberately not persisted.
+    # Windows on ARM has no CUDA wheels on download.pytorch.org, so a fresh-shell update cannot
+    # re-derive the index from the driver.
+    # Only NVIDIA's own channels, with no userinfo, query or fragment: a mirror is not persisted.
     if woa_torch_index:
         candidate = str(woa_torch_index).strip()
-        # urlsplit raises on a malformed authority, and this value arrives from the
-        # environment. That would break the never-raises contract and lose the whole
-        # manifest, so an unparseable URL simply is not one we persist.
+        # urlsplit raises on a malformed authority, which would break the never-raises contract.
         try:
             parsed = urlsplit(candidate)
             _woa_ok = (
@@ -329,9 +326,8 @@ def write_manifest(
             )
         except ValueError:
             _woa_ok = False
-        # netloc, not hostname: hostname strips ":443", so a value with a port was
-        # written and then refused by setup.ps1's reader. Equality keeps writer and
-        # reader on the same set, and drops userinfo with it.
+        # netloc, not hostname: hostname strips ":443", so a value with a port was written and
+        # then refused by setup.ps1's reader. Equality drops userinfo with it.
         if _woa_ok:
             payload["woa_torch_index"] = candidate.rstrip("/")
     path = manifest_path(root)

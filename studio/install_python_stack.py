@@ -4013,9 +4013,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     if NO_TORCH:
         return True
     # A CUDA torch already here is the only one win_arm64 has: its family tag is not on
-    # download.pytorch.org, so the driver-derived expectation can only disagree and "repairing" it
-    # resolves a cu130 with no wheel. ANY explicit pin is exempt: this distrusts the INFERRED
-    # expectation. Mirrors setup.ps1's guard.
+    # download.pytorch.org, so the inferred expectation can only disagree. Explicit pins are exempt.
     if _is_win_arm64_interpreter() and _explicit_torch_index_url() is None:
         _installed = _probe_installed_torch_version()
         if _installed and _is_cuda_family_leaf(_torch_flavor_tag(_installed)):
@@ -4094,8 +4092,7 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     _torch_pkg, _vision_pkg, _audio_pkg = (
         _XPU_TORCH_PKG_SPEC if expected == "xpu" else _TORCH_FLAVOR_REPAIR_PKG_SPEC
     )
-    # Keyed on the INTERPRETER, not the machine: an emulated x64 venv installs win_amd64 wheels,
-    # for which torchaudio does exist.
+    # Keyed on the INTERPRETER, not the machine: an emulated x64 venv installs win_amd64 wheels.
     _trio = [_torch_pkg, _vision_pkg, _audio_pkg]
     if _is_win_arm64_interpreter() and not _windows_arm64_has_torchaudio():
         _trio = [_torch_pkg, _vision_pkg]
@@ -4412,9 +4409,8 @@ def _ensure_rocm_torch() -> None:
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
                 gfx_arch, ("torch", "torchvision", "torchaudio")
             )
-            # Same win_arm64 exception setup.ps1 applies: no torchaudio wheel exists
-            # there, so asking for one makes the trio unresolvable. The interpreter's arch
-            # decides which wheels exist.
+            # Same win_arm64 exception setup.ps1 applies: no torchaudio wheel exists there, so
+            # asking for one makes the trio unresolvable.
             _rocm_trio = [_torch_pkg, _vision_pkg, _audio_pkg]
             if _is_win_arm64_interpreter():
                 _rocm_trio = [_torch_pkg, _vision_pkg]
@@ -5409,13 +5405,9 @@ def _purge_recordless_distributions(output: "bytes | str | None") -> list[str]:
 # Packages to skip on Windows (require special build steps)
 WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
 
-# No win_arm64 wheel and no sdist that builds without a toolchain this installer does not
-# require (MSVC, Rust, LLVM, FFmpeg). All optional: nothing imports them at startup.
-#   tensorboard  pure Python, but needs grpcio, which has no win_arm64 wheel at any
-#                version; librosa and openai-whisper need numba -> llvmlite, whose only
-#                win_arm64 wheels are cp314.
-# Entries must be lowercase -- _filter_requirements lowercases the line and compares
-# against these verbatim, so "MeCab" would never match "mecab==0.996.13".
+# No win_arm64 wheel and no sdist buildable without MSVC / Rust / LLVM / FFmpeg. All optional.
+#   tensorboard needs grpcio; librosa and openai-whisper need numba -> llvmlite (cp314 only).
+# Lowercase entries only: _filter_requirements lowercases the line and compares verbatim.
 WINDOWS_ARM64_SKIP_PACKAGES = {
     "mecab",
     "sqlite-vec",
@@ -5456,9 +5448,8 @@ def _wheel_matches_interpreter(filename: str) -> bool:
     this_abi = f"{this_cpython}t" if free_threaded else this_cpython
     for py_tag in py_tags:
         for abi_tag in abi_tags:
-            # abi3 is excluded HERE too, not only below: this branch shadows that one
-            # for an exact-minor tag, so cp313-abi3 would be taken on 3.13t. Free-threaded
-            # builds do not implement the stable ABI (CPython #111506, PEP 703).
+            # abi3 is excluded HERE too: this branch shadows the one below for an exact-minor
+            # tag, and free-threaded builds have no stable ABI (CPython #111506).
             if py_tag == this_cpython and (
                 abi_tag in ("none", this_abi) or (abi_tag == "abi3" and not free_threaded)
             ):
@@ -5492,10 +5483,7 @@ def _find_links_wheel_versions() -> "dict[str, frozenset[str]]":
     """
     versions: "dict[str, set[str]]" = {}
     # UV_FIND_LINKS ONLY: uv is the only resolver that reaches this list and it does not consume
-    # PIP_FIND_LINKS, so counting a wheel supplied only there drops the skip and then hands the uv
-    # resolve an sdist. pip cannot be the resolver here either -- pip_install refuses the fallback
-    # once the win_arm64 overrides are in force. Split on commas, the way uv reads it: a whitespace
-    # class tore "C:\\private wheels", one directory to uv, into two nonexistent paths.
+    # PIP_FIND_LINKS. Split on commas the way uv reads it: "C:\\private wheels" is one directory.
     for value, separator in ((os.environ.get("UV_FIND_LINKS"), ","),):
         for entry in re.split(separator, value or ""):
             entry = entry.strip().strip('"')
@@ -5549,13 +5537,12 @@ def _version_satisfies(version: str, specifier: str) -> "bool | None":
             continue
         try:
             spec_set = module.SpecifierSet(specifier)
-            # Prereleases off unless the specifier names one, the policy uv and pip resolve
-            # under. packaging's own default reads ">=0.12" as containing 0.13.0rc1.
+            # Prereleases off unless the specifier names one; packaging's default reads ">=0.12"
+            # as containing 0.13.0rc1.
             return bool(spec_set.contains(version, prereleases = bool(spec_set.prereleases)))
         except Exception:
             break
-    # The comparison below models the numeric release only, so 0.13.0rc1 would reduce to 0.13.0 and
-    # read as satisfying ==0.13.0. A non-final version is not judged here at all.
+    # The comparison below models the numeric release only, so a non-final version is not judged.
     if not re.fullmatch(r"\s*v?\d+(?:\.\d+)*\s*", version or ""):
         return False
     got = _parse_release(version)
@@ -5664,8 +5651,7 @@ def _requirement_pins(req: "Path | None") -> "dict[str, list[str]]":
 
 
 # Skipped for their DEPENDENCIES rather than themselves: whisper's metadata needs tiktoken
-# unconditionally, so filtering the direct line does not stop the same sdist arriving
-# transitively. Every blocker has to be hosted before the feature is installable.
+# unconditionally, so filtering the direct line does not stop the sdist arriving transitively.
 WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
     "tensorboard": ("grpcio",),
     "librosa": ("llvmlite", "numba"),
@@ -5674,27 +5660,23 @@ WINDOWS_ARM64_SKIP_UNBLOCKED_BY = {
 
 
 # The blocker versions the optional packages' OWN metadata demands. A wheelhouse can host a
-# tag-compatible blocker that is too old: the skip drops, the metadata then rejects the hosted
-# version, and the whole extras pass fails instead of one feature staying disabled.
+# tag-compatible blocker that is too old, and the whole extras pass then fails.
 # {blocker: (specifier, package it was read from, that package's pinned version)}; the provenance
-# makes a bump to extras.txt a prompt to re-read the metadata. llvmlite has no entry on purpose:
-# it arrives through numba, which couples to it by an exact range, so a floor here would be a guess.
+# makes a bump to extras.txt a prompt to re-read the metadata. llvmlite arrives through numba,
+# which couples to it by an exact range, so a floor here would be a guess.
 WINDOWS_ARM64_BLOCKER_FLOORS: "dict[str, tuple[str, str, str]]" = {
     "grpcio": (">=1.74.0", "tensorboard", "2.21.0"),
     "numba": (">=0.51.0", "librosa", "0.11.0"),
 }
 
 
-# Optional features the RELEASED metadata excludes on win_arm64 by MARKER, so nothing requires
-# them and a hosted wheel has no requirement to satisfy however many the wheelhouse carries.
-# Re-enabling one takes an explicit install. Each carries the floor its own metadata declares,
-# because a bare name plus --no-deps takes whatever happens to be hosted.
+# Optional features the RELEASED metadata excludes on win_arm64 by MARKER, so a hosted wheel has
+# no requirement to satisfy. Each carries its own declared floor, since --no-deps takes anything.
 WINDOWS_ARM64_WHEELHOUSE_OPTIONALS = {
     "hf-transfer": "",
     "xformers": ">=0.0.22.post7",
-    # Excluded by marker in pyproject.toml and studio.txt both; the one unconditional line is
-    # in no-torch-runtime.txt, which the torch install never applies. Without this a staged
-    # wheel was ignored and RAG stayed unavailable.
+    # Excluded by marker in pyproject.toml and studio.txt both; the one unconditional line is in
+    # no-torch-runtime.txt, which the torch install never applies.
     "sqlite-vec": "",
 }
 
@@ -5753,7 +5735,7 @@ def _install_wheelhouse_optionals() -> None:
             _note(f"windows on arm: could not install the wheelhouse {name}; feature stays off")
             continue
         # xFormers links its extension against ONE (torch, CUDA) pair; beside any other its ops
-        # vanish behind a log line rather than an error. Same reading and removal as the resync.
+        # vanish behind a log line rather than an error.
         if _canonical_dist_name(name) == "xformers":
             built_for = _resident_xformers_build_torch()
             resident = str(_probe_installed_torch_version() or "")
@@ -5767,10 +5749,8 @@ def _install_wheelhouse_optionals() -> None:
         _note(f"windows on arm: installed {name}=={version} from the wheelhouse")
 
 
-# Blockers the PUBLIC index already resolves, for particular interpreters only: llvmlite and numba
-# publish win_arm64 wheels and cp314 is the only tag either publishes one for, so a native 3.14 host
-# had librosa's chain resolvable and dropped it anyway. The version is recorded as well as the tag,
-# so the blocker floors are checked against a real number. {dist: {interpreter tag: version}}.
+# Blockers the PUBLIC index already resolves, for particular interpreters only: cp314 is the only
+# tag llvmlite and numba publish win_arm64 wheels for. {dist: {interpreter tag: version}}.
 WINDOWS_ARM64_PUBLIC_INDEX_WHEELS: "dict[str, dict[str, str]]" = {
     "llvmlite": {"cp314": "0.49.0"},
     "numba": {"cp314": "0.67.0"},
@@ -5849,9 +5829,7 @@ def _uv_config_index_policy() -> "dict[str, object]":
             section = section.get(part, {}) if isinstance(section, dict) else {}
         if not isinstance(section, dict):
             continue
-        # uv pip gives [pip] scalars precedence over the top-level ones (verified on 0.10.7:
-        # [pip].no-index and [pip].index-url each beat their top-level twin), and an [[index]]
-        # entry with default = true beats [pip].index-url.
+        # uv pip (0.10.7): [pip] scalars beat top-level, and [[index]] default = true beats both.
         pip_scope = section.get("pip", {}) if isinstance(section.get("pip"), dict) else {}
         file_no_index = None
         for scope in (pip_scope, section):
@@ -5955,15 +5933,14 @@ def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
 
     def hosted(name: str) -> bool:
         canonical = _canonical_dist_name(name)
-        # The wheelhouse plus what the public index already resolves for this interpreter:
-        # a blocker available there needs no local copy to stop blocking.
+        # A blocker the public index already resolves for this interpreter needs no local copy.
         versions = set(available.get(canonical) or ()) | _public_index_win_arm64_versions(canonical)
         if not versions:
             return False
         clauses = [clause for clause in pins.get(canonical, []) if clause]
         if not clauses:
-            # No direct line to satisfy: a transitive blocker, or an unpinned entry. One with a
-            # known floor is still checked against it, since nothing installs it directly.
+            # No direct line to satisfy: a transitive blocker, or an unpinned entry. A known floor
+            # is still checked, since nothing installs it directly.
             floor = WINDOWS_ARM64_BLOCKER_FLOORS.get(canonical)
             if floor is None:
                 return True
@@ -5979,8 +5956,8 @@ def _windows_arm64_skip_packages(req: "Path | None" = None) -> set[str]:
         canonical = _canonical_dist_name(package)
         blockers = WINDOWS_ARM64_SKIP_UNBLOCKED_BY.get(canonical)
         if blockers:
-            # The blockers decide even when the package's own wheel is hosted: these publish
-            # py3-none-any wheels staging copies, so a wheelhouse can hold one and lack the rest.
+            # The blockers decide even when the package's own wheel is hosted: a wheelhouse can
+            # hold the py3-none-any wheel and lack the rest.
             if all(hosted(b) for b in blockers):
                 continue
         elif hosted(package):
@@ -7446,8 +7423,7 @@ def pip_install(
     if (
         actual_req is not None
         and PLATFORM_LACKS_TORCHCODEC_WHEEL
-        # Unless the wheelhouse carries one: extras-no-deps.txt is the only line that asks for
-        # torchcodec, and this removed it before the resolver saw it.
+        # Unless the wheelhouse carries one: extras-no-deps.txt is the only line asking for it.
         and not _wheelhouse_hosts("torchcodec")
     ):
         # Linux aarch64 / Windows ARM64 / Intel Mac have no torchcodec
@@ -7935,8 +7911,7 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras-no-deps.txt",
     )
 
-    # 3c. Optional win_arm64 features whose released metadata excludes them outright, so
-    #     no requirement file can pull them in even when the wheelhouse hosts a wheel.
+    # 3c. Optional win_arm64 features whose released metadata excludes them outright.
     _install_wheelhouse_optionals()
 
     # 4. Install the torch-matched torchao override. Reinstall only when the pin
