@@ -2097,7 +2097,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     # body leaves BOTH and the outer body stops too. Always taking the
                     # innermost let the outer loop's remaining commands replay as reached. A
                     # count past the nesting leaves every loop, which is what bash does.
-                    _, _, level = _strip_exec_prefixes(text.lstrip("!").strip())[0].strip().partition(" ")
+                    _, _, level = (
+                        _strip_exec_prefixes(text.lstrip("!").strip())[0].strip().partition(" ")
+                    )
                     depth = int(level.strip()) if level.strip().isdigit() else 1
                     broke_at = loop[max(len(loop) - depth, 0)] + 1
 
