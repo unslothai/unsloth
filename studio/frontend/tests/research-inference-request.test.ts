@@ -18,7 +18,8 @@ test("Codex research keeps provider routing and clamps generation settings", () 
         providerType: "openai_codex",
         modelId: "gpt-5.6-sol",
         maxOutputTokens: 128000,
-      maxOutputTokensFromSavedCap: false,
+        maxOutputTokensFromSavedCap: false,
+        maxOutputTokensPublished: null,
       },
       temperature: 0.2,
       topP: 0.9,
@@ -70,6 +71,7 @@ test("the report ceiling the connection resolved reaches the run config", () => 
       modelId: "gemini-3.6-flash",
       maxOutputTokens: 65536,
       maxOutputTokensFromSavedCap: false,
+      maxOutputTokensPublished: null,
     },
     temperature: 0.2,
     topP: 0.9,
@@ -95,6 +97,7 @@ test("an undocumented model with no connection override sends no ceiling", () =>
       // What getGroundedExternalMaxOutputTokens returns when nothing documents the model.
       maxOutputTokens: null,
       maxOutputTokensFromSavedCap: false,
+      maxOutputTokensPublished: null,
     },
     temperature: 0.2,
     topP: 0.9,
@@ -117,6 +120,7 @@ test("an explicit connection override is still sent", () => {
       modelId: "some-self-hosted-model",
       maxOutputTokens: 20000,
       maxOutputTokensFromSavedCap: false,
+      maxOutputTokensPublished: null,
     },
     temperature: 0.2,
     topP: 0.9,
@@ -140,6 +144,7 @@ test("the request says whether the saved cap is what grounded its ceiling", () =
         modelId: "some-self-hosted-model",
         maxOutputTokens,
         maxOutputTokensFromSavedCap,
+        maxOutputTokensPublished: null,
       },
       temperature: 0.2,
       topP: 0.9,
@@ -155,4 +160,32 @@ test("the request says whether the saved cap is what grounded its ceiling", () =
   assert.equal(build(false, 30000).maxOutputTokensFromSavedCap, false);
   // No ceiling to qualify, so the flag has nothing to say and is left off entirely.
   assert.equal("maxOutputTokensFromSavedCap" in build(true, null), false);
+});
+
+test("the published ceiling rides along, unfolded, when the model has one", () => {
+  const request = buildResearchInferenceRequest({
+    checkpoint: "external::p1::gemini-3.6-flash",
+    external: {
+      providerId: "p1",
+      providerType: "gemini",
+      modelId: "gemini-3.6-flash",
+      // What the connection actually spends: the override folded into the published cap.
+      maxOutputTokens: 8192,
+      maxOutputTokensFromSavedCap: false,
+      maxOutputTokensPublished: 65536,
+    },
+    temperature: 0.2,
+    topP: 0.9,
+    maxTokens: 4096,
+    reasoningRequested: false,
+    reasoningStyle: "none",
+    reasoningEffort: "low",
+    reasoningEffortLevels: ["low", "medium", "high"],
+    clampReasoningEffort: clamp,
+  });
+
+  // Both numbers survive: the backend needs the pair to tell a capped connection from a
+  // model that genuinely stops at 8192.
+  assert.equal(request.maxOutputTokens, 8192);
+  assert.equal(request.maxOutputTokensPublished, 65536);
 });

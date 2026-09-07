@@ -218,6 +218,7 @@ def _sanitize_config(
         "maxTokens",
         "maxOutputTokens",
         "maxOutputTokensFromSavedCap",
+        "maxOutputTokensPublished",
         "enableThinking",
         "reasoningEffort",
     }
@@ -298,6 +299,12 @@ def _sanitize_config(
             request["maxOutputTokensFromSavedCap"], bool
         ):
             raise ValueError
+        if "maxOutputTokensPublished" in request:
+            published = request["maxOutputTokensPublished"]
+            if isinstance(published, bool) or not isinstance(published, int):
+                raise ValueError
+            if not 1 <= published <= MAX_JSON_SAFE_INTEGER:
+                raise ValueError
         if "enableThinking" in request and not isinstance(request["enableThinking"], bool):
             raise ValueError
         if "reasoningEffort" in request:

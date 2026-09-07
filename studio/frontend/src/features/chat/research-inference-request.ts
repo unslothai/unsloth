@@ -21,6 +21,7 @@ export interface ResearchInferenceRequest {
   maxTokens?: number;
   maxOutputTokens?: number;
   maxOutputTokensFromSavedCap?: boolean;
+  maxOutputTokensPublished?: number;
   enableThinking?: boolean;
   reasoningEffort?: string;
 }
@@ -35,6 +36,8 @@ export function buildResearchInferenceRequest(input: {
     maxOutputTokens: number | null;
     /** True when the connection's saved cap is the only thing grounding that ceiling. */
     maxOutputTokensFromSavedCap: boolean;
+    /** The model's own published limit, before the connection override is folded in. */
+    maxOutputTokensPublished: number | null;
   };
   temperature: number;
   topP: number;
@@ -64,6 +67,17 @@ export function buildResearchInferenceRequest(input: {
                 // The run outlives the connection edit that grounded it, so the backend is
                 // told whether clearing the saved cap leaves this number standing on nothing.
                 maxOutputTokensFromSavedCap: input.external.maxOutputTokensFromSavedCap,
+                // The ceiling above already has the override folded in, so it cannot say
+                // whether the model itself stops there. The report floor turns on that.
+                ...(input.external.maxOutputTokensPublished != null &&
+                Number.isFinite(input.external.maxOutputTokensPublished) &&
+                input.external.maxOutputTokensPublished > 0
+                  ? {
+                      maxOutputTokensPublished: Math.floor(
+                        input.external.maxOutputTokensPublished,
+                      ),
+                    }
+                  : {}),
               }
             : {}),
         }

@@ -28,6 +28,7 @@ const {
   getExternalMinOutputTokens,
   externalMaxOutputTokensNeedsConnectionCap,
   getGroundedExternalMaxOutputTokens,
+  getPublishedExternalMaxOutputTokens,
   resolveExternalMaxTokensClamp,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
@@ -321,4 +322,19 @@ test("the grounding of a ceiling is reported alongside it", () => {
   );
   // A published cap keeps standing on its own after the override goes.
   assert.equal(externalMaxOutputTokensNeedsConnectionCap("gemini", "gemini-3.6-flash"), false);
+});
+
+test("the published ceiling is reported without the override folded in", () => {
+  // The number the report floor turns on: a 65536 model on a connection capped at 8192 must
+  // stay distinguishable from a model that genuinely stops at 8192.
+  assert.equal(getPublishedExternalMaxOutputTokens("gemini", "gemini-3.6-flash"), 65536);
+  assert.equal(
+    getExternalMaxOutputTokens("gemini", "gemini-3.6-flash", 8192),
+    8192,
+  );
+  assert.equal(getPublishedExternalMaxOutputTokens("custom", "some-self-hosted-model"), null);
+  assert.equal(
+    getPublishedExternalMaxOutputTokens("openrouter", "deepseek/deepseek-r1-0528"),
+    null,
+  );
 });

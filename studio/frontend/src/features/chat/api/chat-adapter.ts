@@ -141,6 +141,7 @@ import {
   clampReasoningEffortToLevels,
   externalMaxOutputTokensNeedsConnectionCap,
   getExternalMaxOutputTokens,
+  getPublishedExternalMaxOutputTokens,
   getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
@@ -4164,6 +4165,10 @@ export function createOpenAIStreamAdapter(
                     researchExternalProvider.maxOutputTokens,
                   ),
                   maxOutputTokensFromSavedCap: externalMaxOutputTokensNeedsConnectionCap(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
+                  ),
+                  maxOutputTokensPublished: getPublishedExternalMaxOutputTokens(
                     researchExternalProvider.providerType,
                     researchExternalSelection.modelId,
                   ),

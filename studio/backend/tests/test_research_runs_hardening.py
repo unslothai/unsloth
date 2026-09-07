@@ -392,25 +392,89 @@ def test_a_saved_cap_cannot_drop_a_connection_below_its_provider_floor(monkeypat
         research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
     )
     inference = {"providerType": "kimi", "providerId": "p1", "maxOutputTokens": 32_768}
-    # The default floor gets there first here; the provider floor is what holds a connection
-    # whose own client ceiling is below it.
+    # The report floor gets there first here; the provider floor is what holds a connection
+    # whose model genuinely publishes a lower limit.
     assert _synthesis_max_tokens(inference) == 16_384
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
-    assert _synthesis_max_tokens({**inference, "maxOutputTokens": 4_096}) == 16_000
+    published_low = {
+        **inference,
+        "maxOutputTokens": 4_096,
+        "maxOutputTokensPublished": 4_096,
+    }
+    assert _synthesis_max_tokens(published_low) == 16_000
 
 
 def test_a_saved_cap_below_the_previous_default_does_not_shorten_the_report(monkeypatch):
     """The cap sizes the chat slider. It may not make a report shorter than it used to be.
 
     Before the connection ceiling was read at all, every run got _SYNTHESIS_MAX_TOKENS, this
-    one included. A user who capped a connection at 8_000 to control chat cost did not ask
+    one included. A user who capped a connection at 8_192 to control chat cost did not ask
     for a shorter report than the one Deep Research has been writing them all along.
+
+    The override arrives ALREADY FOLDED into maxOutputTokens -- getExternalMaxOutputTokens
+    sends min(published, override) -- so 8_192 here is what the client really sends for a
+    65_536 model on a connection capped at 8_192, not a hypothetical.
     """
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_192}
+    )
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 8_192,
+        "maxOutputTokensPublished": 65_536,
+        "maxOutputTokensFromSavedCap": False,
+    }
+    assert _synthesis_max_tokens(inference, 900) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_model_that_genuinely_stops_low_still_lowers_the_report(monkeypatch):
+    """The one thing that may go below the old floor is the model's own published limit.
+
+    Asking a 4_096-token model for 16_384 is refused, so the floor cannot be blind to it.
+    """
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {
+        "providerType": "openai",
+        "providerId": "p1",
+        "externalModel": "gpt-4-turbo",
+        "maxOutputTokens": 4_096,
+        "maxOutputTokensPublished": 4_096,
+        "maxOutputTokensFromSavedCap": False,
+    }
+    assert _synthesis_max_tokens(inference, 900) == 4_096
+
+
+def test_an_undocumented_model_capped_low_keeps_the_old_floor(monkeypatch):
+    """Same rule with nothing published: only a model's own limit may go below the floor."""
     monkeypatch.setattr(
         research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 8_000}
     )
-    inference = {"providerType": "gemini", "providerId": "p1", "maxOutputTokens": 32_768}
-    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
+    inference = {
+        "providerType": "custom",
+        "providerId": "p1",
+        "externalModel": "some-self-hosted-model",
+        "maxOutputTokens": 8_000,
+        "maxOutputTokensFromSavedCap": True,
+    }
+    assert _synthesis_max_tokens(inference, 900) == research_runs._SYNTHESIS_MAX_TOKENS
+
+
+def test_a_cap_between_the_floor_and_the_ceiling_still_binds(monkeypatch):
+    """The floor is a floor, not a bypass: a cap above it still lowers a stale ceiling."""
+    monkeypatch.setattr(
+        research_runs.providers_db, "get_provider", lambda _id: {"max_output_tokens": 20_000}
+    )
+    inference = {
+        "providerType": "gemini",
+        "providerId": "p1",
+        "externalModel": "gemini-3.6-flash",
+        "maxOutputTokens": 32_768,
+        "maxOutputTokensPublished": 65_536,
+        "maxOutputTokensFromSavedCap": False,
+    }
+    assert _synthesis_max_tokens(inference, 900) == 20_000
 
 
 def test_clearing_the_saved_cap_invalidates_a_ceiling_only_it_grounded(monkeypatch):
@@ -461,9 +525,18 @@ def test_a_run_created_before_the_grounding_flag_is_unchanged(monkeypatch):
 
 
 def test_a_client_ceiling_below_the_default_still_lowers_the_budget(monkeypatch):
-    """That one is the model's documented limit, not a preference: asking past it is refused."""
+    """A published limit is the model's own, not a preference: asking past it is refused.
+
+    It has to be the PUBLISHED one. maxOutputTokens alone cannot say whether 8_192 is the
+    model's limit or a connection the user capped, and only the first may go below the floor.
+    """
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
-    inference = {"providerType": "openai", "providerId": "p1", "maxOutputTokens": 8_192}
+    inference = {
+        "providerType": "openai",
+        "providerId": "p1",
+        "maxOutputTokens": 8_192,
+        "maxOutputTokensPublished": 8_192,
+    }
     assert _synthesis_max_tokens(inference) == 8_192
 
 
@@ -545,8 +618,24 @@ def test_a_client_resolved_ceiling_is_used_verbatim(monkeypatch):
 
 def test_a_ceiling_below_the_default_is_respected(monkeypatch):
     monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
-    inference = {"providerType": "openai", "providerId": "p1", "maxOutputTokens": 8_192}
+    inference = {
+        "providerType": "openai",
+        "providerId": "p1",
+        "maxOutputTokens": 8_192,
+        "maxOutputTokensPublished": 8_192,
+    }
     assert _synthesis_max_tokens(inference) == 8_192
+
+
+def test_a_legacy_ceiling_below_the_default_keeps_the_old_budget(monkeypatch):
+    """Without a published limit the number is ambiguous, so it does not lower the report.
+
+    Such a run asked for _SYNTHESIS_MAX_TOKENS before any of this existed and the provider
+    took it, so keeping that is the no-regression answer.
+    """
+    monkeypatch.setattr(research_runs.providers_db, "get_provider", lambda _id: None)
+    inference = {"providerType": "openai", "providerId": "p1", "maxOutputTokens": 8_192}
+    assert _synthesis_max_tokens(inference) == research_runs._SYNTHESIS_MAX_TOKENS
 
 
 def test_the_provider_floor_table_matches_the_client_one_it_mirrors():

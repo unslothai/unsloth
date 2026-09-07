@@ -200,6 +200,21 @@ export function externalMaxOutputTokensNeedsConnectionCap(
 }
 
 /**
+ * The model's own published output limit, before any connection override is folded in.
+ *
+ * `getGroundedExternalMaxOutputTokens` returns the override-folded number, which is the right
+ * thing to spend but the wrong thing to reason about: it cannot tell a model that genuinely
+ * stops at 8192 from a 65536 model on a connection the user capped at 8192. Deep Research
+ * needs the difference, because the first may lower its report budget and the second may not.
+ */
+export function getPublishedExternalMaxOutputTokens(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): number | null {
+  return _publishedMaxOutputTokens(providerType, modelId);
+}
+
+/**
  * `_documentedMaxOutputTokens`, minus the entries that do not survive being sent unattended.
  *
  * An OpenRouter id resolves through the direct provider's table, and a router endpoint is not

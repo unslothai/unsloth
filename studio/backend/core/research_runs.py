@@ -479,12 +479,7 @@ def _synthesis_max_tokens(inference: dict[str, Any], model_timeout_seconds: Any 
         # The client resolved this against the run's own model, but the run is durable: the
         # connection's cap can have been lowered since it was created, and the saved row is
         # the current truth about what the user allows this connection to spend.
-        #
-        # It lowers the budget only as far as the previous default. That column caps the chat
-        # Max Tokens slider, and a user who set it to 4_096 for cost was not asking for a
-        # report shorter than the one Deep Research already wrote them at 16_384 -- a PR that
-        # exists to make reports longer must not shorten anybody's.
-        budget = min(resolved, max(saved, _SYNTHESIS_MAX_TOKENS)) if saved else resolved
+        budget = min(resolved, saved) if saved else resolved
     else:
         # A run created before the client sent its resolved ceiling falls back to here. The
         # saved cap belongs to the connection, not to this run's model -- one connection
@@ -494,9 +489,29 @@ def _synthesis_max_tokens(inference: dict[str, Any], model_timeout_seconds: Any 
         # budget safely at all, so a legacy run keeps exactly the default it already had.
         budget = _SYNTHESIS_MAX_TOKENS
     # The chat path never hands a connection less than its provider's floor, because below it
-    # a thinking answer is cut off before the report starts. A saved cap is allowed to lower
-    # the budget, but not past that.
-    return max(min(budget, _synthesis_budget_ceiling(model_timeout_seconds)), floor)
+    # a thinking answer is cut off before the report starts.
+    return max(
+        min(budget, _synthesis_budget_ceiling(model_timeout_seconds)),
+        _report_floor(inference),
+        floor,
+    )
+
+
+def _report_floor(inference: dict[str, Any]) -> int:
+    """The budget every run had before a connection ceiling was read at all.
+
+    Only the model's own published limit may pull the report below it. A connection override
+    may not: that column sizes the chat Max Tokens slider, and a user who capped a connection
+    at 8_192 for cost was not asking for a shorter report than Deep Research has been writing
+    them all along. The distinction is invisible in `maxOutputTokens`, which already has the
+    override folded into the published cap -- min(65_536, 8_192) and a model that genuinely
+    stops at 8_192 are the same number by the time it arrives -- so the published limit is
+    carried separately and read here.
+    """
+    published = _positive_int_or_none(inference.get("maxOutputTokensPublished"))
+    if published:
+        return min(_SYNTHESIS_MAX_TOKENS, published)
+    return _SYNTHESIS_MAX_TOKENS
 
 
 def _synthesis_budget_ceiling(model_timeout_seconds: Any = None) -> int:
