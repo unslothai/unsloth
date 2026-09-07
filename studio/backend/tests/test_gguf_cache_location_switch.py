@@ -351,3 +351,60 @@ def test_memory_estimate_uses_the_copy_selected_for_load(cache_locations):
     estimated, size = _resolve_quant_gguf(repo_id, "Q4_K_M", False)
     assert estimated == loaded
     assert size == 128
+
+
+@pytest.mark.parametrize("endpoint", ["/api/models/gguf-variants", "/api/hub/gguf-variants"])
+@pytest.mark.parametrize("failure", ["network", 503, 401, 403, 404, 429])
+def test_inactive_only_chat_cache_handles_hub_failures(
+    cache_locations, cache_client, monkeypatch, endpoint, failure
+):
+    import httpx
+
+    repo_id, expected = cache_locations
+    active_root = hf_cache_settings.get_hf_cache_paths().hub_cache
+    active_path = next(path for repo, path in expected.values() if repo.parent == active_root)
+    active_path.unlink()
+    quant, (repo, path) = next(
+        (quant, pair) for quant, pair in expected.items() if pair[0].parent != active_root
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    error = (
+        ConnectionError("Hub temporarily unavailable")
+        if failure == "network"
+        else (
+            httpx.HTTPStatusError(
+                "Hub response failed",
+                request = httpx.Request("GET", "https://huggingface.co/api/models/Org/Model-GGUF"),
+                response = httpx.Response(failure),
+            )
+        )
+    )
+
+    def unavailable(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(gguf_variants, "list_gguf_variants", unavailable)
+    transient = failure == "network" or failure == 503
+    if transient:
+        scoped = cache_client.get(
+            endpoint,
+            params = {"repo_id": repo_id, "local_path": str(path.parent)},
+        )
+        assert scoped.status_code == 200, scoped.text
+        assert {v["quant"] for v in scoped.json()["variants"] if v["downloaded"]} == {quant}
+
+    response = cache_client.get(
+        endpoint,
+        params = {
+            "repo_id": repo_id,
+            "local_path": repo_id,
+            "include_cache_locations": True,
+        },
+    )
+    if not transient:
+        assert response.status_code == failure, response.text
+        return
+    assert response.status_code == 200, response.text
+    variants = [v for v in response.json()["variants"] if v["downloaded"]]
+    assert [(v["quant"], v["cache_path"]) for v in variants] == [(quant, str(repo))]
+    assert not variants[0]["partial"]

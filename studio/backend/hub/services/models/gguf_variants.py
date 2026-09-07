@@ -1679,8 +1679,8 @@ async def get_gguf_variants_answer(
             sources = cached_gguf_sources(repo_id)
         try:
             response = _compute()
-        except Exception:
-            if sources and (prefer_local_cache or offline):
+        except Exception as exc:
+            if sources and (prefer_local_cache or offline or hf_error_status(exc) is None):
                 response = GgufVariantsResponse(repo_id = repo_id, variants = [])
             else:
                 if skip:
