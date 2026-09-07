@@ -625,6 +625,30 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
 _LLAMA_RANDOM_SEED = 0xFFFFFFFF
 
 
+def _resolve_id_slot(id_slot) -> "Optional[int]":
+    """Resolve a slot pin that may be a plain id or a callable that supplies one.
+
+    The OpenAI route builds its generator before admission returns, so the slot is not
+    known at call time; passing a callable lets the payload builders read it on the first
+    round, by which point the lease exists. A callable that raises is treated as "no pin"
+    rather than failing the request: an unpinned run still generates, it just cannot be
+    checkpointed.
+    """
+    if id_slot is None:
+        return None
+    if callable(id_slot):
+        try:
+            id_slot = id_slot()
+        except Exception:
+            return None
+    if id_slot is None:
+        return None
+    try:
+        return int(id_slot)
+    except (TypeError, ValueError):
+        return None
+
+
 def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
     """Disable prompt caching for fixed seeds so repeated requests stay reproducible."""
     if seed is None:
@@ -27123,6 +27147,63 @@ class LlamaCppBackend:
         env = (os.environ.get("LLAMA_ARG_CACHE_PROMPT") or "").strip().lower()
         return env in _LLAMA_ARG_FALSE_VALUES
 
+    def read_slots_snapshot(self) -> list:
+        """What llama-server says each slot is holding right now, or [] if it will not say.
+
+        Ground truth for the KV ledger. The stream tells us what was emitted; the server
+        knows what it actually holds, and the two differ by the speculative batch that is
+        in flight. Never raises: a missing readout only costs accuracy.
+        """
+        if not self.is_loaded:
+            return []
+        try:
+            import httpx  # noqa: WPS433
+
+            response = httpx.get(
+                f"{self.base_url}/slots",
+                headers = self._auth_headers,
+                timeout = 5.0,
+                trust_env = False,
+            )
+            if response.status_code != 200:
+                return []
+            payload = response.json()
+            return payload if isinstance(payload, list) else []
+        except Exception:
+            return []
+
+    def kv_swap_controller(self):
+        """The KV checkpoint controller for this server, or None when it cannot be used.
+
+        Distinct from save_slots_for_resume() below, which snapshots every slot once so a
+        model reload can come back warm. This one moves a single chat's cells in and out
+        while other chats keep decoding, so it needs the live geometry: the context it is
+        sharing, how many slots share it, and how far the speculative draft runs ahead
+        (the buffer is sized from that lead).
+        """
+        from core.inference.kv_swap import (  # noqa: WPS433
+            get_kv_swap_controller,
+            kv_swap_enabled,
+            make_http_post,
+        )
+
+        if not kv_swap_enabled() or not self.is_loaded or not self._slot_save_dir:
+            return None
+        n_ctx = self._kv_cache_context_total or self.context_length
+        if not n_ctx:
+            return None
+        controller = get_kv_swap_controller(
+            self.base_url,
+            n_ctx = int(n_ctx),
+            n_parallel = self.effective_parallel_slots,
+            draft_n_max = int(self.spec_draft_n_max or 0),
+            save_dir = self._slot_save_dir,
+        )
+        # Rebound every call: a reload can relaunch llama-server with new auth on the
+        # same URL, and a stale header would fail every save with a 401.
+        controller._http_post = make_http_post(self.base_url, self._auth_headers)
+        return controller
+
     def save_slots_for_resume(
         self, should_abort: Optional[Callable[[], bool]] = None
     ) -> Optional[dict]:
@@ -28233,6 +28314,8 @@ class LlamaCppBackend:
         thread_id: Optional[str] = None,
         tools_withheld: bool = False,
         _allow_respawn_retry: bool = True,
+        # Pins this run to one llama-server slot, so a KV checkpoint can name it.
+        id_slot: Optional[int] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -28290,6 +28373,9 @@ class LlamaCppBackend:
             # llama-server applies the template; it rejects both flags set true.
             payload["continue_final_message"] = True
             payload["add_generation_prompt"] = False
+        _pinned_slot = _resolve_id_slot(id_slot)
+        if _pinned_slot is not None:
+            payload["id_slot"] = _pinned_slot
         # Default cap to the model context when known.
         payload["max_tokens"] = (
             max_tokens
@@ -28652,6 +28738,9 @@ class LlamaCppBackend:
         # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
         # where the previous round's request has completed.
         on_conversation_grew: Optional[Callable[[list], None]] = None,
+        # Pins this run to one llama-server slot. Without it the server picks by LRU, and
+        # a KV checkpoint cannot know which slot to save. See core/inference/kv_swap.py.
+        id_slot: Optional[int] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -29347,6 +29436,11 @@ class LlamaCppBackend:
                 "frequency_penalty": frequency_penalty,
             }
 
+            # Pinning is what makes a KV checkpoint addressable: the saver has to name a
+            # slot, and llama-server's own LRU would move this run between rounds.
+            _pinned_slot = _resolve_id_slot(id_slot)
+            if _pinned_slot is not None:
+                payload["id_slot"] = _pinned_slot
             # Progress events feed the first-token deadline; timings stay opt-in.
             payload["return_progress"] = True
             if perf_callback is not None:
@@ -31843,6 +31937,9 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
+        _pinned_slot = _resolve_id_slot(id_slot)
+        if _pinned_slot is not None:
+            stream_payload["id_slot"] = _pinned_slot
         if logit_bias:
             stream_payload["logit_bias"] = logit_bias
         if _reasoning_kw is not None:
