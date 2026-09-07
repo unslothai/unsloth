@@ -64,7 +64,7 @@ def caches(monkeypatch, tmp_path):
     studio_home = tmp_path / "StudioHome"
     default_cache = tmp_path / "default-uv"
     monkeypatch.setattr(studio, "STUDIO_HOME", studio_home)
-    monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda: default_cache)
+    monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda cwd = None: default_cache)
     return studio_home / "cache" / "uv", default_cache
 
 
@@ -272,7 +272,7 @@ def test_a_default_cache_uv_cannot_name_does_not_block_the_redirect(monkeypatch,
     nobody can identify."""
     studio = _studio()
     studio_cache, _default = caches
-    monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda: None)
+    monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda cwd = None: None)
     seen = _run_posix(monkeypatch, tmp_path)
 
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
@@ -413,6 +413,22 @@ def test_a_relative_marker_is_resolved_before_it_is_handed_over(monkeypatch, tmp
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
 
 
+def test_a_recorded_path_containing_a_newline_survives_the_round_trip(monkeypatch, tmp_path, caches):
+    """A newline is legal in a POSIX path and uv reports one verbatim. Read line by line,
+    the record looked like several and only the last fragment survived, so the update
+    treated a warm cache as absent and redirected uv somewhere else."""
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    weird = tmp_path / "two\nline cache"
+    _fill(weird)
+    _record(tmp_path / "StudioHome", weird)
+
+    env = studio._with_studio_uv_cache({})
+
+    assert env["UV_CACHE_DIR"] == str(weird)
+
+
 # --- Backfilling the marker for installs that predate it --------------------------------
 
 
@@ -532,7 +548,7 @@ def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, t
     weird = (tmp_path / os.fsdecode(b"caf\xe9-cache")).resolve()
     _fill(weird)
     monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "StudioHome")
-    monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda: weird)
+    monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda cwd = None: weird)
     monkeypatch.delenv("UV_CACHE_DIR", raising = False)
 
     studio._backfill_uv_cache_marker({"UV_CACHE_DIR": str(weird)})
@@ -547,7 +563,7 @@ def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, t
 # --- The uv probe ---------------------------------------------------------------------
 
 
-def _probe_kwargs(monkeypatch, stdout: str = "/cache/uv\n") -> dict:
+def _probe_kwargs(monkeypatch, stdout: str = "/cache/uv\n", cwd = None) -> dict:
     studio = _studio()
     monkeypatch.setattr(studio.shutil, "which", lambda name: "/usr/bin/uv")
     seen: dict = {}
@@ -563,8 +579,51 @@ def _probe_kwargs(monkeypatch, stdout: str = "/cache/uv\n") -> dict:
         return completed
 
     monkeypatch.setattr(studio.subprocess, "run", _fake_run)
-    seen["result"] = studio._uv_default_cache_dir()
+    seen["result"] = studio._uv_default_cache_dir(cwd)
     return seen
+
+
+def test_the_probe_asks_from_the_directory_setup_will_ask_from(monkeypatch, tmp_path):
+    """uv discovers uv.toml and pyproject.toml from its working directory, and both setup
+    scripts change into their own before the dependency pass (studio/setup.sh:1788). Asked
+    in the caller's directory instead, the probe answers for whatever project the user
+    happens to be standing in, and that answer is then forced on the child."""
+    seen = _probe_kwargs(monkeypatch, stdout = "relcache\n", cwd = tmp_path / "studio")
+
+    assert seen["cwd"] == str(tmp_path / "studio")
+    # And the relative answer resolves against that directory, not against the caller's.
+    assert seen["result"] == tmp_path / "studio" / "relcache", seen["result"]
+
+
+def test_the_setup_handoff_probes_from_the_setup_script_directory(monkeypatch, tmp_path):
+    """The wiring, not just the parameter: _run_setup_script is the only caller that knows
+    where the script it is about to run lives. Driven through the Windows branch, whose
+    handoff is a plain Popen rather than the POSIX streaming reader."""
+    studio = _studio()
+    repo_root = tmp_path / "repo"
+    (repo_root / "studio").mkdir(parents = True)
+    (repo_root / "studio" / "setup.ps1").write_text("", encoding = "utf-8")
+    monkeypatch.setattr(studio.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        studio._studio_runtime_gate, "resolve_windows_powershell", lambda: "powershell.exe"
+    )
+    monkeypatch.setattr(studio, "_probe_profile_proxy_defaults", lambda hosts: None)
+    monkeypatch.setattr(studio, "_backfill_uv_cache_marker", lambda env: None)
+    monkeypatch.delenv("UV_CACHE_DIR", raising = False)
+    seen: dict = {}
+    monkeypatch.setattr(
+        studio, "_with_studio_uv_cache", lambda env, cwd = None: seen.update(cwd = cwd) or env
+    )
+
+    class _Process:
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(studio.subprocess, "Popen", lambda argv, **kw: _Process())
+
+    studio._run_setup_script(repo_root = repo_root)
+
+    assert seen["cwd"] == repo_root / "studio", seen
 
 
 def test_the_probe_decodes_utf8_whatever_the_console_codec_is(monkeypatch):

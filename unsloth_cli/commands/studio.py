@@ -3691,8 +3691,14 @@ def _uv_platform_cache_dir() -> Optional[Path]:
     return Path(home) / ".cache" / "uv" if home else None
 
 
-def _uv_default_cache_dir() -> Optional[Path]:
-    """Asked of uv, not reconstructed, so uv.toml and UV_CONFIG_FILE count."""
+def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:
+    """Asked of uv, not reconstructed, so uv.toml and UV_CONFIG_FILE count.
+
+    Asked from where setup will ask it, too. Both setup scripts change into their own
+    directory before the dependency pass (studio/setup.sh:1788), and uv discovers
+    uv.toml and pyproject.toml from its working directory, so probing in the caller's
+    would answer for whatever project the user happens to be standing in.
+    """
     uv = shutil.which("uv")
     if not uv:
         return _uv_platform_cache_dir()
@@ -3700,6 +3706,7 @@ def _uv_default_cache_dir() -> Optional[Path]:
     try:
         result = subprocess.run(
             [uv, "cache", "dir"],
+            cwd = str(cwd) if cwd is not None else None,
             capture_output = True,
             text = True,
             # UnicodeDecodeError is a ValueError, so the handler below would not catch it.
@@ -3721,7 +3728,7 @@ def _uv_default_cache_dir() -> Optional[Path]:
         return _uv_platform_cache_dir()
     # uv answers a relative cache-dir with the relative spelling, resolved against its own
     # working directory. No expanduser: uv makes a literal "~" directory, not one in $HOME.
-    base = os.environ.get("UV_WORKING_DIR") or os.getcwd()
+    base = os.environ.get("UV_WORKING_DIR") or (str(cwd) if cwd is not None else os.getcwd())
     return Path(os.path.abspath(os.path.join(base, lines[-1])))
 
 
@@ -3740,12 +3747,18 @@ def _recorded_install_uv_cache() -> Optional[Path]:
         )
     except OSError:
         return None
-    # Not stripped: a recorded path may end or begin with a space. Blank means unset.
-    lines = [line for line in recorded.splitlines() if line.strip()]
-    if not lines:
+    # One record, one trailing delimiter, and everything before it is the path: splitting
+    # on lines would take a POSIX path containing a newline for several records and keep
+    # the last fragment. Not otherwise stripped, since a path may end or begin with a
+    # space; blank still means unset.
+    if recorded.endswith("\n"):
+        recorded = recorded[:-1]
+    if recorded.endswith("\r"):
+        recorded = recorded[:-1]
+    if not recorded.strip():
         return None
     # No expanduser, as in the probe: uv treats a tilde as an ordinary path segment.
-    return Path(os.path.abspath(lines[-1]))
+    return Path(os.path.abspath(recorded))
 
 
 def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
@@ -3786,7 +3799,7 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         pass
 
 
-def _with_studio_uv_cache(env: Optional[dict]) -> Optional[dict]:
+def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Optional[dict]:
     """An update reached neither installer nor _setup_cache_env, so uv re-downloaded
     what the install had just fetched."""
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
@@ -3799,7 +3812,7 @@ def _with_studio_uv_cache(env: Optional[dict]) -> Optional[dict]:
     if not _uv_cache_has_packages(studio_cache):
         # _setup_cache_env mkdirs this empty every server start: a shared-mode install
         # would be sent to a cache holding nothing, which --offline cannot recover from.
-        default_cache = _uv_default_cache_dir()
+        default_cache = _uv_default_cache_dir(cwd)
         if default_cache is not None and _uv_cache_has_packages(default_cache):
             # Named, not re-resolved: a blank inherited value reaches uv as
             # `--cache-dir ''` and exits 2.
@@ -3821,7 +3834,9 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(1)
 
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
-    env = _with_studio_uv_cache(env)
+    # The setup script's own directory: that is where it will run uv from, so that is
+    # where the probe has to ask what uv would default to.
+    env = _with_studio_uv_cache(env, cwd = script.parent)
 
     if platform.system() == "Windows":
         # Resolved, not bare: the gate that runs immediately before this in setup() and update()
