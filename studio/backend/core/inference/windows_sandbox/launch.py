@@ -26,7 +26,7 @@ from .content import RuntimeContentStore
 from .content_files import PathLease, _SecurityAttributes, native_files
 from .dependencies import checked_path
 from .host_config import HostConfiguration, HostPaths
-from .native_process import create_suspended_host
+from .native_process import create_suspended_host, attach_delayed_startup
 from .preparation import prepare_runtime_snapshot
 from .profiles import PYTHON_PROFILE, WindowsRuntimeError
 from .identity import (
@@ -35,7 +35,13 @@ from .identity import (
     RuntimeReaderRecipe,
     recover_identities,
 )
-from .protocol import LaunchBinding, authorize_startup, new_launch_nonce, _pipe_api
+from .protocol import (
+    LaunchBinding,
+    authorize_startup,
+    new_launch_nonce,
+    _pipe_api,
+    startup_permission,
+)
 from .native_io import NativePipeReader as _NativePipeReader
 
 
@@ -174,6 +180,7 @@ class _PythonLaunch:
         self.probe_ports = ()
         self.published, self.deadline, self.cancel = published, deadline, cancel
         self.identity = self.access = self.process = None
+        self.catalog = None
         self.reservation = InvocationReservation(InvocationRecipe.new())
         self.reader_name = secrets.token_hex(16)
         self.nonce = new_launch_nonce()
@@ -183,18 +190,29 @@ class _PythonLaunch:
         self.retained_processes = []
         self.retained_raw = []
         self.started = self.closed = False
+        self.startup_binding = None
+        self.expected_catalog_binding = None
         self.stdout = None
-        self._cleanup_lock = threading.Lock()
+        self._cleanup_lock = threading.RLock()
 
     def _adopt_failure(self, error):
+        catalog = getattr(error, "catalog_owner", None)
+        if catalog is not None:
+            self.catalog = catalog
         worker = getattr(error, "retained_process", None)
-        if worker is not None:
-            self.retained_processes.append(worker)
-        self.retained_processes.extend(getattr(error, "retained_processes", ()))
+        processes = (
+            *getattr(error, "retained_processes", ()),
+            *((worker,) if worker is not None else ()),
+        )
+        for process in processes:
+            if not any(existing is process for existing in self.retained_processes):
+                self.retained_processes.append(process)
         self.handles.update(getattr(error, "retained_token_handles", ()))
         self.handles.update(getattr(error, "retained_control_handles", ()))
         job = getattr(error, "retained_job", None)
-        if job is not None:
+        if job is not None and not any(existing is job for existing, _pending in self.retained_raw):
+            # Nested failure handlers may forward the same owner. Keep its one
+            # mutable pending list: a second copy can later close reused handles.
             self.retained_raw.append((job, list(getattr(error, "retained_native_handles", ()))))
 
     def _pipe(self):
@@ -235,6 +253,11 @@ class _PythonLaunch:
             from .probe import prepare_probe_files
             prepare_probe_files(self)
         identity = self.identity
+        from .private_catalog import prepare_private_catalog
+
+        self.catalog = prepare_private_catalog(
+            Path(identity.private_temp), package_sid = identity.sid_string
+        )
         lpac._grant_modify(str(self.workdir), identity.sid)
         lpac._grant_modify(identity.private_temp, identity.sid)
         if self.probe_executable is not None:
@@ -262,6 +285,33 @@ class _PythonLaunch:
             api.kernel.CloseHandle(handle)
         self.file_pins.file(sentinel)
         mapping = {item.source.path: item.relative_path for item in self.published.spec().files}
+        from .activation_plan import build_activation_plan
+        from .activation_manifest import inspect_activation_image, require_empty_activation_manifest
+
+        selected = []
+        # Packages remain payload-only. Preparing a manifest context never calls
+        # a package initializer or adds that image to the native preload graph.
+        for item in self.published.spec().files:
+            if not item.relative_path.startswith(
+                "packages/"
+            ) or not item.relative_path.lower().endswith((".pyd", ".dll")):
+                continue
+            try:
+                image = inspect_activation_image(files / item.relative_path)
+                manifest = require_empty_activation_manifest(image)
+            except WindowsRuntimeError:
+                # Unsupported semantics keep the ordinary restricted loader path.
+                # They are never silently stripped or granted startup authority.
+                continue
+            if manifest is not None:
+                selected.append(item.relative_path)
+        activation = build_activation_plan(
+            self.access.generation,
+            self.published.spec(),
+            tuple(selected),
+            nonce = self.nonce,
+            profile_digest = bytes.fromhex(PYTHON_PROFILE.digest),
+        )
         config = HostConfiguration(
             HostPaths(
                 str(home / Path(runtime.runtime_dll.file.path).name),
@@ -287,6 +337,15 @@ class _PythonLaunch:
                 str(files / mapping[path])
                 for path in self.published.core.dependencies.ordered_loads
             ),
+            packages = tuple(
+                str(files / "packages" / str(index))
+                for index in range(len(runtime.package_paths))
+                if any(
+                    item.relative_path.startswith(f"packages/{index}/")
+                    for item in self.published.spec().files
+                )
+            ),
+            activation_plan = activation.encode(),
         )
         config_path = Path(identity.private_temp) / "startup-config"
         api.create(config_path, config.encode())
@@ -334,11 +393,23 @@ class _PythonLaunch:
         _remaining(self.deadline, self.cancel)
 
     def spawn(self, prepared, kwargs):
+        # Creation, owner adoption and cleanup must share one lifecycle lock.
+        # Error cleanup re-enters it; another thread cannot release inherited
+        # channels or mark this owner closed while CreateProcess is in flight.
+        with self._cleanup_lock:
+            return self._spawn_owned(prepared, kwargs)
+
+    def _spawn_owned(self, prepared, kwargs):
         if self.started or self.closed:
             raise _invalid("A Python launch cannot be reused or replayed.")
         self.started = True
         try:
             _retry_pending_cleanup(self.deadline, self.cancel)
+            if self.catalog is None or (
+                self.expected_catalog_binding is not None
+                and self.catalog.binding_digest != self.expected_catalog_binding
+            ):
+                raise _invalid("Private catalog binding changed after qualification.")
             if (
                 kwargs.get("stdout") != subprocess.PIPE
                 or kwargs.get("stderr") != subprocess.STDOUT
@@ -367,6 +438,7 @@ class _PythonLaunch:
                     control_handles = (self.status_write, self.ack_read, self.config),
                     timeout = _remaining(self.deadline, self.cancel),
                     cancel = self.cancel,
+                    delayed_startup = True,
                 )
             except BaseException as error:
                 self._adopt_failure(error)
@@ -391,21 +463,31 @@ class _PythonLaunch:
                 bytes.fromhex(self.published.content_digest),
             )
             remaining = _remaining(self.deadline, self.cancel)
+
+            def grant_startup():
+                _remaining(self.deadline, self.cancel)
+                attach_delayed_startup(self.process, deadline = self.deadline, cancel = self.cancel)
+                return startup_permission(
+                    binding, str(self.catalog.hive_path), self.catalog.identity
+                )
+
             self.handles.difference_update((self.status_read, self.ack_write))
             try:
-                authorize_startup(
+                self.startup_binding = authorize_startup(
                     self.process,
                     self.status_read,
                     self.ack_write,
                     binding,
                     timeout = remaining,
                     cancel = self.cancel,
+                    grant_startup = grant_startup,
                 )
             except BaseException as error:
                 self.handles.update(getattr(error, "retained_control_handles", ()))
                 raise
             return self.process
         except BaseException as original:
+            self._adopt_failure(original)
             try:
                 self.cleanup()
             except Exception as cleanup:
@@ -464,6 +546,11 @@ class _PythonLaunch:
         if self.access is not None:
             self.access.close()
             self.access = self.process = None
+        if self.catalog is not None:
+            from .private_catalog import PrivateCatalog
+            if isinstance(self.catalog, PrivateCatalog):
+                self.catalog.close()
+            self.catalog = None
         for handle in tuple(self.handles):
             self._close_handle(handle)
         if self.stdout is not None:

@@ -25,6 +25,7 @@ WRITE = 0x40000000
 READ_CONTROL = 0x20000
 SHARE_READ = 1
 SHARE_WRITE = 2
+STREAM_CHUNK_BYTES = 1024 * 1024
 _INVALID_HANDLE = ctypes.c_void_p(-1).value
 
 
@@ -373,25 +374,38 @@ class NativeFiles:
             )
         return info
 
-    def read(self, handle, limit):
+    def iter_read(self, handle, limit):
+        """Read a pinned file once, retaining bounded memory and exact size checks."""
         info = self.info(handle)
         if info.size > limit:
             raise WindowsRuntimeError(
                 "WINDOWS_SANDBOX_CONTENT_INVALID", "Runtime content exceeds its byte limit."
             )
-        chunks, remaining = [], info.size
+        remaining = info.size
         while remaining:
-            chunk = ctypes.create_string_buffer(min(1024 * 1024, remaining))
+            chunk = ctypes.create_string_buffer(min(STREAM_CHUNK_BYTES, remaining))
             count = W.DWORD()
             if not self.kernel.ReadFile(handle, chunk, len(chunk), ctypes.byref(count), None):
                 raise _error("ReadFile(content)")
-            if not 0 < count.value <= remaining:
+            if not 0 < count.value <= len(chunk):
                 raise WindowsRuntimeError(
                     "WINDOWS_SANDBOX_CONTENT_INVALID", "Runtime content was truncated."
                 )
-            chunks.append(chunk.raw[: count.value])
             remaining -= count.value
-        return b"".join(chunks)
+            yield chunk.raw[: count.value]
+        after = self.info(handle)
+        if (after.volume, after.index_high, after.index_low, after.size) != (
+            info.volume,
+            info.index_high,
+            info.index_low,
+            info.size,
+        ):
+            raise WindowsRuntimeError(
+                "WINDOWS_SANDBOX_CONTENT_INVALID", "Runtime content changed during reading."
+            )
+
+    def read(self, handle, limit):
+        return b"".join(self.iter_read(handle, limit))
 
     def mkdir(self, path):
         with self.security_attributes() as attributes:
@@ -413,8 +427,19 @@ class NativeFiles:
             raise _error("CreateFileW(private content)")
         try:
             self.require_private(handle)
-            for offset in range(0, len(data), 1024 * 1024):
-                chunk = data[offset : offset + 1024 * 1024]
+            chunks = (
+                (
+                    data[offset : offset + STREAM_CHUNK_BYTES]
+                    for offset in range(0, len(data), STREAM_CHUNK_BYTES)
+                )
+                if isinstance(data, bytes)
+                else data
+            )
+            for chunk in chunks:
+                if not isinstance(chunk, bytes) or not 0 < len(chunk) <= STREAM_CHUNK_BYTES:
+                    raise WindowsRuntimeError(
+                        "WINDOWS_SANDBOX_CONTENT_INVALID", "Invalid runtime copy chunk."
+                    )
                 count = W.DWORD()
                 if not self.kernel.WriteFile(
                     handle, chunk, len(chunk), ctypes.byref(count), None

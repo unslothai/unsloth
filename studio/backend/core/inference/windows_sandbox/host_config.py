@@ -18,6 +18,7 @@ from .profiles import select_abi_adapter, WindowsRuntimeError
 MAGIC = b"USLPCF1\0"
 HEADER = struct.Struct("<8s8I32s32s32s")
 MAX_BYTES = 65536
+MAX_EXPANDED_BYTES = MAX_BYTES + 1024 * 1024 + 4
 MAX_STRING_BYTES = 32766
 MAX_LIST = 64
 
@@ -81,6 +82,7 @@ class HostConfiguration:
     packages: tuple[str, ...] = ()
     arguments: tuple[str, ...] = ()
     native_images: tuple[str, ...] = ()
+    activation_plan: bytes | None = None
 
     def encode(self):
         if type(self.paths) is not HostPaths or type(self.version) is not tuple:
@@ -111,13 +113,36 @@ class HostConfiguration:
                 *self.native_images,
             ]
         )
+        version = 1
+        if self.activation_plan is not None:
+            from .activation_plan import ActivationPlan
+
+            plan = ActivationPlan.decode(
+                self.activation_plan,
+                nonce = self.nonce,
+                profile_digest = self.profile_digest,
+                content_digest = self.content_digest,
+                runtime_home = ntpath.dirname(self.paths.runtime_home),
+            )
+            if (plan.nonce, plan.profile_digest, plan.content_digest) != (
+                self.nonce,
+                self.profile_digest,
+                self.content_digest,
+            ):
+                raise _invalid("Activation plan does not match the host launch binding.")
+            version = 2
         size = HEADER.size + len(body)
         if size > MAX_BYTES:
             raise _invalid("Native host configuration exceeds its bound.")
+        if version == 2:
+            body += struct.pack("<I", len(self.activation_plan)) + self.activation_plan
+            size = HEADER.size + len(body)
+            if size > MAX_EXPANDED_BYTES:
+                raise _invalid("Expanded native host configuration exceeds its bound.")
         return (
             HEADER.pack(
                 MAGIC,
-                1,
+                version,
                 size,
                 *self.version,
                 len(self.packages),

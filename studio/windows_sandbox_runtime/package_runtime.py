@@ -63,6 +63,9 @@ def assemble(hosts, output):
     _, contents["LICENSE.AGPL-3.0"] = read_regular_file(
         ROOT.parent / "LICENSE.AGPL-3.0", limit = 1024 * 1024
     )
+    _, contents["LICENSE.Detours.MIT"] = read_regular_file(
+        ROOT / "LICENSE.Detours.MIT", limit = 1024 * 1024
+    )
     manifest = canonical_json(
         {
             "schema": 1,

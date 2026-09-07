@@ -181,7 +181,13 @@ def admit_studio_runtime(
     return _admit_broker_runtime(selected_executable, _capture_broker_runtime(), bounds)
 
 
-def _admit_broker_runtime(selected_executable, broker, bounds):
+def _admit_broker_runtime(
+    selected_executable,
+    broker,
+    bounds,
+    *,
+    include_packages = False,
+):
     if any(type(value) is not int or value <= 0 for value in asdict(bounds).values()):
         raise WindowsRuntimeError("WINDOWS_SANDBOX_SCAN_LIMIT", "Invalid admission bounds.")
     deadline = time.monotonic() + bounds.seconds
@@ -239,4 +245,10 @@ def _admit_broker_runtime(selected_executable, broker, bounds):
         )
     # Snapshot publication rechecks every identity under source pins before copy.
     # This returned object itself is neither an immutable snapshot nor qualification.
+    if include_packages:
+        from .package_snapshot import inventory_package_files
+
+        # Selected packages are copied as payload data. They are never added to
+        # the CPython initializer graph or executed by the admission worker.
+        files.extend(inventory_package_files(runtime.package_paths))
     return AdmittedCore(runtime, dependencies, tuple(files), broker.pid)

@@ -5,6 +5,7 @@
 #include "gate.h"
 
 #define US_CONFIG_BYTES 65536u
+#define US_EXPANDED_CONFIG_BYTES (US_CONFIG_BYTES + 1048576u + 4u)
 #define US_CONFIG_LIST 64u
 enum UsPath {
     US_RUNTIME_DLL, US_STDLIB, US_NATIVE_DIR, US_RUNTIME_HOME, US_EXECUTABLE,
@@ -22,6 +23,8 @@ _Static_assert(sizeof(UsConfigHeader) == 136, "host configuration ABI changed");
 typedef struct {
     UsConfigHeader header;
     wchar_t *values[US_CONFIG_FIELDS + 3 * US_CONFIG_LIST];
+    BYTE *activation_plan;
+    DWORD activation_bytes;
 } UsConfig;
 
 BOOL us_read_config(HANDLE input, UsConfig *config);

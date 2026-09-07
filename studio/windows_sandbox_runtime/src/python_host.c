@@ -4,6 +4,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include "host_config.h"
+#include "activation_plan.h"
+#include "activation_context.h"
+#include "authority_audit.h"
 #include <sddl.h>
 #include <string.h>
 #include <stdlib.h>
@@ -205,11 +208,16 @@ static int run_host(int argc, wchar_t **argv) {
     PSID sid = NULL;
     PythonApi api = {0};
     HMODULE python = NULL;
+    HMODULE dns = NULL;
     BOOL winsock = FALSE;
+    HKEY catalog = NULL;
+    DWORD activation_count = 0;
     HMODULE native_images[US_CONFIG_LIST] = {0};
     int result = 92;
-    if (!ConvertStringSidToSidW(launch.values[US_PACKAGE_SID], &sid)
-        || !us_validate_startup(sid, launch.values[US_AAP], &status)) goto failed;
+    if (!ConvertStringSidToSidW(launch.values[US_PACKAGE_SID], &sid)) goto failed;
+    if (launch.header.version == 2
+        && !us_clean_entry(output, ack, sid, launch.values[US_TEMP], &status, &catalog)) goto failed;
+    if (!us_validate_startup(sid, launch.values[US_AAP], &status)) goto failed;
     if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)) { us_fail(&status, 10, GetLastError()); goto failed; }
     python = load_runtime_image(launch.values[US_RUNTIME_DLL]);
     if (!python) { us_fail(&status, 10, GetLastError()); goto failed; }
@@ -228,14 +236,53 @@ static int run_host(int argc, wchar_t **argv) {
         if (!native_images[i]) { us_fail(&status, 11, GetLastError()); goto failed; }
     }
     WSADATA wsa;
+    if (catalog) {
+        LSTATUS mapped = RegOverridePredefKey(HKEY_LOCAL_MACHINE, catalog);
+        if (mapped) { us_fail(&status, 11, (DWORD)mapped); goto failed; }
+        /* Fixed OS initialization only; no resolver query runs before the drop.
+           The clean-entry handshake precedes startup impersonation, and the
+           post-drop audit must reject any retained host registry authority. */
+        dns = LoadLibraryExW(L"dnsapi.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!dns) { us_fail(&status, 11, GetLastError()); goto failed; }
+    }
     int error = WSAStartup(MAKEWORD(2, 2), &wsa);
+    if (catalog) {
+        LSTATUS unmapped = RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL);
+        if (unmapped) { us_fail(&status, 11, (DWORD)unmapped); goto failed; }
+        LSTATUS cache = RegDisablePredefinedCacheEx();
+        if (cache) { us_fail(&status, 11, (DWORD)cache); goto failed; }
+    }
     if (error) { us_fail(&status, 11, (DWORD)error); goto failed; }
     winsock = TRUE;
     if (!warm_providers()) { us_fail(&status, 11, (DWORD)WSAGetLastError()); goto failed; }
     PyObject *overlapped = api.PyImport_ImportModule("_overlapped");
     if (!overlapped) { api.PyErr_Print(); us_fail(&status, 11, ERROR_DLL_INIT_FAILED); goto failed; }
     api.Py_DecRef(overlapped);
+    if (launch.header.version == 2) {
+        DWORD context_error = us_activation_plan_prepare(launch.activation_plan,
+            launch.activation_bytes, &launch.header.binding, launch.values[US_RUNTIME_HOME],
+            &activation_count);
+        if (context_error) {
+            fprintf(stderr, "Activation plan validation stage %lu failed (%lu).\n",
+                    us_activation_plan_diagnostic(), context_error);
+            us_fail(&status, 11, context_error); goto failed;
+        }
+    }
     if (!us_drop_and_validate(sid, launch.values[US_AAP], &status)) goto failed;
+    if (activation_count) {
+        DWORD installed = us_activation_install();
+        if (installed) { us_fail(&status, 12, installed); goto failed; }
+    }
+    if (launch.header.version == 2) {
+        UsAuthorityReport authority;
+        DWORD audited = us_authority_audit(catalog, &authority);
+        if (audited) {
+            fprintf(stderr, "Retained authority audit failed (%lu, native %lu, host keys %lu, tokens %lu).\n",
+                audited, authority.native_status, authority.foreign_keys, authority.tokens);
+            us_fail(&status, 13, audited); goto failed;
+        }
+        status.checks |= 0xe00u; /* Clean entry, bound activation plan, retained authority audit. */
+    }
     if (!SetCurrentDirectoryW(launch.values[US_WORKDIR]) || !publish_post_drop_config(&api, &launch)
         || api.PyRun_SimpleStringFlags(setup, NULL)) { us_fail(&status, 12, ERROR_DLL_INIT_FAILED); goto failed; }
     us_free_config(&launch);
@@ -246,8 +293,10 @@ static int run_host(int argc, wchar_t **argv) {
     result = api.PyRun_SimpleStringFlags(payload, NULL) ? 1 : 0;
     if (api.Py_FinalizeEx()) result = 120;
     if (winsock) WSACleanup();
+    if (dns) FreeLibrary(dns);
     for (size_t i = US_CONFIG_LIST; i; --i) if (native_images[i-1]) FreeLibrary(native_images[i-1]);
     FreeLibrary(python);
+    if (catalog && RegCloseKey(catalog)) return 121;
     return result;
 failed:
     /* Startup failure must never run finalizers under a retained startup token.

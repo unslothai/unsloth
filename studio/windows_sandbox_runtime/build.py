@@ -27,6 +27,7 @@ def build(
     sdk_root,
     output,
     python_home = None,
+    detours_source = None,
 ):
     compiler = vs_root / "VC" / "Tools" / "MSVC" / MSVC_VERSION
     include = sdk_root / "Include" / SDK_VERSION
@@ -111,6 +112,28 @@ def build(
         ("detach_control", [ROOT / "tests/native/detach_control.c"], [], []),
     ]
     if python_home is not None:
+        if detours_source is None:
+            raise ValueError("Python hosts require an explicit pinned Detours source checkout.")
+        from build_activation_context import build as build_activation
+
+        activation_output = output / "activation"
+        build_activation(detours_source, activation_output, vs_root, sdk_root)
+        activation_evidence = json.loads((activation_output / "build.json").read_text())
+        detours_objects = [
+            activation_output / (name + ".obj")
+            for name in (
+                "detours",
+                "modules",
+                "disasm",
+                "image",
+                "creatwth",
+                "disolx86",
+                "disolx64",
+                "disolia64",
+                "disolarm",
+                "disolarm64",
+            )
+        ]
         header = (python_home / "include/patchlevel.h").read_text(encoding = "utf-8")
         version = tuple(
             int(re.search(rf"^#define\s+PY_{part}_VERSION\s+(\d+)", header, re.MULTILINE)[1])
@@ -120,13 +143,27 @@ def build(
         targets.append(
             (
                 f"python_host-{adapter.identity}",
-                [ROOT / "src/gate.c", ROOT / "src/host_config.c", ROOT / "src/python_host.c"],
+                [
+                    ROOT / "src/gate.c",
+                    ROOT / "src/host_config.c",
+                    ROOT / "src/python_host.c",
+                    ROOT / "src/activation_context.c",
+                    ROOT / "src/activation_plan.c",
+                    ROOT / "src/authority_audit.c",
+                    *detours_objects,
+                ],
                 [
                     f"/I{python_home / 'include'}",
+                    f"/I{activation_output / 'vendor/src'}",
                     f"/DUS_PY_MAJOR={adapter.major}",
                     f"/DUS_PY_MINOR={adapter.minor}",
                 ],
-                [f"/NODEFAULTLIB:python{adapter.major}{adapter.minor}.lib", "ws2_32.lib"],
+                [
+                    f"/NODEFAULTLIB:python{adapter.major}{adapter.minor}.lib",
+                    "ws2_32.lib",
+                    "psapi.lib",
+                    "bcrypt.lib",
+                ],
             )
         )
     for name, sources, compile_flags, link_flags in targets:
@@ -179,6 +216,12 @@ def build(
                 "sdk": SDK_VERSION,
                 "sources": source_hashes,
                 "binary": {"sha256": hashlib.sha256(binary).hexdigest(), "size": len(binary)},
+                "detours": {
+                    "commit": activation_evidence["detours_commit"],
+                    "source_digest": hashlib.sha256(
+                        json.dumps(activation_evidence["detours_sources"], sort_keys = True).encode()
+                    ).hexdigest(),
+                },
             }
             (output / (name + ".build.json")).write_text(
                 json.dumps(evidence, sort_keys = True, separators = (",", ":")), encoding = "utf-8"
@@ -194,5 +237,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--python-home", type = Path, help = "Build the matching host from static CPython headers"
     )
+    parser.add_argument("--detours-source", type = Path)
     options = parser.parse_args()
-    print(build(options.vs_root, options.sdk_root, options.output, options.python_home))
+    print(
+        build(
+            options.vs_root,
+            options.sdk_root,
+            options.output,
+            options.python_home,
+            options.detours_source,
+        )
+    )

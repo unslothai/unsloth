@@ -186,13 +186,27 @@ def _payload(
     *,
     private_workdir = False,
     terminal_roots = None,
+    terminal_snapshot = False,
 ):
+    if type(terminal_snapshot) is not bool or (
+        terminal_snapshot
+        and (
+            private_workdir or terminal_roots is not None or type(reader) is not RuntimeReaderRecipe
+        )
+    ):
+        raise _invalid("Terminal snapshot ownership requires only its workdir and durable reader.")
     if terminal_roots is not None and (private_workdir or reader is not None):
         raise _invalid("Terminal ownership cannot include Python runtime access.")
     return {
-        "version": 5
-        if terminal_roots is not None
-        else (4 if private_workdir else (2 if reader is None else 3)),
+        "version": (
+            6
+            if terminal_snapshot
+            else (
+                5
+                if terminal_roots is not None
+                else (4 if private_workdir else (2 if reader is None else 3))
+            )
+        ),
         "state": state,
         "moniker": recipe.moniker,
         "owner_pid": recipe.owner_pid,
@@ -205,7 +219,11 @@ def _payload(
             if reader is not None
             else ({"reader": None} if private_workdir else {})
         ),
-        **({"purpose": "qualification"} if private_workdir else {}),
+        **(
+            {"purpose": "terminal"}
+            if terminal_snapshot
+            else ({"purpose": "qualification"} if private_workdir else {})
+        ),
         **(
             {"purpose": "terminal", "runtime_roots": list(terminal_roots)}
             if terminal_roots is not None
@@ -219,13 +237,15 @@ def _validate(value, recipe, sid):
     extra = (
         {"purpose", "runtime_roots"}
         if version == 5
-        else ({"reader", "purpose"} if version == 4 else ({"reader"} if version == 3 else set()))
+        else (
+            {"reader", "purpose"} if version in (4, 6) else ({"reader"} if version == 3 else set())
+        )
     )
     if (
         type(value) is not dict
         or set(value) != set(_payload(recipe, sid, "creating", "")) | extra
         or type(value["version"]) is not int
-        or value["version"] not in (2, 3, 4, 5)
+        or value["version"] not in (2, 3, 4, 5, 6)
         or value["state"] not in ("creating", "ready", "collision")
         or value["moniker"] != recipe.moniker
         or value["sid"] != sid
@@ -254,9 +274,11 @@ def _validate(value, recipe, sid):
         _terminal_roots(value["runtime_roots"], value["workdir"])
         if value["purpose"] != "terminal":
             raise _invalid("Terminal ownership changed its purpose.")
+    if version == 6 and value["purpose"] != "terminal":
+        raise _invalid("Terminal snapshot ownership changed its purpose.")
     return (
         RuntimeReaderRecipe.from_value(value["reader"])
-        if version == 3 or (version == 4 and value["reader"] is not None)
+        if version in (3, 6) or (version == 4 and value["reader"] is not None)
         else None
     )
 
@@ -387,6 +409,19 @@ class InvocationReservation:
             current.workdir, reader = None, private_workdir = False, terminal_roots = roots
         )
 
+    def create_terminal_snapshot(self, workdir, *, reader: RuntimeReaderRecipe):
+        """Own copied Terminal content before its invocation SID receives access.
+
+        The fixed reader recipe refers to a separately validated generation.
+        This journal neither owns original runtime roots nor publishes or runs it.
+        """
+        return self._create(
+            workdir,
+            reader = reader,
+            private_workdir = False,
+            terminal_snapshot = True,
+        )
+
     def _create(
         self,
         workdir,
@@ -394,9 +429,21 @@ class InvocationReservation:
         reader,
         private_workdir,
         terminal_roots = None,
+        terminal_snapshot = False,
     ):
         if self.started or self.closed:
             raise _invalid("An invocation reservation cannot be reused.")
+        if type(terminal_snapshot) is not bool or (
+            terminal_snapshot
+            and (
+                private_workdir
+                or terminal_roots is not None
+                or type(reader) is not RuntimeReaderRecipe
+            )
+        ):
+            raise _invalid(
+                "Terminal snapshot ownership requires only its workdir and durable reader."
+            )
         self.started = True
         if reader is not None:
             if type(reader) is not RuntimeReaderRecipe:
@@ -426,6 +473,7 @@ class InvocationReservation:
                 reader = reader,
                 private_workdir = private_workdir,
                 terminal_roots = terminal_roots,
+                terminal_snapshot = terminal_snapshot,
             )
             _write(self.path, creating)
             result = lpac._api().userenv.CreateAppContainerProfile(
@@ -446,6 +494,7 @@ class InvocationReservation:
                     reader = reader,
                     private_workdir = private_workdir,
                     terminal_roots = terminal_roots,
+                    terminal_snapshot = terminal_snapshot,
                 )
                 _write(self.path, self.collision_record)
                 raise _invalid("Windows reported an invocation identity collision.")
@@ -480,6 +529,7 @@ class InvocationReservation:
                     reader,
                     private_workdir = private_workdir,
                     terminal_roots = terminal_roots,
+                    terminal_snapshot = terminal_snapshot,
                 ),
             )
             return self.identity

@@ -39,6 +39,22 @@ CORE_CHECKS = (
 )
 NETWORK_CHECKS = ("ipv4_tcp_denied", "ipv4_udp_denied", "ipv6_tcp_denied", "ipv6_udp_denied")
 HOST_CHECKS = NETWORK_CHECKS + ("host_named_pipe_denied",)
+# This checklist is deliberately wider than compatibility and the registry
+# handle audit. Missing measurements must keep production execution unavailable.
+REQUIRED_QUALIFICATION_CHECKS = (
+    CORE_CHECKS
+    + HOST_CHECKS
+    + (
+        "dns_directed_denied",
+        "dns_default_ex_denied",
+        "dns_default_w_denied",
+        "native_expanded_startup_gate",
+        "retained_host_ipc_denied",
+        "inherited_host_handles_denied",
+        "running_cancellation_cleanup",
+        "broker_death_cleanup",
+    )
+)
 HOST_PIPE_PREFIX = "\\\\.\\pipe\\unsloth-python-probe-"
 
 _DNS_CONTEXT_SOURCE = r"""
@@ -185,7 +201,9 @@ if NETWORK_PORTS:
     + "\n".join("    " + line for line in _HOST_PIPE_SOURCE.splitlines())
     + "\n"
     + _DNS_CONTEXT_SOURCE
-    + "\nprint(json.dumps({'probe_nonce':PROBE_NONCE,'version':list(sys.version_info[:3]),'checks':checks,'dns_context':dns_context},sort_keys=True))\n"
+    + "\n_result={'probe_nonce':PROBE_NONCE,'version':list(sys.version_info[:3]),'checks':checks,'dns_context':dns_context}\n"
+    + "if NETWORK_PORTS: _result['dns_queries']=perform_dns_probe()\n"
+    + "print(json.dumps(_result,sort_keys=True))\n"
 )
 
 
@@ -203,6 +221,8 @@ def probe_source(nonce, network_ports = ()):
     if type(nonce) is not bytes or len(nonce) != 32:
         raise WindowsRuntimeError("WINDOWS_SANDBOX_PROBE_INVALID", "Invalid fixed probe binding.")
     ports = validate_network_ports(network_ports)
+    from .dns_probe import payload_source
+
     return (
         "PROBE_NONCE = "
         + json.dumps(nonce.hex())
@@ -219,6 +239,7 @@ def probe_source(nonce, network_ports = ()):
         + "HOST_PIPE_PATH = "
         + json.dumps(HOST_PIPE_PREFIX + nonce.hex())
         + "\n"
+        + (payload_source(nonce) if ports else "")
         + _CORE_SOURCE
     )
 
@@ -426,6 +447,8 @@ class ProbeObservations:
     checks: tuple[str, ...]
     elapsed_seconds: float
     dns_context: DnsContextObservations
+    qualification_complete: bool = False
+    catalog_binding_digest: str = ""
 
 
 def _parse_probe_output(data, nonce, version, *, network):
@@ -437,7 +460,13 @@ def _parse_probe_output(data, nonce, version, *, network):
     value = _json(data)
     if (
         type(value) is not dict
-        or set(value) != {"probe_nonce", "version", "checks", "dns_context"}
+        or set(value)
+        not in (
+            {"probe_nonce", "version", "checks", "dns_context"},
+            {"probe_nonce", "version", "checks", "dns_context", "dns_queries"}
+            if network
+            else set(),
+        )
         or value["probe_nonce"] != nonce.hex()
         or type(value["version"]) is not list
         or any(type(part) is not int for part in value["version"])
@@ -507,13 +536,15 @@ def run_python_probe(
     from ..os_sandbox import spawn_prepared_launch
     from .launch import _remaining
     from .profiles import PYTHON_PROFILE
+    from contextlib import ExitStack
+    from .dns_probe import dns_probe
 
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 120:
         raise WindowsRuntimeError("WINDOWS_SANDBOX_PROBE_INVALID", "Invalid fixed probe deadline.")
     start = time.monotonic()
     deadline = start + timeout
     _remaining(deadline, cancel)
-    with _probe_network_endpoints() as endpoints:
+    with _probe_network_endpoints() as endpoints, ExitStack() as controls:
         prepared = prepare_python_probe(
             selected_executable,
             store_root,
@@ -523,6 +554,9 @@ def run_python_probe(
         )
         owner = prepared.spawn_callback.__self__
         try:
+            dns = controls.enter_context(
+                dns_probe(deadline = deadline, cancel = cancel, nonce = owner.nonce)
+            )
             server = _prepare_host_pipe(owner)
             process = spawn_prepared_launch(
                 prepared,
@@ -538,10 +572,26 @@ def run_python_probe(
                 env = prepared.env,
             )
             data = _collect_probe_output(owner, process)
+            catalog_binding_digest = owner.catalog.binding_digest
             checks, dns_context = _parse_probe_output(
                 data, owner.nonce, owner.published.core.runtime.version, network = True
             )
             _verify_host_pipe(owner, server)
+            queries = json.loads(data).get("dns_queries")
+            checks += dns.verify(queries)
+            from .protocol import LaunchBinding
+
+            expected_binding = LaunchBinding(
+                process.pid,
+                owner.nonce,
+                bytes.fromhex(PYTHON_PROFILE.digest),
+                bytes.fromhex(owner.published.content_digest),
+            )
+            if owner.startup_binding != expected_binding:
+                raise WindowsRuntimeError(
+                    "WINDOWS_SANDBOX_PROBE_INVALID", "Native startup evidence is missing."
+                )
+            checks += ("native_expanded_startup_gate",)
         finally:
             try:
                 owner.cleanup()
@@ -561,4 +611,5 @@ def run_python_probe(
         checks,
         time.monotonic() - start,
         dns_context,
+        catalog_binding_digest = catalog_binding_digest,
     )

@@ -5,9 +5,10 @@
 Use Studio's selected release CPython and its packages. Run each Python tool in
 one LPAC process with zero payload capabilities; support threads and explain
 worker/subprocess denial. Never grant a package initializer temporary startup
-authority. Terminal remains a separate compatibility problem. Do not replace
-the current PR's Windows launchers or change their profile selection as a side
-effect of bringing in this experimental runtime.
+authority. Terminal remains a separate compatibility problem. Production routing
+now selects the new per-kind backend, which must refuse execution until the
+selected runtime passes every qualification gate. Explicit Limited behavior
+remains owned by the existing separate implementation.
 
 ## Delivery stages
 
@@ -67,6 +68,11 @@ effect of bringing in this experimental runtime.
   replace a host-secret, DNS, IPC or lifecycle denial test with a positive control.
 
 ## Acceptance evidence
+
+The local implementation connects stages 3 and 4 but does not claim all their
+acceptance evidence. In particular, the retained registry audit is narrower than
+complete IPC qualification, and Terminal compatibility cannot be inferred from
+Python results. Missing checks keep Required execution unavailable.
 
 Component delivery requires strict manifest negative cases, real selected-Pillow
 resource inspection, a native build with warnings as errors, wrong-HMODULE and

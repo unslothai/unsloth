@@ -62,7 +62,8 @@ def read_readers(store, pins):
                 store.api.require_private(temporary.file(path))
             continue  # No grants may be applied before atomic journal publication.
         names.add(path.name)
-    readers, sids = {}, set()
+    readers: dict[str, dict] = {}
+    sids = set()
     for name in sorted(names):
         if name.endswith(".lock"):
             if name[:-5] + ".json" not in names:
@@ -151,8 +152,13 @@ def validate_acl(store, handle, path, readers):
 
 
 def _targets(store, generation):
-    directories = {store.root, generation.directory, generation.directory / "files"}
-    for path in generation.files:
+    directories = {
+        store.root,
+        generation.directory,
+        generation.directory / "files",
+        *generation.directories,
+    }
+    for path in (*generation.files, *generation.directories):
         directories.update(
             parent for parent in path.parents if parent.is_relative_to(generation.directory)
         )
@@ -251,6 +257,7 @@ class RuntimeReadLease:
             lease.digest,
             directory,
             tuple(directory / "files" / item.relative_path for item in published.spec().files),
+            directories = tuple(directory / "files" / name for name in published.spec().directories),
         )
         lease.pins = PathLease()
         lease.process = None

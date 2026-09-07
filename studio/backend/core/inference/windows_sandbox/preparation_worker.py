@@ -79,7 +79,9 @@ def main():
     try:
         if "launch" in request:
             owner = launch_transfer.worker_owner(request["launch"], broker, store_root)
-        core = _admit_broker_runtime(broker.executable, broker, bounds)
+        core = _admit_broker_runtime(
+            broker.executable, broker, bounds, include_packages = store_root is not None
+        )
         if store_root is not None:
             from core.inference.windows_sandbox.artifacts import admit_installed_artifacts
             from core.inference.windows_sandbox.content import RuntimeContentStore

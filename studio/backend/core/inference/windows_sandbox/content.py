@@ -30,10 +30,11 @@ from .content_access import (
 from .dependencies import FileIdentity, checked_path
 from .profiles import WindowsRuntimeError
 
-MAX_FILES = 4096
-MAX_BYTES = 1024 * 1024 * 1024
-MAX_FILE_BYTES = 512 * 1024 * 1024
-MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+MAX_FILES = 65536
+MAX_DIRECTORIES = 64
+MAX_BYTES = 16 * 1024 * 1024 * 1024
+MAX_FILE_BYTES = 4 * 1024 * 1024 * 1024
+MAX_MANIFEST_BYTES = 32 * 1024 * 1024
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _BUILD_NAME = re.compile(r"\.build-[0-9a-f]{32}")
 _RESERVED = re.compile(r"(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])", re.IGNORECASE)
@@ -75,9 +76,10 @@ def _encode(value):
 def _validate_manifest(value):
     if (
         not isinstance(value, dict)
-        or set(value) != {"version", "context", "files"}
-        or type(value["version"]) is not int
-        or value["version"] != 1
+        or type(value.get("version")) is not int
+        or value["version"] not in (1, 2)
+        or set(value)
+        != {"version", "context", "files"} | ({"directories"} if value["version"] == 2 else set())
     ):
         raise _invalid("Unknown runtime manifest schema.")
     context = value["context"]
@@ -112,6 +114,23 @@ def _validate_manifest(value):
             str(parent) in names for parent in PurePosixPath(name).parents if str(parent) != "."
         ):
             raise _invalid("Runtime file/directory collision.")
+    if value["version"] == 2:
+        directories = value["directories"]
+        if type(directories) is not list or not 0 < len(directories) <= MAX_DIRECTORIES:
+            raise _invalid("Runtime directory count limit exceeded.")
+        declared = set()
+        for directory in directories:
+            name = _relative(directory).casefold()
+            if name in declared:
+                raise _invalid("Colliding runtime directory paths.")
+            declared.add(name)
+        for name in declared:
+            others = names | (declared - {name})
+            if any(
+                other == name or other.startswith(name + "/") or name.startswith(other + "/")
+                for other in others
+            ):
+                raise _invalid("Declared runtime directories must be empty and non-overlapping.")
     encoded = _encode(value)
     if len(encoded) > MAX_MANIFEST_BYTES:
         raise _invalid("Runtime manifest byte limit exceeded.")
@@ -131,12 +150,15 @@ class SnapshotSpec:
     dependency_digest: str
     profile_digest: str
     helper_digest: str
+    directories: tuple[str, ...] = ()
 
     def manifest(self):
         if not isinstance(self.files, tuple) or not 0 < len(self.files) <= MAX_FILES:
             raise _invalid("Runtime file count limit exceeded.")
-        value = {
-            "version": 1,
+        if type(self.directories) is not tuple:
+            raise _invalid("Runtime directories require an immutable tuple.")
+        value: dict[str, object] = {
+            "version": 2 if self.directories else 1,
             "context": {
                 "runtime": self.runtime_digest,
                 "dependencies": self.dependency_digest,
@@ -155,6 +177,8 @@ class SnapshotSpec:
                 key = lambda item: item["path"],
             ),
         }
+        if self.directories:
+            value["directories"] = sorted(self.directories)
         return _validate_manifest(value)
 
 
@@ -165,6 +189,7 @@ class ContentGeneration:
     files: tuple[Path, ...]
     # A copied hash is integrity evidence, not approval for privileged startup.
     trust_classification: str = "payload_only"
+    directories: tuple[Path, ...] = ()
 
 
 class RuntimeContentStore:
@@ -228,6 +253,10 @@ class RuntimeContentStore:
             directories.update(
                 str(parent) for parent in PurePosixPath(name).parents if str(parent) != "."
             )
+        for item in manifest.get("directories", ()):
+            path = PurePosixPath("files/" + item)
+            directories.add(str(path))
+            directories.update(str(parent) for parent in path.parents if str(parent) != ".")
         return files, directories
 
     def _inventory(
@@ -235,6 +264,8 @@ class RuntimeContentStore:
         directory,
         pins,
         readers = None,
+        *,
+        max_entries = MAX_MANIFEST_BYTES // 2 + MAX_FILES,
     ):
         files: set[str]
         directories: set[str]
@@ -243,8 +274,10 @@ class RuntimeContentStore:
             current = pending.pop()
             validate_acl(self, pins.directory(current), current, readers or {})
             for child in current.iterdir():
-                if len(files) + len(directories) >= 65536:
-                    raise _invalid("Runtime directory scan limit exceeded.")
+                if len(files) + len(directories) >= max_entries:
+                    raise _invalid(
+                        "Runtime generation contains missing or unlisted entries (scan limit exceeded)."
+                    )
                 info = child.lstat()
                 if getattr(info, "st_file_attributes", 0) & 0x400:
                     raise _invalid("A runtime generation contains a reparse point.")
@@ -273,21 +306,32 @@ class RuntimeContentStore:
             raise _invalid("Invalid cached runtime manifest.") from exc
         if _validate_manifest(manifest) != data or hashlib.sha256(data).hexdigest() != digest:
             raise _invalid("Runtime manifest does not match its content address.")
-        if self._inventory(directory, pins, readers) != self._paths(manifest):
+        expected = self._paths(manifest)
+        if (
+            self._inventory(directory, pins, readers, max_entries = sum(map(len, expected)))
+            != expected
+        ):
             raise _invalid("Runtime generation contains missing or unlisted entries.")
         paths = []
         for item in manifest["files"]:
             path = directory / "files" / item["path"]
             handle = pins.file(path)
             validate_acl(self, handle, path, readers or {})
-            content = self.api.read(handle, item["size"])
-            if (
-                len(content) != item["size"]
-                or hashlib.sha256(content).hexdigest() != item["sha256"]
-            ):
+            checksum, size = hashlib.sha256(), 0
+            for chunk in self.api.iter_read(handle, item["size"]):
+                checksum.update(chunk)
+                size += len(chunk)
+            if size != item["size"] or checksum.hexdigest() != item["sha256"]:
                 raise _invalid("Cached runtime bytes changed.")
             paths.append(path)
-        return ContentGeneration(digest, directory, tuple(paths))
+        return ContentGeneration(
+            digest,
+            directory,
+            tuple(paths),
+            directories = tuple(
+                directory / "files" / name for name in manifest.get("directories", ())
+            ),
+        )
 
     def _lease_marker(
         self,
@@ -345,6 +389,12 @@ class RuntimeContentStore:
                 self.api.create(staging / ".build.json", data)
                 self.api.mkdir(staging / "files")
                 created_dirs.append(staging / "files")
+                for name in spec.directories:
+                    target = staging / "files" / name
+                    for parent in (*reversed(target.parents), target):
+                        if parent.is_relative_to(staging / "files") and not parent.exists():
+                            self.api.mkdir(parent)
+                            created_dirs.append(parent)
                 for item in sorted(spec.files, key = lambda item: item.relative_path):
                     source = item.source
                     with PathLease() as pins:
@@ -352,13 +402,10 @@ class RuntimeContentStore:
                         handle = pins.file(source_path)
                         before = source_path.stat()
                         security = self.api.security_text(handle)
-                        content = self.api.read(handle, source.size)
-                        if (
-                            (before.st_dev, before.st_ino, before.st_size)
-                            != (source.device, source.inode, source.size)
-                            or len(content) != source.size
-                            or hashlib.sha256(content).hexdigest() != source.sha256
-                            or self.api.security_text(handle) != security
+                        if (before.st_dev, before.st_ino, before.st_size) != (
+                            source.device,
+                            source.inode,
+                            source.size,
                         ):
                             raise WindowsRuntimeError(
                                 "WINDOWS_SANDBOX_RUNTIME_CHANGED",
@@ -370,7 +417,25 @@ class RuntimeContentStore:
                                 self.api.mkdir(parent)
                                 created_dirs.append(parent)
                         created_files.append(target)
-                        self.api.create(target, content)
+                        checksum, size = hashlib.sha256(), 0
+
+                        def chunks():
+                            nonlocal size
+                            for chunk in self.api.iter_read(handle, source.size):
+                                checksum.update(chunk)
+                                size += len(chunk)
+                                yield chunk
+
+                        self.api.create(target, chunks())
+                        if (
+                            size != source.size
+                            or checksum.hexdigest() != source.sha256
+                            or self.api.security_text(handle) != security
+                        ):
+                            raise WindowsRuntimeError(
+                                "WINDOWS_SANDBOX_RUNTIME_CHANGED",
+                                "Runtime source changed since discovery.",
+                            )
                 for name, content in ((".lease", b""), ("manifest.json", data)):
                     target = staging / name
                     created_files.append(target)
@@ -499,8 +564,8 @@ class RuntimeContentStore:
                 generation = self._verify(digest, pins)
             # Other store users cannot acquire a lease until mutation unlocks.
             files = [directory / ".lease", directory / "manifest.json", *generation.files]
-            directories = {directory, directory / "files"}
-            for path in generation.files:
+            directories = {directory, directory / "files", *generation.directories}
+            for path in (*generation.files, *generation.directories):
                 directories.update(
                     parent for parent in path.parents if parent.is_relative_to(directory)
                 )

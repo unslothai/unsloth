@@ -253,7 +253,7 @@ try:
         assert process.returncode == 0
         assert not retained_owner.retained_raw
     else:
-        assert len(retained_owner.retained_raw) == 1
+        assert len(retained_owner.retained_raw) == 1, [(id(job), tuple(pending)) for job, pending in retained_owner.retained_raw]
         job, pending = retained_owner.retained_raw[0]
         assert job._handle in failed_handles if {kind!r} == 'job' else job._handle is not None
         assert len(pending) == {{'job':0, 'thread':2, 'process':1}}[{kind!r}]
@@ -273,3 +273,32 @@ if (root/'cache'/'.readers').exists():
 print('PARTIAL_CREATION_CLOSE_RETRIED')
 """
     assert "PARTIAL_CREATION_CLOSE_RETRIED" in run_harness(installed_runtime, tmp_path, body)
+
+
+def test_forwarded_cleanup_owner_is_adopted_once_without_restoring_closed_handles():
+    from types import SimpleNamespace
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
+    from core.inference.windows_sandbox.launch import _PythonLaunch
+
+    owner = _PythonLaunch.__new__(_PythonLaunch)
+    owner.catalog = None
+    owner.retained_processes, owner.retained_raw, owner.handles = [], [], set()
+    process, different_process, job = SimpleNamespace(), SimpleNamespace(), SimpleNamespace()
+    failure = SimpleNamespace(
+        retained_process = process,
+        retained_processes = (process, different_process),
+        retained_job = job,
+        retained_native_handles = (11, 12),
+    )
+    owner._adopt_failure(failure)
+    owner._adopt_failure(failure)
+    assert len(owner.retained_processes) == 2
+    assert owner.retained_processes[0] is process
+    assert owner.retained_processes[1] is different_process
+    assert len(owner.retained_raw) == 1 and owner.retained_raw[0][0] is job
+    pending = owner.retained_raw[0][1]
+    assert pending.pop() == 12  # Simulate successful partial cleanup.
+    owner._adopt_failure(failure)
+    assert owner.retained_raw[0][1] is pending and pending == [11]

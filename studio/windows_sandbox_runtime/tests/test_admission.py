@@ -45,7 +45,12 @@ def test_admission_binds_actual_broker_and_declared_core_only():
     assert not any(
         "site-packages" in name or name.endswith(("sitecustomize.py", "usercustomize.py", ".pth"))
         for name in names
+        if name.startswith("runtime/")
     )
+    package_sources = {
+        item.source.path for item in value.files if item.relative_path.startswith("packages/")
+    }
+    assert not package_sources.intersection(value.dependencies.ordered_loads)
     assert {image.file.path for image in value.dependencies.images} <= {
         item.source.path for item in value.files
     }

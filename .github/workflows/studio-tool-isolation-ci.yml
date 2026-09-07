@@ -161,10 +161,11 @@ jobs:
         run: >-
           python -m pytest -q
           test_contract.py test_discovery.py test_activation_manifest.py
+          test_activation_plan.py test_package_snapshot.py test_backend.py
           test_job_policy.py test_protocol.py test_host_config.py
 
   windows-lpac:
-    name: ${{ matrix.runner }} LPAC Preview qualification
+    name: ${{ matrix.runner }} Windows capability and refusal controls
     strategy:
       fail-fast: false
       matrix:
@@ -185,11 +186,29 @@ jobs:
           python -m pip install -r studio/backend/requirements/studio.txt
           python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth requests 'numpy<3' pytest pytest-asyncio httpx
           python -m pip install 'torch>=2.4,<2.11' 'transformers>=4.51,<5.5'
-      - name: Report the Windows capability state
+      - name: Verify complete qualification or explicit Windows unavailability
         shell: pwsh
         working-directory: studio/backend
         run: |
-          python -c "from core.inference.os_sandbox import capability_snapshot; c=capability_snapshot(force=True); print(c); assert c.environment == 'windows', c; open(r'$env:GITHUB_STEP_SUMMARY', 'a', encoding='utf-8').write(f'Windows capability: backend={c.backend} state={c.protection_state} profile={c.profile_id} qualified={c.qualified}\n\nreason: {c.reason}\n'); assert c.available and c.qualified and c.protection_state == 'preview', c; assert c.profile_id in ('windows-lpac-preview-v1', 'windows-appcontainer-preview-v1'), c"
+          @'
+          import os
+          from core.inference.os_sandbox import capability_snapshot
+          from core.inference.windows_sandbox.profiles import PYTHON_PROFILE
+          c = capability_snapshot(force=True, execution_kind="python")
+          print(c)
+          assert c.environment == "windows" and c.backend == "windows-lpac", c
+          assert c.available is c.qualified, c
+          if c.available:
+              assert c.profile_id == PYTHON_PROFILE.profile_id, c
+              assert c.protection_state == "preview", c
+              outcome = "The selected Python runtime passed complete live qualification."
+          else:
+              assert c.profile_id == "none" and c.protection_state == "unavailable", c
+              assert c.reason, c
+              outcome = "Required execution remains unavailable. Passing refusal controls does not qualify Windows execution."
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"Windows capability: backend={c.backend} state={c.protection_state} profile={c.profile_id} qualified={c.qualified}\n\n{outcome}\n\nreason: {c.reason}\n")
+          '@ | python -
       - name: Run Windows enforcement and shared regression tests
         # Runs whatever the probe reported: the suites skip the live legs when
         # no backend qualifies, so a regression in the shared tool paths is

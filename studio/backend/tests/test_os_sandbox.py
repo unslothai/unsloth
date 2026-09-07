@@ -1124,14 +1124,15 @@ def test_real_tool_path_prepares_before_launch_and_never_popen_inner_argv(
         assert specs[0].argv[0:2] == (sys.executable, "-u")
         assert specs[0].argv[2].endswith(".py")
     else:
-        # Required mode: on Windows this is cmd even when Git bash exists.
         if sys.platform == "win32":
-            # The isolated Terminal hands cmd a batch file written in the workdir.
-            # call, not the bare path: cmd's search for a command named like a
-            # batch file is refused inside the container.
-            assert specs[0].argv[:4] == ("cmd", "/d", "/c", "call")
-            assert specs[0].argv[4].endswith(".cmd")
-            assert os.path.dirname(specs[0].argv[4]) == os.path.normpath(specs[0].workdir)
+            selected = os_sandbox.selected_windows_terminal()
+            assert specs[0].argv[0] == selected
+            if os.path.basename(selected).lower() == "bash.exe":
+                assert specs[0].argv[1:] == ("--noprofile", "--norc", "-c", "printf ok")
+            else:
+                assert specs[0].argv[1:4] == ("/d", "/c", "call")
+                assert specs[0].argv[4].endswith(".cmd")
+                assert os.path.dirname(specs[0].argv[4]) == os.path.normpath(specs[0].workdir)
         else:
             assert specs[0].argv == tuple(
                 inference_tools._get_shell_cmd("printf ok", os_isolated = True)
@@ -3426,3 +3427,66 @@ def test_wsl1_probe_failure_names_the_distribution_upgrade(monkeypatch):
     # A qualified capability is never rewritten.
     good = os_sandbox.SandboxCapability("linux-bubblewrap", True, "ok")
     assert os_sandbox._explain_linux_probe_failure(good) is good
+
+
+@pytest.mark.parametrize("os_isolated", [False, True])
+def test_fresh_windows_backend_keeps_selected_bash_across_modes(monkeypatch, os_isolated):
+    selected = r"C:\Program Files\Git\bin\bash.exe"
+    monkeypatch.setattr(os_sandbox.sys, "platform", "win32")
+    monkeypatch.setattr(
+        os_sandbox, "_platform_backend", lambda: SimpleNamespace(requires_fresh_qualification = True)
+    )
+    monkeypatch.setattr(os_sandbox, "selected_windows_terminal", lambda: selected)
+    command = inference_tools._get_shell_cmd("printf selected", os_isolated = os_isolated)
+    assert command[0] == selected
+    assert command[-2:] == ["-c", "printf selected"]
+    assert "cmd" not in command
+
+
+def test_fresh_windows_backend_uses_absolute_selected_cmd_for_batch(monkeypatch):
+    selected = r"C:\Windows\System32\cmd.exe"
+    script = r"C:\private work\script.cmd"
+    monkeypatch.setattr(os_sandbox.sys, "platform", "win32")
+    monkeypatch.setattr(
+        os_sandbox, "_platform_backend", lambda: SimpleNamespace(requires_fresh_qualification = True)
+    )
+    monkeypatch.setattr(os_sandbox, "selected_windows_terminal", lambda: selected)
+    assert inference_tools._get_shell_cmd(
+        "echo selected", os_isolated = True, script_path = script
+    ) == [
+        selected,
+        "/d",
+        "/c",
+        "call",
+        script,
+    ]
+
+
+def test_fresh_windows_model_description_does_not_substitute_cmd(monkeypatch):
+    monkeypatch.setattr(os_sandbox.sys, "platform", "win32")
+    monkeypatch.setattr(
+        os_sandbox, "_platform_backend", lambda: SimpleNamespace(requires_fresh_qualification = True)
+    )
+    monkeypatch.setattr(inference_tools, "_windows_bash", lambda: r"C:\Git\bin\bash.exe")
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "terminal", "description": inference_tools._TERMINAL_BASH_NOTE},
+        }
+    ]
+    described = inference_tools.apply_os_isolated_tool_descriptions(tools)
+    assert "bash" in described[0]["function"]["description"]
+    assert "cmd" not in described[0]["function"]["description"]
+    assert "desktop" not in described[0]["function"]["description"]
+    assert tools[0]["function"]["description"] == inference_tools._TERMINAL_BASH_NOTE
+
+
+def test_legacy_windows_backend_keeps_its_existing_cmd_dispatch(monkeypatch):
+    monkeypatch.setattr(os_sandbox.sys, "platform", "win32")
+    monkeypatch.setattr(os_sandbox, "_platform_backend", lambda: SimpleNamespace())
+    monkeypatch.setattr(inference_tools, "_windows_bash", lambda: r"C:\Git\bin\bash.exe")
+    assert inference_tools._get_shell_cmd("echo selected", os_isolated = True) == [
+        "cmd",
+        "/c",
+        "echo selected",
+    ]

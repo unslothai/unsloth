@@ -92,6 +92,7 @@ def corrupt(owner,value,*args):
             value[key] = value[key].replace(drive,other,1)
         value['traverse'] = [p.replace(drive,other,1) for p in value['traverse']]
         value['file_pins'] = [[p.replace(drive,other,1),h] for p,h in value['file_pins']]
+        value['catalog']['directory'] = value['catalog']['directory'].replace(drive,other,1)
     return original_adopt(owner,value,*args)
 launch._PythonLaunch.__init__,launch_transfer.adopt_launch = capture,corrupt
 try:

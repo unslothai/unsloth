@@ -1,15 +1,15 @@
 # Windows Python bootstrap runtime
 
-The LPAC rewrite is under construction. These components are **not selected by
-the production backend**, and the ABI registry is not a support/qualification
-matrix. Required execution continues to fail closed when the existing backend's
-live probe fails.
+The LPAC rewrite is integrated locally with the production backend selector.
+Selection does **not** establish availability: Required execution refuses any
+runtime without complete measured qualification. The ABI registry is a build
+registry, not a support matrix. Explicit Limited execution remains separate.
 
 The [implementation plan](IMPLEMENTATION_PLAN.md) separates component delivery
-from activating the expanded Python profile. This directory now includes the
-experimental protected-runtime and native-bootstrap infrastructure, adapted to
-the current PR's separate production Windows launchers. The production backend
-selector does not import this bootstrap.
+from activating the expanded Python profile. The launcher now connects protected
+package snapshots, a clean-entry handshake, a private Winsock catalog, native
+activation plans and a post-drop retained-authority audit. Python and Terminal
+require separate qualification of the selected executable.
 
 ### Pillow activation-context component
 
@@ -44,13 +44,34 @@ The builder copies committed Detours source into the selected output directory,
 compiles it there, and records source/binary provenance. It does not download or
 install Detours. Use the pinned compiler/SDK documented in `build.py`.
 
-The component is **not yet linked into the packaged Python host**. Native driver
-tests exercise resource-only preparation, wrong-module refusal, changed-manifest
-refusal and real repeated Pillow DLL unload/reload in an ordinary host process.
-A separate local LPAC diagnostic also passed the six-format Pillow suite with
-zero payload capabilities using this adapter, but that diagnostic still composes
-private-catalog startup outside the packaged launcher. Neither result qualifies
-DNS, remaining retained authority, CUDA, Terminal or full runtime activation.
+The component is linked into each packaged Python host. Plans bind exact final
+snapshot bytes, profile and invocation identity. Native component tests include
+wrong-module and changed-image refusal; these do not replace the installed-host
+Pillow matrix or establish DNS, IPC, CUDA or Terminal qualification.
+
+Activation-plan v2 also carries the broker-measured 64-bit volume serial and
+128-bit file ID. The native consumer compares them on its pinned file handle,
+checks the volume-relative opened path, and hashes the complete image. This
+avoids LPAC-denied DOS-device lookups without granting access to ancestor paths.
+
+The private catalog is prepared in the bounded worker and transferred as validated
+data; registry handles never cross processes. The invocation reservation owns
+its files until process reaping and profile cleanup complete. Its stable binding
+covers catalog bytes, provider hashes, OS and policy, excluding the random marker
+and invocation SID, so an earlier probe cannot authorize a different snapshot.
+
+The private catalog is invocation-owned writable state. Its provider inventory
+is bounded and validated; it does not expose the host hive to payload code.
+The native audit rejects retained host registry keys, tokens and foreign process
+or thread handles. Other IPC types still require qualification; an empty token
+capability list alone never enables the backend.
+
+Build each ABI with `build.py --python-home <matching-home>
+--detours-source <pinned-checkout>` and the compiler/SDK/output arguments above.
+Assemble all three hosts with `package_runtime.py --host <ABI>=<binary>` repeated
+once per ABI and `--output <wheel-directory>`. The development companion is
+`0.1.0.dev2`; its manifest binds the current profile and source/build hashes.
+The wheel includes the Detours MIT notice. No build or download runs at tool time.
 
 The intended Python profile runs one workload process per tool invocation.
 Imports and threads remain available; worker creation raises
@@ -108,7 +129,7 @@ For native bootstrap tests, build matching hosts with `build.py` and set
 `tests/test_artifacts.py`. These fixtures deliberately fail on missing build
 prerequisites; platform skips and standalone adapter skips never qualify a host.
 
-Still required before selection: the expanded private-catalog/activation-plan
-connection, per-runtime authority and network qualification, per-kind production
-selection, and the complete installed-package Windows matrix. Unsupported
+Still required before reporting availability: complete retained IPC and lifecycle
+qualification, active DNS controls, and the installed-package Windows matrix.
+Terminal child-launch compatibility is a separate gate. Unsupported
 ABIs/layouts must never select a nearby adapter or gain additional capabilities.

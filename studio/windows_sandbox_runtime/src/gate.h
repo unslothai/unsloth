@@ -36,6 +36,7 @@ _Static_assert(sizeof(UsAcknowledgement) == 112, "startup acknowledgement ABI ch
 
 /* These functions never run payload code, resume threads or approve artifacts. */
 BOOL us_validate_startup(PSID package_sid, const wchar_t *aap_path, UsStatus *status);
+BOOL us_clean_entry(HANDLE output, HANDLE input, PSID package_sid, const wchar_t *private_temp, UsStatus *status, HKEY *catalog);
 BOOL us_drop_and_validate(PSID package_sid, const wchar_t *aap_path, UsStatus *status);
 BOOL us_send_status(HANDLE output, const UsStatus *status);
 BOOL us_wait_acknowledgement(HANDLE input, const UsBinding *binding);

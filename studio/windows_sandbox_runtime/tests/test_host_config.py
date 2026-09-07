@@ -47,6 +47,17 @@ def config():
     )
 
 
+def test_expanded_config_binds_activation_plan(config):
+    from core.inference.windows_sandbox.activation_plan import ActivationPlan
+
+    plan = ActivationPlan(config.nonce, config.profile_digest, config.content_digest, ()).encode()
+    encoded = replace(config, activation_plan = plan).encode()
+    assert HEADER.unpack_from(encoded)[1:3] == (2, len(encoded))
+    assert encoded.endswith(struct.pack("<I", len(plan)) + plan)
+    with pytest.raises(WindowsRuntimeError):
+        replace(config, activation_plan = plan, nonce = b"x" * 32).encode()
+
+
 def test_host_config_is_bounded_data_with_unicode_arguments(config):
     value = replace(
         config,

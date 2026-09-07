@@ -133,6 +133,8 @@ def worker_owner(request, broker, store_root):
 
 
 def worker_response(owner, *, failed):
+    from .private_catalog import catalog_receipt
+
     collision = owner.reservation.collision_record if owner is not None else None
     if failed:
         return {"collision": collision}
@@ -149,6 +151,7 @@ def worker_response(owner, *, failed):
         "env": owner.environment,
         "reader_pins": [[str(p), h] for p, h in owner.access.pins.handles.items()],
         "file_pins": [[str(p), h] for p, h in owner.file_pins.handles.items()],
+        "catalog": catalog_receipt(owner.catalog),
     }
 
 
@@ -188,6 +191,7 @@ def adopt_launch(owner, value, published, process, runtime_rows, check_deadline)
             "env",
             "reader_pins",
             "file_pins",
+            "catalog",
         }
         or value["collision"] is not None
     ):
@@ -219,6 +223,9 @@ def adopt_launch(owner, value, published, process, runtime_rows, check_deadline)
     ):
         raise _invalid("Invalid traversal grant inventory.")
     environment = _environment(value["env"])
+    from .private_catalog import adopt_catalog
+
+    catalog = adopt_catalog(value["catalog"], temporary)
     reader_rows = _decode(tuple[tuple[str, int], ...], value["reader_pins"])
     file_rows = _decode(tuple[tuple[str, int], ...], value["file_pins"])
     runtime_paths = {Path(path) for path, _ in runtime_rows}
@@ -277,6 +284,7 @@ def adopt_launch(owner, value, published, process, runtime_rows, check_deadline)
             execution_kind = "python",
         )
     owner.environment = environment
+    owner.catalog = catalog
     owner.binary = str(
         Path(published.store_root) / published.content_digest / "files/trusted/python_host.exe"
     )
@@ -289,6 +297,8 @@ def release_worker_pins(owner):
     """After ACK or failure, release local handles only; parent owns recovery."""
     if owner is None:
         return
+    if owner.catalog is not None:
+        owner.catalog.release_registry_handles()
     if owner.access is not None:
         owner.access.pins.close()
     owner.file_pins.close()

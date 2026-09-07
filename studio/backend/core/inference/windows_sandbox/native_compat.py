@@ -229,7 +229,7 @@ class WindowsLpacProcess:
             if self.stdout is not None:
                 self.stdout.close()
                 self.stdout = None
-            for name in ("_thread_handle", "_handle"):
+            for name in ("_startup_token", "_thread_handle", "_handle"):
                 handle = getattr(self, name, None)
                 if handle:
                     if not _api().kernel32.CloseHandle(handle):

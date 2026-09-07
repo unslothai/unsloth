@@ -60,6 +60,9 @@ static BOOL valid_path(const wchar_t *text) {
 }
 
 void us_free_config(UsConfig *config) {
+    free(config->activation_plan);
+    config->activation_plan = NULL;
+    config->activation_bytes = 0;
     for (size_t i = 0; i < US_CONFIG_FIELDS + 3 * US_CONFIG_LIST; ++i) {
         free(config->values[i]);
         config->values[i] = NULL;
@@ -72,7 +75,7 @@ BOOL us_read_config(HANDLE input, UsConfig *config) {
     LARGE_INTEGER size, zero = {0};
     memset(config, 0, sizeof(*config));
     if (GetFileType(input) != FILE_TYPE_DISK || !GetFileSizeEx(input, &size)
-        || size.QuadPart < sizeof(UsConfigHeader) || size.QuadPart > US_CONFIG_BYTES
+        || size.QuadPart < sizeof(UsConfigHeader) || size.QuadPart > US_EXPANDED_CONFIG_BYTES
         || !SetFilePointerEx(input, zero, NULL, FILE_BEGIN)) goto done;
     data = (BYTE *)malloc((size_t)size.QuadPart);
     if (!data) goto done;
@@ -83,7 +86,7 @@ BOOL us_read_config(HANDLE input, UsConfig *config) {
     }
     memcpy(&config->header, data, sizeof(config->header));
     UsConfigHeader *header = &config->header;
-    if (memcmp(header->magic, "USLPCF1", 8) || header->version != 1 || header->bytes != total
+    if (memcmp(header->magic, "USLPCF1", 8) || (header->version != 1 && header->version != 2) || header->bytes != total
         || header->images > US_CONFIG_LIST || header->packages > US_CONFIG_LIST || header->arguments > US_CONFIG_LIST)
         goto done;
     size_t position = sizeof(config->header), image_start = US_CONFIG_FIELDS + header->packages + header->arguments;
@@ -107,6 +110,19 @@ BOOL us_read_config(HANDLE input, UsConfig *config) {
             if (wcslen(text) <= home_length || _wcsnicmp(text, config->values[US_RUNTIME_HOME], home_length)
                 || text[home_length] != L'\\') goto done;
         }
+    }
+    if (position > US_CONFIG_BYTES) goto done;
+    if (header->version == 2) {
+        DWORD bytes;
+        if (position + sizeof(bytes) > total) goto done;
+        memcpy(&bytes, data + position, sizeof(bytes));
+        position += sizeof(bytes);
+        if (!bytes || bytes > 1048576u || position + bytes != total) goto done;
+        config->activation_plan = (BYTE *)malloc(bytes);
+        if (!config->activation_plan) goto done;
+        memcpy(config->activation_plan, data + position, bytes);
+        config->activation_bytes = bytes;
+        position += bytes;
     }
     ok = position == total;
 done:

@@ -92,10 +92,15 @@ PYTHON_PROFILE = BootstrapProfile(
     runtime_families = ("cpython", "venv"),
     startup_capabilities = ("registryRead",),
     startup_actions = (
+        "verify_zero_capability_clean_entry",
+        "open_identity_bound_private_registry_catalog",
         "initialize_isolated_cpython",
         "load_cpython_native_images",
-        "initialize_winsock_providers",
+        "initialize_winsock_with_private_hklm",
+        "load_system_dnsapi_with_private_hklm",
         "initialize_overlapped",
+        "prepare_hash_bound_empty_activation_contexts",
+        "drop_startup_capability_and_audit_retained_authority",
     ),
     native_features = CPYTHON_NATIVE_FEATURES,
     payload_capabilities = (),
@@ -104,6 +109,8 @@ PYTHON_PROFILE = BootstrapProfile(
         "python_single_process",
         "gpu_execution_unqualified",
         "console_signal_wakeup_unavailable",
+        "private_winsock_catalog_writable",
+        "unknown_activation_manifests_unadapted",
     ),
 )
 

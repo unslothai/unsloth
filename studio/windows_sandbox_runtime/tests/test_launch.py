@@ -191,6 +191,9 @@ def fail_after_creation(*args, **kwargs):
     if {raw_handles!r}:
         error.retained_job = process._unsloth_job
         error.retained_native_handles = (process._handle, process._thread_handle)
+        error.retained_token_handles = (process._startup_token,)
+        assert process._startup_token is not None
+        process._startup_token = None  # Raw error now owns every native handle.
     else:
         error.retained_processes = (process,)
     raise error
@@ -289,6 +292,9 @@ def fail_after_creation(*args, **kwargs):
     if {raw_handles!r}:
         error.retained_job = process._unsloth_job
         error.retained_native_handles = (process._handle, process._thread_handle)
+        error.retained_token_handles = (process._startup_token,)
+        assert process._startup_token is not None
+        process._startup_token = None  # Raw error now owns every native handle.
     else:
         error.retained_processes = (process,)
     raise error
@@ -325,8 +331,12 @@ finally:
     for process, terminate in retained:
         process._unsloth_job.terminate = terminate
     # Production preparation retries cleanup only, never the original command.
+    retained_launch = reference()
     recovered = prepare_python_launch(spec, root/'cache')
     recovered.cleanup()
+    assert retained_launch.closed and not retained_launch.handles
+    assert not retained_launch.retained_processes and not retained_launch.retained_raw
+    del retained_launch
 assert not recovered.cleanup_diagnostics
 assert not launch._pending_cleanup
 gc.collect()

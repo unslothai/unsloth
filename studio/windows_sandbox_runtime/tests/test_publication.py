@@ -121,7 +121,11 @@ def block():
 original_create = NativeFiles.create
 def create(self, path, data):
     if {stage!r} == 'partial_copy' and str(path).endswith('.py'):
-        original_create(self, path, data[:16])
+        # The publisher streams source chunks while retaining its source pin.
+        # Consume only the first chunk and leave the source iterator alive at
+        # interruption, just as a partially completed real copy would.
+        first = data if isinstance(data, bytes) else next(iter(data))
+        original_create(self, path, first[:16])
         block()
     else:
         original_create(self, path, data)

@@ -37,7 +37,10 @@ finally:
         owner.cleanup()
 assert len(owners) == 1
 owner = owners[0]
-assert result.checks == probe.CORE_CHECKS + probe.HOST_CHECKS
+from core.inference.windows_sandbox.dns_probe import DNS_CHECKS
+assert result.checks == probe.CORE_CHECKS + probe.HOST_CHECKS + DNS_CHECKS + ('native_expanded_startup_gate',)
+assert result.qualification_complete is False
+assert not set(probe.REQUIRED_QUALIFICATION_CHECKS) <= set(result.checks)
 assert result.version == tuple(sys.version_info[:3])
 assert result.content_digest == owner.published.content_digest
 assert result.runtime_digest == owner.published.core.digest

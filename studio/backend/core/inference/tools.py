@@ -7393,19 +7393,27 @@ def _get_shell_cmd(
     os_isolated: bool = False,
     script_path: str | None = None,
 ) -> list[str]:
-    """Return the platform-appropriate shell invocation for a command string.
+    """Return the selected shell's invocation without changing its language.
 
-    ``os_isolated`` says the launch runs inside the Windows AppContainer. Git for
-    Windows bash is an MSYS2 program and MSYS2 opens a shared object under
-    ``\\BaseNamedObjects`` at startup, which an AppContainer is denied
-    (``NtCreateDirectoryObject: 0xC0000022``), so it can never start there. The
-    isolated launch uses cmd and the model is told so by
-    apply_os_isolated_tool_descriptions. ``script_path`` names a batch file the
-    caller wrote inside the workdir holding ``command``: cmd /c executes only
-    the first line of a multi-line argument, a batch file runs all of them.
-    ``/d`` skips the AutoRun registry commands, which are host state.
+    The fresh Windows backend qualifies the selected native shell and keeps
+    that executable in Required and Limited modes. The legacy AppContainer
+    backend retains its cmd dispatch. A reserved batch file preserves multiline
+    cmd scripts, and /d prevents host AutoRun registry commands.
     """
     if sys.platform == "win32":
+        from .os_sandbox import _platform_backend, selected_windows_terminal
+
+        if getattr(_platform_backend(), "requires_fresh_qualification", False):
+            selected = selected_windows_terminal()
+            if os.path.basename(selected).lower() == "bash.exe":
+                return (
+                    [selected, "--noprofile", "--norc", "-c", command]
+                    if os_isolated
+                    else [selected, "-c", command]
+                )
+            if script_path:
+                return [selected, "/d", "/c", "call", script_path]
+            return [selected, "/d", "/c", command]
         # why: the model is told this tool is bash and writes bash. cmd /c runs
         # only the first line of a multi-line command, keeps single quotes
         # literal, and does not understand bash quoting, so a correct script
@@ -10341,19 +10349,15 @@ def _isolation_cleanup_trailer(prepared_launch, tool_name: str) -> str:
 def apply_os_isolated_tool_descriptions(
     tools: list[dict], network_allowlist: tuple[str, ...] | list[str] | None = None
 ) -> list[dict]:
-    """Describe what actually runs inside the OS sandbox this turn.
-
-    Two adjustments, both no-ops when they do not apply. On Windows with Git
-    bash installed, the terminal description promises bash but an OS-isolated
-    launch runs cmd (see _get_shell_cmd), so the cmd note replaces the bash
-    note. When the session enabled the network allowlist, the python and
-    terminal descriptions gain the list of reachable hosts so the model asks
-    for what the proxy admits instead of guessing why a download failed.
-    A list without either tool is returned as-is.
-    """
+    """Describe the selected isolated shell and any enforced network allowlist."""
     swap_shell = sys.platform == "win32" and bool(_windows_bash())
+    fresh_bash = False
+    if swap_shell:
+        from .os_sandbox import _platform_backend
+        fresh_bash = bool(getattr(_platform_backend(), "requires_fresh_qualification", False))
+        swap_shell = not fresh_bash
     hosts = tuple(str(host) for host in (network_allowlist or ()) if str(host).strip())
-    if not swap_shell and not hosts:
+    if not swap_shell and not fresh_bash and not hosts:
         return tools
     out: list[dict] = []
     swapped = False
@@ -10365,6 +10369,10 @@ def apply_os_isolated_tool_descriptions(
             continue
         original = str(function.get("description", ""))
         description = original
+        if name == "terminal" and fresh_bash:
+            description = description.replace(
+                _TERMINAL_BASH_NOTE, " The shell is bash (Git for Windows)."
+            )
         if name == "terminal" and swap_shell:
             if _TERMINAL_BASH_NOTE in description:
                 description = description.replace(_TERMINAL_BASH_NOTE, _TERMINAL_CMD_NOTE)

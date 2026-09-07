@@ -31,7 +31,7 @@ from .native_plan import DependencyEdge, DependencyPlan, ScanBounds, SystemLoade
 from .profiles import PYTHON_PROFILE, WindowsRuntimeError
 from .runtime import RuntimeDescriptor
 
-MAX_RESULT = 8 * 1024 * 1024
+MAX_RESULT = 32 * 1024 * 1024
 
 
 @dataclass(frozen = True)
@@ -90,7 +90,7 @@ def _decode(
         return cls(**{key: _decode(kind, value[key], depth + 1) for key, kind in schema.items()})
     origin, args = get_origin(cls), get_args(cls)
     if origin is tuple:
-        if type(value) is not list or len(value) > 16384:
+        if type(value) is not list or len(value) > 65536:
             raise _invalid("Preparation sequence has an invalid size or type.")
         if len(args) == 2 and args[1] is Ellipsis:
             return tuple(_decode(args[0], item, depth + 1) for item in value)

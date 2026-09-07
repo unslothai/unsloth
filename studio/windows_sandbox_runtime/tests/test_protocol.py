@@ -115,3 +115,54 @@ def test_native_failure_is_bounded_diagnostic_not_launch_record(binding):
 def test_invalid_binding_is_rejected(binding, changes):
     with pytest.raises(WindowsRuntimeError, match = "PROTOCOL_MISMATCH"):
         replace(binding, **changes)
+
+
+def test_clean_entry_is_not_payload_authorization(binding):
+    data = packet(binding, phase = p.CLEAN_ENTRY, checks = 0, stage = 1)
+    p.parse_clean_entry(data, binding)
+    with pytest.raises(WindowsRuntimeError):
+        p.parse_startup_status(data, binding)
+    with pytest.raises(WindowsRuntimeError):
+        p.parse_clean_entry(packet(binding), binding)
+
+
+@pytest.mark.parametrize(
+    "change", [{"pid": 124}, {"nonce": b"x" * 32}, {"checks": 1}, {"error": 5}, {"stage": 2}]
+)
+def test_clean_entry_rejects_unbound_or_dirty_start(binding, change):
+    values = dict(phase = p.CLEAN_ENTRY, checks = 0, stage = 1)
+    values.update(change)
+    with pytest.raises(WindowsRuntimeError):
+        p.parse_clean_entry(packet(binding, **values), binding)
+
+
+def test_private_catalog_permission_is_bounded_and_bound(binding):
+    path = r"E:\private\hive\winsock.hiv"
+    data = p.startup_permission(binding, path, b"m" * 32)
+    header = p.STARTUP_GO.unpack_from(data)
+    assert p.STARTUP_GO.size == 152 and len(data) < 4096
+    assert header == (
+        b"USLPGO2\0",
+        2,
+        0,
+        binding.nonce,
+        binding.profile_digest,
+        binding.content_digest,
+        b"m" * 32,
+        len(path.encode("utf-16-le")),
+        0,
+    )
+    assert data[p.STARTUP_GO.size :].decode("utf-16-le") == path
+
+
+@pytest.mark.parametrize(
+    "path,marker",
+    [
+        (r"E:\private\..\host", b"m" * 32),
+        (r"E:\private\hive", b"m"),
+        ("E:\\" + "x" * 1024, b"m" * 32),
+    ],
+)
+def test_private_catalog_permission_rejects_bad_paths_or_identity(binding, path, marker):
+    with pytest.raises(WindowsRuntimeError):
+        p.startup_permission(binding, path, marker)

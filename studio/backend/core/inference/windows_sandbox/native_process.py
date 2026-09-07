@@ -188,6 +188,7 @@ def create_suspended_host(
     control_handles,
     timeout = 30,
     cancel = None,
+    delayed_startup = False,
 ):
     """Return one suspended, Job1-owned LPAC target with its startup token attached.
 
@@ -293,10 +294,13 @@ def create_suspended_host(
         _check(deadline, cancel)
         target = _create(binary, argv, identity, env, directory, handles, stdin, stdout, None)
         _check(deadline, cancel)
-        if not api.advapi32.SetThreadToken(
+        if not delayed_startup and not api.advapi32.SetThreadToken(
             ctypes.byref(W.HANDLE(target._thread_handle)), duplicate
         ):
             raise lpac._winerror("SetThreadToken(native startup)")
+        if delayed_startup:
+            target._startup_token = duplicate.value
+            tokens.remove(duplicate.value)
         while tokens:
             if not api.kernel32.CloseHandle(tokens[-1]):
                 raise lpac._winerror("CloseHandle(startup token)")
@@ -338,3 +342,42 @@ def create_suspended_host(
                 failure.retained_job = original.retained_job
                 failure.retained_native_handles = original.retained_native_handles
             raise failure
+
+
+def attach_delayed_startup(
+    process,
+    *,
+    deadline = None,
+    cancel = None,
+):
+    """Called once after the fixed native entry handshake, never before resume."""
+    from . import native_compat as lpac
+
+    def check():
+        if cancel is not None and cancel.is_set():
+            raise WindowsRuntimeError("WINDOWS_SANDBOX_CANCELLED", "Delayed startup was cancelled.")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise WindowsRuntimeError(
+                "WINDOWS_SANDBOX_STARTUP_TIMEOUT", "Delayed startup exceeded its deadline."
+            )
+
+    check()
+    wait = 5 if deadline is None else min(5, max(0, deadline - time.monotonic()))
+    if not process._close_lock.acquire(timeout = wait):
+        check()
+        raise _invalid("Delayed startup is racing process cleanup.")
+    try:
+        check()
+        token = getattr(process, "_startup_token", None)
+        if not token or process.poll() is not None:
+            raise _invalid("Delayed startup token is unavailable or its owner exited.")
+        api = lpac._api()
+        if not api.advapi32.SetThreadToken(
+            ctypes.byref(W.HANDLE(process._thread_handle)), W.HANDLE(token)
+        ):
+            raise lpac._winerror("SetThreadToken(delayed startup)")
+        if not api.kernel32.CloseHandle(token):
+            raise lpac._winerror("CloseHandle(delayed startup token)")
+        process._startup_token = None
+    finally:
+        process._close_lock.release()

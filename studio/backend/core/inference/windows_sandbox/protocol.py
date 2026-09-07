@@ -26,9 +26,12 @@ STATUS_MAGIC = b"USLPAC1\0"
 ACK_MAGIC = b"USLACK1\0"
 STATUS = struct.Struct("<8s6I32s32s32s")
 ACK = struct.Struct("<8s2I32s32s32s")
+STARTUP_GO = struct.Struct("<8s2I32s32s32s32s2I")
+CLEAN_ENTRY = 3
 READY = 1
 FAILED = 2
 REQUIRED_GATE_CHECKS = 0x1FF
+EXPANDED_GATE_CHECKS = 0xFFF
 
 
 def _invalid(message):
@@ -54,7 +57,12 @@ def new_launch_nonce():
     return secrets.token_bytes(32)
 
 
-def parse_startup_status(data, binding: LaunchBinding):
+def parse_startup_status(
+    data,
+    binding: LaunchBinding,
+    *,
+    expanded = False,
+):
     if type(data) is not bytes or len(data) != STATUS.size:
         raise _invalid("Native startup status has the wrong size.")
     magic, version, phase, pid, checks, error, stage, nonce, profile, content = STATUS.unpack(data)
@@ -66,7 +74,7 @@ def parse_startup_status(data, binding: LaunchBinding):
         or profile != binding.profile_digest
         or content != binding.content_digest
         or phase not in (READY, FAILED)
-        or checks & ~REQUIRED_GATE_CHECKS
+        or checks & ~(EXPANDED_GATE_CHECKS if expanded else REQUIRED_GATE_CHECKS)
         or not 1 <= stage <= 16
     ):
         raise _invalid("Native startup status does not match this invocation.")
@@ -75,7 +83,11 @@ def parse_startup_status(data, binding: LaunchBinding):
             "WINDOWS_SANDBOX_STARTUP_FAILED",
             f"Native startup failed at stage {stage} (WinError {error}).",
         )
-    if error or stage != 16 or checks != REQUIRED_GATE_CHECKS:
+    if (
+        error
+        or stage != 16
+        or checks != (EXPANDED_GATE_CHECKS if expanded else REQUIRED_GATE_CHECKS)
+    ):
         raise _invalid("Native startup did not prove every required gate check.")
     # This immutable binding is not an execution record or a qualification.
     return binding
@@ -87,6 +99,50 @@ def acknowledgement(binding: LaunchBinding):
     )
 
 
+def parse_clean_entry(data, binding):
+    if type(data) is not bytes or len(data) != STATUS.size:
+        raise _invalid("Invalid clean-entry record size.")
+    expected = STATUS.pack(
+        STATUS_MAGIC,
+        VERSION,
+        CLEAN_ENTRY,
+        binding.pid,
+        0,
+        0,
+        1,
+        binding.nonce,
+        binding.profile_digest,
+        binding.content_digest,
+    )
+    if data != expected:
+        # Preserve useful native failure diagnostics without accepting READY here.
+        if STATUS.unpack(data)[2] == FAILED:
+            parse_startup_status(data, binding)
+        raise _invalid("Native clean entry does not match this invocation.")
+
+
+def startup_permission(binding, hive_path, marker):
+    from .host_config import _path
+
+    path = _path(hive_path).encode("utf-16-le")
+    if len(path) > 2048 or type(marker) is not bytes or len(marker) != 32:
+        raise _invalid("Invalid private catalog path or identity.")
+    return (
+        STARTUP_GO.pack(
+            b"USLPGO2\0",
+            2,
+            0,
+            binding.nonce,
+            binding.profile_digest,
+            binding.content_digest,
+            marker,
+            len(path),
+            0,
+        )
+        + path
+    )
+
+
 def authorize_startup(
     process,
     status_handle,
@@ -95,6 +151,7 @@ def authorize_startup(
     *,
     timeout,
     cancel = None,
+    grant_startup = None,
 ):
     """Own parent control handles, wait for bounded status/EOF, then acknowledge.
 
@@ -122,6 +179,7 @@ def authorize_startup(
             raise _invalid("Invalid startup owner, profile or deadline.")
         deadline = time.monotonic() + timeout
         data = bytearray()
+        entered = grant_startup is None
         while True:
             if cancel is not None and cancel.is_set():
                 raise WindowsRuntimeError(
@@ -148,9 +206,44 @@ def authorize_startup(
                 ):
                     raise _invalid("Native startup status read failed.")
                 data.extend(buffer.raw[: count.value])
+                if not entered and len(data) == STATUS.size:
+                    parse_clean_entry(bytes(data), binding)
+                    if cancel is not None and cancel.is_set():
+                        raise WindowsRuntimeError(
+                            "WINDOWS_SANDBOX_CANCELLED", "Startup cancelled at native entry."
+                        )
+                    if time.monotonic() >= deadline or process.poll() is not None:
+                        raise _invalid("Native entry owner exited or expired.")
+                    response = grant_startup()
+                    if cancel is not None and cancel.is_set():
+                        raise WindowsRuntimeError(
+                            "WINDOWS_SANDBOX_CANCELLED",
+                            "Startup cancelled while attaching its token.",
+                        )
+                    if time.monotonic() >= deadline:
+                        raise WindowsRuntimeError(
+                            "WINDOWS_SANDBOX_STARTUP_TIMEOUT",
+                            "Startup token attachment exceeded its deadline.",
+                        )
+                    if process.poll() is not None:
+                        raise _invalid("Native startup owner exited during token attachment.")
+                    if (
+                        type(response) is not bytes
+                        or not STARTUP_GO.size < len(response) <= STARTUP_GO.size + 2048
+                    ):
+                        raise _invalid("Invalid native startup permission record.")
+                    written = W.DWORD()
+                    if not api.WriteFile(
+                        acknowledgement_handle, response, len(response), ctypes.byref(written), None
+                    ) or written.value != len(response):
+                        raise _invalid("Native startup permission write failed.")
+                    entered = True
+                    data.clear()
             else:
                 time.sleep(min(0.005, max(0, deadline - time.monotonic())))
-        parse_startup_status(bytes(data), binding)
+        if not entered:
+            raise _invalid("Native host exited before clean entry.")
+        parse_startup_status(bytes(data), binding, expanded = grant_startup is not None)
         if cancel is not None and cancel.is_set():
             raise WindowsRuntimeError(
                 "WINDOWS_SANDBOX_CANCELLED", "Native startup was cancelled before acknowledgement."

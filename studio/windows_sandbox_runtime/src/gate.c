@@ -115,6 +115,63 @@ static BOOL all_thread_tokens_absent(void) {
     return TRUE;
 }
 
+BOOL us_clean_entry(HANDLE output, HANDLE input, PSID sid, const wchar_t *private_temp, UsStatus *status, HKEY *catalog) {
+    HANDLE token = NULL;
+    DWORD value = 0;
+    __declspec(align(8)) BYTE data[4096];
+    *catalog = NULL;
+    if (!all_thread_tokens_absent()
+        || !OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return us_fail(status, 1, GetLastError());
+    BOOL valid = token_info(token, TokenIsAppContainer, &value, sizeof(value)) && value == 1
+        && token_info(token, TokenCapabilities, data, sizeof(data))
+        && ((TOKEN_GROUPS *)data)->GroupCount == 0 && package_matches(token, sid);
+    DWORD error = GetLastError();
+    if (!CloseHandle(token)) return us_fail(status, 1, GetLastError());
+    if (!valid) return us_fail(status, 1, error);
+    /* These fixed system initializers run before any startup token can arrive. */
+    if (!LoadLibraryExW(L"ole32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32)
+        || !LoadLibraryExW(L"oleaut32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32))
+        return us_fail(status, 1, GetLastError());
+    status->phase = 3;
+    DWORD wrote = 0;
+    if (!WriteFile(output, status, sizeof(*status), &wrote, NULL) || wrote != sizeof(*status))
+        return us_fail(status, 1, GetLastError());
+    struct { char magic[8]; uint32_t version, reserved; UsBinding binding; BYTE marker[32]; uint32_t path_bytes, reserved2; } go;
+    _Static_assert(sizeof(go) == 152, "startup permission ABI changed");
+    DWORD received = 0;
+    while (received < sizeof(go)) {
+        DWORD got = 0;
+        if (!ReadFile(input, (BYTE *)&go + received, (DWORD)sizeof(go) - received, &got, NULL) || !got)
+            return us_fail(status, 1, ERROR_INVALID_DATA);
+        received += got;
+    }
+    if (memcmp(go.magic, "USLPGO2", 8) || go.version != 2 || go.reserved || go.reserved2
+        || !go.path_bytes || go.path_bytes > 2048 || go.path_bytes % 2
+        || memcmp(&go.binding, &status->binding, sizeof(go.binding)))
+        return us_fail(status, 1, ERROR_INVALID_DATA);
+    wchar_t path[1025] = {0};
+    received = 0;
+    while (received < go.path_bytes) {
+        DWORD got = 0;
+        if (!ReadFile(input, (BYTE *)path + received, go.path_bytes - received, &got, NULL) || !got)
+            return us_fail(status, 1, ERROR_INVALID_DATA);
+        received += got;
+    }
+    size_t parent = wcslen(private_temp), length = go.path_bytes / sizeof(wchar_t);
+    if (wcslen(path) != length || length <= parent || _wcsnicmp(path, private_temp, parent)
+        || path[parent] != L'\\' || wcsstr(path + parent, L"..") || wcschr(path + parent, L':')
+        || wcschr(path + parent, L'/')) return us_fail(status, 1, ERROR_INVALID_DATA);
+    LSTATUS loaded = RegLoadAppKeyW(path, catalog, KEY_QUERY_VALUE, 0, 0);
+    if (loaded) return us_fail(status, 1, (DWORD)loaded);
+    BYTE marker[32]; DWORD bytes = sizeof(marker), kind = 0;
+    LSTATUS query = RegQueryValueExW(*catalog, L"UnslothCatalogIdentity", NULL, &kind, marker, &bytes);
+    if (query || kind != REG_BINARY || bytes != sizeof(marker) || memcmp(marker, go.marker, sizeof(marker)))
+        return us_fail(status, 1, ERROR_INVALID_DATA);
+    status->phase = US_FAILED;
+    return TRUE;
+}
+
 BOOL us_drop_and_validate(PSID package_sid, const wchar_t *aap_path, UsStatus *status) {
     HANDLE token = NULL;
     DWORD value = 0;

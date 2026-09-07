@@ -204,6 +204,8 @@ class SandboxCapability:
     # backend without a loopback bridge (Windows AppContainer) offers only that.
     network_policies: tuple[str, ...] = ("deny",)
     network_allowlist: tuple[str, ...] = ()
+    # Internal runtime proof, distinct from the UI consent generation.
+    qualification_generation: str = ""
 
 
 ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
@@ -2840,8 +2842,8 @@ def _platform_backend() -> SandboxBackend | None:
         return _MACOS_BACKEND
     if sys.platform == "win32":
         if _WINDOWS_BACKEND is None:
-            from .windows_lpac import WindowsLpacBackend
-            _WINDOWS_BACKEND = WindowsLpacBackend()
+            from .windows_sandbox.backend import WindowsBootstrapBackend
+            _WINDOWS_BACKEND = WindowsBootstrapBackend()
         return _WINDOWS_BACKEND
     return None
 
@@ -2911,6 +2913,7 @@ def _capability_with_identity(
             str(capability.qualified),
             protection_state,
             profile_id,
+            capability.probe_generation,
             *capability.limitations,
         )
     ).encode()
@@ -2953,10 +2956,107 @@ def _capability_with_identity(
     )
 
 
-def capability_snapshot(*, force: bool = False) -> SandboxCapability:
+def selected_windows_terminal() -> str:
+    """Resolve the same trusted shell selection for capability and actual tools."""
+    from .tools import _windows_bash
+
+    selected = _windows_bash()
+    if selected:
+        return os.path.realpath(selected)
+    root = os.environ.get("SystemRoot")
+    if not root or not os.path.isabs(root):
+        raise SandboxUnavailableError("The Windows system shell location is unavailable")
+    return os.path.realpath(os.path.join(root, "System32", "cmd.exe"))
+
+
+def _aggregate_windows_capability(backend, *, force = False):
+    """UI consent covers both tools; individual Required launches remain independent."""
+    environment = _environment_class()
+    fingerprint = _environment_fingerprint(backend)
+    terminal_failure = None
+    try:
+        terminal = selected_windows_terminal()
+    except SandboxUnavailableError as error:
+        terminal = ""
+        terminal_failure = SandboxCapability(
+            backend.identity,
+            False,
+            str(error),
+            available = False,
+            limitations = ("terminal_runtime_unselectable",),
+            probe_generation = "windows-terminal-unselectable-v1",
+        )
+    selected = {"python": os.path.realpath(sys.executable), "terminal": terminal}
+    capabilities = {}
+    with _probe_lock:
+        for kind, executable in selected.items():
+            measured = (
+                terminal_failure
+                if kind == "terminal" and terminal_failure is not None
+                else backend.probe_for_kind(kind, executable)
+            )
+            capabilities[kind] = _capability_with_identity(
+                measured,
+                environment = environment,
+                fingerprint = fingerprint,
+                network_allowlist_supported = False,
+            )
+    available = all(item.available for item in capabilities.values())
+    qualified = all(item.qualified for item in capabilities.values())
+    identity = hashlib.sha256(
+        json.dumps(
+            {
+                kind: {"selected": selected[kind], "generation": item.probe_generation}
+                for kind, item in capabilities.items()
+            },
+            sort_keys = True,
+            separators = (",", ":"),
+        ).encode()
+    ).hexdigest()
+    combined = SandboxCapability(
+        backend.identity,
+        qualified,
+        "; ".join(f"{kind.title()}: {item.reason}" for kind, item in capabilities.items()),
+        available = available,
+        transient = any(item.transient for item in capabilities.values()),
+        profile_id = "windows-lpac-tools-v1",
+        protection_state = "preview" if available else "unavailable",
+        limitations = tuple(
+            f"{kind}:{limitation}"
+            for kind, item in capabilities.items()
+            for limitation in item.limitations
+        ),
+        probe_generation = identity,
+    )
+    combined = _capability_with_identity(combined, environment = environment, fingerprint = fingerprint)
+    return _with_limited_capability(combined, force = force), capabilities, selected
+
+
+def capability_snapshot(
+    *,
+    force: bool = False,
+    execution_kind = None,
+    selected_executable = None,
+) -> SandboxCapability:
     backend = _platform_backend()
     environment = _environment_class()
     fingerprint = _environment_fingerprint(backend)
+    if backend is not None and getattr(backend, "requires_fresh_qualification", False):
+        if execution_kind is None and selected_executable is None:
+            return _aggregate_windows_capability(backend, force = force)[0]
+        # Windows qualification binds the selected runtime, packages and helper,
+        # which can change without the generic OS/environment fingerprint.
+        with _probe_lock:
+            measured = backend.probe_for_kind(execution_kind or "python", selected_executable)
+            return _with_limited_capability(
+                _capability_with_identity(
+                    measured,
+                    environment = environment,
+                    fingerprint = fingerprint,
+                    network_allowlist_supported = False,
+                ),
+                force = force,
+            )
     if backend is None:
         return _with_limited_capability(
             _capability_with_identity(
@@ -3127,7 +3227,32 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
             terminate_descendants = canonical.terminate_descendants,
         )
 
-    capability = capability_snapshot()
+    consent_capability = None
+    if (
+        sys.platform == "win32"
+        and backend is not None
+        and getattr(backend, "requires_fresh_qualification", False)
+        and canonical.requested_mode == "limited"
+    ):
+        consent_capability, kinds, selected = _aggregate_windows_capability(backend)
+        if (
+            canonical.execution_kind not in kinds
+            or not selected[canonical.execution_kind]
+            or os.path.normcase(os.path.realpath(canonical.argv[0]))
+            != os.path.normcase(selected[canonical.execution_kind])
+        ):
+            raise SandboxUnavailableError("Limited launch differs from the selected tool runtime")
+        capability = kinds[canonical.execution_kind]
+    else:
+        capability = (
+            capability_snapshot(
+                execution_kind = canonical.execution_kind, selected_executable = canonical.argv[0]
+            )
+            if sys.platform == "win32"
+            else capability_snapshot()
+        )
+    if consent_capability is None:
+        consent_capability = capability
 
     if canonical.requested_mode == "limited":
         if canonical.network_policy != "deny":
@@ -3136,7 +3261,7 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
             raise SandboxUnavailableError(
                 "the network allowlist requires OS isolation; Limited mode cannot enforce it"
             )
-        if capability.available:
+        if consent_capability.available:
             raise SandboxUnavailableError(
                 "OS isolation is available; Limited mode is not authorized for this capability generation"
             )
@@ -3153,7 +3278,7 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 canonical.limited_grant,
                 current_subject = canonical.current_subject,
                 tool_ui_session_id = canonical.tool_ui_session_id,
-                probe_generation = capability.probe_generation,
+                probe_generation = consent_capability.probe_generation,
                 requested_mode = "limited",
             )
         except LimitedGrantError as exc:
@@ -3236,7 +3361,18 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
         # concurrent re-probe cannot swap profiles between the check and the launch.
         prepare_for_profile = getattr(backend, "prepare_for_profile", None)
         if callable(prepare_for_profile):
-            prepared = prepare_for_profile(canonical, capability.profile_id)
+            if getattr(backend, "requires_fresh_qualification", False):
+                if not capability.qualification_generation:
+                    raise SandboxUnavailableError(
+                        "Fresh runtime qualification has no generation binding"
+                    )
+                prepared = prepare_for_profile(
+                    canonical,
+                    capability.profile_id,
+                    expected_generation = capability.qualification_generation,
+                )
+            else:
+                prepared = prepare_for_profile(canonical, capability.profile_id)
         else:
             prepared = backend.prepare(canonical)
     except SandboxUnavailableError:

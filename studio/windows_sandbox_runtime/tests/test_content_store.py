@@ -326,7 +326,7 @@ def test_publication_closes_owned_source_and_staging_handles(snapshot, monkeypat
 
 def test_source_parent_cannot_be_replaced_during_copy(snapshot, monkeypatch):
     store, spec, source = snapshot
-    original = store.api.read
+    original = store.api.iter_read
     observed = []
 
     def read(handle, limit):
@@ -337,7 +337,7 @@ def test_source_parent_cannot_be_replaced_during_copy(snapshot, monkeypatch):
             observed.append(True)
         return original(handle, limit)
 
-    monkeypatch.setattr(store.api, "read", read)
+    monkeypatch.setattr(store.api, "iter_read", read)
     store.publish(spec)
     assert observed == [True]
 
@@ -868,3 +868,75 @@ def test_cleanup_rejects_lexically_nested_parent_escape(snapshot, tmp_path):
     assert outside.read_bytes() == b"keep me"
     with store.lease(digest):
         pass
+
+
+@pytest.mark.parametrize("offset", [0, 1024 * 1024 + 17, 2 * 1024 * 1024 + 30])
+@pytest.mark.parametrize("cached", [False, True])
+def test_streaming_checks_every_chunk_and_rejects_changed_bytes(snapshot, offset, cached):
+    store, spec, source = snapshot
+    source.write_bytes(b"a" * (2 * 1024 * 1024 + 31))
+    identity, _ = read_regular_file(source, limit = 3 * 1024 * 1024)
+    spec = replace(spec, files = (SnapshotFile(identity, "Lib/sample.py"),))
+    path = source
+    if cached:
+        digest = store.publish(spec)
+        path = store.root / digest / "files/Lib/sample.py"
+    with path.open("r+b") as stream:
+        stream.seek(offset)
+        stream.write(b"b")
+    with pytest.raises(
+        WindowsRuntimeError, match = "CONTENT_INVALID" if cached else "RUNTIME_CHANGED"
+    ):
+        store.publish(spec)
+    assert not list(store.root.glob(".build-*"))
+
+
+def test_publication_and_cache_verification_stream_bounded_chunks(snapshot, monkeypatch):
+    store, spec, source = snapshot
+    source.write_bytes(b"a" * (2 * 1024 * 1024 + 31))
+    identity, _ = read_regular_file(source, limit = 3 * 1024 * 1024)
+    spec = replace(spec, files = (SnapshotFile(identity, "Lib/sample.py"),))
+    original, read = store.api.iter_read, store.api.read
+    observed = []
+
+    def chunks(handle, limit):
+        for chunk in original(handle, limit):
+            if limit == identity.size:
+                observed.append(len(chunk))
+            assert len(chunk) <= content_files.STREAM_CHUNK_BYTES
+            yield chunk
+
+    def small_read(handle, limit):
+        assert limit != identity.size, "payload was buffered in full"
+        return read(handle, limit)
+
+    monkeypatch.setattr(store.api, "iter_read", chunks)
+    monkeypatch.setattr(store.api, "read", small_read)
+    digest = store.publish(spec)
+    with store.lease(digest):
+        pass
+    assert observed == [1024 * 1024, 1024 * 1024, 31] * 2
+
+
+@pytest.mark.parametrize("failure", ["truncated", "grown", "identity"])
+def test_stream_reader_detects_truncation_and_final_handle_changes(failure):
+    from types import SimpleNamespace
+
+    api = content_files.NativeFiles.__new__(content_files.NativeFiles)
+    before = SimpleNamespace(size = 3, volume = 1, index_high = 0, index_low = 2)
+    after = SimpleNamespace(
+        size = 4 if failure == "grown" else 3,
+        volume = 1,
+        index_high = 0,
+        index_low = 3 if failure == "identity" else 2,
+    )
+    infos = iter([before, after])
+    api.info = lambda handle: next(infos)
+
+    def read_file(handle, buffer, length, count, overlapped):
+        count._obj.value = 0 if failure == "truncated" else length
+        return True
+
+    api.kernel = SimpleNamespace(ReadFile = read_file)
+    with pytest.raises(WindowsRuntimeError, match = "CONTENT_INVALID"):
+        list(api.iter_read(123, 3))

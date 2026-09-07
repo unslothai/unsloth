@@ -26,7 +26,8 @@ from .profiles import ABI_ADAPTERS, PYTHON_PROFILE, WindowsRuntimeError
 
 DISTRIBUTION = "unsloth-windows-sandbox-runtime"
 PACKAGE = "unsloth_windows_sandbox_runtime"
-VERSION = "0.1.0.dev1"
+VERSION = "0.1.0.dev2"
+DETOURS_COMMIT = "adb07604aa56508448b95bf037c2a6d0d3b6831a"
 WHEEL_TAG = "py3-none-win_amd64"
 MSVC_VERSION = "14.44.35207"
 SDK_VERSION = "10.0.22621.0"
@@ -37,6 +38,12 @@ SOURCE_NAMES = (
     "src/host_config.c",
     "src/host_config.h",
     "src/python_host.c",
+    "src/activation_context.c",
+    "src/activation_context.h",
+    "src/activation_plan.c",
+    "src/activation_plan.h",
+    "src/authority_audit.c",
+    "src/authority_audit.h",
     "src/runtime.manifest.xml",
 )
 
@@ -65,6 +72,7 @@ def validate_build(value, adapter):
         "sdk",
         "sources",
         "binary",
+        "detours",
     }:
         raise _invalid("Invalid native build provenance schema.")
     if (
@@ -87,6 +95,10 @@ def validate_build(value, adapter):
         or type(value["sources"]) is not dict
         or set(value["sources"]) != set(SOURCE_NAMES)
         or not all(_hash(digest) for digest in value["sources"].values())
+        or type(value["detours"]) is not dict
+        or set(value["detours"]) != {"commit", "source_digest"}
+        or value["detours"]["commit"] != DETOURS_COMMIT
+        or not _hash(value["detours"]["source_digest"])
     ):
         raise _invalid("Native build provenance does not match this ABI/profile/toolchain.")
     _file_record(value["binary"])
@@ -108,7 +120,7 @@ def artifact_names():
     return (
         tuple(f"bin/python_host-{adapter.identity}.exe" for adapter in ABI_ADAPTERS)
         + tuple(f"shims/{name}.txt" for name in SHIMS)
-        + ("LICENSE.AGPL-3.0",)
+        + ("LICENSE.AGPL-3.0", "LICENSE.Detours.MIT")
     )
 
 
