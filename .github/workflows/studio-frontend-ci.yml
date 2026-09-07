@@ -23,6 +23,7 @@ on:
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
+      - 'tests/studio/playwright_nonmodal_menus.py'
       - 'tests/studio/playwright_settings_tabs.py'
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
@@ -511,6 +512,7 @@ jobs:
             logs/playwright-*
             logs/settings_tabs_report.json
             logs/settings_tabs_blocked_report.json
+            logs/nonmodal_menus_report.json
             logs/pw/
           retention-days: 3
           if-no-files-found: ignore
