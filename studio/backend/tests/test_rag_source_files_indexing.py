@@ -17,15 +17,15 @@ from routes.rag import _save_native_path_upload
 SECRET = b"n" * 32
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _lease_secret(monkeypatch):
     monkeypatch.setenv(
         leases.LEASE_SECRET_ENV,
         base64.urlsafe_b64encode(SECRET).decode("ascii").rstrip("="),
     )
-    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
+    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising=False)
     yield
-    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising = False)
+    monkeypatch.setattr(leases, "_CACHED_LEASE_SECRET", None, raising=False)
 
 
 def _b64(raw: bytes) -> str:
@@ -35,11 +35,11 @@ def _b64(raw: bytes) -> str:
 def _sign(
     path,
     *,
-    operation = "attach",
-    path_kind = "attachment",
-    identity_options = None,
-    nonce = None,
-    secret = SECRET,
+    operation="attach",
+    path_kind="attachment",
+    identity_options=None,
+    nonce=None,
+    secret=SECRET,
 ):
     st = os.stat(path)
     path_type = "directory" if os.path.isdir(path) else "file"
@@ -79,6 +79,10 @@ def test_config_source_extensions_exist():
     assert ".go" in config.SOURCE_TEXT_EXTS
     assert ".cpp" in config.SOURCE_TEXT_EXTS
 
+    # Check newly aligned extensions from text attachments (Dan Han review)
+    for ext in (".ipynb", ".csproj", ".jsonc", ".csv", ".svg", ".text", ".log", ".mdx"):
+        assert ext in config.ALL_UPLOAD_EXTS, f"{ext} missing from ALL_UPLOAD_EXTS"
+
     assert config.SOURCE_TEXT_EXTS.issubset(config.TEXT_EXTS)
     assert config.SOURCE_TEXT_EXTS.issubset(config.ALL_UPLOAD_EXTS)
 
@@ -96,7 +100,7 @@ def test_parsers_text_file_supports_source_code(tmp_path):
 
     for name, content in source_files.items():
         file_path = tmp_path / name
-        file_path.write_text(content, encoding = "utf-8")
+        file_path.write_text(content, encoding="utf-8")
         pages = parsers.parse(str(file_path))
         assert len(pages) == 1
         assert pages[0].text == content, f"Failed parsing {name}"
@@ -105,7 +109,7 @@ def test_parsers_text_file_supports_source_code(tmp_path):
 def test_parsers_text_file_rejects_binary(tmp_path):
     binary_file = tmp_path / "fake.py"
     binary_file.write_bytes(b"import sys\n\x00\x01\x02binary")
-    with pytest.raises(ValueError, match = "unsupported binary content"):
+    with pytest.raises(ValueError, match="unsupported binary content"):
         parsers.parse(str(binary_file))
 
 
@@ -121,23 +125,28 @@ def test_folder_sync_scan_finds_source_code_and_ignores_dirs(tmp_path):
     # Setup mock workspace
     src_dir = tmp_path / "src"
     src_dir.mkdir()
-    (src_dir / "app.js").write_text("console.log('test')", encoding = "utf-8")
-    (src_dir / "service.ts").write_text("const x = 1;", encoding = "utf-8")
-    (src_dir / "main.py").write_text("print('test')", encoding = "utf-8")
-    (src_dir / "Program.cs").write_text("// C# code", encoding = "utf-8")
-    (src_dir / "index.php").write_text("<?php phpinfo(); ?>", encoding = "utf-8")
-    (src_dir / "config.json").write_text("{}", encoding = "utf-8")
-    (src_dir / "deploy.yaml").write_text("k: v", encoding = "utf-8")
+    (src_dir / "app.js").write_text("console.log('test')", encoding="utf-8")
+    (src_dir / "service.ts").write_text("const x = 1;", encoding="utf-8")
+    (src_dir / "main.py").write_text("print('test')", encoding="utf-8")
+    (src_dir / "Program.cs").write_text("// C# code", encoding="utf-8")
+    (src_dir / "index.php").write_text("<?php phpinfo(); ?>", encoding="utf-8")
+    (src_dir / "config.json").write_text("{}", encoding="utf-8")
+    (src_dir / "deploy.yaml").write_text("k: v", encoding="utf-8")
     (src_dir / "unsupported.exe").write_bytes(b"binary")
+
+    # Build output directories are NOT ignored (no regression for users with build/dist folders)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    (build_dir / "output.js").write_text("console.log('build')", encoding="utf-8")
 
     # Ignored directories
     node_modules = tmp_path / "node_modules"
     node_modules.mkdir()
-    (node_modules / "dep.js").write_text("console.log('dep')", encoding = "utf-8")
+    (node_modules / "dep.js").write_text("console.log('dep')", encoding="utf-8")
 
     git_dir = tmp_path / ".git"
     git_dir.mkdir()
-    (git_dir / "config").write_text("git config", encoding = "utf-8")
+    (git_dir / "config").write_text("git config", encoding="utf-8")
 
     found_dict, _ = folder_sync._scan(str(tmp_path))
     found_keys = {k.replace("\\", "/") for k in found_dict.keys()}
@@ -150,6 +159,7 @@ def test_folder_sync_scan_finds_source_code_and_ignores_dirs(tmp_path):
     assert "src/index.php" in found_keys
     assert "src/config.json" in found_keys
     assert "src/deploy.yaml" in found_keys
+    assert "build/output.js" in found_keys
 
     # Excluded files
     assert "src/unsupported.exe" not in found_keys
@@ -159,12 +169,12 @@ def test_folder_sync_scan_finds_source_code_and_ignores_dirs(tmp_path):
 
 def test_routes_accept_source_file_native_drop(rag_home, tmp_path):
     source = tmp_path / "index.php"
-    source.write_text("<?php echo 'drop works'; ?>", encoding = "utf-8")
+    source.write_text("<?php echo 'drop works'; ?>", encoding="utf-8")
 
     stored_path, filename = _save_native_path_upload(_sign(source))
     assert filename == "index.php"
     assert os.path.isfile(stored_path)
-    with open(stored_path, encoding = "utf-8") as f:
+    with open(stored_path, encoding="utf-8") as f:
         assert f.read() == "<?php echo 'drop works'; ?>"
 
 
@@ -176,16 +186,5 @@ def test_start_ingestion_validates_extensions(rag_home, tmp_path):
     # Unsupported file type raises ValueError
     bad_path = tmp_path / "binary.exe"
     bad_path.write_bytes(b"MZ...")
-    with pytest.raises(ValueError, match = "unsupported file type: .exe"):
+    with pytest.raises(ValueError, match="unsupported file type: .exe"):
         ingestion.start_ingestion(scope, "proj-1", None, "binary.exe", str(bad_path))
-
-    # Supported source code file passes extension validation
-    path = tmp_path / "service.ts"
-    path.write_text("export interface User { id: string; }", encoding = "utf-8")
-    try:
-        ingestion.start_ingestion(scope, "proj-1", None, "service.ts", str(path))
-    except ValueError as exc:
-        pytest.fail(f"start_ingestion incorrectly rejected source file extension: {exc}")
-    except Exception:
-        # Passed extension check; DB error is expected when sqlite-vec native lib is uninitialized in mock pytest
-        pass

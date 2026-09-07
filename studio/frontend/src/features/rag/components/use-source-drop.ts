@@ -13,7 +13,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { RAG_UPLOAD_ACCEPT } from "../types/rag";
 import { partitionSupported } from "./source-drop-policy";
 import { type RagUploadItem, uploadItemFromIntent } from "./use-rag-documents";
 
@@ -63,7 +62,7 @@ export function useSourceDrop({
       names.length === 1
         ? `Can't add ${names[0]}`
         : `Can't add ${names.length} files`,
-      { description: `Supported types: ${RAG_UPLOAD_ACCEPT}, source code` },
+      { description: "Supported types: documents and source code files" },
     );
   }, []);
 
