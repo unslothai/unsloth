@@ -66,9 +66,16 @@ class LlamaServerStatsLogger:
         out = {}
         for k, v in _METRIC_RE.findall(body):
             try:  # a malformed value must not kill the daemon thread
-                out[k] = float(v)
+                value = float(v)
             except ValueError:
                 continue
+            # float() overflows a long enough digit string to inf without raising, and an
+            # inf reaches the log as a rate no arithmetic here can bound and as JSON no
+            # strict parser will read back. _env_float rejects the same text for the same
+            # reason. A double llama-server can print cannot exceed ~1.8e308, so nothing
+            # measurable is dropped.
+            if math.isfinite(value):
+                out[k] = value
         return out
 
     @staticmethod
@@ -187,7 +194,12 @@ class LlamaServerStatsLogger:
             # client scraping between polls reads the same way, so this understates its
             # window rather than fabricating one; the two are indistinguishable here.
             gen_tps = m.get("predicted_tokens_seconds")
-            # The prompt pair is aligned, so it answers whenever its gauge does not.
+            # The prompt pair is aligned, so it answers whenever its gauge does not, and a
+            # build carrying neither measured no prompt at all. /metrics renders one table,
+            # so that build is the one whose scrape carries no prompt metric of any kind.
+            prompt_measured = "prompt_tokens_seconds" in m or (
+                "prompt_tokens_total" in m and "prompt_seconds_total" in m
+            )
             prompt_tps = m.get("prompt_tokens_seconds") or prompt_delta
             stalled_for = self._stalled_for(now, running, decode_calls)
             if self._stall_timeout and stalled_for >= self._stall_timeout:
@@ -205,13 +217,15 @@ class LlamaServerStatsLogger:
                     self._report_stall(running, waiting, stalled_for, decode_calls)
             # Gate on real activity this tick, so an idle engine stays quiet.
             if running or waiting or gen_tps or gen_moved or prompt_tps:
-                # Absent rather than zero in both cases: a build with no gauge and one
-                # with no n_decode_total were never measured, which is what
-                # engine_progress_unmeasurable says about them. 0.0 states the opposite.
+                # Absent rather than zero in every case: a build with no gauge, one with
+                # no n_decode_total and one with no prompt metric were never measured,
+                # which is what engine_progress_unmeasurable says about them. 0.0 states
+                # the opposite.
                 fields = {}
                 if gen_tps is not None:
                     fields["gen_tok_s"] = round(float(gen_tps), 1)
-                fields["prompt_tok_s"] = round(float(prompt_tps), 1)
+                if prompt_measured:
+                    fields["prompt_tok_s"] = round(float(prompt_tps), 1)
                 fields["running"], fields["waiting"] = running, waiting
                 if decode_rate is not None:
                     fields["decode_calls_s"] = round(float(decode_rate), 1)

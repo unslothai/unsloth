@@ -265,6 +265,53 @@ def test_a_build_without_the_generation_gauge_omits_the_field(monkeypatch):
     assert 1.0 / 0.0001 == 10000.0
 
 
+def test_a_build_with_no_prompt_metric_omits_the_field(monkeypatch):
+    """The third unmeasurable case, and it gets the same answer as the other two: a
+    scrape carrying no prompt gauge and no prompt counters measured no prompt, and
+    printing 0.0 would say a measurement was taken and found the engine at rest."""
+    snaps = [
+        {"tokens_predicted_total": 0.0, "requests_processing": 1.0},
+        {"tokens_predicted_total": 50.0, "requests_processing": 1.0},
+    ]
+    stats = _drive(snaps, monkeypatch)
+
+    assert stats and all("prompt_tok_s" not in s for s in stats)
+    assert all(s["running"] == 1 for s in stats)
+
+
+def test_a_non_finite_metric_value_never_reaches_the_line(monkeypatch):
+    """float() turns a long enough digit string into inf without raising, and an inf
+    rate is both unbounded by anything here and unreadable by a strict JSON parser.
+    _env_float already refuses the same text on the same grounds."""
+
+    class _Resp:
+        status = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    body = (
+        "llamacpp:prompt_tokens_seconds " + "9" * 400 + "\n"
+        "llamacpp:prompt_tokens_total 10\n"
+        "llamacpp:prompt_seconds_total 1\n"
+    ).encode()
+    monkeypatch.setattr(ls.urllib.request, "urlopen", lambda *a, **k: _Resp(body))
+
+    m = LlamaServerStatsLogger("http://127.0.0.1:0", _Capture())._scrape()
+
+    assert "prompt_tokens_seconds" not in m
+    assert m["prompt_tokens_total"] == 10.0
+
+
 def test_the_llama_cpp_gauge_still_wins_when_it_reports(monkeypatch):
     """predicted_tokens_seconds is llama.cpp's own per-generation average: where it is
     present and non-zero it is authoritative, and this change does not touch it."""
