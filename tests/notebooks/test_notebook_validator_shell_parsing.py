@@ -4560,9 +4560,9 @@ def test_a_called_function_body_is_replayed():
     nv = _load_notebook_validator_module()
 
     called = "!setup() { pip install torch==2.11.0 torchcodec==0.10.0; }; setup"
-    assert [
-        (inv.action, inv.packages) for inv in nv.unconditional_pip_invocations(called)
-    ] == [("install", ["torch==2.11.0", "torchcodec==0.10.0"])]
+    assert [(inv.action, inv.packages) for inv in nv.unconditional_pip_invocations(called)] == [
+        ("install", ["torch==2.11.0", "torchcodec==0.10.0"])
+    ]
     assert [
         f.rule for f in nv.rule_inst_004_torchcodec_torch(called, COLAB_TORCH211, "nb.ipynb", 0)
     ] == ["R-INST-004"]

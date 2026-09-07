@@ -1590,9 +1590,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 tails.append(False)
                 header = _FUNCTION_DEF_RE.fullmatch("".join(buf).lstrip("!").strip())
                 def_levels.append(ch == "{" and header is not None)
-                def_names.append(
-                    _function_name(header.group(0)) if ch == "{" and header else None
-                )
+                def_names.append(_function_name(header.group(0)) if ch == "{" and header else None)
                 list_has_pip.append(False)
                 list_models.append(None)
                 prev_ops.append("")
@@ -1796,9 +1794,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 # A bare `setup` at this level calls it. Only the FIRST word: `setup --dry-run`
                 # still calls it, while `echo setup` does not.
                 called.add(
-                    _split_first_word(
-                        _strip_exec_prefixes(text.lstrip("!").strip())[0].strip()
-                    )[0]
+                    _split_first_word(_strip_exec_prefixes(text.lstrip("!").strip())[0].strip())[0]
                 )
             ordered.append((text, piece_conditional))
             # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`

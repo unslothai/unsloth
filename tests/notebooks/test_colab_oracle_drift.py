@@ -449,9 +449,7 @@ def test_a_pin_file_missing_a_seed_package_is_not_acknowledged(oracle, tmp_path,
         line for line in PIP.splitlines() if not line.startswith(f"{dropped}==")
     )
     out_dir = tmp_path / f"missing_{dropped}"
-    rc = nv.cmd_refresh_colab(
-        argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
-    )
+    rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
     assert rc == 2
     assert not out_dir.exists()
 
