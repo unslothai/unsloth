@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """Both amp helpers are in `_utils.__all__`, so a DEVICE_TYPE whose branch leaves them unbound
 makes `from ._utils import *` raise (mlx did). Sliced with `ast`: importing `_utils` needs a GPU.
 """
