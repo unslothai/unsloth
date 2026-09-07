@@ -2834,7 +2834,11 @@ def test_the_resolve_step_pins_every_shape_of_ref_it_can_be_given(tmp_path):
         "run"
     ]
 
-    def drive_gpu(unsloth_ref, gate_sha, fetch_exit = 0):
+    def drive_gpu(
+        unsloth_ref,
+        gate_sha,
+        fetch_exit = 0,
+    ):
         work = tmp_path / f"gpu{abs(hash((unsloth_ref, gate_sha, fetch_exit)))}"
         stub = work / "bin"
         stub.mkdir(parents = True)

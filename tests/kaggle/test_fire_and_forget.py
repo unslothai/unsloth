@@ -1210,7 +1210,14 @@ def test_a_malformed_neighbour_notebook_does_not_hide_a_failing_report(tmp_path,
     )
     (dest / f"b{launch.OUTPUT_SUFFIX}").write_text("[]", encoding = "utf-8")
     (dest / f"c{launch.OUTPUT_SUFFIX}").write_text(
-        json.dumps({"cells": ["not a cell", {"outputs": ["not an output", {"text": 7}, {"text": ["x", 1]}]}]}),
+        json.dumps(
+            {
+                "cells": [
+                    "not a cell",
+                    {"outputs": ["not an output", {"text": 7}, {"text": ["x", 1]}]},
+                ]
+            }
+        ),
         encoding = "utf-8",
     )
     assert launch.extract_reports(dest) == [{"label": "control", "passed": False, "model": "m"}]
@@ -1333,11 +1340,13 @@ def test_the_studio_workflow_resolves_its_ref_to_a_commit_before_dispatching():
         # after the job queued can name a commit the gate never keyed the
         # account draw or the in-flight check on.
         assert step["env"]["GATE_SHA"] == "${{ needs.gate.outputs.head_sha }}"
-        assert 'RESOLVED="$GATE_SHA"' in run and "$(git ls-remote" not in run, (
-            f"{path.name}: the GPU job resolves the ref a second time"
-        )
+        assert (
+            'RESOLVED="$GATE_SHA"' in run and "$(git ls-remote" not in run
+        ), f"{path.name}: the GPU job resolves the ref a second time"
         assert wf["jobs"]["gate"]["outputs"]["head_sha"] == "${{ steps.ref.outputs.head_sha }}"
-        assert "exit 1" in run or "stand_down=true" in run, f"{path.name} dispatches on an unresolved ref"
+        assert (
+            "exit 1" in run or "stand_down=true" in run
+        ), f"{path.name} dispatches on an unresolved ref"
         # A full SHA passes the shape test whether or not the repository has
         # it; only fetching the object says it is there. Without this the
         # Studio leg spent a session on a commit no status could be posted to.
