@@ -281,7 +281,6 @@ def _fix_gemma4_base_bos_token(tokenizer, config = None):
         return tokenizer
     if _needs_gemma4_base_bos(tokenizer, config = config):
         _enable_add_bos_token(tokenizer)
-    _dedupe_bos_chat_template(tokenizer)
     return tokenizer
 
 

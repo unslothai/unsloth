@@ -278,43 +278,45 @@ def test_gemma4_e2b_hub_tokenizer_prepends_bos():
     assert raw_ids[0] != raw.bos_token_id
 
 
-def test_chat_template_bos_is_stripped_when_tokenizer_auto_adds():
+def test_chat_template_bos_is_preserved_when_tokenizer_auto_adds():
     tok = _gemma4_base(
         add_bos_token = True,
         chat_template = "{{ bos_token }}{% for m in messages %}{{ m }}{% endfor %}",
     )
     tu._fix_gemma4_base_bos_token(tok)
     assert tok.add_bos_token is True
-    assert "{{ bos_token }}" not in tok.chat_template
-    assert tok.chat_template.startswith("{% for m in messages %}")
+    assert tok.chat_template.startswith("{{ bos_token }}")
 
 
-def test_gemma_template_prepend_skipped_when_auto_bos():
-    template = "{%- for message in messages %}{{ message }}{% endfor %}"
-    tok = _gemma4_base(add_bos_token = True)
-    assert tu._tokenizer_auto_adds_bos(tok)
-    if not tu._tokenizer_auto_adds_bos(tok) and not template.startswith(
-        ("{{ bos_token }}", "{{- bos_token }}")
-    ):
-        template = "{{ bos_token }}" + template
-    assert not template.startswith("{{ bos_token }}")
+@pytest.mark.parametrize("prefix", ["", " \n"])
+def test_real_tokenizer_chat_bos_survives_save_reload(tmp_path, prefix):
+    from tokenizers import Tokenizer, models, pre_tokenizers, processors
+    from transformers import PreTrainedTokenizerFast
 
-    stripped = tu._strip_bos_from_chat_template_text("{{- bos_token -}}" + template)
-    assert "bos_token" not in stripped.split("for message", 1)[0]
-
-
-def test_save_reload_shape_keeps_one_bos_in_chat_prompt():
-    """Saved configs can carry both add_bos_token and a template that emits bos."""
-    tok = _gemma4_base(
-        add_bos_token = True,
-        chat_template = "{{ bos_token }}{% for m in messages %}{{ m }}{% endfor %}",
+    backend = Tokenizer(
+        models.WordLevel({"[UNK]": 0, "[PAD]": 1, "<bos>": 2, "Hello": 3}, unk_token = "[UNK]")
     )
-    tu._fix_gemma4_base_bos_token(tok)
-    assert tok.add_bos_token is True
-    assert "{{ bos_token }}" not in tok.chat_template
+    backend.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+    backend.post_processor = processors.TemplateProcessing(
+        single = "<bos> $A", special_tokens = [("<bos>", 2)]
+    )
+    tok = PreTrainedTokenizerFast(tokenizer_object = backend, bos_token = "<bos>", unk_token = "[UNK]")
+    tok.chat_template = prefix + "{{ bos_token }}Hello"
+    config = types.SimpleNamespace(model_type = "gemma4")
+    tu._fix_gemma4_base_bos_token(tok, config = config)
+    tok.save_pretrained(tmp_path)
+    tok = PreTrainedTokenizerFast.from_pretrained(tmp_path)
+    tu._fix_gemma4_base_bos_token(tok, config = config)
+    messages = [{"role": "user", "content": "Hello"}]
+    encoded = tok.apply_chat_template(messages, tokenize = True)
+    ids = encoded["input_ids"] if hasattr(encoded, "keys") else encoded
+    assert ids == [2, 3]
+    rendered = tok.apply_chat_template(messages, tokenize = False)
+    assert tok(rendered, add_special_tokens = False)["input_ids"] == [2, 3]
+    assert tok("Hello")["input_ids"] == [2, 3]
 
 
-def test_dict_chat_template_strips_without_crash():
+def test_export_helper_strips_dict_chat_template_without_crash():
     tok = _gemma4_base(
         add_bos_token = True,
         chat_template = {
@@ -322,7 +324,7 @@ def test_dict_chat_template_strips_without_crash():
             "tool_use": "{% for m in messages %}{{ m }}{% endfor %}",
         },
     )
-    tu._fix_gemma4_base_bos_token(tok)
+    tu._dedupe_bos_chat_template(tok)
     assert "{{ bos_token }}" not in tok.chat_template["default"]
     assert tok.chat_template["tool_use"].startswith("{% for m in messages %}")
 
