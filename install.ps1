@@ -16,6 +16,15 @@
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
+    # First: Exit-InstallFailure restores the marker long before the selection runs, and
+    # under `irm | iex` the script scope is the caller's session.
+    $script:StudioUvMarkerSaved = $false
+    $script:StudioUvMarkerExisted = $false
+    $script:StudioUvMarkerPrevious = $null
+    # One flag for both rollbacks: clearing them separately leaves a window either way
+    # round, where an interruption restores one half of a committed install.
+    $script:StudioInstallCommitted = $false
+
     # The user's PowerShell profile has already run by the time this does, and the documented
     # piped web entry point documented in the README has no script file to re-launch
     # with -NoProfile, so each way a profile can reach in here is cut individually below.
@@ -317,6 +326,10 @@ function Install-UnslothStudio {
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
+        }
+        # Separate from the venv rollback: an install can fail before one is in flight.
+        if (Get-Command Restore-StudioUvCacheMarker -CommandType Function -ErrorAction SilentlyContinue) {
+            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
         }
         # Most failures return before the lock try/finally, and under `irm | iex`
         # these variables are the caller's own. Defined later, so probed like above.
@@ -1221,6 +1234,89 @@ public static class UnslothStudioFinalPathV2
     }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
+    # Records which cache this install used, so an update reuses it rather than guessing:
+    # Set-StudioUvCacheForLaunch repoints the backend at the Studio cache even in shared
+    # mode, so one on-demand install makes an empty Studio cache look full. Never fatal.
+    # uv resolves a relative cache-dir against its working directory, which UV_WORKING_DIR
+    # moves and which may itself be relative to where the installer was run. $PWD.Path
+    # explicitly: GetFullPath resolves against the .NET process directory, which
+    # Set-Location does not move. Mirrors _absolutize_uv_cache_dir in install.sh.
+    function Resolve-StudioUvCachePath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Cache)
+        if ([string]::IsNullOrEmpty($Cache) -or [System.IO.Path]::IsPathRooted($Cache)) {
+            return $Cache
+        }
+        try {
+            $base = if (-not [string]::IsNullOrWhiteSpace($env:UV_WORKING_DIR)) {
+                if ([System.IO.Path]::IsPathRooted($env:UV_WORKING_DIR)) {
+                    $env:UV_WORKING_DIR
+                } else { Join-Path $PWD.Path $env:UV_WORKING_DIR }
+            } else { $PWD.Path }
+            return [System.IO.Path]::GetFullPath((Join-Path $base $Cache))
+        } catch { return $Cache }
+    }
+
+    function Write-StudioUvCacheMarker {
+        param(
+            [Parameter(Mandatory = $true)][string]$StudioRoot,
+            [Parameter(Mandatory = $true)][string]$Cache
+        )
+        $markerDir = Join-Path $StudioRoot "cache"
+        $markerFile = Join-Path $markerDir "uv-cache-dir"
+        # Absolute: the update resolves this against ITS working directory.
+        $Cache = Resolve-StudioUvCachePath -Cache $Cache
+        # Remembered so a rollback can put it back.
+        if (-not $script:StudioUvMarkerSaved) {
+            # Under "Stop", Test-Path inside an ACL-denied directory throws.
+            $existing = Test-Path -LiteralPath $markerFile -ErrorAction SilentlyContinue
+            if ($existing) {
+                # UTF8, not the default: Windows PowerShell 5.1 decodes a BOM-less file
+                # with the active ANSI code page, and the update writes this one BOM-less
+                # UTF-8, so a non-ASCII path came back as mojibake and was restored that way.
+                $previous = Get-Content -LiteralPath $markerFile -Raw -Encoding UTF8 `
+                    -ErrorAction SilentlyContinue
+                # One we cannot read is one we cannot put back, so leave it alone.
+                if ($null -eq $previous) { return }
+                $script:StudioUvMarkerPrevious = $previous
+                $script:StudioUvMarkerExisted = $true
+            } else {
+                $script:StudioUvMarkerPrevious = $null
+                $script:StudioUvMarkerExisted = $false
+            }
+            $script:StudioUvMarkerSaved = $true
+        }
+        # CreateDirectory, not New-Item -Path: -Path treats [] in the root as a wildcard.
+        if (-not (Test-Path -LiteralPath $markerDir -PathType Container -ErrorAction SilentlyContinue)) {
+            try { [System.IO.Directory]::CreateDirectory($markerDir) | Out-Null } catch { }
+        }
+        # Removed first: Set-Content follows a symlink and would truncate its target.
+        Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+        # And only once gone, since that removal fails non-terminatingly. Get-Item -Force
+        # reports the link itself; Test-Path would follow it.
+        if ($null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)) {
+            return
+        }
+        Set-Content -LiteralPath $markerFile -Value $Cache `
+            -Encoding utf8 -ErrorAction SilentlyContinue
+    }
+
+    function Restore-StudioUvCacheMarker {
+        # AllowEmptyString and the blank guard: a throw here would be reported as a
+        # failed environment restore.
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$StudioRoot)
+        if ($script:StudioInstallCommitted) { return }
+        if (-not $script:StudioUvMarkerSaved) { return }
+        if ([string]::IsNullOrWhiteSpace($StudioRoot)) { return }
+        $markerFile = Join-Path (Join-Path $StudioRoot "cache") "uv-cache-dir"
+        Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+        $stillThere = $null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)
+        if (-not $stillThere -and $script:StudioUvMarkerExisted -and $null -ne $script:StudioUvMarkerPrevious) {
+            Set-Content -LiteralPath $markerFile -Value ([string]$script:StudioUvMarkerPrevious).TrimEnd("`r", "`n") `
+                -Encoding utf8 -ErrorAction SilentlyContinue
+        }
+        $script:StudioUvMarkerSaved = $false
+    }
+
     function Set-StudioUvCacheEnvironment {
         param(
             [Parameter(Mandatory = $true)][string]$StudioRoot,
@@ -1230,6 +1326,11 @@ public static class UnslothStudioFinalPathV2
         $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
         if (-not [string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
             $script:StudioUvCacheMode = "custom"
+            # Absolute before anything uses it, so every phase of one install and the
+            # marker name the same directory (see _absolutize_uv_cache_dir in install.sh).
+            $env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR
+            # Recorded like any other choice; a caller still outranks the marker.
+            Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $env:UV_CACHE_DIR
             step "uv cache" "preserving custom UV_CACHE_DIR ($env:UV_CACHE_DIR)"
             return
         }
@@ -1299,6 +1400,7 @@ public static class UnslothStudioFinalPathV2
             }
         }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
+        Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $selectedCache
 
         switch ($script:StudioUvCacheMode) {
             "shared" {
@@ -4213,6 +4315,9 @@ exit 0
     }
 
     function Restore-StudioVenvRollback {
+        # The same flag the marker restore consults, so an interruption mid-commit cannot
+        # put one half of a committed install back and keep the other.
+        if ($script:StudioInstallCommitted) { return }
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
@@ -4264,6 +4369,11 @@ exit 0
     }
 
     function Complete-StudioVenvRollback {
+        # First and alone: this one assignment is what both restores consult, so an
+        # interruption cannot find them disagreeing. A first install rolls nothing back
+        # and still commits.
+        $script:StudioInstallCommitted = $true
+        $script:StudioUvMarkerSaved = $false
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         # The replacement is committed. Disable restoration before deleting the
@@ -6573,6 +6683,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     } finally {
         if (-not $studioVenvReplacementCommitted) {
             Restore-StudioVenvRollback
+            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
         }
     }
 
