@@ -85,7 +85,7 @@ class Harness:
         fail_first = 0,
         unmeasured_every = 0,
         unmeasured_grows = False,
-        reset_at = 0,
+        vanish_every = 0,
         rebound = False,
         ready_at = None,
         tail = KEY_LINE,
@@ -99,8 +99,8 @@ class Harness:
         self.unmeasured_every = unmeasured_every
         self.unmeasured_grows = unmeasured_grows
         self.unmeasured = 0
-        self.reset_at = reset_at
-        self.reset_seen = False
+        self.vanish_every = vanish_every
+        self.vanished = 0
         self.rebound = rebound
         self.downloaded_bytes = downloaded_bytes
         self.chunk_bytes = chunk_bytes
@@ -157,14 +157,12 @@ class Harness:
                     "progress": 0,
                     "cache_measured": False,
                 }
-            if self.reset_at and self.polls == self.reset_at:
-                # An XET run falling back to HTTP purges the partial and re-fetches. A
-                # complete scan reports the smaller figure, so it is a real reset rather
-                # than a root that could not be read.
-                self.downloaded_bytes = self.chunk_bytes
-                self.reset_seen = True
+            if self.vanish_every and self.polls % self.vanish_every == 0:
+                # A cache mount that disappears cleanly is a MEASURED absence -- no scan
+                # error -- so the count drops to zero and returns on the next remount.
+                self.vanished += 1
                 return {
-                    "downloaded_bytes": self.downloaded_bytes,
+                    "downloaded_bytes": 0,
                     "expected_bytes": EXPECTED_BYTES,
                     "progress": 0,
                     "cache_measured": True,
@@ -371,28 +369,6 @@ def test_a_growing_unmeasured_reading_still_counts(monkeypatch):
     assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
 
 
-def test_a_restarted_transfer_is_not_held_to_its_old_high_water_mark(monkeypatch):
-    # A complete scan is believed in both directions. When an XET transfer falls back to
-    # HTTP the partial is purged and the count restarts lower, and holding the old figure
-    # as a floor would shut down a download that is running the whole time.
-    harness = Harness(
-        monkeypatch,
-        chunk_bytes = 1024**3,
-        unmeasured_every = 1,
-        unmeasured_grows = True,
-        # Far enough in that re-fetching past the old figure takes longer than the cap.
-        reset_at = 20,
-        ready_at = 45,
-    )
-
-    server = harness.start()
-
-    assert harness.reset_seen
-    assert server is harness.server
-    assert harness.shutdowns == []
-    assert harness.clock.elapsed > start_cli._SERVER_START_TIMEOUT_S
-
-
 def test_a_partial_scan_rebound_is_not_progress(monkeypatch, capsys):
     # Nothing is downloading; one cache root simply comes and goes. Letting the partial
     # scan lower the baseline would turn the next complete scan of the very same bytes
@@ -403,6 +379,26 @@ def test_a_partial_scan_rebound_is_not_progress(monkeypatch, capsys):
         harness.start()
 
     assert harness.unmeasured > 0
+    assert harness.shutdowns == [harness.server]
+    assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
+    assert harness.clock.elapsed < 2 * start_cli._SERVER_START_TIMEOUT_S
+
+
+def test_a_vanished_cache_mount_is_not_progress(monkeypatch, capsys):
+    # Nothing is downloading; a cache mount just comes and goes. Its absence is reported
+    # as a MEASURED zero, so a baseline that followed readings down would read every
+    # remount as fresh growth and keep a wedged server waiting for as long as it flaps.
+    harness = Harness(
+        monkeypatch,
+        downloaded_bytes = 12 * 1024**3,
+        chunk_bytes = 0,
+        vanish_every = 2,
+    )
+
+    with pytest.raises(typer.Exit):
+        harness.start()
+
+    assert harness.vanished > 0
     assert harness.shutdowns == [harness.server]
     assert f"made no progress for {start_cli._SERVER_START_TIMEOUT_S}s" in capsys.readouterr().err
     assert harness.clock.elapsed < 2 * start_cli._SERVER_START_TIMEOUT_S

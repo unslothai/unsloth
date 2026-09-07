@@ -994,10 +994,6 @@ def _normalized_variant(value: object) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
 
-class _UnmeasuredReading(Exception):
-    """A progress reading the server answered but could not measure well enough to use."""
-
-
 class _ModelDownloadProgress:
     """Best-effort polling of the model download endpoints."""
 
@@ -1085,21 +1081,18 @@ class _ModelDownloadProgress:
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
-            bytes_read = max(0, int(reading.get("downloaded_bytes") or 0))
-            if reading.get("cache_measured") is False and bytes_read <= self._downloaded_bytes:
-                # A scan that could not read every root is only a lower bound
-                # (`snapshot_progress.py`), so it may raise this count but never lower it:
-                # letting it lower the count turns the next complete scan of the very same
-                # cached bytes into apparent growth, and recurring mount errors would renew
-                # the deadline forever for a server that is downloading nothing.
-                # A complete scan is believed in both directions, so a transfer that really
-                # does restart lower -- an XET run falling back to HTTP -- is picked up as
-                # soon as any reading measures the whole cache. The asymmetry is deliberate:
-                # the download manager accepts every non-zero change because it is drawing a
-                # bar, where a wrong move costs a repaint, while here it decides whether to
-                # keep waiting, so a false renewal costs an unbounded hang.
-                raise _UnmeasuredReading
-            self._downloaded_bytes = bytes_read
+            # The liveness baseline only ever rises. A reading falls for reasons that are
+            # not "bytes left the disk": an incomplete scan reporting a lower bound, a
+            # cache mount vanishing cleanly (`hf_cache_state._safe_is_dir` calls that a
+            # measured absence, not an error), an XET run purging its partial. Following a
+            # reading down would make the recovery back to the same figure look like fresh
+            # growth and renew the deadline for a server that is downloading nothing, and a
+            # flapping mount could do that forever. The cost is that a transfer which truly
+            # restarts is not counted again until it passes its own high mark; that failure
+            # is bounded and says so, where a false renewal is an unbounded wait.
+            self._downloaded_bytes = max(
+                self._downloaded_bytes, max(0, int(reading.get("downloaded_bytes") or 0))
+            )
             self._failures = 0
             self._retry_at = 0.0
             self._display.update(reading)
