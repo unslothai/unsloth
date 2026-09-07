@@ -162,6 +162,15 @@ export function LlamaUpdateBanner({
     installedTag,
     latestTag,
   );
+  // Only the migration offer, and only the pair it was measured on: a version update
+  // or a hand-picked switch keeps the plain line.
+  const restartNote =
+    backendChange &&
+    !versionChanged &&
+    status?.from_backend === "rocm" &&
+    status?.to_backend === "vulkan"
+      ? "Vulkan is >10% faster than ROCM. No restart needed after update"
+      : "No restart needed after update";
   const changelogKey =
     component === "llama.cpp" && versionChanged
       ? `${installedTag}\0${latestTag}`
@@ -269,7 +278,7 @@ export function LlamaUpdateBanner({
               {versionChanged && backendChange
                 ? `${backendChange} backend · `
                 : ""}
-              No restart needed after update
+              {restartNote}
             </p>
           </div>
         </div>
