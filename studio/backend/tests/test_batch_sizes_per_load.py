@@ -648,8 +648,10 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
         and isinstance(node.func, ast.Name)
         and node.func.id == "_ubatch_for_slots"
     ]
-    # sizing pass, embedding slot clamp, fit-time reduction, then the post-launch record
-    assert len(calls) == 4, f"expected four re-derivations, found {len(calls)}"
+    # sizing pass, embedding slot clamp, fit-time reduction, the spill planner's
+    # per-slot cache floors (one derivation per candidate slot count it may step
+    # down to), the planner's own slot reduction, then the post-launch record
+    assert len(calls) == 6, f"expected six re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact
@@ -658,6 +660,10 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     assert compact.index("_launched_ubatch=_ubatch_for_slots") > compact.index(
         "gpu_indices,use_fit,n_parallel=_gi_slots,False,_slots"
     )
+    # ...and the planner's slot rung is the last of those, after the fit-time one
+    planner_reduction = compact.index("n_parallel=_spill.n_parallel")
+    assert planner_reduction > compact.index("gpu_indices,use_fit,n_parallel=_gi_slots,False,_slots")
+    assert compact.index("_launched_ubatch=_ubatch_for_slots") > planner_reduction
 
 
 def test_the_remote_guard_charges_the_flat_output_buffer():
