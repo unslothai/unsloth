@@ -253,7 +253,8 @@ def _marker_truth(text: str, environment: dict[str, str]) -> bool | None:
             else:
                 groups.append([value])
         folded = [
-            False if any(v is False for v in group)
+            False
+            if any(v is False for v in group)
             else (True if all(v is True for v in group) else None)
             for group in groups
         ]

