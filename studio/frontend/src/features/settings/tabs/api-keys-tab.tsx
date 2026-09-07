@@ -22,11 +22,10 @@ import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
-import { LanAccessSection } from "../components/lan-access-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { MonitorLink } from "../components/monitor-link";
-import { RemoteAccessSection } from "../components/remote-access-section";
 import { UsageExamples } from "../components/usage-examples";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 export function ApiKeysTab() {
   const t = useT();
@@ -183,10 +182,19 @@ export function ApiKeysTab() {
 
       <KeylessApiAccessSection onSettingsChange={setKeyless} />
 
-      {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
-      <RemoteAccessSection />
-
-      <LanAccessSection />
+      <p className="text-xs text-muted-foreground">
+        {t("settings.remoteLan.description")}{" "}
+        <button
+          type="button"
+          onClick={() =>
+            useSettingsDialogStore.getState().setActiveTab("remote-lan")
+          }
+          className="font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
+        >
+          {t("settings.tabs.remoteLan")}
+        </button>
+        .
+      </p>
 
       <ModelAutoSwitchSection />
 

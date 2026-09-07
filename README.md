@@ -173,7 +173,7 @@ unsloth studio --secure
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
-**LAN Access (home network)**: `Settings > API keys > LAN access`
+**LAN Access (home network)**: `Settings > Remote & LAN > LAN access`
 
 #### Password management & headless starts
 Headless starts:
