@@ -1237,6 +1237,25 @@ public static class UnslothStudioFinalPathV2
     # Records which cache this install used, so an update reuses it rather than guessing:
     # Set-StudioUvCacheForLaunch repoints the backend at the Studio cache even in shared
     # mode, so one on-demand install makes an empty Studio cache look full. Never fatal.
+    # uv resolves a relative cache-dir against its working directory, which UV_WORKING_DIR
+    # moves and which may itself be relative to where the installer was run. $PWD.Path
+    # explicitly: GetFullPath resolves against the .NET process directory, which
+    # Set-Location does not move. Mirrors _absolutize_uv_cache_dir in install.sh.
+    function Resolve-StudioUvCachePath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Cache)
+        if ([string]::IsNullOrEmpty($Cache) -or [System.IO.Path]::IsPathRooted($Cache)) {
+            return $Cache
+        }
+        try {
+            $base = if (-not [string]::IsNullOrWhiteSpace($env:UV_WORKING_DIR)) {
+                if ([System.IO.Path]::IsPathRooted($env:UV_WORKING_DIR)) {
+                    $env:UV_WORKING_DIR
+                } else { Join-Path $PWD.Path $env:UV_WORKING_DIR }
+            } else { $PWD.Path }
+            return [System.IO.Path]::GetFullPath((Join-Path $base $Cache))
+        } catch { return $Cache }
+    }
+
     function Write-StudioUvCacheMarker {
         param(
             [Parameter(Mandatory = $true)][string]$StudioRoot,
@@ -1244,20 +1263,8 @@ public static class UnslothStudioFinalPathV2
         )
         $markerDir = Join-Path $StudioRoot "cache"
         $markerFile = Join-Path $markerDir "uv-cache-dir"
-        # Absolute: the update resolves this against ITS working directory. $PWD is
-        # explicit because GetFullPath uses the unmoved .NET process directory.
-        try {
-            if (-not [System.IO.Path]::IsPathRooted($Cache)) {
-                $base = if (-not [string]::IsNullOrWhiteSpace($env:UV_WORKING_DIR)) {
-                    # May itself be relative, against the installer's own directory.
-                    if ([System.IO.Path]::IsPathRooted($env:UV_WORKING_DIR)) {
-                        $env:UV_WORKING_DIR
-                    } else { Join-Path $PWD.Path $env:UV_WORKING_DIR }
-                } else { $PWD.Path }
-                $Cache = Join-Path $base $Cache
-            }
-            $Cache = [System.IO.Path]::GetFullPath($Cache)
-        } catch { }
+        # Absolute: the update resolves this against ITS working directory.
+        $Cache = Resolve-StudioUvCachePath -Cache $Cache
         # Remembered so a rollback can put it back.
         if (-not $script:StudioUvMarkerSaved) {
             # Under "Stop", Test-Path inside an ACL-denied directory throws.
@@ -1321,13 +1328,7 @@ public static class UnslothStudioFinalPathV2
             $script:StudioUvCacheMode = "custom"
             # Absolute before anything uses it, so every phase of one install and the
             # marker name the same directory (see _absolutize_uv_cache_dir in install.sh).
-            if (-not [System.IO.Path]::IsPathRooted($env:UV_CACHE_DIR)) {
-                try {
-                    $env:UV_CACHE_DIR = [System.IO.Path]::GetFullPath(
-                        (Join-Path $PWD.Path $env:UV_CACHE_DIR)
-                    )
-                } catch { }
-            }
+            $env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR
             # Recorded like any other choice; a caller still outranks the marker.
             Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $env:UV_CACHE_DIR
             step "uv cache" "preserving custom UV_CACHE_DIR ($env:UV_CACHE_DIR)"

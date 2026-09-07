@@ -1242,6 +1242,16 @@ class TestInstallUvCacheRootParity:
                 "function Set-StudioUvCacheEnvironment"
             )
         ]
+        # The custom branch resolves through the same helper as the marker writer, or the
+        # two disagree the moment UV_WORKING_DIR is set: it anchored to $PWD alone.
+        assert ps1.count("Resolve-StudioUvCachePath -Cache") == 2, ps1.count(
+            "Resolve-StudioUvCachePath -Cache"
+        )
+        assert "$env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR" in ps1
+        # Both sides read UV_WORKING_DIR to resolve a relative cache, and both anchor a
+        # relative one to the directory the installer was run from.
+        assert "UV_WORKING_DIR" in sh[sh.index("_absolutize_uv_cache_dir() {") :][:600]
+        assert "UV_WORKING_DIR" in ps1[ps1.index("function Resolve-StudioUvCachePath") :][:800]
         for start in _all_indexes(ps1_marker, "Remove-Item -LiteralPath $markerFile"):
             # The call form: the comment above the gate names the cmdlet too.
             window = ps1_marker[

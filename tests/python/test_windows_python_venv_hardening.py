@@ -67,6 +67,7 @@ def _uv_cache_functions(source: str) -> str:
     return "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Resolve-StudioUvCachePath",
             "Write-StudioUvCacheMarker",
             "Set-StudioUvCacheEnvironment",
             "Set-StudioUvCacheForLaunch",
@@ -823,7 +824,11 @@ def test_a_non_ascii_marker_survives_the_rollback(tmp_path: Path, shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
-        for name in ("Write-StudioUvCacheMarker", "Restore-StudioUvCacheMarker")
+        for name in (
+            "Resolve-StudioUvCachePath",
+            "Write-StudioUvCacheMarker",
+            "Restore-StudioUvCacheMarker",
+        )
     )
     studio_root = tmp_path / "studio root"
     marker = studio_root / "cache" / "uv-cache-dir"
@@ -866,7 +871,11 @@ def test_a_rolled_back_install_restores_the_previous_uv_cache_marker(
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
-        for name in ("Write-StudioUvCacheMarker", "Restore-StudioUvCacheMarker")
+        for name in (
+            "Resolve-StudioUvCachePath",
+            "Write-StudioUvCacheMarker",
+            "Restore-StudioUvCacheMarker",
+        )
     )
     studio_root = tmp_path / "studio root"
     marker = studio_root / "cache" / "uv-cache-dir"
@@ -909,7 +918,10 @@ def test_a_relative_cache_is_recorded_absolute(tmp_path: Path, shell: str):
     """`uv cache dir` answers a relative cache-dir with the relative spelling, and the
     update resolves the marker against ITS working directory, not the installer's."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    functions = _extract(r"    function Write-StudioUvCacheMarker \{.*?\n    \}\n", source)
+    functions = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in ("Resolve-StudioUvCachePath", "Write-StudioUvCacheMarker")
+    )
     studio_root = tmp_path / "studio root"
     marker = studio_root / "cache" / "uv-cache-dir"
 
@@ -934,6 +946,40 @@ Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache "relcache"
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_relative_working_directory_moves_the_relative_cache(tmp_path: Path, shell: str):
+    """UV_WORKING_DIR is where uv starts, so a relative cache hangs off it and not off the
+    installer's own directory. It may itself be relative, against the installer's."""
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    functions = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in ("Resolve-StudioUvCachePath", "Write-StudioUvCacheMarker")
+    )
+    studio_root = tmp_path / "studio root"
+    marker = studio_root / "cache" / "uv-cache-dir"
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+{functions}
+$script:StudioUvMarkerSaved = $false
+Set-Location -LiteralPath $env:TEST_CWD
+$env:UV_WORKING_DIR = "subdir"
+Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache "relcache"
+(Get-Content -LiteralPath $env:TEST_MARKER -Raw).Trim()
+"""
+    env = os.environ.copy()
+    env.pop("UV_WORKING_DIR", None)
+    env["TEST_STUDIO_HOME"] = str(studio_root)
+    env["TEST_MARKER"] = str(marker)
+    env["TEST_CWD"] = str(tmp_path)
+    recorded = _run_powershell(shell, script, env).splitlines()[-1]
+
+    assert os.path.normcase(os.path.normpath(recorded)) == os.path.normcase(
+        os.path.normpath(str(tmp_path / "subdir" / "relcache"))
+    ), recorded
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
 def test_an_unreadable_cache_directory_does_not_abort_the_install(tmp_path: Path, shell: str):
     """The marker is optional, so probing for it must not fail the install: under
     $ErrorActionPreference = "Stop", Test-Path inside an ACL-denied directory throws
@@ -941,7 +987,10 @@ def test_an_unreadable_cache_directory_does_not_abort_the_install(tmp_path: Path
     if os.name == "nt" or os.geteuid() == 0:
         pytest.skip("POSIX mode bits do not deny this caller")
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    functions = _extract(r"    function Write-StudioUvCacheMarker \{.*?\n    \}\n", source)
+    functions = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in ("Resolve-StudioUvCachePath", "Write-StudioUvCacheMarker")
+    )
     studio_root = tmp_path / "studio root"
     (studio_root / "cache").mkdir(parents = True)
     (studio_root / "cache").chmod(0o000)

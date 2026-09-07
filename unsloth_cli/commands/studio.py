@@ -3815,14 +3815,18 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     if recorded is not None and _uv_cache_has_packages(recorded):
         # Only while it holds something: a marker for an emptied cache loses to a warm one.
         return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
-    if not _uv_cache_has_packages(studio_cache):
-        # _setup_cache_env mkdirs this empty every server start: a shared-mode install
-        # would be sent to a cache holding nothing, which --offline cannot recover from.
-        default_cache = _uv_default_cache_dir(cwd)
-        if default_cache is not None and _uv_cache_has_packages(default_cache):
-            # Named, not re-resolved: a blank inherited value reaches uv as
-            # `--cache-dir ''` and exits 2.
-            return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
+    # No marker, so this install predates it and content is all there is. _setup_cache_env
+    # mkdirs the Studio cache empty on every server start, so an empty one says nothing;
+    # and a warm one says less than it looks, because install.sh:705 points the running
+    # backend there even in shared mode, so a single on-demand wheel warms it. Where both
+    # are warm the two are indistinguishable, and uv's default is what such an install has
+    # been updating from all along: preferring the Studio cache there would be a new way
+    # for an offline update to fail, on an install that cannot record its way out.
+    default_cache = _uv_default_cache_dir(cwd)
+    if default_cache is not None and _uv_cache_has_packages(default_cache):
+        # Named, not re-resolved: a blank inherited value reaches uv as
+        # `--cache-dir ''` and exits 2.
+        return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
     return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
 
 

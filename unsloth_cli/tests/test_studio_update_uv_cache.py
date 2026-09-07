@@ -228,20 +228,47 @@ def test_the_chosen_cache_is_named_rather_than_left_to_the_child(monkeypatch, tm
     wins, it reaches the child as an explicit path."""
     studio_cache, default_cache = caches
     for warm, expected in ((default_cache, default_cache), (studio_cache, studio_cache)):
+        # Each iteration states its own starting point: the other cache goes cold, and the
+        # previous run's backfilled marker goes away, or either would decide this one.
+        for cache in (studio_cache, default_cache):
+            shutil.rmtree(cache, ignore_errors = True)
         _fill(warm)
-        # The previous iteration's run backfills a marker, which would then decide this
-        # one. Each iteration states its own starting point.
         (tmp_path / "StudioHome" / "cache" / "uv-cache-dir").unlink(missing_ok = True)
         seen = _run_posix(monkeypatch, tmp_path)
         assert seen["env"]["UV_CACHE_DIR"] == str(expected), seen["env"].get("UV_CACHE_DIR")
 
 
-def test_a_studio_mode_install_wins_over_a_populated_default(monkeypatch, tmp_path, caches):
-    """The case the PR exists for: the installer filled the Studio cache, so the update
-    must read it rather than uv's default, whatever else is lying around."""
+def test_a_studio_mode_install_wins_over_a_cold_default(monkeypatch, tmp_path, caches):
+    """The case the PR exists for: the installer filled the Studio cache and the update
+    was downloading all of it again into a cache holding nothing."""
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_two_warm_caches_and_no_marker_keep_uv_s_default(monkeypatch, tmp_path, caches):
+    """An install that predates the marker cannot say which cache it used, and content
+    cannot tell either: install.sh:705 points the running backend at the Studio cache even
+    in shared mode, so one on-demand wheel warms it. uv's default is what such an install
+    has been updating from all along, and preferring the Studio cache here would be a new
+    way for an offline update to fail on an install that cannot record its way out."""
     studio_cache, default_cache = caches
     _fill(studio_cache)
     _fill(default_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+
+    assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
+
+
+def test_a_marker_still_settles_two_warm_caches(monkeypatch, tmp_path, caches):
+    """And that ambiguity is exactly what the marker removes: an install that recorded the
+    Studio cache keeps it, warm default or not."""
+    studio_cache, default_cache = caches
+    _fill(studio_cache)
+    _fill(default_cache)
+    _record(tmp_path / "StudioHome", studio_cache)
     seen = _run_posix(monkeypatch, tmp_path)
 
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
