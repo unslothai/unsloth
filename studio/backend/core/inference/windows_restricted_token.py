@@ -681,10 +681,10 @@ class _LaunchIdentity:
     # whose objects a reconciliation may act on.
     desktop: str = ""
     # The restricted token's own user SID, and the subset of granted_roots this
-    # launch put an ACE for it on. Empty until the token exists, because the SID
-    # is read off the token that was built rather than assumed. Unlike the launch
+    # launch created or adopted a temporary ACE for. Empty until the token exists:
+    # the SID is read from the built token rather than assumed. Unlike the launch
     # SID this one names a real account, so the roots are tracked exactly: an ACE
-    # that was already there before the launch is neither added nor revoked.
+    # that predates all managed launches is never recorded for revocation.
     user_sid_string: str = ""
     user_sid_roots: tuple[str, ...] = ()
 
@@ -704,7 +704,8 @@ class _LaunchIdentity:
             # because another Studio held the lock, and the next launch or
             # reconciliation will hold it instead. See _defer_cleanup.
             refused = False
-            # Only where this launch added the ACE. SetEntriesInAclW(REVOKE_ACCESS)
+            # Only managed temporary ACEs this launch created or adopted.
+            # SetEntriesInAclW(REVOKE_ACCESS)
             # drops every ACE for a trustee, so revoking the user's SID from a root
             # that granted it explicitly before the launch would hand back a workdir
             # the user no longer reaches.
@@ -737,6 +738,20 @@ class _LaunchIdentity:
                                     )
                                 else:
                                     _lpac._revoke_sid(path, user_sid)
+                                # Retire this dependency before releasing the
+                                # root lock. Two cleanups must not each observe
+                                # the other's already-finished claim and leave
+                                # the temporary account ACE behind forever.
+                                previous_roots = self.user_sid_roots
+                                self.user_sid_roots = tuple(
+                                    root for root in previous_roots
+                                    if os.path.normcase(root) != os.path.normcase(path)
+                                )
+                                try:
+                                    _write_manifest(self)
+                                except Exception:
+                                    self.user_sid_roots = previous_roots
+                                    raise
                             except Exception as exc:  # noqa: BLE001 - continue ownership cleanup
                                 errors.append(f"user ACL {path}: {exc}")
                 except _lpac._LedgerUnavailableError as exc:
@@ -1070,18 +1085,12 @@ def _root_acl_key(path: str) -> str:
 
 
 def _ledger_section(key: str, operation: str, *, destructive: bool) -> Any:
-    """The windows_lpac ledger one DACL edit runs inside.
+    """Require coordination for every complete-DACL read/modify/write.
 
-    Fail-closed for a revoke and best effort for a grant, which is the whole of
-    the asymmetry: ``_destructive_ledger`` raises rather than run the block
-    without the lock file, ``_installation_ledger`` logs and proceeds. The
-    parameter that takes the key is called ``moniker`` because an LPAC
-    installation is what it usually names; it is only ever the name the lock file
-    beside the manifests takes.
+    A grant also replaces the DACL and can erase another writer's ACE. The
+    destructive flag describes the caller, not permission to skip the lock.
     """
-    if destructive:
-        return _lpac._destructive_ledger(key, operation)
-    return _lpac._installation_ledger(key)
+    return _lpac._destructive_ledger(key, operation)
 
 
 @contextmanager
@@ -1103,18 +1112,9 @@ def _root_acl_edit(path: str, *, destructive: bool = False) -> Iterator[None]:
     not the session mutex this used to hold: the mutex proceeds when it is not
     acquired, and its namespace is narrower than the manifests it is ordering.
 
-    ``destructive`` is the fail-closed half and every revoke sets it. A grant
-    proceeds without the ledger because it takes nothing away, so a busy ledger
-    never fails a tool call. A revoke performed unsynchronised is the damage
-    itself, so it is refused, and the ``_LedgerUnavailableError`` reaches
-    ``cleanup``, which keeps the write-ahead manifest and queues the record for a
-    retry. The two SIDs a revoke names are not equally bad to get wrong, and both
-    point the same way. The launch SID names one launch and no account, so a
-    skipped revoke of it leaves an ACE for a principal that does not exist. The
-    token's own user SID is shared by every launch of the account, so a skipped
-    revoke of it leaves the account an ACE on a directory it already owns, while
-    a revoke of it performed unsynchronised takes the workdir away from a sibling
-    launch's running child. Skipping is the harmless direction for both.
+    Every edit fails closed if the ledger is unavailable. Preparation then
+    refuses the launch, while cleanup preserves its write-ahead record for a
+    later retry. A grant cannot safely merge from an unlocked DACL snapshot.
 
     What this still does not order is the AppContainer launcher, which serialises
     its own grants under its installation moniker rather than under the root
@@ -1124,13 +1124,18 @@ def _root_acl_edit(path: str, *, destructive: bool = False) -> Iterator[None]:
     """
     with (
         _ROOT_ACL_LOCK,
-        _ledger_section(_root_acl_key(path), f"the DACL revoke on {path}", destructive = destructive),
+        _ledger_section(_root_acl_key(path), f"the DACL edit on {path}", destructive = destructive),
     ):
         yield
 
 
-def _user_sid_root_is_claimed(root: str, exclude_manifest: str) -> bool:
-    """Whether a live launch other than this one still needs the user SID on ``root``.
+def _user_sid_root_is_claimed(
+    root: str, exclude_manifest: str, *, user_sid: str = "", include_stale: bool = False
+) -> bool:
+    """Whether another launch records a managed user-SID grant on ``root``.
+
+    Cleanup checks live dependencies. Preparation also includes stale owners
+    so it can adopt a temporary grant whose original cleanup is still pending.
 
     The launch SID names one launch and nothing else, so revoking it can never
     take an ACE another launch is using. The token's user SID is the opposite:
@@ -1151,10 +1156,12 @@ def _user_sid_root_is_claimed(root: str, exclude_manifest: str) -> bool:
         payload = _parse_manifest(manifest)
         if payload is None or not payload["user_sid_roots"]:
             continue
+        if user_sid and payload["user_sid"] != user_sid:
+            continue
         if target not in {os.path.normcase(path) for path in payload["user_sid_roots"]}:
             continue
         owner = (payload["owner_pid"], payload["owner_created"])
-        if _lpac._process_identity(owner[0]) == owner:
+        if include_stale or _lpac._process_identity(owner[0]) == owner:
             return True
     return False
 
@@ -1380,48 +1387,30 @@ def _grant_token_user(identity: _LaunchIdentity, token: wintypes.HANDLE) -> None
     is readable but not writable, which is what the live probe demonstrates on a
     directory it grants the user SID and nothing else.
 
-    Only the roots that need the ACE get one, and only those that carried no ACE
-    for this account beforehand are recorded for cleanup to take back. See
-    ``_root_grant_plan`` for why those are two questions rather than one.
+    Only roots that need the ACE get one. Cleanup records also claim temporary
+    ACEs left by another managed launch, so the final dependent launch removes
+    them. Genuinely preexisting account ACEs are never recorded for revocation.
+    See ``_root_grant_plan`` for the access and ownership checks.
     """
     api = _lpac._api()
     text = _token_user_sid_text(api, token)
     with _sid_of(text) as sid:
-        # Every root is read and later written under that root's own lock, so no
-        # edit is ever interleaved with another. The plan is not held across the
-        # manifest write, and does not need to be: a concurrent launch that
-        # granted this same SID in between only makes the grant below a merge,
-        # and its revoke is held off by the claim check rather than by this lock.
-        plan = []
+        identity.user_sid_string = text
         for root in identity.granted_roots:
             with _root_acl_edit(root):
-                plan.append((root, *_root_grant_plan(root, sid)))
-        identity.user_sid_string = text
-        identity.user_sid_roots = tuple(
-            root for root, needed, revocable in plan if needed and revocable
-        )
-        # Write-ahead, for the same reason the launch SID's grants are: the
-        # record is made before the ACE is, so a Studio that dies between the two
-        # leaves something the next start can find and undo. Revoking an ACE that
-        # was never made is a no-op, because a recorded root is one whose DACL
-        # did not name this SID at all. The record is also what a concurrent
-        # launch reads to see that this root is still held, so it exists before
-        # anything could act on it.
-        _write_manifest(identity)
-        for root, needed, revocable in plan:
-            if not needed:
-                continue
-            if not revocable:
-                logger.info(
-                    "Widening the existing %s access of %s on %s for this Limited launch; the "
-                    "ACE is left in place, because revoking it would take the account's own "
-                    "with it",
-                    "workdir" if root == identity.workdir else "private temp",
-                    text,
-                    root,
+                needed, revocable = _root_grant_plan(root, sid)
+                # An existing ACE may belong to another launch, not the user.
+                # Adopt that temporary grant's cleanup responsibility, including
+                # a crashed owner's pending record. Publish before leaving the
+                # same root lock used by cleanup, even when no grant is needed.
+                managed = (needed and revocable) or _user_sid_root_is_claimed(
+                    root, identity.manifest_path, user_sid = text, include_stale = True
                 )
-            with _root_acl_edit(root):
-                _lpac._grant_modify(root, sid)
+                if managed and root not in identity.user_sid_roots:
+                    identity.user_sid_roots += (root,)
+                _write_manifest(identity)
+                if needed:
+                    _lpac._grant_modify(root, sid)
 
 
 def _set_default_dacl(api: Any, token: wintypes.HANDLE, sid: ctypes.c_void_p) -> None:

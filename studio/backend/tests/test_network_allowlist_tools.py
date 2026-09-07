@@ -162,9 +162,17 @@ def test_descriptions_gain_the_allowlisted_hosts_only_when_asked(monkeypatch):
     assert "admits only these hosts" not in tools_module.TERMINAL_TOOL["function"]["description"]
 
 
-def test_windows_cmd_note_and_allowlist_note_compose(monkeypatch):
+@pytest.mark.parametrize("fresh_bash", [False, True])
+def test_windows_shell_note_and_allowlist_note_compose(monkeypatch, fresh_bash):
+    from types import SimpleNamespace
+    from core.inference import os_sandbox
+
     monkeypatch.setattr(tools_module.sys, "platform", "win32")
     monkeypatch.setattr(tools_module, "_windows_bash", lambda: r"C:\\Git\\bin\\bash.exe")
+    monkeypatch.setattr(
+        os_sandbox, "_platform_backend",
+        lambda: SimpleNamespace(requires_fresh_qualification = fresh_bash),
+    )
     bash_terminal = {
         **tools_module.TERMINAL_TOOL,
         "function": {
@@ -176,7 +184,9 @@ def test_windows_cmd_note_and_allowlist_note_compose(monkeypatch):
         [bash_terminal, tools_module.PYTHON_TOOL], network_allowlist = ["pypi.org"]
     )
     terminal = out[0]["function"]["description"]
-    assert "The shell is cmd, not bash" in terminal
+    expected_shell = "The shell is bash (Git for Windows)." if fresh_bash else "The shell is cmd, not bash"
+    assert expected_shell in terminal
+    assert ("The shell is cmd, not bash" in terminal) is not fresh_bash
     assert "admits only these hosts: pypi.org" in terminal
     assert "admits only these hosts: pypi.org" in out[1]["function"]["description"]
     # Without an allowlist, the python tool is returned by identity as before.

@@ -5,11 +5,12 @@
 
 Two operator-facing pieces the predecessor sandbox PRs carried:
 
-* A console notice when OS isolation is unavailable or unqualified. Tools default
+* A console notice when OS isolation is unavailable. Tools default
   to ``os_isolation_required`` and fail closed, so on such a host every Python and
-  Terminal tool call refuses. Without this, the first the operator hears of it is a
-  refused tool call mid-conversation, so say it once at startup with the
-  capability's own reason and remediation.
+  Terminal tool call refuses in Required mode. Available Preview backends remain
+  usable without claiming complete qualification. Report unavailability once at
+  startup with the capability's own reason and remediation, before the operator
+  encounters a refused tool call mid-conversation.
 * A background warm probe. The first ``capability_snapshot()`` on a cold host
   scans the system roots and can take up to two minutes; running it at startup
   keeps that cost off the first tool call. The result is cached inside
@@ -60,7 +61,7 @@ def format_sandbox_startup_notice(capability: "SandboxCapability") -> str:
     ``remediation`` is emitted verbatim and unindented: it carries a copy-pasteable
     AppArmor profile whose own indentation is load bearing.
     """
-    if capability.available and capability.qualified:
+    if capability.available:
         return ""
     lines = [
         "",

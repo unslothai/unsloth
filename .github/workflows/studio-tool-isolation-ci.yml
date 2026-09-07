@@ -355,4 +355,4 @@ jobs:
           cache-dependency-path: studio/frontend/package-lock.json
       - run: npm ci
       - run: npm run typecheck
-      - run: node --experimental-strip-types --test tests/tool-isolation-adapter.test.ts
+      - run: node --experimental-strip-types --test tests/tool-isolation-adapter.test.ts tests/tool-isolation-races.test.ts tests/tool-isolation-presentation.test.ts tests/tool-network-policy.test.ts

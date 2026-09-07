@@ -1554,12 +1554,20 @@ def _prepare_environment(
     monkeypatch.setattr(windows_lpac, "_validate_workdir", lambda path: str(work))
     monkeypatch.setattr(windows_lpac, "_canonical_inner_argv", lambda argv, env: tuple(argv))
     monkeypatch.setattr(windows_lpac, "_process_identity", lambda pid = None: (os.getpid(), 5))
-    monkeypatch.setattr(
-        windows_lpac, "_grant_modify", lambda path, sid: granted.append((path, sid.value))
-    )
-    monkeypatch.setattr(
-        windows_lpac, "_revoke_sid", lambda path, sid, **kw: revoked.append((path, sid.value))
-    )
+    def grant(path, sid):
+        granted.append((path, sid.value))
+        if sid.value == _USER_SID_VALUE:
+            granted_already.add(path)
+            named_already.add(path)
+
+    def revoke(path, sid, **kw):
+        revoked.append((path, sid.value))
+        if sid.value == _USER_SID_VALUE:
+            granted_already.discard(path)
+            named_already.discard(path)
+
+    monkeypatch.setattr(windows_lpac, "_grant_modify", grant)
+    monkeypatch.setattr(windows_lpac, "_revoke_sid", revoke)
     return SimpleNamespace(
         manifests = manifests,
         temp_root = temp_root,
@@ -2068,6 +2076,7 @@ def test_the_user_sid_ace_is_added_after_the_token_and_recorded_before_it(tmp_pa
         "token",
         "manifest",
         f"grant {_USER_SID_VALUE}",
+        "manifest",
         f"grant {_USER_SID_VALUE}",
     ]
     # The first record cannot name a SID that did not exist yet; the second is
@@ -2075,7 +2084,8 @@ def test_the_user_sid_ace_is_added_after_the_token_and_recorded_before_it(tmp_pa
     # reconcilable and never the other way round.
     assert recorded[0]["user_sid"] == "" and recorded[0]["user_sid_roots"] == []
     assert recorded[1]["user_sid"] == _TOKEN_USER_SID
-    assert recorded[1]["user_sid_roots"] == [str(host.work), identity.private_temp]
+    assert recorded[1]["user_sid_roots"] == [str(host.work)]
+    assert recorded[2]["user_sid_roots"] == [str(host.work), identity.private_temp]
     assert identity.user_sid_string == _TOKEN_USER_SID
     assert identity.user_sid_roots == (str(host.work), identity.private_temp)
 
@@ -2441,9 +2451,7 @@ def test_every_root_dacl_edit_happens_under_that_roots_lock(tmp_path, monkeypatc
     # the ledger for the root it is editing.
     assert len(edits) == 8, edits
     assert all(held == path for path, (held, _destructive) in edits), edits
-    # And every revoke declared itself destructive, which is what makes a busy
-    # ledger skip it rather than run it unsynchronised. The four grants did not:
-    # a grant takes nothing away, so a busy ledger must not fail a tool call.
+    # The flag describes the operation; both kinds must hold the ledger.
     assert [destructive for _path, (_held, destructive) in edits] == [False] * 4 + [True] * 4
 
 
@@ -2455,11 +2463,85 @@ def _launch_under_a_busy_ledger(tmp_path, monkeypatch):
         token_launcher, "_create_restricted_token", lambda identity: wintypes.HANDLE(4711)
     )
     monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
-    recorder.ledger.hold(token_launcher._root_acl_key(str(host.work)))
     prepared = token_launcher.WindowsRestrictedTokenBackend().prepare(
         os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
     )
+    recorder.ledger.hold(token_launcher._root_acl_key(str(host.work)))
     return recorder, host, prepared
+
+
+def test_busy_ledger_blocks_preparation_before_any_grant_or_spawn(tmp_path, monkeypatch):
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    recorder.ledger.hold(token_launcher._root_acl_key(str(host.work)))
+    with pytest.raises(windows_lpac._LedgerUnavailableError, match = "could not be taken"):
+        token_launcher.WindowsRestrictedTokenBackend().prepare(
+            os_sandbox.ToolLaunchPlan(argv = ("must-not-run",), workdir = str(host.work), env = {})
+        )
+    assert host.granted == []
+    assert "CreateProcessAsUserW" not in recorder.names()
+    recorder.ledger.busy.clear()
+    token_launcher._drain_deferred_cleanups()
+
+
+def test_cleanup_retires_claim_before_a_sibling_finishes(tmp_path, monkeypatch):
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(token_launcher, "_create_restricted_token", lambda _: wintypes.HANDLE(4711))
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+    backend = token_launcher.WindowsRestrictedTokenBackend()
+    plan = os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    first, second = backend.prepare(plan), backend.prepare(plan)
+    first_identity = first.spawn_callback._launch_identity
+    second_identity = second.spawn_callback._launch_identity
+    assert str(host.work) in second_identity.user_sid_roots
+    release_objects = token_launcher._revoke_user_objects
+
+    def finish_sibling(identity):
+        if identity is first_identity:
+            # The first record still exists, but its per-root dependency is retired.
+            record = token_launcher._parse_manifest(Path(identity.manifest_path))
+            assert record["user_sid_roots"] == []
+            second.cleanup()
+            assert second.cleanup_diagnostics == []
+        release_objects(identity)
+
+    monkeypatch.setattr(token_launcher, "_revoke_user_objects", finish_sibling)
+    host.revoked.clear()
+    first.cleanup()
+    assert first.cleanup_diagnostics == []
+    assert host.revoked.count((str(host.work), _USER_SID_VALUE)) == 1
+    assert first_identity.cleaned and second_identity.cleaned
+
+
+def test_failed_claim_retirement_keeps_the_record_for_retry(tmp_path, monkeypatch):
+    recorder = _WinApiRecorder()
+    host = _prepare_environment(tmp_path, monkeypatch, recorder)
+    monkeypatch.setattr(token_launcher, "_create_restricted_token", lambda _: wintypes.HANDLE(4711))
+    monkeypatch.setattr(windows_lpac, "_job_object_with_limits", lambda: _FakeJob(recorder))
+    backend = token_launcher.WindowsRestrictedTokenBackend()
+    plan = os_sandbox.ToolLaunchPlan(argv = ("x",), workdir = str(host.work), env = {})
+    first, second = backend.prepare(plan), backend.prepare(plan)
+    identity = first.spawn_callback._launch_identity
+    write = token_launcher._write_manifest
+
+    def fail_retirement(record):
+        if record is identity and str(host.work) not in record.user_sid_roots:
+            raise OSError("manifest write failed")
+        write(record)
+
+    monkeypatch.setattr(token_launcher, "_write_manifest", fail_retirement)
+    first.cleanup()
+    assert any("manifest write failed" in error for error in first.cleanup_diagnostics)
+    assert not identity.cleaned
+    assert str(host.work) in identity.user_sid_roots
+    assert str(host.work) in token_launcher._parse_manifest(Path(identity.manifest_path))["user_sid_roots"]
+    second.cleanup()
+    assert (str(host.work), _USER_SID_VALUE) not in host.revoked
+    monkeypatch.setattr(token_launcher, "_write_manifest", write)
+    identity.cleanup()
+    assert identity.cleaned
+    assert host.revoked.count((str(host.work), _USER_SID_VALUE)) == 1
 
 
 def test_a_busy_ledger_skips_the_root_revoke_and_keeps_the_whole_record(tmp_path, monkeypatch):
@@ -2473,14 +2555,12 @@ def test_a_busy_ledger_skips_the_root_revoke_and_keeps_the_whole_record(tmp_path
     launch of it, and a revoke of that one lands on a sibling launch's running
     child. Neither may run unsynchronised; both are left for reconciliation.
 
-    The grant is the other half. It takes nothing away, so it proceeds under the
-    same busy ledger with a diagnostic rather than failing the tool call.
+    The competing writer takes the lock after this launch prepared successfully.
     """
     recorder, host, prepared = _launch_under_a_busy_ledger(tmp_path, monkeypatch)
     identity = prepared.spawn_callback._launch_identity
 
-    # The launch was not refused: all four grants were made, on the root whose
-    # ledger is busy as much as on the one whose is free.
+    # All grants preceded the competing writer's lock acquisition.
     assert host.granted == [
         (str(host.work), _LAUNCH_SID_VALUE),
         (identity.private_temp, _LAUNCH_SID_VALUE),
@@ -3243,6 +3323,15 @@ def test_windows_lpac_exposes_the_shared_job_factory():
 # ── live Windows tests ───────────────────────────────────────────────────────
 
 
+def _assert_live_limitations(limitations):
+    expected = tuple(
+        base + pipe_limit
+        for base in (token_launcher._LIMITATIONS, token_launcher._LIMITATIONS_PROFILE_UNREADABLE)
+        for pipe_limit in ((), (token_launcher._LIMITATION_NAMED_PIPES_DENIED,))
+    )
+    assert limitations in expected, limitations
+
+
 @pytest.fixture(scope = "module")
 def live_token_backend():
     if sys.platform != "win32":
@@ -3254,12 +3343,9 @@ def live_token_backend():
     print(f"restricted-token probe: {time.perf_counter() - started:.2f}s {capability.reason}")
     assert capability.available is True, capability.reason
     assert capability.profile_id == backend.profile_id
-    # Which of the two profile disclosures this host earns depends on the account
-    # the suite runs as, so the fixture pins the pair rather than one of them.
-    assert capability.limitations in (
-        token_launcher._LIMITATIONS,
-        token_launcher._LIMITATIONS_PROFILE_UNREADABLE,
-    ), capability.limitations
+    # Profile reads and named-pipe compatibility are both observed by the live
+    # probe. Permit only its four documented combinations, not arbitrary limits.
+    _assert_live_limitations(capability.limitations)
     assert backend.limitations == capability.limitations
     return backend
 
@@ -3350,9 +3436,17 @@ def test_live_token_child_writes_only_the_workdir_and_private_temp(live_token_ba
             "        return open(p).read()\n"
             "    except OSError as e:\n"
             "        return type(e).__name__\n"
+            "def pipe():\n"
+            "    from multiprocessing import Pipe\n"
+            "    try:\n"
+            "        left, right = Pipe()\n"
+            "    except PermissionError:\n"
+            "        return False\n"
+            "    left.close(); right.close(); return True\n"
             "print(json.dumps({'secret_read': r(sys.argv[1]), 'secret_write': w(sys.argv[1]),"
             " 'work': w('out.txt'), 'temp': w(os.path.join(os.environ['TEMP'], 't.txt')),"
-            " 'user_temp': w(os.path.join(sys.argv[2], 'u.txt')), 'exe': sys.executable}))",
+            " 'user_temp': w(os.path.join(sys.argv[2], 'u.txt')), 'exe': sys.executable,"
+            " 'named_pipes': pipe()}))",
             str(secret),
             str(secret_root),
         )
@@ -3365,7 +3459,7 @@ def test_live_token_child_writes_only_the_workdir_and_private_temp(live_token_ba
         assert report["secret_read"] in ("secret", "PermissionError"), report
         readable = report["secret_read"] == "secret"
         assert live_token_backend.limitations == token_launcher._disclosed_limitations(
-            profile_readable = readable, named_pipes = True
+            profile_readable = readable, named_pipes = report["named_pipes"]
         )
         assert report["secret_write"] == "PermissionError"
         assert report["user_temp"] == "PermissionError"
@@ -3544,10 +3638,7 @@ def test_live_limited_tool_call_records_the_token_launcher(
     assert "write_restricted_token" in records[0].retained_safeguards
     # The record repeats what the probe observed, never the class default.
     assert records[0].limitations == live_token_backend.limitations
-    assert records[0].limitations in (
-        token_launcher._LIMITATIONS,
-        token_launcher._LIMITATIONS_PROFILE_UNREADABLE,
-    )
+    _assert_live_limitations(records[0].limitations)
     assert not Path(result.strip().splitlines()[-1]).exists()  # private temp removed after the call
 
 

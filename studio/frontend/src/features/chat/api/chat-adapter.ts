@@ -4807,7 +4807,10 @@ export function createOpenAIStreamAdapter(
             tool_execution_mode: "os_isolation_required",
             tool_ui_session_id: requestedUiSessionId,
             tool_network_policy: effectiveToolNetworkPolicy(
-              requestedNetworkPolicy,
+              queuedToolNetworkPolicy(
+                requestedNetworkPolicy,
+                useChatRuntimeStore.getState().toolNetworkPolicy,
+              ),
               "os_isolation_required",
               useChatRuntimeStore.getState().toolIsolationCapability,
             ),
@@ -4859,7 +4862,10 @@ export function createOpenAIStreamAdapter(
             tool_execution_mode: mode,
             tool_ui_session_id: requestedUiSessionId,
             tool_network_policy: effectiveToolNetworkPolicy(
-              requestedNetworkPolicy,
+              queuedToolNetworkPolicy(
+                requestedNetworkPolicy,
+                isolation.toolNetworkPolicy,
+              ),
               mode,
               capability,
             ),
@@ -6084,6 +6090,10 @@ export function createOpenAIStreamAdapter(
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     ...toolIsolationRequestFields,
+                    tool_network_policy: queuedToolNetworkPolicy(
+                      toolIsolationRequestFields.tool_network_policy ?? "deny",
+                      useChatRuntimeStore.getState().toolNetworkPolicy,
+                    ),
                     permission_mode: permissionMode,
                     ...(permissionMode === "auto"
                       ? {}
@@ -6292,6 +6302,10 @@ export function createOpenAIStreamAdapter(
             // defeat the safe-only exception); "ask" sends true, off/full send false.
             permission_mode: permissionMode,
             ...toolIsolationRequestFields,
+            tool_network_policy: queuedToolNetworkPolicy(
+              toolIsolationRequestFields.tool_network_policy ?? "deny",
+              useChatRuntimeStore.getState().toolNetworkPolicy,
+            ),
             ...(permissionMode === "auto"
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),

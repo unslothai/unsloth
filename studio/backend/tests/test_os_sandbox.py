@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import errno
 import importlib.util
 import math
@@ -15,6 +16,7 @@ from types import SimpleNamespace
 import shlex
 import shutil
 import socket
+import stat
 import statistics
 import struct
 import subprocess
@@ -693,6 +695,68 @@ def test_linux_runtime_beneath_tmp_is_mounted_after_private_tmpfs(monkeypatch, t
         assert private_tmpfs < runtime_mount
     finally:
         prepared.cleanup()
+
+
+@pytest.mark.parametrize("is_directory", [True, False])
+def test_tmp_runtime_nested_masks_follow_the_final_runtime_bind(monkeypatch, tmp_path, is_directory):
+    runtime = "/tmp/studio-venv"
+    nested = runtime + "/host-mount"
+    mount = os_sandbox._LinuxMount("2", "1", "0:2", "/", nested, "rw", "tmpfs", "tmpfs", "rw")
+    monkeypatch.setattr(os_sandbox, "_runtime_read_paths", lambda: (runtime,))
+    monkeypatch.setattr(os_sandbox, "_validate_runtime_paths", lambda *a, **kw: None)
+    monkeypatch.setattr(os_sandbox, "_validate_linux_workdir_environment", lambda *a: None)
+    monkeypatch.setattr(os_sandbox, "_LINUX_SYSTEM_ROOTS", ())
+    monkeypatch.setattr(os_sandbox, "_LINUX_ETC_FILES", ())
+    monkeypatch.setattr(os_sandbox, "_nested_exposed_mounts", lambda *a: [mount])
+    real_stat = os.stat
+    def mount_stat(path, *args, **kwargs):
+        if os.fspath(path) == nested:
+            return SimpleNamespace(st_mode = stat.S_IFDIR if is_directory else stat.S_IFREG)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os_sandbox.os, "stat", mount_stat)
+    backend = os_sandbox.LinuxBubblewrapBackend()
+    backend._bwrap = "/usr/bin/bwrap"
+    prepared = backend.prepare(_spec(tmp_path))
+    try:
+        argv = prepared.argv
+        bind = argv.index(runtime)
+        mask = argv.index(nested)
+        assert argv[bind - 1] == "--ro-bind"
+        assert mask > bind
+        if is_directory:
+            assert argv[mask - 1] == "--tmpfs"
+        else:
+            assert argv[mask - 2] == "--ro-bind"
+        private_tmp = next(i for i in range(len(argv) - 1) if argv[i:i + 2] == ("--tmpfs", "/tmp"))
+        assert private_tmp < bind < mask
+    finally:
+        prepared.cleanup()
+
+
+@pytest.mark.parametrize("host_content", [False, True])
+def test_wsl_probe_accepts_only_empty_private_masks(monkeypatch, tmp_path, host_content):
+    masked = tmp_path / "masked"
+    masked.mkdir()
+    if host_content:
+        (masked / "host-secret").write_text("must stay hidden", encoding = "utf-8")
+    monkeypatch.setattr(os_sandbox, "_WSL_HIDDEN_PATHS", (str(masked),))
+    payload = os_sandbox._probe_payload(
+        str(tmp_path), "unused", "unused", os.getpid(), None,
+        ("127.0.0.1", 1), None, ("127.0.0.1", 1), {}, (),
+    )
+    # Execute the generated probe's actual mask check, not a profile-text assertion.
+    check = next(
+        node for node in ast.parse(payload).body
+        if isinstance(node, ast.For) and isinstance(node.target, ast.Name)
+        and node.target.id == "masked"
+    )
+    code = compile(ast.Module(body = [check], type_ignores = []), "<mask-probe>", "exec")
+    if host_content:
+        with pytest.raises(AssertionError, match = "contains host data"):
+            exec(code, {"os": os})
+    else:
+        exec(code, {"os": os})
 
 
 def test_linux_seccomp_filter_rejects_x32_syscalls_on_x86(monkeypatch):
@@ -2058,6 +2122,104 @@ def _assert_native_ok(completed: subprocess.CompletedProcess) -> None:
         f"sandboxed command failed ({completed.returncode})\n"
         f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
     )
+
+
+def test_live_nested_tmp_runtime_mount_hides_host_socket(qualified_native_capability):
+    """Exercise recursive binds with a real mount, without mounting in the host namespace."""
+    import hashlib
+
+    find = "/usr/bin/find"
+    assert os_sandbox._trusted_linux_executable(find)
+    find_digest = hashlib.sha256(Path(find).read_bytes()).hexdigest()
+    # The outer namespace exists only to build the hostile fixture. Root-owned
+    # find maps to an overflow UID there; pin its already-validated identity so
+    # the real trusted -xdev scanner, not a simulated scan, is still exercised.
+    code = r'''
+import hashlib, os, socket, subprocess, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from core.inference import os_sandbox as sandbox
+find_digest = sys.argv[2]
+def trusted_find(path):
+    return path == '/usr/bin/find' and hashlib.sha256(Path(path).read_bytes()).hexdigest() == find_digest
+sandbox._trusted_linux_executable = trusted_find
+with tempfile.TemporaryDirectory(prefix='us-nested-', dir='/tmp') as base:
+    runtime = Path(base) / 'runtime'
+    foreign = runtime / 'host'
+    foreign.mkdir(parents=True)
+    work = Path(base) / 'work'
+    work.mkdir()
+    subprocess.run(['/bin/mount', '-t', 'tmpfs', '-o', 'size=1m', 'tmpfs', str(foreign)], check=True)
+    prepared = None
+    server = socket.socket(socket.AF_UNIX)
+    try:
+        secret = foreign / 'secret'
+        secret.write_text('HOST_SENTINEL')
+        host_socket = str(foreign / 'host.sock')
+        server.bind(host_socket)
+        server.listen(1)
+        roots = sandbox._runtime_read_paths()
+        sandbox._runtime_read_paths = lambda: (*roots, str(runtime))
+        backend = sandbox.LinuxBubblewrapBackend()
+        backend._bwrap = sys.argv[3]
+        backend._disable_userns_supported = '--disable-userns' in sandbox._bwrap_supported_options(sys.argv[3])
+        payload = """
+import os, socket
+from multiprocessing.resource_sharer import DupFd, stop
+from pathlib import Path
+assert not Path(SECRET).exists(), 'host file was exposed'
+with socket.socket(socket.AF_UNIX) as client:
+    try:
+        client.connect(HOST_SOCKET)
+    except OSError:
+        pass
+    else:
+        raise AssertionError('host socket was exposed')
+with socket.socket(socket.AF_UNIX) as listener, socket.socket(socket.AF_UNIX) as client:
+    try:
+        listener.bind('/tmp/private.sock')
+        listener.listen(1)
+        client.connect('/tmp/private.sock')
+        peer, _ = listener.accept()
+        with peer:
+            client.sendall(b'private')
+            assert peer.recv(7) == b'private'
+            peer.sendall(b'reply')
+            assert client.recv(5) == b'reply'
+    finally:
+        os.unlink('/tmp/private.sock')
+r, w = os.pipe()
+shared = DupFd(r).detach()
+try:
+    os.write(w, b'R')
+    assert os.read(shared, 1) == b'R'
+finally:
+    for fd in (r, w, shared): os.close(fd)
+    stop()
+print('NESTED_RUNTIME_ISOLATED_PRIVATE_IPC_OK')
+""".replace('SECRET', repr(str(secret))).replace('HOST_SOCKET', repr(host_socket))
+        plan = sandbox.ToolLaunchPlan(argv=(sys.executable, '-I', '-c', payload), workdir=str(work), env={'PATH':'/usr/bin:/bin'})
+        prepared = backend.prepare(plan)
+        result = subprocess.run(prepared.argv, cwd=prepared.workdir, env=prepared.env,
+            pass_fds=prepared.pass_fds, close_fds=True, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        print(result.stdout)
+    finally:
+        server.close()
+        if prepared is not None: prepared.cleanup()
+        subprocess.run(['/bin/umount', str(foreign)], check=True)
+'''
+    completed = subprocess.run(
+        [
+            "/usr/bin/unshare", "--user", "--map-root-user", "--mount",
+            "--propagation", "private", "--fork", sys.executable, "-c", code,
+            str(Path(os_sandbox.__file__).resolve().parents[2]), find_digest,
+            os_sandbox._LINUX_BACKEND._bwrap,
+        ],
+        capture_output = True, text = True, timeout = 180, close_fds = True,
+    )
+    _assert_native_ok(completed)
+    assert "NESTED_RUNTIME_ISOLATED_PRIVATE_IPC_OK" in completed.stdout
 
 
 def test_live_filesystem_proc_devices_and_interpreter_boundary(

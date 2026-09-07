@@ -82,6 +82,13 @@ def test_qualified_but_unavailable_still_warns():
     assert sandbox_startup.format_sandbox_startup_notice(capability) != ""
 
 
+def test_available_unqualified_backend_does_not_claim_tools_are_blocked(capsys):
+    capability = replace(_AVAILABLE, qualified = False, protection_state = "preview")
+    assert sandbox_startup.format_sandbox_startup_notice(capability) == ""
+    sandbox_startup.print_sandbox_startup_notice(capability)
+    assert capsys.readouterr().out == ""
+
+
 def test_notice_stays_compact_and_plain():
     notice = sandbox_startup.format_sandbox_startup_notice(_UNAVAILABLE)
     lines = notice.splitlines()

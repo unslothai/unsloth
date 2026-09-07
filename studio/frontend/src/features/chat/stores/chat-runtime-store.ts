@@ -3953,6 +3953,9 @@ function scheduleLegacyQwenDefaultsRetry(
   });
 }
 
+// Pending consent belongs to one request as well as one authenticated UI session.
+let limitedGrantRequestId = 0;
+
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
   threadScopedSettingsPending: false,
@@ -5329,7 +5332,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               "Limited mode requires a current grant for this page session.",
           };
         }
-        return { toolExecutionMode, toolIsolationError: null };
+        return {
+          toolExecutionMode,
+          toolIsolationError: null,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+        };
       }
       if (toolExecutionMode === "full" && state.permissionMode !== "full") {
         return {
@@ -5344,6 +5351,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         toolNetworkPolicy: "deny" as ToolNetworkPolicy,
         limitedToolGrant: null,
         toolIsolationError: null,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
   setToolNetworkPolicy: (toolNetworkPolicy) =>
@@ -5413,11 +5421,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   },
   requestLimitedToolGrant: async () => {
     const before = get();
+    const requestId = ++limitedGrantRequestId;
     const capability = before.toolIsolationCapability;
     if (!capability || capability.protection_state !== "unavailable") {
       const message =
         "Limited mode is only available when OS isolation is unavailable.";
-      set(() => ({ toolIsolationError: message }));
+      set(() => ({ toolIsolationError: message, toolIsolationGrantLoading: false }));
       throw new Error(message);
     }
     const requestedGeneration = capability.probe_generation;
@@ -5427,7 +5436,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         before.toolIsolationUiSessionId,
         requestedGeneration,
       );
-      const currentCapability = get().toolIsolationCapability;
+      const current = get();
+      if (
+        requestId !== limitedGrantRequestId ||
+        current.toolIsolationUiSessionId !== before.toolIsolationUiSessionId ||
+        current.queuedSettingsEpoch !== before.queuedSettingsEpoch ||
+        current.toolExecutionMode !== before.toolExecutionMode ||
+        !current.toolIsolationGrantLoading
+      ) {
+        throw new Error("Tool permissions changed while consent was pending. Try again.");
+      }
+      const currentCapability = current.toolIsolationCapability;
       if (
         grant.probe_generation !== requestedGeneration ||
         currentCapability?.probe_generation !== requestedGeneration ||
@@ -5450,6 +5469,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Could not enable Limited mode";
+      const current = get();
+      if (
+        requestId !== limitedGrantRequestId ||
+        current.toolIsolationUiSessionId !== before.toolIsolationUiSessionId
+      ) {
+        throw error;
+      }
+      if (
+        current.queuedSettingsEpoch !== before.queuedSettingsEpoch ||
+        current.toolExecutionMode !== before.toolExecutionMode ||
+        !current.toolIsolationGrantLoading
+      ) {
+        set(() => ({ toolIsolationGrantLoading: false }));
+        throw error;
+      }
       set(() => ({
         limitedToolGrant: null,
         toolExecutionMode: "os_isolation_required",
@@ -5462,6 +5496,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   clearLimitedToolGrant: () =>
     set((state) => ({
       limitedToolGrant: null,
+      toolIsolationGrantLoading: false,
       toolExecutionMode:
         state.toolExecutionMode === "limited"
           ? ("os_isolation_required" as ToolExecutionMode)
@@ -5894,6 +5929,7 @@ function clearToolIsolationGrantForAuthSession(): void {
   // session: a different account signing in on this tab starts at the persisted level.
   useChatRuntimeStore.setState((state) => ({
     toolIsolationUiSessionId: createToolIsolationUiSessionId(),
+    toolIsolationGrantLoading: false,
     ...protectedIsolationDefaults(
       threadScopedOverride("permissionMode") ?? loadPermissionMode(),
     ),

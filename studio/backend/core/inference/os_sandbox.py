@@ -1636,6 +1636,13 @@ class LinuxBubblewrapBackend:
             seccomp_filter.close()
             shutil.rmtree(identity_dir, ignore_errors = True)
             raise
+        argv.extend(("--dir", workdir, "--remount-ro", "/"))
+        argv.extend(("--tmpfs", "/dev/shm", "--tmpfs", "/tmp"))
+        argv.extend(("--dir", "/tmp/runtime"))
+        for path in private_tmp_runtime_paths:
+            argv.extend(("--ro-bind", path, path))
+        # Recursive runtime binds can re-expose nested mounts. Mask only after
+        # the final bind, including runtimes restored beneath the private /tmp.
         for mount, is_directory in nested_mounts:
             if is_directory:
                 argv.extend(("--tmpfs", mount.mount_point))
@@ -1644,11 +1651,6 @@ class LinuxBubblewrapBackend:
         if environment in ("wsl1", "wsl2"):
             for path in _WSL_HIDDEN_PATHS:
                 argv.extend(("--tmpfs", path))
-        argv.extend(("--dir", workdir, "--remount-ro", "/"))
-        argv.extend(("--tmpfs", "/dev/shm", "--tmpfs", "/tmp"))
-        argv.extend(("--dir", "/tmp/runtime"))
-        for path in private_tmp_runtime_paths:
-            argv.extend(("--ro-bind", path, path))
         argv.extend(("--bind", workdir, workdir, "--chdir", workdir))
         argv.extend(("--setenv", "HOME", workdir, "--setenv", "TMPDIR", "/tmp"))
         network_bridge = spec.network_policy == "allowlist"
@@ -2604,12 +2606,17 @@ except socket.gaierror:
     pass
 for forbidden in (
     '/sys', '/run', '/var/run', '/init', '/mnt/c', '/mnt/e', '/mnt/wsl', '/mnt/wslg',
-    '/usr/lib/wsl',
     '/dev/kvm', '/dev/dxg', '/dev/dri', '/dev/fuse', '/dev/vsock', '/dev/mem',
     '/var/run/docker.sock', '/run/containerd/containerd.sock',
     '/var/run/podman/podman.sock', '/var/run/secrets/kubernetes.io',
 ):
     assert not os.path.exists(forbidden), forbidden + ' was exposed'
+# WSL runtime roots are replaced by empty tmpfs mounts, not removed. Their
+# existence is expected; any host content remaining beneath them is not.
+for masked in {_WSL_HIDDEN_PATHS!r}:
+    if os.path.lexists(masked):
+        assert not os.path.islink(masked), masked + ' is a symlink'
+        assert os.path.isdir(masked) and not os.listdir(masked), masked + ' contains host data'
 s = socket.socket(socket.AF_UNIX)
 try:
     s.connect({host_socket!r})

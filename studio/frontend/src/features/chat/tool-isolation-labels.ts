@@ -41,6 +41,8 @@ export const TOOL_ISOLATION_LIMITATION_TEXT: Readonly<Record<string, string>> = 
     "The network allowlist admits only HTTPS connections to the listed hosts through a local proxy; plain HTTP, other ports and every other host are refused.",
   network_allowlist_unsupported_on_windows:
     "The network allowlist is not offered on Windows; OS-isolated launches there have no network.",
+  terminal_runtime_unselectable:
+    "The selected Terminal runtime could not be prepared for OS isolation. Terminal execution remains blocked in Required mode.",
 };
 
 /** Human label for the way Limited mode is implemented when it is more than the software
