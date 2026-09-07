@@ -147,9 +147,15 @@ def test_the_margin_is_what_decides_a_near_tie():
 
     Which confirms the decline above is the MARGIN talking and not an accident
     of the arithmetic: the spill really is cheaper here, just not by enough.
+
+    RE-ANCHORED, +343 MiB, when the per-device reserve gained its context-linear term: at
+    n_ctx 32768 that term is (32768 - 16384) * 21924 B = 342.6 MiB, so every budget in this
+    file now means 343 MiB less to the planner than it did. Shifting the card by exactly that
+    keeps the cell at the same distance from the band's edge, which is what the test is about;
+    leaving it would have tested the reserve instead of the gate.
     """
     layout = dense_layout()
-    card = [14848 * 1024 * 1024]
+    card = [15191 * 1024 * 1024]
     strict = plan_placement(layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6)))
     lenient = plan_placement(
         layout,

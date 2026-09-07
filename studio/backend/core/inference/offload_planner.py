@@ -201,6 +201,18 @@ class PlanOptions:
     # graph's reservation is not. Erring high costs some spill (linear at
     # 5.544 ms/GiB), erring low costs the whole load.
     overhead_bytes_per_device: int = (3 * GIB) // 2
+    # The part of that reserve that is NOT flat. MEASURED by sweeping device headroom with -ot at
+    # fixed context and budget until the load flips from failing to serving: gemma-4-26B-A4B Q4
+    # needs ~1184 MiB at n_ctx 33792, (1786.3, 1932.5] at ~66600 and more than 1958.1 at 132096,
+    # so the slope is in [18.8, 23.4] KiB per token of TOTAL context. Total context, not prompt
+    # length: three runs held n_ctx to 1.2% while moving pp 4x and parallel 4x the other way and
+    # their brackets still overlapped. Budget independent: the 12 and 16 GiB ladders agree at
+    # every context. And invisible in the buffer report, where the cache read 1200.0 MiB and the
+    # compute buffer 366.0 MiB across a 14x span of context.
+    overhead_bytes_per_token: int = 21924
+    # Below this the term is zero, so the flat reserve is unchanged and no existing placement
+    # moves. 1536 MiB is ample at every context measured at or below it and short above it.
+    overhead_free_ctx: int = 16384
     # GPU-resident bytes NOT in the layout (a vision projector, an MTP draft
     # reserve), charged once against the pooled budget: the layout only knows the
     # target GGUF's tensor table. Subtracting from the budget also reaches
@@ -433,11 +445,28 @@ class Plan:
         return bool(self.spilled_blocks) or self.spilled_lm_head
 
 
-def _usable_vram(vram_bytes_per_device: Sequence[int], opts: PlanOptions) -> int:
+def _device_reserve(opts: PlanOptions, n_ctx: int) -> int:
+    """Bytes to leave free on EVERY device: the flat term plus the context-linear one.
+
+    Charged per device like the flat term it extends. Whether the context-linear part is really
+    per device or shared across a layer split is UNMEASURED, every calibration run being single
+    GPU, so this over-reserves on multi-GPU rather than under-reserving. Over-reserving spills
+    more, at a measured 7 to 12% of generation per surplus GiB; under-reserving loses the load.
+    """
+    over = max(0, n_ctx - max(0, opts.overhead_free_ctx))
+    return max(0, opts.overhead_bytes_per_device) + over * max(0, opts.overhead_bytes_per_token)
+
+
+def _usable_vram(vram_bytes_per_device: Sequence[int], opts: PlanOptions, n_ctx: int) -> int:
     """Total creditable VRAM: every device pays the fixed per-device overhead,
     the split pays for each device AFTER the first, then the pool pays once for
-    whatever sits on a card outside the layout."""
-    pooled = sum(max(0, v - opts.overhead_bytes_per_device) for v in vram_bytes_per_device)
+    whatever sits on a card outside the layout.
+
+    ``n_ctx`` is required rather than defaulted: the reserve is context dependent and a caller
+    that silently got the flat term would under-reserve at long context and fail the load.
+    """
+    reserve = _device_reserve(opts, n_ctx)
+    pooled = sum(max(0, v - reserve) for v in vram_bytes_per_device)
     split = max(0, len(vram_bytes_per_device) - 1) * max(0, opts.pipeline_overhead_bytes)
     return pooled - split - max(0, opts.extra_resident_bytes)
 
@@ -976,16 +1005,30 @@ def max_context_for(
         + (0 if spill_lm_head else layout.lm_head_bytes)
         + (0 if spill_all_ffn else layout.spillable_bytes)
     )
-    free = _usable_vram(vram_bytes_per_device, opts) - fixed
-    if free <= 0:
-        return 0
     per_token = layout.kv_bytes_per_token_f16 * _kv_elem_bytes(kv_quantised) // 2
     if per_token <= 0:
         return 0
-    ctx = (free // per_token) // 256 * 256
-    if layout.n_ctx_train:
-        ctx = min(ctx, layout.n_ctx_train)
-    return max(0, ctx)
+
+    def _solve(at_ctx: int) -> int:
+        free = _usable_vram(vram_bytes_per_device, opts, at_ctx) - fixed
+        if free <= 0:
+            return 0
+        ctx = (free // per_token) // 256 * 256
+        if layout.n_ctx_train:
+            ctx = min(ctx, layout.n_ctx_train)
+        return max(0, ctx)
+
+    # The reserve is a function of the context and the context is what is being solved for, so
+    # one pass answers with the reserve for some other context. _solve is non-increasing in its
+    # argument, so starting at the largest answer the reserve can permit converges monotonically
+    # DOWN and every intermediate value is an over-estimate rather than an under-estimate.
+    ctx = _solve(opts.overhead_free_ctx)
+    for _ in range(8):
+        nxt = _solve(ctx)
+        if nxt >= ctx:
+            break
+        ctx = nxt
+    return ctx
 
 
 def plan_placement(
@@ -1038,15 +1081,17 @@ def plan_placement(
         # Metal also keeps mmap zero copy (buffer_from_host_ptr), so the no-mmap
         # rule inverts there too.
         return Plan(reason = "unified memory host, spilling frees no device memory")
-    budget = _usable_vram(vram_bytes_per_device, opts)
-    if budget <= 0:
-        return Plan(reason = "no creditable VRAM after per-device overhead and reserved allocations")
-
+    # Settle the context first: the per-device reserve has a context-linear term, so the budget
+    # is a function of n_ctx and cannot be computed above it.
     n_ctx = requested_ctx if requested_ctx > 0 else layout.n_ctx_train
     if layout.n_ctx_train:
         n_ctx = min(n_ctx, layout.n_ctx_train)
     if n_ctx <= 0:
         return Plan(reason = "no usable context length")
+
+    budget = _usable_vram(vram_bytes_per_device, opts, n_ctx)
+    if budget <= 0:
+        return Plan(reason = "no creditable VRAM after per-device overhead and reserved allocations")
     if layout.has_swa and kv_bytes_floor <= 0:
         # Sliding-window attention, and nobody measured the cache. The layout's
         # own product has no SWA term -- it charges every attention layer the
@@ -1287,7 +1332,7 @@ def _per_device_shortfall(
         # devices[0] once -sm none has already pruned the list.
         if device == 0:
             used += max(0, opts.extra_resident_bytes)
-        headroom = max(0, vram_bytes_per_device[device] - opts.overhead_bytes_per_device)
+        headroom = max(0, vram_bytes_per_device[device] - _device_reserve(opts, n_ctx))
         if used > headroom:
             return (
                 f"device {device} would still hold {used / GIB:.2f} GiB of its "
