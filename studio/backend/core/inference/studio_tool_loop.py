@@ -50,7 +50,7 @@ import json
 import threading
 
 from dataclasses import dataclass, field
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol
 
 from core.inference import tools as tools_module
@@ -359,6 +359,9 @@ class ToolLoopPolicy:
     auto_heal: bool | None = None
     # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
     nudge_tool_calls: bool | None = None
+    # Called just before the loop relays the chunk that ends a turn it healed a text-form call out of. Only the headerless
+    # relay sets it, to arm its ServerToolCallStripper for a call that never appeared on the wire as a tool_calls key.
+    on_withheld_tool_call: Callable[[], None] | None = None
 
 
 def _reject_json_constant(name: str) -> Any:
@@ -1260,6 +1263,12 @@ async def stream_with_studio_tools(
         provider_turns += 1
         turn = _Turn(round = provider_turns)
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
+        # A healed text-form call never reaches the wire as a tool_calls key, so a headerless caller's stripper cannot
+        # tell this turn ends in a call the loop is about to run rather than in an answer. Hold that turn-ending chunk
+        # until finalize() has said whether anything was promoted, then arm the stripper before releasing it. Arming at
+        # promotion time instead would still be too late for unterminated markup, which only promotes in finalize(),
+        # after the provider's "stop" has already gone out.
+        held_final: str | None = None
 
         active_tools = controller.active_tools()
         tools_available = (
@@ -1332,6 +1341,13 @@ async def stream_with_studio_tools(
                 turn.note_hosted_tool_event(payload.get("_toolEvent"))
                 if isinstance(choice.get("finish_reason"), str):
                     turn.finish_reason = choice["finish_reason"]
+                # Only a live healer can still promote a call this turn. Once it is dormant the structured path is in
+                # charge and the wire already carries the tool_calls key the stripper arms on.
+                hold_final = (
+                    isinstance(choice.get("finish_reason"), str)
+                    and healer is not None
+                    and not healer.dormant
+                )
 
                 if isinstance(raw_calls, list) and raw_calls:
                     if healer is not None and not healer.dormant:
@@ -1347,7 +1363,10 @@ async def stream_with_studio_tools(
                     plain = _delta_text(content)
                     if plain:
                         turn.text.append(plain)
-                    yield line
+                    if hold_final:
+                        held_final = line
+                    else:
+                        yield line
                     continue
 
                 released: list[str] = []
@@ -1362,12 +1381,18 @@ async def stream_with_studio_tools(
                     turn.text.append(visible)
                 if visible == content:
                     # Nothing was held back, the case for almost every chunk of ordinary prose
-                    yield line
+                    if hold_final:
+                        held_final = line
+                    else:
+                        yield line
                     continue
                 # Withholding everything is normal mid-block. Only drop the chunk when it carries nothing else worth
                 # relaying.
                 if visible or turn.finish_reason is not None or len(delta) > 1:
-                    yield _rewrite_content(payload, choice, visible)
+                    if hold_final:
+                        held_final = _rewrite_content(payload, choice, visible)
+                    else:
+                        yield _rewrite_content(payload, choice, visible)
 
             if healer is not None:
                 for kind, value in healer.finalize():
@@ -1377,6 +1402,20 @@ async def stream_with_studio_tools(
                             yield _sse({"choices": [{"index": 0, "delta": {"content": value}}]})
                     elif kind == "tool_call":
                         turn.healed.append(value)
+
+            if held_final is not None:
+                # The turn ended in a call this loop is about to run, so the provider's reason is not the end of the
+                # response. Arming blanks it for headerless callers and records the debt, so owed_terminal_chunk() still
+                # mints a terminal if the loop stops before a later turn supplies one. A truncated turn is the exception:
+                # it refuses to run the call, so its reason really is final and stands.
+                if (
+                    turn.healed
+                    and turn.finish_reason not in ("length", "content_filter")
+                    and policy.on_withheld_tool_call is not None
+                ):
+                    policy.on_withheld_tool_call()
+                yield held_final
+                held_final = None
 
         finally:
             # Release the upstream response now rather than leaving it to the async-generator finalisation hook, which

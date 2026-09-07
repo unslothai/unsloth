@@ -275,6 +275,19 @@ class ServerToolCallStripper:
         self._owes_finish = False
         self._last_envelope: dict[str, Any] | None = None
 
+    def arm(self) -> None:
+        """Withhold the next turn-ending reason for a call that never reached the wire.
+
+        A text-form ``<tool_call>`` healed out of ordinary content is executed by the loop
+        but is invisible here: the markup is removed from the content it arrived in, and no
+        ``tool_calls`` key ever appears, so ``_line_offers_tool_call`` cannot see it. The
+        loop knows, and says so by calling this before it releases the chunk that closes
+        that turn. Everything after is the structured path's behaviour exactly, debt
+        included.
+        """
+        self._pending_call = True
+        self._owes_finish = True
+
     def strip(self, line: str) -> str | None:
         pending = self._pending_call or _line_offers_tool_call(line)
         out = strip_server_executed_tool_call(line, pending_call = pending)
