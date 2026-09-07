@@ -366,6 +366,32 @@ def version_minor(v: str) -> str:
     return ".".join(parts[:2]) if len(parts) >= 2 else parts[0]
 
 
+# `1.2.3rc1`, `1.2.3.dev0`, `1.2.3a2`, `1.2.3b1`: PEP 440 orders every one of these BELOW the
+# plain `1.2.3` they lead up to.
+_PRERELEASE_RE = re.compile(r"(?:a|b|c|rc|alpha|beta|pre|preview|dev)\d*$", re.IGNORECASE)
+
+
+def _is_prerelease(version: str) -> bool:
+    """Does this version sort below the release with the same numbers?"""
+    return bool(_PRERELEASE_RE.search(normalise_version(version).replace("_", ".").rstrip(".")))
+
+
+def at_least(version: str, floor: str) -> bool:
+    """`version >= floor` with PEP 440's prerelease ordering.
+
+    `cmp_versions` reads dotted digits only, so `2.11.0rc1` came back as 2.11.0.1 and sorted
+    ABOVE `2.11`. That approved a torch/torchcodec pairing outside the ABI-stable contract and
+    suppressed R-INST-004 on it.
+    """
+    # The suffix goes before the digits are read, or `2.11.0rc1` compares as 2.11.0.1 and
+    # sorts ABOVE 2.11 on the strength of its prerelease number.
+    core = _PRERELEASE_RE.sub("", normalise_version(version)).rstrip(".")
+    order = cmp_versions(core, floor)
+    if order != 0:
+        return order > 0
+    return not _is_prerelease(version)
+
+
 def cmp_versions(a: str, b: str) -> int:
     """Return -1/0/+1. Compares dotted numeric components only."""
 
@@ -1047,6 +1073,25 @@ def _fold_and_or(assured: list[bool], prev_ops: list[str], piece_is_pip: bool) -
         assured[-1] = piece_is_pip
 
 
+def _leading_shell_keywords(piece: str) -> list[str]:
+    """The compound-statement words this piece opens with, in order.
+
+    `_unwrap_shell_group` strips them, so the state they carry has to be read off the RAW
+    piece before it: a body spanning a separator keeps only its first command otherwise.
+    """
+    text = piece.strip()
+    if text.startswith("!"):
+        text = text[1:].lstrip()
+    text = text.lstrip("({").lstrip()
+    words: list[str] = []
+    while True:
+        parts = text.split(maxsplit = 1)
+        if not parts or parts[0].lower() not in _SHELL_KEYWORDS:
+            return words
+        words.append(parts[0].lower())
+        text = parts[1].strip() if len(parts) > 1 else ""
+
+
 def _split_chained(line: str) -> list[tuple[str, bool]]:
     """One shell line -> `(command, conditional)` per command. Only the first keeps the `!`.
 
@@ -1249,16 +1294,30 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # unreachable. Its own substitutions still expanded first, and one inside a `$( )` only
     # replaces that subshell, so this is applied at this level alone.
     handed_over = False
+    # One flag per open compound statement: True once its BODY has started. `if false; then
+    # echo x; pip install ...; fi` runs neither command, but only the piece carrying the
+    # `then` was being flagged, so the second one replayed as an install bash never performs.
+    body_levels: list[bool] = []
     for (piece, flag), (text, command_flag) in zip(out, commands):
         if handed_over:
             break
+        for keyword in _leading_shell_keywords(piece):
+            if keyword in _SHELL_TEST_KEYWORDS:
+                body_levels.append(False)  # the test itself runs whenever the line does
+            elif keyword in _SHELL_BODY_KEYWORDS:
+                if body_levels:
+                    body_levels[-1] = True
+                else:
+                    body_levels.append(True)
+            elif body_levels:
+                body_levels.pop()  # fi / done / esac
         for inner in _substitution_bodies(piece):
             ordered.extend(
                 (inner_text, flag or inner_flag)
                 for inner_text, inner_flag in _split_chained(f"!{inner}")
             )
         if text:
-            ordered.append((text, command_flag))
+            ordered.append((text, command_flag or any(body_levels)))
             # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`
             # along with every other transparent prefix.
             handed_over = not command_flag and _command_execs(piece)
@@ -1531,6 +1590,24 @@ def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[
     return findings
 
 
+def _removed_by_cell(install_cell: str, name: str) -> bool:
+    """Did this cell uninstall `name`, rather than simply never mention it?
+
+    `resolved_set` drops an uninstalled package, and the rules below read that as "no
+    resolution data, say nothing". Removing the dependency an explicit `--no-deps` install
+    needs is the broken state they exist to catch, so the two cases have to be told apart.
+    """
+    wanted = name.replace("_", "-").lower()
+    for inv in unconditional_pip_invocations(install_cell):
+        if inv.action != "uninstall":
+            continue
+        for raw in inv.packages:
+            sp = parse_spec(raw)
+            if sp is not None and sp.name.replace("_", "-").lower() == wanted:
+                return True
+    return False
+
+
 def rule_inst_002_no_deps_transitive(
     install_cell: str, colab: dict[str, str], file: str, cell_idx: int
 ) -> list[Finding]:
@@ -1561,6 +1638,19 @@ def rule_inst_002_no_deps_transitive(
                     continue
                 resolved_target = res.get(target.replace("_", "-"), res.get(target))
                 if resolved_target is None:
+                    if not _removed_by_cell(install_cell, target):
+                        continue
+                    findings.append(
+                        Finding(
+                            rule = "R-INST-002",
+                            file = file,
+                            cell = cell_idx,
+                            line = inv.line_no,
+                            severity = "error",
+                            message = f"`--no-deps {sp.name}=={v}` requires `{target}` {spec_str}, and this cell uninstalls it",
+                            hint = f"drop the `pip uninstall {target}` or reinstall it inside {sp.name}'s window",
+                        )
+                    )
                     continue
                 if not constraint_satisfied(resolved_target, ops):
                     findings.append(
@@ -2010,18 +2100,17 @@ def rule_inst_004_torchcodec_torch(
     # through 0.15, all of which upstream supports, and R-INST-004 is an error.
     # An inexact version is a floor, which is enough for a check that only asks whether both
     # sides clear a floor of their own.
-    if (
-        cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) >= 0
-        and cmp_versions(codec_v, TORCHCODEC_ABI_STABLE_CODEC) >= 0
+    if at_least(torch_v, TORCHCODEC_ABI_STABLE_TORCH) and at_least(
+        codec_v, TORCHCODEC_ABI_STABLE_CODEC
     ):
         return findings  # ABI-stable pairing, not locked to one torch minor
     t_minor = version_minor(torch_v)
     c_minor = version_minor(codec_v)
     allowed = TORCH_TORCHCODEC.get(t_minor)
     if allowed is None:
-        if cmp_versions(torch_v, TORCHCODEC_ABI_STABLE_TORCH) < 0:
+        if not at_least(torch_v, TORCHCODEC_ABI_STABLE_TORCH):
             return findings  # torch older than the table — don't flag
-        if not codec_exact and cmp_versions(c_minor, TORCHCODEC_ABI_STABLE_CODEC) < 0:
+        if not codec_exact and not at_least(c_minor, TORCHCODEC_ABI_STABLE_CODEC):
             return findings  # a newer codec above this floor would be ABI-stable and fine
         # Past the ABI floor with a pre-0.12 codec: locked to an older torch minor.
         findings.append(
@@ -2066,7 +2155,10 @@ def rule_inst_005_transformers_tokenizers(
     res = resolved_set(install_cell, colab)
     tf = res.get("transformers")
     tok = res.get("tokenizers")
-    if not tf or tok is None:
+    if not tf:
+        return findings
+    tokenizers_removed = tok is None and _removed_by_cell(install_cell, "tokenizers")
+    if tok is None and not tokenizers_removed:
         return findings
     # Find the transformers pin and check for --no-deps.
     environment = _marker_environment(colab)
@@ -2087,6 +2179,18 @@ def rule_inst_005_transformers_tokenizers(
         return findings
     spec_str, ops = transitive_constraint("transformers", tf, "tokenizers")
     if not ops:
+        return findings
+    if tokenizers_removed:
+        findings.append(
+            Finding(
+                rule = "R-INST-005",
+                file = file,
+                cell = cell_idx,
+                severity = "error",
+                message = f"`--no-deps transformers=={tf}` requires tokenizers {spec_str}, and this cell uninstalls it",
+                hint = "drop the `pip uninstall tokenizers` or reinstall it inside the window",
+            )
+        )
         return findings
     if not constraint_satisfied(tok, ops):
         findings.append(

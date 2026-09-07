@@ -3404,3 +3404,118 @@ def test_a_redirection_before_the_executable_is_consumed():
         ], cell
     # A trailing redirection is the command's own and is left where it is.
     assert nv._strip_exec_prefixes("pip install x >/tmp/log") == ("pip install x >/tmp/log", False)
+
+
+def test_a_compound_body_stays_conditional_past_its_separators():
+    """`if false; then echo x; pip install ...; fi` runs neither command.
+
+    Only the piece carrying the `then` was flagged, so the second command in the body replayed
+    as an install bash never performs, which can fabricate or hide an R-INST-004.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained('!if false; then echo x; pip install "torch==2.12.0"; fi') == [
+        ("!false", False),
+        ("!echo x", True),
+        ('!pip install "torch==2.12.0"', True),
+    ]
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!if false; then echo x; pip install "torch==2.12.0"; fi',
+            COLAB_TORCH211,
+            "nb.ipynb",
+            0,
+        )
+        == []
+    )
+    # The body ends at its closer, and the test itself runs whenever the line does.
+    assert nv._split_chained("!if false; then pip install a; fi; pip install b") == [
+        ("!false", False),
+        ("!pip install a", True),
+        ("!pip install b", False),
+    ]
+    assert nv._split_chained("!if pip install a; then pip install b; fi") == [
+        ("!pip install a", False),
+        ("!pip install b", True),
+    ]
+    # `while`/`do`/`done` carries the same way.
+    assert [
+        flag for _, flag in nv._split_chained("!while true; do pip install a; pip install b; done")
+    ] == [False, True, True]
+
+
+def test_a_dependency_the_cell_removes_is_reported():
+    """Uninstalling what a `--no-deps` install needs is the broken state the rule catches.
+
+    `resolved_set` drops the removed package, and reading that as "no resolution data" made
+    R-INST-005 and R-INST-002 fall silent on a strictly worse environment.
+    """
+    nv = _load_notebook_validator_module()
+    colab = {
+        "torch": "2.11.0+cu128",
+        "python": "3.12",
+        "tokenizers": "0.20.0",
+        "transformers": "4.40.0",
+    }
+
+    removed = '!pip install --no-deps "transformers==4.57.0"\n!pip uninstall -y tokenizers'
+    findings = nv.rule_inst_005_transformers_tokenizers(removed, colab, "nb.ipynb", 0)
+    assert [f.rule for f in findings] == ["R-INST-005"]
+    assert "uninstalls it" in findings[0].message
+    # The ordinary out-of-window case is unchanged, and a package the cell never mentions on a
+    # host that does not have it either is still missing data rather than a violation.
+    assert [
+        f.rule
+        for f in nv.rule_inst_005_transformers_tokenizers(
+            '!pip install --no-deps "transformers==4.57.0"', colab, "nb.ipynb", 0
+        )
+    ] == ["R-INST-005"]
+    assert (
+        nv.rule_inst_005_transformers_tokenizers(
+            '!pip install --no-deps "transformers==4.57.0"',
+            {"torch": "2.11.0+cu128", "python": "3.12"},
+            "nb.ipynb",
+            0,
+        )
+        == []
+    )
+
+
+def test_a_prerelease_sorts_below_the_abi_floor():
+    """PEP 440 orders `2.11.0rc1` and `0.12.0.dev1` BELOW `2.11` and `0.12`.
+
+    `cmp_versions` reads dotted digits only, so the prerelease number read as another release
+    component and lifted these above the floor, approving a pairing outside the ABI-stable
+    contract and suppressing R-INST-004 on it.
+    """
+    nv = _load_notebook_validator_module()
+
+    for version, floor, expected in (
+        ("2.11.0rc1", "2.11", False),
+        ("2.11.0b2", "2.11", False),
+        ("0.12.0.dev1", "0.12", False),
+        ("0.12.0rc1", "0.12", False),
+        ("2.11", "2.11", True),
+        ("2.11.0", "2.11", True),
+        ("2.11.0+cu128", "2.11", True),
+        ("2.11.1rc1", "2.11", True),
+        ("2.12", "2.11", True),
+        ("0.11", "0.12", False),
+    ):
+        assert nv.at_least(version, floor) is expected, (version, floor)
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128", "python": "3.12"}
+    for cell in (
+        '!pip install "torch==2.11.0rc1" "torchcodec==0.12.0"',
+        '!pip install "torch==2.11.0" "torchcodec==0.12.0.dev1"',
+    ):
+        assert [f.rule for f in nv.rule_inst_004_torchcodec_torch(cell, colab, "nb.ipynb", 0)] == [
+            "R-INST-004"
+        ], cell
+    # The stable pairing the ABI rule exists to allow is untouched.
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            '!pip install "torch==2.11.0" "torchcodec==0.12.0"', colab, "nb.ipynb", 0
+        )
+        == []
+    )

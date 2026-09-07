@@ -2483,16 +2483,21 @@ def _torchcodec_version_mismatch_hint() -> str | None:
         parts = Version(version.split("+", 1)[0]).release
         return tuple(parts[:2]) + (0,) * (2 - len(parts[:2]))
 
+    def _at_least(version: str, floor: tuple) -> bool:
+        # The FULL Version, not its release tuple: PEP 440 sorts `2.11.0rc1` below `2.11`,
+        # while `.release` drops the rc and read it as being at the ABI floor. That approved a
+        # pairing outside the ABI-stable contract and silenced this hint on it.
+        return Version(version.split("+", 1)[0]) >= Version(".".join(str(p) for p in floor))
+
     try:
         torch_release = _release(torch.__version__)
         codec_release = _release(torchcodec_version)
+        torch_at_abi = _at_least(torch.__version__, _TORCHCODEC_ABI_STABLE_TORCH)
+        codec_at_abi = _at_least(torchcodec_version, _TORCHCODEC_ABI_STABLE_CODEC)
     except Exception:
         # Non-PEP440 version strings must never break `import unsloth`.
         return None
-    if (
-        torch_release >= _TORCHCODEC_ABI_STABLE_TORCH
-        and codec_release >= _TORCHCODEC_ABI_STABLE_CODEC
-    ):
+    if torch_at_abi and codec_at_abi:
         return None  # ABI-stable pairing, not locked to one torch minor
     torch_minor = ".".join(str(p) for p in torch_release)
     codec_minor = ".".join(str(p) for p in codec_release)
@@ -2501,7 +2506,7 @@ def _torchcodec_version_mismatch_hint() -> str | None:
     if allowed is None:
         # No lockstep row: below the table stays silent; at or past the ABI floor this is a
         # pre-0.12 codec, since 0.12+ already returned above.
-        if torch_release < _TORCHCODEC_ABI_STABLE_TORCH:
+        if not torch_at_abi:
             return None
         abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)
         return (
