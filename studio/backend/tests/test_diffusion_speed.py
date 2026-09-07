@@ -833,6 +833,7 @@ def test_windows_partially_initialized_dynamo_falls_back_to_eager(monkeypatch):
     must decide eager here rather than let a GGUF load discover it mid-generation."""
     from core.inference import diffusion_speed as ds_mod
 
+    torch = _stub_torch(monkeypatch)
     monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
     monkeypatch.setattr(ds_mod.sys, "platform", "win32")
     monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
@@ -840,6 +841,7 @@ def test_windows_partially_initialized_dynamo_falls_back_to_eager(monkeypatch):
     # A partially initialized module: present, but the submodule import that would populate
     # `.utils` never finished -- so `import torch._dynamo.utils` raises, exactly like the report.
     partial_dynamo = types.ModuleType("torch._dynamo")
+    monkeypatch.setattr(torch, "_dynamo", partial_dynamo)
     monkeypatch.setitem(sys.modules, "torch._dynamo", partial_dynamo)
     monkeypatch.delitem(sys.modules, "torch._dynamo.utils", raising = False)
     _set_crt_headers(monkeypatch, True)

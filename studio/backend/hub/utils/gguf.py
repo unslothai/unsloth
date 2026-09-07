@@ -1408,8 +1408,19 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
     return None
 
 
+def _is_existing_file(path: Path) -> bool:
+    """Whether *path* exists: ``os.walk`` names a dangling link like any other file."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def list_local_gguf_variants(
-    directory: str, model_root: Optional[str] = None
+    directory: str,
+    model_root: Optional[str] = None,
+    *,
+    require_existing_files: bool = False,
 ) -> tuple[list[GgufVariantInfo], bool]:
     root = _resolve_gguf_dir(Path(directory))
     if root is None:
@@ -1429,12 +1440,19 @@ def list_local_gguf_variants(
     has_vision = False
     # Match the cache dir of ANY H3 bundle repo: the aggregation runs over whichever mirror the user
     # actually downloaded.
-    root_key = root.as_posix().lower()
+    # A whole SEGMENT, not a substring: "models--unsloth--MiniMax-H3-GGUF-mirror" (and -v2, -i1)
+    # contains the marker while being an ordinary chat repo, and the denoiser filter then left it
+    # with no quants -- which withholds the auto-switch entry, so a downloaded model 404s.
+    segments = set(root.as_posix().lower().split("/"))
     h3_bundle_repo = next(
-        (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in root_key), None
+        (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in segments), None
     )
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
+        # Off by default: the Hub lists the dangling link an evicted blob leaves, so a user
+        # can see and clean that quant. Only a caller advertising what it loads excludes it.
+        if require_existing_files and not _is_existing_file(file):
+            continue
         if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
             continue
         if is_imatrix_filename(file.name):

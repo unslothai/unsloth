@@ -32,6 +32,7 @@ class _LocalGgufEntry:
     load_path: str
     variants: tuple[str, ...]  # local quant labels; () for a standalone .gguf
     is_gguf: bool = True  # False routes the load to the inference orchestrator
+    aliases: tuple[tuple[str, str], ...] = ()  # see _legacy_variant_aliases
 
 
 _CACHE_TTL_S = 5.0
@@ -87,21 +88,68 @@ def _advertised_loader_id(info) -> Optional[str]:
     return public_model_id(raw_id) or raw_id
 
 
-def _resolve_load_dir(p):
-    """The concrete dir holding the GGUFs. For an HF cache repo (``models--*``
-    with ``snapshots/``) this is the latest snapshot dir, so /load takes the
-    local branch instead of the download-capable repo-id branch."""
+def _resolve_load_dir(p, loader_id: Optional[str] = None):
     from pathlib import Path
 
+    load_dir = p
     try:
         if (p / "snapshots").is_dir():
             from routes.models import _resolve_hf_cache_realpath
             real = _resolve_hf_cache_realpath(p)
             if real:
-                return Path(real)
+                load_dir = Path(real)
     except Exception:
         pass
-    return p
+    try:
+        from utils.audio_tokens import detect_local_tts_audio_type
+        from utils.models.model_config import load_model_defaults
+
+        llm_dir = load_dir / "LLM"
+        if llm_dir.is_dir() and (
+            (loader_id and (load_model_defaults(loader_id) or {}).get("audio_type") == "bicodec")
+            or detect_local_tts_audio_type(llm_dir) == "bicodec"
+        ):
+            return llm_dir
+    except Exception:
+        pass
+    return load_dir
+
+
+def _legacy_variant_aliases(variants) -> tuple[tuple[str, str], ...]:
+    """``(legacy label, current label)`` for each id this module used to publish and no longer does.
+
+    /v1/models published the loader's label before the swap to the shared lister, and a client
+    pins what it was shown. ``DeepSeek-R1-BF16-Q4_K_M.gguf`` was ``BF16``, is ``Q4_K_M``: quant
+    shaped, so _resolve_from_index refuses it and the pin 404s. ``Meta-Llama-3-8B.gguf`` was
+    ``8B``, is the whole stem: not quant shaped, so it falls through to the Ollama-tag branch and
+    quietly serves the preferred quant instead. The quiet one is why quantless labels alias too.
+
+    Accept-only, so nothing new can pin a legacy spelling and a bare id never reaches here.
+    Dropped rather than guessed: a legacy label equal to a current one, and one naming two files.
+    Grouped rows give one file per quant, so ``alpha-Q4_K_M.gguf`` beside
+    ``zeta-BF16-Q4_K_M.gguf`` keeps the 404. Never raises: _local_gguf_entry answers None on an
+    escape, which would drop the whole repo.
+    """
+    try:
+        from utils.models.model_config import _extract_quant_label, _qualified_variant_name
+
+        # .lower() matches how _resolve_from_index folds the request
+        current = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
+        seen: dict[str, Optional[str]] = {}
+        for variant in variants:
+            quant = getattr(variant, "quant", None)
+            filename = getattr(variant, "filename", None)
+            if not quant or not filename:
+                continue
+            legacy = _qualified_variant_name(filename, _extract_quant_label(filename))
+            key = str(legacy).lower()
+            if not key or key in current:
+                continue
+            # None = ambiguous: a second file claimed it, so it names neither.
+            seen[key] = None if key in seen else str(quant)
+        return tuple((legacy, quant) for legacy, quant in seen.items() if quant is not None)
+    except Exception:
+        return ()
 
 
 def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
@@ -109,7 +157,10 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
     path so /load resolves the variant locally and never fetches a remote one."""
     from pathlib import Path
-    from utils.models.model_config import detect_gguf_model, list_local_gguf_variants
+
+    # The lister every stored per-model setting is keyed by, so one file has one identity.
+    from hub.utils.gguf import list_local_gguf_variants
+    from utils.models.model_config import detect_gguf_model
 
     path = getattr(info, "path", None)
     if not isinstance(path, str):
@@ -127,7 +178,9 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         load_dir = _resolve_load_dir(p)
-        variants, _ = list_local_gguf_variants(str(load_dir))
+        # Asked of the lister, not filtered after: two checkpoints can share a quant, and
+        # grouping keeps one, so a dead file would take its readable namesake down with it.
+        variants, _ = list_local_gguf_variants(str(load_dir), require_existing_files = True)
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None
@@ -146,7 +199,9 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         best = preferred_quant(unqualified or quants)
         if best and quants[0] != best:
             quants = (best, *(q for q in quants if q != best))
-        return _LocalGgufEntry(loader_id, str(load_dir), quants)
+        return _LocalGgufEntry(
+            loader_id, str(load_dir), quants, aliases = _legacy_variant_aliases(variants)
+        )
     except Exception:
         return None
 
@@ -301,6 +356,52 @@ def _config_is_servable_here(load_dir, config: dict) -> bool:
     return _is_generative_chat_config(config)
 
 
+def _host_can_serve_minimax_music3() -> bool:
+    import sys
+    from importlib.util import find_spec
+    from importlib.metadata import version
+    from packaging.version import Version
+
+    try:
+        from core.inference.audio_device import audio_device_forces_cpu
+        from utils.hardware import hardware as hw
+        return (
+            sys.version_info >= (3, 10)
+            and hw.DEVICE == hw.DeviceType.CUDA
+            and not hw.IS_ROCM
+            and not audio_device_forces_cpu(None)
+            and find_spec("diffusers") is not None
+            and Version(version("diffusers")) >= Version("0.40.0")
+        )
+    except Exception:
+        return False
+
+
+def _native_audio_pipeline_is_servable_here(load_dir) -> bool:
+    from core.inference.native_audio import (
+        _MINIMAX_DOWNLOAD_COMPONENTS,
+        minimax_music3_local_components_complete,
+        native_audio_type_from_local_path,
+    )
+    from utils.security.remote_code_scan import REMOTE_CODE_CONFIG_FILES
+
+    if (
+        native_audio_type_from_local_path(str(load_dir)) != "minimax_music3"
+        or not _host_can_serve_minimax_music3()
+        or not minimax_music3_local_components_complete(load_dir)
+    ):
+        return False
+    for directory in (
+        load_dir,
+        *(load_dir / component for component in _MINIMAX_DOWNLOAD_COMPONENTS),
+    ):
+        for name in REMOTE_CODE_CONFIG_FILES:
+            config = _read_json(directory / name)
+            if isinstance(config, dict) and config.get("auto_map"):
+                return False
+    return not any((load_dir / name).is_file() for name in (*_ADAPTER_MARKERS, "modules.json"))
+
+
 def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     """Build an entry for a local non-GGUF checkpoint (safetensors, MLX) the
     inference orchestrator can serve, else None.
@@ -321,7 +422,9 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         p = Path(path)
         if not p.is_dir():
             return None
-        load_dir = _resolve_load_dir(p)
+        load_dir = _resolve_load_dir(p, loader_id)
+        if _native_audio_pipeline_is_servable_here(load_dir):
+            return _LocalGgufEntry(loader_id, str(load_dir), (), is_gguf = False)
         if not _weights_are_servable(load_dir):
             return None
         config = _read_json(load_dir / "config.json")
@@ -753,6 +856,11 @@ def _resolve_from_index(
         for v in entry.variants:
             if v.lower() == wanted:
                 return entry.load_path, v, entry.loader_id
+        # ahead of both branches below: one refuses a retired spelling, the other answers it
+        # with a different quant
+        for legacy, current in entry.aliases:
+            if legacy == wanted:
+                return entry.load_path, current, entry.loader_id
         from core.inference.openai_auto_download import looks_like_quant
 
         if looks_like_quant(variant):

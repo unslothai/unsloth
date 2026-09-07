@@ -35,10 +35,18 @@ def test_the_hub_readme_describes_the_shipped_images():
         "/workspace/host",
         "/workspace/.cache/huggingface",
         "sm_75 sm_80 sm_86 sm_90 sm_100 sm_120",
+        "UNSLOTH_STUDIO_PASSWORD",
     ):
         assert needle in text, f"the Hub README no longer mentions {needle!r}"
     # the previous image's conventions, none of which exist in this one
-    for stale in ("USER_PASSWORD", "/workspace/work", "2222:22", "localhot"):
+    # Studio writes the generated password to a file and does not print it itself
+    for stale in (
+        "USER_PASSWORD",
+        "/workspace/work",
+        "2222:22",
+        "localhot",
+        "prints its first-boot",
+    ):
         assert stale not in text, f"the Hub README still carries {stale!r} from the old image"
 
 
