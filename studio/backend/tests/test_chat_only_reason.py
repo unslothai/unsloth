@@ -30,6 +30,7 @@ def _no_torch(monkeypatch):
     # The no_torch verdict reads the venv's install manifest; pin it so the answer does
     # not depend on which venv runs these tests.
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
+    monkeypatch.setattr(hw, "_NO_TORCH_STACK_SETTLED", False)
     # detect_hardware() assigns these module globals directly (not via monkeypatch),
     # so save and restore them; otherwise a chat-only verdict here leaks into other
     # backend tests (e.g. test_utils.py) when they share a process on a GPU host.
@@ -68,39 +69,51 @@ def test_apple_silicon_with_incomplete_mlx_stack_stays_chat_only(monkeypatch):
     assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
 
 
-def test_apple_silicon_no_torch_install_without_usable_mlx_is_off_by_request(monkeypatch):
-    # GGUF-only by request: not a broken stack, so the UI must not send the user to
-    # `unsloth studio update`, which keeps no-torch and cannot enable Train. The same
-    # verdict whether mlx is absent or present but partial: the self-heal declines both.
+def _no_torch_apple_silicon(monkeypatch, *, mlx_on_disk: bool):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
+    monkeypatch.setattr(hw, "_mlx_distribution_installed", lambda: mlx_on_disk)
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
-    for mlx_on_disk in (False, True):
-        monkeypatch.setattr(hw, "_has_mlx", lambda v = mlx_on_disk: v)
-        assert hw.detect_hardware() == hw.DeviceType.CPU
-        assert hw.CHAT_ONLY is True
-        assert hw.CHAT_ONLY_REASON == "no_torch"
-        assert hw.CHAT_ONLY_DETAIL is None
 
 
-def test_a_no_torch_verdict_is_still_overturned_by_a_usable_stack(monkeypatch):
-    # The warm's first stage can lose the import race on a healthy hand-installed stack
-    # (#9120); the post-warm probe must be able to overturn no_torch like mlx_unavailable.
-    hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = hw.DeviceType.CPU, True, "no_torch"
+def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatch):
+    # GGUF-only by request: not a broken stack, so the UI must not send the user to
+    # `unsloth studio update`, which keeps no-torch and cannot enable Train.
+    _no_torch_apple_silicon(monkeypatch, mlx_on_disk = False)
+    assert hw.detect_hardware() == hw.DeviceType.CPU
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    assert hw.CHAT_ONLY_DETAIL is None
+
+
+def test_apple_silicon_no_torch_install_with_mlx_on_disk_waits_for_the_probe(monkeypatch):
+    # A hand-installed stack can lose the warm's import race (#9120) and be usable a moment
+    # later. no_torch would stop the sidebar polling before the overturn lands, so the verdict
+    # stays mlx_unavailable, which the post-warm probe can still overturn, until it settles.
+    _no_torch_apple_silicon(monkeypatch, mlx_on_disk = True)
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
     assert hw.verdict_blames_the_mlx_stack() is True
 
-    def _usable_after_the_warm():
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = hw.DeviceType.MLX, False, None
-        return hw.DEVICE
 
-    monkeypatch.setattr(hw, "_detect_hardware_locked", _usable_after_the_warm)
-    was_complete = hw.DETECTION_COMPLETE.is_set()
-    hw.DETECTION_COMPLETE.set()
-    try:
-        assert hw.overturn_the_mlx_verdict(hw.current_detection_epoch()) is True
-    finally:
-        hw.DETECTION_COMPLETE.set() if was_complete else hw.DETECTION_COMPLETE.clear()
-    assert hw.CHAT_ONLY is False
+def test_the_probe_settles_a_no_torch_host_once_the_stack_measures_unusable(monkeypatch):
+    _no_torch_apple_silicon(monkeypatch, mlx_on_disk = True)
+    hw.detect_hardware()
+    assert hw.settle_the_no_torch_verdict() is True
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    assert hw.CHAT_ONLY_DETAIL is None
+    assert hw.verdict_blames_the_mlx_stack() is False
+    # And a later pass stays settled rather than re-arming the sidebar's poll.
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+
+
+def test_settling_leaves_any_other_verdict_alone(monkeypatch):
+    for chat_only, reason in ((False, None), (True, "intel_mac"), (True, "no_torch")):
+        hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = chat_only, reason
+        assert hw.settle_the_no_torch_verdict() is False
+        assert (hw.CHAT_ONLY, hw.CHAT_ONLY_REASON) == (chat_only, reason)
 
 
 def test_apple_silicon_no_torch_install_with_usable_mlx_enables_training(monkeypatch):

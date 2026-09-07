@@ -170,6 +170,7 @@ def _hardware(monkeypatch, *, blames_mlx: bool):
     monkeypatch.setattr(hw, "verdict_blames_the_mlx_stack", lambda: blames_mlx)
     monkeypatch.setattr(hw, "current_detection_epoch", lambda: 1)
     monkeypatch.setattr(hw, "detect_hardware", lambda: None)
+    monkeypatch.setattr(hw, "settle_the_no_torch_verdict", lambda: False)
     overturns = []
     monkeypatch.setattr(
         hw, "overturn_the_mlx_verdict", lambda epoch: bool(overturns.append(epoch)) or True
@@ -254,3 +255,33 @@ def test_a_no_torch_install_still_overturns_a_verdict_that_blames_mlx(monkeypatc
     assert mr.start_mlx_autorepair_if_needed() is False
     assert overturns == [1], "the chat-only verdict was left standing against a usable stack"
     assert attempts == [], "an adequate stack needs no reinstall"
+
+
+def test_a_no_torch_install_settles_its_verdict_once_the_probe_measures_unusable(monkeypatch):
+    """With mlx on disk the verdict boots as mlx_unavailable so the sidebar keeps polling for
+    the overturn; once the probe measures the stack unusable, nothing is coming, so it settles
+    as the opt-out it is and the poll stops on the next read."""
+    import utils.hardware.hardware as hw
+
+    _apple_silicon_without_mlx(monkeypatch)
+    _hardware(monkeypatch, blames_mlx = True)
+    monkeypatch.setattr(mr, "_installed_without_torch", lambda: True)
+    settled = []
+    monkeypatch.setattr(hw, "settle_the_no_torch_verdict", lambda: settled.append(1) or True)
+
+    assert mr.start_mlx_autorepair_if_needed() is False
+    assert settled == [1]
+
+
+def test_the_kill_switch_does_not_settle_the_verdict_as_no_torch(monkeypatch):
+    import utils.hardware.hardware as hw
+
+    _apple_silicon_without_mlx(monkeypatch)
+    _hardware(monkeypatch, blames_mlx = True)
+    monkeypatch.setattr(mr, "_installed_without_torch", lambda: False)
+    monkeypatch.setenv(mr.DISABLE_ENV_VAR, "1")
+    settled = []
+    monkeypatch.setattr(hw, "settle_the_no_torch_verdict", lambda: settled.append(1) or True)
+
+    assert mr.start_mlx_autorepair_if_needed() is False
+    assert settled == [], "the kill switch is a normal install; its verdict is not an opt-out"

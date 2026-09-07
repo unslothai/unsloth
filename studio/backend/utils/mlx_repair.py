@@ -548,7 +548,8 @@ def start_mlx_autorepair_if_needed() -> bool:
     # for no one.
     # A --no-torch install declined the training stack on purpose, so treat it
     # exactly like the kill switch: no reinstall, but a correct verdict still wins.
-    opted_out = os.environ.get(DISABLE_ENV_VAR) == "1" or _installed_without_torch()
+    no_torch = _installed_without_torch()
+    opted_out = os.environ.get(DISABLE_ENV_VAR) == "1" or no_torch
     if opted_out and not _hw.verdict_blames_the_mlx_stack():
         return False
     # Read before the measurement, so a shutdown during it discards whatever is published on
@@ -565,6 +566,13 @@ def start_mlx_autorepair_if_needed() -> bool:
             )
         return False
     if opted_out:
+        # Measured unusable and nothing will reinstall it, so a --no-torch host's verdict
+        # settles as the opt-out it is instead of staying a repairable mlx_unavailable.
+        if no_torch and _hw.settle_the_no_torch_verdict():
+            logger.info(
+                "MLX stack measures unusable on a --no-torch install; Train/Export stay "
+                "off by request. Reinstall without --no-torch to enable them."
+            )
         return False
 
     with _attempted_lock:
