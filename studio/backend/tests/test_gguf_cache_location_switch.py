@@ -277,7 +277,10 @@ def test_cached_quant_keeps_its_own_context(cache_locations, cache_client, missi
 
 
 @pytest.mark.parametrize("undersized", [False, True])
-def test_inactive_source_uses_scoped_online_status(cache_locations, monkeypatch, undersized):
+@pytest.mark.parametrize("fail_repeat_listing", [False, True])
+def test_inactive_source_uses_scoped_online_status(
+    cache_locations, monkeypatch, undersized, fail_repeat_listing
+):
     from hub.utils.download_manifest import ExpectedFile
     from hub.utils.gguf import GgufVariantInfo
     from hub.utils.gguf_plan import plan_from_expected_files
@@ -297,9 +300,15 @@ def test_inactive_source_uses_scoped_online_status(cache_locations, monkeypatch,
     path.symlink_to(blob)
     variant = GgufVariantInfo(filename = path.name, quant = quant, size_bytes = 256)
     requirement = plan_from_expected_files(quant, [ExpectedFile(path.name, 256, "b" * 64)])
-    monkeypatch.setattr(
-        gguf_variants, "list_gguf_variants", lambda *a, **kw: ([variant], False, [])
-    )
+    listing_calls = []
+
+    def list_online(*args, **kwargs):
+        listing_calls.append(repo_id)
+        if fail_repeat_listing and len(listing_calls) > 1:
+            raise ConnectionError("a repeated Hub request failed")
+        return [variant], False, []
+
+    monkeypatch.setattr(gguf_variants, "list_gguf_variants", list_online)
     monkeypatch.setattr(gguf_variants, "_variant_requirement_cache_get", lambda *a: requirement)
     inventory_scan.invalidate_hf_cache_scans()
     scoped = asyncio.run(
@@ -308,12 +317,14 @@ def test_inactive_source_uses_scoped_online_status(cache_locations, monkeypatch,
             local_path = str(path.parent),
         )
     )
+    listing_calls.clear()
     merged = asyncio.run(
         gguf_variants.get_gguf_variants_response(
             repo_id,
             include_cache_locations = True,
         )
     )
+    assert listing_calls == [repo_id]
     direct = next(v for v in scoped.variants if v.quant == quant)
     actual = next(v for v in merged.variants if v.quant == quant)
     assert direct.downloaded is not undersized

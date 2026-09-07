@@ -1044,8 +1044,10 @@ async def get_gguf_variants_answer(
     # of the same-named repo, else a GGUF-less directory could evict the resident model.
     answered_locally = [False]
     variant_context_sources: dict[str, str] = {}
+    hub_listing = None
 
     def _compute(local_path: Optional[str] = local_path) -> GgufVariantsResponse:
+        nonlocal hub_listing
         repo_cache_dir = (
             None if is_local_path(repo_id) else _repo_cache_dir_for_request(repo_id, local_path)
         )
@@ -1370,7 +1372,9 @@ async def get_gguf_variants_answer(
             return None
 
         try:
-            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
+            if hub_listing is None:
+                hub_listing = list_gguf_variants(repo_id, hf_token = hf_token)
+            variants, has_vision, siblings = hub_listing
         except Exception:
             # Ungated: _cache_fallback_response already refuses an unauthorized caller.
             fallback = _cache_fallback_response()
