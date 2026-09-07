@@ -134,6 +134,44 @@ def test_setup_token_outlives_the_time_an_operator_takes_to_type(monkeypatch):
     )
 
 
+def _token_ttl_seconds() -> float:
+    from datetime import datetime, timezone
+
+    row = storage.get_connection().execute("SELECT expires_at FROM link_tokens").fetchone()
+    return (datetime.fromisoformat(row[0]) - datetime.now(timezone.utc)).total_seconds()
+
+
+def test_a_loopback_launch_token_is_not_bound_to_an_hour(monkeypatch):
+    """No deadline arms on a loopback launch, so nothing is going to shut down.
+
+    The seed this replaces stayed usable for as long as the process ran. Bounding
+    the token to the default hour here would protect nothing and would turn "left
+    the setup tab open over lunch" into an error the seed never produced.
+    """
+    _seed_admin()
+    monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
+    app = _App(bootstrap_password = _SEED, bind_host = "127.0.0.1", secure = False)
+    studio_main._inject_bootstrap(_HTML, app)
+
+    from auth.bootstrap_timeout import DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
+
+    assert _token_ttl_seconds() > DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS, (
+        "the setup token expires in an hour on a launch that never shuts down"
+    )
+
+
+def test_an_exposed_launch_token_is_bound_by_the_shutdown_deadline(monkeypatch):
+    """A deadline arms, so the token must not outlive the window it occupies."""
+    _seed_admin()
+    monkeypatch.setenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", "900")
+    app = _App(bootstrap_password = _SEED, bind_host = "0.0.0.0", secure = False)
+    studio_main._inject_bootstrap(_HTML, app)
+
+    ttl = _token_ttl_seconds()
+    assert ttl <= 900, f"token outlives the deadline that will stop Studio ({ttl}s)"
+    assert ttl > authentication.LINK_TOKEN_EXPIRE_SECONDS
+
+
 def test_nothing_is_injected_once_a_password_is_set():
     _seed_admin(must_change_password = False)
     out, nonce = studio_main._inject_bootstrap(_HTML, _App(bootstrap_password = _SEED))

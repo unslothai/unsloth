@@ -2284,6 +2284,13 @@ def _strip_crossorigin(html_bytes: bytes) -> bytes:
     return html.encode("utf-8")
 
 
+# A launch with no bootstrap deadline never shuts itself down, so the seed this
+# token replaces would have stayed usable for the life of the process. Long
+# enough that no first login reaches it, finite so the nonce row is still
+# reclaimed.
+SETUP_TOKEN_TTL_WITHOUT_DEADLINE = 7 * 24 * 60 * 60
+
+
 def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     """Inject a ONE-TIME setup token while the first password change is pending.
 
@@ -2337,20 +2344,42 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     try:
         from auth.authentication import create_link_token
         from auth.bootstrap_timeout import (
-            DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS,
             bootstrap_timeout_seconds,
+            should_arm_bootstrap_timeout,
         )
 
         # Live as long as the seeded credential itself would have been useful.
         # This token is minted when the setup page LOADS and redeemed when the
-        # operator submits the form, so a URL-handoff TTL would expire under
-        # anyone who opened Studio and came back to it a few minutes later --
-        # turning a working first login into an error the seed never produced.
-        # The bootstrap deadline is the natural bound: past it Studio shuts down
-        # anyway, so the token cannot outlive the window it replaces. A disabled
-        # deadline (0) falls back to the default rather than minting a token that
-        # never expires.
-        setup_ttl = bootstrap_timeout_seconds() or DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS
+        # operator submits the form, which can be much later, so the TTL has to
+        # follow whether this launch is going to shut itself down.
+        #
+        # Deadline armed: bound by it. Studio exits at that point, so the token
+        # cannot outlive the window the seed occupied, and a shorter life is free.
+        #
+        # Deadline NOT armed (the ordinary loopback `unsloth studio`): the
+        # process runs until stopped and the seed would have kept working the
+        # whole time, so an hour here would be a bound protecting nothing while
+        # turning "left the setup tab open over lunch" into an error the seed
+        # never produced. A week instead: no operator crosses it, and it still
+        # expires rather than persisting in the nonce table forever.
+        #
+        # should_arm_bootstrap_timeout is the same pure decision run.py makes, so
+        # the two cannot drift. Recomputed rather than read off the live deadline
+        # because run.py arms it AFTER the socket binds, so an early page load
+        # would otherwise read "no deadline" on a launch that is about to arm one.
+        # api_only/frontend_served are fixed here: reaching this code means the
+        # index is being served.
+        setup_ttl = SETUP_TOKEN_TTL_WITHOUT_DEADLINE
+        if should_arm_bootstrap_timeout(
+            host = getattr(app.state, "bind_host", "127.0.0.1"),
+            secure = bool(getattr(app.state, "secure", False)),
+            api_only = False,
+            frontend_served = True,
+            is_colab = _IS_COLAB,
+            requires_change = True,
+            timeout_seconds = bootstrap_timeout_seconds(),
+        ):
+            setup_ttl = bootstrap_timeout_seconds()
         link_token = create_link_token(storage.DEFAULT_ADMIN_USERNAME, expires_in = setup_ttl)
     except Exception:
         # No token means the page simply shows the ordinary login form; never
