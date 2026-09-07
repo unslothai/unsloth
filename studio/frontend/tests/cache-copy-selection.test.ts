@@ -4,10 +4,62 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { modelIdsMatch } from "../src/features/hub/lib/model-identity.ts";
 import {
   modelIdsMatchForPicker,
   soleQuantRowState,
 } from "../src/features/model-picker/components/model-selector/row-identity.ts";
+
+test("Hub carries the chat loader's physical target into resident and loading state", () => {
+  const source = readFileSync(
+    new URL("../src/features/hub/hub-page.tsx", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const activeCheckpoint =");
+  assert.ok(start >= 0);
+  const resident = new Function(
+    "checkpoint",
+    "residentCheckpoint",
+    "activeLoadId",
+    "isExternalModelId",
+    `${source.slice(start, source.indexOf(";", start) + 1)} return activeCheckpoint;`,
+  );
+  const repo = "Org/Model";
+  const path = "/old/hub/models--Org--Model/snapshots/abc";
+  assert.equal(
+    resident(repo, repo, path, () => false),
+    path,
+  );
+  assert.equal(
+    resident(repo, repo, null, () => false),
+    repo,
+  );
+  assert.equal(
+    resident(repo, null, path, () => false),
+    null,
+  );
+  const loadingStart = source.indexOf("const isLoadingThisModel = useMemo(");
+  const loadingEnd = source.indexOf("\n\n", loadingStart);
+  assert.ok(loadingStart >= 0 && loadingEnd > loadingStart);
+  const loading = new Function(
+    "useMemo",
+    "loadingModel",
+    "selectedModel",
+    "modelIdsMatch",
+    `${source.slice(loadingStart, loadingEnd)} return isLoadingThisModel;`,
+  );
+  for (const runId of [repo, path]) {
+    assert.equal(
+      loading(
+        (fn: () => boolean) => fn(),
+        { id: repo, loadId: path },
+        { resource: { runId } },
+        modelIdsMatch,
+      ),
+      runId === path,
+    );
+  }
+});
 
 test("the runtime loader and in-flight guard distinguish cache targets", () => {
   const source = readFileSync(

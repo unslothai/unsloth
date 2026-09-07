@@ -416,6 +416,7 @@ export function ModelsPage() {
   const { selectModel, loadingModel, loadProgress, ejectModel } =
     useChatModelRuntime();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const activeLoadId = useChatRuntimeStore((s) => s.activeLoadId);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
   // Resident, not merely picked. An image or video load evicts the chat model
   // and leaves the pick alone, so the cards kept saying "Loaded" for weights the
@@ -423,7 +424,7 @@ export function ModelsPage() {
   // stays as it was rather than flashing "On device" on every launch.
   const activeCheckpoint =
     checkpoint && !isExternalModelId(checkpoint) && residentCheckpoint !== null
-      ? checkpoint
+      ? activeLoadId || checkpoint
       : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeLoadedContextLength = useChatRuntimeStore(
@@ -1340,7 +1341,7 @@ export function ModelsPage() {
 
   const isLoadingThisModel = useMemo(() => {
     if (!loadingModel || !selectedModel) return false;
-    return modelIdsMatch(loadingModel.id, selectedModel.resource.runId);
+    return modelIdsMatch(loadingModel.loadId || loadingModel.id, selectedModel.resource.runId);
   }, [loadingModel, selectedModel]);
 
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
