@@ -30,7 +30,6 @@ actually expensive to lose.
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
@@ -38,55 +37,18 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-import pytest  # noqa: E402
 
 from core.inference import llama_preemption as preemption  # noqa: E402
 
-from test_llama_tool_loop_preempt_resume import (  # noqa: E402
-    _Recorder,
-    _RecordingPolicy,
-    _delta,
-    _done,
-    _finish,
-    _run,
+from .preempt_fakes import (  # noqa: E402
+    RecordingPolicy as _RecordingPolicy,
+    delta as _delta,
+    done as _done,
+    finish as _finish,
+    reasoning as _reasoning,
+    tool_call_chunk as _tool_call,
 )
-
-
-def _reasoning(text: str) -> str:
-    return (
-        "data: "
-        + json.dumps({"choices": [{"index": 0, "delta": {"reasoning_content": text}}]})
-        + "\n"
-    )
-
-
-def _tool_call(call_id: str, name: str, arguments: dict) -> str:
-    return (
-        "data: "
-        + json.dumps(
-            {
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": call_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": name,
-                                        "arguments": json.dumps(arguments),
-                                    },
-                                }
-                            ]
-                        },
-                    }
-                ]
-            }
-        )
-        + "\n"
-    )
+from .test_llama_tool_loop_preempt_resume import _Recorder, _run  # noqa: E402
 
 
 class TestAPauseMidThoughtKeepsTheThought:

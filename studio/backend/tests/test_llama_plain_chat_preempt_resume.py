@@ -23,121 +23,28 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import json
 import threading
 
 from core.inference import llama_preemption as preemption
-from core.inference.llama_cpp import LlamaCppBackend
+
+from .preempt_fakes import (
+    PreemptRecorder,
+    RecordingPolicy as _RecordingPolicy,
+    delta as _delta,
+    done as _done,
+    finish as _finish,
+    run_plain as _run,
+)
 
 
-def _delta(content: str) -> str:
-    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n"
-
-
-def _finish(reason: str = "stop") -> str:
-    return (
-        "data: "
-        + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
-        + "\n"
-    )
-
-
-def _done() -> str:
-    return "data: [DONE]\n"
-
-
-class _Recorder:
-    """A backend whose stream pauses itself partway through chosen attempts."""
-
-    def __init__(
-        self,
+def _Recorder(monkeypatch, streams, *, signal, pause_attempts = (0,)):
+    """The shared recorder on this file's port, pausing the first attempt by default."""
+    return PreemptRecorder(
         monkeypatch,
         streams,
-        *,
-        signal,
-        pause_attempts = (0,),
-    ):
-        self.payloads: list[dict] = []
-        self.signal = signal
-        self.pause_attempts = set(pause_attempts)
-        self._streams = [list(stream) for stream in streams]
-        self.backend = LlamaCppBackend.__new__(LlamaCppBackend)
-        backend = self.backend
-        backend._process = object()
-        backend._healthy = True
-        backend._port = 48849
-        backend._api_key = None
-        backend._effective_context_length = 4096
-        backend._supports_reasoning = False
-        backend._reasoning_always_on = False
-        backend._reasoning_style = "enable_thinking"
-        backend._supports_preserve_thinking = False
-
-        recorder = self
-
-        @contextlib.contextmanager
-        def fake_stream_with_retry(
-            _client,
-            _url,
-            payload,
-            _cancel_event,
-            headers = None,
-            first_token_deadline = None,
-            preempt_event = None,
-        ):
-            recorder.payloads.append(copy.deepcopy(payload))
-            yield type(
-                "FakeResponse", (), {"status_code": 200, "chunks": recorder._streams.pop(0)}
-            )()
-
-        def fake_iter_text_cancellable(
-            response,
-            _cancel_event,
-            first_token_deadline = None,
-            preempt_event = None,
-        ):
-            attempt = len(recorder.payloads) - 1
-            for chunk in response.chunks:
-                yield chunk
-                if attempt in recorder.pause_attempts and chunk.startswith("data: {"):
-                    recorder.signal.request("kv_pressure")
-                    raise preemption.LlamaStreamPreempted
-
-        monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
-        monkeypatch.setattr(backend, "_iter_text_cancellable", fake_iter_text_cancellable)
-        monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: False)
-
-
-class _RecordingPolicy:
-    def __init__(self, *, resume = True):
-        self.events: list[str] = []
-        self.checkpoints: list[preemption.StreamCheckpoint] = []
-        self._resume = resume
-
-    def should_preempt(self) -> bool:
-        return False
-
-    def on_preempted(self, checkpoint):
-        self.events.append("preempted")
-        self.checkpoints.append(checkpoint)
-
-    def await_resume(self, timeout = None) -> bool:
-        self.events.append("awaited")
-        return self._resume
-
-    def on_resumed(self) -> None:
-        self.events.append("resumed")
-
-
-def _run(backend, *, signal, policy, **kwargs):
-    return list(
-        backend.generate_chat_completion(
-            messages = [{"role": "user", "content": "write me a poem"}],
-            cancel_event = threading.Event(),
-            preempt_event = signal,
-            preempt_policy = policy,
-            **kwargs,
-        )
+        signal = signal,
+        pause_attempts = pause_attempts,
+        port = 48849,
     )
 
 

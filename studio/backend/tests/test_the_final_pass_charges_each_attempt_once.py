@@ -27,162 +27,45 @@ through and is resumed.
 
 from __future__ import annotations
 
-import contextlib
-import copy
-import json
 import threading
 
 from core.inference import llama_preemption as preemption
-from core.inference.llama_cpp import _TOKEN_REPORT_EVERY, LlamaCppBackend
+from core.inference.llama_cpp import _TOKEN_REPORT_EVERY
+
+from .preempt_fakes import (
+    DecliningPolicy as _RecordingPolicy,
+    PreemptRecorder,
+    delta as _delta,
+    done as _done,
+    finish as _finish,
+    tool_call as _tool_call,
+    web_search_tool,
+)
+
+_TOOL = web_search_tool()
 
 
-_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "search",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
-    },
-}
+def _Recorder(monkeypatch, streams, *, signal, pause_attempts, pause_after):
+    """The shared recorder on this file's port, preempting after a set chunk count."""
+    return PreemptRecorder(
+        monkeypatch,
+        streams,
+        signal = signal,
+        pause_attempts = pause_attempts,
+        pause_after = pause_after,
+        port = 48853,
+        execute_tool = True,
+    )
+
 
 # Enough chunks that the batched reporter fires at least once per attempt, and enough
 # beyond it that a carried-over counter reports a different number from a reset one.
 _CHUNKS_PER_ATTEMPT = _TOKEN_REPORT_EVERY + 8
 
 
-def _delta(content: str) -> str:
-    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n"
-
-
-def _finish(reason: str = "stop") -> str:
-    return (
-        "data: "
-        + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
-        + "\n"
-    )
-
-
-def _done() -> str:
-    return "data: [DONE]\n"
-
-
 def _answer_stream(letter: str) -> list[str]:
     """One character per chunk, which is what a token delta usually is."""
     return [_delta(letter) for _ in range(_CHUNKS_PER_ATTEMPT)] + [_finish(), _done()]
-
-
-def _tool_call(call_id: str = "call_search") -> list[str]:
-    return [
-        "data: "
-        + json.dumps(
-            {
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": call_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": "web_search",
-                                        "arguments": json.dumps({"query": "kernel"}),
-                                    },
-                                }
-                            ]
-                        },
-                    }
-                ]
-            }
-        )
-        + "\n",
-        _done(),
-    ]
-
-
-class _RecordingPolicy:
-    def __init__(self):
-        self.checkpoints: list[preemption.StreamCheckpoint] = []
-
-    def should_preempt(self) -> bool:
-        return False
-
-    def on_preempted(self, checkpoint) -> None:
-        self.checkpoints.append(checkpoint)
-
-    def await_resume(self, timeout = None) -> bool:
-        return True
-
-    def on_resumed(self) -> None:
-        return None
-
-    def on_declined(self) -> None:
-        return None
-
-
-class _Recorder:
-    """A backend that preempts a chosen attempt after a set number of chunks."""
-
-    def __init__(self, monkeypatch, streams, *, signal, pause_attempts, pause_after):
-        self.payloads: list[dict] = []
-        self.signal = signal
-        self.pause_attempts = set(pause_attempts)
-        self.pause_after = pause_after
-        self._streams = [list(stream) for stream in streams]
-        backend = LlamaCppBackend.__new__(LlamaCppBackend)
-        backend._process = object()
-        backend._healthy = True
-        backend._port = 48853
-        backend._api_key = None
-        backend._effective_context_length = 4096
-        backend._supports_reasoning = False
-        backend._reasoning_always_on = False
-        backend._reasoning_style = "enable_thinking"
-        backend._supports_preserve_thinking = False
-        self.backend = backend
-
-        recorder = self
-
-        @contextlib.contextmanager
-        def fake_stream_with_retry(
-            _client,
-            _url,
-            payload,
-            _cancel_event,
-            headers = None,
-            first_token_deadline = None,
-            preempt_event = None,
-        ):
-            recorder.payloads.append(copy.deepcopy(payload))
-            stream = recorder._streams.pop(0)
-            yield type("FakeResponse", (), {"status_code": 200, "chunks": stream})()
-
-        def fake_iter_text_cancellable(
-            response,
-            _cancel_event,
-            first_token_deadline = None,
-            preempt_event = None,
-        ):
-            attempt = len(recorder.payloads) - 1
-            seen = 0
-            for chunk in response.chunks:
-                yield chunk
-                if not chunk.startswith("data: {"):
-                    continue
-                seen += 1
-                if attempt in recorder.pause_attempts and seen >= recorder.pause_after:
-                    # Pressure noticed mid-stream, which is when it really is.
-                    recorder.signal.request("kv_pressure")
-                    raise preemption.LlamaStreamPreempted
-
-        monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
-        monkeypatch.setattr(backend, "_iter_text_cancellable", fake_iter_text_cancellable)
-        monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: False)
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool",
-            lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
-        )
 
 
 def _paused_final_run(monkeypatch, *, pause_attempts = (1,)):

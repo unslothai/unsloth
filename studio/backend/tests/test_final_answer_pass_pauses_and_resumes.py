@@ -22,185 +22,51 @@ the loop's one-round budget breaks it into the final pass, and that pass is what
 from __future__ import annotations
 
 import ast
-import contextlib
-import copy
-import json
 import pathlib
-import threading
 
 from core.inference import llama_preemption as preemption
-from core.inference.llama_cpp import LlamaCppBackend
+
+from .preempt_fakes import (
+    PreemptRecorder,
+    RecordingPolicy as _RecordingPolicy,
+    delta as _delta,
+    done as _done,
+    finish as _finish,
+    run_tool_loop,
+    tool_call as _tool_call,
+    web_search_tool,
+)
+
+_TOOL = web_search_tool()
 
 
-LLAMA_CPP = pathlib.Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-
-_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": "search",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
-    },
-}
-
-
-def _delta(content: str) -> str:
-    return "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n"
-
-
-def _finish(reason: str = "stop") -> str:
-    return (
-        "data: "
-        + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
-        + "\n"
-    )
-
-
-def _done() -> str:
-    return "data: [DONE]\n"
-
-
-def _tool_call(call_id: str = "call_search") -> list[str]:
-    return [
-        "data: "
-        + json.dumps(
-            {
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": call_id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": "web_search",
-                                        "arguments": json.dumps({"query": "kernel"}),
-                                    },
-                                }
-                            ]
-                        },
-                    }
-                ]
-            }
-        )
-        + "\n",
-        _done(),
-    ]
-
-
-class _RecordingPolicy:
-    """Stands in for the admission side. Records the handshake order."""
-
-    def __init__(self, *, resume = True):
-        self.events: list[str] = []
-        self.checkpoints: list[preemption.StreamCheckpoint] = []
-        self._resume = resume
-
-    def should_preempt(self) -> bool:
-        return False
-
-    def on_preempted(self, checkpoint):
-        self.events.append("preempted")
-        self.checkpoints.append(checkpoint)
-
-    def await_resume(self, timeout = None) -> bool:
-        self.events.append("awaited")
-        return self._resume
-
-    def on_resumed(self) -> None:
-        self.events.append("resumed")
-
-
-class _Recorder:
-    """A backend that pauses the stream of a chosen attempt partway through.
-
-    Attempt 0 is the tool round; attempt 1 is the final answering pass, which is the one
-    these tests are about.
-    """
-
-    def __init__(
-        self,
+def _Recorder(monkeypatch, streams, *, signal, pause_attempts = (1,)):
+    """Attempt 0 is the tool round; attempt 1 is the final answering pass, which is the
+    one these tests are about, so that is what pauses unless a caller says otherwise."""
+    return PreemptRecorder(
         monkeypatch,
         streams,
-        *,
-        signal,
-        pause_attempts = (1,),
-    ):
-        self.payloads: list[dict] = []
-        self.signal = signal
-        self.pause_attempts = set(pause_attempts)
-        self._streams = [list(stream) for stream in streams]
-        backend = LlamaCppBackend.__new__(LlamaCppBackend)
-        backend._process = object()
-        backend._healthy = True
-        backend._port = 48847
-        backend._api_key = None
-        backend._effective_context_length = 4096
-        backend._supports_reasoning = False
-        backend._reasoning_always_on = False
-        backend._reasoning_style = "enable_thinking"
-        backend._supports_preserve_thinking = False
-        self.backend = backend
-
-        recorder = self
-
-        @contextlib.contextmanager
-        def fake_stream_with_retry(
-            _client,
-            _url,
-            payload,
-            _cancel_event,
-            headers = None,
-            first_token_deadline = None,
-            preempt_event = None,
-        ):
-            recorder.payloads.append(copy.deepcopy(payload))
-            recorder.opened_with_signal.append(preempt_event)
-            stream = recorder._streams.pop(0)
-            yield type("FakeResponse", (), {"status_code": 200, "chunks": stream})()
-
-        def fake_iter_text_cancellable(
-            response,
-            _cancel_event,
-            first_token_deadline = None,
-            preempt_event = None,
-        ):
-            attempt = len(recorder.payloads) - 1
-            recorder.read_with_signal.append(preempt_event)
-            for chunk in response.chunks:
-                yield chunk
-                if attempt in recorder.pause_attempts and chunk.startswith("data: {"):
-                    # Pressure noticed mid-stream, which is when it really is.
-                    recorder.signal.request("kv_pressure")
-                    raise preemption.LlamaStreamPreempted
-
-        self.opened_with_signal: list[object] = []
-        self.read_with_signal: list[object] = []
-        monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
-        monkeypatch.setattr(backend, "_iter_text_cancellable", fake_iter_text_cancellable)
-        monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: False)
-        monkeypatch.setattr(
-            "core.inference.tools.execute_tool",
-            lambda name, arguments, **_kwargs: "Linux kernel 6.10.",
-        )
+        signal = signal,
+        pause_attempts = pause_attempts,
+        port = 48847,
+        execute_tool = True,
+    )
 
 
 def _run(recorder, *, signal, policy):
-    return list(
-        recorder.backend.generate_chat_completion_with_tools(
-            messages = [{"role": "user", "content": "what kernel is current?"}],
-            tools = [_TOOL],
-            cancel_event = threading.Event(),
-            preempt_event = signal,
-            preempt_policy = policy,
-            # One round, so the loop breaks mid-round into the synthesized final pass.
-            max_tool_iterations = 1,
-            permission_mode = "off",
-        )
+    return run_tool_loop(
+        recorder.backend,
+        signal = signal,
+        policy = policy,
+        tools = [_TOOL],
+        prompt = "what kernel is current?",
+        # One round, so the loop breaks mid-round into the synthesized final pass.
+        max_tool_iterations = 1,
+        permission_mode = "off",
     )
 
+
+LLAMA_CPP = pathlib.Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
 
 def _paused_final_run(monkeypatch, *, resume = True):
     signal = preemption.PreemptSignal()

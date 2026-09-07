@@ -47,21 +47,21 @@ from routes import chat_generation_runs as run_routes  # noqa: E402
 from routes import inference  # noqa: E402
 from storage import chat_generation_runs_db as runs_db  # noqa: E402
 
-from test_chat_generation_supervisor import durable_run  # noqa: E402, F401
-from test_llama_plain_chat_preempt_resume import (  # noqa: E402
+from .preempt_fakes import (  # noqa: E402
+    RecordingPolicy as _RecordingPolicy,
+    delta as _delta,
+    done as _done,
+    finish as _finish,
+)
+from .test_llama_plain_chat_preempt_resume import (  # noqa: E402
     _Recorder as _PlainRecorder,
+    _run as _run_plain,
 )
-from test_llama_plain_chat_preempt_resume import (  # noqa: E402
-    _RecordingPolicy,
-    _delta,
-    _done,
-    _finish,
-)
-from test_llama_plain_chat_preempt_resume import _run as _run_plain
-from test_llama_tool_loop_preempt_resume import (  # noqa: E402
+from .test_llama_tool_loop_preempt_resume import (  # noqa: E402
     _Recorder as _ToolRecorder,
+    _run as _run_tools,
 )
-from test_llama_tool_loop_preempt_resume import _run as _run_tools  # noqa: E402
+from test_chat_generation_supervisor import durable_run  # noqa: E402, F401
 
 
 def _nothing_yet() -> str:

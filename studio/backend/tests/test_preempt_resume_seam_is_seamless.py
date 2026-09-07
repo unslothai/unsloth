@@ -42,15 +42,18 @@ _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-from test_llama_plain_chat_preempt_resume import (  # noqa: E402
+from .preempt_fakes import (  # noqa: E402
+    RecordingPolicy as _RecordingPolicy,
+    delta as _delta,
+    done as _done,
+    finish as _finish,
+    reasoning as _reasoning,
+)
+from .test_llama_plain_chat_preempt_resume import (  # noqa: E402
     _Recorder as _PlainRecorder,
-    _RecordingPolicy,
-    _delta,
-    _done,
-    _finish,
     _run as _run_plain,
 )
-from test_llama_tool_loop_preempt_resume import (  # noqa: E402
+from .test_llama_tool_loop_preempt_resume import (  # noqa: E402
     _TOOL,
     _Recorder as _ToolRecorder,
     _run as _run_tools,
@@ -60,14 +63,6 @@ from test_llama_tool_loop_preempt_resume import (  # noqa: E402
 def _empty_delta() -> str:
     """A chunk with no text: what a pause lands on when it arrives before the first token."""
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": {}}]}) + "\n"
-
-
-def _reasoning(text: str) -> str:
-    return (
-        "data: "
-        + json.dumps({"choices": [{"index": 0, "delta": {"reasoning_content": text}}]})
-        + "\n"
-    )
 
 
 def _as_a_route_would(snapshots: list[str]) -> str:

@@ -16,11 +16,8 @@ On an upstream build without the flag every path here is the one that exists tod
 from __future__ import annotations
 
 import contextlib
-import copy
-import json
 import threading
 
-import httpx
 import pytest
 
 from core.inference import llama_cpp as llama_cpp_mod
@@ -32,6 +29,40 @@ from core.inference.llama_preemption import (
     get_preemption_controller,
     reset_preemption_controllers,
 )
+
+from .preempt_fakes import (
+    FakeResponse as _FakeResponse,
+    PreemptRecorder,
+    ServerHookPolicy as _HookPolicy,
+    delta as preempt_fakes_delta,
+    finish as preempt_fakes_finish,
+)
+
+
+def _delta(content: str) -> str:
+    return preempt_fakes_delta(content, terminator = "\n\n")
+
+
+def _finish(reason: str = "stop") -> str:
+    return preempt_fakes_finish(reason, terminator = "\n\n")
+
+
+def _Recorder(monkeypatch, chunks, *, server_preempts):
+    """A backend whose upstream stream is a scripted list of raw SSE chunks, read through
+    the REAL cancel-aware iterator so the comment lines take the real path.
+
+    ``patch_iter = False`` is that difference: every other preemption test replaces the
+    reader, and these tests are about what the reader itself does with a `: preempt`
+    comment, so it has to be the shipped one.
+    """
+    return PreemptRecorder(
+        monkeypatch,
+        [chunks],
+        patch_iter = False,
+        response_factory = _FakeResponse,
+        _server_preempts_kv = server_preempts,
+        _kv_cache_unified = True,
+    )
 
 
 @pytest.fixture(autouse = True)
@@ -236,94 +267,6 @@ class TestController:
 
 
 # ----------------------------------------------------------------------- the stream
-
-
-def _delta(content: str) -> str:
-    return (
-        "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": content}}]}) + "\n\n"
-    )
-
-
-def _finish(reason: str = "stop") -> str:
-    return (
-        "data: "
-        + json.dumps({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
-        + "\n\n"
-    )
-
-
-class _FakeResponse:
-    status_code = 200
-
-    def __init__(self, chunks):
-        self._chunks = list(chunks)
-
-    def iter_text(self):
-        yield from self._chunks
-
-    def close(self):
-        pass
-
-
-class _Recorder:
-    """A backend whose upstream stream is a scripted list of raw SSE chunks, read through
-    the REAL cancel-aware iterator so the comment lines take the real path."""
-
-    def __init__(self, monkeypatch, chunks, *, server_preempts):
-        self.payloads = []
-        backend = LlamaCppBackend.__new__(LlamaCppBackend)
-        backend._process = object()
-        backend._healthy = True
-        backend._port = 48851
-        backend._api_key = None
-        backend._effective_context_length = 4096
-        backend._supports_reasoning = False
-        backend._reasoning_always_on = False
-        backend._reasoning_style = "enable_thinking"
-        backend._supports_preserve_thinking = False
-        backend._server_preempts_kv = server_preempts
-        backend._kv_cache_unified = True
-        self.backend = backend
-        recorder = self
-
-        @contextlib.contextmanager
-        def fake_stream_with_retry(
-            _client,
-            _url,
-            payload,
-            _cancel_event,
-            headers = None,
-            **_kw,
-        ):
-            recorder.payloads.append(copy.deepcopy(payload))
-            yield _FakeResponse(chunks)
-
-        monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
-        monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: False)
-
-
-class _HookPolicy:
-    def __init__(self):
-        self.events = []
-
-    def should_preempt(self):
-        return False
-
-    def on_preempted(self, checkpoint):
-        self.events.append("preempted")
-
-    def await_resume(self, timeout = None):
-        self.events.append("awaited")
-        return True
-
-    def on_resumed(self):
-        self.events.append("resumed")
-
-    def on_server_parked(self):
-        self.events.append("server-parked")
-
-    def on_server_resumed(self):
-        self.events.append("server-resumed")
 
 
 def _client_view(events):
