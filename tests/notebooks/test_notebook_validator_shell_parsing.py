@@ -1700,8 +1700,6 @@ def test_notebook_validator_reads_the_compatible_release_ceiling():
         assert nv.rule_inst_004_torchcodec_torch(cell, COLAB_TORCH211, "nb.ipynb", 0) == [], cell
 
 
-
-
 def _git_plus_rules(line: str) -> list[str]:
     nv = _load_notebook_validator_module()
     return [f.rule for f in nv.rule_inst_001_git_plus(line, "t.ipynb", 0)]
@@ -1765,8 +1763,6 @@ def test_an_arm_close_paren_is_not_stripped_off_a_substitution():
     assert nv._substitution_bodies(text) == ["pip install git+https://e.com/p.git"]
     # A real group still loses its brackets.
     assert nv._unwrap_shell_group("( pip install x )")[0] == "pip install x"
-
-
 
 
 def test_operators_inside_a_parameter_expansion_stay_literal():
