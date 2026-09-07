@@ -289,6 +289,16 @@ function Get-StudioPython {
     return $null
 }
 
+# The venv the RUNNING Studio uses, not the default location. Get-StudioPython
+# already resolves a custom home and the legacy layout; the inventory and the
+# event scoping must agree on this directory or a runtime under a custom home
+# is inventoried in one place and counted as foreign in the other.
+function Resolve-VenvDir {
+    $studioPython = Get-StudioPython
+    if ($studioPython) { return (Split-Path -Parent (Split-Path -Parent $studioPython)) }
+    return $VENV_DIR
+}
+
 function Test-StudioResponding([int] $port) {
     try {
         $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/liveness" -TimeoutSec 5 -UseBasicParsing
@@ -634,7 +644,7 @@ function Invoke-Run {
     # From the interpreter that actually runs Studio when there is one, so a
     # custom home or an older layout is inventoried rather than guessed at.
     $studioPython = Get-StudioPython
-    $venvDir = if ($studioPython) { Split-Path -Parent (Split-Path -Parent $studioPython) } else { $VENV_DIR }
+    $venvDir = Resolve-VenvDir
     Write-Host "venv: $venvDir"
     $venvInventory = @(Get-SignatureInventory $venvDir)
     ConvertTo-Json -InputObject @($venvInventory) -Depth 4 |
@@ -775,7 +785,7 @@ function Invoke-Collect {
     # the root. Resolved the same way the inventory resolves it, so a runtime
     # chosen in Studio settings is scoped in rather than counted as foreign.
     $tail = (Resolve-LlamaDir $dir) -replace '^[A-Za-z]:', ''
-    $venvTail = $VENV_DIR -replace '^[A-Za-z]:', ''
+    $venvTail = (Resolve-VenvDir) -replace '^[A-Za-z]:', ''
     $shaped = @($events | ForEach-Object {
         $msg = $_.Message
         $scope =

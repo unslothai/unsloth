@@ -635,7 +635,7 @@ def test_studio_logs_reach_the_evidence_only_through_the_backend_redactor(tmp_pa
 
 def test_the_powershell_probe_rejects_empty_inventories_and_keeps_reverting():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    assert "no PE files found under $llamaDir" in ps1
+    assert "no PE files found under ${llamaDir}:" in ps1
     revert = ps1[ps1.index("function Invoke-Revert") :]
     assert "$policyError = $_" in revert
     assert revert.index("$policyError = $_") < revert.index(
@@ -768,8 +768,14 @@ def test_collect_judges_the_load_step_not_the_exit_code():
 
 def test_the_venv_inventory_comes_from_the_running_interpreter_and_cannot_be_empty():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    assert "$venvDir = if ($studioPython) { Split-Path -Parent (Split-Path -Parent $studioPython) } else { $VENV_DIR }" in ps1
+    assert "function Resolve-VenvDir" in ps1
+    assert "$venvDir = Resolve-VenvDir" in ps1
     assert "no PE files found under $venvDir" in ps1
+    # The event scoping in collect must resolve the venv the same way the
+    # inventory does, or a custom-home venv is counted as somebody else's.
+    collect = ps1[ps1.index("function Invoke-Collect") : ps1.index("function Invoke-Revert")]
+    assert "$venvTail = (Resolve-VenvDir) -replace" in collect
+    assert "$VENV_DIR -replace" not in collect
 
 
 def test_the_readme_clones_a_durable_ref():
