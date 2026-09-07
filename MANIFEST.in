@@ -11,6 +11,26 @@ prune studio/frontend/tests
 prune unsloth_cli/tests
 prune unsloth/kernels/moe/tests
 
+# Frontend pre-build tree. public/ is copied into frontend/dist by Vite, so
+# shipping both put all 99 of its files in the wheel twice; src/ is .tsx that is
+# already compiled into dist/assets. Only frontend/dist is served at runtime.
+# Keep these in step with exclude-package-data in pyproject.toml: that entry
+# covers the wheel built in place, this one covers the wheel `python -m build`
+# rebuilds from the sdist.
+prune studio/frontend/public
+prune studio/frontend/src
+exclude studio/frontend/package-lock.json
+
+# Desktop crate. `tauri build` reads these from a git checkout in
+# release-desktop.yml, never from the published wheel. src-tauri/icons is
+# deliberately absent here: install.sh copies icon.icns and icon.png out of
+# site-packages to build the macOS and Linux launchers.
+prune studio/src-tauri/src
+prune studio/src-tauri/linux
+prune studio/src-tauri/windows
+prune studio/src-tauri/dmg
+prune studio/src-tauri/capabilities
+
 # Backstop for a suite added anywhere else later. `prune` and a `*` glob are both
 # single-level, so this needs `**`, and it cannot see a root-level tests/ at all.
 global-exclude */tests/**
