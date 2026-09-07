@@ -14,13 +14,16 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import threading
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from core.inference.sse_control_frames import (
     is_ui_control_sse_line,
+    ServerToolCallStripper,
     strip_server_executed_tool_call,
 )
 from routes.inference import (
@@ -358,7 +361,7 @@ def test_the_relay_only_strips_calls_the_loop_owns():
     src = inspect.getsource(_proxy_to_external_provider)
     assert "if not _ui_events and policy is not None:" in src
     assert "if not _ui_events and run_studio_tool_loop:" in src
-    assert src.count("strip_server_executed_tool_call(line)") == 2
+    assert src.count("_tool_call_stripper.strip(line)") == 2
 
 
 def test_a_legacy_function_call_is_left_for_the_caller():
@@ -373,6 +376,86 @@ def test_a_legacy_function_call_is_left_for_the_caller():
     # And a finish_reason with no call withheld beside it is the caller's own turn ending.
     plain = 'data: {"choices": [{"index": 0, "delta": {"content": "x"}, "finish_reason": "stop"}]}'
     assert strip_server_executed_tool_call(plain) == plain
+
+
+def test_a_stop_that_only_looks_final_is_held_back_too():
+    # llama.cpp and vLLM finish a perfectly good structured tool call on "stop", and the
+    # loop deliberately runs those (studio_tool_loop keeps "stop" out of its `truncated`
+    # set). Stripping only the call leaves an empty chunk marked finish_reason "stop", so
+    # a client that ends its turn on the first finish_reason never reads the answer the
+    # loop is about to stream: the same lost reply the frame gate exists to prevent.
+    stripper = ServerToolCallStripper()
+    call = (
+        'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, '
+        '"id": "c1", "type": "function", "function": {"name": "python", '
+        '"arguments": "{}"}}]}, "finish_reason": null}]}'
+    )
+    end = 'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}'
+
+    # The call chunk carries nothing else, so it drops entirely, as it already did.
+    assert stripper.strip(call) is None
+    # New: so does the "stop" that closes the turn that call belonged to. Without this
+    # the caller gets an empty chunk marked finish_reason "stop" and ends the turn there.
+    assert stripper.strip(end) is None
+    # The loop's next turn is the caller's to read, finish_reason and all.
+    answer = 'data: {"choices": [{"index": 0, "delta": {"content": "56088"}}]}'
+    assert stripper.strip(answer) == answer
+    assert stripper.strip(end) == end
+
+
+def test_a_stop_the_loop_will_not_run_past_stays_final():
+    # "length" and "content_filter" are the two the loop refuses to run (a call cut off at
+    # the token ceiling may be half-written), so that turn really is the last one and its
+    # finish_reason has to reach the caller.
+    for reason in ("length", "content_filter"):
+        stripper = ServerToolCallStripper()
+        call = (
+            'data: {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, '
+            '"id": "c1", "type": "function", "function": {"name": "python"}}]}}]}'
+        )
+        stripper.strip(call)
+        end = ('data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "%s"}]}'
+               % reason)
+        assert json.loads(stripper.strip(end)[5:])["choices"][0]["finish_reason"] == reason
+
+
+def test_a_turn_with_no_withheld_call_keeps_its_own_stop():
+    # The state is per turn, not per stream: an ordinary turn must be relayed untouched.
+    stripper = ServerToolCallStripper()
+    for line in (
+        'data: {"choices": [{"index": 0, "delta": {"content": "hi"}}]}',
+        'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}',
+    ):
+        assert stripper.strip(line) == line, line
+
+
+def test_a_process_wide_tools_on_flag_does_not_refuse_a_plain_request():
+    # `unsloth studio run --enable-tools` fills the tool-policy OVERRIDE slot, not the
+    # default one, so _tools_on_by_launcher_default_only stops answering for it. Reading
+    # that narrower predicate here would 400 every ordinary OpenAI stream on that
+    # launcher -- `unsloth chat`'s own included, which sends no tool fields and no header.
+    # Which slot the operator used is not something the caller can see or act on.
+    payload = _gate_payload(enable_tools = None, enabled_tools = None)
+    for policy in (None, True):
+        with mock.patch("state.tool_policy.get_tool_policy", return_value = policy):
+            assert _confirm_gate_has_no_channel(payload, False, ["python"]) is False
+            # Tools are withdrawn for that stream instead, the same way the launcher
+            # default is, so the loop it could not be prompted for never opens.
+            assert _launcher_tool_default_applies(payload, False) is False
+    # A request that asked for tools itself is still refused: it can be told about the
+    # header, and it is the one the gate was written for.
+    asked = _gate_payload(enable_tools = True, enabled_tools = ["python"])
+    for policy in (None, True):
+        with mock.patch("state.tool_policy.get_tool_policy", return_value = policy):
+            assert _confirm_gate_has_no_channel(asked, False, ["python"]) is True
+
+
+def test_a_disabled_tool_policy_can_never_prompt():
+    # --disable-tools vetoes even an explicit enable_tools, so no loop opens and nothing
+    # can prompt. Refusing there would 400 a request that would have run fine.
+    asked = _gate_payload(enable_tools = True, enabled_tools = ["python"])
+    with mock.patch("state.tool_policy.get_tool_policy", return_value = False):
+        assert _confirm_gate_has_no_channel(asked, False, ["python"]) is False
 
 
 def test_the_selected_catalog_beats_a_stale_mcp_flag():
@@ -392,7 +475,7 @@ def test_a_stripped_call_still_paces_a_keepalive():
     # Same trap as the gated frames: a long argument stream drops every fragment and keeps
     # the loop's stall timer from firing, so the relay must write something.
     src = inspect.getsource(_proxy_to_external_provider)
-    assert src.count("strip_server_executed_tool_call(line)") == 2
+    assert src.count("_tool_call_stripper.strip(line)") == 2
     # Each strip that drops the line pairs with the paced keepalive before continuing.
     assert src.count("if line is None:") == 2
     stripped_blocks = src.count("_drop_keepalive.due()")

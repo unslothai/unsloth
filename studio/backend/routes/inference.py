@@ -3215,7 +3215,7 @@ from core.inference.external_provider import ExternalProviderClient
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
     is_ui_control_sse_line,
-    strip_server_executed_tool_call,
+    ServerToolCallStripper,
 )
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
@@ -3689,6 +3689,27 @@ def _tools_on_by_launcher_default_only(payload) -> bool:
     )
 
 
+def _tools_on_by_process_policy_only(payload) -> bool:
+    """True when tools are on only because the PROCESS says so: the request asked for none.
+
+    The wider sibling of _tools_on_by_launcher_default_only, which reads the same request
+    fields but additionally insists the process installed no CLI override. That extra
+    condition is right where the question is "may the launcher default answer for this
+    request", and wrong where it is "can this caller be prompted at all": `unsloth studio
+    run --enable-tools` fills the override slot rather than the default one, so under it
+    every ordinary OpenAI stream -- `unsloth chat`'s own included -- states no tool intent,
+    inherits the full catalogue, and would be refused for a gate it never asked to open.
+    Which slot the operator used is not something the caller can see or act on, so it must
+    not decide whether the caller is served.
+    """
+    from state.tool_policy import get_tool_policy
+    return (
+        get_tool_policy() is not False
+        and payload.enable_tools is None
+        and not getattr(payload, "mcp_enabled", False)
+    )
+
+
 def _request_states_tool_intent(payload) -> bool:
     """True when a request states its own tool intent through the standard
     OpenAI fields: a `tool_choice: "none"` withdrawal, its own tool catalog,
@@ -3974,7 +3995,15 @@ def _tool_calls_are_disabled(payload) -> bool:
     "none" and the per-message budget is unspent, and discards a call a provider emits
     under "none" anyway. The selector does not read either field, so a catalogue can be
     non-empty while nothing in it is reachable.
+
+    A `--disable-tools` process policy is the third way: it vetoes even an explicit
+    enable_tools (see _explicit_studio_tool_loop_requested), so no loop opens and nothing
+    can prompt. The per-backend branches already guard on that, but this predicate is
+    about whether a prompt CAN fire, and under that policy it cannot.
     """
+    from state.tool_policy import get_tool_policy
+    if get_tool_policy() is False:
+        return True
     if getattr(payload, "tool_choice", None) == "none":
         return True
     return getattr(payload, "max_tool_calls_per_message", None) == 0
@@ -4007,12 +4036,13 @@ def _confirm_gate_has_no_channel(
         return False
     if _tool_calls_are_disabled(payload):
         return False
-    if _tools_on_by_launcher_default_only(payload):
+    if _tools_on_by_process_policy_only(payload):
         # The request never asked for tools, so it cannot be asked to know about the
-        # header either. `unsloth studio run` installs a tools-on default, and refusing
-        # here would 400 every ordinary OpenAI request on that launcher. The default is
-        # withdrawn for this caller instead (see _launcher_tool_default_applies), so the
-        # loop it could not be prompted for never opens.
+        # header either. `unsloth studio run` turns tools on for the process -- as a
+        # default, or as an override under --enable-tools -- and refusing here would 400
+        # every ordinary OpenAI request on that launcher, `unsloth chat`'s own included.
+        # Tools are withdrawn for this caller instead (see _launcher_tool_default_applies),
+        # so the loop it could not be prompted for never opens.
         return False
     if getattr(payload, "permission_mode", None) is None:
         payload = _AutoPermissionMode(payload)
@@ -4029,7 +4059,7 @@ def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
     answer would park the caller in wait_tool_decision on the first high-risk call.
     Plain chat is what such a request asked for and what it gets.
     """
-    if not _tools_on_by_launcher_default_only(payload):
+    if not _tools_on_by_process_policy_only(payload):
         return True
     if _request_states_tool_intent(payload):
         return False
@@ -19450,6 +19480,8 @@ async def _proxy_to_external_provider(
     # the same per-request answer (see UI_STREAM_EVENTS_HEADER).
     _ui_events = _ui_stream_events_enabled(request)
     _drop_keepalive = _DroppedFrameKeepalive()
+    # One per request: it carries the withheld-call state across the lines of a turn.
+    _tool_call_stripper = ServerToolCallStripper()
     # Unsloth's UI asks for the gate by permission_mode, not by confirm_tool_calls,
     # so reading the raw flag admits the exact request the local routes reject: a
     # non-streaming permission_mode="ask" with the flag omitted proxies through
@@ -19835,7 +19867,7 @@ async def _proxy_to_external_provider(
                     if not _ui_events and policy is not None:
                         # policy is set only when the loop owns the catalogue, so a call
                         # here is one this server runs, not one to hand to the caller.
-                        line = strip_server_executed_tool_call(line)
+                        line = _tool_call_stripper.strip(line)
                         if line is None:
                             # A long argument stream drops every fragment here and, like a
                             # gated frame, keeps the loop's stall timer from firing.
@@ -20164,7 +20196,7 @@ async def _proxy_to_external_provider(
                 if not _ui_events and run_studio_tool_loop:
                     # Only inside the loop: on a plain proxy the calls are the caller's
                     # own and must pass through untouched.
-                    line = strip_server_executed_tool_call(line)
+                    line = _tool_call_stripper.strip(line)
                     if line is None:
                         if _drop_keepalive.due():
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE

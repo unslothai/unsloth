@@ -157,7 +157,7 @@ def is_ui_control_sse_line(line: str) -> bool:
     return not any(key in payload for key in _SUBSTANTIVE_KEYS)
 
 
-def strip_server_executed_tool_call(line: str) -> str | None:
+def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> str | None:
     """Hold a call the server runs itself back from a caller that did not opt in.
 
     ``stream_with_studio_tools`` relays the provider's own ``delta.tool_calls`` and the
@@ -168,6 +168,14 @@ def strip_server_executed_tool_call(line: str) -> str | None:
     answer. Returns the line with the call and that finish_reason removed, or None when
     nothing worth relaying was left.
 
+    ``pending_call`` says a call was already withheld earlier in this turn, which makes a
+    ``finish_reason: "stop"`` on this line just as misleading as "tool_calls": llama.cpp
+    and vLLM routinely end a perfectly good tool call on "stop" and the loop deliberately
+    runs those (see studio_tool_loop's ``truncated`` rule), so the turn has not finished
+    either. Callers that track the turn use ``ServerToolCallStripper`` rather than passing
+    this by hand. "length" and "content_filter" are left alone on purpose: those are the
+    two the loop refuses to run, so that turn really is the last one.
+
     Only for the Unsloth-tool-loop path. On a plain proxy the calls are the caller's own
     and must pass through untouched.
     """
@@ -176,6 +184,7 @@ def strip_server_executed_tool_call(line: str) -> str | None:
     if not isinstance(choices, list) or not choices:
         return line
 
+    not_really_final = ("tool_calls", "stop") if pending_call else ("tool_calls",)
     changed = False
     kept_choices = []
     for choice in choices:
@@ -192,7 +201,7 @@ def strip_server_executed_tool_call(line: str) -> str | None:
                 src = {k: v for k, v in src.items() if k != "tool_calls"}
                 choice[src_key] = src
                 withheld = True
-        if choice.get("finish_reason") == "tool_calls":
+        if choice.get("finish_reason") in not_really_final:
             # The arguments arrive in earlier chunks and this one usually carries an empty
             # delta, so it cannot be keyed on a call withheld here. Not a rename either:
             # the turn has not finished, the loop answers in the next one. A legacy call
@@ -208,6 +217,64 @@ def strip_server_executed_tool_call(line: str) -> str | None:
     if not _choices_say_anything(kept_choices) and "usage" not in payload:
         return None
     return "data: " + json.dumps(payload, separators = (",", ":"))
+
+
+def _line_offers_tool_call(line: str) -> bool:
+    """Whether this line carries a ``tool_calls`` fragment at all."""
+    payload = _sse_payload(line)
+    choices = payload.get("choices") if payload else None
+    if not isinstance(choices, list):
+        return False
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        for src_key in ("delta", "message"):
+            src = choice.get(src_key)
+            if isinstance(src, dict) and src.get("tool_calls"):
+                return True
+    return False
+
+
+class ServerToolCallStripper:
+    """``strip_server_executed_tool_call`` with the one bit of turn state it needs.
+
+    A turn whose calls this server runs is not over when the provider says it is, and the
+    provider does not always say "tool_calls": llama.cpp and vLLM finish a structured call
+    on "stop", which the loop runs anyway. Stripping only the call then leaves a caller
+    holding an empty chunk marked ``finish_reason: "stop"``, and a client that ends the
+    turn there never reads the answer the loop is about to stream -- the same lost reply
+    the control-frame gate exists to prevent, arrived at from the other side.
+
+    So remember, per stream, that a call was withheld and no reply has followed it, and
+    treat the "stop" that closes that turn the way "tool_calls" is already treated. The
+    next turn opens with the flag clear, so its own finish_reason is relayed untouched.
+    """
+
+    def __init__(self) -> None:
+        self._pending_call = False
+
+    def strip(self, line: str) -> str | None:
+        offers_call = _line_offers_tool_call(line)
+        out = strip_server_executed_tool_call(line, pending_call = self._pending_call)
+        if offers_call:
+            self._pending_call = True
+        elif self._pending_call and _line_ends_turn(line):
+            # The turn the withheld call belonged to has closed. Whatever the loop does
+            # next opens a turn of its own, whose finish_reason is the caller's to read.
+            self._pending_call = False
+        return out
+
+
+def _line_ends_turn(line: str) -> bool:
+    """Whether this line carries any finish_reason, i.e. closes the provider's turn."""
+    payload = _sse_payload(line)
+    choices = payload.get("choices") if payload else None
+    if not isinstance(choices, list):
+        return False
+    return any(
+        isinstance(choice, dict) and choice.get("finish_reason") is not None
+        for choice in choices
+    )
 
 
 def _choices_say_anything(choices: list[Any]) -> bool:
