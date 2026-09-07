@@ -6962,7 +6962,7 @@ def install_python_stack() -> int:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
         else:
             base_total += 1  # torch flavor invariant (step 13w), Windows
-    if IS_MAC_ARM:
+    if IS_MAC_ARM and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
@@ -7047,7 +7047,9 @@ def install_python_stack() -> int:
     # unsloth + unsloth-zoo, and it never installs MLX by name. Gating it left
     # fresh installs resolving MLX transitively, so nothing held tokenizers in
     # mlx-lm's <=0.23.0 window and Train/Export came up off until update ran.
-    if IS_MAC_ARM:
+    # Still gated on NO_TORCH: these are direct args, so NO_TORCH_SKIP_PACKAGES
+    # cannot filter them, and GGUF-only installs must not gain a training stack.
+    if IS_MAC_ARM and not NO_TORCH:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
             "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",
