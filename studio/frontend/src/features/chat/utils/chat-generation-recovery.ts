@@ -88,6 +88,53 @@ export function generationIsSettled(
   return status !== null && TERMINAL.has(status) && cursor >= lastEventSeq;
 }
 
+/** One follower update, as far as the publish decision is concerned: how far this follower has
+ *  folded, what the run's row says now, and how far the run itself had got when this tab attached. */
+export type RecoveryCatchUpUpdate = {
+  cursor: number;
+  status: StoredGenerationStatus;
+  lastEventSeq: number;
+};
+
+/** Decides whether a follower shows an update or merely folds it.
+ *
+ *  A follower attaches to a run already under way, so most of what it reads was written before it
+ *  existed. Those frames are the reply AS IT STANDS, not a stream to watch: publishing each one
+ *  re-typed the whole answer in front of the reader, one awaited storage write per frame, so a
+ *  reopened tab replayed a generation it had missed instead of opening on where that generation
+ *  now is. Everything at or below the watermark this tab attached at therefore folds silently into
+ *  the accumulator, and the first update past it publishes the whole caught-up reply in one write.
+ *  From there every frame is genuinely live and shows as it arrives. A run that had already settled
+ *  when the tab opened has nothing above the watermark, so `settled` overrides the fold: its whole
+ *  history is what the reader must see, once. */
+export function createRecoveryCatchUpGate(): {
+  /** Whether to write and render this update. `changed` is whether folding it changed the reply. */
+  shouldPublish(update: RecoveryCatchUpUpdate, changed: boolean): boolean;
+} {
+  // Armed by the first update, which is always the run's snapshot: its `lastEventSeq` is the live
+  // edge as seen on arrival, so everything at or under it predates this reader.
+  let watermark = -1;
+  let lastPublishedStatus = "";
+  return {
+    shouldPublish(update, changed) {
+      if (watermark < 0) watermark = update.lastEventSeq;
+      const settled = generationIsSettled(
+        update.status,
+        update.cursor,
+        update.lastEventSeq,
+      );
+      // History folds. The frame at the live edge is where showing resumes, and a settled run has
+      // no live edge to wait for.
+      if (!settled && update.cursor < watermark) return false;
+      if (changed || settled || update.status !== lastPublishedStatus) {
+        lastPublishedStatus = update.status;
+        return true;
+      }
+      return false;
+    },
+  };
+}
+
 export async function loadGenerationOverlaySnapshot<TMessage, TRun>(
   threadId: string,
   listActiveRuns: (id: string) => Promise<TRun[]>,

@@ -111,6 +111,7 @@ import {
   generationChunkCountsTowardTiming,
   generationChunkHasSubstantiveDelta,
   generationIsCorroboratedLive,
+  createRecoveryCatchUpGate,
   threadHasDurableGenerationRun,
   generationNeedsRecovery,
   isLiveGenerationRun,
@@ -995,7 +996,11 @@ function scheduleGenerationRecovery(
     };
 
     try {
-      let lastPublishedStatus = "";
+      // Frames written before this tab attached are history, not a stream: the gate folds them
+      // into `replay` without publishing, so a reopened tab opens on the reply as it stands and then
+      // streams from there instead of re-typing everything it missed. It also decides when a fold
+      // has caught up with the live edge and is worth one write.
+      const catchUp = createRecoveryCatchUpGate();
       let identityValidated = false;
       // The follower reports its no-progress deadline by throwing, and the settlement below is
       // exactly what must happen then; without this catch the message stays running forever.
@@ -1056,8 +1061,18 @@ function scheduleGenerationRecovery(
                   currentMetadata,
                   chunk._reasoningDurationMs,
                 );
-                lastPublishedStatus = update.run.status;
-                await publish(update.run);
+                if (
+                  catchUp.shouldPublish(
+                    {
+                      cursor,
+                      status: update.run.status,
+                      lastEventSeq: update.run.lastEventSeq,
+                    },
+                    true,
+                  )
+                ) {
+                  await publish(update.run);
+                }
                 continue;
               }
               if (generationChunkCountsTowardTiming(chunk)) {
@@ -1085,13 +1100,16 @@ function scheduleGenerationRecovery(
               replayChanged = replay.applyChunk(update.event.payload) || replayChanged;
             }
           }
-          const shouldPublish =
-            replayChanged ||
-            update.run.status !== lastPublishedStatus ||
-            (["cancelled", "completed", "failed"].includes(update.run.status) &&
-              cursor >= update.run.lastEventSeq);
-          if (shouldPublish) {
-            lastPublishedStatus = update.run.status;
+          if (
+            catchUp.shouldPublish(
+              {
+                cursor,
+                status: update.run.status,
+                lastEventSeq: update.run.lastEventSeq,
+              },
+              replayChanged,
+            )
+          ) {
             await publish(update.run);
           }
           if (isTerminalChatGenerationRun(update.run)) {
