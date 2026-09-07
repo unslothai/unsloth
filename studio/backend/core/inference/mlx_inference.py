@@ -993,10 +993,10 @@ def _generation_step(*, vision: bool, drafted: bool):
 def _generation_default(setting: str, fallback: int, *, vision: bool, drafted: bool) -> int:
     """A prefill setting as the runtime that would run generation defaults to it.
 
-    Studio passes neither ``prefill_step_size`` nor ``kv_group_size``, so a load runs at
-    whichever default its runtime ships. Reading them beats restating them in a second
-    constant that can drift apart: a drafter alone moves the chunk from 2048 to 512, which
-    the memory estimate would price four times over on the quantized-cache path.
+    Where Studio passes the setting itself, the caller answers instead; the rest of the time a
+    load runs at whichever default its runtime ships. Reading them beats restating them in a
+    second constant that can drift apart: a drafter alone moves the chunk from 2048 to 512,
+    which the memory estimate would price four times over on the quantized-cache path.
     """
     import inspect
     try:
@@ -1013,8 +1013,28 @@ def _generation_default(setting: str, fallback: int, *, vision: bool, drafted: b
         return fallback
 
 
+def mlx_vlm_prefills_on_the_snapshot_grid() -> bool:
+    """Whether a vision load pins its prefill step rather than taking mlx-vlm's own default.
+
+    ``_vlm_prompt_cache_session`` pins it so a reused turn chunks the rows an unreused one did,
+    which makes the pinned step the one a vision load really runs at wherever that store can be
+    built. The store's remaining test needs the model, and the loads it turns away -- diffusion
+    -- are refused before anything sizes them.
+    """
+    if _prompt_cache_max_bytes() <= 0:
+        return False
+    try:
+        from mlx_vlm.generate import GenerationResult
+    except Exception as exc:
+        logger.debug("Cannot tell whether mlx-vlm carries the snapshot grid: %s", exc)
+        return False
+    return hasattr(GenerationResult, "cached_tokens")
+
+
 def mlx_prefill_chunk(*, vision: bool = False, drafted: bool = False) -> int:
     """Most tokens one prefill step takes; the last step of a prompt may be shorter."""
+    if vision and mlx_vlm_prefills_on_the_snapshot_grid():
+        return VLM_PROMPT_CACHE_PREFILL_STEP
     return _generation_default(
         "prefill_step_size", MLX_PREFILL_CHUNK_FALLBACK, vision = vision, drafted = drafted
     )

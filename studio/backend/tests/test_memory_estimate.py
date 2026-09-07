@@ -3775,6 +3775,134 @@ class TestComputeBytes:
         )
 
 
+@_NEEDS_MLX
+class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
+    """unsloth-zoo routes each call between a score matrix and a dequantized copy of the cache,
+    and the two cost differently enough that pricing the wrong one is pricing another load."""
+
+    # hidden, intermediate, heads, kv heads, head width.
+    GQA = (3584, 18944, 32, 8, 128, 0)
+    MHA = (3584, 18944, 32, 32, 128, 0)
+    WIDE = (3584, 18944, 16, 2, 256, 0)
+
+    @pytest.mark.parametrize(
+        "widths, chunk, copies",
+        [
+            (GQA, 2048, True),
+            (GQA, 256, True),
+            # Ungrouped, the copy is HQ rows rather than HKV, so the tie sits above this step.
+            (MHA, 2048, True),
+            (MHA, 256, False),
+            # mlx has no fused kernel at this head width, so the runtime scores it either way.
+            (WIDE, 2048, False),
+            (WIDE, 256, False),
+        ],
+    )
+    def test_both_halves_of_the_wrappers_choice_are_asked(self, widths, chunk, copies):
+        assert (mm._dequantized_row_bytes(widths, 2, 4, 64, chunk) is not None) is copies
+
+    def test_the_copy_charged_is_the_cache_the_wrapper_would_make(self):
+        import mlx.core as mx
+
+        from unsloth_zoo.mlx.attention import _row_bytes
+
+        cache = mx.quantize(mx.zeros((1, 8, 1, 128), dtype = mx.bfloat16), group_size = 64, bits = 4)
+        # Keys and values both, and dequantized plus packed: the packed half is the compaction
+        # a prefix view pays before it can be dequantized at all.
+        assert mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048) == (
+            2 * 8 * _row_bytes(cache, 64, mx.bfloat16)
+        )
+
+    def test_a_copied_route_is_charged_the_copy_and_not_the_scores(self):
+        row = mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
+        floor = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, None)
+        priced = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, 2048, 4, 64)
+        scores = mm._widest_quantized_scores(32768, 2048, 2048) * 32 * mm._QUANT_SCORE_DTYPE_SIZE
+        assert priced - floor == row * 32768 < scores
+
+    def test_the_decode_step_still_scores_where_that_is_the_wider_of_the_two(self):
+        # One cached row against 128 query heads: the copy is small and the decode step is not.
+        widths = (3584, 18944, 128, 1, 64, 0)
+        row = mm._dequantized_row_bytes(widths, 2, 8, 64, 2048)
+        floor = mm._compute_bytes(widths, 2, 2048, [], 32768, None)
+        charged = mm._compute_bytes(widths, 2, 2048, [], 32768, 2048, 8, 64) - floor
+        assert row is not None and charged == (32769) * 128 * mm._QUANT_SCORE_DTYPE_SIZE
+        assert charged > row * 32768
+
+    def test_a_zoo_that_cannot_route_it_keeps_the_scores_whole(self, monkeypatch):
+        import builtins
+
+        real = builtins.__import__
+
+        def _no_wrapper(name, *a, **kw):
+            if name == "unsloth_zoo.mlx.attention":
+                raise ImportError("this zoo predates the wrapper")
+            return real(name, *a, **kw)
+
+        monkeypatch.setattr(builtins, "__import__", _no_wrapper)
+        assert mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048) is None
+        floor = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, None)
+        priced = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, 2048, 4, 64)
+        assert priced - floor == (
+            mm._widest_quantized_scores(32768, 2048, 2048) * 32 * mm._QUANT_SCORE_DTYPE_SIZE
+        )
+
+    @pytest.mark.parametrize(
+        "stated, expected",
+        [
+            ({"num_key_value_heads": 8, "head_dim": 128}, (8, 128, 0)),
+            # Ungrouped attention states no separate count, and a head is the hidden size split.
+            ({}, (32, 112, 0)),
+            # A tower can state the count and leave the width to the division.
+            ({"num_key_value_heads": 4}, (4, 112, 0)),
+            # And a head width that is not the division, which several towers carry.
+            ({"head_dim": 64}, (32, 64, 0)),
+            # Values narrower than keys, which mlx will not fuse and this must not flatten.
+            ({"head_dim": 192, "v_head_dim": 128}, (32, 192, 128)),
+        ],
+    )
+    def test_the_geometry_the_route_reads_comes_off_the_checkpoint(self, stated, expected):
+        from types import SimpleNamespace
+
+        config = {"hidden_size": 3584, "num_attention_heads": 32, **stated}
+        assert mm._config_widths(config)[3:] == expected
+        # The built tower answers the same, so a probe and a config cannot disagree here.
+        assert mm._tower_widths(SimpleNamespace(args = SimpleNamespace(**config)))[3:] == expected
+
+    def test_the_group_size_the_load_resolved_reaches_the_route(self):
+        # A wider group packs fewer scales and biases beside the same data, so the copy shrinks
+        # while the cache it was made from does too. Pricing it at the module default would
+        # charge a packing this load is not using.
+        _on_bfloat16_chip()
+        snapshot = _local_snapshot("unsloth/Qwen3-4B-Thinking-2507")
+        priced = {
+            group: mm.mlx_memory_breakdown(
+                snapshot, n_ctx = 32768, load_in_4bit = True, kv_bits = 4, kv_group_size = group
+            )
+            for group in (32, 128)
+        }
+        charged = {group: breakdown.compute_bytes for group, breakdown in priced.items()}
+        assert charged[32] - charged[128] == 32768 * (
+            mm._dequantized_row_bytes((2560, 9728, 32, 8, 128, 0), 2, 4, 32, 2048)
+            - mm._dequantized_row_bytes((2560, 9728, 32, 8, 128, 0), 2, 4, 128, 2048)
+        )
+
+    def test_a_tower_whose_values_are_narrower_keeps_the_scores(self):
+        # mlx fuses only where the two widths agree, so a key width it would fuse on its own
+        # must still keep the scores once the values beside it are narrower.
+        assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 64), 2, 4, 64, 2048) is None
+        assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 192, 128), 2, 4, 64, 2048) is None
+        # Stating the width the keys already have changes nothing.
+        assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 128), 2, 4, 64, 2048) == (
+            mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
+        )
+
+    def test_an_unquantized_load_never_reaches_the_route(self):
+        assert mm._dequantized_row_bytes(self.GQA, 2, None, 64, 2048) is None
+        # And a tower that stated no head geometry cannot be routed from a guess.
+        assert mm._dequantized_row_bytes((3584, 18944, 32, 0, 0, 0), 2, 4, 64, 2048) is None
+
+
 @pytest.mark.skipif(not _HAVE_MLX, reason = "imports architecture modules")
 class TestProbeFollowsTheLoadersRoute:
     """The estimator must not price a load path that cannot be taken."""
@@ -3826,13 +3954,15 @@ class TestProbeFollowsTheLoadersRoute:
 
 @pytest.mark.skipif(not _HAVE_MLX, reason = "asks the installed runtime")
 class TestGenerationSettingsComeFromTheLoader:
-    """What a load prefills at is read off the runtime, never restated beside it."""
+    """What a load prefills at is read off the runtime, except where Studio pins it."""
 
-    def test_each_path_is_read_from_the_function_that_would_run_it(self):
+    def test_each_path_is_read_from_the_function_that_would_run_it(self, monkeypatch):
         import inspect
 
         from core.inference import mlx_inference as mi
 
+        # Nothing pins the step, so every path answers with its own runtime's default.
+        monkeypatch.setattr(mi, "mlx_vlm_prefills_on_the_snapshot_grid", lambda: False)
         for vision, drafted in ((False, False), (True, False), (False, True), (True, True)):
             step = mi._generation_step(vision = vision, drafted = drafted)
             for setting, ask in (
@@ -3851,6 +3981,42 @@ class TestGenerationSettingsComeFromTheLoader:
         assert mi.mlx_prefill_chunk(drafted = True) != mi.mlx_prefill_chunk()
         # But only on the text path: mlx-vlm drives a drafter inside its own generation.
         assert mi.mlx_prefill_chunk(vision = True, drafted = True) == mi.mlx_prefill_chunk(vision = True)
+
+    def test_a_pinned_vision_step_outranks_the_runtimes_own(self, monkeypatch):
+        from core.inference import mlx_inference as mi
+
+        vlm_default = mi._generation_default("prefill_step_size", 0, vision = True, drafted = False)
+        assert vlm_default != mi.VLM_PROMPT_CACHE_PREFILL_STEP
+        for pinned, expected in ((True, mi.VLM_PROMPT_CACHE_PREFILL_STEP), (False, vlm_default)):
+            monkeypatch.setattr(mi, "mlx_vlm_prefills_on_the_snapshot_grid", lambda p = pinned: p)
+            assert mi.mlx_prefill_chunk(vision = True) == expected
+            # Only the vision path is pinned, and the group size never is.
+            assert mi.mlx_prefill_chunk() == mi.MLX_PREFILL_CHUNK_FALLBACK
+            assert mi.mlx_kv_group_size(vision = True) == mi.MLX_KV_GROUP_SIZE_FALLBACK
+
+    def test_the_step_priced_and_the_store_that_pins_it_answer_together(self, monkeypatch):
+        """The estimate is only right while these two read the same capability."""
+        import importlib
+
+        from core.inference.mlx_inference import (
+            MLXInferenceBackend,
+            mlx_vlm_prefills_on_the_snapshot_grid,
+        )
+
+        # `mlx_vlm.generate` is a submodule shadowed by a function of the same name.
+        vlm_generate = importlib.import_module("mlx_vlm.generate")
+        backend = MLXInferenceBackend.__new__(MLXInferenceBackend)
+        backend._memory_limits_applied = {}
+        for cached_tokens, built in ((True, True), (False, False)):
+            backend._vlm_snapshot_store = None
+            backend._vlm_snapshot_store_unavailable = False
+            monkeypatch.setattr(
+                vlm_generate,
+                "GenerationResult",
+                type("R", (), {"cached_tokens": 0} if cached_tokens else {}),
+            )
+            assert mlx_vlm_prefills_on_the_snapshot_grid() is built
+            assert (backend._vlm_prompt_cache_store() is not None) is built
 
     @pytest.mark.parametrize("chunk, group", [(None, 0), (True, "64")])
     def test_a_runtime_that_states_no_usable_value_falls_back(self, monkeypatch, chunk, group):
@@ -3963,10 +4129,10 @@ class TestGenerationSettingsComeFromTheLoader:
 
 
 @_NEEDS_MLX
-@pytest.mark.parametrize("reported, compute", [(None, 9_448_833_807), (512, 2_874_458_895)])
+@pytest.mark.parametrize("reported, compute", [(None, 1_035_321_999), (512, 903_201_423)])
 def test_the_estimate_prices_the_chunk_the_loader_reports(monkeypatch, reported, compute):
-    # The drift this closes: a load prefilling at 512 priced at 2048 is 3.3x high on the
-    # quantized score term, which no assertion about the constant alone would catch.
+    # The drift this closes: the chunk a load really prefills at has to reach the estimate, and
+    # no assertion about the constant alone would catch it standing still.
     _on_bfloat16_chip()
     if reported is not None:
         from core.inference import mlx_inference as mi
@@ -3986,7 +4152,7 @@ def test_the_estimate_prices_the_chunk_the_loader_reports(monkeypatch, reported,
         kv_bits = 4,
         prefill_chunk = 512,
     )
-    assert override.compute_bytes == 2_874_458_895
+    assert override.compute_bytes == 903_201_423
 
 
 @_NEEDS_MLX
@@ -4367,7 +4533,7 @@ class TestShardsTheLoaderReads:
             4,
             2_822_044_672,
             1_369_571_328,
-            9_448_833_807,
+            1_035_321_999,
             36,
             "4-bit",
         ),
@@ -4378,7 +4544,7 @@ class TestShardsTheLoaderReads:
             None,
             21_634_993_114,
             740_720_640,
-            2_737_160_847,
+            943_440_527,
             40,
             "bf16",
         ),
@@ -4392,7 +4558,7 @@ class TestShardsTheLoaderReads:
             None,
             2_099_712_075,
             267_386_880,
-            803_717_775,
+            701_760_143,
             12,
             "bf16",
         ),
@@ -4403,7 +4569,7 @@ class TestShardsTheLoaderReads:
             4,
             3_520_856_064,
             342_392_832,
-            5_167_104_719,
+            753_582_735,
             36,
             "4-bit",
         ),
@@ -4413,7 +4579,7 @@ class TestShardsTheLoaderReads:
             4,
             3_520_856_064,
             241_827_840,
-            874_685_711,
+            717_152_431,
             36,
             "4-bit",
         ),
@@ -4423,7 +4589,7 @@ class TestShardsTheLoaderReads:
             4,
             3_520_856_064,
             241_827_840,
-            874_685_647,
+            717_151_119,
             36,
             "4-bit",
         ),
@@ -4433,8 +4599,8 @@ class TestShardsTheLoaderReads:
             4096,
             None,
             4_462_976_625,
-            119_472_128,
-            833_995_407,
+            60_784_640,
+            705_544_847,
             30,
             "bf16",
         ),
@@ -4445,7 +4611,7 @@ class TestShardsTheLoaderReads:
             None,
             5_298_715_127,
             249_561_088,
-            1_281_737_359,
+            761_512_591,
             28,
             "bf16",
         ),

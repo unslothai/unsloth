@@ -633,7 +633,7 @@ def _tower_layers(model) -> Optional[int]:
 
 
 def _tower_widths(model):
-    """``(hidden, intermediate, heads)`` as the tower was BUILT, or zeros."""
+    """``(hidden, intermediate, heads, kv heads, head width)`` as the tower was BUILT, or zeros."""
     node, depth = model, 0
     while node is not None and depth < 3:
         for name in ("args", "config"):
@@ -642,11 +642,16 @@ def _tower_widths(model):
                 0 if resolved is None else _config_width(getattr(resolved, "hidden_size", None))
             )
             if hidden > 0:
+                heads = _config_width(getattr(resolved, "num_attention_heads", None))
                 return (
                     hidden,
                     _config_width(getattr(resolved, "intermediate_size", None))
                     or _config_width(getattr(resolved, "moe_intermediate_size", None)),
-                    _config_width(getattr(resolved, "num_attention_heads", None)),
+                    heads,
+                    _config_width(getattr(resolved, "num_key_value_heads", None)) or heads,
+                    _config_width(getattr(resolved, "head_dim", None))
+                    or (hidden // heads if heads else 0),
+                    _config_width(getattr(resolved, "v_head_dim", None)),
                 )
         node = getattr(node, "model", None) or getattr(node, "language_model", None)
         depth += 1
@@ -655,11 +660,16 @@ def _tower_widths(model):
 
 def _config_widths(config: dict):
     text = config.get("text_config") or config
+    hidden = _config_width(text.get("hidden_size"))
+    heads = _config_width(text.get("num_attention_heads"))
     return (
-        _config_width(text.get("hidden_size")),
+        hidden,
         _config_width(text.get("intermediate_size"))
         or _config_width(text.get("moe_intermediate_size")),
-        _config_width(text.get("num_attention_heads")),
+        heads,
+        _config_width(text.get("num_key_value_heads")) or heads,
+        _config_width(text.get("head_dim")) or (hidden // heads if heads else 0),
+        _config_width(text.get("v_head_dim")),
     )
 
 
@@ -669,7 +679,7 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits, kv_group_size):
     cache = None
     whole_prompt = False
     layers = None
-    widths = (0, 0, 0)
+    widths = (0, 0, 0, 0, 0, 0)
     failure = ValueError("no architecture module could build this config")
     for build, make_prompt_cache, model_class in _probe_models(config, dtype):
         # Construction stays OUTSIDE the guard: retrying a rejected config builds a full tower.
@@ -909,11 +919,67 @@ def _widest_quantized_scores(n_ctx: int, boundary: int, prefill_chunk: int) -> i
     return max(widest, n_ctx + 1)
 
 
+def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, prefill_chunk):
+    """Bytes per cached token one attention call holds where the runtime dequantizes the cache
+    instead of scoring it, or None where this shape still materializes the scores.
+
+    unsloth-zoo wraps each runtime's quantized attention and chooses per call, so the choice is
+    asked of that wrapper rather than restated: a zoo carrying no wrapper, a head width mlx will
+    not fuse, and a prefill step under the tie all keep the scores.
+    """
+    _hidden, _intermediate, heads, kv_heads, head_dim, value_dim = widths
+    if not (heads and kv_heads and head_dim and kv_bits):
+        return None
+    try:
+        import mlx.core as mx
+
+        from unsloth_zoo.mlx.attention import (
+            _row_bytes,
+            dequantizing_is_smaller,
+            fused_kernel_exists,
+        )
+    except Exception as exc:
+        logger.debug("MLX estimate cannot reach the quantized-attention wrapper: %s", exc)
+        return None
+    try:
+        # Only the width of the dtype reaches the answer, and mlx is lazy, so these shapes are
+        # described to the wrapper without an array behind them ever being made.
+        dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
+
+        def rows(width):
+            return mx.quantize(
+                mx.zeros((1, kv_heads, 1, width), dtype = dtype),
+                group_size = kv_group_size,
+                bits = kv_bits,
+            )
+
+        # A tower whose values are narrower than its keys is why these are asked separately:
+        # mlx will not fuse that shape, and the copy would not be twice one row either.
+        keys, values = rows(head_dim), rows(value_dim or head_dim)
+        queries = mx.zeros((1, heads, prefill_chunk, head_dim), dtype = dtype)
+        # Both runtimes prefill under "causal"; a mask the fused kernel refuses is its own case.
+        if not fused_kernel_exists(queries, keys, values, kv_group_size, "causal"):
+            return None
+        if not dequantizing_is_smaller(queries, keys, values, kv_group_size):
+            return None
+        return kv_heads * sum(_row_bytes(cache, kv_group_size, dtype) for cache in (keys, values))
+    except Exception as exc:
+        logger.debug("MLX estimate cannot route the quantized attention: %s", exc)
+        return None
+
+
 def _compute_bytes(
-    widths, dtype_size: int, prefill_chunk: int, plan, n_ctx: int, quant_boundary
+    widths,
+    dtype_size: int,
+    prefill_chunk: int,
+    plan,
+    n_ctx: int,
+    quant_boundary,
+    kv_bits = None,
+    kv_group_size: int = _KV_GROUP_SIZE,
 ) -> int:
     """Transient buffers a prefill step holds, on top of weights and cache."""
-    hidden, intermediate, heads = widths
+    hidden, intermediate, heads = widths[:3]
     if hidden <= 0:
         return 0
     intermediate = intermediate or 4 * hidden
@@ -922,12 +988,14 @@ def _compute_bytes(
     total = _COMPUTE_BASE_BYTES + prefill_chunk * (attention_width + recurrent_width)
     if quant_boundary is not None:
         # The one term that DOES grow with the context, and only on the quantized path.
-        total += (
-            _widest_quantized_scores(n_ctx, quant_boundary, prefill_chunk)
-            * heads
-            * _QUANT_SCORE_DTYPE_SIZE
-            * _QUANT_SCORE_LIVE
-        )
+        score = heads * _QUANT_SCORE_DTYPE_SIZE * _QUANT_SCORE_LIVE
+        row = _dequantized_row_bytes(widths, dtype_size, kv_bits, kv_group_size, prefill_chunk)
+        if row is None:
+            total += _widest_quantized_scores(n_ctx, quant_boundary, prefill_chunk) * score
+        else:
+            # A copy replaces the scores only where the step is wide enough to be routed to it.
+            # The decode step never is, so its own scores can still be the wider of the two.
+            total += max(row * n_ctx, (n_ctx + 1) * score)
     return int(total)
 
 
@@ -1073,6 +1141,7 @@ class _MlxSizing:
     widths: tuple
     chunk: int
     kv_bits: Optional[int]
+    kv_group_size: int
 
 
 def _size_load(
@@ -1124,6 +1193,7 @@ def _size_load(
         widths = widths,
         chunk = chunk,
         kv_bits = kv_bits,
+        kv_group_size = kv_group_size or loaded_group,
     )
 
 
@@ -1137,7 +1207,14 @@ def _priced_at(sizing: _MlxSizing, n_ctx: int) -> Optional[MlxMemoryBreakdown]:
             sizing.plan, context, sizing.quant_start, chunk, whole_prompt
         )
         compute = _compute_bytes(
-            sizing.widths, sizing.dtype.size, chunk, sizing.plan, context, quant_boundary
+            sizing.widths,
+            sizing.dtype.size,
+            chunk,
+            sizing.plan,
+            context,
+            quant_boundary,
+            sizing.kv_bits,
+            sizing.kv_group_size,
         )
     except Exception as exc:
         logger.debug("MLX estimate could not price %s tokens: %s", n_ctx, exc)
