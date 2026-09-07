@@ -1254,7 +1254,11 @@ def _piece_assumes_pip(piece: str) -> bool:
 
 
 def _close_group(
-    assured: list[bool], prev_ops: list[str], last_ok: list[bool | None], pending: str
+    assured: list[bool],
+    prev_ops: list[str],
+    last_ok: list[bool | None],
+    models: list[bool | None],
+    pending: str,
 ) -> None:
     """Fold a closing group's success into the list that contains it.
 
@@ -1265,13 +1269,22 @@ def _close_group(
     """
     if pending.strip():
         last_ok[-1] = _piece_success_model(pending)
-    inner = last_ok.pop() is True
+    inner_model = last_ok.pop()
+    inner = inner_model is True
     assured.pop()
+    models.pop()
     prev_ops.pop()
     if prev_ops[-1] == "&&":
         assured[-1] = assured[-1] and inner
     else:
         assured[-1] = assured[-1] or inner
+    # Three-valued too, for the `||` reachability fold: `{ false; } || pip install x` always
+    # reaches the install, and discarding the group's KNOWN failure marked it conditional.
+    models[-1] = (
+        inner_model
+        if prev_ops[-1] == ""
+        else _fold_status(models[-1], prev_ops[-1], inner_model)
+    )
 
 
 def _fold_pending(assured: list[bool], prev_ops: list[str], pending: str) -> None:
@@ -1325,6 +1338,10 @@ def _left_hand_status(models: list[bool | None], prev_ops: list[str], pending: s
     Called at each `&&`/`||` so the operator sees the status of everything to its left, not
     just the piece beside it.
     """
+    if not _unwrap_shell_group(pending)[0].strip():
+        # A group just closed and the text in hand is its bare bracket. The level ALREADY
+        # carries the group's status; folding the bracket as an unknown command wiped it.
+        return models[-1]
     piece = _piece_success_model(pending)
     models[-1] = piece if prev_ops[-1] == "" else _fold_status(models[-1], prev_ops[-1], piece)
     return models[-1]
@@ -1463,8 +1480,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 tails.pop()
                 if len(def_levels) > 1:
                     def_levels.pop()
-                list_models.pop()
-                _close_group(list_has_pip, prev_ops, last_ok, "".join(buf))
+                _close_group(list_has_pip, prev_ops, last_ok, list_models, "".join(buf))
             buf.append(ch)
             i += 1
         elif ch == "#" and (
@@ -1568,8 +1584,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     tails.pop()
                     if len(def_levels) > 1:
                         def_levels.pop()
-                    list_models.pop()
-                    _close_group(list_has_pip, prev_ops, last_ok, "".join(buf))
+                    _close_group(list_has_pip, prev_ops, last_ok, list_models, "".join(buf))
             if ch not in ")}":
                 grouping_closed = False
             buf.append(ch)
@@ -1963,7 +1978,10 @@ def _git_source_repository(source: str) -> str:
     # splitting at the first one read `unslothai/unsloth@fake/../../attacker/repo@main` as the
     # allowlisted repo while pip clones the traversal that resolves outside it.
     path = path.rsplit("@", 1)[0].rstrip("/")
-    if path.endswith(".git"):
+    # `unsloth.GIT` is the same repository: the host and path are lowered further down, so a
+    # case-sensitive strip left `.GIT` on, and the lowered `unsloth.git` then matched no
+    # allowlist entry and a permitted install was reported.
+    if path.lower().endswith(".git"):
         path = path[: -len(".git")]
     # Resolve `.` and `..` as a URL client does, or `unslothai/unsloth/../../attacker/repo`
     # reads as an allowlisted prefix.
@@ -2420,6 +2438,12 @@ def _effective_version(
         exact, floor, cap, ceiling, exclusions, exclusive_floor = _spec_window(pins)
         # Where an install lands when it has to move, or None when nothing names it.
         landing = floor if _window_names_one_minor(floor, ceiling, cap) else None
+        if landing is not None and _split_prerelease(landing)[1]:
+            # `~=0.12.0rc1` admits the stable 0.12 releases as well, and pip takes the newest
+            # candidate, so the window names the MINOR but never the prerelease itself.
+            # Returning the rc as the landing put it below the ABI-stable floor, which PEP 440
+            # sorts it under, and rejected a valid upgrade.
+            landing = _split_prerelease(landing)[0]
         if landing is None and ceiling is not None:
             # A wider window still names the MINOR pip moves to, which is what the callers
             # compare; without it `<0.10.5` and `>=0.8,<0.11` came back unknown.

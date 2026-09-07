@@ -4419,3 +4419,81 @@ def test_an_escaped_brace_does_not_close_a_parameter_expansion():
     assert ("!pip install torch==2.12.0", True) in nv._split_chained(
         '!echo "${READY:-$(pip install torch==2.12.0)}"'
     )
+
+
+def test_a_closing_group_hands_its_status_to_the_operator_after_it():
+    """`{ false; } || pip install ...` always reaches the install.
+
+    Verified against bash. The group's own and-or state was popped without folding, so the
+    `||` saw an unknown left side and marked a certain install conditional; R-INST-004 then
+    dropped the pairing.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations("!{ false; } || pip install torchcodec==0.10.0")
+    ] == [("install", ["torchcodec==0.10.0"])]
+    # A subshell carries its status the same way.
+    assert nv._split_chained("!(false) || pip install a") == [
+        ("!false", False),
+        ("!pip install a", False),
+    ]
+    # A group that SUCCEEDS skips the fallback, and an unknown one leaves it conditional.
+    for cell in ("!{ true; } || pip install a", "!{ maybe; } || pip install a"):
+        assert list(nv.unconditional_pip_invocations(cell)) == [], cell
+
+
+def test_a_prerelease_window_lands_on_its_minor_not_on_the_prerelease():
+    """`torchcodec~=0.12.0rc1` admits the stable 0.12 line, and pip takes the newest of it.
+
+    PEP 440 sorts 0.12.0rc1 below 0.12, so returning the prerelease as the landing put it
+    under the ABI-stable floor and R-INST-004 rejected a valid upgrade beside torch 2.11.
+    """
+    nv = _load_notebook_validator_module()
+
+    for spec in ("torchcodec~=0.12.0rc1", "torchcodec>=0.12.0rc1,<0.13"):
+        assert nv._effective_version(f'!pip install "{spec}"', "torchcodec", "0.11.0+cu128") == (
+            "0.12.0",
+            True,
+        ), spec
+        assert (
+            nv.rule_inst_004_torchcodec_torch(
+                f'!pip install "{spec}"', COLAB_TORCH211, "nb.ipynb", 0
+            )
+            == []
+        ), spec
+    # An EXACT prerelease still names the release pip installs, which is below the floor.
+    assert [
+        f.rule
+        for f in nv.rule_inst_004_torchcodec_torch(
+            "!pip install torchcodec==0.12.0rc1", COLAB_TORCH211, "nb.ipynb", 0
+        )
+    ] == ["R-INST-004"]
+    # A stable window is unchanged.
+    assert nv._effective_version(
+        '!pip install "torchcodec~=0.10.0"', "torchcodec", "0.11.0+cu128"
+    ) == ("0.10.0", True)
+
+
+def test_an_allowlisted_repository_is_matched_whatever_the_suffix_case():
+    """`unsloth.GIT` is the same repository as `unsloth.git`.
+
+    The suffix was stripped before the host and path were lowered, so `.GIT` stayed on and the
+    lowered `unsloth.git` matched no allowlist entry: a permitted install was reported.
+    """
+    nv = _load_notebook_validator_module()
+
+    for spelling in (
+        "git+https://github.com/unslothai/unsloth.GIT",
+        "git+https://github.com/unslothai/unsloth.Git",
+        "git+https://GitHub.com/UnslothAI/Unsloth.GIT@main",
+    ):
+        assert nv.rule_inst_001_git_plus(f"!pip install {spelling}", "nb.ipynb", 0) == [], spelling
+    # A repository that is NOT allowlisted is still reported, uppercase suffix or not.
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!pip install git+https://github.com/evil/repo.GIT", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
