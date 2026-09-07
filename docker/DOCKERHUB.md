@@ -17,7 +17,13 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in th
 
 ## Quick start
 
-Requires the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and an NVIDIA driver of 570.26 or newer. On Windows use Docker Desktop with the WSL 2 backend.
+Needs an NVIDIA driver of 570.26 or newer and, on Linux, the NVIDIA Container Toolkit. One command installs the toolkit (Ubuntu, Debian, RHEL, Fedora, Rocky, Amazon Linux, SUSE) and checks a container can see the GPU:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh
+```
+
+On Windows use Docker Desktop with the WSL 2 backend and a current NVIDIA Windows driver; nothing else to install. Then:
 
 ```bash
 docker run -d --gpus all --ipc=host \

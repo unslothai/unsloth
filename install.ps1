@@ -5,8 +5,9 @@
 # AMSI scans this file in full before a line of it runs and nothing reads the header from inside.
 #
 # The web entry point cannot forward arguments, so it takes options as environment variables set
-# beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a
-# local run takes the equivalent flags (--no-torch, --skip-autostart, --python, --local).
+# beforehand (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE,
+# UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME); a local run takes the equivalent flags
+# (--no-torch, --skip-autostart, --isolated-uv-cache, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -14,6 +15,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
+
+    # First: Exit-InstallFailure restores the marker long before the selection runs, and
+    # under `irm | iex` the script scope is the caller's session.
+    $script:StudioUvMarkerSaved = $false
+    $script:StudioUvMarkerExisted = $false
+    $script:StudioUvMarkerPrevious = $null
+    # One flag for both rollbacks: clearing them separately leaves a window either way
+    # round, where an interruption restores one half of a committed install.
+    $script:StudioInstallCommitted = $false
 
     # The user's PowerShell profile has already run by the time this does, and the documented
     # piped web entry point documented in the README has no script file to re-launch
@@ -316,6 +326,10 @@ function Install-UnslothStudio {
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
+        }
+        # Separate from the venv rollback: an install can fail before one is in flight.
+        if (Get-Command Restore-StudioUvCacheMarker -CommandType Function -ErrorAction SilentlyContinue) {
+            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
         }
         # Most failures return before the lock try/finally, and under `irm | iex`
         # these variables are the caller's own. Defined later, so probed like above.
@@ -651,6 +665,7 @@ function Install-UnslothStudio {
     $TauriMode = $false
     $SkipTorch = $false
     $SkipAutostart = $false
+    $IsolateUvCache = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
@@ -659,6 +674,7 @@ function Install-UnslothStudio {
             "--local"    { $StudioLocalInstall = $true }
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
+            "--isolated-uv-cache" { $IsolateUvCache = $true }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
@@ -684,6 +700,7 @@ function Install-UnslothStudio {
     # Env-var equivalent for web installs; an explicit flag still wins.
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
     if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
+    if ($env:UNSLOTH_ISOLATE_UV_CACHE -in @('1', 'true', 'yes', 'on')) { $IsolateUvCache = $true }
 
     if ($script:UnslothVerbose) {
         $env:UNSLOTH_VERBOSE = '1'
@@ -1216,6 +1233,213 @@ public static class UnslothStudioFinalPathV2
         $StudioRedirectMode = 'default'
     }
     $VenvDir = Join-Path $StudioHome "unsloth_studio"
+
+    # Records which cache this install used, so an update reuses it rather than guessing:
+    # Set-StudioUvCacheForLaunch repoints the backend at the Studio cache even in shared
+    # mode, so one on-demand install makes an empty Studio cache look full. Never fatal.
+    # uv resolves a relative cache-dir against its working directory, which UV_WORKING_DIR
+    # moves and which may itself be relative to where the installer was run. $PWD.Path
+    # explicitly: GetFullPath resolves against the .NET process directory, which
+    # Set-Location does not move. Mirrors _absolutize_uv_cache_dir in install.sh.
+    function Resolve-StudioUvCachePath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Cache)
+        if ([string]::IsNullOrEmpty($Cache) -or [System.IO.Path]::IsPathRooted($Cache)) {
+            return $Cache
+        }
+        try {
+            $base = if (-not [string]::IsNullOrWhiteSpace($env:UV_WORKING_DIR)) {
+                if ([System.IO.Path]::IsPathRooted($env:UV_WORKING_DIR)) {
+                    $env:UV_WORKING_DIR
+                } else { Join-Path $PWD.Path $env:UV_WORKING_DIR }
+            } else { $PWD.Path }
+            return [System.IO.Path]::GetFullPath((Join-Path $base $Cache))
+        } catch { return $Cache }
+    }
+
+    function Write-StudioUvCacheMarker {
+        param(
+            [Parameter(Mandatory = $true)][string]$StudioRoot,
+            [Parameter(Mandatory = $true)][string]$Cache
+        )
+        $markerDir = Join-Path $StudioRoot "cache"
+        $markerFile = Join-Path $markerDir "uv-cache-dir"
+        # Absolute: the update resolves this against ITS working directory.
+        $Cache = Resolve-StudioUvCachePath -Cache $Cache
+        # Remembered so a rollback can put it back.
+        if (-not $script:StudioUvMarkerSaved) {
+            # Under "Stop", Test-Path inside an ACL-denied directory throws.
+            $existing = Test-Path -LiteralPath $markerFile -ErrorAction SilentlyContinue
+            if ($existing) {
+                # UTF8, not the default: Windows PowerShell 5.1 decodes a BOM-less file
+                # with the active ANSI code page, and the update writes this one BOM-less
+                # UTF-8, so a non-ASCII path came back as mojibake and was restored that way.
+                $previous = Get-Content -LiteralPath $markerFile -Raw -Encoding UTF8 `
+                    -ErrorAction SilentlyContinue
+                # One we cannot read is one we cannot put back, so leave it alone.
+                if ($null -eq $previous) { return }
+                $script:StudioUvMarkerPrevious = $previous
+                $script:StudioUvMarkerExisted = $true
+            } else {
+                $script:StudioUvMarkerPrevious = $null
+                $script:StudioUvMarkerExisted = $false
+            }
+            $script:StudioUvMarkerSaved = $true
+        }
+        # CreateDirectory, not New-Item -Path: -Path treats [] in the root as a wildcard.
+        if (-not (Test-Path -LiteralPath $markerDir -PathType Container -ErrorAction SilentlyContinue)) {
+            try { [System.IO.Directory]::CreateDirectory($markerDir) | Out-Null } catch { }
+        }
+        # Removed first: Set-Content follows a symlink and would truncate its target.
+        Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+        # And only once gone, since that removal fails non-terminatingly. Get-Item -Force
+        # reports the link itself; Test-Path would follow it.
+        if ($null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)) {
+            return
+        }
+        Set-Content -LiteralPath $markerFile -Value $Cache `
+            -Encoding utf8 -ErrorAction SilentlyContinue
+    }
+
+    function Restore-StudioUvCacheMarker {
+        # AllowEmptyString and the blank guard: a throw here would be reported as a
+        # failed environment restore.
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$StudioRoot)
+        if ($script:StudioInstallCommitted) { return }
+        if (-not $script:StudioUvMarkerSaved) { return }
+        if ([string]::IsNullOrWhiteSpace($StudioRoot)) { return }
+        $markerFile = Join-Path (Join-Path $StudioRoot "cache") "uv-cache-dir"
+        Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+        $stillThere = $null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)
+        if (-not $stillThere -and $script:StudioUvMarkerExisted -and $null -ne $script:StudioUvMarkerPrevious) {
+            Set-Content -LiteralPath $markerFile -Value ([string]$script:StudioUvMarkerPrevious).TrimEnd("`r", "`n") `
+                -Encoding utf8 -ErrorAction SilentlyContinue
+        }
+        $script:StudioUvMarkerSaved = $false
+    }
+
+    function Set-StudioUvCacheEnvironment {
+        param(
+            [Parameter(Mandatory = $true)][string]$StudioRoot,
+            [bool]$Isolated = $false,
+            [string]$UvExecutable = ""
+        )
+        $studioCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
+        if (-not [string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
+            $script:StudioUvCacheMode = "custom"
+            # Absolute before anything uses it, so every phase of one install and the
+            # marker name the same directory (see _absolutize_uv_cache_dir in install.sh).
+            $env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR
+            # Recorded like any other choice; a caller still outranks the marker.
+            Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $env:UV_CACHE_DIR
+            step "uv cache" "preserving custom UV_CACHE_DIR ($env:UV_CACHE_DIR)"
+            return
+        }
+
+        if ($Isolated) {
+            $selectedCache = $studioCache
+            $script:StudioUvCacheMode = "isolated"
+        } else {
+            $sharedCache = $null
+            $sharedCachePopulated = $false
+            $scanBlocked = $false
+            try {
+                # Ask uv so uv.toml / UV_CONFIG_FILE / the default count; remove a
+                # blank inherited value so it cannot override them.
+                Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
+                if ($UvExecutable) {
+                    $resolvedCache = @(& $UvExecutable cache dir 2>$null)
+                    $uvCacheExit = $LASTEXITCODE
+                    # Last nonblank line, not [0]: a notice would become the path.
+                    $resolvedLine = $resolvedCache |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                        Select-Object -Last 1
+                    if ($uvCacheExit -eq 0 -and $null -ne $resolvedLine) {
+                        $sharedCache = ([string]$resolvedLine).Trim()
+                    }
+                }
+                if (-not $sharedCache -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+                    $sharedCache = Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"
+                }
+                if ($sharedCache -and (Test-Path -LiteralPath $sharedCache -PathType Container)) {
+                    # Warm means package BYTES: wheels-* is metadata only (.msgpack/
+                    # .http on uv 0.10), so a bare `--dry-run` used to read as warm.
+                    $buckets = Get-ChildItem -LiteralPath $sharedCache -Directory -Force -ErrorAction Stop |
+                        Where-Object { $_.Name -match '^(archive|builds|built-wheels|wheels|sdists)-' }
+                    foreach ($bucket in $buckets) {
+                        # SilentlyContinue, not Stop: one denied subdirectory must not
+                        # make a populated cache read as empty. `find` also skips and continues.
+                        $scanErrors = $null
+                        $entry = Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force `
+                                -ErrorAction SilentlyContinue -ErrorVariable scanErrors |
+                            Where-Object {
+                                $_.Name -notin @("CACHEDIR.TAG", ".git", ".gitignore") -and
+                                $_.Extension -notin @(".lock", ".msgpack", ".http", ".rev")
+                            } |
+                            Select-Object -First 1
+                        if ($null -ne $entry) {
+                            $sharedCachePopulated = $true
+                            break
+                        }
+                        # Unreadable is not empty; remembered so the message says why.
+                        if ($scanErrors -and $scanErrors.Count -gt 0) { $scanBlocked = $true }
+                    }
+                }
+            } catch {
+                # An uninspectable cache is not an install error; isolation is safe.
+                $sharedCache = $null
+                $sharedCachePopulated = $false
+                $scanBlocked = $true
+            }
+
+            if ($sharedCachePopulated) {
+                $selectedCache = $sharedCache
+                $script:StudioUvCacheMode = "shared"
+            } else {
+                $selectedCache = $studioCache
+                $script:StudioUvCacheMode = "studio"
+            }
+        }
+        Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
+        Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $selectedCache
+
+        switch ($script:StudioUvCacheMode) {
+            "shared" {
+                step "uv cache" "reusing existing shared cache ($selectedCache) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
+            }
+            "isolated" {
+                step "uv cache" "forced Studio cache isolation ($selectedCache); already-cached packages may download again" "Yellow"
+            }
+            "studio" {
+                if ($scanBlocked -and -not [string]::IsNullOrWhiteSpace([string]$sharedCache)) {
+                    step "uv cache" "using new Studio-owned cache ($selectedCache); part of $sharedCache could not be read, so cached packages may download again" "Yellow"
+                } elseif ($scanBlocked) {
+                    step "uv cache" "using new Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
+                } else {
+                    step "uv cache" "using new Studio-owned cache ($selectedCache)"
+                }
+            }
+        }
+    }
+
+    function Set-StudioUvCacheForLaunch {
+        param([Parameter(Mandatory = $true)][string]$StudioRoot)
+        if ($script:StudioUvCacheMode -eq "shared") {
+            Set-Item -LiteralPath Env:UV_CACHE_DIR -Value (Join-Path (Join-Path $StudioRoot "cache") "uv")
+        }
+    }
+
+    function Restore-StudioUvCacheEnvironment {
+        param(
+            [bool]$WasPresent,
+            [AllowNull()][string]$PreviousValue
+        )
+        # The provider, not the .NET API: that maps empty to deletion on Windows.
+        if ($WasPresent) {
+            Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $PreviousValue
+        } else {
+            Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
+        }
+    }
 
     $Rule = [string]::new([char]0x2500, 52)
     $Sloth = [char]::ConvertFromUtf32(0x1F9A5)
@@ -3058,6 +3282,8 @@ exit 0
     $studioNeedsRuntimeLock = $true
     $studioUsesLegacyLayout = ($StudioRedirectMode -ne 'env') -or $studioUsesTauriManagedRoot
     $studioAutoStartProcess = $null
+    $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
+    $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
     try {
         if ($studioNeedsRuntimeLock) {
             try {
@@ -3810,6 +4036,8 @@ exit 0
         return (Exit-InstallFailure "uv could not be installed")
     }
 
+    Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
+
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
         $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
@@ -4087,6 +4315,9 @@ exit 0
     }
 
     function Restore-StudioVenvRollback {
+        # The same flag the marker restore consults, so an interruption mid-commit cannot
+        # put one half of a committed install back and keep the other.
+        if ($script:StudioInstallCommitted) { return }
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
@@ -4138,6 +4369,11 @@ exit 0
     }
 
     function Complete-StudioVenvRollback {
+        # First and alone: this one assignment is what both restores consult, so an
+        # interruption cannot find them disagreeing. A first install rolls nothing back
+        # and still commits.
+        $script:StudioInstallCommitted = $true
+        $script:StudioUvMarkerSaved = $false
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         # The replacement is committed. Disable restoration before deleting the
@@ -6447,6 +6683,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     } finally {
         if (-not $studioVenvReplacementCommitted) {
             Restore-StudioVenvRollback
+            Restore-StudioUvCacheMarker -StudioRoot $StudioHome
         }
     }
 
@@ -6512,6 +6749,8 @@ sys.exit(2 if conflict else (0 if installed else 1))
                 # Through the interpreter, not the generated console script: the
                 # autostart must not be the one step an Application Control policy
                 # can still refuse after a clean install.
+                Set-StudioUvCacheForLaunch -StudioRoot $StudioHome
+
                 $studioAutoStartProcess = Start-Process -FilePath $VenvPython `
                     -ArgumentList (Get-ManagedUnslothCliCommandLine -Arguments @("studio", "-p", "8888")) `
                     -NoNewWindow -PassThru
@@ -6576,6 +6815,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
         Write-StudioLine ""
     }
     } finally {
+        Restore-StudioUvCacheEnvironment -WasPresent $hadPreviousUvCacheDir -PreviousValue $previousUvCacheDir
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
