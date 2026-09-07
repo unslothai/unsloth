@@ -4,18 +4,14 @@
 
 """Browser checks for NonModalDropdownMenu, driven against smoke-nonmodal-menus.html.
 
-The AST tests pin which menus use the wrapper. Only a browser can answer what the wrapper
-then does: whether a scroll behind an open menu closes it, whether the list keeps the scroll
-it was given, whether the dismissing click is swallowed exactly once, and whether focus comes
-back to the trigger that opened it. Each of those has already regressed once (#9243, #9772,
-and twice inside the change that added the wrapper), and none is reachable from source text.
+The AST tests pin which menus use the wrapper; only a browser answers what it then does to a
+scroll behind an open menu, to the dismissing click and to focus. Each has regressed once
+already (#9243, #9772, and twice inside the change that added the wrapper).
 
-The page also mounts one UNCONVERTED modal menu. It is the shape every converted menu had
-before, so one run measures both: a case that behaves identically on both is Radix and not
-this wrapper, and the lock the control still writes to <body> is what proves the probe can
-see a lock at all.
+The page also mounts one UNCONVERTED modal menu, the shape every converted one had before, so
+a case behaving the same on both is Radix and not this wrapper, and the lock it still writes
+to <body> proves the probe can see a lock at all.
 
-    python3 tests/studio/playwright_nonmodal_menus.py
     PW_ENGINE=webkit python3 tests/studio/playwright_nonmodal_menus.py
 """
 
@@ -42,8 +38,8 @@ OUT = Path(os.environ.get("PW_OUT", "logs/nonmodal_menus_report.json"))
 ENTRY = "/smoke-nonmodal-menus-main.tsx"
 PAGE = "/smoke-nonmodal-menus.html"
 
-# Radix holds exit-animated content mounted for `duration-100`, so probe both sides of that
-# window: a guard that outlives the close swallows whatever the user clicks next.
+# Both sides of the `duration-100` exit window: a guard outliving the close swallows the
+# next click.
 EXIT_WINDOW_MS = (30, 75, 125)
 
 
@@ -86,9 +82,8 @@ def open_control(page) -> None:
 def raw_click(page, selector: str) -> None:
     """A real pointer press at the element's centre, with no actionability wait.
 
-    A modal menu puts `pointer-events: none` on <body>, so Playwright's own click refuses to
-    act there ("<html> intercepts pointer events"). The control arm has to bypass its own
-    actionability check to be measurable at all.
+    A modal menu puts `pointer-events: none` on <body>, so Playwright's own click refuses to act
+    there; the control arm has to bypass that to be measurable at all.
     """
     box = page.locator(selector).bounding_box()
     if box is None:
@@ -244,9 +239,8 @@ def check_dismiss_guard(page, checks: Checks) -> None:
             )
             close_all(page)
 
-    # Radix returns focus to the trigger on close, but a non-modal menu lets the press reach
-    # the field first, so Firefox and WebKit leave the caret there and Chromium does not.
-    # Either is usable; focus falling to <body> would not be.
+    # A non-modal menu lets the press reach the field before Radix restores the trigger, so
+    # Firefox and WebKit keep the caret and Chromium does not. Either is usable; <body> is not.
     focus_after = {}
     for label, opener in (
         ("converted", lambda: open_row(page, 9)),
@@ -308,9 +302,8 @@ def check_focus_return(page, checks: Checks) -> None:
 
 
 def check_keyboard(page, checks: Checks) -> None:
-    # Focus a trigger that is already on screen and let the focus settle. Focusing an
-    # off-screen one scrolls it into view and that scroll arrives a frame or two later,
-    # which races the open rather than testing it.
+    # An on-screen trigger, focus settled: focusing an off-screen one scrolls it into view a
+    # frame or two later, which races the open rather than testing it.
     reset_list(page)
     page.get_by_label("Row options 2", exact = True).focus()
     page.wait_for_timeout(250)
@@ -360,9 +353,8 @@ def check_lifetime(page, checks: Checks) -> None:
         page.wait_for_timeout(500)
         reopened[label] = menus_open(page)
         close_all(page)
-    # Whether the reopening click lands at all is a race with Radix's exit animation, and
-    # both arms lose it about as often as they win. The invariant worth holding is the one
-    # that is not a race: neither arm may end up with two menus open at once.
+    # Whether the reopening click lands is a race both arms lose about as often as they win.
+    # The invariant that is not a race: neither may end up with two menus open at once.
     checks.record(
         "reopening during the exit animation never leaves two menus open",
         all(count <= 1 for count in reopened.values()),

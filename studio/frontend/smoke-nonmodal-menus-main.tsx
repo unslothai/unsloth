@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Harness for tests/studio/playwright_nonmodal_menus.py: the real NonModalDropdownMenu on a real
-// overflowing list, so the measured scroll-close, dismiss-guard and focus behaviour is the
-// component's own. Same shape as smoke-autoscroll.html: a vite entry, no backend, no auth.
+// overflowing list, so the behaviour measured is the component's own. No backend, no auth.
 
 import {
   DropdownMenu,
@@ -20,8 +19,7 @@ import { type ReactElement, StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
-// Count capture-phase scroll listeners on `document` so a leak across opens is measurable.
-// Installed before React so every registration the tree makes is seen.
+// Counts document listeners so a leak across opens is measurable. Before React, to see them all.
 const listenerCounts: Record<string, number> = {};
 const realAdd = document.addEventListener.bind(document);
 const realRemove = document.removeEventListener.bind(document);
@@ -34,8 +32,7 @@ document.removeEventListener = ((type: string, fn: never, opts: never) => {
   return realRemove(type, fn, opts);
 }) as typeof document.removeEventListener;
 
-// A click that reaches a bubble-phase document listener was delivered; the dismiss guard
-// swallows in the capture phase, so a swallowed click never gets here.
+// The guard swallows in the capture phase, so a swallowed click never reaches this one.
 let documentClicks = 0;
 document.addEventListener("click", () => {
   documentClicks += 1;

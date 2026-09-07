@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The menus a long chat opens constantly must not be modal: the body scroll lock and the inherited
-// `pointer-events` write cost a visible pause and a layout shift that scale with the thread.
-//
-// Parsed rather than scanned. A string search only recognises the exact spelling it was written
-// for, so re-modalising a menu in any other shape -- `<DropdownMenu modal={true}>`, or the
-// multi-line form these files already use elsewhere -- reads as untouched.
+// The menus a long chat opens constantly must not be modal: the scroll lock and the inherited
+// `pointer-events` write cost a pause and a layout shift that scale with the thread. Parsed
+// rather than scanned, or re-modalising in any other spelling reads as untouched.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -65,8 +62,7 @@ function enclosingMenuRoot(
 for (const [file, marker] of NON_MODAL) {
   test(`${file}: the menu at ${marker} is non-modal`, () => {
     const source = parse(file);
-    // Every occurrence, not just the first: a second copy of the same trigger is exactly how
-    // one of these menus drifts back onto the modal layer unnoticed.
+    // Every occurrence: a second copy of the same trigger is how one drifts back unnoticed.
     const positions: number[] = [];
     for (let at = source.text.indexOf(marker); at !== -1; ) {
       positions.push(at);
@@ -100,9 +96,8 @@ test("NonModalDropdownMenu is non-modal and guards its own dismissal", () => {
 });
 
 test("the dismiss guard is mounted only while the menu is open", () => {
-  // `DropdownMenuContent` animates out, so Radix holds it mounted for the whole exit animation.
-  // An ungated guard keeps watching `document` after the menu has closed and swallows the next
-  // click the user makes anywhere on the page.
+  // The content outlives the close by its exit animation, and an ungated guard left watching
+  // `document` swallows the next click the user makes anywhere on the page.
   const source = parse("components/ui/non-modal-dropdown-menu.tsx");
   const text = source.text;
   assert.match(
@@ -118,8 +113,7 @@ test("the dismiss guard is mounted only while the menu is open", () => {
 });
 
 test("the menu content still animates out, which is why the guard is gated", () => {
-  // If this stops being true the gate above is merely harmless rather than load-bearing, and the
-  // comment explaining it should be revisited rather than the gate quietly dropped.
+  // Without the animation the gate above is merely harmless; revisit it rather than drop it.
   const content = readFileSync(
     new URL("../src/components/ui/dropdown-menu.tsx", import.meta.url),
     "utf8",
