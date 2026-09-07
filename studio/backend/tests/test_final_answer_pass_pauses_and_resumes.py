@@ -283,9 +283,9 @@ class TestTheFinalPassResumes:
         assert policy.events.count("preempted") == 1, "it paused more than once"
         assert not signal.is_set(), "the signal must be cleared before ending the turn"
         assert len(recorder.payloads) == 2, "the final pass was re-opened after a refusal"
-        assert any(event.get("reason") == "preempt_gave_up" for event in events), (
-            "the turn ended with no notice of why"
-        )
+        assert any(
+            event.get("reason") == "preempt_gave_up" for event in events
+        ), "the turn ended with no notice of why"
         metadata = [event for event in events if event.get("type") == "metadata"]
         assert metadata and metadata[-1]["finish_reason"] == "length", (
             "a turn holding a partial has to finish as continuable, which is what the "
@@ -306,9 +306,9 @@ class TestTheWiringIsThere:
         return source[head : source.index("buffer += raw_chunk", head)]
 
     def test_the_final_stream_is_opened_on_the_signal(self):
-        assert '{"preempt_event": preempt_event}' in self._final_pass_source().split("as (")[0], (
-            "the final pass opens its stream without the signal it can be preempted by"
-        )
+        assert (
+            '{"preempt_event": preempt_event}' in self._final_pass_source().split("as (")[0]
+        ), "the final pass opens its stream without the signal it can be preempted by"
 
     def test_the_final_stream_is_read_on_the_signal(self):
         reader = self._final_pass_source()
@@ -321,13 +321,13 @@ class TestTheWiringIsThere:
     def test_both_pass_the_signal_conditionally(self):
         """A test double written against the old signature must keep working."""
         source = self._final_pass_source()
-        assert source.count('{"preempt_event": preempt_event}') == 2, (
-            "expected the signal at both sites of the final pass, the stream open and the reader"
-        )
+        assert (
+            source.count('{"preempt_event": preempt_event}') == 2
+        ), "expected the signal at both sites of the final pass, the stream open and the reader"
         for site in source.split('{"preempt_event": preempt_event}')[:-1]:
-            assert site.rstrip().endswith("**({} if preempt_event is None else"), (
-                "the signal must be passed only when set, never as a bare keyword"
-            )
+            assert site.rstrip().endswith(
+                "**({} if preempt_event is None else"
+            ), "the signal must be passed only when set, never as a bare keyword"
 
     def test_the_handler_exists_and_precedes_the_catch_all(self):
         source = LLAMA_CPP.read_text(encoding = "utf-8")
@@ -348,9 +348,9 @@ class TestTheWiringIsThere:
             "self._assemble_preempt_resume(",
         ):
             assert step in block, f"the final pass's pause never {step}"
-        assert block.index("preempt_event.clear()") < block.index("preempt_policy.on_resumed()"), (
-            "the clear must not run after the participant becomes selectable again"
-        )
+        assert block.index("preempt_event.clear()") < block.index(
+            "preempt_policy.on_resumed()"
+        ), "the clear must not run after the participant becomes selectable again"
 
     def test_the_module_still_parses(self):
         """The handler lives deep inside a very long generator; a stray indent there
