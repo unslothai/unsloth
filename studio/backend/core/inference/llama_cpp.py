@@ -440,6 +440,7 @@ from state.tool_approvals import (
     wait_tool_decision,
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
+from utils.code_integrity import code_integrity_block_reason
 
 # The leaf module, not utils.models: importing anything from that package runs its __init__,
 # which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
@@ -7759,8 +7760,13 @@ class LlamaCppBackend:
     # Nanoseconds and size, not int(st_mtime): an update landing in the same second as
     # the probe kept the key identical and got the old build's capabilities.
     _CAPABILITY_PROBE_RETRY_SECONDS = 30.0
+    # Ceiling for the backoff below. A binary blocked by Application Control or
+    # Smart App Control stays blocked until the file or the policy changes, so
+    # re-probing it every 30s buys nothing and costs a 10s timeout each time.
+    _CAPABILITY_PROBE_RETRY_MAX_SECONDS = 600.0
     _capability_cache: dict[tuple[str, int, int], dict[str, object]] = {}
     _capability_retry_after: dict[tuple[str, int, int], float] = {}
+    _capability_retry_backoff: dict[tuple[str, int, int], float] = {}
     _capability_cache_lock = threading.Lock()
 
     # The value form of the flash-attention flag. Newer llama.cpp declares it
@@ -7931,6 +7937,11 @@ class LlamaCppBackend:
                 timeout = 10,
                 check = False,
                 env = probe_env,
+                # Every other subprocess in this module passes these. Without
+                # them the probe flashes a console window, and this one runs on
+                # a status poll rather than a user action, so it flashes
+                # repeatedly while the panel is open.
+                **_windows_hidden_subprocess_kwargs(),
             )
             probe_ok = result.returncode == 0
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
@@ -8119,7 +8130,17 @@ class LlamaCppBackend:
                     spec_draft_cache_v_flag = _alias
                     break
         except (OSError, subprocess.SubprocessError) as exc:
-            logger.debug(f"llama-server --help probe failed: {exc}")
+            blocked = code_integrity_block_reason(exc)
+            if blocked is not None:
+                # Not a debug-level detail: nothing the user does inside Studio
+                # can recover from this, and without the log line the only
+                # symptom is a probe that never answers.
+                logger.warning(
+                    f"llama-server is blocked by Windows code integrity policy: {blocked}. "
+                    f"Binary: {bin_path}"
+                )
+            else:
+                logger.debug(f"llama-server --help probe failed: {exc}")
             saw_spec_type = False
             probe_ok = False
             help_text = ""
@@ -8215,11 +8236,24 @@ class LlamaCppBackend:
                 # Bound both failure modes: do not pin a transient failure for
                 # the process lifetime, and do not make every caller repeat a
                 # 10-second timeout while a persistent failure remains (#8317).
-                cls._capability_retry_after[cache_key] = (
-                    time.monotonic() + cls._CAPABILITY_PROBE_RETRY_SECONDS
+                #
+                # Doubling rather than a flat 30s. A transient failure still
+                # clears on the next poll, but a binary the OS refuses to run at
+                # all -- Application Control or Smart App Control denying it,
+                # which is permanent until the file or the policy changes --
+                # stops costing a 10s timeout every 30s forever. The key
+                # includes the file's mtime and size, so replacing the binary
+                # starts a fresh key with no inherited backoff.
+                delay = cls._capability_retry_backoff.get(
+                    cache_key, cls._CAPABILITY_PROBE_RETRY_SECONDS
+                )
+                cls._capability_retry_after[cache_key] = time.monotonic() + delay
+                cls._capability_retry_backoff[cache_key] = min(
+                    delay * 2.0, cls._CAPABILITY_PROBE_RETRY_MAX_SECONDS
                 )
             else:
                 cls._capability_retry_after.pop(cache_key, None)
+                cls._capability_retry_backoff.pop(cache_key, None)
             return info
 
     @staticmethod

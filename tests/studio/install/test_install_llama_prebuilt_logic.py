@@ -50,6 +50,7 @@ write_prebuilt_metadata = INSTALL_LLAMA_PREBUILT.write_prebuilt_metadata
 existing_install_matches_plan = INSTALL_LLAMA_PREBUILT.existing_install_matches_plan
 existing_install_matches_choice = INSTALL_LLAMA_PREBUILT.existing_install_matches_choice
 ensure_diffusion_visual_server = INSTALL_LLAMA_PREBUILT.ensure_diffusion_visual_server
+runtime_payload_health_groups = INSTALL_LLAMA_PREBUILT.runtime_payload_health_groups
 
 
 def linux_host() -> HostInfo:
@@ -2400,11 +2401,25 @@ def write_windows_install_shape(
     include_llama_dll: bool = True,
     include_cuda_dll: bool = False,
     include_cudart_dlls: bool = False,
+    include_shared_runtime: bool = True,
 ) -> None:
     runtime_dir = install_dir / "build" / "bin" / "Release"
     runtime_dir.mkdir(parents = True, exist_ok = True)
     (runtime_dir / "llama-server.exe").write_bytes(b"MZ")
     (runtime_dir / "llama-quantize.exe").write_bytes(b"MZ")
+    if include_shared_runtime:
+        # Everything a published or upstream Windows bundle carries alongside
+        # llama.dll. Both are built with BUILD_SHARED_LIBS on, so llama-server.exe
+        # is a thin launcher and the real code lives in these libraries.
+        for name in (
+            "llama-common.dll",
+            "llama-server-impl.dll",
+            "ggml.dll",
+            "ggml-base.dll",
+            "ggml-cpu-x64.dll",
+            "mtmd.dll",
+        ):
+            (runtime_dir / name).write_bytes(b"DLL")
     if include_llama_dll:
         (runtime_dir / "llama.dll").write_bytes(b"DLL")
     if include_cuda_dll:
@@ -6880,3 +6895,80 @@ def test_detect_host_reads_the_driver_cuda_version_from_a_localized_nvidia_smi(
     host = INSTALL_LLAMA_PREBUILT.detect_host()
     assert host.compute_caps == ["86"]
     assert host.driver_cuda_version == (13, 1)
+
+
+def _flat(groups: list[list[str]]) -> set[str]:
+    return {pattern for group in groups for pattern in group}
+
+
+@pytest.mark.parametrize(
+    "install_kind",
+    ["windows-cpu", "windows-arm64", "windows-cuda", "windows-hip", "windows-rocm", "windows-vulkan"],
+)
+def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
+    """Every Windows install kind owes llama-common.dll, not just llama.dll.
+
+    Windows used to require only llama.dll while each Linux kind required six
+    libraries including libllama-common.so*. A tree missing llama-common.dll
+    therefore reported "prebuilt installed and validated" and then failed at
+    exec with a Bad Image dialog naming that file.
+    """
+    patterns = _flat(runtime_payload_health_groups(install_kind, source_label = "published"))
+    for required in (
+        "llama.dll",
+        "llama-common.dll",
+        "llama-server.exe",
+        "llama-server-impl.dll",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu*.dll",
+        "mtmd.dll",
+    ):
+        assert required in patterns, f"{install_kind} does not require {required}"
+
+
+def test_windows_source_build_does_not_require_the_shared_runtime():
+    """setup.ps1 builds with -DBUILD_SHARED_LIBS=OFF, so those files never exist.
+
+    Requiring them for a source build would fail a healthy tree on every check.
+    """
+    patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = None))
+    assert "llama.dll" in patterns
+    for absent in ("llama-common.dll", "llama-server-impl.dll", "mtmd.dll"):
+        assert absent not in patterns
+
+
+def test_windows_upstream_bundles_require_the_shared_runtime_too():
+    """Upstream ggml-org Windows zips are also built with shared libs on."""
+    patterns = _flat(runtime_payload_health_groups("windows-cpu", source_label = "upstream"))
+    assert "llama-common.dll" in patterns
+
+
+def test_existing_install_matches_plan_windows_rejects_missing_llama_common(tmp_path: Path):
+    """A published Windows tree without llama-common.dll is not healthy."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    write_windows_install_shape(install_dir, include_llama_dll = True)
+    runtime_dir = install_dir / "build" / "bin" / "Release"
+    (runtime_dir / "llama-common.dll").unlink()
+
+    groups = runtime_payload_health_groups("windows-cpu", source_label = "published")
+    host = HostInfo(
+        system = "Windows",
+        machine = "AMD64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+    )
+    assert INSTALL_LLAMA_PREBUILT._runtime_payload_has(install_dir, host, groups) is False
+
+    (runtime_dir / "llama-common.dll").write_bytes(b"DLL")
+    assert INSTALL_LLAMA_PREBUILT._runtime_payload_has(install_dir, host, groups) is True

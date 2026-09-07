@@ -6914,6 +6914,42 @@ def installed_llama_ggml_tree(install_dir: Path | None = None) -> str | None:
     return tree if isinstance(tree, str) and tree else None
 
 
+def _windows_shared_groups(source_label: str | None) -> list[list[str]]:
+    """Runtime files every Windows install kind owes, before its backend DLL.
+
+    Only ``llama.dll`` used to be required here, while the Linux kinds each
+    required six libraries including ``libllama-common.so*``. That asymmetry let
+    a Windows tree missing ``llama-common.dll`` report "prebuilt installed and
+    validated" and then fail at exec, which is what a user sees as
+
+        llama-server.exe - Bad Image
+        ...\\llama-common.dll is either not designed to run on Windows or it
+        contains an error. Error status 0xc0e90002.
+
+    That status is a code integrity refusal, so on those machines the file is
+    present and simply cannot be loaded. Requiring it does not make Smart App
+    Control let go, but it does mean a truncated or partially extracted install
+    is caught here rather than surfacing as an unexplained runtime failure.
+
+    Gated on the prebuilt sources. Both our bundles and upstream's are built
+    with ``BUILD_SHARED_LIBS`` on, so they ship ``llama-common.dll`` and the
+    thin ``llama-server.exe`` beside ``llama-server-impl.dll``. The from source
+    path in ``setup.ps1`` passes ``-DBUILD_SHARED_LIBS=OFF`` and links the same
+    code statically, so none of those files exist there and requiring them
+    would fail a healthy tree.
+    """
+    groups: list[list[str]] = [["llama.dll"]]
+    if source_label in {"published", "upstream"}:
+        groups.append(["llama-common.dll"])
+        groups.append(["llama-server.exe"])
+        groups.append(["llama-server-impl.dll"])
+        groups.append(["ggml.dll"])
+        groups.append(["ggml-base.dll"])
+        groups.append(["ggml-cpu*.dll"])
+        groups.append(["mtmd.dll"])
+    return groups
+
+
 def runtime_payload_health_groups(
     install_kind: str,
     *,
@@ -6974,9 +7010,9 @@ def runtime_payload_health_groups(
             groups.append(["llama-diffusion-gemma-visual-server"])
         return groups
     if install_kind in {"windows-cpu", "windows-arm64"}:
-        return [["llama.dll"]]
+        return _windows_shared_groups(source_label)
     if install_kind == "windows-cuda":
-        groups = [["llama.dll"], ["ggml-cuda.dll"]]
+        groups = _windows_shared_groups(source_label) + [["ggml-cuda.dll"]]
         # Require the complete cudart trio only when it was paired with this install.
         if runtime_name:
             groups.append(["cudart64_*.dll"])
@@ -6984,9 +7020,9 @@ def runtime_payload_health_groups(
             groups.append(["cublasLt64_*.dll"])
         return groups
     if install_kind in {"windows-hip", "windows-rocm"}:
-        return [["llama.dll"], ["*hip*.dll"]]
+        return _windows_shared_groups(source_label) + [["*hip*.dll"]]
     if install_kind == "windows-vulkan":
-        groups = [["llama.dll"], ["ggml-vulkan.dll"]]
+        groups = _windows_shared_groups(source_label) + [["ggml-vulkan.dll"]]
         if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server.exe"])
         return groups
