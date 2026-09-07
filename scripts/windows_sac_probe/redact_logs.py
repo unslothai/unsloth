@@ -21,14 +21,12 @@ def backend_dir(explicit: str | None) -> Path:
     if explicit:
         return Path(explicit)
     import studio  # the installed package, beside the interpreter this runs under
-
     return Path(studio.__file__).resolve().parent / "backend"
 
 
 def load_redactor(backend: Path):
     sys.path.insert(0, str(backend))
     from utils.log_redaction import redact_log_text
-
     return redact_log_text
 
 
@@ -46,7 +44,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("source")
     ap.add_argument("destination")
-    ap.add_argument("--backend", default = None, help = "studio/backend directory (default: the installed one)")
+    ap.add_argument(
+        "--backend", default = None, help = "studio/backend directory (default: the installed one)"
+    )
     args = ap.parse_args()
     redact = load_redactor(backend_dir(args.backend))
     for name in copy_redacted(Path(args.source), Path(args.destination), redact):

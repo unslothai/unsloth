@@ -588,7 +588,10 @@ def test_studio_logs_reach_the_evidence_only_through_the_backend_redactor(tmp_pa
     copy runs Studio's own utils.log_redaction under the managed interpreter."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
     assert "Copy-Item -LiteralPath $studioLogs" not in ps1 and "Redact-Secrets" not in ps1
-    assert "redact_logs.py" in ps1 and "$python = Get-StudioPython" in ps1[ps1.index("function Invoke-Collect") :]
+    assert (
+        "redact_logs.py" in ps1
+        and "$python = Get-StudioPython" in ps1[ps1.index("function Invoke-Collect") :]
+    )
     assert "no managed interpreter to run the redactor" in ps1
     # The helper, driven against this checkout's backend on the canonical cases.
     src = tmp_path / "logs"
@@ -635,18 +638,28 @@ def test_the_powershell_probe_rejects_empty_inventories_and_keeps_reverting():
     assert "no PE files found under $llamaDir" in ps1
     revert = ps1[ps1.index("function Invoke-Revert") :]
     assert "$policyError = $_" in revert
-    assert revert.index("$policyError = $_") < revert.index("Write-Section 'Restore CodeIntegrity log'")
-    assert revert.index("Write-Section 'Restore Defender preferences'") < revert.index("if ($null -ne $policyError) {")
+    assert revert.index("$policyError = $_") < revert.index(
+        "Write-Section 'Restore CodeIntegrity log'"
+    )
+    assert revert.index("Write-Section 'Restore Defender preferences'") < revert.index(
+        "if ($null -ne $policyError) {"
+    )
     assert "the audit policy is still applied" in revert
 
 
 def test_rollback_state_is_persisted_before_the_efi_partition_changes_and_stays_out_of_the_zip():
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    block = ps1[ps1.index("Write-Section 'Audit policy'") : ps1.index("Write-Section 'Policy state after applying'")]
+    block = ps1[
+        ps1.index("Write-Section 'Audit policy'") : ps1.index(
+            "Write-Section 'Policy state after applying'"
+        )
+    ]
     persist = block.index("$baseline.AuditPolicyApplied = $true")
     assert block.index("Copy-Item -LiteralPath $NOISG_DEST -Destination $ROLLBACK_POLICY") < persist
-    assert persist < block.index("Set-Content -LiteralPath $baselinePath", persist) < block.index(
-        "Copy-Item -LiteralPath $AuditPolicy -Destination $NOISG_DEST"
+    assert (
+        persist
+        < block.index("Set-Content -LiteralPath $baselinePath", persist)
+        < block.index("Copy-Item -LiteralPath $AuditPolicy -Destination $NOISG_DEST")
     )
     assert "Join-Path (Join-Path $dir 'rollback') 'preexisting-policy.cip'" in ps1
     assert "Compress-Archive -Path (Join-Path $dir '*')" not in ps1
@@ -668,12 +681,23 @@ def test_the_inventory_is_of_the_runtime_studio_resolved(tmp_path, monkeypatch):
     s = _load_scenario()
     seen: list[str] = []
 
-    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+    def fake(
+        base_url,
+        method,
+        path,
+        payload = None,
+        token = None,
+        timeout = 900,
+    ):
         seen.append(path)
         if path == "/api/auth/login":
             return 200, {"access_token": "tok"}
         if path == "/api/settings/llama-cpp-path":
-            return 200, {"path": "D:\\llama", "source": "studio", "resolved_binary": "D:\\llama\\llama-server.exe"}
+            return 200, {
+                "path": "D:\\llama",
+                "source": "studio",
+                "resolved_binary": "D:\\llama\\llama-server.exe",
+            }
         return 200, {"status": "done"}
 
     monkeypatch.setattr(s, "_request", fake)
@@ -681,11 +705,23 @@ def test_the_inventory_is_of_the_runtime_studio_resolved(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["studio_scenario.py", "--model", "m", "--out", str(tmp_path), "--port", "1", "--password", "pw", "--home", str(tmp_path), "--poll-seconds", "0.05"],
+        [
+            "studio_scenario.py",
+            "--model",
+            "m",
+            "--out",
+            str(tmp_path),
+            "--port",
+            "1",
+            "--password",
+            "pw",
+            "--home",
+            str(tmp_path),
+            "--poll-seconds",
+            "0.05",
+        ],
     )
     s.main()
     sel = json.loads((tmp_path / "runtime-selection.json").read_text(encoding = "utf-8"))
     assert sel["resolved_binary"].endswith("llama-server.exe") and sel["source"] == "studio"
     assert seen.index("/api/settings/llama-cpp-path") < seen.index("/api/inference/load")
-
-
