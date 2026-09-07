@@ -295,6 +295,19 @@ class ServerToolCallStripper:
         self._pending_call = True
         self._owes_finish = True
 
+    def end_turn(self) -> None:
+        """The loop finished a provider turn, whatever the provider said to close it.
+
+        A turn boundary is normally read off the finish_reason on the wire, but a provider
+        may close on ``[DONE]`` alone and the loop consumes that sentinel before this ever
+        sees it, leaving the withheld-call flag raised into the next turn. The next turn's
+        reasons are its own: a legacy ``function_call`` there belongs to the caller, and
+        stripping it as though it closed the previous call means the caller never dispatches
+        it. The debt is deliberately left alone -- it is still owed until a real terminal
+        reaches the caller.
+        """
+        self._pending_call = False
+
     def strip(self, line: str) -> str | None:
         pending = self._pending_call or _line_offers_tool_call(line)
         out = strip_server_executed_tool_call(line, pending_call = pending)

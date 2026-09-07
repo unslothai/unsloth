@@ -362,6 +362,9 @@ class ToolLoopPolicy:
     # Called just before the loop relays the chunk that ends a turn it healed a text-form call out of. Only the headerless
     # relay sets it, to arm its ServerToolCallStripper for a call that never appeared on the wire as a tool_calls key.
     on_withheld_tool_call: Callable[[], None] | None = None
+    # Called when a provider turn ends, however it ended. Same headerless-only wiring: it clears the stripper's
+    # withheld-call flag, which the wire cannot always close because a turn may end on [DONE] alone.
+    on_provider_turn_end: Callable[[], None] | None = None
 
 
 def _reject_json_constant(name: str) -> Any:
@@ -1470,6 +1473,12 @@ async def stream_with_studio_tools(
                     await aclose()
                 except (RuntimeError, GeneratorExit):
                     pass
+
+        # The provider turn is over, whichever way it ended. Said explicitly because a turn closed on [DONE] alone
+        # carries no finish_reason for the stripper to read the boundary off, and the loop consumes that sentinel here
+        # rather than relaying it.
+        if policy.on_provider_turn_end is not None:
+            policy.on_provider_turn_end()
 
         # Both mean the turn ended before the model finished Both of these mean the turn ended before the model finished
         # saying what it wanted: "length" hit the token ceiling, "content_filter" had the output cut by the provider's

@@ -152,6 +152,7 @@ def _relay(turns, *, ui_events):
                 bypass_permissions = False,
                 rag_scope = None,
                 on_withheld_tool_call = None if ui_events else stripper.arm,
+                on_provider_turn_end = None if ui_events else stripper.end_turn,
             ),
             cancel_event = threading.Event(),
         )
@@ -304,6 +305,46 @@ def test_the_opt_in_stream_keeps_that_order_too(loop_env):
     lines = _relay([trailing_marker], ui_events = True)
 
     assert _text(lines) == "Comparing: the value <to"
+
+
+def test_the_next_turns_legacy_call_keeps_its_own_reason(loop_env):
+    """A withheld call must not reach past the turn it belonged to.
+
+    The wire is not always enough to close a turn: a provider can end one on [DONE] alone,
+    and the loop eats that sentinel rather than relaying it, so the withheld-call flag stayed
+    raised into the next turn. A legacy delta.function_call there is the caller's own to
+    dispatch, and it dispatches on the finish_reason, so stripping that reason as though it
+    closed the previous call means the call never runs.
+    """
+    server_call_then_done = [
+        _sse({"content": "looking. "}),
+        _sse(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "c1",
+                        "function": {"name": "web_search", "arguments": '{"query":"42"}'},
+                    }
+                ]
+            }
+        ),
+        _DONE,
+    ]
+    legacy_offer = [
+        _sse({"content": "now yours: "}),
+        _sse({"function_call": {"name": "caller_tool", "arguments": '{"x":1}'}}),
+        _sse(finish = "function_call"),
+        _DONE,
+    ]
+    lines = _relay([server_call_then_done, legacy_offer], ui_events = False)
+
+    assert loop_env == ["web_search"], "only the server call runs; the legacy one is the caller's"
+    assert "function_call" in _text(lines) or any(
+        '"function_call"' in line for line in lines
+    ), "the legacy call itself must reach the caller"
+    # Its own reason, not a minted stop: the caller dispatches on this.
+    assert _finish_reasons(lines) == ["function_call"]
 
 
 def test_a_truncated_turn_keeps_its_reason(loop_env):
