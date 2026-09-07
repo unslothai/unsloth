@@ -4715,13 +4715,40 @@ export function HubModelPicker({
     otherModelsCollapsed,
   ]);
 
-  const selectedHubOptionKey = useMemo(
-    () =>
-      value
-        ? hubOptionKeys.find((optionKey) => optionKey.endsWith(`::${value}`))
-        : undefined,
-    [hubOptionKeys, value],
-  );
+  const selectedHubOptionKey = useMemo(() => {
+    if (!value) return undefined;
+    const selectedKeys = new Set(
+      visibleCachedGguf
+        .filter((row) =>
+          row.repo_id === value &&
+          modelIdsMatchForPicker(row.load_id || row.repo_id, selectedLoadId),
+        )
+        .map((row) =>
+          makeModelOptionKey("downloaded-gguf", cachedGgufRowKey(row)),
+        ),
+    );
+    for (const row of pinnedRows) {
+      const entry = row.entry;
+      if (
+        entry?.repoId === value &&
+        entry.quant === (selectedGgufVariant ?? activeGgufVariant) &&
+        modelIdsMatchForPicker(entry.loadId || entry.repoId, selectedLoadId)
+      ) {
+        selectedKeys.add(makeModelOptionKey("pinned-quant", row.key));
+      }
+    }
+    return hubOptionKeys.find((key) =>
+      selectedKeys.has(key) || key.endsWith(`::${value}`),
+    );
+  }, [
+    hubOptionKeys,
+    value,
+    visibleCachedGguf,
+    pinnedRows,
+    selectedLoadId,
+    selectedGgufVariant,
+    activeGgufVariant,
+  ]);
   const hubModelList = useRovingModelList({
     label: "Hub models",
     optionKeys: hubOptionKeys,
@@ -5490,7 +5517,7 @@ export function HubModelPicker({
                 ? undefined
                 : (quant, expectedBytes) =>
                     updateGgufVariant(c.repo_id, quant, expectedBytes),
-              updateDisabled: loadedModelId === c.repo_id,
+              updateDisabled: copyMatches && loadedModelId === c.repo_id,
               onDelete: async (quant) => {
                 await deleteCachedModel(
                   c.repo_id,

@@ -11,6 +11,7 @@ import asyncio
 import threading
 import time
 from collections import OrderedDict
+from copy import copy
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -560,6 +561,45 @@ def _variant_state_repositories(cache_scans):
                 continue
 
 
+def _gguf_inventory_revisions(repo_info, active_hub_cache):
+    """Keep additional snapshots only when they expose otherwise missing complete quants."""
+    if str(repo_info.repo_type) != "model" or len(repo_info.revisions) < 2:
+        return [(repo_info, "")]
+    snapshot, payloads = _repo_gguf_payload_snapshots(repo_info)
+    primary = _resolve_load_identity(
+        repo_info.repo_id,
+        repo_path = Path(repo_info.repo_path),
+        snapshot_path = snapshot,
+        active_hub_cache = active_hub_cache,
+        payload_snapshots = payloads,
+    ).load_snapshot
+    if primary is None:
+        return [(repo_info, "")]
+    revisions = {
+        str(Path(revision.snapshot_path).resolve()): revision
+        for revision in repo_info.revisions
+        if getattr(revision, "snapshot_path", None) is not None
+    }
+    covered = set(hf_cache_scan.complete_snapshot_variants(str(primary)) or ())
+    selected = [str(primary)]
+    for path in sorted(
+        revisions, key = lambda path: snapshot_selection_key(Path(path)), reverse = True
+    ):
+        complete = set(hf_cache_scan.complete_snapshot_variants(path) or ())
+        if complete - covered:
+            selected.append(path)
+            covered.update(complete)
+    if len(selected) == 1 or str(primary) not in revisions:
+        return [(repo_info, "")]
+    rows = []
+    for index, path in enumerate(selected):
+        scoped = copy(repo_info)
+        # CachedRepoInfo is frozen; alter only our shallow copy, never the shared scan.
+        object.__setattr__(scoped, "revisions", (revisions[path],))
+        rows.append((scoped, path if index else ""))
+    return rows
+
+
 def _scan_cached_gguf(
     *, cache_scans: Optional[list] = None, active_hub_cache: Optional[Path] = None
 ) -> list[dict]:
@@ -580,9 +620,16 @@ def _scan_cached_gguf(
         logger.warning("Could not build shared cached-GGUF state index: %s", e)
         variant_states = None
 
-    seen_lower: dict[tuple[str, str], dict] = {}
+    seen_lower: dict[tuple[str, str, str], dict] = {}
     for hf_cache in cache_scans:
-        for repo_info in hf_cache.repos:
+        scoped_repos = []
+        for repo in hf_cache.repos:
+            try:
+                scoped_repos.extend(_gguf_inventory_revisions(repo, active_hub_cache))
+            except Exception as e:
+                logger.debug("Could not split cached GGUF revisions for %s: %s", repo.repo_id, e)
+                scoped_repos.append((repo, ""))
+        for repo_info, revision_key in scoped_repos:
             try:
                 if str(repo_info.repo_type) != "model":
                     continue
@@ -638,7 +685,7 @@ def _scan_cached_gguf(
                 # Quantizations of one repo can live in different download folders.
                 # Each row must retain the folder its variants load and delete from.
                 cache_root = os.path.normcase(str(repo_path.parent.resolve()))
-                key = (repo_id.lower(), cache_root)
+                key = (repo_id.lower(), cache_root, revision_key)
                 existing = seen_lower.get(key)
                 last_modified = _repo_gguf_last_modified(repo_info)
                 row_task = _cached_row_task(
@@ -693,7 +740,7 @@ def _scan_cached_gguf(
                     )
                 )
                 row["inventory_id"] = _local_inventory_id(
-                    "cache", "gguf", repo_id.lower(), cache_root
+                    "cache", "gguf", repo_id.lower(), revision_key or cache_root
                 )
                 # Coalesce repeated scans of one root without hiding other roots.
                 if _prefer_cache_row(row, existing):

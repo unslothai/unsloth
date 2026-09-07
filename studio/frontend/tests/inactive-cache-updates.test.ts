@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { modelIdsMatchForPicker } from "../src/features/model-picker/components/model-selector/row-identity.ts";
+import { cachedGgufRowKey } from "../src/features/model-picker/components/model-selector/sole-quant-cache.ts";
 
 function source(path: string) {
   return ts.createSourceFile(
@@ -31,6 +33,78 @@ function expression(file: ts.SourceFile, name: string) {
   assert.ok(result, name);
   return result.getText(file);
 }
+
+test("an inactive resident copy does not lock updates to the active copy", () => {
+  const picker = source(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  const disabled = new Function(
+    "loadedModelId",
+    "c",
+    "copyMatches",
+    `return (${expression(picker, "updateDisabled")});`,
+  );
+  assert.equal(disabled("Org/Model", { repo_id: "Org/Model" }, false), false);
+  assert.equal(disabled("Org/Model", { repo_id: "Org/Model" }, true), true);
+  assert.equal(disabled("Other/Model", { repo_id: "Org/Model" }, true), false);
+});
+
+test("keyboard focus follows the selected cache copy and visible pinned quant", () => {
+  const picker = source(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  const resolve = new Function(
+    "useMemo",
+    "value",
+    "hubOptionKeys",
+    "visibleCachedGguf",
+    "pinnedRows",
+    "selectedLoadId",
+    "selectedGgufVariant",
+    "activeGgufVariant",
+    "cachedGgufRowKey",
+    "makeModelOptionKey",
+    "modelIdsMatchForPicker",
+    `return (${expression(picker, "selectedHubOptionKey")});`,
+  );
+  const rows = [
+    { repo_id: "Org/Model", inventory_id: "copy1", load_id: "/first/snapshot" },
+    {
+      repo_id: "Org/Model",
+      inventory_id: "copy2",
+      load_id: "/second/snapshot",
+    },
+  ];
+  const keys = [
+    "downloaded-gguf::unrelated",
+    "downloaded-gguf::copy1",
+    "downloaded-gguf::copy2",
+  ];
+  const pinned = {
+    key: "Org/Model::Q8_0",
+    entry: { repoId: "Org/Model", quant: "Q8_0", loadId: "/second/snapshot" },
+  };
+  const select = (options: string[]) =>
+    resolve(
+      (fn: () => unknown) => fn(),
+      "Org/Model",
+      options,
+      rows,
+      [pinned],
+      "/second/snapshot",
+      "Q8_0",
+      null,
+      cachedGgufRowKey,
+      (section: string, id: string) => `${section}::${id}`,
+      modelIdsMatchForPicker,
+    );
+  assert.equal(select(keys), "downloaded-gguf::copy2");
+  assert.equal(
+    select(["pinned-quant::Org/Model::Q8_0", ...keys]),
+    "pinned-quant::Org/Model::Q8_0",
+  );
+  assert.equal(select(["search-hf::Org/Model"]), "search-hf::Org/Model");
+});
 
 for (const activeCache of [false, true, undefined]) {
   test(`Update actions respect cache destination (${activeCache})`, () => {

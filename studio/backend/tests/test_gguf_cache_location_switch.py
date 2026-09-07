@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -101,6 +102,41 @@ def test_cached_gguf_keeps_quants_in_previous_download_folders(cache_locations, 
     deletion._delete_cached_model_blocking(repo_id, "Q8_0", None, found["Q8_0"]["cache_path"])
     assert not expected["Q8_0"][1].exists()
     assert expected["Q6_K"][1].is_file()
+
+
+def test_cache_rows_preserve_quants_in_older_revisions(cache_locations, cache_client):
+    repo_id, expected = cache_locations
+    repo, current_file = expected["Q6_K"]
+    older = repo / "snapshots" / ("a" * 40)
+    older.mkdir()
+    (older / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    os.utime(older, (1, 1))
+    inventory_scan.invalidate_hf_cache_scans()
+    rows = [row for row in cache_inventory._scan_cached_gguf() if row["repo_id"] == repo_id]
+    found = {}
+    for row in rows:
+        response = asyncio.run(
+            gguf_variants.get_gguf_variants_response(
+                repo_id, prefer_local_cache = True, local_path = row["load_id"]
+            )
+        )
+        for variant in response.variants:
+            if variant.downloaded:
+                found[variant.quant] = row["load_id"]
+    assert set(found) == {"Q4_K_M", "Q6_K", "Q8_0"}
+    assert found["Q4_K_M"] == str(older)
+    assert found["Q6_K"] == str(current_file.parent)
+    assert len({row["inventory_id"] for row in rows}) == 3
+    assert sum(row["size_bytes"] for row in rows) == 768
+    scans = inventory_scan.all_hf_cache_scans()
+    repeated = cache_inventory._scan_cached_gguf(cache_scans = scans + scans)
+    assert [row for row in repeated if row["repo_id"] == repo_id] == rows
+    assert any(len(item.revisions) == 2 for scan in scans for item in scan.repos)
+    # Once the primary snapshot also has Q4, its older revision needs no extra row.
+    (current_file.parent / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    inventory_scan.invalidate_hf_cache_scans()
+    rows = [row for row in cache_inventory._scan_cached_gguf() if row["repo_id"] == repo_id]
+    assert len(rows) == 2
 
 
 @pytest.mark.parametrize("action", ["impact", "reveal", "copy"])
