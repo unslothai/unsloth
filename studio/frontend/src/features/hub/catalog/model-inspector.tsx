@@ -776,6 +776,7 @@ export const ModelInspector = memo(function ModelInspector({
               systemRamGb={systemRamGb}
               cachePath={model.path}
               activeCache={model.activeCache}
+              loadId={model.resource.runId}
               knownBytes={model.cachedBytes}
               onLoad={model.isLocal ? onLoadLocal : onLoad}
               onUseInChat={onUseInChat}

@@ -868,7 +868,7 @@ export const InventoryRow = memo(function InventoryRow({
                 totalBytes={row.bytes}
                 isGguf={row.isGguf}
                 isDataset={isDataset}
-                cachePath={row.cachePath}
+                cachePath={row.isGguf ? row.loadId || row.cachePath : row.cachePath}
               />
             ) : trailing ? (
               <span>{trailing}</span>
@@ -922,7 +922,7 @@ export const InventoryRow = memo(function InventoryRow({
               totalBytes={row.bytes}
               isGguf={row.isGguf}
               isDataset={isDataset}
-              cachePath={row.cachePath}
+              cachePath={row.isGguf ? row.loadId || row.cachePath : row.cachePath}
             />
           ) : trailing ? (
             <span className="truncate text-ui-11p5 tabular-nums text-muted-foreground/70">

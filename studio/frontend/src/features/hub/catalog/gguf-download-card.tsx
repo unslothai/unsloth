@@ -571,6 +571,7 @@ export function GgufDownloadCard({
   systemRamGb,
   cachePath,
   activeCache,
+  loadId,
   preferLocalCache = false,
   isPartial = false,
   onLoad,
@@ -592,6 +593,7 @@ export function GgufDownloadCard({
   systemRamGb?: number;
   cachePath?: string | null;
   activeCache?: boolean | null;
+  loadId?: string | null;
   preferLocalCache?: boolean;
   isPartial?: boolean;
   onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
@@ -615,7 +617,8 @@ export function GgufDownloadCard({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const partialsResumable = useHttpPartialsResumable();
-  const localVariantPath = cachePath?.trim() || null;
+  const localVariantPath =
+    (loadId !== repoId ? loadId?.trim() : null) || cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
       repoId,

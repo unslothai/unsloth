@@ -34,6 +34,38 @@ function expression(file: ts.SourceFile, name: string) {
   return result.getText(file);
 }
 
+test("Hub variant queries use the selected snapshot while file actions keep their root", () => {
+  const card = source("features/hub/catalog/gguf-download-card.tsx");
+  const resolve = new Function(
+    "repoId",
+    "loadId",
+    "cachePath",
+    `return (${expression(card, "localVariantPath")});`,
+  );
+  assert.equal(
+    resolve(
+      "Org/Model",
+      "/hub/models--Org--Model/snapshots/old",
+      "/hub/models--Org--Model",
+    ),
+    "/hub/models--Org--Model/snapshots/old",
+  );
+  assert.equal(
+    resolve("Org/Model", "Org/Model", "/hub/models--Org--Model"),
+    "/hub/models--Org--Model",
+  );
+  assert.equal(resolve("Org/Model", "Org/Model", null), null);
+  assert.match(
+    source("features/hub/catalog/model-inspector.tsx").text,
+    /loadId=\{model\.resource\.runId\}/,
+  );
+  assert.match(
+    source("features/hub/catalog/download-section.tsx").text,
+    /loadId=\{loadId\}/,
+  );
+  assert.match(card.text, /cachePath=\{cachePath\}/);
+});
+
 test("an inactive resident copy does not lock updates to the active copy", () => {
   const picker = source(
     "features/model-picker/components/model-selector/pickers.tsx",
