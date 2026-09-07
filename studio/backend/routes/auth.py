@@ -27,15 +27,19 @@ from models.auth import (
     CreateApiKeyResponse,
     DesktopInitialPasswordRequest,
     DesktopLoginRequest,
+    LinkInitialPasswordRequest,
+    LinkTokenRequest,
     RefreshTokenRequest,
 )
 from models.users import Token
 from auth import storage, hashing
 from auth.authentication import (
     authenticated_via_desktop_jwt,
+    authenticated_via_link_jwt,
     authenticated_without_credential,
     create_access_token,
     create_refresh_token,
+    exchange_link_token_with_secret,
     get_current_credential,
     get_current_subject,
     get_current_subject_allow_password_change,
@@ -521,6 +525,82 @@ async def desktop_login(payload: DesktopLoginRequest) -> Token:
     )
 
 
+# Sync def (not async), like /identity: every step here is blocking SQLite work
+# (token lookup, single-use consume, refresh-token insert) that can wait out the
+# connection busy timeout while another writer holds the auth DB. On an async
+# handler that wait pins the event loop and stalls every other request; FastAPI
+# runs a sync handler in its threadpool instead. The failure buckets this route
+# shares with /login are guarded by _LOGIN_BUCKETS_LOCK, so threadpool execution
+# is safe.
+@router.post("/link-exchange", response_model = Token)
+def link_exchange(payload: LinkTokenRequest, request: Request) -> Token:
+    """Exchange a one-time, short-TTL link token for normal session tokens.
+
+    Powers the opt-in Colab same-tab handoff: the same-tab URL carries a
+    single-use ``?link_token=...`` the UI posts here to obtain the same JWT the
+    login form issues. The token is consumed here (a replay is rejected) and is
+    never logged. Unauthenticated by design -- the token itself is the credential.
+
+    Per-IP failure rate-limited like /login. This endpoint is unauthenticated and
+    each attempt performs a SQLite lookup plus HMAC/base64 processing, so without a
+    limiter an attacker could spray invalid tokens and saturate the threadpool with
+    that work. There is no username here (the token is the credential), so failures
+    fold into the per-IP aggregate bucket; the bound is checked BEFORE any storage
+    work, and a successful exchange clears the bucket (mirrors /login).
+    """
+    ip_key = _unknown_user_key(request)
+    blocked_for = _login_blocked(ip_key)
+    if blocked_for > 0:
+        raise HTTPException(
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS,
+            # IP not interpolated into the body; behind a proxy/NAT it's
+            # misleading or an info leak.
+            detail = (f"Too many failed link-token exchanges. Try again in {blocked_for} seconds."),
+            headers = {"Retry-After": str(blocked_for)},
+        )
+
+    exchanged = exchange_link_token_with_secret(payload.link_token)
+    if exchanged is None:
+        _record_login_failure(ip_key)
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid, expired, or already-used link token",
+        )
+    username, secret_at_exchange = exchanged
+    # link = True marks this session as link-minted so it may set the FIRST password
+    # without presenting the seeded one (see /link-initial-password). Deliberately
+    # not stamped on the refresh token: the claim must not outlive the exchange, so
+    # refreshing drops the privilege and leaves an ordinary session.
+    access_token = create_access_token(subject = username, link = True)
+    refresh_token = create_refresh_token(subject = username)
+    # Bind session issuance to the JWT secret the link token validated against. A
+    # concurrent password change rotates that secret (and revokes refresh tokens)
+    # to invalidate every outstanding session; if it rotated between the single-use
+    # consumption above and this issuance, revoke the tokens we just minted and
+    # reject, so a pre-change link token cannot mint a session that survives the
+    # change (consume-before-rotation TOCTOU). A rotation that lands after this
+    # recheck is caught by that same refresh-token revocation and the JWT signature
+    # change, so no issued session outlives the password change.
+    if storage.get_jwt_secret(username) != secret_at_exchange:
+        try:
+            storage.consume_refresh_token(refresh_token)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid, expired, or already-used link token",
+        )
+    # A valid single-use token proves legitimacy: reset this IP's failure throttle,
+    # exactly as a successful /login does.
+    _clear_login_bucket(ip_key)
+    return Token(
+        access_token = access_token,
+        refresh_token = refresh_token,
+        token_type = "bearer",
+        must_change_password = storage.requires_password_change(username),
+    )
+
+
 @router.post("/refresh", response_model = Token)
 async def refresh(payload: RefreshTokenRequest) -> Token:
     """Exchange a refresh token for a new access+refresh pair (single-use)."""
@@ -604,6 +684,78 @@ async def set_desktop_initial_password(
         pass
     access_token = create_access_token(subject = current_subject, desktop = True, secret = new_secret)
     refresh_token = create_refresh_token(subject = current_subject, desktop = True, secret = new_secret)
+    return Token(
+        access_token = access_token,
+        refresh_token = refresh_token,
+        token_type = "bearer",
+        must_change_password = False,
+    )
+
+
+@router.post("/link-initial-password", response_model = Token)
+async def set_link_initial_password(
+    payload: LinkInitialPasswordRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+    is_link: bool = Depends(authenticated_via_link_jwt),
+) -> Token:
+    """Set the first real password from a one-time link-token session.
+
+    Same authority argument as /desktop-initial-password: the caller proved
+    possession of an out-of-band secret (there, .desktop_secret; here, a
+    single-use link token the server placed only where the operator could reach
+    it) rather than the account password, so it may set the FIRST password while
+    the seeded credential is still in place. It cannot change an existing one --
+    that stays with /change-password, which verifies the current password.
+
+    Narrow on purpose. A link session has no other extra power, the route refuses
+    once must_change_password is clear, and the write is a compare-and-set on the
+    credential just read so a concurrent /change-password or reset-password cannot
+    be clobbered by a caller that verified no password at all.
+    """
+    if not is_link:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "This action requires a one-time setup link.",
+        )
+
+    record = storage.get_user_and_secret(current_subject)
+    if record is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "User session is invalid",
+        )
+
+    _salt, pwd_hash, _jwt_secret, must_change_password = record
+    if not must_change_password:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "A password is already set. Change it instead.",
+        )
+    if any(ch.isspace() for ch in payload.new_password):
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "New password cannot contain spaces",
+        )
+
+    new_secret = storage.update_password(
+        current_subject,
+        payload.new_password,
+        revoke_refresh_tokens = True,
+        expect_password_hash = pwd_hash,
+    )
+    if new_secret is None:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "The password changed while this request was in flight. Try again.",
+        )
+    try:
+        request.app.state.bootstrap_password = None
+    except AttributeError:
+        pass
+    # Ordinary session from here on: the link privilege is spent.
+    access_token = create_access_token(subject = current_subject, secret = new_secret)
+    refresh_token = create_refresh_token(subject = current_subject, secret = new_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,

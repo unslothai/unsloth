@@ -50,11 +50,70 @@ def _conditional_extent(src: str) -> tuple[int, int]:
 
 def test_hasbootstrappassword_constant_is_derived_from_bootstrap_window_value():
     """The guard must read from window.__UNSLOTH_BOOTSTRAP__, matching the backend's
-    bootstrap-injection contract in studio/backend/main.py::_inject_bootstrap."""
+    bootstrap-injection contract in studio/backend/main.py::_inject_bootstrap.
+
+    The backend now injects a one-time `link_token` rather than the seeded
+    `password`, so the guard is derived from the token, with `password` still
+    honoured so an older backend paired with this bundle keeps working. What must
+    not drift is that the gate reads the INJECTED value: deriving it from
+    anything else would either strand first-boot users behind a field they cannot
+    fill, or render the field on a page that has no credential for it.
+    """
     src = AUTH_FORM.read_text(encoding = "utf-8")
-    assert "const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);" in src, (
-        "hasBootstrapPassword constant missing or its derivation drifted; "
-        "this is the gate that hides the Current password input on first boot"
+    match = re.search(r"const hasBootstrapPassword = Boolean\((.*?)\);", src, re.DOTALL)
+    assert match, (
+        "hasBootstrapPassword constant missing; this is the gate that hides the "
+        "Current password input on first boot"
+    )
+    derivation = match.group(1)
+    assert "window.__UNSLOTH_BOOTSTRAP__?.link_token" in derivation or (
+        "setupToken" in derivation
+        and "const setupToken = window.__UNSLOTH_BOOTSTRAP__?.link_token;" in src
+    ), "hasBootstrapPassword must be derived from the injected link_token; " f"found {derivation!r}"
+    assert "window.__UNSLOTH_BOOTSTRAP__?.password" in derivation, (
+        "keep honouring an injected password so an older backend serving the "
+        "seed still hides the Current password field"
+    )
+
+
+def test_the_submit_gate_and_the_disable_gate_agree_about_the_setup_token():
+    """Both current-password rules must be skipped on the setup-token path.
+
+    The submit handler re-checks what disables the button, because Enter and
+    autofill can bypass the button. On the setup-token path there is no current
+    password and the form renders no field for one, so a rule that survives in
+    only one of the two places produces the worst possible failure: an enabled
+    button, a click that makes no request at all, and an error about a field the
+    user cannot see. That is a real regression this caught, so it is pinned.
+    """
+    src = AUTH_FORM.read_text(encoding = "utf-8")
+    for rule in (
+        "currentPassword.length < 8",
+        "currentPassword === newPassword",
+    ):
+        occurrences = [line.strip() for line in src.splitlines() if rule in line]
+        assert occurrences, f"the {rule!r} rule disappeared entirely"
+        for line in occurrences:
+            assert "!setupToken" in line, (
+                f"{line!r} does not exempt the setup-token path. The disable gate "
+                "and the submit gate must agree, or the button enables a submit "
+                "that returns without making a request."
+            )
+
+
+def test_setup_token_is_never_sent_as_a_password():
+    """The injected link token is a bearer credential for /link-exchange only.
+
+    It must never be posted as `current_password`: that would send it to the
+    password-verification path, where it cannot work, and would put a bearer
+    credential in a field the browser may offer to save.
+    """
+    src = AUTH_FORM.read_text(encoding = "utf-8")
+    assert "current_password: setupToken" not in src
+    assert "setPassword(bootstrap.link_token)" not in src
+    assert 'apiUrl("/api/auth/link-initial-password")' in src, (
+        "first-boot setup must go through /link-initial-password, which takes "
+        "no current password"
     )
 
 

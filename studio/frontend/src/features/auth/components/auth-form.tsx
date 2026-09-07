@@ -18,11 +18,18 @@ import {
   hasExpired,
 } from "../bootstrap-deadline";
 
-// Bootstrap credentials injected into index.html by the backend (only present
-// while default admin must_change_password is true)
+// One-time setup token injected into index.html by the backend (only present
+// while default admin must_change_password is true). This used to carry the
+// seeded password itself; it now carries a single-use, short-TTL link token
+// that can do nothing but set the first password. `password` is kept optional
+// so an older backend paired with this bundle still works.
 declare global {
   interface Window {
-    __UNSLOTH_BOOTSTRAP__?: { username: string; password: string };
+    __UNSLOTH_BOOTSTRAP__?: {
+      username: string;
+      link_token?: string;
+      password?: string;
+    };
   }
 }
 
@@ -50,6 +57,29 @@ type TokenResponse = {
   refresh_token: string;
   must_change_password: boolean;
 };
+
+type SetupExchange = { access: string | null; status: number | null };
+
+/** Redeem the one-time setup token for an access token.
+ *
+ * Never throws: a failure just means the page keeps showing the ordinary form
+ * and the operator can reload to be issued a fresh token. The status comes back
+ * with it so a failure can say what actually happened rather than guess.
+ */
+async function exchangeSetupToken(linkToken: string): Promise<SetupExchange> {
+  try {
+    const response = await fetch(apiUrl("/api/auth/link-exchange"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ link_token: linkToken }),
+    });
+    if (!response.ok) return { access: null, status: response.status };
+    const token = (await response.json()) as TokenResponse;
+    return { access: token.access_token ?? null, status: response.status };
+  } catch {
+    return { access: null, status: null };
+  }
+}
 
 async function loginWithPassword(
   username: string,
@@ -87,6 +117,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const username = HIDDEN_LOGIN_USERNAME;
   const [password, setPassword] = useState("");
+  // Access token from redeeming the injected one-time setup token, held in memory
+  // only: it is a first-boot credential, not a session to persist.
+  const [setupSession, setSetupSession] = useState<string | null>(null);
+  const [setupError, setSetupError] = useState<number | null>(null);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -97,6 +131,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const [deadlineAt, setDeadlineAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const reloadReadySent = useRef(false);
+  const setupExchangeStarted = useRef(false);
 
   useEffect(() => {
     if (deadlineAt === null) {
@@ -185,14 +220,42 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   }, [statusLoading]);
 
   // Seed password from bootstrap credentials injected into HTML by web CLI.
+  // Only an older backend still sends one; the current one sends a link token,
+  // which the setup-session effect below exchanges instead.
   useEffect(() => {
     function loadBootstrap() {
       const bootstrap = window.__UNSLOTH_BOOTSTRAP__;
-      if (bootstrap && !isLoginMode && !password) {
+      if (bootstrap?.password && !isLoginMode && !password) {
         setPassword(bootstrap.password);
       }
     }
     loadBootstrap();
+  }, []);
+
+  // Redeem the injected one-time setup token as soon as the setup page loads,
+  // rather than waiting for the operator to submit. The token is short lived and
+  // single use by design, so redeeming it seconds after it was minted is what it
+  // is built for. Doing it at submit time instead put expiry, the shared login
+  // rate limiter and any transient error on the click itself, where the failure
+  // is least recoverable and most confusing.
+  useEffect(() => {
+    const token = window.__UNSLOTH_BOOTSTRAP__?.link_token;
+    if (!token || isLoginMode) return;
+    // Claimed in setup and never released, which a local flag cannot do:
+    // StrictMode replays setup, cleanup, setup, and this token is SINGLE USE.
+    // Exchanging on the second setup would spend a token the first setup had
+    // already burned, and the first setup's session went out with its own
+    // cleanup, so the operator would be left holding a 401 that no reload can
+    // clear (the reload mints a fresh token and burns that one the same way).
+    if (setupExchangeStarted.current) return;
+    setupExchangeStarted.current = true;
+    void (async () => {
+      const { access, status } = await exchangeSetupToken(token);
+      // No cancelled check: the session belongs to the page, not to this mount,
+      // and dropping it on unmount is what made the replay unrecoverable.
+      if (access) setSetupSession(access);
+      else setSetupError(status);
+    })();
   }, []);
 
   const blockedByState =
@@ -218,17 +281,23 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const switchLinkTo = "/login";
   const switchLinkText = "Back to login";
   const currentPassword = password || window.__UNSLOTH_BOOTSTRAP__?.password || "";
-  // On first boot the backend injects __UNSLOTH_BOOTSTRAP__ and we silently
-  // reuse that password; the Current password input is only rendered for the
-  // admin-forced must_change_password path where no bootstrap is available.
-  const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
+  // On first boot the backend injects __UNSLOTH_BOOTSTRAP__ and setup runs off
+  // it, so the Current password input is only rendered for the admin-forced
+  // must_change_password path where no bootstrap is available. Unchanged from
+  // when the injected value was the password itself: the rendered form is the
+  // same either way, only what backs it differs.
+  const setupToken = window.__UNSLOTH_BOOTSTRAP__?.link_token;
+  const hasBootstrapPassword = Boolean(
+    setupToken || window.__UNSLOTH_BOOTSTRAP__?.password,
+  );
   const invalidChangePasswordForm =
     !isLoginMode &&
-    (currentPassword.length < 8 ||
+    // The setup token stands in for the current password, so do not require one.
+    ((!setupToken && currentPassword.length < 8) ||
       newPassword.length < 8 ||
       /\s/.test(newPassword) ||
       newPassword !== confirmPassword ||
-      currentPassword === newPassword);
+      (!setupToken && currentPassword === newPassword));
   const showWhitespaceWarning = !isLoginMode && /\s/.test(newPassword);
   const showPasswordMismatchWarning =
     !isLoginMode &&
@@ -242,7 +311,11 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
     if (!isLoginMode) {
       // Mirror the disable gate: Enter / autofill can bypass the button.
-      if (currentPassword.length < 8) {
+      // Both must skip the current-password rules on the setup-token path, where
+      // there is no current password to supply and the form never renders a field
+      // for one. Keep the two in step: a gate here that the button does not have
+      // shows an error on a click the UI said was fine, with no request made.
+      if (!setupToken && currentPassword.length < 8) {
         setError(
           currentPassword
             ? "Current password must be at least 8 characters."
@@ -262,7 +335,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         setError("Passwords do not match.");
         return;
       }
-      if (currentPassword === newPassword) {
+      if (!setupToken && currentPassword === newPassword) {
         setError("New password must be different from your current password.");
         return;
       }
@@ -274,6 +347,41 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
       if (isLoginMode) {
         token = await loginWithPassword(username, password);
+      } else if (setupToken) {
+        // First-boot setup. The token was already exchanged for a session when
+        // the page loaded (see the setup-session effect above), so this only has
+        // to set the first password, through the route that does not ask for the
+        // current one. Same two fields on screen as before.
+        let setupAccess = setupSession;
+        if (!setupAccess) {
+          const retry = await exchangeSetupToken(setupToken);
+          setupAccess = retry.access;
+          if (!setupAccess) {
+            const detail = retry.status ?? setupError;
+            throw new Error(
+              "Could not start setup with the one-time link in this page" +
+                (detail ? ` (${detail})` : "") +
+                ". Reload the page to get a new one.",
+            );
+          }
+        }
+        const response = await fetch(apiUrl("/api/auth/link-initial-password"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${setupAccess}`,
+          },
+          body: JSON.stringify({ new_password: newPassword }),
+        });
+        if (!response.ok) {
+          let message = "Password update failed.";
+          const errorPayload = (await response
+            .json()
+            .catch(() => null)) as { detail?: string } | null;
+          if (errorPayload?.detail) message = errorPayload.detail;
+          throw new Error(message);
+        }
+        token = (await response.json()) as TokenResponse;
       } else {
         let accessToken = getAuthToken();
 
