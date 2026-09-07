@@ -247,7 +247,8 @@ what says which build a cell actually exercised, not the label.
 
 `collect` writes a zip to `%USERPROFILE%\unsloth-sac-probe\`. Inside:
 
-- `signature-inventory.csv` and `.json`: every PE under the runtime Studio loads (`UNSLOTH_LLAMA_CPP_PATH`, else `<Studio home>\llama.cpp`, else `~\.unsloth\llama.cpp`) with its Authenticode `Status`, `StatusMessage`, signer subject, thumbprint and SHA-256. Record `Status`, not merely whether a certificate is present: an unsigned file and one whose chain did not build both report `UnknownError`, and `StatusMessage` is what separates them
+- `runtime-selection.json`: the llama-server Studio resolved, in its own order (`LLAMA_SERVER_PATH`, `UNSLOTH_LLAMA_CPP_PATH`, the folder selected in Studio's settings, the managed default). The inventory is of that build.
+- `signature-inventory.csv` and `.json`: every PE under that runtime with its Authenticode `Status`, `StatusMessage`, signer subject, thumbprint and SHA-256. Record `Status`, not merely whether a certificate is present: an unsigned file and one whose chain did not build both report `UnknownError`, and `StatusMessage` is what separates them
 - `venv-signature-inventory.csv` and `.json`: the same for every PE in the `unsloth_studio` venv, which is around 25 times as many files and is where the only enforced block so far actually landed. `run` also prints the ten worst packages by unsigned count
 - `scenario-status.json`: whether the Studio scenario ran and its exit code. Read this **before** reading the event count. A scenario that never authenticated or never loaded a model produces an empty window, and an empty window looks identical to a clean allow. `collect` warns loudly when this happened, and refuses to imply a result
 - `code-integrity-events.json` and `.txt`: events 3033, 3076, 3077, 3089 and 3090 to 3099 in the run window

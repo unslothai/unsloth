@@ -88,17 +88,21 @@ function Get-StudioHome {
     return (Join-Path $env:USERPROFILE '.unsloth\studio')
 }
 
-# The runtime Studio actually loads. UNSLOTH_LLAMA_CPP_PATH is an explicit
-# install dir; a custom Studio home keeps its runtime under <home>\llama.cpp;
-# only the legacy home uses ~\.unsloth\llama.cpp. Inventorying the wrong tree
+# The runtime Studio actually loads, in Studio's own order
+# (llama_cpp.py _find_llama_server_binary): LLAMA_SERVER_PATH names the binary,
+# UNSLOTH_LLAMA_CPP_PATH an install dir, then the folder selected in Studio's
+# settings, then the managed default (<home>\llama.cpp for a custom home,
+# ~\.unsloth\llama.cpp for the legacy one). The settings choice is only
+# visible through the API, so the scenario records it in runtime-selection.json
+# and the inventory reads that when it is there. Inventorying the wrong tree
 # would omit exactly the files the events are about.
 function Get-LlamaDir {
+    if ($env:LLAMA_SERVER_PATH) { return (Split-Path -Parent $env:LLAMA_SERVER_PATH) }
     if ($env:UNSLOTH_LLAMA_CPP_PATH) { return $env:UNSLOTH_LLAMA_CPP_PATH }
     $override = if ($env:UNSLOTH_STUDIO_HOME) { $env:UNSLOTH_STUDIO_HOME } else { $env:STUDIO_HOME }
     if ($override) { return (Join-Path $override 'llama.cpp') }
     return (Join-Path $env:USERPROFILE '.unsloth\llama.cpp')
 }
-$LLAMA_DIR = Get-LlamaDir
 # The managed venv. Studio loads far more native code from here than from the
 # llama.cpp runtime: 673 PE files against 27 on a measured install, 657 of them
 # unsigned, spread across torch, scipy, sklearn, numpy, av and the rest. The
@@ -106,6 +110,21 @@ $LLAMA_DIR = Get-LlamaDir
 # (sentencepiece\_sentencepiece.cp313-win_amd64.pyd), not in llama.cpp, so an
 # inventory that stops at the runtime dir omits the evidence.
 $VENV_DIR = Join-Path (Get-StudioHome) 'unsloth_studio'
+
+function Resolve-LlamaDir([string] $dir) {
+    $selection = Join-Path $dir 'runtime-selection.json'
+    if (Test-Path -LiteralPath $selection) {
+        $sel = Get-Content -LiteralPath $selection -Raw | ConvertFrom-Json
+        if ($sel.resolved_binary) {
+            Write-Host ("runtime selected by Studio ({0}): {1}" -f $sel.source, $sel.resolved_binary)
+            return (Split-Path -Parent $sel.resolved_binary)
+        }
+        Write-Warning "Studio reported no resolvable llama-server (source $($sel.source), path $($sel.path)); inventorying $(Get-LlamaDir)"
+    } elseif (-not $env:LLAMA_SERVER_PATH -and -not $env:UNSLOTH_LLAMA_CPP_PATH) {
+        Write-Warning 'no runtime-selection.json from the scenario: a folder selected in Studio settings cannot be seen from here, so the managed default is inventoried'
+    }
+    return (Get-LlamaDir)
+}
 $PE_EXT = @('.exe', '.dll', '.pyd', '.sys', '.ocx', '.cpl', '.scr')
 
 # unsloth_cli reads UNSLOTH_STUDIO_PASSWORD itself and treats it as
@@ -179,30 +198,6 @@ function Get-CiLogSettings {
     return [pscustomobject]@{ Enabled = $enabled; MaxSize = $maxSize }
 }
 
-# The shapes studio/backend/utils/log_redaction.py masks, so a log copied
-# into the evidence carries nothing its own reader would have hidden.
-function Redact-Secrets([string] $Text) {
-    if ($null -eq $Text) { return $Text }
-    $rules = @(
-        @('\bhf_[A-Za-z0-9]{20,}', 'hf_<redacted>'),
-        @('(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}', 'sk-<redacted>'),
-        @('\b(?:gsk_|xai-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|xox[abpsr]-|ya29\.)[A-Za-z0-9_.-]{16,}', '<redacted>'),
-        @('\bAIza[0-9A-Za-z_-]{30,}', '<redacted>'),
-        @('\b(?:AKIA|ASIA)[0-9A-Z]{16}\b', '<redacted>'),
-        @('\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}', '<redacted>'),
-        @('://[^/\s:@]+:[^/\s@]+@', '://<redacted>@'),
-        @('(?i)([?&](?:token|api[-_]key|apikey|sig|signature|x-amz-signature|x-amz-credential|x-amz-security-token|access_token)=)[^&\s"'']+', '$1<redacted>'),
-        @('(?i)((?:proxy-)?authorization["'']?\s*[:=]\s*["'']?(?:bearer|basic|digest|token|apikey))(\s+)([^\s"'',}\]]+)', '$1$2<redacted>'),
-        @('(?i)\b(Bearer)(\s+)([^\s"'',}\]]+)', '$1$2<redacted>'),
-        @('(?i)\b((?:api[-_]?key|access[-_]?token|refresh[-_]?token|secret|password|passwd|pwd|token|credential)s?["'']?\s*[:=]\s*["'']?)([^\s"'',}\]]{6,})', '$1<redacted>'),
-        @('(?im)\b((?:set-)?cookie["'']?\s*[:=]\s*)(\S.*)$', '$1<redacted>')
-    )
-    foreach ($rule in $rules) {
-        $Text = [regex]::Replace($Text, $rule[0], $rule[1])
-    }
-    return $Text
-}
-
 function Write-Section([string] $Text) {
     Write-Host ''
     Write-Host "=== $Text ===" -ForegroundColor Cyan
@@ -214,6 +209,10 @@ function Assert-Elevated {
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw 'Run this from an elevated PowerShell. Right click Windows Terminal or PowerShell and pick "Run as administrator".'
     }
+}
+
+function Get-RollbackPolicyPath([string] $dir) {
+    return (Join-Path (Join-Path $dir 'rollback') 'preexisting-policy.cip')
 }
 
 function Get-RunDir {
@@ -408,6 +407,7 @@ function Save-Baseline([string] $dir) {
 function Invoke-Prepare {
     Assert-Elevated
     $dir = Get-RunDir
+    $ROLLBACK_POLICY = Get-RollbackPolicyPath $dir
     Write-Section 'Baseline'
     $baselinePath = Join-Path $dir 'baseline.json'
     if (Test-Path -LiteralPath $baselinePath) {
@@ -489,17 +489,21 @@ function Invoke-Prepare {
             # pre-existing would make revert reinstall it.
             if ((Test-Path -LiteralPath $NOISG_DEST) -and -not $baseline.AuditPolicyApplied) {
                 # Keep it so revert restores it instead of deleting an
-                # administrator's policy.
-                Copy-Item -LiteralPath $NOISG_DEST -Destination (Join-Path $dir 'preexisting-policy.cip') -Force
+                # administrator's policy. Under rollback\, which collect
+                # leaves out of the zip: a customised policy is deployment
+                # detail and is needed only here.
+                New-Item -ItemType Directory -Force -Path (Split-Path $ROLLBACK_POLICY) | Out-Null
+                Copy-Item -LiteralPath $NOISG_DEST -Destination $ROLLBACK_POLICY -Force
                 $baseline.AuditPolicyPreexisting = $true
-                Write-Warning "a policy with $NOISG_GUID was already installed; saved to preexisting-policy.cip and will be restored by revert"
+                Write-Warning "a policy with $NOISG_GUID was already installed; saved to rollback\preexisting-policy.cip and will be restored by revert"
             }
-            New-Item -ItemType Directory -Force -Path (Split-Path $NOISG_DEST) | Out-Null
-            Copy-Item -LiteralPath $AuditPolicy -Destination $NOISG_DEST -Force
-            # Persisted before the refresh: if CiTool fails, the copied file is
-            # on the EFI partition and revert must know to remove or restore it.
+            # Persisted before anything on the EFI partition changes: an
+            # interruption between the copy and this write would leave a
+            # baseline saying no policy was applied, and revert would skip it.
             $baseline.AuditPolicyApplied = $true
             $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
+            New-Item -ItemType Directory -Force -Path (Split-Path $NOISG_DEST) | Out-Null
+            Copy-Item -LiteralPath $AuditPolicy -Destination $NOISG_DEST -Force
             Invoke-Native 'CiTool.exe' @('-r')
         } finally {
             Dismount-Efi $mounted
@@ -580,29 +584,6 @@ function Invoke-Run {
     # install, Studio inside the evidence window.
     if (-not $SkipStudio -and -not (Test-StudioResponding $Port)) { Initialize-Studio $dir $false }
 
-    Write-Section 'Signature inventory'
-    Write-Host "runtime: $LLAMA_DIR"
-    $inventory = @(Get-SignatureInventory $LLAMA_DIR)
-    # -InputObject: an empty pipeline writes an empty file, not `[]`.
-    ConvertTo-Json -InputObject @($inventory) -Depth 4 |
-        Set-Content -LiteralPath (Join-Path $dir 'signature-inventory.json') -Encoding UTF8
-    $inventory | Export-Csv -LiteralPath (Join-Path $dir 'signature-inventory.csv') -NoTypeInformation -Encoding UTF8
-
-    $total = $inventory.Count
-    if ($total -eq 0) {
-        # A runtime with no PE files is a stale UNSLOTH_LLAMA_CPP_PATH, an
-        # absent install or a failed enumeration; evidence from it would read
-        # as a bundle with nothing unsigned.
-        throw "no PE files found under $LLAMA_DIR; this is not a llama.cpp runtime, so the cell is invalid. Check UNSLOTH_LLAMA_CPP_PATH / UNSLOTH_STUDIO_HOME or install Studio first"
-    }
-    $valid = @($inventory | Where-Object { $_.Status -eq 'Valid' }).Count
-    Write-Host "$valid of $total PE files report a valid Authenticode signature"
-    if ($total -gt 0 -and $valid -lt $total) {
-        Write-Host 'unsigned or unverifiable:' -ForegroundColor Yellow
-        $inventory | Where-Object { $_.Status -ne 'Valid' } |
-            Select-Object Name, Status | Format-Table -AutoSize | Out-String | Write-Host
-    }
-
     # The venv, separately. See $VENV_DIR: this is where the native code
     # actually lives, and where the only enforced block seen so far landed.
     Write-Section 'Venv signature inventory'
@@ -657,6 +638,34 @@ function Invoke-Run {
     }
     $scenarioStatus | ConvertTo-Json -Depth 3 |
         Set-Content -LiteralPath (Join-Path $dir 'scenario-status.json') -Encoding UTF8
+
+
+    # After the scenario, which records the runtime Studio resolved: the
+    # files do not change in between, and the inventory must be of the
+    # build the scenario drove.
+    Write-Section 'Signature inventory'
+    $llamaDir = Resolve-LlamaDir $dir
+    Write-Host "runtime: $llamaDir"
+    $inventory = @(Get-SignatureInventory $llamaDir)
+    # -InputObject: an empty pipeline writes an empty file, not `[]`.
+    ConvertTo-Json -InputObject @($inventory) -Depth 4 |
+        Set-Content -LiteralPath (Join-Path $dir 'signature-inventory.json') -Encoding UTF8
+    $inventory | Export-Csv -LiteralPath (Join-Path $dir 'signature-inventory.csv') -NoTypeInformation -Encoding UTF8
+
+    $total = $inventory.Count
+    if ($total -eq 0) {
+        # A runtime with no PE files is a stale UNSLOTH_LLAMA_CPP_PATH, an
+        # absent install or a failed enumeration; evidence from it would read
+        # as a bundle with nothing unsigned.
+        throw "no PE files found under $llamaDir; this is not a llama.cpp runtime, so the cell is invalid. Check UNSLOTH_LLAMA_CPP_PATH / UNSLOTH_STUDIO_HOME or install Studio first"
+    }
+    $valid = @($inventory | Where-Object { $_.Status -eq 'Valid' }).Count
+    Write-Host "$valid of $total PE files report a valid Authenticode signature"
+    if ($total -gt 0 -and $valid -lt $total) {
+        Write-Host 'unsigned or unverifiable:' -ForegroundColor Yellow
+        $inventory | Where-Object { $_.Status -ne 'Valid' } |
+            Select-Object Name, Status | Format-Table -AutoSize | Out-String | Write-Host
+    }
 
     Write-Host ''
     if (-not $SkipStudio -and $scenarioStatus.ExitCode -ne 0) {
@@ -752,20 +761,23 @@ function Invoke-Collect {
         Set-Content -LiteralPath (Join-Path $dir 'sac-state-after.json') -Encoding UTF8
 
     # Studio's own logs, which carry the request timings and the backend errors.
-    # Redacted on the way in, never raw: the zip is attached to an issue, and
-    # Studio's logs can carry tokens that its own log reader masks
-    # (studio/backend/utils/log_redaction.py, whose shapes these mirror).
+    # Never raw: the zip is attached to an issue, and Studio's logs can carry
+    # tokens. They are copied through Studio's own redactor
+    # (studio/backend/utils/log_redaction.py) by the managed interpreter that
+    # ships it; without that interpreter the logs are left out, not copied.
     $studioLogs = Join-Path (Get-StudioHome) 'logs'
     if (Test-Path -LiteralPath $studioLogs) {
-        $dest = Join-Path $dir 'studio-logs'
-        New-Item -ItemType Directory -Force -Path $dest | Out-Null
-        foreach ($log in Get-ChildItem -LiteralPath $studioLogs -File -Recurse -ErrorAction SilentlyContinue) {
+        $python = Get-StudioPython
+        if ($python) {
+            $redactor = Join-Path $PSScriptRoot 'redact_logs.py'
             try {
-                $text = Get-Content -LiteralPath $log.FullName -Raw -ErrorAction Stop
-                Set-Content -LiteralPath (Join-Path $dest $log.Name) -Value (Redact-Secrets $text) -Encoding UTF8
+                Invoke-Native $python @('-X', 'utf8', '-I', $redactor, $studioLogs, (Join-Path $dir 'studio-logs'))
             } catch {
-                Write-Warning "could not copy $($log.FullName): $_"
+                Write-Warning "Studio logs were not copied (redaction failed): $_"
+                Remove-Item -LiteralPath (Join-Path $dir 'studio-logs') -Recurse -Force -ErrorAction SilentlyContinue
             }
+        } else {
+            Write-Warning 'Studio logs were not copied: no managed interpreter to run the redactor'
         }
     }
 
@@ -780,6 +792,8 @@ function Invoke-Collect {
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     foreach ($item in Get-ChildItem -LiteralPath $dir -Recurse -File) {
         $rel = $item.FullName.Substring($dir.Length).TrimStart('\')
+        # rollback\ holds the administrator's own policy; it stays out of the zip.
+        if ($rel -like 'rollback\*') { continue }
         $target = Join-Path $stage $rel
         New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
         try {
@@ -844,6 +858,7 @@ function Invoke-Revert {
         throw "no baseline at $baselinePath; nothing to revert to. Was -Label $Label used for prepare?"
     }
     $baseline = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+    $ROLLBACK_POLICY = Get-RollbackPolicyPath $dir
 
     # The policy block may throw (mount, copy or CiTool). The log and Defender
     # restorations below do not depend on it and must still run; the failure
@@ -852,7 +867,7 @@ function Invoke-Revert {
     if ($baseline.AuditPolicyApplied) {
       try {
         Write-Section 'Remove audit policy'
-        $saved = Join-Path $dir 'preexisting-policy.cip'
+        $saved = $ROLLBACK_POLICY
         $mounted = Mount-Efi
         try {
             if ($baseline.AuditPolicyPreexisting -and (Test-Path -LiteralPath $saved)) {

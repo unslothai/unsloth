@@ -489,6 +489,14 @@ def main() -> int:
     token = authenticate(base_url, Path(args.home), args.password)
     print("authenticated")
 
+    # Which llama-server Studio will run, in its own precedence: a folder
+    # selected in Studio's settings is visible only here, and the inventory
+    # must be of the build the scenario drives.
+    status, body = _request(base_url, "GET", "/api/settings/llama-cpp-path", token = token)
+    runtime = body if status == 200 and isinstance(body, dict) else {"error": f"{status}: {str(body)[:200]}"}
+    (out_dir / "runtime-selection.json").write_text(json.dumps(runtime, indent = 2), encoding = "utf-8")
+    print(f"runtime: {runtime.get('resolved_binary') or runtime.get('error') or 'unresolved'} ({runtime.get('source')})")
+
     poller = StatusPoller(base_url, token, args.poll_seconds)
     poller.start()
 
@@ -498,6 +506,7 @@ def main() -> int:
         "model_path": repo,
         "gguf_variant": variant,
         "port": port,
+        "runtime": runtime,
         "steps": {},
     }
     load_payload: dict[str, Any] = {"model_path": repo}

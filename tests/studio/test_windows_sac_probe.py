@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -581,24 +582,110 @@ def test_a_tool_end_the_loop_closed_without_running_is_not_an_execution():
     assert s.tool_end_failure("Unsloth Studio docs: https://docs.unsloth.ai") is None
 
 
-def test_the_powershell_probe_redacts_logs_rejects_empty_inventories_and_keeps_reverting():
+def test_studio_logs_reach_the_evidence_only_through_the_backend_redactor(tmp_path):
+    """The zip is attached to an issue. A PowerShell port of the redaction
+    rules drifted from the canonical suite within one review round, so the
+    copy runs Studio's own utils.log_redaction under the managed interpreter."""
     ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
-    # Studio logs reach the zip only through Redact-Secrets, never by a raw copy.
-    assert "Copy-Item -LiteralPath $studioLogs" not in ps1
-    assert "Redact-Secrets $text" in ps1 and "function Redact-Secrets" in ps1
-    for shape in ("hf_[A-Za-z0-9]{20,}", "Bearer", "AKIA|ASIA", "eyJ", "cookie"):
-        assert (
-            shape in ps1[ps1.index("function Redact-Secrets") : ps1.index("function Write-Section")]
-        ), shape
-    # A runtime with no PE files is an invalid cell, not a clean one.
-    assert "no PE files found under $LLAMA_DIR" in ps1
-    # A policy failure in revert does not skip the log and Defender restores.
+    assert "Copy-Item -LiteralPath $studioLogs" not in ps1 and "Redact-Secrets" not in ps1
+    assert "redact_logs.py" in ps1 and "$python = Get-StudioPython" in ps1[ps1.index("function Invoke-Collect") :]
+    assert "no managed interpreter to run the redactor" in ps1
+    # The helper, driven against this checkout's backend on the canonical cases.
+    src = tmp_path / "logs"
+    src.mkdir()
+    lines = [
+        "Downloading with token hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+        "OPENAI_API_KEY=opaquevalue123456",
+        'password="correct horse battery staple"',
+        'llama-server --api-key "abcdef ghijklmnop" --port 8080',
+        "Authorization: Basic dXNlcm5hbWU6c3VwZXJzZWNyZXQ=",
+        "Cookie: unsloth_session=8f3c9d1ab77e4f0a9c2b3d4e",
+        "n_tokens = 4096",
+    ]
+    (src / "studio.log").write_text("\n".join(lines), encoding = "utf-8")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(PROBE_DIR / "redact_logs.py"),
+            str(src),
+            str(tmp_path / "out"),
+            "--backend",
+            str(REPO_ROOT / "studio" / "backend"),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert proc.returncode == 0, proc.stderr[-1500:]
+    out = (tmp_path / "out" / "studio.log").read_text(encoding = "utf-8")
+    for secret in (
+        "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+        "opaquevalue123456",
+        "horse battery staple",
+        "abcdef ghijklmnop",
+        "dXNlcm5hbWU6c3VwZXJzZWNyZXQ=",
+        "8f3c9d1ab77e4f0a9c2b3d4e",
+    ):
+        assert secret not in out, secret
+    assert "n_tokens = 4096" in out
+
+
+def test_the_powershell_probe_rejects_empty_inventories_and_keeps_reverting():
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    assert "no PE files found under $llamaDir" in ps1
     revert = ps1[ps1.index("function Invoke-Revert") :]
     assert "$policyError = $_" in revert
-    assert revert.index("$policyError = $_") < revert.index(
-        "Write-Section 'Restore CodeIntegrity log'"
-    )
-    assert revert.index("Write-Section 'Restore Defender preferences'") < revert.index(
-        "if ($null -ne $policyError) {"
-    )
+    assert revert.index("$policyError = $_") < revert.index("Write-Section 'Restore CodeIntegrity log'")
+    assert revert.index("Write-Section 'Restore Defender preferences'") < revert.index("if ($null -ne $policyError) {")
     assert "the audit policy is still applied" in revert
+
+
+def test_rollback_state_is_persisted_before_the_efi_partition_changes_and_stays_out_of_the_zip():
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    block = ps1[ps1.index("Write-Section 'Audit policy'") : ps1.index("Write-Section 'Policy state after applying'")]
+    persist = block.index("$baseline.AuditPolicyApplied = $true")
+    assert block.index("Copy-Item -LiteralPath $NOISG_DEST -Destination $ROLLBACK_POLICY") < persist
+    assert persist < block.index("Set-Content -LiteralPath $baselinePath", persist) < block.index(
+        "Copy-Item -LiteralPath $AuditPolicy -Destination $NOISG_DEST"
+    )
+    assert "Join-Path (Join-Path $dir 'rollback') 'preexisting-policy.cip'" in ps1
+    assert "Compress-Archive -Path (Join-Path $dir '*')" not in ps1
+    assert "if ($rel -like 'rollback\\*') { continue }" in ps1
+    assert "$saved = $ROLLBACK_POLICY" in ps1[ps1.index("function Invoke-Revert") :]
+
+
+def test_the_inventory_is_of_the_runtime_studio_resolved(tmp_path, monkeypatch):
+    """A folder selected in Studio's settings, or LLAMA_SERVER_PATH, wins over
+    the managed default in Studio; an inventory of the default would then hash
+    a different build than the scenario drove."""
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    llama = ps1[ps1.index("function Get-LlamaDir") : ps1.index("function Resolve-LlamaDir")]
+    assert llama.index("$env:LLAMA_SERVER_PATH") < llama.index("$env:UNSLOTH_LLAMA_CPP_PATH")
+    resolve = ps1[ps1.index("function Resolve-LlamaDir") : ps1.index("function Invoke-Native")]
+    assert "runtime-selection.json" in resolve and "$sel.resolved_binary" in resolve
+    run = ps1[ps1.index("function Invoke-Run") : ps1.index("function Invoke-Collect")]
+    assert run.index("& python @scenarioArgs") < run.index("$llamaDir = Resolve-LlamaDir $dir")
+    s = _load_scenario()
+    seen: list[str] = []
+
+    def fake(base_url, method, path, payload = None, token = None, timeout = 900):
+        seen.append(path)
+        if path == "/api/auth/login":
+            return 200, {"access_token": "tok"}
+        if path == "/api/settings/llama-cpp-path":
+            return 200, {"path": "D:\\llama", "source": "studio", "resolved_binary": "D:\\llama\\llama-server.exe"}
+        return 200, {"status": "done"}
+
+    monkeypatch.setattr(s, "_request", fake)
+    monkeypatch.setattr(s, "_stream_events", lambda *a, **k: (200, [], None))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["studio_scenario.py", "--model", "m", "--out", str(tmp_path), "--port", "1", "--password", "pw", "--home", str(tmp_path), "--poll-seconds", "0.05"],
+    )
+    s.main()
+    sel = json.loads((tmp_path / "runtime-selection.json").read_text(encoding = "utf-8"))
+    assert sel["resolved_binary"].endswith("llama-server.exe") and sel["source"] == "studio"
+    assert seen.index("/api/settings/llama-cpp-path") < seen.index("/api/inference/load")
+
+
