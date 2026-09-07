@@ -14,13 +14,10 @@ ok()  { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 ROLLBACK_BLOCK=$(sed -n '/^_VENV_ROLLBACK_DIR=""/,/^trap '\''_on_install_signal 143'\'' TERM$/p' "$INSTALL_SH")
-# _restore_studio_venv_replacement calls this, and it is defined above the block, with the
-# rest of the uv cache selector. Splicing the block without it makes every signal case exit
-# 127 on a command that is present in the real installer.
+# Both are defined above the block, with the rest of the cache selector, and both are
+# called from it. Splicing without them makes the cases exit 127 on a command the real
+# installer has, which satisfies any expectation about a marker that must not change.
 # printf, not $'\n': the workflow runs this file with `sh`, whatever the shebang says.
-# _record_uv_cache_choice comes along for the same reason: the marker cases below call it,
-# and without it they exit 127 before writing anything, which every expectation about a
-# marker that must not change would then satisfy vacuously.
 MARKER_HELPER=$(awk '
     /^(_restore_uv_cache_marker|_record_uv_cache_choice)\(\) \{/ { grab = 1 }
     grab { print }
@@ -411,9 +408,8 @@ else
     bad "Windows rollback deletion still hides failures"
 fi
 
-# A failed install restores the marker even when no venv replacement was ever in flight:
-# a first install has no previous venv, and the ownership guard can refuse the directory
-# before one starts. The marker must not outlive the attempt that wrote it.
+# The marker must not outlive the attempt that wrote it, even when no venv replacement
+# was ever in flight: a first install has none, and the ownership guard can refuse early.
 marker_case() {  # label, pre-existing marker value or empty, expect, [commit]
     _label="$1"; _pre="$2"; _expect="$3"; _commit="${4:-}"
     _dir="$WORK/marker-$_label"
@@ -450,10 +446,8 @@ echo "=== uv cache marker survives only a successful install ==="
 marker_case "a failed install with no venv replacement restores the previous marker" \
     "/previous/install/cache" "/previous/install/cache"
 marker_case "a failed first install leaves no marker behind" "" "<gone>"
-# A first install has no previous environment, so the commit takes no rollback branch. It
-# must still commit the marker: what follows the commit can fail, and the environment it
-# installed stays, so reverting the marker aims that environment's next offline update at
-# a cache it never filled.
+# A first install takes no rollback branch and must still commit the marker: what follows
+# can fail, and the environment it installed stays.
 marker_case "a committed first install keeps its marker when a later step fails" \
     "/previous/install/cache" "/tmp/this-attempt-cache" commit
 

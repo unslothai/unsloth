@@ -249,9 +249,8 @@ for shell in sh bash; do
         chmod 755 "$DEEP_CACHE/archive-v0/aaa hidden" 2>/dev/null || true
     fi
 
-    # The marker `unsloth studio update` reads. Content alone cannot tell a Studio cache
-    # the installer filled from one a runtime install dropped a single wheel into, so the
-    # choice is recorded rather than re-derived later.
+    # The marker `unsloth studio update` reads: content cannot tell a Studio cache the
+    # installer filled from one a runtime install dropped a single wheel into.
     MARKER="$ROOT/cache/uv-cache-dir"
     check_marker() { # label, expected
         if [ "$(cat "$MARKER" 2>/dev/null)" = "$2" ]; then
@@ -282,17 +281,15 @@ for shell in sh bash; do
         "$STUDIO_CACHE"
     check_marker "isolated mode records the Studio cache" "$STUDIO_CACHE"
 
-    # A custom cache is where this install actually put its wheels, so it is recorded too.
-    # Leaving the previous install's marker in place would aim later updates at a cache
-    # this install never filled; the caller still wins on any run that sets the variable.
+    # A custom cache holds this install's wheels too, so it is recorded; the caller still
+    # wins on any run that sets the variable.
     printf '%s\n' "$STUDIO_CACHE" > "$MARKER"
     run_case "$shell" "custom mode is still preserved" value "$OVERRIDE" false \
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$OVERRIDE" custom \
         "preserving custom UV_CACHE_DIR ($OVERRIDE)" "$OVERRIDE"
     check_marker "custom mode replaces an earlier install's marker" "$OVERRIDE"
 
-    # A marker path that is a symlink must be replaced, not followed: a redirection would
-    # truncate whatever it points at.
+    # A symlinked marker is replaced, not followed: a redirection truncates its target.
     rm -rf "$ROOT/cache"; mkdir -p "$ROOT/cache"
     VICTIM="$CASE/someone elses file"
     printf 'do not clobber\n' > "$VICTIM"
@@ -307,8 +304,7 @@ for shell in sh bash; do
         fi
     }
 
-    # An existing marker we cannot read is one we cannot put back, so leave it alone
-    # rather than overwrite it and restore a blank file on rollback.
+    # One we cannot read is one we cannot put back, so leave it alone.
     rm -rf "$ROOT/cache"; mkdir -p "$ROOT/cache"
     printf '%s\n' "/previous/install/cache" > "$MARKER"
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 200 "$MARKER" 2>/dev/null; then
@@ -324,7 +320,7 @@ for shell in sh bash; do
     fi
 
     # uv resolves a relative cache against its own working directory, which --directory
-    # and UV_WORKING_DIR move; anchoring to $PWD would record a directory uv never used.
+    # and UV_WORKING_DIR move.
     rm -rf "$ROOT/cache"
     WORKDIR_PROBE="$WORK/$shell workdir.sh"
     {
@@ -347,8 +343,7 @@ WORKDIR
         bad "$shell: recorded [$_wd], wanted [$CASE/uvdir/relcache]"
     fi
 
-    # A relative UV_WORKING_DIR is itself resolved against the directory the installer ran
-    # from, so recording "work/cache" would name somewhere else at update time.
+    # Which may itself be relative, against the directory the installer ran from.
     rm -rf "$ROOT/cache"
     REL_PROBE="$WORK/$shell relworkdir.sh"
     {
@@ -372,9 +367,7 @@ RELWD
     fi
 
 
-    # The marker describes the environment, so a rolled-back install puts it back. The
-    # installer restores the previous venv on failure; a marker naming the cache of an
-    # install that never happened would outlive the environment it was chosen for.
+    # The marker describes the environment, so a rolled-back install puts it back.
     ROLLBACK_PROBE="$WORK/$shell rollback.sh"
     {
         printf '%s\n' "$HELPERS"

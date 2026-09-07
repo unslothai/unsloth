@@ -3729,54 +3729,40 @@ def _uv_default_cache_dir() -> Optional[Path]:
 
 
 def _recorded_install_uv_cache() -> Optional[Path]:
-    """The cache the installer actually used, as it recorded it.
+    """The cache the installer used, as it recorded it.
 
-    Guessing from content cannot tell a Studio cache the installer filled from one that
-    holds a single wheel some runtime install dropped there (wheel_utils.py:405), because
-    install.sh:705 points the running backend at it even in shared mode. The installers
-    know which they chose, so they write it down; absent, for installs that predate the
-    marker, the caller falls back to inspecting both caches.
+    Content cannot tell a Studio cache the installer filled from one holding a single
+    wheel the running backend dropped there (wheel_utils.py:405), since install.sh:705
+    points it there even in shared mode. Absent, the caller falls back to content.
     """
     try:
-        # utf-8-sig, not utf-8: Windows PowerShell 5.1 writes `-Encoding utf8` WITH a BOM,
-        # which utf-8 would decode into the first character of the path.
-        # surrogateescape, not replace: a POSIX path may hold bytes that are not UTF-8 at
-        # all, and U+FFFD would name a directory that does not exist. This is the exact
-        # spelling os.fsdecode gives such a path, which is what the write below records.
+        # utf-8-sig: Windows PowerShell 5.1 writes `-Encoding utf8` WITH a BOM.
+        # surrogateescape: a POSIX path may not be UTF-8, and U+FFFD would name nothing.
         recorded = (STUDIO_HOME / "cache" / "uv-cache-dir").read_text(
             encoding = "utf-8-sig", errors = "surrogateescape"
         )
     except OSError:
         return None
-    # splitlines already drops the terminator; the line itself is NOT stripped, because
-    # the installers write UV_CACHE_DIR through verbatim and a path may legitimately end
-    # or begin with a space. Blank lines are still skipped, since blank means unset.
+    # Not stripped: a recorded path may end or begin with a space. Blank means unset.
     lines = [line for line in recorded.splitlines() if line.strip()]
     if not lines:
         return None
-    # No expanduser, for the same reason the probe drops it: the installers write this
-    # path through the way uv would read it, and uv treats a tilde as an ordinary path
-    # segment rather than $HOME.
+    # No expanduser, as in the probe: uv treats a tilde as an ordinary path segment.
     return Path(os.path.abspath(lines[-1]))
 
 
 def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
     """Record the cache this update used, for installs whose installer never did.
 
-    Everyone installed before the marker existed reaches the content fallback, and that
-    fallback goes stale the moment the backend drops one wheel into the Studio cache:
-    both caches then look warm and the next update stops preferring the one the install
-    filled. Writing the choice down once the setup it drove has succeeded closes that,
-    and does the same for a marker whose cache has since been emptied.
+    Those reach the content fallback, which goes stale the moment the backend drops one
+    wheel into the Studio cache and both caches look warm. Writing the choice down once
+    setup has succeeded closes that, and likewise for a marker whose cache was emptied.
     """
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
-        # The caller's, for this run. The installers record their own choice; an update
-        # must not promote a one-shot value into one.
+        # One run's value. Only an installer's own choice becomes a marker.
         return
     if (os.environ.get(_studio_stage.STAGE_ROOT_ENV) or "").strip():
-        # A staged update still has verification and the outer stage probes to pass, and
-        # STUDIO_HOME here names the LIVE install, not the stage. Writing now would point
-        # the live marker at a cache built for an environment that may never be activated.
+        # STUDIO_HOME names the LIVE install here, and the stage can still be rejected.
         return
     chosen = (env or {}).get("UV_CACHE_DIR")
     if not chosen:
@@ -3787,14 +3773,10 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
     marker = STUDIO_HOME / "cache" / "uv-cache-dir"
     try:
         marker.parent.mkdir(parents = True, exist_ok = True)
-        # Unlinked first: write_text follows a symlink and would truncate whatever it
-        # points at, so a marker path someone has linked elsewhere would quietly destroy
-        # an unrelated file.
+        # Unlinked first: a write follows a symlink and truncates its target.
         marker.unlink(missing_ok = True)
-        # fsencode, not write_text: an undecodable POSIX path reaches here as surrogates,
-        # and encoding those raises UnicodeEncodeError, which is not an OSError and so
-        # escaped this handler entirely, failing an update whose setup had already
-        # succeeded. Encoding it the way the filesystem gave it to us writes it instead.
+        # fsencode: an undecodable path arrives as surrogates, and encoding those raises
+        # UnicodeEncodeError, which is not an OSError.
         marker.write_bytes(os.fsencode(f"{chosen}\n"))
     except (OSError, ValueError):
         # ValueError covers UnicodeError, for a path fsencode still cannot render.
@@ -3813,8 +3795,7 @@ def _with_studio_uv_cache(env: Optional[dict]) -> Optional[dict]:
     studio_cache = STUDIO_HOME / "cache" / "uv"
     recorded = _recorded_install_uv_cache()
     if recorded is not None and _uv_cache_has_packages(recorded):
-        # Only while it still holds something: `uv cache clean` is the user's to run, and
-        # a marker pointing at an emptied cache should not outrank a warm one.
+        # Only while it holds something: a marker for an emptied cache loses to a warm one.
         return {**(env or os.environ), "UV_CACHE_DIR": str(recorded)}
     if not _uv_cache_has_packages(studio_cache):
         # A shared-mode install left the wheels in uv's own cache and _setup_cache_env
@@ -3902,7 +3883,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
 
     if returncode != 0:
         raise typer.Exit(returncode)
-    # Only now: a cache that did not get through setup is not one to point later updates at.
+    # Only now: a cache that did not get through setup is not one to record.
     _backfill_uv_cache_marker(env)
 
 

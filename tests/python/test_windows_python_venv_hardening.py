@@ -814,11 +814,9 @@ foreach ($root in @($env:TEST_STUDIO_HOME_ONE, $env:TEST_STUDIO_HOME_TWO)) {{
 def test_a_rolled_back_install_restores_the_previous_uv_cache_marker(
     tmp_path: Path, shell: str, preexisting: bool
 ):
-    """The marker describes the environment, so it goes back when the environment does.
-
-    install.ps1 restores the previous venv on failure; a marker naming the cache of an
-    install that never happened would outlive the environment it was chosen for.
-    """
+    """The marker describes the environment, so it goes back when the environment does:
+    install.ps1 restores the previous venv on failure, and a marker for an install that
+    never happened would outlive it."""
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     functions = "".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
@@ -891,12 +889,9 @@ Write-StudioUvCacheMarker -StudioRoot $env:TEST_STUDIO_HOME -Cache "relcache"
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_an_unreadable_cache_directory_does_not_abort_the_install(tmp_path: Path, shell: str):
-    """The marker is optional; probing for it must not be able to fail the install.
-
-    install.ps1 runs under $ErrorActionPreference = "Stop", and Test-Path on a path inside
-    a directory the ACL denies throws UnauthorizedAccessException rather than returning
-    $false, so an unsuppressed probe took the whole install down.
-    """
+    """The marker is optional, so probing for it must not fail the install: under
+    $ErrorActionPreference = "Stop", Test-Path inside an ACL-denied directory throws
+    UnauthorizedAccessException rather than returning $false."""
     if os.name == "nt" or os.geteuid() == 0:
         pytest.skip("POSIX mode bits do not deny this caller")
     source = INSTALL_PS1.read_text(encoding = "utf-8")

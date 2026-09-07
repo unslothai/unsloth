@@ -1140,9 +1140,9 @@ class TestInstallUvCacheRootParity:
                 assert metadata_suffix in source, metadata_suffix
 
     def test_both_installers_record_the_cache_they_chose(self):
-        """`unsloth studio update` reads this to reuse the install's cache. Content alone
-        cannot decide it: install.sh:705 points the running backend at the Studio cache
-        even in shared mode, so a runtime install leaves bytes in the losing cache."""
+        """`unsloth studio update` reads this to reuse the install's cache. Content
+        cannot decide it: install.sh:705 points the backend at the Studio cache even in
+        shared mode, so a runtime install leaves bytes in the losing one."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
         ps1 = INSTALL_PS1.read_text(encoding = "utf-8")
         cli = (REPO_ROOT / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
@@ -1150,11 +1150,9 @@ class TestInstallUvCacheRootParity:
         for source in (sh, ps1, cli):
             assert "uv-cache-dir" in source
 
-        # Written after the choice is made, and never for a caller's own UV_CACHE_DIR:
-        # that is one run's business, not a property of the install.
+        # Written after the choice is made.
         assert "_record_uv_cache_choice() {" in sh
-        # Every mode records, custom included: a marker left over from a previous install
-        # would aim later updates at a cache this one never filled.
+        # Every mode records, custom included, or a previous install's marker survives.
         call_sites = [
             match.start()
             for match in re.finditer(r"^[ \t]+_record_uv_cache_choice[ \t]*$", sh, re.MULTILINE)
@@ -1179,17 +1177,14 @@ class TestInstallUvCacheRootParity:
         # Windows PowerShell 5.1 writes -Encoding utf8 WITH a BOM, so the reader allows one.
         assert "utf-8-sig" in cli
 
-        # Absolute on both sides: the update resolves the marker against its own working
-        # directory, and uv answers a relative cache-dir with the relative spelling.
+        # Absolute on both sides: the update resolves it against its own directory.
         assert 'case "$UV_CACHE_DIR" in' in sh
         assert "IsPathRooted" in ps1
 
-        # The reset must precede everything that can consume the snapshot: the selector
-        # that writes the marker, and every Exit-InstallFailure that restores it. Under
-        # `irm | iex` the script scope is the caller's session and nothing clears the flag
-        # on success, so a second install failing early would otherwise revert the marker
-        # belonging to the first, which succeeded. Entry of Install-UnslothStudio is the
-        # only place that is ahead of both.
+        # The reset must precede both consumers of the snapshot, the selector that writes
+        # the marker and every Exit-InstallFailure that restores it. Under `irm | iex` the
+        # script scope is the caller's session, so a second install failing early would
+        # otherwise revert the first one's marker. Only the entry point is ahead of both.
         entry = ps1.index("function Install-UnslothStudio {")
         # The call form, not the bare name, which also appears in prose above.
         first_consumer = min(
@@ -1203,8 +1198,7 @@ class TestInstallUvCacheRootParity:
         ):
             assert variable in ps1[entry:first_consumer], variable
 
-        # Committing the environment commits the marker that came with it, so a failure
-        # after the commit does not revert it.
+        # Committing the environment commits the marker that came with it.
         assert (
             "$script:StudioUvMarkerSaved = $false"
             in ps1[
@@ -1216,8 +1210,8 @@ class TestInstallUvCacheRootParity:
         )
         commit_start = sh.index("_commit_studio_venv_replacement() {")
         commit_body = sh[commit_start : sh.index("\n}", commit_start)]
-        # Before the venv flag, not merely inside the function: a signal landing between
-        # the two would keep the committed environment and revert the marker it came with.
+        # Before the venv flag: a signal between the two keeps the environment and
+        # reverts its marker.
         assert commit_body.index("_UV_MARKER_SAVED=false") < commit_body.index(
             "_VENV_ROLLBACK_ACTIVE=false"
         )
@@ -1225,9 +1219,7 @@ class TestInstallUvCacheRootParity:
         assert ps1_commit.index("$script:StudioUvMarkerSaved = $false") < ps1_commit.index(
             "$script:StudioVenvRollbackActive = $false"
         )
-        # And outside the rollback branch on both sides. A first install has no previous
-        # environment, so the branch is skipped and the marker would stay revertible under
-        # an environment that stays installed.
+        # And outside the rollback branch, which a first install skips entirely.
         assert commit_body.index("_UV_MARKER_SAVED=false") < commit_body.index(
             'if [ "$_VENV_ROLLBACK_ACTIVE" = true ]'
         )
@@ -1235,9 +1227,8 @@ class TestInstallUvCacheRootParity:
             "if (-not $script:StudioVenvRollbackActive) { return }"
         )
 
-        # Both marker writes are gated on the old entry actually being gone. The unlink is
-        # what keeps a symlinked marker from truncating what it points at, and it can fail
-        # silently: the directory may deny deletion while the target stays writable.
+        # Both writes are gated on the old entry being gone: the unlink is what keeps a
+        # symlinked marker from truncating its target, and it can fail silently.
         for body in (
             sh[sh.index("_record_uv_cache_choice() {") : sh.index("_restore_uv_cache_marker() {")],
             sh[sh.index("_restore_uv_cache_marker() {") :][:600],
@@ -1251,16 +1242,13 @@ class TestInstallUvCacheRootParity:
             )
         ]
         for start in _all_indexes(ps1_marker, "Remove-Item -LiteralPath $markerFile"):
-            # The call form, not the bare name: the comment above the gate names the
-            # cmdlet, and a window ending there would exclude the gate it is about.
+            # The call form: the comment above the gate names the cmdlet too.
             window = ps1_marker[
                 start : ps1_marker.index("Set-Content -LiteralPath $markerFile", start)
             ]
             assert "Get-Item -LiteralPath $markerFile -Force" in window, window
 
-        # A failed install restores the marker whether or not a venv replacement was ever
-        # in flight: a first install has no previous venv, and the ownership guard can
-        # refuse the directory before one starts.
+        # Restored whether or not a venv replacement was ever in flight.
         assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_exit() {") :]
         assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_signal() {") :]
         assert ps1.count("Restore-StudioUvCacheMarker -StudioRoot") == 2

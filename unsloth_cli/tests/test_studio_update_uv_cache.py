@@ -318,9 +318,8 @@ def _record(studio_home: Path, value) -> None:
 
 
 def test_the_recorded_install_cache_beats_both_guesses(monkeypatch, tmp_path, caches):
-    """The case content cannot decide: a shared-mode install, and the running backend has
-    since dropped one wheel into the Studio cache (install.sh:705 points it there even in
-    shared mode), so both caches hold package bytes."""
+    """The case content cannot decide: a shared install whose backend has since dropped
+    one wheel into the Studio cache (install.sh:705), so both caches hold packages."""
     studio_cache, default_cache = caches
     _fill(studio_cache, name = "some_runtime_wheel.whl")
     _fill(default_cache)
@@ -331,8 +330,7 @@ def test_the_recorded_install_cache_beats_both_guesses(monkeypatch, tmp_path, ca
 
 
 def test_a_recorded_studio_cache_survives_the_user_warming_their_own(monkeypatch, tmp_path, caches):
-    """The mirror image: a studio-mode install, and the user has since used uv for
-    something else. Content alone would hand the update a cache the install never used."""
+    """The mirror: a studio install, and the user has since warmed uv's own cache."""
     studio_cache, default_cache = caches
     _fill(studio_cache)
     _fill(default_cache)
@@ -343,8 +341,7 @@ def test_a_recorded_studio_cache_survives_the_user_warming_their_own(monkeypatch
 
 
 def test_an_emptied_recorded_cache_does_not_outrank_a_warm_one(monkeypatch, tmp_path, caches):
-    """`uv cache clean` is the user's to run. A marker pointing at nothing is stale, not
-    authoritative."""
+    """A marker pointing at an emptied cache is stale, not authoritative."""
     studio_cache, default_cache = caches
     _fill(default_cache)
     _record(tmp_path / "StudioHome", studio_cache)
@@ -354,8 +351,7 @@ def test_an_emptied_recorded_cache_does_not_outrank_a_warm_one(monkeypatch, tmp_
 
 
 def test_installs_older_than_the_marker_still_work(monkeypatch, tmp_path, caches):
-    """No marker is the normal state for everyone installed before this change, so the
-    content fallback has to stay."""
+    """The normal state for everyone installed before this change."""
     studio_cache, _default = caches
     _fill(studio_cache)
     seen = _run_posix(monkeypatch, tmp_path)
@@ -366,10 +362,9 @@ def test_installs_older_than_the_marker_still_work(monkeypatch, tmp_path, caches
 def test_a_reinstall_into_a_custom_cache_is_not_shadowed_by_the_old_marker(
     monkeypatch, tmp_path, caches
 ):
-    """A reinstall with a nonblank UV_CACHE_DIR fills that cache, so the installers record
-    it too. Were the previous install's marker left behind, a later update without the
-    variable would read a cache this install never filled, and both still hold packages,
-    so nothing downstream could notice."""
+    """A reinstall with a nonblank UV_CACHE_DIR fills that cache, so it is recorded too:
+    a stale marker would aim later updates at a cache this install never filled, and both
+    hold packages, so nothing downstream could notice."""
     studio_cache, _default = caches
     custom = tmp_path / "caller cache"
     _fill(studio_cache)
@@ -382,9 +377,8 @@ def test_a_reinstall_into_a_custom_cache_is_not_shadowed_by_the_old_marker(
 
 @pytest.mark.parametrize("spelling", ["trailing ", " leading", "  both  "])
 def test_a_recorded_path_keeps_its_whitespace(monkeypatch, tmp_path, caches, spelling):
-    """The installers write UV_CACHE_DIR through verbatim and a directory name may
-    legitimately start or end with a space, so stripping the line would probe a different
-    path and read a warm cache as cold."""
+    """A recorded name may start or end with a space, and stripping it would probe a
+    different path and read a warm cache as cold."""
     _studio_cache, _default = caches
     odd = tmp_path / spelling
     _fill(odd)
@@ -395,8 +389,8 @@ def test_a_recorded_path_keeps_its_whitespace(monkeypatch, tmp_path, caches, spe
 
 
 def test_a_marker_written_by_windows_powershell_is_read_back(monkeypatch, tmp_path, caches):
-    """Windows PowerShell 5.1 writes `-Encoding utf8` with a BOM, and utf-8 would decode
-    it into the first character of the path."""
+    """PowerShell 5.1 writes `-Encoding utf8` with a BOM, which utf-8 would decode into
+    the first character of the path."""
     studio_cache, default_cache = caches
     _fill(studio_cache)
     _fill(default_cache)
@@ -427,8 +421,8 @@ def _marker(tmp_path: Path) -> Path:
 
 
 def test_a_legacy_install_records_what_the_update_worked_out(monkeypatch, tmp_path, caches):
-    """Otherwise the fallback has to be re-derived every time, and it goes stale the
-    moment the backend drops one wheel into the Studio cache."""
+    """Otherwise the fallback is re-derived every time, and goes stale the moment the
+    backend drops one wheel into the Studio cache."""
     _studio_cache, default_cache = caches
     _fill(default_cache)
     _run_posix(monkeypatch, tmp_path)
@@ -464,8 +458,7 @@ def test_a_live_marker_is_not_overwritten_by_the_update(monkeypatch, tmp_path, c
 
 
 def test_a_stale_marker_is_replaced_once_the_fallback_works(monkeypatch, tmp_path, caches):
-    """`uv cache clean` on the recorded cache leaves a pointer to nothing; the update
-    already ignores it, and should stop re-deriving that every time."""
+    """A marker whose cache was emptied is already ignored; stop re-deriving that."""
     studio_cache, default_cache = caches
     _fill(default_cache)
     _record(tmp_path / "StudioHome", studio_cache)
@@ -475,8 +468,7 @@ def test_a_stale_marker_is_replaced_once_the_fallback_works(monkeypatch, tmp_pat
 
 
 def test_a_caller_supplied_cache_is_never_promoted_to_the_marker(monkeypatch, tmp_path, caches):
-    """The installers record their own choice. An update must not turn one run's
-    environment variable into every later update's default."""
+    """One run's environment variable must not become every later update's default."""
     studio_cache, _default = caches
     _fill(studio_cache)
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "caller cache"))
@@ -486,9 +478,8 @@ def test_a_caller_supplied_cache_is_never_promoted_to_the_marker(monkeypatch, tm
 
 
 def test_a_staged_update_does_not_write_the_live_marker(monkeypatch, tmp_path, caches):
-    """STUDIO_HOME names the LIVE install even in a staged child, and the stage can still
-    be rejected by verification or the outer probes. Writing now would point the live
-    marker at a cache built for an environment that was never activated."""
+    """STUDIO_HOME names the LIVE install even in a staged child, and the stage can
+    still be rejected, so writing now would aim it at an environment never activated."""
     studio = _studio()
     _studio_cache, default_cache = caches
     _fill(default_cache)
@@ -517,10 +508,9 @@ def test_the_backfill_replaces_a_symlink_rather_than_its_target(monkeypatch, tmp
 
 @pytest.mark.skipif(os.name != "posix", reason = "POSIX filesystem byte semantics")
 def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, tmp_path):
-    """A POSIX path is bytes, and an undecodable one reaches Python as surrogates.
-    Encoding those raises UnicodeEncodeError, which is not an OSError and so escaped the
-    best-effort handler entirely: an update whose setup had already succeeded then failed
-    at the very end, after unlinking the marker it was replacing."""
+    """An undecodable POSIX path reaches Python as surrogates, and encoding those raises
+    UnicodeEncodeError, which is not an OSError and escaped the best-effort handler: an
+    update whose setup had succeeded failed at the end, with its marker already gone."""
     studio = _studio()
     weird = (tmp_path / os.fsdecode(b"caf\xe9-cache")).resolve()
     _fill(weird)
@@ -533,8 +523,7 @@ def test_a_cache_path_that_is_not_utf_8_is_recorded_and_read_back(monkeypatch, t
     assert _marker(tmp_path).read_bytes().strip() == os.fsencode(str(weird))
     # And the reader gives back the path the filesystem uses, not one with U+FFFD in it.
     assert studio._recorded_install_uv_cache() == weird
-    # Removed here rather than left to the tmp_path reaper, which cannot always delete a
-    # name it cannot decode and would report it as leaked garbage on every later run.
+    # The tmp_path reaper cannot always delete a name it cannot decode.
     shutil.rmtree(weird, ignore_errors = True)
 
 

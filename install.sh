@@ -619,23 +619,18 @@ _resolve_studio_destinations() {
     _STUDIO_HOME_REDIRECT=default
 }
 
-# Write down which cache this install used, so a later `unsloth studio update` reuses it
-# instead of guessing from content. Guessing cannot work: in shared mode the launch below
-# repoints the running backend at the Studio cache, so any on-demand install the server
-# does leaves package bytes there and makes an empty Studio cache look like a full one.
-# Best effort, since a read-only or unwritable STUDIO_HOME must not fail the install.
+# Records which cache this install used, so an update reuses it rather than guessing: the
+# launch below repoints the backend at the Studio cache even in shared mode, so one
+# on-demand install makes an empty Studio cache look full. Never fatal.
 _record_uv_cache_choice() {
     _uv_marker_dir="$STUDIO_HOME/cache"
     _uv_marker_file="$_uv_marker_dir/uv-cache-dir"
-    # Absolute, because the update resolves this against ITS working directory, not the
-    # installer's. The base is uv's working directory, which --directory / UV_WORKING_DIR
-    # moves: uv changes into it before resolving a relative cache-dir, so anchoring to
-    # $PWD would name a directory uv never used.
+    # Absolute: the update resolves this against ITS working directory, and the base is
+    # uv's, which --directory / UV_WORKING_DIR moves.
     case "$UV_CACHE_DIR" in
         /*) _uv_marker_value="$UV_CACHE_DIR" ;;
         *)
-            # UV_WORKING_DIR may itself be relative, and uv resolves it against the
-            # directory the installer was run from before it resolves the cache.
+            # Which may itself be relative, against the installer's own directory.
             _uv_marker_base="${UV_WORKING_DIR:-$PWD}"
             case "$_uv_marker_base" in
                 /*) ;;
@@ -644,14 +639,10 @@ _record_uv_cache_choice() {
             _uv_marker_value="$_uv_marker_base/$UV_CACHE_DIR"
             ;;
     esac
-    # Remembered so a failed install can put it back: the traps restore the previous
-    # environment, and a marker naming the cache of an install that never happened would
-    # outlive it and send the next update somewhere that environment never used.
+    # Remembered so a failed install can put it back.
     if [ "$_UV_MARKER_SAVED" != true ]; then
         if [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; then
-            # An existing marker we cannot read is one we cannot put back. Leaving it
-            # alone loses this run's preference; overwriting it loses the previous
-            # install's, and a rollback would then restore a blank file.
+            # One we cannot read is one we cannot put back, so leave it alone.
             _UV_MARKER_PREVIOUS=$(cat "$_uv_marker_file" 2>/dev/null) || return 0
             _UV_MARKER_EXISTED=true
         else
@@ -662,13 +653,9 @@ _record_uv_cache_choice() {
     fi
     (
         mkdir -p "$_uv_marker_dir" 2>/dev/null &&
-            # Unlinked first: a redirection follows a symlink and would truncate whatever
-            # it points at, so a marker path someone has linked elsewhere would quietly
-            # destroy an unrelated file.
+            # Unlinked first: a redirection follows a symlink and truncates its target.
             rm -f "$_uv_marker_file" 2>/dev/null &&
-            # And only write once it is gone: rm can fail on a link whose directory
-            # denies deletion while its target is writable, which is exactly the case
-            # the redirection would truncate.
+            # And only once gone: rm can fail on a link in an undeletable directory.
             ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; } &&
             printf '%s\n' "$_uv_marker_value" > "$_uv_marker_file" 2>/dev/null
     ) || true
@@ -691,10 +678,7 @@ _configure_uv_cache() {
         *[![:space:]]*)
             _UV_CACHE_MODE=custom
             export UV_CACHE_DIR
-            # Recorded like any other choice. Leaving the previous install's marker in
-            # place would point later updates at a cache this install never filled, and
-            # a caller who wants the variable to stay one-shot still wins on every run:
-            # a nonblank UV_CACHE_DIR outranks the marker in _with_studio_uv_cache too.
+            # Recorded like any other choice; a caller still outranks the marker.
             _record_uv_cache_choice
             step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
             return 0
@@ -791,8 +775,7 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
-# The uv cache marker travels with the environment: saved before the first write, put
-# back if the environment is rolled back. See _record_uv_cache_choice.
+# The marker travels with the environment. See _record_uv_cache_choice.
 _UV_MARKER_SAVED=false
 _UV_MARKER_EXISTED=false
 _UV_MARKER_PREVIOUS=""
@@ -928,10 +911,7 @@ _prune_stale_studio_venv_rollbacks() {
 }
 
 _commit_studio_venv_replacement() {
-    # Outside the rollback branch, because a first install has no previous environment to
-    # roll back and still commits one. Anything failing after this point (the shim-path
-    # guard, a signal) would otherwise revert the marker while leaving that environment
-    # installed, and send its next offline update to a cache it never filled.
+    # Outside the branch: a first install rolls nothing back and still commits.
     _UV_MARKER_SAVED=false
     if [ "$_VENV_ROLLBACK_ACTIVE" = true ]; then
         _rollback_to_remove="$_VENV_ROLLBACK_DIR"
@@ -969,10 +949,7 @@ _on_install_exit() {
     _status=$?
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
-        # Not inside the venv restore: an install can fail before a replacement is even
-        # in flight (a first install has no previous venv, the ownership guard can refuse
-        # the directory, the backup mv can fail), and that failed attempt must not leave
-        # a marker naming a cache no environment here was built from.
+        # Separate from the venv restore: an install can fail before one is in flight.
         _restore_uv_cache_marker
     fi
     _cleanup_install_temporaries
