@@ -824,7 +824,11 @@ def install_wall_clock_watchdog(
             pass
         os._exit(2)
 
-    watchdog = _WallClockWatchdog(deadline_s, _kaboom).start()
+    # Bound before started: at deadline_s <= 0 the thread reaches _kaboom during start(),
+    # and a _kaboom that closed over an unbound name dies of NameError in that thread
+    # instead of exiting, leaving the run with no watchdog at all.
+    watchdog = _WallClockWatchdog(deadline_s, _kaboom)
+    watchdog.start()
     if info is not None:
         info(f"watchdog armed: hard-exit {deadline_s:.0f}s after the last step")
     return watchdog

@@ -2537,7 +2537,14 @@ class Payload:
                 env = env,
                 capture_output = True,
                 text = True,
-                timeout = self.args.ui_wall_timeout + 300,
+                # Only a backstop for a watchdog that did not fire, so it has to outlast
+                # one that did. STUDIO_UI_WALL_TIMEOUT_S is now the budget between two
+                # progress reports rather than the whole run, so the driver's own exit
+                # lands one budget after its last step, not one budget after it started:
+                # allow a budget for the work and a budget for the silence. Killing it
+                # first costs exactly the traceback and thread dump this exists to read,
+                # because SIGKILL leaves TimeoutExpired with no stderr to report.
+                timeout = self.args.ui_wall_timeout * 2 + 300,
             )
             rc, out, err = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:

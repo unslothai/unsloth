@@ -54,20 +54,6 @@ TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 # cannot close the gap, and paid once per run.
 RAPID_FIRST_TURN_HOLD_S = 3.0
 
-# Budget for ONE wait, restarted by `wall_kick()`. It must outlast the longest single wait
-# -- the rapid-submit settle at 2x the turn timeout, so 1080s where studio-mac-ui-smoke.yml
-# sets STUDIO_UI_TURN_TIMEOUT_MS=540000, against the 720s this was pinned at -- or it
-# hard-exits mid-wait and the run says only "wedged somewhere". Not a total: `send_and_wait`
-# budgets 4x the turn timeout across seven turns. Linux keeps its 720s floor.
-_WALL_FLOOR_S = 720.0
-_LONGEST_WAIT_S = (TURN_TIMEOUT_MS / 1000) * 2
-WALL_TIMEOUT_S = float(
-    os.environ.get(
-        "STUDIO_UI_WALL_TIMEOUT_S",
-        max(_WALL_FLOOR_S, _LONGEST_WAIT_S + 120),
-    )
-)
-
 PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
 
 # Default stays Chromium for CI. Local runs can select firefox/webkit or a Chromium channel such as chrome/msedge.
@@ -82,6 +68,23 @@ CPU_THROTTLE = float(os.environ.get("STUDIO_UI_CPU_THROTTLE", "0") or 0)
 # Per-fetch budget; /api/inference/load is the slowest (cold-cache GGUF load).
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
 LOAD_FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_LOAD_TIMEOUT_MS", "180000"))
+
+# Budget for ONE wait, restarted by `wall_kick()`. It must outlast the longest single wait
+# or it hard-exits mid-wait and the run says only "wedged somewhere". Two waits compete for
+# longest, and both are configured per runner, so take the max of the pair rather than
+# whichever happens to win at today's values: the rapid-submit settle at 2x the turn timeout
+# (1080s where studio-mac-ui-smoke.yml sets STUDIO_UI_TURN_TIMEOUT_MS=540000, against the
+# 720s this was pinned at) and the /api/inference/load fetch (600s on the Kaggle lane).
+# Not a total: `send_and_wait` budgets 4x the turn timeout across seven turns. Linux, setting
+# neither, keeps its 720s floor.
+_WALL_FLOOR_S = 720.0
+_LONGEST_WAIT_S = max((TURN_TIMEOUT_MS / 1000) * 2, LOAD_FETCH_TIMEOUT_MS / 1000)
+WALL_TIMEOUT_S = float(
+    os.environ.get(
+        "STUDIO_UI_WALL_TIMEOUT_S",
+        max(_WALL_FLOOR_S, _LONGEST_WAIT_S + 120),
+    )
+)
 
 _n = [0]
 
