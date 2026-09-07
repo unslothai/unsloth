@@ -1440,9 +1440,17 @@ def list_local_gguf_variants(
     has_vision = False
     # Match the cache dir of ANY H3 bundle repo: the aggregation runs over whichever mirror the user
     # actually downloaded.
-    root_key = root.as_posix().lower()
+    #
+    # A whole path SEGMENT, not a substring. A cache dir name only ever extends a repo id by more
+    # of that id, so "models--unsloth--MiniMax-H3-GGUF-mirror" (and -v2, -i1, -BF16, or a scan
+    # folder a user named that) contains the bundle's marker while being an ordinary chat repo.
+    # Substring matching kept only the bundle's own denoiser partitions in those, which names no
+    # file there, so the repo listed no quants at all. That was survivable while only the picker
+    # read this; the auto-switch index now does, and an empty quant list there means the entry is
+    # withheld, /v1/models drops a downloaded model and a request for it 404s.
+    segments = set(root.as_posix().lower().split("/"))
     h3_bundle_repo = next(
-        (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in root_key), None
+        (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in segments), None
     )
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
