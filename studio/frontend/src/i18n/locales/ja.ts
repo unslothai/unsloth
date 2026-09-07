@@ -1120,6 +1120,16 @@ export const ja = {
         total: "{value} 合計",
       },
       llamaBackend: {
+        exactConcurrency: {
+          label: "厳密な並列実行",
+          description: "複数のチャットが同時に動くとスループットが下がります。次回のモデル読み込みから有効になります。",
+          hint: "KV キャッシュを共有する他のチャットに結果が左右されないデコードを llama-server に要求します。単独でも 3 つの隣と一緒でも同じトークンが出ます。自動は要求し、サーバーが拒否した場合はそのまま続行します。オンは要求し、拒否されたら読み込みを失敗させます。オフは要求しません。",
+          auto: "自動",
+          off: "オフ",
+          on: "オン",
+          envLocked: "環境変数 UNSLOTH_LLAMA_EXACT_CONCURRENCY で設定されているため、この選択は使われません。",
+          reloadRequired: "新しい設定を適用するにはモデルを読み込み直してください。",
+        },
         title: "GGUF 推論エンジン",
         label: "計算バックエンド",
         description: "llama.cpp が GGUF モデルの実行に使うバックエンドです。",

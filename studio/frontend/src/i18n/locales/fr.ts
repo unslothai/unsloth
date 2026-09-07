@@ -1164,6 +1164,16 @@ export const fr = {
         total: "{value} au total",
       },
       llamaBackend: {
+        exactConcurrency: {
+          label: "Concurrence exacte",
+          description: "Coûte du débit quand plusieurs chats tournent en même temps, et s'applique au prochain chargement du modèle.",
+          hint: "Demander à llama-server un décodage dont le résultat ne dépend pas des autres chats partageant le cache KV : un chat produit les mêmes tokens seul et à côté de trois voisins. Auto le demande et continue sans si le serveur refuse ; Activé le demande et fait échouer le chargement ; Désactivé ne le demande jamais.",
+          auto: "Auto",
+          off: "Désactivé",
+          on: "Activé",
+          envLocked: "Défini par la variable d'environnement UNSLOTH_LLAMA_EXACT_CONCURRENCY, ce choix n'est donc pas utilisé.",
+          reloadRequired: "Rechargez le modèle pour appliquer le nouveau réglage.",
+        },
         title: "Moteur d'inférence GGUF",
         label: "Backend de calcul",
         description: "Le backend utilisé par llama.cpp pour exécuter les modèles GGUF.",

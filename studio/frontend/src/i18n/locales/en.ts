@@ -1133,6 +1133,16 @@ export const en = {
         total: "{value} total",
       },
       llamaBackend: {
+        exactConcurrency: {
+          label: "Exact concurrency",
+          description: "Costs throughput when chats run at once, and applies on the next model load.",
+          hint: "Ask llama-server for decoding whose result does not depend on the other chats sharing the KV cache, so a chat produces the same tokens alone and beside three neighbours. Auto asks and carries on without it if the server refuses; On asks and fails the load instead; Off never asks.",
+          auto: "Auto",
+          off: "Off",
+          on: "On",
+          envLocked: "Set by the UNSLOTH_LLAMA_EXACT_CONCURRENCY environment variable, so this choice is not used.",
+          reloadRequired: "Reload the model to apply the new setting.",
+        },
         title: "GGUF inference engine",
         label: "Compute backend",
         description: "The backend llama.cpp uses to run GGUF models.",

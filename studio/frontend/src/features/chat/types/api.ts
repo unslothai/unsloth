@@ -381,6 +381,13 @@ export interface InferenceStatusResponse {
   requested_parallel_slots?: number | null;
   /** Slots llama-server actually runs, after any fit-time reduction. Null when no GGUF model is loaded. */
   parallel_slots?: number | null;
+  /** What the running llama-server does about exact concurrency: "on" it was launched with it
+   *  and came up, "off" it was not asked for, "unavailable" it was asked for under "auto" and
+   *  the server refused. Absent on a backend that predates the switch, which reads as "off". */
+  exact_concurrency?: string | null;
+  /** The exact-concurrency setting the load resolved to (auto/off/on) after the environment
+   *  override, the request field and the stored setting. What was ASKED for. */
+  requested_exact_concurrency?: string | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */

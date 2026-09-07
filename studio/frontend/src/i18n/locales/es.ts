@@ -1160,6 +1160,16 @@ export const es = {
         total: "{value} en total",
       },
       llamaBackend: {
+        exactConcurrency: {
+          label: "Concurrencia exacta",
+          description: "Cuesta rendimiento cuando varios chats se ejecutan a la vez y se aplica en la próxima carga del modelo.",
+          hint: "Pide a llama-server una decodificación cuyo resultado no dependa de los demás chats que comparten la caché KV: un chat genera los mismos tokens solo que junto a tres vecinos. Automático lo pide y continúa sin ello si el servidor lo rechaza; Activado lo pide y hace fallar la carga; Desactivado no lo pide nunca.",
+          auto: "Automático",
+          off: "Desactivado",
+          on: "Activado",
+          envLocked: "Definido por la variable de entorno UNSLOTH_LLAMA_EXACT_CONCURRENCY, así que esta elección no se usa.",
+          reloadRequired: "Recarga el modelo para aplicar la nueva configuración.",
+        },
         title: "Motor de inferencia GGUF",
         label: "Backend de cómputo",
         description: "El backend que llama.cpp usa para ejecutar modelos GGUF.",

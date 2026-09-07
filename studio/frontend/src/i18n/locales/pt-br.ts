@@ -1148,6 +1148,16 @@ export const ptBR = {
         total: "{value} total",
       },
       llamaBackend: {
+        exactConcurrency: {
+          label: "Concorrência exata",
+          description: "Custa throughput quando vários chats rodam ao mesmo tempo e se aplica no próximo carregamento do modelo.",
+          hint: "Pede ao llama-server uma decodificação cujo resultado não depende dos outros chats que compartilham o cache KV: um chat produz os mesmos tokens sozinho e ao lado de três vizinhos. Automático pede e segue sem isso se o servidor recusar; Ligado pede e falha o carregamento; Desligado nunca pede.",
+          auto: "Automático",
+          off: "Desligado",
+          on: "Ligado",
+          envLocked: "Definido pela variável de ambiente UNSLOTH_LLAMA_EXACT_CONCURRENCY, então esta escolha não é usada.",
+          reloadRequired: "Recarregue o modelo para aplicar a nova configuração.",
+        },
         title: "GGUF inference engine",
         label: "Compute backend",
         description: "The backend llama.cpp uses to run GGUF models.",

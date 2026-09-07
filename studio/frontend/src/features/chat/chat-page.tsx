@@ -147,6 +147,7 @@ import {
   chatModelSwitchMeta,
   type ChatModelSwitchTarget,
 } from "./components/chat-model-notice-switch";
+import { ExactConcurrencyChip } from "./components/exact-concurrency-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -3972,6 +3973,7 @@ export function ChatPage({
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[var(--studio-chat-control-height,34px)]"
               />
             )}
+            {view.mode !== "compare" && <ExactConcurrencyChip />}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"

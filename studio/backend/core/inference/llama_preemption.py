@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Protocol, runtime_checkable
 
 from core.inference.llama_admission import LlamaAdmissionLease, _bool_env
+from core.inference.llama_exact import EXACT_STATE_OFF, EXACT_STATES
 
 
 _SLOTS = {"slots": True} if sys.version_info >= (3, 10) else {}
@@ -45,6 +46,41 @@ _log = get_logger(__name__)
 # it accepts the same spellings.
 PREEMPT_ENV = "UNSLOTH_LLAMA_ADMISSION_PREEMPT"
 DEFAULT_PREEMPT_ENABLED = True
+
+# Who pauses a chat when the pool fills. `studio` is this module: abort the upstream
+# stream at a safe point and resume by re-prefilling the partial, which is exact at the
+# seam but not byte-identical once a drafter is involved, and which has to hold reaction
+# headroom clear of the ceiling. `server` is a llama-server built with `--preempt-ram`
+# (unslothai/llama.cpp#184): it parks a slot's sequence in host RAM and restores it in
+# place, byte-identical, at N minus a handful of cells, and tells the client with SSE
+# comments. `auto` picks `server` when the launched build has the flag and the cache is
+# unified, `studio` otherwise. With both active the lower Studio watermark would fire
+# first and the better mechanism would never run, which is why the mode is exclusive.
+PREEMPT_MODE_ENV = "UNSLOTH_LLAMA_PREEMPT_MODE"
+PREEMPT_MODE_AUTO = "auto"
+PREEMPT_MODE_STUDIO = "studio"
+PREEMPT_MODE_SERVER = "server"
+_PREEMPT_MODES = (PREEMPT_MODE_AUTO, PREEMPT_MODE_STUDIO, PREEMPT_MODE_SERVER)
+
+
+def preempt_mode_setting() -> str:
+    """The configured mode, one of auto, studio, server. Unknown spellings read as auto."""
+    raw = (os.environ.get(PREEMPT_MODE_ENV) or "").strip().lower()
+    return raw if raw in _PREEMPT_MODES else PREEMPT_MODE_AUTO
+
+
+def resolve_preempt_mode(server_preempts: bool) -> str:
+    """Which side pauses chats on this load: `server` or `studio`.
+
+    `server_preempts` is whether the launched llama-server can park slots by itself
+    (`--preempt-ram` present and not zero, `--kv-unified` on). Asking for `server` on a
+    build that cannot is answered with `studio`, since a mode nobody implements is a
+    crash, not a preference.
+    """
+    setting = preempt_mode_setting()
+    if setting == PREEMPT_MODE_STUDIO:
+        return PREEMPT_MODE_STUDIO
+    return PREEMPT_MODE_SERVER if server_preempts else PREEMPT_MODE_STUDIO
 
 
 # Room held clear of the budget. A commitment is an estimate, and the cost of being a
@@ -403,6 +439,16 @@ class DeferredPreemptionPolicy:
         if self._inner is not None:
             self._inner.on_resumed()
 
+    def on_server_parked(self) -> None:
+        hook = getattr(self._inner, "on_server_parked", None)
+        if hook is not None:
+            hook()
+
+    def on_server_resumed(self) -> None:
+        hook = getattr(self._inner, "on_server_resumed", None)
+        if hook is not None:
+            hook()
+
 
 class NullPreemptionPolicy:
     """Never pauses. The default, so every existing call site is unchanged."""
@@ -693,6 +739,15 @@ class PreemptionSnapshot:
     # exactly while this is non-zero, so a log line that reports one without the other
     # cannot be read back.
     prefilling: int = 0
+    # `studio` or `server`; see resolve_preempt_mode.
+    mode: str = PREEMPT_MODE_STUDIO
+    # `on`, `off` or `unavailable`: whether this backend's llama-server decodes in exact
+    # concurrency, so a chat's tokens do not depend on who shares its KV cache. Carried
+    # here because it is the other half of what a pause means to a reader: under `server`
+    # mode a park is byte-identical, and under exact mode so is the concurrency the park
+    # returns to. Nothing in this module ACTS on it; it is reported, not policy. See
+    # core.inference.llama_exact.
+    exact: str = EXACT_STATE_OFF
     # Participants that hold cells right now, in any state, raw streams included. This
     # is the question "is anybody else in the cache" answered by the ledger alone:
     # ``committed`` folds in the last residency reading, which can still be counting a
@@ -723,6 +778,8 @@ class PreemptionController:
         "_residency_probe",
         "_drift_logged_at",
         "_progress_tokens",
+        "_server_mode",
+        "_exact",
     )
 
     def __init__(self, key: str):
@@ -764,6 +821,12 @@ class PreemptionController:
         # one. Deliberately not derived from `committed`, which is a maximum over two
         # estimates and can sit still through thousands of generated tokens.
         self._progress_tokens = 0
+        # True when llama-server parks slots itself (see resolve_preempt_mode). The
+        # ledger keeps counting, so the log and the length-continuation arithmetic stay
+        # informed, but no sweep here ever chooses a victim.
+        self._server_mode = False
+        # Reported, never acted on: see PreemptionSnapshot.exact.
+        self._exact = EXACT_STATE_OFF
 
     def configure(
         self,
@@ -773,6 +836,8 @@ class PreemptionController:
         draft_tokens: Optional[int] = None,
         slots: Optional[int] = None,
         batch_tokens: Optional[int] = None,
+        server_mode: Optional[bool] = None,
+        exact: Optional[str] = None,
     ) -> None:
         """Re-read the cache this backend actually allocated.
 
@@ -791,6 +856,16 @@ class PreemptionController:
                 self._slots = max(1, int(slots or 1))
             if batch_tokens is not None:
                 self._batch_tokens = max(0, int(batch_tokens or 0))
+            if server_mode is not None:
+                self._server_mode = bool(server_mode)
+            if exact is not None:
+                self._exact = str(exact) if str(exact) in EXACT_STATES else EXACT_STATE_OFF
+
+    @property
+    def server_mode(self) -> bool:
+        """Whether llama-server, not this module, pauses chats on this backend."""
+        with self._lock:
+            return self._server_mode
 
     @property
     def active(self) -> bool:
@@ -1343,6 +1418,12 @@ class PreemptionController:
         raising it the moment the grant lands is how a chat is admitted into room that
         stops existing in the same breath.
         """
+        if self._server_mode:
+            # The server reserves its own drafts and an 8 cell margin on top of every
+            # running sequence (preempt_kv_reserve, server-context.cpp) and parks a slot
+            # the moment the next batch does not fit, so there is no reaction latency for
+            # this side to cover and no batch to hold room for. Every chat gets the window.
+            return 0
         return preemption_buffer_tokens(
             self._budget,
             draft_tokens = self._draft_tokens,
@@ -1433,6 +1514,12 @@ class PreemptionController:
         """
         with self._lock:
             if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
+                return []
+            if self._server_mode:
+                # llama-server parks and restores slots itself, byte-identically, and
+                # announces it on the stream. Choosing a victim here as well would abort
+                # a stream the server was about to park in place, and would re-prefill
+                # what the server would have kept.
                 return []
             buffer = self._buffer_locked()
             ceiling = max(0, self._budget - buffer)
@@ -1588,6 +1675,8 @@ class PreemptionController:
                 slots = max(1, self._slots or 1),
                 tools_running = states.count(ParticipantState.TOOLS_RUNNING),
                 prefilling = self._pending_prefill_locked(),
+                mode = PREEMPT_MODE_SERVER if self._server_mode else PREEMPT_MODE_STUDIO,
+                exact = self._exact,
                 holders = sum(1 for p in self._participants.values() if p.holds_kv),
             )
 
@@ -1885,6 +1974,26 @@ class ControllerPreemptionPolicy:
     def on_resumed(self) -> None:
         self._controller.note_resumed(self._gen_id)
 
+    def on_server_parked(self) -> None:
+        """llama-server parked this slot in host RAM; the stream said so with a comment.
+
+        Nothing is handed back: the server freed the cells itself and holds the sequence,
+        and it will restore them without asking. The ledger only records that this chat
+        is waiting, so the epoch ends and the log shows the pause.
+        """
+        participant = self._controller.participant(self._gen_id)
+        _log.info(
+            "llama preemption server-parked: gen_id=%s tokens=%s",
+            self._gen_id,
+            participant.tokens if participant is not None else None,
+        )
+        self._controller.set_state(self._gen_id, ParticipantState.PAUSED)
+
+    def on_server_resumed(self) -> None:
+        """The server restored the slot; tokens are flowing again."""
+        _log.info("llama preemption server-resumed: gen_id=%s", self._gen_id)
+        self._controller.note_resumed(self._gen_id)
+
 
 def _slot_decoded(slot: dict) -> int:
     """Tokens this slot has generated so far, from `/slots`.
@@ -1931,6 +2040,12 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
     idle_tokens = 0
     idle = []
     for slot in slots:
+        # A slot llama-server has parked (server-side preemption, `is_preempted`) reports
+        # its logical sequence but holds no cells: the sequence is in host RAM until it is
+        # restored. Counting it made a nearly empty pool read as over the ceiling and
+        # erased idle slots for room that was never short.
+        if slot.get("is_preempted"):
+            continue
         # WHICH field this came from decides whether the decoded tokens still have to be
         # added, so the two cannot be collapsed into one `or` chain. Measured live over 128
         # processing samples (outputs/slot_probe.jsonl): `n_prompt_tokens - n_decoded` is

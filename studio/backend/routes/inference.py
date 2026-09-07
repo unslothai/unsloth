@@ -2622,6 +2622,14 @@ def _openai_llama_preemption_arm(
         # The cache fails on the next BATCH not fitting, not on being full; see
         # _openai_llama_effective_batch_tokens.
         batch_tokens = _openai_llama_effective_batch_tokens(llama_backend),
+        # A llama-server built with --preempt-ram parks slots itself, byte-identically,
+        # and says so on the stream. The controller then keeps its ledger but chooses no
+        # victims, and the buffer is the server's own reserve rather than ours.
+        server_mode = bool(getattr(llama_backend, "server_preempts_kv", False)),
+        # Not policy here, reporting: whether this llama-server was launched in exact
+        # concurrency decides whether the concurrency a pause returns to is byte-identical
+        # or merely correct, and the armed line is where a reader looks for that.
+        exact = str(getattr(llama_backend, "exact_concurrency", "off") or "off"),
     )
     if not controller.active:
         # The three reasons are worth telling apart: no shared cache, no budget, or the
@@ -2661,6 +2669,8 @@ def _openai_llama_preemption_arm(
     _llama_preemption_log(
         "armed",
         gen_id = gen_id,
+        mode = snapshot.mode,
+        exact = snapshot.exact,
         charged = charged,
         committed = snapshot.committed,
         budget = snapshot.budget,

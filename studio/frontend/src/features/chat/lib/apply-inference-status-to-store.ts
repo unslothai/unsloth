@@ -11,6 +11,7 @@ import {
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
+import { normalizeExactConcurrency } from "./exact-concurrency";
 import { isSpeechOnlyStatus } from "./speech-only-status";
 import {
   mergeBackendRecommendedInference,
@@ -421,6 +422,9 @@ export function applyActiveModelStatusToStore(
     defaultChatTemplate: nextDefaultChatTemplate,
     loadedIsMultimodal: isMultimodalResponse(status),
     loadedIsDiffusion: status.is_diffusion ?? false,
+    // Read on every status, not just a seeded load: it describes the RUNNING server, so a
+    // tab that opened onto an already-loaded model has to learn it from here.
+    loadedExactConcurrency: normalizeExactConcurrency(status.exact_concurrency),
     activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
     mmprojFallbackReason: status.mmproj_fallback_reason ?? null,

@@ -84,6 +84,7 @@ import {
   type LocalContextPolicy,
 } from "../utils/auto-compaction";
 import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
+import type { ExactConcurrencyState } from "../lib/exact-concurrency";
 import {
   THREAD_SCOPED_PARAM_KEYS,
   THREAD_SCOPED_SETTING_KEYS,
@@ -2432,6 +2433,9 @@ type ChatRuntimeStore = {
   loadedIsMultimodal: boolean;
   /** Active model is a block-diffusion model (DiffusionGemma): drives the denoising-canvas artifact auto-render. */
   loadedIsDiffusion: boolean;
+  /** What the running llama-server does about exact concurrency. "off" until a status says
+   *  otherwise, so a backend that does not publish the field never claims the guarantee. */
+  loadedExactConcurrency: ExactConcurrencyState;
   /** Live denoising frame per conversation ("__default" until the id exists). Transient and
    *  keyed, since two denoising chats overwrote each other's frame. */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
@@ -4071,6 +4075,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
+  loadedExactConcurrency: "off",
   customContextLength: null,
   loadedCustomContextLength: null,
   defaultChatTemplate: null,
@@ -4976,6 +4981,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedGpuIndexKind: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
+      loadedExactConcurrency: "off",
       customContextLength: null,
       loadedCustomContextLength: null,
       defaultChatTemplate: null,
