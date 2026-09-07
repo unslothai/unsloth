@@ -282,9 +282,15 @@ class ServerToolCallStripper:
         # The turn the withheld call belonged to has closed. Whatever the loop does next
         # opens a turn of its own, whose finish_reason is the caller's to read.
         self._pending_call = pending and not ends_turn
-        if ends_turn:
-            # Owed while the reason we removed has not been replaced by a relayed one.
-            self._owes_finish = not (out is not None and _line_ends_turn(out))
+        if pending:
+            # Armed as soon as a call is withheld, not only where a finish_reason was
+            # removed: a provider that closes the turn on [DONE] alone never offers one to
+            # remove, and the caller would be left holding a stream whose only chunk this
+            # held back. The debt is settled below the moment a real terminal is relayed.
+            self._owes_finish = True
+        if out is not None and _line_ends_turn(out):
+            # A genuine terminal reason reached the caller; nothing is owed.
+            self._owes_finish = False
         self._remember_envelope(line)
         return out
 

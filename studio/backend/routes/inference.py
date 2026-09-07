@@ -28613,8 +28613,17 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # the tools handed in -- so hand it a placeholder for the schemas selected below.
     # Without them it reads the plain branch and prices away the whole catalog.
     _tpl = (entry.get("chat_template_info") or {}).get("template")
-    _template_tools = payload.tools if getattr(payload, "tool_choice", None) != "none" else None
-    if not _template_tools and (_tools_on or _explicit_studio_tool_loop_requested(payload)):
+    # Detection only, exactly as the completion draws it: this picks which branch of a
+    # named template is read, never what is rendered, so it must not follow tool_choice.
+    # A count that reads the plain branch for a tool conversation loses the assistant's
+    # calls and the result correlation fields to _extract_content_parts, and then prices a
+    # history the completion keeps.
+    _template_tools = payload.tools or None
+    if not _template_tools and (
+        _tools_on
+        or _explicit_studio_tool_loop_requested(payload)
+        or any(m.role == "tool" or m.tool_calls for m in payload.messages)
+    ):
         _template_tools = ({},)
     _takes_tools = bool(
         _detect_safetensors_features(backend, _tpl, tools = _template_tools).get(

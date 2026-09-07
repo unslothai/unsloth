@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from core.inference.sse_control_frames import (
+    ServerToolCallStripper,
     is_ui_control_sse_line,
     ServerToolCallStripper,
     strip_server_executed_tool_call,
@@ -605,6 +606,51 @@ def test_tool_choice_none_withdraws_the_catalogue_but_not_the_capability():
     assert 'm.role == "tool" or m.tool_calls' in detect
     # The catalogue itself is still withdrawn for "none".
     assert 'if payload.tool_choice == "none":\n        _sf_tools_on = False' in src
+
+
+def test_a_withheld_call_always_leaves_the_caller_a_finish_reason():
+    # A provider that closes the turn on [DONE] alone offers no finish_reason to remove,
+    # so arming the debt only where one was removed left the caller holding a stream whose
+    # only chunk was withheld. finish_reason is required in the chunk schema: openai-node
+    # raises without it.
+    stripper = ServerToolCallStripper()
+    call = 'data: {"id": "c", "choices": [{"index": 0, "delta": {"tool_calls": [{"id": "x"}]}}]}'
+    assert stripper.strip(call) is None
+    owed = stripper.owed_terminal_chunk()
+    assert owed is not None and '"finish_reason":"stop"' in owed
+    # Minted once, not on every call.
+    assert stripper.owed_terminal_chunk() is None
+
+
+def test_a_stream_that_kept_its_own_terminal_is_owed_nothing():
+    # No spurious extra chunk when the caller already has a real finish_reason, whether or
+    # not a call was withheld earlier in the stream.
+    plain = ServerToolCallStripper()
+    plain.strip('data: {"id": "c", "choices": [{"index": 0, "delta": {"content": "hi"}}]}')
+    plain.strip('data: {"id": "c", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}')
+    assert plain.owed_terminal_chunk() is None
+
+    after_call = ServerToolCallStripper()
+    after_call.strip(
+        'data: {"id": "c", "choices": [{"index": 0, "delta": {"tool_calls": [{"id": "x"}]},'
+        ' "finish_reason": "tool_calls"}]}'
+    )
+    after_call.strip('data: {"id": "c", "choices": [{"index": 0, "delta": {"content": "a"}}]}')
+    after_call.strip(
+        'data: {"id": "c", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}'
+    )
+    assert after_call.owed_terminal_chunk() is None
+
+
+def test_the_mlx_counter_keeps_capability_out_of_the_withdrawal_too():
+    # Same split the completion draws: the catalogue goes for tool_choice "none", the
+    # template branch used to read the history does not.
+    from routes import inference as inf
+
+    src = inspect.getsource(inf._mlx_count_chat_tokens)
+    detect = src[src.index("_template_tools = ") :][:400]
+    assert 'tool_choice", None) != "none"' not in detect
+    assert 'm.role == "tool" or m.tool_calls' in detect
 
 
 def test_external_provider_relay_drops_control_frames_too():
