@@ -1289,9 +1289,12 @@ class TestEstimateMemoryRoute:
         resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
         assert resp.context_fitted is None
         assert (seen["n_ctx"], seen["kv_bits"]) == (MAX_REQUESTABLE_CONTEXT, 4)
+        # Nothing declares a window and nothing fitted one, so the load installs no cache bound
+        # and there is no length to price: a number here is one the conversation may grow past.
         write(json.dumps({"model_type": "llama"}))
-        _estimate(model_path = "org/model")
-        assert seen["n_ctx"] == ri._DEFAULT_MLX_ESTIMATE_CTX
+        seen.clear()
+        assert _estimate(model_path = "org/model").reason == "unsizable"
+        assert seen == {}
 
         # A vision load keeps the snapshot store where it can build one, and that is the same
         # allowance the text history occupies, so the panel reserves it on the load's terms.

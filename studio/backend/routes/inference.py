@@ -11264,11 +11264,6 @@ def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
     return None
 
 
-# What an MLX estimate falls back to when the panel names no context and the checkpoint declares
-# no window it can be held to: the MLX loader's own default.
-_DEFAULT_MLX_ESTIMATE_CTX = 2048
-
-
 def _mlx_estimate_ceiling(model_dir: str) -> Optional[int]:
     """The window this checkpoint declares, held to what a load may be asked for.
 
@@ -15801,17 +15796,17 @@ async def estimate_memory(
                 mlx_fitted_ctx, mlx_kv_bits = _mlx_estimate_fitted_context(
                     config, model_dir, mlx_load_in_4bit, mlx_kv_bits
                 )
+            # Naming nothing is what a load does when the user pins nothing, and such a load
+            # opens at the window this machine holds. Pricing some default there would quote a
+            # fraction of the cache the conversation is free to grow into.
+            mlx_priced_ctx = mlx_named_ctx or mlx_fitted_ctx or _mlx_estimate_ceiling(model_dir)
+            if not mlx_priced_ctx:
+                # Nothing declares a window and nothing fitted one, so the load will not install
+                # a cache bound either: any length quoted here is one the conversation may pass.
+                return EstimateMemoryResponse(available = False, reason = "unsizable")
             mlx_breakdown = mlx_memory_breakdown(
                 model_dir,
-                # Naming nothing is what a load does when the user pins nothing, and such a load
-                # opens at the window this machine holds. Pricing the loader's own default there
-                # would quote a fraction of the cache the conversation is free to grow into.
-                n_ctx = (
-                    mlx_named_ctx
-                    or mlx_fitted_ctx
-                    or _mlx_estimate_ceiling(model_dir)
-                    or _DEFAULT_MLX_ESTIMATE_CTX
-                ),
+                n_ctx = mlx_priced_ctx,
                 # The load refuses to quantize a bounded cache, so such a window is priced full.
                 kv_bits = mlx_kv_bits,
                 # /load quantizes an unquantized checkpoint by default and does not always honour the request.
