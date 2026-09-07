@@ -505,9 +505,9 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
     sweep, selection = main.split("for account_id in order:", 2)[1:]
     assert "in_flight_for_commit(survey" in sweep and "concurrency_verdict(" not in sweep
     assert "concurrency_verdict(" in selection and "in_flight_for_commit(" not in selection
-    assert (
-        "_survey(account_id)" in sweep and "_survey(account_id)" in selection
-    ), "surveys are not shared between the sweep and the selection"
+    assert "_survey(account_id)" in sweep and "_survey(account_id)" in selection, (
+        "surveys are not shared between the sweep and the selection"
+    )
     for path, kind in ((NOTEBOOK_WF, "notebook"), (STUDIO_WF, "studio")):
         gate_steps = [
             s
@@ -519,42 +519,37 @@ def test_a_kernel_already_running_this_commit_on_any_account_stands_the_run_down
             assert f"--kind {kind}" in step["run"], f"{path.name}: the gate is not told its kind"
 
 
-def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
-    monkeypatch, tmp_path
-):
-    """The sampled account is FREE and the other one holds a kernel for this
-    commit, which is what a retry looks like after the first run handed the
-    commit over. A gate that only asks the account it is about to pick finds
-    it clear and dispatches a duplicate session."""
+def _drive_gate(monkeypatch, tmp_path, *, holder, outcomes = None, extra = (), clock = None):
+    """Run gate.main() with two stub accounts. `holder` is the account whose
+    survey shows a notebook kernel of the commit under test; `outcomes` maps an
+    account to a probe outcome other than ok (the client is still handed back,
+    as probe_account does for insufficient_quota and quota_unreadable)."""
     sha = "abcdef0123456789" + "0" * 24
-    sampled = gate.weighted_pick(sha, {"1": 60.0, "2": 30.0})[0]
-    other = "2" if sampled == "1" else "1"
+    outcomes = outcomes or {}
     apis = {"1": object(), "2": object()}
 
     def probe(account_id, env_name, **_kw):
         quota = {"total_hours": 60.0 if account_id == "1" else 30.0, "remaining_hours": 50.0}
-        return (
-            {
-                "account": account_id,
-                "env": env_name,
-                "outcome": "ok",
-                "user": f"user{account_id}",
-                "quota": quota,
-                "total_hours": quota["total_hours"],
-                "remaining_hours": 50.0,
-                "reserve_hours": 1.0,
-            },
-            apis[account_id],
-        )
+        record = {
+            "account": account_id,
+            "env": env_name,
+            "outcome": outcomes.get(account_id, "ok"),
+            "user": f"user{account_id}",
+            "quota": quota,
+            "total_hours": quota["total_hours"],
+            "remaining_hours": 50.0,
+            "reserve_hours": 1.0,
+        }
+        return record, apis[account_id]
 
-    surveys_asked: list[str] = []
+    surveys_asked: list[tuple[str, float | None]] = []
 
     def survey(api, *a, **k):
         account_id = next(i for i, obj in apis.items() if obj is api)
-        surveys_asked.append(account_id)
-        own = (
-            [f"user{other}/unsloth-t4-ci-n{sha[:12]}-1111 (RUNNING)"] if account_id == other else []
-        )
+        surveys_asked.append((account_id, k.get("budget_sec")))
+        if clock is not None:
+            clock[0] += 170.0  # a slow survey
+        own = [f"user{holder}/unsloth-t4-ci-n{sha[:12]}-1111 (RUNNING)"] if account_id == holder else []
         return {
             "busy": list(own),
             "own": own,
@@ -569,6 +564,8 @@ def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
 
     monkeypatch.setattr(gate, "probe_account", probe)
     monkeypatch.setattr(gate, "survey_kernels", survey)
+    if clock is not None:
+        monkeypatch.setattr(gate.time, "monotonic", lambda: clock[0])
     monkeypatch.setenv("KAGGLE_API_TOKEN", "x")
     monkeypatch.setenv("KAGGLE_API_TOKEN_2", "y")
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
@@ -590,17 +587,109 @@ def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
             "notebook",
             "--run-id",
             "7",
+            *extra,
         ],
     )
     code = gate.main()
     outputs = dict(
-        line.split("=", 1)
-        for line in (tmp_path / "out.txt").read_text().splitlines()
-        if "=" in line
+        line.split("=", 1) for line in (tmp_path / "out.txt").read_text().splitlines() if "=" in line
     )
+    return code, outputs, surveys_asked, sha
+
+
+def _other(sha: str) -> tuple[str, str]:
+    sampled = gate.weighted_pick(sha, {"1": 60.0, "2": 30.0})[0]
+    return sampled, ("2" if sampled == "1" else "1")
+
+
+def test_the_gate_stands_down_when_the_other_account_already_runs_this_commit(
+    monkeypatch, tmp_path
+):
+    """The sampled account is FREE and the other one holds a kernel for this
+    commit, which is what a retry looks like after the first run handed the
+    commit over. A gate that only asks the account it is about to pick finds
+    it clear and dispatches a duplicate session."""
+    _sampled, other = _other("abcdef0123456789" + "0" * 24)
+    code, outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder = other)
     assert code == 0
     assert outputs["should_run"] == "false", outputs["reason"]
     assert f"account {other}" in outputs["reason"] and "already running" in outputs["reason"]
-    assert set(surveys_asked) == {"1", "2"}, "the account holding the kernel was never asked"
+    assert {a for a, _b in asked} == {"1", "2"}, "the account holding the kernel was never asked"
     # One survey per account, reused by the selection loop.
-    assert len(surveys_asked) == 2, surveys_asked
+    assert len(asked) == 2, asked
+
+
+def test_an_account_that_cannot_launch_is_still_asked_whether_it_runs_this_commit(
+    monkeypatch, tmp_path
+):
+    """The account that dispatched this commit is exactly the one likely to be
+    short of quota now. Skipping it in the sweep because it cannot take a NEW
+    launch hands the retry to the other account, which dispatches the same
+    commit again."""
+    _sampled, other = _other("abcdef0123456789" + "0" * 24)
+    for outcome in ("insufficient_quota", "quota_unreadable"):
+        code, outputs, asked, _sha = _drive_gate(
+            monkeypatch, tmp_path, holder = other, outcomes = {other: outcome}
+        )
+        assert outputs["should_run"] == "false", (outcome, outputs["reason"])
+        assert "already running" in outputs["reason"], (outcome, outputs["reason"])
+        assert other in {a for a, _b in asked}, (outcome, asked)
+
+
+def test_the_second_slot_is_not_a_duplicate(monkeypatch, tmp_path):
+    """`slot: 2` is the documented way to run a second session on the same ref
+    beside slot 1. A kernel of this commit already running is then the point,
+    not a duplicate, and the gate must let the dispatch through."""
+    sampled, other = _other("abcdef0123456789" + "0" * 24)
+    code, outputs, asked, _sha = _drive_gate(
+        monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "2")
+    )
+    assert outputs["should_run"] == "true", outputs["reason"]
+    # And slot 1, same situation, still stands down.
+    code, outputs, asked, _sha = _drive_gate(
+        monkeypatch, tmp_path, holder = sampled, extra = ("--slot", "1")
+    )
+    assert outputs["should_run"] == "false", outputs["reason"]
+    # The workflow passes its slot input through; the collector's in-flight
+    # check on the GPU job is likewise switched off on slot 2.
+    source = NOTEBOOK_WF.read_text(encoding = "utf-8")
+    assert "--slot '${{ inputs.slot || '1' }}'" in source
+    collect = [
+        s for _j, _n, s in _steps(_wf(NOTEBOOK_WF)) if s.get("id") == "collect" and "--sha" in s["run"]
+    ]
+    assert len(collect) == 1
+    assert "(inputs.slot || '1') == '1' && steps.ref.outputs.ref" in collect[0]["run"], (
+        "the GPU job's in-flight check would stand a slot 2 dispatch down"
+    )
+
+
+def test_the_surveys_share_one_budget(monkeypatch, tmp_path):
+    """Two accounts, two surveys, each bounded on its own by SURVEY_BUDGET_SEC:
+    back to back they outlive the gate job. The second survey gets whatever the
+    first left of ONE budget."""
+    clock = [1000.0]
+    _sampled, other = _other("abcdef0123456789" + "0" * 24)
+    _code, _outputs, asked, _sha = _drive_gate(monkeypatch, tmp_path, holder = other, clock = clock)
+    assert len(asked) == 2, asked
+    first, second = asked[0][1], asked[1][1]
+    assert first == pytest.approx(gate.SURVEY_BUDGET_SEC)
+    assert second == pytest.approx(gate.SURVEY_BUDGET_SEC - 170.0), (first, second)
+
+
+def test_the_gate_is_keyed_on_the_commit_the_gpu_job_will_test():
+    """A dispatch naming `unsloth_ref` tests that ref, not github.sha. Keyed on
+    github.sha the gate looks for the wrong kernel, and once the default branch
+    has moved two runs of the same requested ref can land on different
+    accounts and never see each other."""
+    for path in (NOTEBOOK_WF, STUDIO_WF):
+        gate_job = _wf(path)["jobs"]["gate"]
+        steps = {s.get("id"): s for s in gate_job["steps"] if s.get("id")}
+        ref = steps.get("ref")
+        assert ref is not None, f"{path.name}: the gate job does not name the commit under test"
+        assert ref["env"]["UNSLOTH_REF"] == "${{ inputs.unsloth_ref }}"
+        assert "head_sha=" in ref["run"] and "git ls-remote" in ref["run"]
+        decide = steps["decide"]
+        assert "--head-sha '${{ steps.ref.outputs.head_sha }}'" in decide["run"], (
+            f"{path.name}: the gate is keyed on a commit the GPU job may not test"
+        )
+        assert "github.sha" not in decide["run"]

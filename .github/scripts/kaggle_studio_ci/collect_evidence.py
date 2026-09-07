@@ -58,11 +58,20 @@ def iter_text(path: Path):
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
             continue
-        for cell in nb.get("cells", []):
-            for output in cell.get("outputs", []):
+        # Valid JSON is not necessarily a notebook: `[]` and a cell or output
+        # that is not an object have both come back from a kernel, and a reader
+        # that raises here fails the job after the verdict was already posted.
+        if not isinstance(nb, dict):
+            continue
+        for cell in nb.get("cells") or []:
+            if not isinstance(cell, dict):
+                continue
+            for output in cell.get("outputs") or []:
+                if not isinstance(output, dict):
+                    continue
                 text = output.get("text") or ""
                 if isinstance(text, list):
-                    text = "".join(text)
+                    text = "".join(str(t) for t in text)
                 yield text
     for log_path in sorted(path.rglob("kernel.log")):
         raw = log_path.read_text(encoding = "utf-8", errors = "replace")

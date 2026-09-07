@@ -591,13 +591,22 @@ def test_the_gate_job_deadline_exceeds_the_gates_own_bound():
     """
     import gate
 
-    worst = 3 * gate.SOCKET_TIMEOUT_SEC + gate.SURVEY_BUDGET_SEC
+    # Per account: authentication, the username read and the quota read, each
+    # at the socket ceiling. Then ONE survey budget shared across every account
+    # the gate asks (two surveys back to back would be the bug), and the call
+    # still in flight when it expires.
+    accounts = len(gate.DEFAULT_ACCOUNT_ENVS)
+    worst = accounts * 3 * gate.SOCKET_TIMEOUT_SEC + gate.SURVEY_BUDGET_SEC + gate.SOCKET_TIMEOUT_SEC
     before_the_gate = 120
-    timeout_s = _workflow()["jobs"]["gate"]["timeout-minutes"] * 60
-    assert timeout_s >= worst + before_the_gate, (
-        f"the gate can take {worst}s, the steps before it up to "
-        f"{before_the_gate}s, and the job is killed at {timeout_s}s"
-    )
+    for path in (WORKFLOW, WORKFLOW.parent / "kaggle-t4-studio-gpu-ci.yml"):
+        workflow = pytest.importorskip("yaml").safe_load(path.read_text(encoding = "utf-8"))
+        timeout_s = workflow["jobs"]["gate"]["timeout-minutes"] * 60
+        assert timeout_s >= worst + before_the_gate, (
+            f"{path.name}: the gate can take {worst}s, the steps before it up to "
+            f"{before_the_gate}s, and the job is killed at {timeout_s}s"
+        )
+    source = (CI_DIR / "gate.py").read_text(encoding = "utf-8")
+    assert "survey_deadline - time.monotonic()" in source, "the surveys do not share one budget"
 
 
 def test_an_unsampled_invocation_is_a_skip_not_a_failure(monkeypatch, tmp_path):
@@ -672,7 +681,7 @@ def _run_gate_against(
     monkeypatch.setattr(gate, "client_username", lambda api: "danielhanchen")
     monkeypatch.setattr(gate, "remaining_gpu_hours", lambda api: dict(quota))
     monkeypatch.setattr(
-        gate, "survey_kernels", answer if callable(answer) else (lambda api: answer)
+        gate, "survey_kernels", answer if callable(answer) else (lambda api, **k: answer)
     )
     code, outputs = _run_gate(monkeypatch, tmp_path, "--force", "true", *extra)
     summary_path = tmp_path / "summary.md"

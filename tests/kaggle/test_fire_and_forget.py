@@ -1534,20 +1534,8 @@ def test_two_commits_that_share_eight_characters_resolve_apart_and_post_twice(mo
     monkeypatch.setattr(post_statuses, "_gh", _gh)
     statuses = collect.statuses_from(
         [
-            {
-                "slug": "me/unsloth-t4-ci-nabcdef01-1111",
-                "sha": "abcdef01",
-                "kind": "notebook",
-                "verdict": "pass",
-                "reason": "ok",
-            },
-            {
-                "slug": "me/unsloth-t4-ci-nabcdef01ffff-2222",
-                "sha": "abcdef01ffff",
-                "kind": "notebook",
-                "verdict": "fail",
-                "reason": "red",
-            },
+            {"slug": "me/unsloth-t4-ci-nabcdef01-1111", "sha": "abcdef01", "kind": "notebook", "verdict": "pass", "reason": "ok"},
+            {"slug": "me/unsloth-t4-ci-nabcdef01ffff-2222", "sha": "abcdef01ffff", "kind": "notebook", "verdict": "fail", "reason": "red"},
         ]
     )
     outcome = post_statuses.post_all(statuses, "unslothai/unsloth")
@@ -1575,6 +1563,34 @@ def test_a_notebook_kernel_without_its_expected_count_is_never_a_pass(tmp_path, 
     monkeypatch.setattr(launch, "extract_reports", lambda dest: [{"passed": True}])
     studio = dict(_ENTRY, kind = "studio", slug = "me/unsloth-t4-ci-sabcdef01-1111")
     api = _StubApi([], {studio["slug"]: "COMPLETE"})
-    assert (
-        collect.collect_one(api, studio, tmp_path, expect = 1, max_age_hours = 3.0)["verdict"] == "pass"
-    )
+    assert collect.collect_one(api, studio, tmp_path, expect = 1, max_age_hours = 3.0)["verdict"] == "pass"
+
+
+def test_every_gate_budget_covers_the_reaper_window():
+    """A dispatching job does not delete its kernel; a kernel that ignores its
+    own timeout runs until the scheduled collector reaps it at the age ceiling,
+    and that pass can be a whole schedule interval plus its job timeout late.
+    The gate admits a run when `remaining >= budget + reserve`, so a budget
+    below that window lets one wedged kernel bill into the human reserve."""
+    collect_wf = _wf(COLLECT_WF)
+    job = collect_wf["jobs"]["collect"]
+    on = collect_wf.get("on") or collect_wf.get(True) or {}  # PyYAML reads a bare `on:` as True
+    crons = [s["cron"] for s in on.get("schedule") or []]
+    assert crons, "the collector is not scheduled"
+    minutes = sorted(int(m) for m in crons[0].split()[0].split(","))
+    interval_min = max(b - a for a, b in zip(minutes, minutes[1:])) if len(minutes) > 1 else 60
+    source = COLLECT_WF.read_text(encoding = "utf-8")
+    m = re.search(r"--max-age-hours '\$\{\{ inputs\.max_age_hours \|\| '(\d+)' \}\}'", source)
+    assert m, "the collector's default age ceiling is not readable from the workflow"
+    max_age = float(m.group(1))
+    assert max_age == collect.DEFAULT_MAX_AGE_HOURS
+    window = max_age + (interval_min + job["timeout-minutes"]) / 60
+    for path in (NOTEBOOK_WF, STUDIO_WF):
+        budgets = {
+            int(b)
+            for b in re.findall(r"--budget-hours (\d+)", path.read_text(encoding = "utf-8"))
+        }
+        assert len(budgets) == 1, (path.name, budgets)
+        assert budgets.pop() >= window, (
+            f"{path.name}: a wedged kernel can bill {window:.2f}h before it is reaped"
+        )

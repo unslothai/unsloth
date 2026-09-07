@@ -706,6 +706,12 @@ def main() -> int:
         help = "notebook or studio: with --head-sha, a kernel of this kind already running "
         "this commit on ANY account stands the run down instead of dispatching a duplicate",
     )
+    ap.add_argument(
+        "--slot",
+        default = "1",
+        help = "the workflow's session slot input. Slot 2 is an opt-in SECOND session on "
+        "the same commit beside slot 1, so it is not stood down as a duplicate",
+    )
     ap.add_argument("--force", default = "false", help = "workflow_dispatch force input")
     ap.add_argument("--labels", default = "", help = "comma or newline separated PR labels")
     ap.add_argument("--label-name", default = "kaggle-t4-ci")
@@ -927,19 +933,36 @@ def main() -> int:
     order = [sampled_account] + [i for i in probes if i != sampled_account]
     handovers: list[str] = []
     surveys: dict[str, dict] = {}
+    # ONE survey budget for the whole gate, however many accounts it asks. Each
+    # survey is bounded on its own, but two of them back to back would outlive
+    # the job's timeout, and a runner killed mid-question is a red rather than
+    # the soft stand-down an incomplete survey turns into.
+    survey_deadline = time.monotonic() + SURVEY_BUDGET_SEC
 
     def _survey(account_id: str) -> dict:
         if account_id not in surveys:
-            surveys[account_id] = survey_kernels(clients[account_id])
+            surveys[account_id] = survey_kernels(
+                clients[account_id],
+                budget_sec = max(0.0, survey_deadline - time.monotonic()),
+            )
         return surveys[account_id]
 
-    # EVERY candidate account first, for THIS commit, before any is chosen. An
-    # earlier run can have handed this commit to the other account; a retry
-    # that finds the preferred account free again would otherwise pick it and
-    # never look at the account whose kernel is still running.
-    if args.head_sha and args.kind:
+    # EVERY account with a usable client first, for THIS commit, before any is
+    # chosen. An earlier run can have handed this commit to the other account;
+    # a retry that finds the preferred account free again would otherwise pick
+    # it and never look at the account whose kernel is still running. Whether
+    # the account could take a NEW launch is beside the point here: the one
+    # that just dispatched is exactly the one likely to be short of quota now.
+    second_slot = str(args.slot or "1").strip() != "1"
+    if args.head_sha and args.kind and second_slot:
+        print(
+            f"[gate] slot {args.slot}: a second session on this commit was asked for, "
+            "so a kernel already running it does not stand this run down",
+            flush = True,
+        )
+    if args.head_sha and args.kind and not second_slot:
         for account_id in order:
-            if not account_id or probes[account_id]["outcome"] != "ok":
+            if not account_id or clients.get(account_id) is None:
                 continue
             try:
                 survey = _survey(account_id)

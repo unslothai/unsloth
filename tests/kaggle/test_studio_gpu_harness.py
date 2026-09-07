@@ -950,16 +950,22 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
 def test_the_reserve_leaves_ci_the_fifty_hours_it_is_allowed():
     source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--reserve-hours 10" in source
-    assert "--budget-hours 2" in source
+    assert "--budget-hours 4" in source
+    assert "--budget-hours 2" not in source
 
 
-def test_the_budget_hours_flag_covers_the_kernel_ceiling():
-    """budget-hours is the worst case one invocation can cost, and the
-    kernel ceiling is what enforces that worst case."""
+def test_the_budget_hours_flag_covers_the_reaper_window():
+    """budget-hours is the worst case one invocation can cost. The kernel
+    ceiling used to be that worst case while this job waited and deleted the
+    kernel itself; it dispatches now, and a kernel that ignores its own timeout
+    is left to the collector's age ceiling plus the collector's schedule and
+    job timeout. See test_every_gate_budget_covers_the_reaper_window."""
     source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--kernel-timeout-sec 4200" in source
     ceiling_hours = 4200 / 3600
-    assert ceiling_hours <= 2.0
+    budgets = {int(b) for b in re.findall(r"--budget-hours (\d+)", source)}
+    assert len(budgets) == 1, budgets
+    assert budgets.pop() >= ceiling_hours
 
 
 def test_the_opt_in_label_the_summary_names_is_the_one_the_gate_reads():
@@ -1669,6 +1675,45 @@ def test_a_nested_executed_notebook_is_read_too(tmp_path):
         collect_evidence.iter_text(tmp_path / "evidence")
     )
     assert total and len(chunks) == total
+
+
+def test_evidence_that_is_json_but_not_a_notebook_does_not_raise(tmp_path):
+    """`[]`, a cell that is a string, an output that is a number: all valid
+    JSON, all seen back from a kernel. The reader used to raise on the first
+    `.get`, and on the GPU workflow that fails the job after the verdict was
+    already posted."""
+    evidence = tmp_path / "evidence" / "unsloth-t4-ci-1234"
+    evidence.mkdir(parents = True)
+    (evidence / "a_output.ipynb").write_text("[]", encoding = "utf-8")
+    (evidence / "b_output.ipynb").write_text(
+        json.dumps({"cells": ["not a cell", {"outputs": [7, {"text": ["x", 1]}]}]}),
+        encoding = "utf-8",
+    )
+    blob = _bundle({"studio.log": b"a log"})
+    (evidence / "c_output.ipynb").write_text(
+        json.dumps({"cells": [{"outputs": [{"text": "\n".join(_chunk_lines(blob))}]}]}),
+        encoding = "utf-8",
+    )
+    streams = list(collect_evidence.iter_text(tmp_path / "evidence"))
+    assert "x1" in streams
+    chunks, total = collect_evidence.collect_chunks(iter(streams))
+    assert total and len(chunks) == total
+
+
+def test_the_evidence_unpack_is_best_effort_on_the_gpu_job():
+    """The notebook and scheduled unpacks already are; this one decided the
+    colour of a job whose verdict had already been posted."""
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    steps = [
+        s
+        for job in workflow["jobs"].values()
+        for s in job.get("steps", [])
+        if "collect_evidence.py" in (s.get("run") or "")
+    ]
+    assert steps, "no unpack step"
+    for step in steps:
+        assert step.get("continue-on-error") is True, step.get("name")
 
 
 # ------------------------------------------------------- a diverged training run

@@ -373,7 +373,11 @@ jobs:
     # and exits 0); this simply does not start.
     if: github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 15, for the honest worst case with two accounts: each one's
+    # authentication, username and quota read at the socket ceiling, one shared
+    # survey budget, and the one call still in flight when it expires. The
+    # harness suite asserts the arithmetic.
+    timeout-minutes: 15
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
       reason: ${{ steps.decide.outputs.reason }}
@@ -464,6 +468,45 @@ jobs:
       # than being interpolated into the shell, for the same reason the
       # stale-approval warning below does: they are free text set by anyone with
       # write access.
+      # THE COMMIT THE GPU JOB WILL TEST, which is not always this workflow's
+      # own. A dispatch naming `unsloth_ref` tests that ref; keyed on
+      # github.sha the in-flight check would look for the wrong kernel (and
+      # could stand a request for an unrelated ref down behind a kernel of the
+      # workflow commit), and once the default branch moved, two runs of the
+      # same requested ref could be drawn onto different accounts and never see
+      # each other. Resolved the way the GPU job resolves it. A ref that does
+      # not resolve leaves the key EMPTY: the draw then falls back to the run
+      # id, and the GPU job stands down on the same ref moments later.
+      - name: Name the commit under test
+        id: ref
+        env:
+          UNSLOTH_REF: ${{ inputs.unsloth_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -z "$UNSLOTH_REF" ]; then
+            echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s' "$UNSLOTH_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            RESOLVED="$UNSLOTH_REF"
+          else
+            RESOLVED=''
+            for attempt in 1 2 3; do
+              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" || true)"
+              PEELED="$(printf '%s\n' "$LS" | grep '\^{}$' | head -n1 | cut -f1)"
+              if [ -n "$PEELED" ]; then
+                RESOLVED="$PEELED"
+              else
+                RESOLVED="$(printf '%s\n' "$LS" | head -n1 | cut -f1)"
+              fi
+              if [ -n "$RESOLVED" ]; then break; fi
+              echo "ls-remote attempt $attempt resolved nothing"
+              sleep 10
+            done
+          fi
+          echo "head_sha=$RESOLVED" >> "$GITHUB_OUTPUT"
+          echo "the gate is keyed on unslothai/unsloth@${RESOLVED:-(unresolved)}"
+
       - name: Decide
         id: decide
         env:
@@ -479,8 +522,9 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
             --percent 15 \
-            --head-sha '${{ github.event.pull_request.head.sha || github.sha }}' \
+            --head-sha '${{ steps.ref.outputs.head_sha }}' \
             --kind notebook \
+            --slot '${{ inputs.slot || '1' }}' \
             --force '${{ inputs.force || (github.event_name == 'schedule' && 'true' || 'false') }}' \
             --labels "$PR_LABELS" \
             --label-name kaggle-t4-ci \
@@ -1042,7 +1086,7 @@ jobs:
           python .github/scripts/kaggle_t4_ci/collect.py \
             --outdir kaggle_collected \
             --expect '${{ steps.build.outputs.payloads }}' \
-            --sha '${{ steps.ref.outputs.ref }}' \
+            --sha '${{ (inputs.slot || '1') == '1' && steps.ref.outputs.ref || '' }}' \
             --kind notebook \
             --no-delete \
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -1082,6 +1126,11 @@ jobs:
       # launch.py's module docstring. One value for both kernels, since Kaggle
       # takes it per push and the larger requirement wins: kernel 2 downloads a
       # 12GB gpt-oss checkpoint before it trains anything.
+      #
+      # `--sha` is what stands a run down when a kernel of this commit is
+      # already up. Slot 2 is the opt-in for a SECOND session on the same ref
+      # beside slot 1 (an A/B, one input varied), so on slot 2 the collector
+      # is not handed the sha and the in-flight check cannot fire.
       #
       # THE GATE'S ANSWER CAN BE STALE BY THE TIME WE GET HERE, and this is the
       # first point at which it cannot be. The `gate` job surveys quota and
