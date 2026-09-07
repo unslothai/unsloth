@@ -787,6 +787,12 @@ def _raw_config_has_vision_config(
             # would return what is already here. Saves both the absence probe and the
             # download's own freshness check.
             config_path = current[0] / "config.json"
+        elif current is not None and "config.json" not in current[1]:
+            # The repo does not publish one, which the document just said. The absence
+            # probe below spends a round trip to be told the same, and it is the reason a
+            # GGUF-only repo cost this caller two reads where it used to cost one.
+            logger.debug("'%s' has no config.json on the Hub", model_name)
+            return None
         else:
             from huggingface_hub import hf_hub_download
             from utils.hf_probe import hf_file_definitely_absent
@@ -1548,9 +1554,20 @@ def _detect_audio_from_tokenizer(
                         # of the process, with the markers in the part that never arrived.
                         if may_answer_for_hub:
                             try:
-                                json.loads(raw)
+                                decoded = json.loads(raw)
                             except Exception:
                                 continue
+                            # The scan above reads the raw text, so a content written as
+                            # an escape does not match it -- and Go's encoding/json
+                            # escapes < and > that way by default, so it is a shape real
+                            # tooling uploads. Standing in for the Hub copy means
+                            # classifying what that copy would have classified: the
+                            # fallback below decodes before it looks, and a miss here is
+                            # a definitive negative cached for the life of the process.
+                            # The parse is already paid for; only the lookup is new.
+                            result = _check_token_patterns(decoded)
+                            if result:
+                                return result, True
                         elif not raw.rstrip().endswith("}"):
                             continue
                         read_any = True

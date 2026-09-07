@@ -1275,3 +1275,33 @@ def test_the_current_snapshot_is_the_one_the_repo_document_names(tmp_path, monke
     assert mc._current_cached_snapshot("acme/vlm") == (snapshot, {"config.json"})
     # Never authorizes, so a caller who forced anonymity is not served the cache.
     assert mc._current_cached_snapshot("acme/vlm", False) is None
+
+
+def test_a_repo_that_publishes_no_config_is_settled_by_the_document(tmp_path, monkeypatch):
+    """The document names the repo's files, so it already says config.json is not among
+    them. Probing the Hub for it spends a round trip to be told the same, and that is what
+    made a cached GGUF-only repo cost this caller two reads where main costs it one."""
+    repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", {"model-Q4_K_M.gguf": "x"})
+
+    result, reads = _probe_against_cache(
+        monkeypatch, repo_dir, listed = ("model-Q4_K_M.gguf",)
+    )
+
+    assert result is None
+    assert reads == []
+
+
+def test_a_config_the_repo_has_but_the_cache_lacks_still_asks(tmp_path, monkeypatch):
+    """Only a document that omits the file settles it. One that lists a file the snapshot
+    does not hold says the opposite: fetch it."""
+    repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", {"model-Q4_K_M.gguf": "x"})
+
+    result, reads = _probe_against_cache(
+        monkeypatch,
+        repo_dir,
+        listed = ("model-Q4_K_M.gguf", "config.json"),
+        remote_config = {"vision_config": {"hidden_size": 8}},
+    )
+
+    assert result is True
+    assert reads == [("absent", "config.json"), ("download", "config.json")]

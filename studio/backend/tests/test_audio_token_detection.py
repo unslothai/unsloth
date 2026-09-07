@@ -590,3 +590,23 @@ def test_a_document_without_siblings_at_all_cannot_answer_negatively(monkeypatch
     )
 
     assert mc._current_cached_snapshot("acme/tts-model") is None
+
+
+def test_a_marker_written_as_an_escape_is_still_found(monkeypatch, tmp_path):
+    """The raw scan that decides whether a file is worth parsing reads the text, so a
+    content written as a JSON escape does not match it. Go's encoding/json escapes < and >
+    that way by default, so it is a shape real tooling uploads. The Hub fallback decodes
+    before it looks; standing in for it has to classify what it would have classified, or
+    the miss becomes a definitive negative cached for the life of the process."""
+    from utils.models.model_config import _may_hold_audio_tokens
+
+    escaped = _tokenizer("<|audio|>").replace("<", chr(92) + "u003c").replace(">", chr(92) + "u003e")
+    assert "<|audio|>" not in escaped and json.loads(escaped)
+    assert not _may_hold_audio_tokens(escaped), "the raw scan is what misses it"
+
+    repo_dir, _ = _cached_snapshot(tmp_path, "acme/tts-model", {"tokenizer_config.json": escaped})
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(monkeypatch, repo_dir)
+
+    assert (audio_type, definitive) == ("audio_vlm", True)
+    assert reads == [], "and the snapshot still answers it without a fetch"
