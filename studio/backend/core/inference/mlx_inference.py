@@ -788,6 +788,52 @@ def _write_video_clip(video_b64: str) -> str:
         return handle.name
 
 
+# mlx-vlm holds two native-resolution RGB copies of the sampled frames before the processor resizes.
+_VIDEO_DECODE_BUDGET_BYTES = 2 << 30
+
+
+def _video_sampling_target(processor) -> tuple[float, int, Optional[int]]:
+    """mlx-vlm's (fps, min_frames, nframes); older releases pass only ``fps`` to ``load_video``."""
+    import inspect
+
+    from mlx_vlm import utils as vlm_utils
+
+    resolve = getattr(vlm_utils, "resolve_video_sampling", None)
+    if resolve is not None:
+        sampling = resolve(processor, {})
+        return sampling.fps, sampling.min_frames, sampling.nframes
+    defaults = inspect.signature(vlm_utils.load_video).parameters
+    return defaults["fps"].default, defaults["min_frames"].default, None
+
+
+def _video_frame_rate(clip_path: str, processor) -> Optional[float]:
+    """The sampling ``fps`` keeping the decoded stack within the budget; None when cv2 cannot
+    open the clip, which mlx-vlm then refuses itself."""
+    import cv2
+
+    capture = cv2.VideoCapture(clip_path)
+    try:
+        if not capture.isOpened():
+            return None
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        native_fps = capture.get(cv2.CAP_PROP_FPS)
+    finally:
+        capture.release()
+    if min(width, height, total_frames) <= 0 or not native_fps or native_fps <= 0:
+        return None
+    wanted_fps, min_frames, nframes = _video_sampling_target(processor)
+    affordable = _VIDEO_DECODE_BUDGET_BYTES // (2 * 3 * width * height)
+    needed = min_frames if nframes is None else nframes
+    if affordable < needed:
+        raise RuntimeError(
+            f"The video's {width}x{height} frames are too large to decode: {needed} of them "
+            f"exceed the {_VIDEO_DECODE_BUDGET_BYTES >> 20} MiB frame budget."
+        )
+    return min(wanted_fps, affordable * native_fps / total_frames)
+
+
 def _discard_video_clip(path: str) -> None:
     try:
         os.remove(path)
@@ -3446,6 +3492,9 @@ class MLXInferenceBackend:
                     if video is not None:
                         clip_path = _write_video_clip(video)
                         vlm_kwargs["video"] = [clip_path]
+                        frame_rate = _video_frame_rate(clip_path, self._processor)
+                        if frame_rate is not None:
+                            vlm_kwargs["fps"] = frame_rate
                     # Emit any prefilled <think> block before the first token so the
                     # UI renders it during prefill, matching _generate_text. Done
                     # inside the adapter context so an unsupported request raises

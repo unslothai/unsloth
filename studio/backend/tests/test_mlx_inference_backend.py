@@ -4158,7 +4158,9 @@ def _video_vlm_backend(monkeypatch, streams):
         yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
 
     mlx_vlm.stream_generate = _vlm_stream
+    real_vlm_utils = pytest.importorskip("mlx_vlm.utils")
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", real_vlm_utils)
     monkeypatch.setattr(
         "core.inference.chat_template_helpers.apply_chat_template_for_generation",
         lambda _t, _m, **_k: "<video> marked",
@@ -4239,6 +4241,112 @@ def test_mlx_vlm_video_clip_lives_on_disk_only_for_the_stream(monkeypatch):
     assert Path(path).exists()
     gen.close()
     assert not Path(path).exists()
+
+
+def _tiny_clip(
+    path,
+    width = 32,
+    height = 24,
+    frames = 12,
+):
+    import cv2
+    import numpy as np
+
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 4.0, (width, height))
+    for index in range(frames):
+        frame = np.zeros((height, width, 3), np.uint8)
+        frame[:, index : index + 4] = 255
+        writer.write(frame)
+    writer.release()
+    return str(path)
+
+
+def test_mlx_vlm_the_decoded_frame_stack_is_bounded(monkeypatch, tmp_path):
+    """A small upload can decode to gigabytes; the rate is the one knob every release passes on."""
+    import base64
+
+    from core.inference import mlx_inference
+
+    pytest.importorskip("mlx_vlm.utils")
+    clip = _tiny_clip(tmp_path / "clip.mp4")
+    per_frame = 2 * 3 * 32 * 24
+    plain = SimpleNamespace()
+    slower = SimpleNamespace(video_processor = SimpleNamespace(fps = 1.0))
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 6)
+    assert mlx_inference._video_frame_rate(clip, plain) == 2.0
+    assert mlx_inference._video_frame_rate(clip, slower) == 1.0
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 4)
+    assert mlx_inference._video_frame_rate(clip, plain) == pytest.approx(4 / 3)
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 3)
+    with pytest.raises(RuntimeError, match = "32x24 frames are too large"):
+        mlx_inference._video_frame_rate(clip, plain)
+
+    unopenable = tmp_path / "header"
+    unopenable.write_bytes(base64.b64decode(_CLIP_B64))
+    assert mlx_inference._video_frame_rate(str(unopenable), plain) is None
+
+
+def test_mlx_vlm_the_frame_rate_follows_an_older_mlx_vlm_decoder(monkeypatch, tmp_path):
+    """Older releases hand load_video only ``fps``, so its signature is the sampling source."""
+    from core.inference import mlx_inference
+
+    mlx_vlm = pytest.importorskip("mlx_vlm")
+
+    def load_video(
+        video_path,
+        fps = 1.5,
+        nframes = None,
+        min_frames = 8,
+        max_frames = 768,
+    ):
+        raise AssertionError("never decoded here")
+
+    monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(load_video = load_video))
+    clip = _tiny_clip(tmp_path / "clip.mp4")
+    per_frame = 2 * 3 * 32 * 24
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 12)
+    assert mlx_inference._video_frame_rate(clip, SimpleNamespace()) == 1.5
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", per_frame * 7)
+    with pytest.raises(RuntimeError, match = "8 of them"):
+        mlx_inference._video_frame_rate(clip, SimpleNamespace())
+
+
+def test_mlx_vlm_the_frame_rate_rides_the_stream(monkeypatch, tmp_path):
+    import base64
+    import tempfile
+
+    from core.inference import mlx_inference
+
+    clip_b64 = base64.b64encode(Path(_tiny_clip(tmp_path / "clip.mp4")).read_bytes()).decode()
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(spool))
+    streams = []
+    backend = _video_vlm_backend(monkeypatch, streams)
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", 2 * 3 * 32 * 24 * 4)
+    turn = [
+        {"role": "user", "content": [{"type": "video"}, {"type": "text", "text": "what moves"}]}
+    ]
+
+    assert list(
+        backend._generate_vlm(
+            turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = clip_b64
+        )
+    ) == ["ok"]
+    assert streams[0][1]["fps"] == pytest.approx(4 / 3)
+
+    monkeypatch.setattr(mlx_inference, "_VIDEO_DECODE_BUDGET_BYTES", 2 * 3 * 32 * 24 * 3)
+    gen = backend._generate_vlm(
+        turn, None, 0, 1, 0, 0, 1, 1, None, _adapter_state = False, video = clip_b64
+    )
+    with pytest.raises(RuntimeError, match = "too large to decode"):
+        next(gen)
+    assert len(streams) == 1, "a refused clip never reaches mlx-vlm"
+    assert list(spool.glob("unsloth-video-*")) == []
 
 
 def test_mlx_vlm_a_video_turn_whose_render_is_unusable_is_refused_not_recovered(monkeypatch):
