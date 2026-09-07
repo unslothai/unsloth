@@ -272,8 +272,7 @@ def _line_ends_turn(line: str) -> bool:
     if not isinstance(choices, list):
         return False
     return any(
-        isinstance(choice, dict) and choice.get("finish_reason") is not None
-        for choice in choices
+        isinstance(choice, dict) and choice.get("finish_reason") is not None for choice in choices
     )
 
 

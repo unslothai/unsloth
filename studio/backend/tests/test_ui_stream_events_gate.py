@@ -414,8 +414,7 @@ def test_a_stop_the_loop_will_not_run_past_stays_final():
             '"id": "c1", "type": "function", "function": {"name": "python"}}]}}]}'
         )
         stripper.strip(call)
-        end = ('data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "%s"}]}'
-               % reason)
+        end = 'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "%s"}]}' % reason
         assert json.loads(stripper.strip(end)[5:])["choices"][0]["finish_reason"] == reason
 
 

@@ -4002,6 +4002,7 @@ def _tool_calls_are_disabled(payload) -> bool:
     about whether a prompt CAN fire, and under that policy it cannot.
     """
     from state.tool_policy import get_tool_policy
+
     if get_tool_policy() is False:
         return True
     if getattr(payload, "tool_choice", None) == "none":
