@@ -102,9 +102,9 @@ def _assert_grandchild_was_killed(gate: Path, sentinel: Path) -> None:
     gate.write_text("go")
     deadline = time.monotonic() + _LEAK_WINDOW_S
     while time.monotonic() < deadline:
-        assert (
-            not sentinel.exists()
-        ), "a grandchild survived the process-group kill and wrote its sentinel"
+        assert not sentinel.exists(), (
+            "a grandchild survived the process-group kill and wrote its sentinel"
+        )
         time.sleep(0.02)
 
 

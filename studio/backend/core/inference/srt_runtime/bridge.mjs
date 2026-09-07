@@ -112,7 +112,9 @@ export async function execute(request, emit) {
   const helper = path.join(packageRoot, 'vendor', 'seccomp', process.arch, 'apply-seccomp');
   fs.accessSync(helper, fs.constants.X_OK);
   const { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } = await import(path.join(packageRoot, 'dist/sandbox/linux-sandbox-utils.js'));
-  const env = { ...request.env, HOME: cwd, TMPDIR: cwd, TMP: cwd, TEMP: cwd };
+  // Empty-root SRT supplies a fresh /tmp tmpfs. A short private path also keeps
+  // multiprocessing resource_sharer addresses below AF_UNIX's pathname limit.
+  const env = { ...request.env, HOME: cwd, TMPDIR: '/tmp', TMP: '/tmp', TEMP: '/tmp' };
   const command = payloadCommand(request);
   const wrapped = await wrapCommandWithSandboxLinux({
     command,

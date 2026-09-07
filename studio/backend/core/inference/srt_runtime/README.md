@@ -46,6 +46,9 @@ the bridge additionally requires inherited seccomp mode. Standalone requests
 default to SRT's stricter Unix-socket-denying native helper. Native checks prove
 private socket pairs and multiprocessing spawn/resource sharing work while
 positive-control host filesystem and abstract sockets cannot be reached.
+Temporary files use the fresh namespace's short `/tmp` path, preventing long
+Studio session paths from exceeding Unix socket pathname limits. Host `/tmp`
+is not granted, and these temporary files disappear with the namespace.
 Optional HTTPS transport restores only two private, owned Unix sockets: the
 existing Studio HTTPS CONNECT proxy and a SOCKS refusal listener. Its authority
 is the private socket, so no proxy credential enters a command line. The

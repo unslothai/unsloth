@@ -17,7 +17,9 @@ from core.inference.network_proxy import AllowlistProxy, NetworkAllowlist
 from core.inference.srt_network import SrtNetworkTransport
 from .test_network_proxy import _EchoUpstream, _client_hello
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason = "private Unix socket authority requires POSIX ownership")
+pytestmark = pytest.mark.skipif(
+    os.name != "posix", reason = "private Unix socket authority requires POSIX ownership"
+)
 
 
 def _proxy(**options):
@@ -31,11 +33,18 @@ def _connect(path):
     return client
 
 
-def _request(transport, method = "CONNECT", host = "upstream.test:443", authenticated = False):
+def _request(
+    transport,
+    method = "CONNECT",
+    host = "upstream.test:443",
+    authenticated = False,
+):
     client = _connect(transport.http_socket_path)
     auth = ""
     if authenticated:
-        credential = base64.b64encode(f"sandbox:{transport.proxy.credential.token}".encode()).decode()
+        credential = base64.b64encode(
+            f"sandbox:{transport.proxy.credential.token}".encode()
+        ).decode()
         auth = f"Proxy-Authorization: Basic {credential}\r\n"
     client.sendall(f"{method} {host} HTTP/1.1\r\nHost: {host}\r\n{auth}\r\n".encode())
     response = b""
@@ -47,12 +56,15 @@ def _request(transport, method = "CONNECT", host = "upstream.test:443", authenti
     return client, response
 
 
-@pytest.mark.parametrize("method,host,authenticated,status", [
-    ("GET", "upstream.test:443", False, b"405"),
-    ("GET", "upstream.test:443", True, b"405"),
-    ("CONNECT", "other.test:443", True, b"403"),
-    ("CONNECT", "upstream.test:80", True, b"403"),
-])
+@pytest.mark.parametrize(
+    "method,host,authenticated,status",
+    [
+        ("GET", "upstream.test:443", False, b"405"),
+        ("GET", "upstream.test:443", True, b"405"),
+        ("CONNECT", "other.test:443", True, b"403"),
+        ("CONNECT", "upstream.test:80", True, b"403"),
+    ],
+)
 def test_http_uds_retains_authenticated_https_only_policy(method, host, authenticated, status):
     with SrtNetworkTransport(_proxy()) as transport:
         client, response = _request(transport, method, host, authenticated)
@@ -69,10 +81,13 @@ def test_http_uds_retains_private_address_denial():
 
 def test_allowed_tls_bytes_cross_uds_and_close_ends_tunnel():
     upstream = _EchoUpstream()
-    transport = SrtNetworkTransport(_proxy(
-        resolver = lambda host, port: ["127.0.0.1"],
-        allowed_ports = {upstream.port}, require_public = False,
-    ))
+    transport = SrtNetworkTransport(
+        _proxy(
+            resolver = lambda host, port: ["127.0.0.1"],
+            allowed_ports = {upstream.port},
+            require_public = False,
+        )
+    )
     try:
         transport.start()
         client, response = _request(transport, host = f"upstream.test:{upstream.port}")
@@ -99,6 +114,7 @@ def test_allowed_tls_bytes_cross_uds_and_close_ends_tunnel():
 def test_socks_refuses_without_input_or_outbound_resolution():
     def never_resolve(*args):
         pytest.fail("SOCKS must never resolve or connect")
+
     with SrtNetworkTransport(_proxy(resolver = never_resolve)) as transport:
         for _ in range(20):
             with _connect(transport.socks_socket_path) as client:
@@ -132,10 +148,12 @@ def test_lifetime_closes_listeners_and_removes_paths():
 def test_partial_start_failure_closes_owned_http_listener(monkeypatch):
     transport = SrtNetworkTransport(_proxy())
     original = transport._listener
+
     def fail_second(path):
         if path.endswith("socks.sock"):
             raise OSError("controlled second bind failure")
         return original(path)
+
     monkeypatch.setattr(transport, "_listener", fail_second)
     with pytest.raises(OSError, match = "second bind"):
         transport.start()
@@ -189,7 +207,9 @@ def test_ordinary_unix_listener_still_requires_credential():
         proxy.serve_listener(listener)
         try:
             with _connect(path) as client:
-                client.sendall(b"CONNECT upstream.test:443 HTTP/1.1\r\nHost: upstream.test:443\r\n\r\n")
+                client.sendall(
+                    b"CONNECT upstream.test:443 HTTP/1.1\r\nHost: upstream.test:443\r\n\r\n"
+                )
                 assert b"407" in client.recv(4096).split(b"\r\n", 1)[0]
         finally:
             proxy.close()
@@ -199,10 +219,12 @@ def test_concurrent_close_waits_for_owned_cleanup(monkeypatch):
     transport = SrtNetworkTransport(_proxy(), lifetime_seconds = None).start()
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     original = transport.proxy.close
+
     def delayed_close():
         entered.set()
         assert release.wait(2)
         original()
+
     monkeypatch.setattr(transport.proxy, "close", delayed_close)
     first = threading.Thread(target = transport.close)
     second = threading.Thread(target = lambda: (transport.close(), finished.set()))
@@ -222,9 +244,11 @@ def test_concurrent_close_waits_for_owned_cleanup(monkeypatch):
 def test_proxy_cleanup_debt_does_not_skip_transport_cleanup(monkeypatch):
     transport = SrtNetworkTransport(_proxy(), lifetime_seconds = None).start()
     original = transport.proxy.close
+
     def fail_after_close():
         original()
         raise RuntimeError("controlled proxy cleanup debt")
+
     monkeypatch.setattr(transport.proxy, "close", fail_after_close)
     with pytest.raises(RuntimeError, match = "SRT proxy cleanup failed"):
         transport.close()

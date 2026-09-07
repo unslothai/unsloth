@@ -383,7 +383,7 @@ def _tokenizer(monkeypatch):
     monkeypatch.setattr(
         tools,
         "_loaded_token_counter",
-        lambda ctx: (lambda chunk, token_budget = 0.0: len(chunk) // _CHARS_PER_TOKEN),
+        lambda ctx: lambda chunk, token_budget = 0.0: len(chunk) // _CHARS_PER_TOKEN,
     )
 
 
@@ -811,7 +811,7 @@ class TestAZeroCapStaysZero:
         _window(monkeypatch, 4096)
         # Nonzero for an empty probe, which is what a chat template does.
         monkeypatch.setattr(
-            tools, "_loaded_token_counter", lambda ctx: (lambda chunk: 4 + len(chunk) // 3)
+            tools, "_loaded_token_counter", lambda ctx: lambda chunk: 4 + len(chunk) // 3
         )
         _room(0)
         text = _dense(40_000)
@@ -964,9 +964,9 @@ class TestTheRetryHintIsInsideTheCap:
         # body has to give up about 400 characters to pay for it. Charged as prose it
         # gives up its length, which line rounding can inflate a little: three times over
         # is comfortably past anything that rounding explains.
-        assert len(without) - len(body) >= 3 * len(
-            hint
-        ), "the body gave up about the hint's length, so the hint was charged as prose"
+        assert len(without) - len(body) >= 3 * len(hint), (
+            "the body gave up about the hint's length, so the hint was charged as prose"
+        )
 
     def test_a_result_that_fits_still_carries_it(self):
         assert tools._truncate("ok", 1_000, hint = self._HINT) == "ok" + self._HINT
@@ -1835,7 +1835,7 @@ class TestACounterThatCannotAnswerIsNotACounter:
     def _mute(monkeypatch):
         """A backend that exposes a counter and can never price anything with it."""
         monkeypatch.setattr(
-            tools, "_loaded_token_counter", lambda ctx: (lambda chunk, token_budget = 0.0: None)
+            tools, "_loaded_token_counter", lambda ctx: lambda chunk, token_budget = 0.0: None
         )
 
     def test_a_counter_that_measures_nothing_gets_the_conservative_margin(self, monkeypatch):

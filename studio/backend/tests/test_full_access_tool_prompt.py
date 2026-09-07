@@ -528,9 +528,9 @@ def test_the_mkdir_clause_promises_an_attempt_not_a_created_directory(tmp_path):
         + tools._build_sandbox_paths_note(),
         "python",
     )
-    assert (
-        "really does create it" not in full
-    ), "the clause promises a directory the filesystem may refuse to create"
+    assert "really does create it" not in full, (
+        "the clause promises a directory the filesystem may refuse to create"
+    )
     assert "outside those prefixes is not rewritten" in full
     assert "attempts the real host path" in full
 

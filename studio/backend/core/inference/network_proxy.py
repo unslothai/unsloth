@@ -1245,7 +1245,9 @@ class AllowlistProxy:
                 or entry.st_uid != os.getuid()
                 or stat.S_IMODE(entry.st_mode) != 0o600
             ):
-                raise ValueError("private proxy socket requires owned 0700 directory and 0600 socket")
+                raise ValueError(
+                    "private proxy socket requires owned 0700 directory and 0600 socket"
+                )
             if self._listener is not None or self._closed.is_set():
                 raise RuntimeError("the proxy cannot accept another listener")
         except BaseException:
@@ -1726,7 +1728,9 @@ class AllowlistProxy:
             name, sep, value = line.partition(":")
             if sep:
                 headers[name.strip().lower()] = value.strip()
-        if not self._private_unix_authority and not self.credential.matches(headers.get("proxy-authorization")):
+        if not self._private_unix_authority and not self.credential.matches(
+            headers.get("proxy-authorization")
+        ):
             raise _Denied(407, "proxy credential missing or wrong")
         if method.upper() != "CONNECT":
             shown = self._host_from_absolute_target(target)
@@ -1838,7 +1842,9 @@ class AllowlistProxy:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise socket.timeout("the connect budget ran out")
-                _, writable, failed = select.select([], [upstream], [upstream], min(0.05, remaining))
+                _, writable, failed = select.select(
+                    [], [upstream], [upstream], min(0.05, remaining)
+                )
                 if not writable and not failed:
                     continue
                 result = upstream.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)

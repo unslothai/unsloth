@@ -34,7 +34,9 @@ class SrtNetworkTransport:
         parent_dir: str | None = None,
         lifetime_seconds: float | None = 300,
     ) -> None:
-        if lifetime_seconds is not None and (not math.isfinite(lifetime_seconds) or lifetime_seconds <= 0):
+        if lifetime_seconds is not None and (
+            not math.isfinite(lifetime_seconds) or lifetime_seconds <= 0
+        ):
             raise ValueError("network transport lifetime must be finite and positive")
         self.proxy = proxy
         self._parent_dir = parent_dir
@@ -66,7 +68,8 @@ class SrtNetworkTransport:
         """The private socket is the authority; no secret enters SRT's arguments."""
         return {
             **{key: "http://127.0.0.1:3128" for key in PROXY_ENV_KEYS},
-            "NO_PROXY": NO_PROXY_VALUE, "no_proxy": NO_PROXY_VALUE,
+            "NO_PROXY": NO_PROXY_VALUE,
+            "no_proxy": NO_PROXY_VALUE,
         }
 
     def _listener(self, path: str) -> socket.socket:
@@ -94,12 +97,16 @@ class SrtNetworkTransport:
                 self._socks = self._listener(self.socks_socket_path)
                 self._socks.settimeout(0.1)
                 self._refuser = threading.Thread(
-                    target = self._refuse_socks, name = "srt-socks-refusal", daemon = True,
+                    target = self._refuse_socks,
+                    name = "srt-socks-refusal",
+                    daemon = True,
                 )
                 self._refuser.start()
                 if self._lifetime is not None:
                     self._watchdog = threading.Thread(
-                        target = self._expire, name = "srt-network-lifetime", daemon = True,
+                        target = self._expire,
+                        name = "srt-network-lifetime",
+                        daemon = True,
                     )
                     self._watchdog.start()
                 return self

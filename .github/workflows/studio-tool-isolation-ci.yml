@@ -32,9 +32,10 @@ jobs:
       OMP_NUM_THREADS: '1'
       MKL_NUM_THREADS: '1'
       PYTHONPATH: studio/backend
-      UNSLOTH_STUDIO_HOME: ${{ runner.temp }}/srt-studio-home
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set isolated Studio state directory
+        run: echo "UNSLOTH_STUDIO_HOME=$RUNNER_TEMP/srt-studio-home" >> "$GITHUB_ENV"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'

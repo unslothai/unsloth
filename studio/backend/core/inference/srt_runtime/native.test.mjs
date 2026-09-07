@@ -67,6 +67,20 @@ test('native private workdir, symlink denial, untrusted output and output pressu
   } finally {fs.rmSync(root,{recursive:true,force:true});}
 });
 
+test('native short temp is writable and isolated from host temp', {skip:!enabled,timeout:90000}, async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'unsloth-srt-temp-'));
+  const work=path.join(root,'long-session-'.repeat(8));fs.mkdirSync(work);
+  const sentinel=path.join(root,'host-sentinel');fs.writeFileSync(sentinel,'host-positive');
+  try {
+    const code=`import os,pathlib,tempfile,json\nassert tempfile.gettempdir()=='/tmp'\nassert os.environ['TMP']==os.environ['TEMP']=='/tmp'\ntry: pathlib.Path(${JSON.stringify(sentinel)}).read_text()\nexcept OSError: pass\nelse: raise RuntimeError('host temp visible')\nfd,name=tempfile.mkstemp(prefix='unsloth-private-temp-');os.write(fd,b'private');os.close(fd)\nassert pathlib.Path(name).read_bytes()==b'private'\nprint(json.dumps({'privateTemp':name}))`;
+    const result=await launch(work,code).done;
+    assert.equal(result.code,0,result.stderr);
+    const payload=JSON.parse(result.stdout.trim());
+    assert.equal(fs.existsSync(payload.privateTemp),false,'private temp appeared on host');
+    assert.equal(fs.readFileSync(sentinel,'utf8'),'host-positive');
+  } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
+
 test('native nested read denial masks a child of a readable runtime root', {skip:!enabled,timeout:90000}, async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'unsloth-srt-nested-'));
   const work=path.join(root,'work');fs.mkdirSync(work);

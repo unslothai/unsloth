@@ -4,6 +4,7 @@
 Prepare ctypes state before fork; install only in the disposable launch child.
 The filesystem namespace, not this filter, confines private Unix IPC paths.
 """
+
 import ctypes
 import errno
 import platform
@@ -42,8 +43,12 @@ def program(machine: str) -> tuple[tuple[int, int, int, int], ...]:
 
 
 class _Filter(ctypes.Structure):
-    _fields_ = [("code", ctypes.c_ushort), ("jt", ctypes.c_ubyte),
-                ("jf", ctypes.c_ubyte), ("k", ctypes.c_uint32)]
+    _fields_ = [
+        ("code", ctypes.c_ushort),
+        ("jt", ctypes.c_ubyte),
+        ("jf", ctypes.c_ubyte),
+        ("k", ctypes.c_uint32),
+    ]
 
 
 class _Program(ctypes.Structure):

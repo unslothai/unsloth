@@ -452,9 +452,9 @@ def test_public_address_refuses_the_blocks_ipaddress_still_calls_global(address)
     """Membership of 2000::/3 decides, because ``is_global`` alone does not."""
     import ipaddress
 
-    assert (
-        ipaddress.ip_address(address).is_global is True
-    ), "this address is only interesting while ipaddress still calls it global"
+    assert ipaddress.ip_address(address).is_global is True, (
+        "this address is only interesting while ipaddress still calls it global"
+    )
     assert public_address(address) is False
 
 
@@ -978,6 +978,7 @@ def test_a_non_ascii_basic_credential_is_refused_without_killing_the_worker(prox
 
 def test_the_connect_budget_bounds_the_whole_answer_list(monkeypatch, upstream):
     attempted: list[str] = []
+
     def slow_connect(self, address, port, deadline):
         attempted.append(address)
         time.sleep(0.2)
@@ -1009,13 +1010,18 @@ def test_the_connect_budget_bounds_the_whole_answer_list(monkeypatch, upstream):
 def test_close_during_dns_prevents_late_outbound_connect(monkeypatch):
     entered, release = threading.Event(), threading.Event()
     attempted, errors = [], []
+
     def resolver(host, port):
         entered.set()
         assert release.wait(2)
         return ["192.0.2.1"]
-    instance = AllowlistProxy(NetworkAllowlist.from_entries(["upstream.test"]), resolver = resolver, require_public = False)
+
+    instance = AllowlistProxy(
+        NetworkAllowlist.from_entries(["upstream.test"]), resolver = resolver, require_public = False
+    )
     monkeypatch.setattr(network_proxy, "CLOSE_JOIN_SECONDS", 0.02)
     monkeypatch.setattr(instance, "_connect_address", lambda *args: attempted.append(args))
+
     def worker():
         try:
             instance._connect_upstream("upstream.test", 443)
@@ -1023,6 +1029,7 @@ def test_close_during_dns_prevents_late_outbound_connect(monkeypatch):
             errors.append(str(exc))
         finally:
             instance._retire_worker()
+
     instance._spawn_worker(worker, (), "proxy-dns-regression")
     assert entered.wait(1)
     try:
@@ -1040,27 +1047,41 @@ def test_close_during_dns_prevents_late_outbound_connect(monkeypatch):
 def test_close_interrupts_registered_connecting_socket(monkeypatch):
     entered, interrupted = threading.Event(), threading.Event()
     errors = []
+
     class ConnectingSocket:
         closed = False
+
         def setblocking(self, value):
             pass
+
         def connect_ex(self, address):
             assert self in instance._tunnels
             entered.set()
             return errno.EINPROGRESS
+
         def shutdown(self, how):
             interrupted.set()
+
         def recv(self, size):
             raise BlockingIOError()
+
         def close(self):
             self.closed = True
+
     connecting = ConnectingSocket()
-    instance = AllowlistProxy(NetworkAllowlist.from_entries(["upstream.test"]), resolver = lambda *args: ["192.0.2.1"], require_public = False)
+    instance = AllowlistProxy(
+        NetworkAllowlist.from_entries(["upstream.test"]),
+        resolver = lambda *args: ["192.0.2.1"],
+        require_public = False,
+    )
     monkeypatch.setattr(network_proxy.socket, "socket", lambda *args: connecting)
+
     def wait_connect(readable, writable, exceptional, timeout):
         interrupted.wait(timeout)
         return [], [], []
+
     monkeypatch.setattr(network_proxy.select, "select", wait_connect)
+
     def worker():
         try:
             instance._connect_upstream("upstream.test", 443)
@@ -1068,6 +1089,7 @@ def test_close_interrupts_registered_connecting_socket(monkeypatch):
             errors.append(str(exc))
         finally:
             instance._retire_worker()
+
     instance._spawn_worker(worker, (), "proxy-connect-regression")
     assert entered.wait(1)
     instance.close()
@@ -1347,9 +1369,9 @@ def test_a_client_hello_at_the_body_cap_is_not_refused_by_its_record_framing(pro
     """The cap bounds the handshake body; the wire also carries a header per record."""
     hello = _hello_at_the_body_cap("upstream.test")
     wire = _hello_records(hello, 4096)
-    assert (
-        len(wire) > network_proxy.MAX_CLIENT_HELLO_BYTES
-    ), "the framing has to push this past the body cap or the test proves nothing"
+    assert len(wire) > network_proxy.MAX_CLIENT_HELLO_BYTES, (
+        "the framing has to push this past the body cap or the test proves nothing"
+    )
     assert len(wire) <= network_proxy.MAX_CLIENT_HELLO_WIRE_BYTES
     client = _tunnel(proxy, upstream, "upstream.test")
     client.sendall(wire)
