@@ -361,6 +361,28 @@ def _requires_hip_reader(mod):
         pytest.skip("_torch_hip_version_on_disk does not exist on this tree")
 
 
+def _fake_torch_on_path(monkeypatch, tmp_path, version_py, *, as_directory = False):
+    """Put a stand-in torch package first on sys.path and make find_spec see it.
+
+    importlib.util.find_spec returns sys.modules[name].__spec__ when the module is
+    already imported, so on a runner that HAS torch (every CI job that installs it)
+    prepending sys.path is not enough -- the real package answers and the fixture is
+    silently ignored. Dropping the entry makes find_spec do a real path search; the
+    monkeypatch is undone at teardown, so the real torch comes back.
+    """
+    torch_dir = tmp_path / "torch"
+    torch_dir.mkdir(exist_ok = True)
+    (torch_dir / "__init__.py").write_text("", encoding = "utf-8")
+    if as_directory:
+        (torch_dir / "version.py").mkdir()
+    else:
+        (torch_dir / "version.py").write_text(version_py, encoding = "utf-8")
+    monkeypatch.delitem(sys.modules, "torch", raising = False)
+    monkeypatch.delitem(sys.modules, "torch.version", raising = False)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return torch_dir
+
+
 _VERSION_PY_ROCM = """\
 from typing import Optional
 
@@ -408,11 +430,7 @@ cuda = None
 def test_the_hip_reader_matches_only_a_quoted_value(monkeypatch, tmp_path, text, expected):
     mod = _load_module(monkeypatch)
     _requires_hip_reader(mod)
-    torch_dir = tmp_path / "torch"
-    torch_dir.mkdir()
-    (torch_dir / "__init__.py").write_text("", encoding = "utf-8")
-    (torch_dir / "version.py").write_text(text, encoding = "utf-8")
-    monkeypatch.syspath_prepend(str(tmp_path))
+    _fake_torch_on_path(monkeypatch, tmp_path, text)
     assert mod._torch_hip_version_on_disk() == expected
 
 
@@ -429,12 +447,8 @@ def test_the_hip_reader_survives_a_missing_torch(monkeypatch, tmp_path):
 def test_the_hip_reader_survives_an_unreadable_version_py(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     _requires_hip_reader(mod)
-    torch_dir = tmp_path / "torch"
-    torch_dir.mkdir()
-    (torch_dir / "__init__.py").write_text("", encoding = "utf-8")
     # version.py is a directory: the read raises OSError, which must be swallowed.
-    (torch_dir / "version.py").mkdir()
-    monkeypatch.syspath_prepend(str(tmp_path))
+    _fake_torch_on_path(monkeypatch, tmp_path, "", as_directory = True)
     assert mod._torch_hip_version_on_disk() == ""
 
 
@@ -446,11 +460,7 @@ def test_the_hip_reader_starts_no_subprocess(monkeypatch, tmp_path):
         "run",
         lambda *a, **k: pytest.fail("reading version.py must not start a subprocess"),
     )
-    torch_dir = tmp_path / "torch"
-    torch_dir.mkdir()
-    (torch_dir / "__init__.py").write_text("", encoding = "utf-8")
-    (torch_dir / "version.py").write_text(_VERSION_PY_ROCM, encoding = "utf-8")
-    monkeypatch.syspath_prepend(str(tmp_path))
+    _fake_torch_on_path(monkeypatch, tmp_path, _VERSION_PY_ROCM)
     assert mod._torch_hip_version_on_disk() == "6.4.43483-a1b2c3d"
 
 
