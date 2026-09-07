@@ -5368,9 +5368,19 @@ def test_the_anthropic_count_refusal_is_name_aware():
                 {
                     "role": "assistant",
                     "content": "",
-                    "tool_calls": [{"id": "toolu_0", "type": "function", "function": {"name": tool, "arguments": "{}"}}],
+                    "tool_calls": [
+                        {
+                            "id": "toolu_0",
+                            "type": "function",
+                            "function": {"name": tool, "arguments": "{}"},
+                        }
+                    ],
                 },
-                {"role": "tool", "tool_call_id": "toolu_0", "content": "out\n" + mcp_images.SENTINEL + envelope},
+                {
+                    "role": "tool",
+                    "tool_call_id": "toolu_0",
+                    "content": "out\n" + mcp_images.SENTINEL + envelope,
+                },
             ]
         )
 
