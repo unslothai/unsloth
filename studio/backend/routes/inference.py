@@ -3892,10 +3892,17 @@ def _folds_studio_tool_history(payload, llama_backend) -> bool:
 
 
 def _folded_studio_tool_messages(messages) -> list:
+    # Fold before coalesce, the order _sanitize_anthropic_openai_messages uses: that is what
+    # merges a folded result with the note after it. Every other route coalesces downstream,
+    # but the guided-decoding passthrough deliberately does not, so a response_format request
+    # on this same thread would reach llama-server with two user turns in a row and Gemma,
+    # which checks alternation by index parity, 400s the whole request.
     return [
         ChatMessage.model_validate(message)
-        for message in fold_tool_results_into_user(
-            [m.model_dump(exclude_none = True) for m in messages]
+        for message in _coalesce_consecutive_user_turns(
+            fold_tool_results_into_user(
+                [m.model_dump(exclude_none = True) for m in messages]
+            )
         )
     ]
 

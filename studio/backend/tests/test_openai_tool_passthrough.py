@@ -2470,6 +2470,69 @@ class TestChatCompletionRequestToolFields:
         assert not any(m.get("role") == "tool" for m in captured["messages"])
         assert monitor.active_count() == 0
 
+    def test_studio_tool_history_under_guided_decoding_has_no_adjacent_user_turns(
+        self, monkeypatch
+    ):
+        """A response_format on this same thread routes to the guided-decoding passthrough,
+        which is the one path that never coalesces. Folding a tool result there leaves it
+        next to the turn that follows it, and Gemma checks alternation by index parity, so
+        llama-server answered 'Unable to generate parser for this template' for the whole
+        request until the fold merged them itself."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+            base_url = "http://llama.guided-fold.test"
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("a response_format request must use the passthrough")
+
+        async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
+            captured["body"] = inference_route._build_openai_passthrough_body(
+                payload,
+                backend_ctx = llama_backend.context_length,
+                llama_backend = llama_backend,
+            )
+            inference_route.api_monitor.finish(kwargs.get("monitor_id"))
+            return inference_route.JSONResponse({"ok": True, "model": model_name})
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        monkeypatch.setattr(
+            inference_route, "_openai_passthrough_non_streaming", fake_passthrough
+        )
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "answer",
+                        "schema": {"type": "object", "properties": {}},
+                    },
+                },
+            },
+        )
+
+        assert resp.status_code == 200
+        roles = [m.get("role") for m in captured["body"]["messages"]]
+        assert "tool" not in roles
+        assert not any(
+            a == "user" and b == "user" for a, b in zip(roles, roles[1:])
+        ), roles
+        assert monitor.active_count() == 0
+
     def test_tool_call_history_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
         import routes.inference as inference_route
 
