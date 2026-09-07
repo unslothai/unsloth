@@ -1973,8 +1973,11 @@ def test_the_preference_plan_tries_rocm_before_the_cpu_fallback(monkeypatch, amd
     host = _windows_amd_host(rocm_gfx_target = "gfx1151", rocm_gfx_targets = ["gfx1151"])
 
     selection = ilp.select_backend_install(
-        backend = None, llama_tag = "b1", published_repo = FORK,
-        published_release_tag = "pin", host = host,
+        backend = None,
+        llama_tag = "b1",
+        published_repo = FORK,
+        published_release_tag = "pin",
+        host = host,
     )
     assert [a.install_kind for a in selection.release_plans[0].attempts] == [
         "windows-vulkan",
@@ -1986,8 +1989,11 @@ def test_the_preference_plan_tries_rocm_before_the_cpu_fallback(monkeypatch, amd
     # And a named request still gets only what it named, so this cannot smuggle ROCm
     # into an explicit --llama-backend vulkan.
     named = ilp.select_backend_install(
-        backend = "vulkan", llama_tag = "b1", published_repo = FORK,
-        published_release_tag = "pin", host = host,
+        backend = "vulkan",
+        llama_tag = "b1",
+        published_repo = FORK,
+        published_release_tag = "pin",
+        host = host,
     )
     assert [a.install_kind for a in named.release_plans[0].attempts] == ["windows-vulkan"]
 
@@ -2053,9 +2059,7 @@ def test_an_override_of_only_stale_paths_answers_on_its_own(monkeypatch, tmp_pat
     assert ilp._amd_vulkan_icd_present() is False
 
 
-def test_the_deprecated_override_is_not_consulted_behind_the_current_one(
-    monkeypatch, tmp_path
-):
+def test_the_deprecated_override_is_not_consulted_behind_the_current_one(monkeypatch, tmp_path):
     # VK_DRIVER_FILES supersedes VK_ICD_FILENAMES rather than being tried alongside it,
     # so a stale AMD entry left in the deprecated variable must not answer for a host
     # the loader is pointing somewhere else.
@@ -2718,16 +2722,12 @@ def test_a_disabled_registry_registration_does_not_answer_for_the_driver(
     assert enabled == [_present_manifest]
 
 
-def test_an_enabled_registration_whose_manifest_is_gone_does_not_answer(
-    monkeypatch, tmp_path
-):
+def test_an_enabled_registration_whose_manifest_is_gone_does_not_answer(monkeypatch, tmp_path):
     # A driver uninstall that leaves its enabled registration behind would otherwise
     # answer for a loader that can open nothing, moving a working ROCm host onto a
     # Vulkan bundle. Same rule the override list follows.
     missing = str(tmp_path / "gone" / "amd-vulkan64.json")
-    assert (
-        _icd_paths(monkeypatch, {_DRIVERS_KEY: [(missing, 0, _FakeIcdWinreg.REG_DWORD)]}) == []
-    )
+    assert _icd_paths(monkeypatch, {_DRIVERS_KEY: [(missing, 0, _FakeIcdWinreg.REG_DWORD)]}) == []
 
 
 def test_a_32_bit_registration_does_not_answer_for_the_x64_bundle(monkeypatch, tmp_path):
@@ -2738,9 +2738,7 @@ def test_a_32_bit_registration_does_not_answer_for_the_x64_bundle(monkeypatch, t
     _icd(tmp_path / "amd-vulkan32.json")
     paths = _icd_paths(
         monkeypatch,
-        {r"SOFTWARE\WOW6432Node\Khronos\Vulkan\Drivers": [
-            (wow, 0, _FakeIcdWinreg.REG_DWORD)
-        ]},
+        {r"SOFTWARE\WOW6432Node\Khronos\Vulkan\Drivers": [(wow, 0, _FakeIcdWinreg.REG_DWORD)]},
     )
     assert paths == []
 

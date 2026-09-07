@@ -8328,9 +8328,7 @@ def _with_rocm_behind_vulkan(
             len(plan.attempts),
         )
         out.append(
-            dataclasses_replace(
-                plan, attempts = [*plan.attempts[:at], *extra, *plan.attempts[at:]]
-            )
+            dataclasses_replace(plan, attempts = [*plan.attempts[:at], *extra, *plan.attempts[at:]])
         )
     return out
 
