@@ -40,7 +40,11 @@ KEYLESS_SCOPE_INFERENCE = "inference"
 KEYLESS_SCOPE_FULL = "full"
 KEYLESS_SCOPES = (KEYLESS_SCOPE_OFF, KEYLESS_SCOPE_INFERENCE, KEYLESS_SCOPE_FULL)
 DEFAULT_KEYLESS_API_ACCESS_SCOPE = KEYLESS_SCOPE_OFF
-APPROVED_DUMMY_BEARERS = frozenset({"not-needed", "lm-studio", "ollama"})
+APPROVED_DUMMY_BEARERS = frozenset(
+    # ``no-key-required`` is what hermes-agent substitutes when no key is configured,
+    # because the OpenAI SDK refuses an empty one (hermes_cli/runtime_provider_backends.py).
+    {"not-needed", "lm-studio", "ollama", "no-key-required"}
+)
 KEYLESS_ADMISSION_STATE_KEY = "keyless_api_admitted"
 
 # Named by method and normalized path: /v1 also aliases model loading, media,

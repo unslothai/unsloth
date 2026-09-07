@@ -776,7 +776,7 @@ def test_credentials_never_downgrade_to_keyless():
     seed_user()
     set_keyless_api_access("full")
     assert resolve(request_for()).scheme == KEYLESS_SCHEME
-    for token in ("not-needed", "lm-studio", "ollama"):
+    for token in ("not-needed", "lm-studio", "ollama", "no-key-required"):
         assert resolve(bearer_request(token)).scheme == KEYLESS_FALLBACK_SCHEME
     set_keyless_api_access("inference")
     with pytest.raises(HTTPException):
