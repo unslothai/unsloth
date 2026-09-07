@@ -233,3 +233,91 @@ def test_a_trailing_flag_without_its_value_is_left_alone():
     # Defensive: an odd-length pair list would otherwise index past the end.
     cmd = ["llama-server", "--cache-ram"]
     assert LlamaCppBackend._without_flag_pairs(cmd, ["--cache-ram"]) == cmd
+
+
+# ── the target the tuning is chosen against ──
+
+
+def test_a_user_device_flag_makes_the_target_unknown():
+    assert LlamaCppBackend._cache_tuning_target_unknown(
+        ["--device", "ROCm1"], None, {}
+    )
+
+
+def test_an_inherited_device_env_makes_the_target_unknown():
+    # The env twin survives an automatic load verbatim -- only an explicit gpu_ids
+    # clears it -- and llama.cpp reads it before argv, so the generated pin is not
+    # what the child places against. Reading argv alone emitted --cache-ram 0 at an
+    # APU the picker had paired with a discrete card.
+    assert LlamaCppBackend._cache_tuning_target_unknown(
+        None, None, {"LLAMA_ARG_DEVICE": "ROCm0"}
+    )
+    # Set but empty is not a selection.
+    assert not LlamaCppBackend._cache_tuning_target_unknown(
+        None, None, {"LLAMA_ARG_DEVICE": "  "}
+    )
+
+
+def test_an_explicit_pin_owns_the_placement_so_the_target_is_known():
+    # The control: gpu_ids clears both spellings, so neither can name another device.
+    assert not LlamaCppBackend._cache_tuning_target_unknown(
+        ["--device", "ROCm1"], [0], {"LLAMA_ARG_DEVICE": "ROCm0"}
+    )
+    assert not LlamaCppBackend._cache_tuning_target_unknown(None, None, {})
+
+
+# ── the arch-crash retry keeps the launch's precedence ──
+
+_CAPS = {"supports_cache_ram": True, "ctx_checkpoints_flag": "--ctx-checkpoints"}
+
+
+def test_the_retry_applies_the_tuning_when_nothing_states_it():
+    assert LlamaCppBackend._retry_cache_tuning_flags(
+        ["llama-server", "-m", "x.gguf"],
+        cache_ram = None,
+        ctx_checkpoints = None,
+        server_caps = _CAPS,
+    ) == ["--cache-ram", "0", "--ctx-checkpoints", "0"]
+
+
+def test_the_retry_does_not_overrule_a_cache_flag_the_command_already_states():
+    # The extras sit in cmd already, so appending here wins last-wins and would zero a
+    # value the panel still shows -- the reverse of the launch, where extras win.
+    flags = LlamaCppBackend._retry_cache_tuning_flags(
+        ["llama-server", "-m", "x.gguf", "--cache-ram", "8192"],
+        cache_ram = None,
+        ctx_checkpoints = None,
+        server_caps = _CAPS,
+    )
+    assert flags == ["--ctx-checkpoints", "0"]
+
+    # The attached spelling is the same setting.
+    assert LlamaCppBackend._retry_cache_tuning_flags(
+        ["llama-server", "--cache-ram=8192", "--ctx-checkpoints=4"],
+        cache_ram = None,
+        ctx_checkpoints = None,
+        server_caps = _CAPS,
+    ) == []
+
+
+def test_the_retry_reads_the_other_checkpoint_alias_as_the_same_setting():
+    # A build advertising --ctx-checkpoints can still be handed --swa-checkpoints.
+    assert LlamaCppBackend._retry_cache_tuning_flags(
+        ["llama-server", "--swa-checkpoints", "4"],
+        cache_ram = None,
+        ctx_checkpoints = None,
+        server_caps = _CAPS,
+    ) == ["--cache-ram", "0"]
+
+
+def test_the_retry_skips_what_the_build_and_the_fields_already_own():
+    # An explicit field, as at launch, and a build without the capability.
+    assert LlamaCppBackend._retry_cache_tuning_flags(
+        ["llama-server"], cache_ram = 4096, ctx_checkpoints = 8, server_caps = _CAPS
+    ) == []
+    assert LlamaCppBackend._retry_cache_tuning_flags(
+        ["llama-server"],
+        cache_ram = None,
+        ctx_checkpoints = None,
+        server_caps = {"supports_cache_ram": False, "ctx_checkpoints_flag": None},
+    ) == []

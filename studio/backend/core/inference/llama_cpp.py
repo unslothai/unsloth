@@ -17221,6 +17221,66 @@ class LlamaCppBackend:
         return discrete if 0 < len(discrete) < len(_selected) else []
 
     @staticmethod
+    def _cache_tuning_target_unknown(
+        extra_args: Optional[Iterable[str]],
+        gpu_ids: Optional[Iterable[int]],
+        env: Mapping[str, str],
+    ) -> bool:
+        """Whether the device this cache tuning would be chosen against is the one
+        the child actually gets.
+
+        A user device selection is not stripped on an automatic load and llama.cpp
+        reads it last (argv) or first (env, before argv either way), so it, not the
+        automatic placement, names the target. Both spellings count: only an explicit
+        ``gpu_ids`` clears LLAMA_ARG_DEVICE, so on an automatic load the env twin
+        survives into the child verbatim. Fail-closed by design -- the failure that
+        matters is emitting --cache-ram 0 against a shared pool, while keeping the
+        prompt cache on a discrete card only forgoes a tuning.
+        """
+        if gpu_ids is not None:
+            return False
+        return bool(
+            _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
+            or str(env.get("LLAMA_ARG_DEVICE", "")).strip()
+        )
+
+    @staticmethod
+    def _retry_cache_tuning_flags(
+        cmd: list[str],
+        *,
+        cache_ram: Optional[int],
+        ctx_checkpoints: Optional[int],
+        server_caps: Mapping[str, Any],
+    ) -> list[str]:
+        """The cache tuning to append when an arch-crash retry lands on a discrete GPU.
+
+        The extras were appended to ``cmd`` long before the retry, so anything added
+        here wins the last-wins parse -- the reverse of the initial launch, where a
+        typed --cache-ram overrides the tuning. So a setting the command already
+        states is skipped, keeping that precedence rather than zeroing a value the
+        panel still shows. An explicit field is handled by the caller's own
+        None checks, exactly as at launch.
+        """
+        stated = {_flag_name(str(token)) for token in cmd}
+        flags: list[str] = []
+        if (
+            cache_ram is None
+            and server_caps.get("supports_cache_ram")
+            and "--cache-ram" not in stated
+        ):
+            flags.extend(["--cache-ram", "0"])
+        checkpoints_flag = server_caps.get("ctx_checkpoints_flag")
+        # Both aliases, since a build that accepts one may still be handed the other
+        # in the extras.
+        if (
+            ctx_checkpoints is None
+            and checkpoints_flag
+            and not ({"--ctx-checkpoints", "--swa-checkpoints"} & stated)
+        ):
+            flags.extend([str(checkpoints_flag), "0"])
+        return flags
+
+    @staticmethod
     def _without_flag_pairs(cmd: list[str], pairs: list[str]) -> list[str]:
         """Remove flag/value pairs THIS process appended, by exact token match.
 
@@ -22489,8 +22549,12 @@ class LlamaCppBackend:
                 # extra_args, not the memory policy's list: that one is built later,
                 # and a gpu_ids pin is exactly the case _strip_device_extra_args
                 # removes the flag in, which is the case this does not ask about.
-                _cache_target_unknown = gpu_ids is None and bool(
-                    _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
+                # The env twin counts for the same reason the flag does: only an
+                # explicit gpu_ids clears LLAMA_ARG_DEVICE, so on an automatic load
+                # the child inherits it verbatim and llama.cpp reads it BEFORE argv,
+                # leaving a target the generated pin never names.
+                _cache_target_unknown = self._cache_tuning_target_unknown(
+                    extra_args, gpu_ids, os.environ
                 )
                 _shared_memory_offload = (
                     sys.platform == "win32"
@@ -24192,15 +24256,12 @@ class LlamaCppBackend:
                                     "survives."
                                 )
                             elif not _retry_shared and not _cache_flags_emitted:
-                                _retry_flags: list[str] = []
-                                if cache_ram is None and server_caps.get("supports_cache_ram"):
-                                    _retry_flags.extend(["--cache-ram", "0"])
-                                if ctx_checkpoints is None and server_caps.get(
-                                    "ctx_checkpoints_flag"
-                                ):
-                                    _retry_flags.extend(
-                                        [str(server_caps["ctx_checkpoints_flag"]), "0"]
-                                    )
+                                _retry_flags = self._retry_cache_tuning_flags(
+                                    cmd,
+                                    cache_ram = cache_ram,
+                                    ctx_checkpoints = ctx_checkpoints,
+                                    server_caps = server_caps,
+                                )
                                 if _retry_flags:
                                     cmd.extend(_retry_flags)
                                     _cache_flags_emitted = list(_retry_flags)
