@@ -799,7 +799,8 @@ def install_wall_clock_watchdog(
         # whole run. Saying "no step" to a script that never reports one sends its reader
         # looking for a step that was never going to come.
         spent = (
-            f"{deadline_s:.0f}s with no step reported" if watchdog.kicked
+            f"{deadline_s:.0f}s with no step reported"
+            if watchdog.kicked
             else f"hit {deadline_s:.0f}s wall-clock deadline"
         )
         msg = (
