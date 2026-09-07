@@ -153,9 +153,9 @@ class TestARoundAtTheCapStillOverlaps:
         lines = _run(_round_of(_CAP), tools = [WEB], max_calls = _UNLIMITED)
         ends = _events(lines, "tool_end")
         assert len(ends) == _CAP
-        assert all("TOGETHER" in (end.get("result") or "") for end in ends), (
-            f"a round exactly at the cap was serialised: {[end.get('result') for end in ends]}"
-        )
+        assert all(
+            "TOGETHER" in (end.get("result") or "") for end in ends
+        ), f"a round exactly at the cap was serialised: {[end.get('result') for end in ends]}"
 
     def test_two_calls_are_untouched(self, rendezvous):
         ends = _events(_run(_round_of(2), tools = [WEB], max_calls = _UNLIMITED), "tool_end")
