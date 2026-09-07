@@ -515,12 +515,25 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
         logger.warning("MLX installed but hardware re-detection failed: %s", exc)
 
 
+def _installed_without_torch() -> bool:
+    """True when this venv was installed --no-torch (GGUF-only).
+
+    Unknown reads as False: an install predating the manifest keeps today's
+    repair behaviour rather than silently losing it.
+    """
+    try:
+        from studio.install_manifest import recorded_no_torch
+        return recorded_no_torch() is True
+    except Exception:
+        return False
+
+
 def start_mlx_autorepair_if_needed() -> bool:
     """If this is an Apple Silicon host whose MLX stack is missing or too old, reinstall it on
     a daemon thread (off the startup critical path) and re-detect on success. True iff a repair
-    thread was started; False off Apple Silicon, when already attempted this process, or when
-    disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. An adequate stack starts no repair but still
-    overturns a verdict that contradicts it."""
+    thread was started; False off Apple Silicon, when already attempted this process, when the
+    venv was installed --no-torch, or when disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. An
+    adequate stack starts no repair but still overturns a verdict that contradicts it."""
     global _attempted, _repair_thread, _repair_started_at
     if not is_apple_silicon():
         return False
@@ -529,7 +542,9 @@ def start_mlx_autorepair_if_needed() -> bool:
     # Opting out declines a reinstall, not a correct verdict, so the overturn still runs, but
     # only when one waits on it: under the warm's kill switch it would be a first MLX import
     # for no one.
-    opted_out = os.environ.get(DISABLE_ENV_VAR) == "1"
+    # A --no-torch install declined the training stack on purpose, so treat it
+    # exactly like the kill switch: no reinstall, but a correct verdict still wins.
+    opted_out = os.environ.get(DISABLE_ENV_VAR) == "1" or _installed_without_torch()
     if opted_out and not _hw.verdict_blames_the_mlx_stack():
         return False
     # Read before the measurement, so a shutdown during it discards whatever is published on
