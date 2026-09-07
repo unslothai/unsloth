@@ -657,7 +657,7 @@ function Invoke-Run {
         # A runtime with no PE files is a stale UNSLOTH_LLAMA_CPP_PATH, an
         # absent install or a failed enumeration; evidence from it would read
         # as a bundle with nothing unsigned.
-        throw "no PE files found under $llamaDir; this is not a llama.cpp runtime, so the cell is invalid. Check UNSLOTH_LLAMA_CPP_PATH / UNSLOTH_STUDIO_HOME or install Studio first"
+        throw "no PE files found under ${llamaDir}: there is no llama.cpp runtime on this machine, so the cell is invalid. Run 'python -X utf8 -I -m unsloth_cli studio setup' to download one (or point UNSLOTH_LLAMA_CPP_PATH / UNSLOTH_STUDIO_HOME at an existing install), then re-run this stage"
     }
     $valid = @($inventory | Where-Object { $_.Status -eq 'Valid' }).Count
     Write-Host "$valid of $total PE files report a valid Authenticode signature"
@@ -710,7 +710,24 @@ function Invoke-Collect {
         }
     }
 
+    # The CodeIntegrity channel is machine-wide. An unrelated Git Bash session
+    # contributed msys-2.0.dll, head.exe and tail.exe to one run, so a raw count
+    # is not a statement about Unsloth. Scope every event by the file it names
+    # before anyone reads a verdict off the totals. Nothing is discarded: the
+    # export keeps all of it, and 'other' is reported separately.
+    #
+    # Device paths (\Device\HarddiskVolume3\Users\...) appear alongside drive
+    # letters in this channel, so match on the tail rather than anchoring at
+    # the root. Resolved the same way the inventory resolves it, so a runtime
+    # chosen in Studio settings is scoped in rather than counted as foreign.
+    $tail = (Resolve-LlamaDir $dir) -replace '^[A-Za-z]:', ''
+    $venvTail = $VENV_DIR -replace '^[A-Za-z]:', ''
     $shaped = @($events | ForEach-Object {
+        $msg = $_.Message
+        $scope =
+            if ($msg -like "*$tail*") { 'llama.cpp' }
+            elseif ($msg -like "*$venvTail*") { 'venv' }
+            else { 'other' }
         [pscustomobject]@{
             TimeCreated = $_.TimeCreated.ToString('o')
             Id          = $_.Id
@@ -721,8 +738,9 @@ function Invoke-Collect {
                 3089 { 'signature-detail' }
                 default { 'context' }
             }
+            Scope       = $scope
             ActivityID  = $_.ActivityId
-            Message     = $_.Message
+            Message     = $msg
         }
     })
     # -InputObject: zero events is a normal and important result for an
@@ -733,9 +751,20 @@ function Invoke-Collect {
     $shaped | Format-List | Out-String |
         Set-Content -LiteralPath (Join-Path $dir 'code-integrity-events.txt') -Encoding UTF8
 
-    $blocks = @($shaped | Where-Object { $_.Id -eq 3077 }).Count
-    $audits = @($shaped | Where-Object { $_.Id -eq 3076 }).Count
-    Write-Host "$blocks enforced block(s) (3077), $audits audit would-block(s) (3076), $($shaped.Count) event(s) total"
+    $ours = @($shaped | Where-Object { $_.Scope -ne 'other' })
+    $blocks = @($ours | Where-Object { $_.Id -eq 3077 }).Count
+    $audits = @($ours | Where-Object { $_.Id -eq 3076 }).Count
+    $foreign = @($shaped | Where-Object { $_.Scope -eq 'other' }).Count
+    Write-Host "Unsloth paths: $blocks enforced block(s) (3077), $audits audit would-block(s) (3076), $($ours.Count) event(s)"
+    foreach ($g in ($ours | Group-Object Scope | Sort-Object Name)) {
+        $b = @($g.Group | Where-Object { $_.Id -eq 3077 }).Count
+        $a = @($g.Group | Where-Object { $_.Id -eq 3076 }).Count
+        Write-Host ("  {0,-10} {1} x 3077, {2} x 3076, {3} event(s)" -f $g.Name, $b, $a, $g.Count)
+    }
+    # Reported, never folded into the totals above. These are somebody else's
+    # binaries and say nothing about whether Studio is blocked.
+    Write-Host "unrelated to Unsloth: $foreign event(s) (kept in the export, excluded from the counts)"
+    Write-Host "$($shaped.Count) event(s) in the window overall"
 
     # Whole-log export as well, since the shaped view drops fields and a
     # reviewer may need the raw record.
