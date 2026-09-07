@@ -18,6 +18,7 @@ import importlib.util
 import os
 import secrets
 import sqlite3
+import subprocess
 import sys
 import threading
 from datetime import datetime, timedelta, timezone
@@ -520,15 +521,25 @@ def test_the_auth_import_graph_pulls_in_no_hardware_module():
     main.py's lifespan deliberately seeds auth before starting hardware
     detection, with a comment that detection used to hold the login screen up.
     An import edge from auth into that machinery would quietly undo it.
+
+    A fresh interpreter, not sys.modules surgery in this one. Popping "torch"
+    out of a shared process and letting something re-import it re-runs its
+    TORCH_LIBRARY registrations, which raises "Only a single TORCH_LIBRARY can
+    be used to register the namespace triton" in whichever unrelated test
+    imports torch next. Measuring in a subprocess also means the answer does not
+    depend on what this session happened to import already.
     """
-    before = set(sys.modules)
-    for name in ("torch", "utils.hardware", "utils.torch_device_probe"):
-        sys.modules.pop(name, None)
-
-    importlib.util.find_spec("auth.authentication")
-    import auth.authentication  # noqa: F401
-    import auth.storage  # noqa: F401
-
-    added = set(sys.modules) - before
-    forbidden = {m for m in added if m.split(".")[0] in {"torch"} or "hardware" in m}
-    assert not forbidden, f"auth now imports hardware machinery: {sorted(forbidden)}"
+    probe = (
+        "import sys\n"
+        "sys.path.insert(0, %r)\n"
+        "import auth.authentication, auth.storage\n"
+        "bad = sorted(m for m in sys.modules\n"
+        "             if m.split('.')[0] == 'torch' or 'hardware' in m)\n"
+        "print(';'.join(bad))\n" % str(_BACKEND)
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output = True, text = True, timeout = 300
+    )
+    assert result.returncode == 0, result.stderr
+    forbidden = [m for m in result.stdout.strip().split(";") if m]
+    assert not forbidden, f"auth now imports hardware machinery: {forbidden}"
