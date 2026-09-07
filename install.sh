@@ -628,22 +628,35 @@ _record_uv_cache_choice() {
     _uv_marker_dir="$STUDIO_HOME/cache"
     _uv_marker_file="$_uv_marker_dir/uv-cache-dir"
     # Absolute, because the update resolves this against ITS working directory, not the
-    # installer's: `uv cache dir` answers a relative cache-dir with the relative spelling,
-    # and UV_CACHE_DIR itself may be relative.
+    # installer's. The base is uv's working directory, which --directory / UV_WORKING_DIR
+    # moves: uv changes into it before resolving a relative cache-dir, so anchoring to
+    # $PWD would name a directory uv never used.
     case "$UV_CACHE_DIR" in
         /*) _uv_marker_value="$UV_CACHE_DIR" ;;
-        *) _uv_marker_value="$PWD/$UV_CACHE_DIR" ;;
+        *) _uv_marker_value="${UV_WORKING_DIR:-$PWD}/$UV_CACHE_DIR" ;;
     esac
-    # Remembered so a failed install can put it back: the trap below restores the previous
+    # Remembered so a failed install can put it back: the traps restore the previous
     # environment, and a marker naming the cache of an install that never happened would
     # outlive it and send the next update somewhere that environment never used.
     if [ "$_UV_MARKER_SAVED" != true ]; then
-        _UV_MARKER_PREVIOUS=$(cat "$_uv_marker_file" 2>/dev/null) || _UV_MARKER_PREVIOUS=""
-        [ -f "$_uv_marker_file" ] && _UV_MARKER_EXISTED=true || _UV_MARKER_EXISTED=false
+        if [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; then
+            # An existing marker we cannot read is one we cannot put back. Leaving it
+            # alone loses this run's preference; overwriting it loses the previous
+            # install's, and a rollback would then restore a blank file.
+            _UV_MARKER_PREVIOUS=$(cat "$_uv_marker_file" 2>/dev/null) || return 0
+            _UV_MARKER_EXISTED=true
+        else
+            _UV_MARKER_PREVIOUS=""
+            _UV_MARKER_EXISTED=false
+        fi
         _UV_MARKER_SAVED=true
     fi
     (
         mkdir -p "$_uv_marker_dir" 2>/dev/null &&
+            # Unlinked first: a redirection follows a symlink and would truncate whatever
+            # it points at, so a marker path someone has linked elsewhere would quietly
+            # destroy an unrelated file.
+            rm -f "$_uv_marker_file" 2>/dev/null &&
             printf '%s\n' "$_uv_marker_value" > "$_uv_marker_file" 2>/dev/null
     ) || true
 }
@@ -651,10 +664,9 @@ _record_uv_cache_choice() {
 _restore_uv_cache_marker() {
     [ "$_UV_MARKER_SAVED" = true ] || return 0
     _uv_marker_file="$STUDIO_HOME/cache/uv-cache-dir"
+    rm -f "$_uv_marker_file" 2>/dev/null || true
     if [ "$_UV_MARKER_EXISTED" = true ]; then
         printf '%s\n' "$_UV_MARKER_PREVIOUS" > "$_uv_marker_file" 2>/dev/null || true
-    else
-        rm -f "$_uv_marker_file" 2>/dev/null || true
     fi
     _UV_MARKER_SAVED=false
 }
@@ -919,6 +931,10 @@ _commit_studio_venv_replacement() {
     # Only prune older orphaned copies after the replacement has succeeded, so
     # an interrupted install never discards the last known-good environment.
     _prune_stale_studio_venv_rollbacks
+    # The marker came with this environment, so it is committed too: a later failure
+    # rolls nothing back, and reverting the marker would leave the installed environment
+    # pointing at the cache of the one before it.
+    _UV_MARKER_SAVED=false
 }
 
 _cleanup_install_temporaries() {

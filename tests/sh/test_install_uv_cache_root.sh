@@ -291,6 +291,63 @@ for shell in sh bash; do
         "preserving custom UV_CACHE_DIR ($OVERRIDE)" "$OVERRIDE"
     check_marker "custom mode replaces an earlier install's marker" "$OVERRIDE"
 
+    # A marker path that is a symlink must be replaced, not followed: a redirection would
+    # truncate whatever it points at.
+    rm -rf "$ROOT/cache"; mkdir -p "$ROOT/cache"
+    VICTIM="$CASE/someone elses file"
+    printf 'do not clobber\n' > "$VICTIM"
+    ln -s "$VICTIM" "$ROOT/cache/uv-cache-dir" 2>/dev/null && {
+        run_case "$shell" "a symlinked marker is replaced, not followed" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$EMPTY_CACHE" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        if [ "$(cat "$VICTIM")" = "do not clobber" ] && [ ! -L "$ROOT/cache/uv-cache-dir" ]; then
+            ok "$shell: the symlink target was left alone"
+        else
+            bad "$shell: writing the marker followed a symlink"
+        fi
+    }
+
+    # An existing marker we cannot read is one we cannot put back, so leave it alone
+    # rather than overwrite it and restore a blank file on rollback.
+    rm -rf "$ROOT/cache"; mkdir -p "$ROOT/cache"
+    printf '%s\n' "/previous/install/cache" > "$MARKER"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 200 "$MARKER" 2>/dev/null; then
+        run_case "$shell" "an unreadable marker does not fail the install" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$EMPTY_CACHE" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+        chmod 600 "$MARKER" 2>/dev/null || true
+        if [ "$(cat "$MARKER")" = "/previous/install/cache" ]; then
+            ok "$shell: an unreadable marker is left as it was"
+        else
+            bad "$shell: an unreadable marker was overwritten ([$(cat "$MARKER")])"
+        fi
+    fi
+
+    # uv resolves a relative cache against its own working directory, which --directory
+    # and UV_WORKING_DIR move; anchoring to $PWD would record a directory uv never used.
+    rm -rf "$ROOT/cache"
+    WORKDIR_PROBE="$WORK/$shell workdir.sh"
+    {
+        printf '%s\n' "$HELPERS"
+        cat <<WORKDIR
+step() { :; }
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+cd '$CASE'
+UV_WORKING_DIR='$CASE/uvdir'; export UV_WORKING_DIR
+UV_CACHE_DIR='relcache'
+_record_uv_cache_choice
+cat '$MARKER'
+WORKDIR
+    } > "$WORKDIR_PROBE"
+    _wd=$($shell "$WORKDIR_PROBE")
+    if [ "$_wd" = "$CASE/uvdir/relcache" ]; then
+        ok "$shell: a relative cache is recorded against uv's working directory"
+    else
+        bad "$shell: recorded [$_wd], wanted [$CASE/uvdir/relcache]"
+    fi
+
+
     # The marker describes the environment, so a rolled-back install puts it back. The
     # installer restores the previous venv on failure; a marker naming the cache of an
     # install that never happened would outlive the environment it was chosen for.

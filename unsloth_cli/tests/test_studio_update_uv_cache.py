@@ -484,6 +484,36 @@ def test_a_caller_supplied_cache_is_never_promoted_to_the_marker(monkeypatch, tm
     assert not _marker(tmp_path).exists()
 
 
+def test_a_staged_update_does_not_write_the_live_marker(monkeypatch, tmp_path, caches):
+    """STUDIO_HOME names the LIVE install even in a staged child, and the stage can still
+    be rejected by verification or the outer probes. Writing now would point the live
+    marker at a cache built for an environment that was never activated."""
+    studio = _studio()
+    _studio_cache, default_cache = caches
+    _fill(default_cache)
+    monkeypatch.setenv(studio._studio_stage.STAGE_ROOT_ENV, str(tmp_path / "stage"))
+    _run_posix(monkeypatch, tmp_path)
+
+    assert not _marker(tmp_path).exists()
+
+
+def test_the_backfill_replaces_a_symlink_rather_than_its_target(monkeypatch, tmp_path, caches):
+    """write_text follows a symlink, so a marker path linked elsewhere would truncate an
+    unrelated file."""
+    _studio_cache, default_cache = caches
+    _fill(default_cache)
+    victim = tmp_path / "someone elses file"
+    victim.write_text("do not clobber", encoding = "utf-8")
+    marker = _marker(tmp_path)
+    marker.parent.mkdir(parents = True, exist_ok = True)
+    marker.symlink_to(victim)
+    _run_posix(monkeypatch, tmp_path)
+
+    assert victim.read_text(encoding = "utf-8") == "do not clobber"
+    assert not marker.is_symlink()
+    assert marker.read_text(encoding = "utf-8").strip() == str(default_cache)
+
+
 # --- The uv probe ---------------------------------------------------------------------
 
 

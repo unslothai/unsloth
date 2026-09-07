@@ -16,6 +16,14 @@
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
+    # First thing in the function, because Exit-InstallFailure restores the marker and the
+    # lock checks can reach it long before the cache selection runs. Under `irm | iex` the
+    # script scope is the caller's session and nothing clears this on success, so a second
+    # install failing early would otherwise revert the marker of the one that succeeded.
+    $script:StudioUvMarkerSaved = $false
+    $script:StudioUvMarkerExisted = $false
+    $script:StudioUvMarkerPrevious = $null
+
     # The user's PowerShell profile has already run by the time this does, and the documented
     # piped web entry point documented in the README has no script file to re-launch
     # with -NoProfile, so each way a profile can reach in here is cut individually below.
@@ -1242,17 +1250,20 @@ public static class UnslothStudioFinalPathV2
         $markerDir = Join-Path $StudioRoot "cache"
         $markerFile = Join-Path $markerDir "uv-cache-dir"
         # Absolute, because the update resolves this against ITS working directory, not the
-        # installer's, and both UV_CACHE_DIR and a uv.toml cache-dir may be relative.
-        # $PWD explicitly: GetFullPath alone resolves against the .NET process directory,
-        # which Set-Location does not move, so it would anchor to wherever the process
-        # started rather than to where the installer is running.
+        # installer's, and both UV_CACHE_DIR and a uv.toml cache-dir may be relative. The
+        # base is uv's working directory, which --directory / UV_WORKING_DIR moves; $PWD
+        # explicitly because GetFullPath resolves against the .NET process directory, which
+        # Set-Location does not move.
         try {
             if (-not [System.IO.Path]::IsPathRooted($Cache)) {
-                $Cache = Join-Path $PWD.Path $Cache
+                $base = if (-not [string]::IsNullOrWhiteSpace($env:UV_WORKING_DIR)) {
+                    $env:UV_WORKING_DIR
+                } else { $PWD.Path }
+                $Cache = Join-Path $base $Cache
             }
             $Cache = [System.IO.Path]::GetFullPath($Cache)
         } catch { }
-        # Remembered so a failed install can put it back: the rollback below restores the
+        # Remembered so a failed install can put it back: the rollback restores the
         # previous environment, and a marker naming the cache of an install that never
         # happened would outlive it.
         if (-not $script:StudioUvMarkerSaved) {
@@ -1260,17 +1271,30 @@ public static class UnslothStudioFinalPathV2
             # $ErrorActionPreference = "Stop", and Test-Path on a path inside a directory
             # the ACL denies throws UnauthorizedAccessException rather than returning
             # $false, which would abort the install over an optional marker.
-            $script:StudioUvMarkerExisted = Test-Path -LiteralPath $markerFile -PathType Leaf `
-                -ErrorAction SilentlyContinue
-            $script:StudioUvMarkerPrevious = if ($script:StudioUvMarkerExisted) {
-                Get-Content -LiteralPath $markerFile -Raw -ErrorAction SilentlyContinue
-            } else { $null }
+            $existing = Test-Path -LiteralPath $markerFile -ErrorAction SilentlyContinue
+            if ($existing) {
+                $previous = Get-Content -LiteralPath $markerFile -Raw -ErrorAction SilentlyContinue
+                # An existing marker we cannot read is one we cannot put back. Leaving it
+                # alone loses this run's preference; overwriting it loses the previous
+                # install's, and a rollback would then restore nothing at all.
+                if ($null -eq $previous) { return }
+                $script:StudioUvMarkerPrevious = $previous
+                $script:StudioUvMarkerExisted = $true
+            } else {
+                $script:StudioUvMarkerPrevious = $null
+                $script:StudioUvMarkerExisted = $false
+            }
             $script:StudioUvMarkerSaved = $true
         }
+        # CreateDirectory, not New-Item -Path: -Path treats [] as a wildcard, and a custom
+        # Studio root may contain them (same reason as the calls at 1199 and 4044).
         if (-not (Test-Path -LiteralPath $markerDir -PathType Container -ErrorAction SilentlyContinue)) {
-            New-Item -ItemType Directory -Path $markerDir -Force `
-                -ErrorAction SilentlyContinue | Out-Null
+            try { [System.IO.Directory]::CreateDirectory($markerDir) | Out-Null } catch { }
         }
+        # Removed first: Set-Content follows a symlink and would truncate whatever it
+        # points at, so a marker path someone has linked elsewhere would quietly destroy
+        # an unrelated file.
+        Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
         Set-Content -LiteralPath $markerFile -Value $Cache `
             -Encoding utf8 -ErrorAction SilentlyContinue
     }
@@ -1283,11 +1307,10 @@ public static class UnslothStudioFinalPathV2
         if (-not $script:StudioUvMarkerSaved) { return }
         if ([string]::IsNullOrWhiteSpace($StudioRoot)) { return }
         $markerFile = Join-Path (Join-Path $StudioRoot "cache") "uv-cache-dir"
-        if ($script:StudioUvMarkerExisted) {
-            Set-Content -LiteralPath $markerFile -Value ($script:StudioUvMarkerPrevious).TrimEnd("`r", "`n") `
+        Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
+        if ($script:StudioUvMarkerExisted -and $null -ne $script:StudioUvMarkerPrevious) {
+            Set-Content -LiteralPath $markerFile -Value ([string]$script:StudioUvMarkerPrevious).TrimEnd("`r", "`n") `
                 -Encoding utf8 -ErrorAction SilentlyContinue
-        } else {
-            Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
         }
         $script:StudioUvMarkerSaved = $false
     }
@@ -4016,14 +4039,6 @@ exit 0
         return (Exit-InstallFailure "uv could not be installed")
     }
 
-    # Before the selector, which is what writes the marker: resetting afterwards would
-    # discard the snapshot it had just taken and make every Restore-StudioUvCacheMarker a
-    # no-op. Reset per run because under `irm | iex` the script scope is the caller's
-    # session, so a second install would otherwise restore the first one's marker.
-    $script:StudioUvMarkerSaved = $false
-    $script:StudioUvMarkerExisted = $false
-    $script:StudioUvMarkerPrevious = $null
-
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
 
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
@@ -4358,6 +4373,10 @@ exit 0
         $backup = $script:StudioVenvRollbackDir
         # The replacement is committed. Disable restoration before deleting the
         # backup so interruption cannot restore a partially deleted environment.
+        # The marker came with this environment, so it is committed too: a later failure
+        # rolls nothing back, and reverting the marker would leave the installed
+        # environment pointing at the cache of the one before it.
+        $script:StudioUvMarkerSaved = $false
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
         $script:StudioVenvRollbackPartial = $false

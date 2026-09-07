@@ -3770,6 +3770,11 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
         # The caller's, for this run. The installers record their own choice; an update
         # must not promote a one-shot value into one.
         return
+    if (os.environ.get(_studio_stage.STAGE_ROOT_ENV) or "").strip():
+        # A staged update still has verification and the outer stage probes to pass, and
+        # STUDIO_HOME here names the LIVE install, not the stage. Writing now would point
+        # the live marker at a cache built for an environment that may never be activated.
+        return
     chosen = (env or {}).get("UV_CACHE_DIR")
     if not chosen:
         return
@@ -3779,6 +3784,10 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
     marker = STUDIO_HOME / "cache" / "uv-cache-dir"
     try:
         marker.parent.mkdir(parents = True, exist_ok = True)
+        # Unlinked first: write_text follows a symlink and would truncate whatever it
+        # points at, so a marker path someone has linked elsewhere would quietly destroy
+        # an unrelated file.
+        marker.unlink(missing_ok = True)
         marker.write_text(f"{chosen}\n", encoding = "utf-8")
     except OSError:
         pass

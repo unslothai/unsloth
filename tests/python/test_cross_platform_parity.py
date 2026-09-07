@@ -1174,22 +1174,34 @@ class TestInstallUvCacheRootParity:
         assert 'case "$UV_CACHE_DIR" in' in sh
         assert "IsPathRooted" in ps1
 
-        # The reset must precede the call that writes the marker. Resetting after it
-        # discards the snapshot Write-StudioUvCacheMarker had just taken, which makes
-        # every Restore-StudioUvCacheMarker a no-op and leaves a failed reinstall's
-        # marker in place. Per run because under `irm | iex` the script scope is the
-        # caller's session.
-        selector_call = ps1.index("Set-StudioUvCacheEnvironment -StudioRoot $StudioHome")
-        # The whole triple, in the run of lines directly above the call. Searching the
-        # file instead would match the copy inside Restore-StudioUvCacheMarker and pass
-        # even with the reset moved back below the call.
-        preamble = ps1[:selector_call]
+        # The reset must precede everything that can consume the snapshot: the selector
+        # that writes the marker, and every Exit-InstallFailure that restores it. Under
+        # `irm | iex` the script scope is the caller's session and nothing clears the flag
+        # on success, so a second install failing early would otherwise revert the marker
+        # belonging to the first, which succeeded. Entry of Install-UnslothStudio is the
+        # only place that is ahead of both.
+        entry = ps1.index("function Install-UnslothStudio {")
+        # The call form, not the bare name, which also appears in prose above.
+        first_consumer = min(
+            ps1.index("Set-StudioUvCacheEnvironment -StudioRoot $StudioHome"),
+            ps1.index('(Exit-InstallFailure "', entry),
+        )
         for variable in (
             "$script:StudioUvMarkerSaved = $false",
             "$script:StudioUvMarkerExisted = $false",
             "$script:StudioUvMarkerPrevious = $null",
         ):
-            assert variable in preamble[-600:], variable
+            assert variable in ps1[entry:first_consumer], variable
+
+        # Committing the environment commits the marker that came with it, so a failure
+        # after the commit does not revert it.
+        assert "$script:StudioUvMarkerSaved = $false" in ps1[
+            ps1.index("function Complete-StudioVenvRollback") :
+            ps1.index("function Complete-StudioVenvRollback") + 900
+        ]
+        commit_start = sh.index("_commit_studio_venv_replacement() {")
+        commit_body = sh[commit_start : sh.index("\n}", commit_start)]
+        assert "_UV_MARKER_SAVED=false" in commit_body
 
         # A failed install restores the marker whether or not a venv replacement was ever
         # in flight: a first install has no previous venv, and the ownership guard can
