@@ -590,3 +590,74 @@ def test_external_provider_relay_drops_control_frames_too():
     assert src.count("is_ui_control_sse_line(line)") == len(
         relays
     ), "every provider relay must hold control frames back from a non-opt-in caller"
+
+
+def test_a_safetensors_stream_that_disabled_tool_calls_opens_no_loop(monkeypatch):
+    # The gate exempts tool_choice: "none" from needing an event channel, on the promise
+    # that no call can happen. The safetensors/MLX branch is the one that had to be made
+    # to keep it: nothing on that path read the field (not _sf_use_tools, not
+    # _select_request_tools, and generate_chat_completion_with_tools is never passed it),
+    # so the loop opened with the full built-in catalogue for a headerless stream that had
+    # just been admitted for being unable to call anything. The first high-risk call then
+    # wrote a tool_start the relay drops and blocked in wait_tool_decision for the hour.
+    import asyncio
+
+    from core.inference.api_monitor import ApiMonitor
+    from models.inference import ChatCompletionRequest, ChatMessage
+    import routes.inference as inf
+    from state.tool_policy import reset_tool_policy
+
+    opened_loop = []
+
+    class _Backend:
+        active_model_name = "sf-model"
+        models = {"sf-model": {"chat_template_info": {"template": "<tool_call> chatml"},
+                               "context_length": 2048}}
+
+        def generate_chat_response(self, *, messages, tools = None, stats_holder = None, **kw):
+            yield "plain answer"
+
+        def generate_chat_completion_with_tools(self, **kwargs):
+            opened_loop.append(kwargs)
+            yield {"type": "content", "content": ""}
+
+        def reset_generation_state(self, caller_cancel_event = None):
+            pass
+
+        def resize_image(self, image):
+            return image
+
+    reset_tool_policy()
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 8))
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = False, supports_tools = False, is_vision = False, context_length = None
+        ),
+    )
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(inf, "_detect_safetensors_features", lambda *a, **k: {"supports_tools": True})
+
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [ChatMessage(role = "user", content = "hi")],
+        stream = True,
+        enable_tools = True,
+        tool_choice = "none",
+    )
+
+    async def _run():
+        response = await inf.openai_chat_completions(
+            payload, request = _request([]), current_subject = "u"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    body = "".join(
+        c.decode() if isinstance(c, bytes) else str(c) for c in asyncio.run(_run())
+    )
+    # No 400: the exemption still admits the request, which is the point of it.
+    assert "invalid_request_error" not in body
+    # And now it is telling the truth: no loop, so no prompt, so nothing to park on.
+    assert opened_loop == [], "tool_choice: 'none' still opened the safetensors tool loop"
+    assert "plain answer" in body

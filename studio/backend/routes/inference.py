@@ -23339,12 +23339,31 @@ async def produce_openai_chat_completions(
     # request as before.
     if _sf_tools_on and not _launcher_tool_default_applies(payload, _ui_events):
         _sf_tools_on = False
-    _sf_mcp_allowed = bool(payload.mcp_enabled) and _sf_cli_policy is not False
+    # tool_choice: "none" withdraws the catalogue outright, the way the GGUF loop does at
+    # its controller (`controller_tools = [] if tool_choice == "none"`). Nothing below
+    # reads the field -- neither _sf_use_tools nor _select_request_tools, and
+    # generate_chat_completion_with_tools is not passed it -- so without this the loop
+    # renders the full built-in catalogue for a request that asked for no call at all. It
+    # is also what _tool_calls_are_disabled promises the confirm gate: without it, a
+    # headerless stream is admitted on the strength of "none", the model calls anyway, and
+    # the tool_start carrying the approval_id is dropped while the generator blocks in
+    # wait_tool_decision for the full hour.
+    if payload.tool_choice == "none":
+        _sf_tools_on = False
+    _sf_mcp_allowed = (
+        payload.tool_choice != "none"
+        and bool(payload.mcp_enabled)
+        and _sf_cli_policy is not False
+    )
 
     # Named templates may expose native reasoning only in their ``tool_use``
     # branch. Use a truthy placeholder for Unsloth-managed tools, whose concrete
     # schemas are selected below, and the request schemas for client passthrough.
-    _sf_server_tool_intent = bool(_sf_tools_on or _explicit_studio_tool_loop_requested(payload))
+    # A withdrawn catalogue renders plain here too, so the probe and the completion do not
+    # disagree about which branch the conversation is in.
+    _sf_server_tool_intent = payload.tool_choice != "none" and bool(
+        _sf_tools_on or _explicit_studio_tool_loop_requested(payload)
+    )
     _sf_template_tools = payload.tools if payload.tool_choice != "none" else None
     if not _sf_template_tools and _sf_server_tool_intent:
         _sf_template_tools = ({},)
