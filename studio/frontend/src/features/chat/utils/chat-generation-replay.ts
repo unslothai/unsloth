@@ -175,7 +175,16 @@ export function createRecoveryReplay(
     const inside = segmented.insideThink();
     let chunk = text;
     if (carriesOwnTags(text)) {
-      // Verbatim: its own tag does the classifying, exactly as the live stream appends it.
+      // Verbatim: its own tag does the classifying, exactly as the live stream appends it. A chunk that
+      // carries an OPEN tag of its own is the exception: `extractDeltaText` wraps a structured
+      // `thinking` part in a full pair, and an open tag inside a block this replay already opened is not
+      // a no-op for the parser -- it survives as literal text inside the thought. A chunk carrying only
+      // a CLOSE is NOT: that tag ends the block either way, which is what the model's own close does to
+      // a block the seed re-created.
+      if (inside && replayOwnsOpenBlock && text.includes(THINK_OPEN_TAG)) {
+        chunk = `${THINK_CLOSE_TAG}${text}`;
+        replayOwnsOpenBlock = false;
+      }
     } else if (kind === "reasoning" && !inside) {
       chunk = `${THINK_OPEN_TAG}${text}`;
       replayOwnsOpenBlock = true;

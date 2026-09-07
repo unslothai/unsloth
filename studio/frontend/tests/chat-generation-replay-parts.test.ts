@@ -280,3 +280,25 @@ test("reopening at any point of a tagged run shows what a stream that never left
     );
   }
 });
+
+// A structured `thinking` part arrives inside delta.content already wrapped in a full pair of tags by
+// extractDeltaText. When the block was opened by THIS replay (a reasoning_content frame before it), that
+// second open tag is not a no-op for the parser: it survives as literal text inside the thought. A chunk
+// carrying only a close tag is the opposite case -- that tag ends whichever block is open either way.
+test("a thinking part with its own tags lands in the thought the replay opened", () => {
+  const frames = [
+    { choices: [{ delta: { reasoning_content: "first thought " } }] },
+    { choices: [{ delta: { content: [{ type: "thinking", text: "structured thought" }] } }] },
+    { choices: [{ delta: { content: [{ type: "text", text: "the answer" }] } }] },
+  ];
+  // What the live path appends, in order: it wraps reasoning_content itself and appends extractDeltaText's
+  // output verbatim, so parsing THAT string is what a reopened tab has to reproduce exactly.
+  const live = parseAssistantContent("<think>first thought </think><think>structured thought</think>the answer");
+  const replay = createRecoveryReplay("");
+  for (const frame of frames) replay.applyChunk(frame, 1000);
+  assert.deepEqual(
+    replay.content() as Array<Record<string, unknown>>,
+    live,
+    "a second open tag must not survive as literal text inside the thought",
+  );
+});
