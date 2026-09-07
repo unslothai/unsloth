@@ -1365,6 +1365,30 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
         assert field in page
 
 
+def test_save_settings_waits_for_gguf_classification():
+    """The Save button that persists without loading (#10216) must carry Load's
+    classification gate.
+
+    Until the GGUF header probe settles, `resolvedIsDiffusion` is false, so the config
+    this page would commit has not been through
+    `withoutUnsupportedDiffusionSettings`. Load is blocked for exactly that window by
+    `stagedMetadataPending`. A Save that is not is worse than a bad load, not better:
+    it writes the unsanitized config to localStorage AND mirrors it to the override an
+    API auto-switch load reads later, where the picker's own later render -- which
+    strips those fields only from what it displays -- never reaches it.
+    """
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # The block is identified by its handler, so a renamed button label does not
+    # silently stop guarding anything.
+    save_button = page.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[1]
+    assert "disabled={" in save_button, "the Save button no longer has a disabled gate"
+    gate = save_button.split("disabled={", 1)[1].split("}", 1)[0]
+    assert "stagedMetadataPending" in gate, (
+        "Save settings is enabled while the GGUF classification is still pending; "
+        f"gate was: {gate.strip()!r}"
+    )
+
+
 def test_legacy_migration_is_idempotent_and_non_destructive():
     """The v1->v2 localStorage migration (unsloth_load_settings -> unsloth_model_configs)
     is invoked on every store read, so it must be idempotent: repeated reads, browser
@@ -2662,11 +2686,11 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
     resolver indexes GGUFs only."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
-        "if ( !saveFailed && (target.apiLoadable ?? target.isGguf) && !nativePathToken ) "
+        "if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) "
         "{ syncModelOverride(" in src
     )
     # The local save is not behind the same gate.
-    assert "if (remember) { saveFailed = !savePerModelConfig(" in src
+    assert "const saved = remember ? savePerModelConfig(" in src
 
 
 def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
@@ -2674,7 +2698,7 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     /api/inference/status reports model_identifier as null for it, so the checkpoint the
     browser keys settings by is the bare file name the backend echoes back."""
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "&& !nativePathToken ) { syncModelOverride(" in page
+    assert "&& !nativePathToken) { syncModelOverride(" in page
     assert (
         "const nativePathToken = target.meta.nativePathToken ?? "
         "(isActiveModel ? activeNativePathToken : null);" in page
@@ -2921,14 +2945,15 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
     """savePerModelConfig normalizes before deciding, and the runtime hands this page
     Speculative Decoding "auto", which canonicalizes to null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert (
-        "const normalizedRuntimeConfig = normalizePerModelConfig( effectiveRuntimeConfig, );" in src
-    )
-    assert "const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);" in src
+    # Both committing paths -- Load and the Save that does not load (#10216) -- go
+    # through persistConfig, so the normalization is asserted once, where it lives.
+    assert "const normalized = normalizePerModelConfig(next);" in src
+    assert "defaultConfig: isDefaultConfig(normalized)" in src
     # The same object goes to storage and to the server, or they disagree again.
-    assert "target.ggufVariant, normalizedRuntimeConfig, evicted," in src
-    assert "remember ? normalizedRuntimeConfig : null," in src
+    assert "savePerModelConfig(configId, target.ggufVariant, normalized, evicted)" in src
+    assert "remember ? normalized : null," in src
     assert "isDefaultConfig(effectiveRuntimeConfig)" not in src
+    assert "isDefaultConfig(next)" not in src
 
     store = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "export function normalizePerModelConfig(" in store

@@ -3267,7 +3267,13 @@ export function ModelConfigPage({
               variant="outline"
               size="sm"
               className="h-8"
+              // Same classification gate as Load, for the same reason: until the header
+              // probe settles, effectiveConfig is reconciled against "not diffusion", so a
+              // save made in that window persists -- locally and to the API override an
+              // auto-switch load reads -- settings the panel would have stripped once the
+              // model came back classified.
               disabled={
+                stagedMetadataPending ||
                 !extraArgsLoadable ||
                 extraArgsHydrating ||
                 (!remember && !savedRemember)
