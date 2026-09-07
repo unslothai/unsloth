@@ -579,6 +579,7 @@ def append_image_turn(
     limit: "int | None" = MAX_TOTAL_MODEL_IMAGES,
     per_result: bool = False,
     owned: "list | None" = None,
+    reserve_caller_images: bool = False,
 ) -> None:
     """A user turn, not the ``role=tool`` result they came with: tool messages take
     no image parts, and local templates render tool content as a string.
@@ -607,6 +608,15 @@ def append_image_turn(
             }
         )
     if limit is not None:
+        if reserve_caller_images:
+            # The caller's own pictures are not in *owned* and so are not counted,
+            # which is right for what this cap protects. But a REMOTE provider applies
+            # its own cap in document order, so an attachment plus a full eight live
+            # results is nine images and the newest tool result is the one silently
+            # dropped -- right when the model asked for it. Same reservation replay
+            # promotion makes, and asked for rather than assumed: the local loop
+            # answers to a context window, not to a provider's count.
+            limit = max(0, limit - (len(_all_image_url_parts(conversation)) - len(owned or ())))
         trim_image_url_turns(conversation, limit, only = owned)
 
 

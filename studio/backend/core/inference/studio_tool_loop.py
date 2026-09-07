@@ -68,8 +68,20 @@ from core.inference.mcp_images import append_image_turn as append_mcp_image_turn
 
 
 def _append_mcp_images_owned(conversation, results, owned):
-    """append_image_turn with the loop's own part list, for asyncio.to_thread."""
-    append_mcp_image_turn(conversation, results, per_result = True, owned = owned)
+    """append_image_turn with the loop's own part list, for asyncio.to_thread.
+
+    Reserving here and not on the GGUF loop: this one talks to a remote provider that
+    applies its own per-request image cap in document order, so an attachment beside a
+    full allowance of tool results silently loses the newest result -- the one the
+    model just asked for. llama-server is local and answers to the context window.
+    """
+    append_mcp_image_turn(
+        conversation,
+        results,
+        per_result = True,
+        owned = owned,
+        reserve_caller_images = True,
+    )
 
 
 from core.inference.tool_loop_controller import (

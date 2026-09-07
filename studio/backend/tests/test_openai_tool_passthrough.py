@@ -10476,3 +10476,48 @@ def test_kimi_stays_permissive_because_its_allowlist_already_narrowed_it():
 
     for model in info.get("default_models") or []:
         assert _external_takes_mcp_images("kimi", vision, model, info) is True, model
+
+
+def test_admission_prices_replay_against_what_generation_really_sends():
+    """Promotion trims replay to MAX_TOTAL_MODEL_IMAGES minus the caller's own
+    pictures, so charging a full eight replay slots ON TOP of the attachments
+    reserved embeddings the request never uses -- most of a small KV window, which
+    needlessly serialises everything beside it."""
+    import json as _json
+
+    from core.inference import mcp_images
+    from routes.inference import _openai_llama_admission_messages_for_estimate
+
+    _PNG = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mNk"
+        "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+    envelope = _json.dumps([{"data": _PNG, "mimeType": "image/png"} for _ in range(4)])
+    history = []
+    for index in range(2):
+        history.append(
+            {
+                "role": "tool",
+                "name": f"mcp__s__shot{index}",
+                "content": "[4 images returned]\n" + mcp_images.SENTINEL + envelope,
+            }
+        )
+    history.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "and this one"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_PNG}"}},
+            ],
+        }
+    )
+
+    _, image_parts = _openai_llama_admission_messages_for_estimate(history)
+
+    assert image_parts <= mcp_images.MAX_TOTAL_MODEL_IMAGES, (
+        f"reserved {image_parts} image embeddings for a request that sends at most "
+        f"{mcp_images.MAX_TOTAL_MODEL_IMAGES}"
+    )
+    # The attachment is still charged: under-reserving is the failure this exists to
+    # prevent, and #9842 charges per-image KV so parallel vision chats are honest.
+    assert image_parts >= 1

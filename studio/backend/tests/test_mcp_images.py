@@ -1320,3 +1320,126 @@ def test_replay_leaves_room_for_the_pictures_the_caller_attached():
     assert attachment["image_url"]["url"] in urls, "the caller's own picture was trimmed"
     # And it survives a provider that keeps only the first MAX_TOTAL_MODEL_IMAGES.
     assert attachment["image_url"]["url"] in urls[: mcp_images.MAX_TOTAL_MODEL_IMAGES]
+
+
+def test_the_replay_trim_runs_before_the_attachment_marker_exists():
+    """The trim drops by marker ORDINAL against a payload list holding replay only.
+    With the attachment's turn AHEAD of the replayed pictures, running it after the
+    mark deleted ordinal 0 -- the attachment's own marker -- while charging replay
+    payload 0, and every later pixel shifted onto the marker before it."""
+    def _scene():
+        return [
+            {"role": "user", "content": "here is my diagram"},
+            mcp_images.placeholder_turn(4, 4),
+            mcp_images.placeholder_turn(4, 4),
+            {"role": "user", "content": "which is bluer?"},
+        ]
+
+    replay = [f"MCP{i}" for i in range(8)]
+
+    # The order the route now uses: trim, snapshot, then mark.
+    conversation, payloads = _scene(), list(replay)
+    mcp_images.trim_image_turns(
+        conversation, payloads, limit = mcp_images.MAX_TOTAL_MODEL_IMAGES - 1
+    )
+    prior = mcp_images.image_marker_parts(conversation)
+    conversation = mcp_images.mark_last_user_turn(conversation, 1, ordinal = 0)
+    ordered = mcp_images.pixels_in_marker_order(conversation, prior, payloads, "ATTACHMENT")
+
+    owner = conversation[0]["content"]
+    assert isinstance(owner, list) and any(part.get("type") == "image" for part in owner), (
+        "the attachment's own marker was trimmed away"
+    )
+    assert ordered[0] == "ATTACHMENT", ordered
+    assert len(mcp_images.image_marker_parts(conversation)) == len(ordered)
+
+
+def test_the_route_trims_replay_before_marking_the_attachment():
+    import inspect
+
+    from routes import inference
+
+    body = inspect.getsource(inference.produce_openai_chat_completions)
+    trim = body.index("trim_mcp_image_turns(\n                _sf_chat_messages")
+    mark = body.index("_sf_chat_messages = mark_mcp_image_turn(")
+    prior = body.index("_sf_prior_markers = mcp_image_marker_parts(_sf_chat_messages)")
+    assert trim < prior < mark, (
+        "trim, then snapshot history, then mark -- any other order binds the "
+        "attachment to a replayed picture's marker"
+    )
+
+
+def test_a_live_result_leaves_room_for_the_pictures_the_caller_attached():
+    """owned holds only what the loop appended, so the cap allowed the attachment
+    PLUS a full eight tool images. A provider keeping the first eight in document
+    order then drops the newest result -- the one the model just asked for."""
+    conversation = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "compare with this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + _png()}},
+            ],
+        }
+    ]
+    owned: list = []
+    for _ in range(3):
+        mcp_images.append_image_turn(
+            conversation,
+            [[{"data": _png(), "mimeType": "image/png"} for _ in range(4)]],
+            per_result = True,
+            owned = owned,
+            # What the EXTERNAL loop passes. The GGUF loop does not: it answers to a
+            # context window rather than to a provider's per-request image count.
+            reserve_caller_images = True,
+        )
+
+    total = sum(
+        1
+        for message in conversation
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    )
+    assert total <= mcp_images.MAX_TOTAL_MODEL_IMAGES, (
+        f"{total} images in the conversation against a cap of "
+        f"{mcp_images.MAX_TOTAL_MODEL_IMAGES}"
+    )
+    # And the caller's own picture is not what made room.
+    assert any(
+        part.get("type") == "image_url"
+        for part in conversation[0]["content"]
+    ), "the attachment was trimmed to fit the tool's results"
+
+
+def test_the_local_loop_keeps_its_own_allowance_beside_an_attachment():
+    """The reservation is the EXTERNAL loop's, asked for rather than assumed: a
+    remote provider counts images per request, llama-server answers to a context
+    window. Reserving here would let six attachments squeeze the tool results the
+    model asked for down to two."""
+    attachments = [
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_png()}"}}
+        for _ in range(6)
+    ]
+    conversation = [
+        {"role": "user", "content": [{"type": "text", "text": "compare"}, *attachments]}
+    ]
+    owned: list = []
+    for _ in range(3):
+        mcp_images.append_image_turn(
+            conversation,
+            [[{"data": _png(), "mimeType": "image/png"} for _ in range(4)]],
+            per_result = True,
+            owned = owned,
+        )
+
+    assert len(owned) == mcp_images.MAX_TOTAL_MODEL_IMAGES
+    survived = sum(
+        1
+        for part in attachments
+        for message in conversation
+        if isinstance(message.get("content"), list)
+        for other in message["content"]
+        if other is part
+    )
+    assert survived == len(attachments), "the loop's cap is still not the caller's"

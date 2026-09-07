@@ -2018,7 +2018,17 @@ def _openai_llama_admission_messages_for_estimate(
         estimate_messages.append(estimate_message)
     # promote_history caps what the envelopes become, so charging past that would
     # reserve KV for images the prompt will not carry.
-    return estimate_messages, image_parts + min(envelope_image_parts, _MCP_MAX_TOTAL_MODEL_IMAGES)
+    # Replay is charged for what generation will really send, not for a second full
+    # allowance. Promotion trims it to MAX_TOTAL_MODEL_IMAGES minus the caller's own
+    # pictures, so adding eight replay slots ON TOP of the attachments reserved
+    # embeddings the request never uses -- most of a small KV window, which
+    # needlessly serialises or rejects everything beside it. Clamped after the walk,
+    # because a tool result early in the conversation is seen before the attachments
+    # on later turns have been counted.
+    return estimate_messages, image_parts + min(
+        envelope_image_parts,
+        max(0, _MCP_MAX_TOTAL_MODEL_IMAGES - image_parts),
+    )
 
 
 def _openai_llama_admission_media_tokens(
@@ -24747,21 +24757,24 @@ async def produce_openai_chat_completions(
             # text-only latest question would otherwise be told it carried an older
             # picture -- and with replayed images in between, the marker order stops
             # matching the pixel order too.
+            # Trimmed BEFORE the attachment's marker exists, which is what the
+            # ordering here is for. The trim drops by marker ORDINAL against a payload
+            # list that holds replay only, so with the attachment's turn ahead of the
+            # replayed pictures it deleted ordinal 0 -- the attachment's own marker --
+            # while charging replay payload 0, and every later pixel shifted onto the
+            # marker before it.
+            trim_mcp_image_turns(
+                _sf_chat_messages, sf_mcp_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
+            )
+            # Snapshot after the trim, so "history" names the markers that survived it.
             _sf_prior_markers = mcp_image_marker_parts(_sf_chat_messages)
+            # Read off the conversation, not assumed: the attachment's marker sits
+            # on the turn that supplied it, which can precede a tool's pictures, and
+            # a positional VLM binds the Nth pixel to the Nth marker.
             _sf_chat_messages = mark_mcp_image_turn(
                 _sf_chat_messages,
                 1,
                 ordinal = _user_ordinal_supplying_the_image(payload.messages),
-            )
-            # Read off the conversation, not assumed: the attachment's marker sits
-            # on the turn that supplied it, which can precede a tool's pictures, and
-            # a positional VLM binds the Nth pixel to the Nth marker.
-            # Trimmed BEFORE the attachment is interleaved: a generic trim over the
-            # combined list removes whatever is first, and the attachment is first
-            # whenever its turn precedes the replayed pictures -- so the user's own
-            # image was the one dropped.
-            trim_mcp_image_turns(
-                _sf_chat_messages, sf_mcp_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
             )
             _sf_loop_images = mcp_pixels_in_marker_order(
                 _sf_chat_messages,
@@ -30987,7 +31000,11 @@ async def anthropic_count_tokens(
     # Apply the same sanitization /messages does before generation, so the count
     # matches the prompt the real request would build (otherwise empty-assistant
     # sentinels / synthetic tool history inflate the count or hit the fallback).
-    openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
+    # Named and judged BEFORE the sanitizer, in the same order /v1/messages uses: it
+    # folds every role="tool" into a user message on a template without tool-role
+    # support, and both the refusal and _promote only look at tool messages.
+    openai_messages = _named_anthropic_tool_results(openai_messages)
+
     # Refused rather than answered, exactly as /v1/chat/completions' counter refuses
     # the same shape: count_chat_tokens renders /apply-template, which swaps each
     # image for a short media marker, so a promoted envelope would be reported
@@ -31009,6 +31026,10 @@ async def anthropic_count_tokens(
     openai_messages = await _promote_mcp_history_images_async(
         openai_messages, vision = llama_backend.is_vision
     )
+
+    # Apply the same sanitization /messages does before generation, so the count
+    # matches the prompt the real request would build.
+    openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without
@@ -31262,6 +31283,18 @@ async def anthropic_messages(
     # builders apply the same strip; without it an Anthropic /v1/messages caller
     # replaying a prior provider-side tool_use forwards fake builtin tool
     # history to a backend with no matching function declarations.
+    # BEFORE the sanitizer. On a template without tool-role support it folds every
+    # role="tool" into a user message, and _promote only looks at tool messages -- so
+    # the envelope survived as JSON in the prompt and the model read megabytes of
+    # base64 while being shown no picture at all.
+    openai_messages = _named_anthropic_tool_results(openai_messages)
+    _anthropic_replayed_image_parts: list = []
+    openai_messages = await _promote_mcp_history_images_async(
+        openai_messages,
+        vision = llama_backend.is_vision,
+        promoted_out = _anthropic_replayed_image_parts,
+    )
+
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
 
     # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
@@ -31277,17 +31310,6 @@ async def anthropic_messages(
             openai_messages,
             llama_backend.is_vision,
         )
-
-    # The same promotion /v1/chat/completions applies, because a client replaying an
-    # Anthropic history sends the envelope back in the tool_result: without this the
-    # model reads megabytes of base64 as text and is shown no picture at all. After
-    # the image normalizer, since promotion emits PNG data URLs already.
-    _anthropic_replayed_image_parts: list = []
-    openai_messages = await _promote_mcp_history_images_async(
-        openai_messages,
-        vision = llama_backend.is_vision,
-        promoted_out = _anthropic_replayed_image_parts,
-    )
 
     # Fill omitted sampling fields with the per-model recommendation (or an operator
     # UNSLOTH_SAMPLING_* pin); an explicit client value wins unless the operator pinned it.
@@ -33542,6 +33564,40 @@ def _template_supports_tools(backend) -> bool:
         return True
     except Exception:
         return True
+
+
+def _named_anthropic_tool_results(messages: list[dict]) -> list[dict]:
+    """Stamp each role="tool" message with the tool it answers.
+
+    anthropic_messages_to_openai renders a tool_result block as tool_call_id plus
+    content and no ``name``, and _promote reads an absent name as legacy MCP history
+    it may trust. Without this, an ordinary Anthropic client tool whose output merely
+    ends in a valid __MCP_IMAGES__ suffix is promoted as IMAGE input on the strength
+    of nothing -- the provenance gate this feature rests on cannot run at all.
+    """
+    names: dict = {}
+    for message in messages:
+        for call in message.get("tool_calls") or ():
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            call_id = call.get("id")
+            if isinstance(function, dict) and isinstance(call_id, str):
+                name = function.get("name")
+                if isinstance(name, str) and name:
+                    names[call_id] = name
+    out = []
+    for message in messages:
+        call_id = message.get("tool_call_id")
+        if (
+            message.get("role") == "tool"
+            and not message.get("name")
+            and isinstance(call_id, str)
+            and call_id in names
+        ):
+            message = {**message, "name": names[call_id]}
+        out.append(message)
+    return out
 
 
 def _sanitize_anthropic_openai_messages(messages: list[dict], backend) -> list[dict]:

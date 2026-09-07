@@ -5184,3 +5184,119 @@ def test_the_anthropic_count_refuses_a_promoted_image_rather_than_undercount():
         "a text-only model has the envelope stripped and sends no pixels, so it "
         "must still be counted rather than refused"
     )
+
+
+def test_the_anthropic_envelope_is_promoted_before_tool_roles_are_folded_away():
+    """A template without tool-role support has the sanitizer fold every role="tool"
+    into a user message. _promote only looks at tool messages, so promoting after it
+    left the envelope as JSON in the prompt: megabytes of base64 read as text, and no
+    picture shown at all."""
+    import inspect
+
+    from routes import inference
+
+    for name, source in (
+        ("generation", inspect.getsource(inference.anthropic_messages)),
+        ("count", inspect.getsource(inference.anthropic_count_tokens)),
+    ):
+        promote = source.index("_promote_mcp_history_images_async(")
+        sanitize = source.index("_sanitize_anthropic_openai_messages(openai_messages")
+        assert promote < sanitize, (
+            f"{name}: the fold runs first and the envelope never reaches promotion"
+        )
+        named = source.index("_named_anthropic_tool_results(openai_messages)")
+        assert named < promote, f"{name}: provenance has to be restored first"
+
+
+def test_an_anthropic_client_tool_is_not_trusted_as_an_mcp_image_source():
+    """anthropic_messages_to_openai renders a tool_result with tool_call_id and no
+    name, and _promote reads an absent name as legacy MCP history it may trust. An
+    ordinary client tool whose output merely ends in a valid suffix was therefore
+    promoted as image input on the strength of nothing."""
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+    from routes.inference import _named_anthropic_tool_results
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    translated = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_0",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_0",
+            "content": "here you go\n" + mcp_images.SENTINEL + envelope,
+        },
+    ]
+
+    named = _named_anthropic_tool_results(translated)
+    assert named[1]["name"] == "read_file", "the result was not correlated to its call"
+
+    out = mcp_images.promote_history(named, vision = True)
+    assert not any(isinstance(m.get("content"), list) for m in out), (
+        "a non-mcp__ tool was promoted as trusted image input"
+    )
+    # The suffix still comes off the text for everyone, MCP or not.
+    assert mcp_images.SENTINEL not in json.dumps(out)
+
+
+def test_a_real_mcp_tool_still_promotes_through_the_anthropic_naming():
+    import base64
+    import io
+    import json
+
+    from PIL import Image
+
+    from core.inference import mcp_images
+    from routes.inference import _named_anthropic_tool_results
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 120, 200)).save(buffer, format = "PNG")
+    envelope = json.dumps(
+        [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+    )
+    translated = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_0",
+                    "type": "function",
+                    "function": {"name": "mcp__shot__capture", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_0",
+            "content": "[1 image returned]\n" + mcp_images.SENTINEL + envelope,
+        },
+    ]
+
+    out = mcp_images.promote_history(_named_anthropic_tool_results(translated), vision = True)
+
+    assert sum(
+        1
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    ) == 1
