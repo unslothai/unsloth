@@ -205,6 +205,34 @@ class TestWaitForHealthResilience:
         assert b._health_wait_cancelled is True
         assert not any("exited with code" in str(c) for c in log.error.call_args_list)
 
+    def test_a_teardown_during_the_last_probe_is_not_reported_as_a_timeout(self, monkeypatch):
+        """The deadline is the other way out of the loop. A teardown landing in the
+        final probe leaves no iteration to notice it, so without a check here the
+        wait returns a plain timeout, the caller sees something retryable, and the
+        fallbacks respawn after shutdown killed the first server."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+
+        def probe(*a, **kw):
+            b._torn_down_process = b._process  # shutdown, during the last probe
+            return mock.Mock(status_code = 503)
+
+        monkeypatch.setattr(httpx, "get", probe)
+        assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
+        assert b._health_wait_cancelled is True
+        # Not a live-but-never-healthy load, so it must not be classified as one.
+        assert not any("health check timed out" in ln for ln in b._stdout_lines)
+
+    def test_a_timeout_with_no_teardown_still_reports_a_timeout(self, monkeypatch):
+        """The check above must not swallow the ordinary #5740 classification."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        b._torn_down_process = mock.Mock()  # an earlier child, unrelated
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
+        assert b._health_wait_cancelled is False
+        assert any("health check timed out" in ln for ln in b._stdout_lines)
+
     def test_an_earlier_childs_teardown_does_not_end_a_later_wait(self, monkeypatch):
         """The other half of keying on identity: the marker names one child, so a
         load that replaced a torn-down one is not aborted by its predecessor."""

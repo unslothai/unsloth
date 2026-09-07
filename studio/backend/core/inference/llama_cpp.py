@@ -27872,6 +27872,7 @@ class LlamaCppBackend:
         # No teardown reset here on purpose: it would erase a teardown that landed
         # between this load's spawn and this line. _torn_down_process is compared
         # by identity instead, so an earlier child's teardown cannot match.
+        process = None  # the child this wait last looked at, read again after the loop
 
         while time.monotonic() < deadline:
             # unload_model() blocks on self._lock, which the load holds across this wait.
@@ -27943,6 +27944,15 @@ class LlamaCppBackend:
 
         if cancelled is not None and cancelled():
             logger.info("llama-server startup cancelled at the health-check deadline")
+            self._health_wait_cancelled = True
+            return False
+
+        # A teardown landing during the last probe or interval wait leaves no
+        # iteration to notice it, so the deadline is the other way out of this
+        # loop and has to ask too. Otherwise the caller reads a deliberate stop as
+        # a plain timeout and the fallbacks respawn during shutdown.
+        if process is not None and getattr(self, "_torn_down_process", None) is process:
+            logger.info("llama-server was torn down while waiting for it to become healthy")
             self._health_wait_cancelled = True
             return False
 
