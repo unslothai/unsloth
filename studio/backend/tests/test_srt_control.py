@@ -35,22 +35,22 @@ def control_helper(tmp_path, monkeypatch):
     class CompletedHelperBeforeRead(original_thread):
         def start(self):
             super().start()
-            self.join(timeout=5)
+            self.join(timeout = 5)
             assert not self.is_alive()
             # Force the fast-exit race: all receipts are buffered before the
             # adapter begins accepting/reading, and the helper already exited.
-            processes[-1].wait(timeout=5)
+            processes[-1].wait(timeout = 5)
 
     monkeypatch.setattr(srt_adapter.threading, "Thread", CompletedHelperBeforeRead)
     yield tmp_path, processes, streams
     for proc in processes:
         if proc.poll() is None:
             proc.kill()
-            proc.wait(timeout=5)
+            proc.wait(timeout = 5)
         srt_adapter.release_control(proc)
 
 
-def _helper(path, variant="valid"):
+def _helper(path, variant = "valid"):
     path.joinpath("bridge.mjs").write_text(
         "import net from 'node:net';\n"
         "let input='';process.stdin.on('data',b=>input+=b);\n"
@@ -85,7 +85,7 @@ def test_control_rejects_bad_authentication_and_malformed_receipts(
 ):
     path, processes, streams = control_helper
     _helper(path, variant)
-    with pytest.raises(srt_adapter.SrtError, match=expected):
+    with pytest.raises(srt_adapter.SrtError, match = expected):
         srt_adapter._spawn_windows({"timeoutMs": 5000})
     assert processes[0].poll() is not None
     assert streams[0].closed
@@ -101,7 +101,7 @@ def test_request_writer_closes_stream_after_broken_pipe(control_helper, monkeypa
         raise BrokenPipeError("controlled request pipe failure")
 
     monkeypatch.setattr(srt_adapter.os, "write", broken_write)
-    with pytest.raises(srt_adapter.SrtError, match="exited before launch acknowledgement"):
+    with pytest.raises(srt_adapter.SrtError, match = "exited before launch acknowledgement"):
         srt_adapter._spawn_windows({"timeoutMs": 5000})
     assert streams[0].closed
     assert processes[0].poll() == 0
