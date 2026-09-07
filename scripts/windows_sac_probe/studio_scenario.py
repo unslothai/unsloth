@@ -47,7 +47,14 @@ class Timed:
         self.calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
 
-    def record(self, method: str, path: str, ms: float, status: Any, note: str = "") -> None:
+    def record(
+        self,
+        method: str,
+        path: str,
+        ms: float,
+        status: Any,
+        note: str = "",
+    ) -> None:
         with self._lock:
             self.calls.append(
                 {
@@ -136,17 +143,22 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> str:
             "password rotated. Pass --password with the password you use to sign in."
         )
 
-    status, body = _request(base_url, "POST", "/api/auth/login",
-                            {"username": "unsloth", "password": secret})
+    status, body = _request(
+        base_url, "POST", "/api/auth/login", {"username": "unsloth", "password": secret}
+    )
     if status != 200:
         raise SystemExit(f"login failed ({status}): {str(body)[:300]}")
     token = body["access_token"]
 
     if rotate:
         new_password = password or "unsloth-sac-probe"
-        status, body = _request(base_url, "POST", "/api/auth/change-password",
-                                {"current_password": secret, "new_password": new_password},
-                                token = token)
+        status, body = _request(
+            base_url,
+            "POST",
+            "/api/auth/change-password",
+            {"current_password": secret, "new_password": new_password},
+            token = token,
+        )
         if status != 200:
             raise SystemExit(f"password rotation failed ({status}): {str(body)[:300]}")
         token = body["access_token"]
@@ -157,7 +169,12 @@ def authenticate(base_url: str, home: Path, password: Optional[str]) -> str:
 class StatusPoller(threading.Thread):
     """Poll /api/inference/status the way the frontend does, and time it."""
 
-    def __init__(self, base_url: str, token: str, interval: float = 5.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        interval: float = 5.0,
+    ) -> None:
         super().__init__(daemon = True)
         self.base_url = base_url
         self.token = token
@@ -178,8 +195,15 @@ class StatusPoller(threading.Thread):
         self._stop.set()
 
 
-def chat(base_url: str, token: str, model: str, prompt: str, *,
-         tools: bool = False, enabled_tools: Optional[list[str]] = None) -> dict[str, Any]:
+def chat(
+    base_url: str,
+    token: str,
+    model: str,
+    prompt: str,
+    *,
+    tools: bool = False,
+    enabled_tools: Optional[list[str]] = None,
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -214,8 +238,12 @@ def main() -> int:
     parser.add_argument("--port", type = int, default = None)
     parser.add_argument("--password", default = os.environ.get("UNSLOTH_STUDIO_PASSWORD"))
     parser.add_argument("--home", default = str(Path.home() / ".unsloth" / "studio"))
-    parser.add_argument("--poll-seconds", type = float, default = 5.0,
-                        help = "status poll cadence; 5s matches the frontend")
+    parser.add_argument(
+        "--poll-seconds",
+        type = float,
+        default = 5.0,
+        help = "status poll cadence; 5s matches the frontend",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -234,8 +262,14 @@ def main() -> int:
     results: dict[str, Any] = {"model": args.model, "port": port, "steps": {}}
     try:
         print(f"loading {args.model} ...")
-        status, body = _request(base_url, "POST", "/api/inference/load",
-                                {"model_path": args.model}, token = token, timeout = 1800)
+        status, body = _request(
+            base_url,
+            "POST",
+            "/api/inference/load",
+            {"model_path": args.model},
+            token = token,
+            timeout = 1800,
+        )
         results["steps"]["load"] = {
             "status": status,
             "ok": status == 200,
@@ -250,24 +284,32 @@ def main() -> int:
 
             print("inference ...")
             results["steps"]["inference"] = chat(
-                base_url, token, args.model,
+                base_url,
+                token,
+                args.model,
                 "Reply with exactly one short sentence about the Antarctic.",
             )
             print(f"  {results['steps']['inference']['chars']} chars")
 
             print("web search ...")
             results["steps"]["web_search"] = chat(
-                base_url, token, args.model,
+                base_url,
+                token,
+                args.model,
                 "Search the web for today's date in Reykjavik and tell me what you found.",
-                tools = True, enabled_tools = ["web_search"],
+                tools = True,
+                enabled_tools = ["web_search"],
             )
             print(f"  tool calls: {results['steps']['web_search']['tool_calls']}")
 
             print("tool calls ...")
             results["steps"]["tool_calls"] = chat(
-                base_url, token, args.model,
+                base_url,
+                token,
+                args.model,
                 "Use your tools to look up what the tallest building in the world is.",
-                tools = True, enabled_tools = ["web_search"],
+                tools = True,
+                enabled_tools = ["web_search"],
             )
             print(f"  tool calls: {results['steps']['tool_calls']['tool_calls']}")
 
@@ -298,8 +340,10 @@ def main() -> int:
     for name, step in results["steps"].items():
         print(f"{name:12s} {'ok' if step.get('ok') else 'FAILED'}  ({step.get('status')})")
     poll = results["status_poll"]
-    print(f"status polls  {poll['count']}, median {poll['median_ms']} ms, max {poll['max_ms']} ms, "
-          f"{poll['over_10s']} over 10s, {poll['over_75s']} over 75s")
+    print(
+        f"status polls  {poll['count']}, median {poll['median_ms']} ms, max {poll['max_ms']} ms, "
+        f"{poll['over_10s']} over 10s, {poll['over_75s']} over 75s"
+    )
     print(f"written to {path}")
 
     # Nonzero when the runtime did not work, so the caller can tell the cells of
