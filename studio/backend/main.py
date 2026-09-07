@@ -2312,6 +2312,25 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
         return html_bytes, None
 
+    # Inject exactly where the seed used to be injected, and nowhere else. This
+    # is a payload swap, not a widening: everything that used to stop the seed
+    # reaching the page must still stop the token, because a token that sets the
+    # first password IS an admin credential, just a shorter-lived one.
+    #
+    # app.state.bootstrap_password is that signal, and it already carries both
+    # existing defences for a headless PUBLIC launch:
+    #   - run.py's pre-bind gate nulls it and sets suppress_bootstrap_injection
+    #     when a public Cloudflare URL is about to serve;
+    #   - unsloth_cli deletes .bootstrap_password before a public re-exec, so
+    #     lifespan reads None. That one is deliberately version-independent
+    #     ("Removal IS the protection"), and gating on the seed's availability
+    #     rather than on an in-process flag is what keeps it that way: no seed on
+    #     disk, no token in the page, whatever version the child happens to be.
+    # Reading app.state here, not a Request, so this stays a process-wide launch
+    # property. A per-request gate is what could not be written correctly.
+    if getattr(app.state, "bootstrap_password", None) is None:
+        return html_bytes, None
+
     # Minted per page load, not cached: two browsers opening the setup page must
     # not race for one token. The nonce table self-purges expired rows on every
     # mint, so the row count is bounded by the TTL rather than by uptime.
