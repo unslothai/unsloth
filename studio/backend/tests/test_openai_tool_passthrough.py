@@ -62,6 +62,7 @@ from routes.inference import (
     _normalize_openai_passthrough_sse_line,
     _openai_compat_stream_stall_timeout,
     _openai_llama_admission_capacity,
+    _image_bytes_to_png_b64,
     _openai_messages_for_gguf_chat,
     _openai_messages_for_passthrough,
     _openai_passthrough_sse_line_terminal_state,
@@ -10403,6 +10404,64 @@ class TestPassthroughImageNormalization:
         part = _openai_messages_for_passthrough(req)[0]["content"][0]["image_url"]
         assert part["url"].startswith("data:image/png;base64,")
         assert part["detail"] == "high"
+
+    @staticmethod
+    def _gray16_ramp_png(width: int = 256) -> bytes:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("I;16", (width, 2))
+        img.putdata([(x % width) * 257 for _ in range(2) for x in range(width)])
+        buf = BytesIO()
+        img.save(buf, format = "PNG")
+        return buf.getvalue()
+
+    def test_sixteen_bit_grayscale_keeps_its_levels(self):
+        # convert("RGB") reads a 16-bit source as 8-bit and clips: the whole ramp
+        # above 255 collapses to white. llama-server reading the same PNG itself
+        # scales instead, so re-encoding must not throw the picture away.
+        from io import BytesIO
+
+        from PIL import Image
+
+        raw = self._gray16_ramp_png()
+        out = base64.b64decode(_image_bytes_to_png_b64(raw))
+
+        row = [Image.open(BytesIO(out)).getpixel((x, 0))[0] for x in range(256)]
+        assert len(set(row)) == 256, f"levels collapsed to {len(set(row))}"
+        assert row.count(255) == 1, f"{row.count(255)} white pixels, expected 1"
+        assert row[0] == 0 and row[-1] == 255
+
+    def test_endian_tagged_sixteen_bit_mode_does_not_raise(self):
+        # I;16B rejects point() outright, and the caller turns any exception into
+        # a 400, so scaling without normalising the mode is worse than clipping.
+        # PNG cannot carry the tagged modes; a 16-bit TIFF reopens as I;16B.
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.new("I;16B", (256, 2))
+        img.putdata([(x % 256) * 257 for _ in range(2) for x in range(256)])
+        buf = BytesIO()
+        img.save(buf, format = "TIFF")
+        assert Image.open(BytesIO(buf.getvalue())).mode == "I;16B"
+
+        out = base64.b64decode(_image_bytes_to_png_b64(buf.getvalue()))
+        row = [Image.open(BytesIO(out)).getpixel((x, 0))[0] for x in range(256)]
+        assert len(set(row)) == 256, f"collapsed to {len(set(row))} levels"
+
+    def test_eight_bit_images_are_unchanged_by_the_scaling_branch(self):
+        from io import BytesIO
+
+        from PIL import Image
+        for mode, colour in (("RGB", (10, 20, 30)), ("RGBA", (10, 20, 30, 255)), ("L", 77)):
+            buf = BytesIO()
+            Image.new(mode, (4, 4), colour).save(buf, format = "PNG")
+
+            out = base64.b64decode(_image_bytes_to_png_b64(buf.getvalue()))
+            px = Image.open(BytesIO(out)).getpixel((0, 0))
+            assert px == ((77, 77, 77) if mode == "L" else (10, 20, 30)), (mode, px)
 
     def test_remote_url_is_forwarded_unchanged(self):
         messages = _openai_messages_for_passthrough(self._req("https://x.example/a.webp"))
