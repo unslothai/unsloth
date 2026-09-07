@@ -34,6 +34,58 @@ const diskRow = (folder: string, active: boolean, partial = false) =>
     "gguf",
   );
 
+for (const active of [false, true]) {
+  test(`snapshot rows in one cache root survive reconciliation (${active})`, () => {
+    const folder = "/hub/models--Org--Model-GGUF";
+    const rows = ["new", "old"].map((revision) =>
+      buildCachedInventoryRow(
+        {
+          repo_id: repoId,
+          inventory_id: `cache:gguf:${repoId}:${revision}`,
+          model_format: "gguf",
+          load_id: `${folder}/snapshots/${revision}`,
+          cache_path: folder,
+          active_cache: active,
+          size_bytes: 256,
+          partial: false,
+        },
+        "gguf",
+      ),
+    );
+    const result = dedupeSameSourceHubCacheRows({
+      cachedRows: rows,
+      localRows: [],
+    });
+    assert.deepEqual(
+      result.cachedRows.map((row) => row.loadId),
+      rows.map((row) => row.loadId),
+    );
+    const repeated = dedupeSameSourceHubCacheRows({
+      cachedRows: [...rows, ...rows],
+      localRows: [],
+    });
+    assert.equal(repeated.cachedRows.length, 2);
+    if (active) {
+      const live = {
+        ...rows[0],
+        id: "live",
+        loadId: repoId,
+        cachePath: null,
+        activeCache: undefined,
+        liveDownload: true,
+      };
+      const combined = dedupeSameSourceHubCacheRows({
+        cachedRows: [live, ...rows],
+        localRows: [],
+      });
+      assert.equal(combined.cachedRows.length, 2);
+      assert.ok(
+        combined.cachedRows.some((row) => row.loadId === rows[1].loadId),
+      );
+    }
+  });
+}
+
 for (const active of ["default", "custom"]) {
   test(`both GGUF locations survive inventory deduplication with ${active} active`, () => {
     const input = [

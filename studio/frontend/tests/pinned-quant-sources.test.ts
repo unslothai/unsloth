@@ -14,6 +14,48 @@ import {
   resolvePinnedQuantSources,
 } from "../src/features/model-picker/components/model-selector/pinned-quant-sources.ts";
 
+test("pinned quants resolve against each row's actual snapshot", async () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/model-picker/components/model-selector/pickers.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const effect = source.slice(
+    source.indexOf("void resolvePinnedQuantSources("),
+  );
+  const match = effect.match(/localPath: ([^\n]+),/);
+  assert.ok(match);
+  const localPath = new Function("copy", `return (${match[1]});`);
+  const root = "/hub/models--Org--Model";
+  const copies = ["new", "old"].map((revision) => ({
+    repo_id: "Org/Model",
+    cache_path: root,
+    load_id: `${root}/snapshots/${revision}`,
+    active_cache: true,
+  }));
+  const rows = await resolvePinnedQuantSources(
+    [{ repoId: "Org/Model", quant: "Q6_K" }],
+    copies,
+    async (copy) => {
+      const path = localPath(copy);
+      const quants =
+        path === root
+          ? ["Q6_K", "Q8_0"]
+          : path.endsWith("/old")
+            ? ["Q6_K"]
+            : ["Q8_0"];
+      return quants.map((quant) => ({
+        quant,
+        filename: `${quant}.gguf`,
+        downloaded: true,
+      }));
+    },
+  );
+  assert.equal(rows[0].loadId, copies[1].load_id);
+});
+
 test("bare GGUF pins survive another copy and disappear after the last copy", async () => {
   const source = readFileSync(
     new URL(

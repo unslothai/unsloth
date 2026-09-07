@@ -4313,7 +4313,7 @@ export function HubModelPicker({
           hfToken || undefined,
           {
             preferLocalCache: true,
-            localPath: copy.cache_path || copy.load_id || undefined,
+            localPath: copy.load_id || copy.cache_path || undefined,
           },
         );
         return normalizeGgufVariantsResponse(response).variants;

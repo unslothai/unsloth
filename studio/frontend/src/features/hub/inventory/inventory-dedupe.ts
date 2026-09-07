@@ -53,7 +53,10 @@ function addPartialFormatFamily(
 }
 
 function knownFamiliesMatchUnknownRow(
-  row: Pick<CachedInventoryRow | LocalInventoryRow, "partialTransport" | "partial">,
+  row: Pick<
+    CachedInventoryRow | LocalInventoryRow,
+    "partialTransport" | "partial"
+  >,
   families: ReadonlySet<PartialFormatFamily> | undefined,
 ): boolean {
   if (!families?.size) return false;
@@ -136,16 +139,32 @@ function dedupeCachedRows(
 ): CachedInventoryRow[] {
   const selected = new Map<string, CachedInventoryRow>();
   const passthrough: CachedInventoryRow[] = [];
+  const activeGgufCopies = new Map<string, CachedInventoryRow>();
   for (const row of rows) {
     const repoFormat = repoFormatKey(row.repoId, row.modelFormat);
-    // Live downloads belong to the active cache. Keep their existing coalescing,
-    // while preserving independently loadable GGUFs in previous cache folders.
-    const key =
+    if (
       repoFormat &&
       row.modelFormat === "gguf" &&
-      row.activeCache === false &&
-      row.cachePath
-        ? `${repoFormat}\0${row.cachePath}`
+      row.cachePath &&
+      row.activeCache !== false &&
+      !row.liveDownload
+    ) {
+      const existing = activeGgufCopies.get(repoFormat);
+      if (!existing || (row.partial && !existing.partial)) {
+        activeGgufCopies.set(repoFormat, row);
+      }
+    }
+  }
+  for (const row of rows) {
+    const repoFormat = repoFormatKey(row.repoId, row.modelFormat);
+    // Coalesce a live download with one active copy, without merging sibling snapshots.
+    const copy =
+      row.liveDownload && repoFormat
+        ? (activeGgufCopies.get(repoFormat) ?? row)
+        : row;
+    const key =
+      repoFormat && row.modelFormat === "gguf" && copy.cachePath
+        ? `${repoFormat}\0${copy.cachePath}\0${copy.loadId || ""}`
         : repoFormat;
     if (!key) {
       passthrough.push(row);
