@@ -640,6 +640,12 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
                 break
             if token == "-" or not token.startswith("-"):
                 break
+            if name == "env" and token.startswith("-S") and len(token) > 2:
+                # `-S, --split-string=S` takes a MANDATORY operand, so the attached spelling
+                # `env -S'pip install' pkg` is valid and runs pip. Exact membership missed it
+                # and R-INST-001 saw no invocation at all.
+                rest = f"{token[2:]} {tail}".strip()
+                break
             if token.startswith("--split-string=") and name == "env":
                 rest = f"{token.partition('=')[2]} {tail}".strip()
                 break
@@ -665,6 +671,8 @@ def _strip_exec_prefixes(text: str) -> tuple[str, bool]:
     return text, prefixed
 
 
+# A bare shell word, used to spot `case` / `esac` while scanning a substitution body.
+_LEADING_WORD_RE = re.compile(r"[A-Za-z_]\w*")
 _SHELL_TEST_KEYWORDS = frozenset({"if", "while", "until", "for", "case"})
 _SHELL_BODY_KEYWORDS = frozenset({"then", "elif", "else", "do"})
 _SHELL_KEYWORDS = _SHELL_TEST_KEYWORDS | _SHELL_BODY_KEYWORDS | {"fi", "done", "esac"}
@@ -824,6 +832,11 @@ def _substitution_bodies(command: str) -> list[str]:
         if opens:
             depth, j = 1, i + 2
             inner_quote = ""
+            # A `case` arm's pattern ends in an UNBALANCED `)`, so inside an open case the
+            # `)` in `$(case x in x) pip install ...;; esac)` is an arm delimiter, not the
+            # closer. Popping on it ended the body at `x)` and the pip call bash really runs
+            # was never scanned.
+            case_depth = 0
             while j < len(command) and depth:
                 inner = command[j]
                 if inner == "\\" and inner_quote != "'":
@@ -837,7 +850,15 @@ def _substitution_bodies(command: str) -> list[str]:
                 elif inner == "(":
                     depth += 1
                 elif inner == ")":
-                    depth -= 1
+                    if not (case_depth and depth == 1):
+                        depth -= 1  # otherwise it is an arm pattern; the body stays open
+                elif inner.isalpha() and not command[j - 1 : j].isalnum():
+                    word = _LEADING_WORD_RE.match(command, j)
+                    if word is not None:
+                        if word.group(0) == "case":
+                            case_depth += 1
+                        elif word.group(0) == "esac" and case_depth:
+                            case_depth -= 1
                 j += 1
             bodies.append(command[i + 2 : j - 1 if depth == 0 else j])
             i = j
@@ -1253,7 +1274,10 @@ def _git_source_repository(source: str) -> str:
     host, _, path = remainder.partition("/")
     host = host.rsplit("@", 1)[-1]  # drop any credentials
     path = path.split("#", 1)[0].split("?", 1)[0]
-    path = path.split("@", 1)[0].rstrip("/")  # drop a trailing @ref
+    # The LAST `@` after the repo path is the revision delimiter (pip VCS support docs), so
+    # splitting at the first one read `unslothai/unsloth@fake/../../attacker/repo@main` as the
+    # allowlisted repo while pip clones the traversal that resolves outside it.
+    path = path.rsplit("@", 1)[0].rstrip("/")
     if path.endswith(".git"):
         path = path[: -len(".git")]
     # Resolve `.` and `..` as a URL client does, or `unslothai/unsloth/../../attacker/repo`
@@ -1682,7 +1706,11 @@ def _effective_version(
             cap, cap_exact = landing, landing is not None
         if exact is not None:
             current, exact_known = exact, True
-        elif current is None:
+        elif current is None or _forces_resolution(inv.flags):
+            # `--upgrade` upgrades every named package to the newest available version, so an
+            # installed release that merely SATISFIES the range is not where it lands:
+            # `pip install -U "torchcodec>=0.10,<0.12"` on 0.10 moves to 0.11. Reading the
+            # installed version back raised a false R-INST-004 against a compatible torch.
             # Absent, so the install puts it there and the only question is where. `<=V`
             # names it exactly (pip takes the highest release allowed), a floor says at
             # least how low, and an exclusive ceiling names nothing: which release sits

