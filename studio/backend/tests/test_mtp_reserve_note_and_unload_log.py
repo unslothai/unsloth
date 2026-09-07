@@ -71,8 +71,43 @@ def test_the_note_still_names_the_context_slots_and_the_fallback(backend, monkey
     monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
     note = _note(backend, flat_fallback = True)
 
+    # No estimator to ask, so every dimension is named -- what the line always did.
     assert note.startswith("MTP reserve: 3.00 GB (draft KV @ 8192 x 2 slots")
     assert "flat-frac fallback" in note
+
+
+def test_slots_and_ubatch_are_named_only_where_they_move_the_reserve(backend, monkeypatch):
+    # A dense embedded head under a unified cache prices its draft KV from the padded
+    # context alone: _mtp_draft_kv_bytes never reads n_ubatch on that branch, and
+    # _kv_cache_cell_layout gives one stream of padded_ctx cells whatever the slot
+    # count. Naming either is the same misdirection this line exists to remove.
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
+    flat = _note(backend, reprice = lambda slots, ub: 3 * 1024**3)
+    assert flat.startswith("MTP reserve: 3.00 GB (draft KV @ 8192)")
+    assert "slots" not in flat and "ubatch" not in flat
+
+    # A separate drafter carries its own KV through _estimate_kv_cache_bytes, which
+    # follows both, so both come back.
+    both = _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + slots * ub)
+    assert "x 2 slots" in both and f"ubatch {backend._DEFAULT_N_UBATCH}" in both
+
+    # One axis at a time, so a single flag cannot be standing in for the pair.
+    assert "x 2 slots" in _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + slots)
+    assert "ubatch" not in _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + slots)
+    assert "slots" not in _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + ub)
+    assert "ubatch" in _note(backend, reprice = lambda slots, ub: 3 * 1024**3 + ub)
+
+
+def test_an_estimator_that_cannot_answer_keeps_the_dimension_named(backend, monkeypatch):
+    # Dropping a name on a raise would silently under-report a real dependency, which
+    # is the failure this whole line is meant to prevent, pointing the other way.
+    monkeypatch.setattr(backend, "_rollback_state_bytes", lambda n_parallel = 1: 0)
+
+    def _raises(slots, ub):
+        raise RuntimeError("unsized")
+
+    note = _note(backend, reprice = _raises)
+    assert "x 2 slots" in note and "ubatch" in note
 
 
 def test_an_unload_with_nothing_resident_logs_no_unload_event(backend, monkeypatch):
@@ -99,3 +134,45 @@ def test_an_unload_of_a_resident_model_still_logs_one_event(backend, monkeypatch
     backend.unload_model()
 
     assert [line for line in seen if "Unloaded GGUF model: unsloth/B-GGUF:Q4_K_M" in str(line)]
+
+
+def test_the_real_estimator_ignores_both_axes_for_a_dense_embedded_head(backend):
+    """The premise the note now asks about, pinned against the estimator itself.
+
+    Without this the note's tests would only prove it renders whatever a stand-in
+    tells it, and the claim that slots and ubatch really are inert on this branch
+    would rest on reading the code.
+    """
+    backend._nextn_predict_layers = 1
+    backend._n_kv_heads = 8
+    backend._n_heads = 64
+    backend._kv_key_length = 128
+    backend._kv_value_length = 128
+    backend._kv_lora_rank = None  # not MLA: no duplicated target context
+    backend._architecture = "qwen3moe"
+
+    def _reserve(n_parallel, n_ubatch):
+        return backend._estimate_mtp_overhead_bytes(
+            8192,
+            spec_draft_n_max = 4,
+            n_parallel = n_parallel,
+            kv_unified = True,
+            n_ubatch = n_ubatch,
+        )
+
+    base = _reserve(2, 512)
+    assert base and base > 0
+    assert _reserve(3, 512) == base
+    assert _reserve(4, 512) == base
+    assert _reserve(2, 1024) == base
+    assert _reserve(2, 256) == base
+
+    # The control: a non-unified cache gives each slot its own stream and pads each
+    # one, so a slot count the context does not divide evenly does move the number,
+    # and a note driven by this estimator would then name it. Three, not two: at two
+    # the halves pad back to exactly the unified total, which would have made this
+    # control pass for the wrong reason.
+    split = backend._estimate_mtp_overhead_bytes(
+        8192, spec_draft_n_max = 4, n_parallel = 3, kv_unified = False, n_ubatch = 512
+    )
+    assert split != base

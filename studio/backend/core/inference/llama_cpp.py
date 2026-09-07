@@ -12612,27 +12612,60 @@ class LlamaCppBackend:
         n_max: Optional[int],
         target_rollback: bool,
         flat_fallback: bool,
+        reprice: Optional[Callable[[int, int], int]] = None,
     ) -> str:
         """The MTP reserve line, naming what that number is a function of.
 
-        n_max is named only where it moves the number. The line used to carry it
-        unconditionally, and on every model whose recurrent state is nil it then
-        read byte-identical across a 4x change in n_max, inviting the reader to
-        conclude the reserve had scaled. On a Hybrid Mamba target it does scale --
-        verification allocates one rollback copy per drafted token -- so there it
-        is named.
+        Every dimension is named only where it moves the number. The line used to
+        carry all of them unconditionally, and on the models where a given one is
+        nil it then read byte-identical across a 4x change in that parameter,
+        inviting the reader to conclude the reserve had scaled with it. Which
+        dimensions bite is per-model, not per-parameter: a dense embedded head
+        under a unified cache prices its draft KV from the padded context alone,
+        so neither slots nor micro-batch move it, while a separate drafter's own
+        KV follows both and a Hybrid Mamba target allocates one rollback copy per
+        drafted token.
+
+        ``reprice`` is the estimator the reserve came from, so slots and ubatch
+        are decided by asking it rather than by re-deriving which branch it took;
+        without it every dimension is named, which is what the line did before.
+        n_max is not one of its arguments, so that one stays structural.
 
         A None micro-batch is llama.cpp's own default, which is both what the
         reserve was computed with and what the child runs at, so it is rendered
         rather than printed as None: "ubatch None" names no parameter.
         """
+        ubatch = self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch
+
+        def _moves(*candidates: tuple[int, int]) -> bool:
+            if reprice is None:
+                return True
+            try:
+                # The estimator's own value at the launched point, not the reported
+                # total: the two can differ (a flat fallback reports 0), and the
+                # question is whether the estimator follows the axis.
+                base = reprice(n_parallel, ubatch)
+                for slots, ub in candidates:
+                    if reprice(slots, ub) != base:
+                        return True
+            except Exception:
+                # An estimator that cannot answer says nothing about the
+                # dependency, so keep the name rather than drop a real one.
+                return True
+            return False
+
+        # Two perturbations per axis: cell counts are padded, so a single step can
+        # land inside the same bucket on a dimension the number does follow.
+        slots_named = _moves((n_parallel + 1, ubatch), (max(1, n_parallel * 2), ubatch))
+        ubatch_named = _moves((n_parallel, ubatch * 2), (n_parallel, max(1, ubatch // 2)))
         scales_with_n_max = bool(
             target_rollback and n_max and self._rollback_state_bytes(n_parallel) > 0
         )
         return (
             f"MTP reserve: {reserve_bytes / (1024**3):.2f} GB "
-            f"(draft KV @ {n_ctx} x {n_parallel} slots, "
-            f"ubatch {self._DEFAULT_N_UBATCH if n_ubatch is None else n_ubatch}"
+            f"(draft KV @ {n_ctx}"
+            + (f" x {n_parallel} slots" if slots_named else "")
+            + (f", ubatch {ubatch}" if ubatch_named else "")
             + (f", n_max {n_max}" if scales_with_n_max else "")
             + (", flat-frac fallback" if flat_fallback else "")
             + "), "
@@ -21198,6 +21231,7 @@ class LlamaCppBackend:
                             n_max = _mtp_eff_n_max,
                             target_rollback = _target_rollback,
                             flat_fallback = mtp_overhead_fn is None,
+                            reprice = lambda slots, ub: _mtp_bytes(effective_ctx, slots, ub),
                         )
                     else:
                         _mtp_note = ""
