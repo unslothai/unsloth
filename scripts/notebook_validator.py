@@ -1320,7 +1320,10 @@ def _close_group(
 
 
 def _fold_pending(
-    assured: list[bool], prev_ops: list[str], pending: str, notebook_bang: bool = True
+    assured: list[bool],
+    prev_ops: list[str],
+    pending: str,
+    notebook_bang: bool = True,
 ) -> None:
     """Fold the command in hand into the list, unless a group already spoke for it.
 
@@ -1615,7 +1618,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # conditional than a bare command. Only an UNKNOWN left side opens a tail, and
             # the left side is the whole list: `true || false || pip install ...` skips the
             # install, and `false && true || pip install ...` always reaches it.
-            left_model = _left_hand_status(list_models, prev_ops, "".join(buf), func_status, not out, closed_pending)
+            left_model = _left_hand_status(
+                list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
+            )
             _fold_pending(list_has_pip, prev_ops, "".join(buf), not out)
             prev_ops[-1] = "||"
             flush("||")
@@ -1635,7 +1640,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # `nvidia-smi && pip install torch==2.12.0` installs nothing on a CPU box, and
             # R-INST-004 is error severity, so replaying it reddened CI on a correct
             # notebook.
-            left_and = _left_hand_status(list_models, prev_ops, "".join(buf), func_status, not out, closed_pending)
+            left_and = _left_hand_status(
+                list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
+            )
             _fold_pending(list_has_pip, prev_ops, "".join(buf), not out)
             prev_ops[-1] = "&&"
             flush("&&")
@@ -1662,7 +1669,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             # with its last lexical command's: `{ false && pip install x; }` fails, because the
             # install never ran. Recording the piece alone let a short-circuited command speak
             # for the group.
-            folded = _left_hand_status(list_models, prev_ops, "".join(buf), func_status, not out, closed_pending)
+            folded = _left_hand_status(
+                list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
+            )
             flush(ch if ch in "&|" else ";")
             last_ok[-1] = folded
             tails[-1] = False
@@ -1733,7 +1742,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                         closing = def_names.pop()
                         if closing:
                             func_status[closing.split("#")[0]] = last_ok[-1]
-                    _close_group(list_has_pip, prev_ops, last_ok, list_models, "".join(buf), not out)
+                    _close_group(
+                        list_has_pip, prev_ops, last_ok, list_models, "".join(buf), not out
+                    )
                     closed_pending = True
             if ch not in ")}":
                 grouping_closed = False
@@ -2026,6 +2037,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 loop = [n for n, word in enumerate(openers) if word in ("while", "until", "for")]
                 if loop:
                     broke_at = loop[-1] + 1
+
     # A defined body is conditional until something calls it. `setup() { pip install x; };
     # setup` definitely installs, and leaving the body conditional dropped it from the replay
     # so the whole-notebook gate skipped R-INST-003/004/005 on a pairing bash performs.

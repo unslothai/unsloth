@@ -494,6 +494,10 @@ def test_a_dry_run_install_does_not_undo_a_removal():
     Treating it as a real reinstall reset the removal, so R-INST-005 returned early instead of
     reporting the dependency the cell really leaves missing.
     """
-    assert nv._removed_by_cell("!pip uninstall -y tokenizers; pip install --dry-run tokenizers", "tokenizers")
+    assert nv._removed_by_cell(
+        "!pip uninstall -y tokenizers; pip install --dry-run tokenizers", "tokenizers"
+    )
     # A real reinstall still puts it back.
-    assert not nv._removed_by_cell("!pip uninstall -y tokenizers; pip install tokenizers", "tokenizers")
+    assert not nv._removed_by_cell(
+        "!pip uninstall -y tokenizers; pip install tokenizers", "tokenizers"
+    )

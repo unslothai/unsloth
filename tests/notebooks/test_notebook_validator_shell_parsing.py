@@ -4874,9 +4874,7 @@ def test_the_negation_word_survives_a_separator():
 
     assert [
         (inv.action, inv.packages)
-        for inv in nv.unconditional_pip_invocations(
-            "!true; ! false && pip install torch==2.12"
-        )
+        for inv in nv.unconditional_pip_invocations("!true; ! false && pip install torch==2.12")
     ] == [("install", ["torch==2.12"])]
     assert list(nv.unconditional_pip_invocations("!true; ! true && pip install a")) == []
     # The cell's own leading bang is still the notebook's, whichever way it is spaced.
@@ -4897,7 +4895,9 @@ def test_a_subshell_hands_over_its_folded_status():
         ("!pip install ignored", True),
         ("!pip install torch==2.12", False),
     ]
-    assert ("!pip install b", True) in nv._split_chained("!(true && pip install a) || pip install b")
+    assert ("!pip install b", True) in nv._split_chained(
+        "!(true && pip install a) || pip install b"
+    )
 
 
 def test_an_external_wrapper_does_not_reach_a_shell_function():
