@@ -72,31 +72,33 @@ class LlamaServerStatsLogger:
         return out
 
     @staticmethod
-    def _counter_rate(base, tokens, seconds):
-        """Tokens per second over the engine's OWN measure of the time they took.
+    def _prompt_rate(base, tokens, seconds):
+        """Prompt tokens per second over the engine's OWN measure of the time they took.
 
-        Returns the rate and the baseline for the next tick. Both llama-server counters
-        are flushed together, from the same add_prompt() / metrics_on_prediction() call,
-        so tokens_predicted_seconds_total is exactly the time tokens_predicted_total was
-        produced in and the ratio cannot depend on when the poll happened to land.
+        Prompt only, and the asymmetry is the point. add_prompt(n, n, t_us) counts every
+        prompt token as a decode step, so prompt_tokens_total and prompt_seconds_total are
+        a matched pair and their ratio is a rate. metrics_on_prediction() passes n_gen and
+        n_gen - 1, because the first generated token comes from the prompt batch for free,
+        so the generation counters are NOT a pair: dividing them credits each generation
+        with a token the seconds never timed, and a one-token completion becomes hundreds
+        of tok/s. Nothing in /metrics exports the generation step count, so there is no
+        generation rate to compute from counters and none is reported.
+
         Dividing by the poll interval instead reports the rate of a window the work did
-        not run in: neither counter moves until a generation is released or a prompt
-        batch produces output, so a 103.7 GB Q4 MoE whose measured ceiling is 24.6 tok/s
-        was logged at 150.6 and 183.7 tok/s, and a prefill spanning several intervals
-        lands all at once the same way.
+        not run in: the counter does not move until a batch produces output, so a prefill
+        spanning several intervals lands whole on one tick.
 
-        Tokens that arrive with no time to divide by hold the baseline rather than being
-        dropped. /metrics renders doubles at six significant digits, so on a long-lived
-        server the seconds total can stop resolving a short request that the token total
-        still resolves; advancing here would lose those tokens and then charge them to
-        whatever seconds arrive next.
+        A delta is kept intact rather than split across ticks: /metrics renders doubles at
+        six significant digits, so on a long-lived server one total can cross a rounding
+        boundary a scrape before the other, and advancing the baseline on that scrape
+        pairs each half with the wrong side.
         """
         if base is None or tokens < base[0] or seconds < base[1]:
             return 0.0, (tokens, seconds)  # first reading, or counters that went backwards
-        d_seconds = seconds - base[1]
-        if d_seconds <= 0.0:
+        d_tokens, d_seconds = tokens - base[0], seconds - base[1]
+        if d_tokens <= 0.0 or d_seconds <= 0.0:
             return 0.0, base
-        return (tokens - base[0]) / d_seconds, (tokens, seconds)
+        return d_tokens / d_seconds, (tokens, seconds)
 
     def _stalled_for(self, now, running, decode_calls):
         """Seconds the engine has held a slot without calling llama_decode().
@@ -175,8 +177,9 @@ class LlamaServerStatsLogger:
                 int(m.get("requests_processing", 0)),
                 int(m.get("requests_deferred", 0)),
             )
-            gen_delta, gen_base = self._counter_rate(gen_base, predicted, predicted_s)
-            prompt_delta, prompt_base = self._counter_rate(prompt_base, prompt, prompt_s)
+            prompt_delta, prompt_base = self._prompt_rate(prompt_base, prompt, prompt_s)
+            gen_moved = gen_base is not None and (predicted, predicted_s) != gen_base
+            gen_base = (predicted, predicted_s)
             # Calls, not tokens, and never fed into tok/s: it is the only counter moving
             # on every llama_decode(), so it is the only sign of progress while a
             # generation runs, where the token counters stay at 0 throughout. A rate over
@@ -185,19 +188,18 @@ class LlamaServerStatsLogger:
             if prev is not None and now > prev[0] and None not in (decode_calls, prev[1]):
                 decode_rate = max(0.0, (decode_calls - prev[1]) / (now - prev[0]))
             prev = (now, decode_calls)
-            # llama.cpp's own gauges win when the build has them, and are averaged over
-            # the window between two scrapes (server-context.cpp resets the bucket on
-            # every /metrics read). A zero is therefore a reading, not a missing one: it
-            # says no generation decode step completed in this window, and its numerator
-            # excludes the first token of each generation, which comes from the prompt
-            # batch for free. Treating it as absent is what let a one-token completion be
-            # divided by a near-zero duration.
-            gen_tps = (
-                m["predicted_tokens_seconds"] if "predicted_tokens_seconds" in m else gen_delta
-            )
-            prompt_tps = (
-                m["prompt_tokens_seconds"] if "prompt_tokens_seconds" in m else prompt_delta
-            )
+            # The gauges are averaged over the window between two /metrics reads, since
+            # server-context.cpp empties the bucket on every read. A zero is therefore a
+            # reading, not a missing one: a completion whose only token came from the
+            # prompt batch contributes no decode step and the engine reports 0 for it.
+            # Falling through to the counters there divided that one token by a
+            # millisecond. Another client scraping /metrics between polls empties the
+            # bucket too and reads the same way, so this understates rather than
+            # fabricates for the window it took; the two are not distinguishable from
+            # here, and a zero that is genuinely zero is the commoner of the two.
+            gen_tps = m.get("predicted_tokens_seconds")
+            # The prompt pair is aligned, so it answers whenever its gauge does not.
+            prompt_tps = m.get("prompt_tokens_seconds") or prompt_delta
             stalled_for = self._stalled_for(now, running, decode_calls)
             if self._stall_timeout and stalled_for >= self._stall_timeout:
                 if decode_calls is None:
@@ -213,20 +215,19 @@ class LlamaServerStatsLogger:
                 elif not self._stall_reported:
                     self._report_stall(running, waiting, stalled_for, decode_calls)
             # Gate on real activity this tick, so an idle engine stays quiet.
-            if running or waiting or gen_tps or prompt_tps:
+            if running or waiting or gen_tps or gen_moved or prompt_tps:
+                # Absent rather than zero, in both cases: a build with no throughput gauge
+                # and a build with no n_decode_total were never measured, which is what
+                # engine_progress_unmeasurable says about the same builds. Printing 0.0
+                # would state the opposite.
                 fields = {}
-                # Absent, not zero: a build without n_decode_total was never measured
-                # making no calls, which is what engine_progress_unmeasurable says too.
+                if gen_tps is not None:
+                    fields["gen_tok_s"] = round(float(gen_tps), 1)
+                fields["prompt_tok_s"] = round(float(prompt_tps), 1)
+                fields["running"], fields["waiting"] = running, waiting
                 if decode_rate is not None:
                     fields["decode_calls_s"] = round(float(decode_rate), 1)
-                self._log.info(
-                    "engine_stats",
-                    gen_tok_s = round(float(gen_tps), 1),
-                    prompt_tok_s = round(float(prompt_tps), 1),
-                    running = running,
-                    waiting = waiting,
-                    **fields,
-                )
+                self._log.info("engine_stats", **fields)
 
 
 # bounded by threading.TIMEOUT_MAX as well
