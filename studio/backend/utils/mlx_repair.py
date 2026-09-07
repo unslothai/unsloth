@@ -428,8 +428,9 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
             )
             return False
         logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
-        # Before the wait, not after: every package is passed with --reinstall-package, so a timeout part way through
-        # leaves a stack neither the one detection measured nor the one asked for.
+        # Before the wait, not after: every package is passed with --reinstall-package, so uv removes and
+        # replaces them as it goes and a timeout or a non-zero exit part way through leaves a stack neither
+        # the one detection measured nor the one asked for. Nothing before this line touches the environment.
         _environment_mutated = True
         result = subprocess.run(
             cmd,

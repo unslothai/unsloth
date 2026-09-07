@@ -9,9 +9,9 @@
 # and nothing in the script consults it.
 #
 # A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH,
-# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME) because a bare `--no-torch` after
-# the pipe would be read as an option to sh itself; a local run takes the equivalent flags
-# (--no-torch, --python, --local).
+# UNSLOTH_SKIP_AUTOSTART, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME)
+# because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local
+# run takes the equivalent flags (--no-torch, --isolated-uv-cache, --python, --local).
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
 #
@@ -61,6 +61,7 @@ TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
 _SKIP_AUTOSTART=false
+_ISOLATE_UV_CACHE=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
@@ -89,6 +90,7 @@ for arg in "$@"; do
         --tauri) TAURI_MODE=true ;;
         --python) _next_is_python=true ;;
         --no-torch) _NO_TORCH_FLAG=true ;;
+        --isolated-uv-cache) _ISOLATE_UV_CACHE=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
@@ -98,6 +100,7 @@ done
 # Env-var equivalents for piped installs; an explicit flag still wins.
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
+case "${UNSLOTH_ISOLATE_UV_CACHE:-}" in 1|true|TRUE|yes|YES|on|ON) _ISOLATE_UV_CACHE=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
@@ -615,6 +618,160 @@ _resolve_studio_destinations() {
     _LOCAL_BIN="$HOME/.local/bin"
     _STUDIO_HOME_REDIRECT=default
 }
+
+# Records which cache this install used, so an update reuses it rather than guessing: the
+# launch below repoints the backend at the Studio cache even in shared mode, so one
+# on-demand install makes an empty Studio cache look full. Never fatal.
+# A relative UV_CACHE_DIR names a different directory in each phase of one install: uv
+# resolves it against its working directory, and setup.sh changes into its own before the
+# dependency pass (studio/setup.sh:1788). Absolute once, here, so both phases and the
+# marker agree. The base is uv's working directory, which --directory / UV_WORKING_DIR
+# moves, and which may itself be relative to where the installer was run.
+_absolutize_uv_cache_dir() {
+    case "$UV_CACHE_DIR" in
+        /*) return 0 ;;
+    esac
+    _uv_cache_base="${UV_WORKING_DIR:-$PWD}"
+    case "$_uv_cache_base" in
+        /*) ;;
+        *) _uv_cache_base="$PWD/$_uv_cache_base" ;;
+    esac
+    UV_CACHE_DIR="$_uv_cache_base/$UV_CACHE_DIR"
+}
+
+_record_uv_cache_choice() {
+    # In place, before anything reads it: every branch records, so this is the one point
+    # every phase of the install and the marker are made to agree on one directory.
+    _absolutize_uv_cache_dir
+    _uv_marker_dir="$STUDIO_HOME/cache"
+    _uv_marker_file="$_uv_marker_dir/uv-cache-dir"
+    _uv_marker_value="$UV_CACHE_DIR"
+    # Remembered so a failed install can put it back.
+    if [ "$_UV_MARKER_SAVED" != true ]; then
+        if [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; then
+            # One we cannot read is one we cannot put back, so leave it alone.
+            _UV_MARKER_PREVIOUS=$(cat "$_uv_marker_file" 2>/dev/null) || return 0
+            _UV_MARKER_EXISTED=true
+        else
+            _UV_MARKER_PREVIOUS=""
+            _UV_MARKER_EXISTED=false
+        fi
+        _UV_MARKER_SAVED=true
+    fi
+    (
+        mkdir -p "$_uv_marker_dir" 2>/dev/null &&
+            # Unlinked first: a redirection follows a symlink and truncates its target.
+            rm -f "$_uv_marker_file" 2>/dev/null &&
+            # And only once gone: rm can fail on a link in an undeletable directory.
+            ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; } &&
+            printf '%s\n' "$_uv_marker_value" > "$_uv_marker_file" 2>/dev/null
+    ) || true
+}
+
+_restore_uv_cache_marker() {
+    [ "${_STUDIO_INSTALL_COMMITTED:-false}" = true ] && return 0
+    [ "$_UV_MARKER_SAVED" = true ] || return 0
+    _uv_marker_file="$STUDIO_HOME/cache/uv-cache-dir"
+    rm -f "$_uv_marker_file" 2>/dev/null || true
+    if [ "$_UV_MARKER_EXISTED" = true ] \
+       && ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; }; then
+        printf '%s\n' "$_UV_MARKER_PREVIOUS" > "$_uv_marker_file" 2>/dev/null || true
+    fi
+    _UV_MARKER_SAVED=false
+}
+
+_configure_uv_cache() {
+    _uv_studio_cache="$STUDIO_HOME/cache/uv"
+    case "${UV_CACHE_DIR-}" in
+        *[![:space:]]*)
+            _UV_CACHE_MODE=custom
+            export UV_CACHE_DIR
+            # Recorded like any other choice; a caller still outranks the marker.
+            _record_uv_cache_choice
+            step "uv cache" "preserving custom UV_CACHE_DIR ($UV_CACHE_DIR)"
+            return 0
+            ;;
+    esac
+
+    if [ "$_ISOLATE_UV_CACHE" = true ]; then
+        UV_CACHE_DIR="$_uv_studio_cache"
+        _UV_CACHE_MODE=isolated
+        export UV_CACHE_DIR
+        _record_uv_cache_choice
+        step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
+        return 0
+    fi
+
+    # Ask uv so uv.toml / UV_CONFIG_FILE / platform defaults count; -u so a blank
+    # inherited value cannot override them; last line so a notice ahead of the path
+    # does not become the path.
+    _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null \
+        | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -n 1) || _uv_default_cache=""
+    if [ -z "$_uv_default_cache" ]; then
+        if [ -n "${XDG_CACHE_HOME:-}" ]; then
+            _uv_default_cache="${XDG_CACHE_HOME}/uv"
+        elif [ -n "${HOME:-}" ]; then
+            _uv_default_cache="${HOME}/.cache/uv"
+        fi
+    fi
+
+    _uv_default_populated=false
+    _uv_scan_blocked=false
+    if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
+        # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
+        # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
+        for _uv_bucket in \
+            "$_uv_default_cache"/archive-* \
+            "$_uv_default_cache"/builds-* \
+            "$_uv_default_cache"/built-wheels-* \
+            "$_uv_default_cache"/wheels-* \
+            "$_uv_default_cache"/sdists-*; do
+            [ -d "$_uv_bucket" ] || continue
+            # Unreadable is not empty; remembered so the message below says why.
+            if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
+                _uv_scan_blocked=true
+                continue
+            fi
+            _uv_artifact=$(find -L "$_uv_bucket" -type f \
+                ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+                ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+                -print 2>/dev/null | head -n 1) || _uv_artifact=""
+            if [ -n "$_uv_artifact" ]; then
+                _uv_default_populated=true
+                break
+            fi
+        done
+    fi
+
+    if [ "$_uv_default_populated" = true ]; then
+        UV_CACHE_DIR="$_uv_default_cache"
+        _UV_CACHE_MODE=shared
+    else
+        UV_CACHE_DIR="$_uv_studio_cache"
+        _UV_CACHE_MODE=studio
+    fi
+    export UV_CACHE_DIR
+    _record_uv_cache_choice
+
+    case "$_UV_CACHE_MODE" in
+        shared)
+            step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
+            ;;
+        studio)
+            if [ "$_uv_scan_blocked" = true ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
+            else
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
+            fi
+            ;;
+    esac
+}
+
+_prepare_studio_uv_cache_for_launch() {
+    [ "${_UV_CACHE_MODE:-}" = shared ] || return 0
+    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    export UV_CACHE_DIR
+}
 _resolve_studio_destinations
 # The PATH we inherited, before anything below prepends to it. The shim setup at the end asks
 # whether a NEW login shell will find _LOCAL_BIN, and by then this process has prepended it
@@ -626,6 +783,13 @@ VENV_DIR="$STUDIO_HOME/unsloth_studio"
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
 _VENV_ROLLBACK_ACTIVE=false
+# The marker travels with the environment. See _record_uv_cache_choice.
+_UV_MARKER_SAVED=false
+_UV_MARKER_EXISTED=false
+_UV_MARKER_PREVIOUS=""
+# One flag for both rollbacks: two leave a window either way round, where a signal
+# restores half a committed install.
+_STUDIO_INSTALL_COMMITTED=false
 
 _start_studio_venv_replacement() {
     _existing_dir="$1"
@@ -697,6 +861,8 @@ _discard_venv_for_recreate() {  # venv dir
 }
 
 _restore_studio_venv_replacement() {
+    # The flag the marker restore consults too, so a signal mid-commit cannot split them.
+    [ "${_STUDIO_INSTALL_COMMITTED:-false}" = true ] && return 0
     [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
     # -e/-L, not -d: a rollback holds whatever _dir_has_entries called occupied,
     # and -d would drop a file or a dangling link and strand the original.
@@ -758,6 +924,10 @@ _prune_stale_studio_venv_rollbacks() {
 }
 
 _commit_studio_venv_replacement() {
+    # First and alone, because a signal can land between any two statements. A first
+    # install rolls nothing back and still commits.
+    _STUDIO_INSTALL_COMMITTED=true
+    _UV_MARKER_SAVED=false
     if [ "$_VENV_ROLLBACK_ACTIVE" = true ]; then
         _rollback_to_remove="$_VENV_ROLLBACK_DIR"
         # The new environment is already committed. Clear the restore state
@@ -794,6 +964,8 @@ _on_install_exit() {
     _status=$?
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
+        # Separate from the venv restore: an install can fail before one is in flight.
+        _restore_uv_cache_marker
     fi
     _cleanup_install_temporaries
     exit "$_status"
@@ -806,6 +978,7 @@ _on_install_signal() {
     trap - EXIT
     trap '' HUP INT TERM
     _restore_studio_venv_replacement
+    _restore_uv_cache_marker
     _cleanup_install_temporaries
     exit "$_signal_status"
 }
@@ -2126,6 +2299,17 @@ _maybe_reroute_strixhalo_to_2404() {
     fi
     _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
+
+    # An automatic path belongs to the origin distro; only an override is portable.
+    case "${UV_CACHE_DIR-}" in
+        *[![:space:]]*)
+            _rr_exports="$_rr_exports; export UV_CACHE_DIR=$(_rr_q "$UV_CACHE_DIR")"
+            ;;
+        *)
+            _rr_exports="$_rr_exports; unset UV_CACHE_DIR"
+            ;;
+    esac
+    [ "$_ISOLATE_UV_CACHE" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_ISOLATE_UV_CACHE=1"
     [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
     [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
     [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_URL=$(_rr_q "$UNSLOTH_TORCH_INDEX_URL")"
@@ -2720,6 +2904,8 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     fi
 fi
 
+_configure_uv_cache
+
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
 tauri_log "STEP" "Creating virtual environment"
 mkdir -p "$STUDIO_HOME"
@@ -3085,6 +3271,11 @@ case "$0" in
     */install.sh|install.sh)
         [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -r "$0" ] && _REPO_IS_CHECKOUT=1 ;;
 esac
+
+# Honor UNSLOTH_ZOO_REF so the Studio venv tracks the requested zoo (the Docker
+# publish workflow forwards one ref to both builds). Unset means main.
+_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
+_ZOO_GIT_SPEC="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@${_ZOO_REF}"
 
 # ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
 _find_no_torch_runtime() {
@@ -5259,10 +5450,10 @@ if [ "$_MIGRATED" = true ]; then
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+        substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
+        run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF})" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+            "$_ZOO_GIT_SPEC"
     fi
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
         if _is_gfx906_bnb_skip; then
@@ -5456,10 +5647,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
             substep "overlaying local repo (editable)..."
             run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-            substep "overlaying unsloth-zoo from git main..."
-            run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+            substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
+            run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF})" uv pip install --python "$_VENV_PY" \
                 --no-deps --reinstall-package unsloth-zoo \
-                "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+                "$_ZOO_GIT_SPEC"
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
@@ -5467,10 +5658,10 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.1"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+        substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
+        run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF})" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+            "$_ZOO_GIT_SPEC"
     else
         _unsloth_install_pkg="$PACKAGE_NAME"
         if [ "$PACKAGE_NAME" = "unsloth" ] && [ -n "$_unsloth_desktop_install_spec" ]; then
@@ -5498,10 +5689,10 @@ else
         run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.1" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
-        substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+        substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
+        run_install_cmd_retry "overlay unsloth-zoo (git ${_ZOO_REF})" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
-            "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
+            "$_ZOO_GIT_SPEC"
     else
         case "$PACKAGE_NAME" in
             unsloth)
@@ -5950,6 +6141,8 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
+
+            _prepare_studio_uv_cache_for_launch
             # Detach stdin from the piped web install's pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).

@@ -55,7 +55,6 @@ def _selector_harness() -> str:
 
 def _run_pwsh(script: str) -> str:
     # run_pwsh, not subprocess.run: a pwsh killed by a signal never ran this script, and
-    # `check = True` would report that as a CalledProcessError carrying the whole excerpt,
     # which reads as the selector being wrong. See tests/_shared/unsloth_pwsh_runner.py.
     result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
@@ -67,9 +66,8 @@ def _run_pwsh(script: str) -> str:
 
 
 # (torch.__version__, expected xFormers version or "" for "no wheel, install nothing").
-# The live wheels behind each row were HEAD-verified on download.pytorch.org and their
-# xformers/cpp_lib.json read back -- cu130/xformers-0.0.34 reports {"torch":
-# "2.10.0+cu130"}, cu128/xformers-0.0.34 reports {"torch": "2.10.0+cu128"}.
+# The live wheels behind each row were HEAD-verified on download.pytorch.org and their xformers/cpp_lib.json read back
+# cu130/xformers-0.0.34 reports {"torch": "2.10.0+cu130"}, cu128/xformers-0.0.34 reports {"torch": "2.10.0+cu128"}.
 SELECTION_CASES = [
     ("2.10.0+cu130", "0.0.34"),
     ("2.10.0+cu128", "0.0.34"),
@@ -82,25 +80,24 @@ SELECTION_CASES = [
     ("2.7.1+cu128", "0.0.31.post1"),
     # 0.0.30 predates the abi3 switch and has no cp313 wheel; the row is deliberately gone.
     ("2.7.0+cu128", ""),
-    # No cu130 build of xFormers exists for torch 2.8 or earlier, and no cu118 /
-    # cu124 win_amd64 build exists at all -- refuse rather than serve a neighbour.
+    # No cu130 build of xFormers exists for torch 2.8 or earlier, and no cu118 / cu124 win_amd64 build exists at all --
+    # refuse rather than serve a neighbour.
     ("2.8.0+cu130", ""),
     ("2.9.0+cu118", ""),
     ("2.10.0+cu124", ""),
-    # torch 2.11+ resolves to 0.0.35. It is built against 2.10.0 and loads there by
-    # design: xFormers moved to the PyTorch stable API/ABI in 0.0.34, whose notes state
-    # such builds are "compatible with any later version".
+    # torch 2.11+ resolves to 0.0.35.
+    # It is built against 2.10.0 and loads there by design: xFormers moved to the PyTorch stable API/ABI in 0.0.34,
+    # whose notes state such builds are "compatible with any later version".
     ("2.11.0+cu130", "0.0.35"),
     ("2.13.0+cu128", "0.0.35"),
-    # And so does every release above the floor that the table cannot list, because they
-    # are published after this script ships. Refusing them left supported builds with no
-    # xFormers at all.
+    # And so does every release above the floor that the table cannot list, because they are published after this script
+    # ships. Refusing them left supported builds with no xFormers at all.
     ("2.10.1+cu130", "0.0.35"),
     ("2.11.1+cu128", "0.0.35"),
     ("2.12.4+cu126", "0.0.35"),
     ("2.14.0+cu130", "0.0.35"),
-    # Bounded in both directions: below the floor there is no stable ABI to lean on, and a
-    # CUDA family that publishes nothing gains no wheel from the era.
+    # Bounded in both directions: below the floor there is no stable ABI to lean on, and a CUDA
+    # family that publishes nothing gains no wheel from the era.
     ("2.9.2+cu130", ""),
     ("2.12.0+cu124", ""),
     # Non-CUDA and nightly builds must miss the table outright.
@@ -147,25 +144,22 @@ def test_installer_installs_xformers_from_the_torch_index():
     assert "--default-index $_xfIndexUrl" in block
     assert "xformers==$_xfVersion" in block
     assert "UNSLOTH_SKIP_XFORMERS" in block
-    # A full-URL index pin is authoritative and is reused WHOLE. Its leaf is not required
-    # to name the CUDA family: a documented full-URL override can be an authenticated
-    # mirror, and rebuilding a download.pytorch.org URL over it strands an air-gapped host.
+    # A full-URL index pin is authoritative and is reused WHOLE.
+    # Its leaf is not required to name the CUDA family: a documented full-URL override can be an authenticated mirror,
+    # and rebuilding a download.pytorch.org URL over it strands an air-gapped host.
     assert (
         "if ($TorchIndexUrl -and -not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL))"
         in block
     )
-    # The leaf is read to BUILD a URL under the override, never to throw the override away:
-    # a full-URL override can be an authenticated mirror whose leaf is not a family, and
-    # rebuilding a download.pytorch.org URL over it strands an air-gapped host.
+    # The leaf is read to BUILD a URL under the override, never to throw the override away: a full-URL override can be
+    # an authenticated mirror whose leaf is not a family, and rebuilding a download.pytorch.org URL over it strands an
+    # air-gapped host.
     assert "$_xfIndexUrl = $TorchIndexUrl" in block
-    # Unpinned, install the direct wheel URL: --default-index does not make an index
-    # exclusive, and cu126/cu128/cu130 share a version string, so a machine with UV_INDEX
-    # set can satisfy the pin from the wrong CUDA family.
     assert '$_xfWheelUrl = Join-UrlPath $_xfBase "$_xfCudaTag/$_xfWheelName"' in block
     assert "--reinstall-package xformers $_xfWheelUrl" in block
-    # The already-installed check compares against the wheel's OWN build target, not the
-    # resident torch: the stable-ABI wheel records the floor release it was compiled
-    # against, so the old comparison force-reinstalled a correct 0.0.35 on every run.
+    # The already-installed check compares against the wheel's OWN build target, not the resident
+    # torch: the stable-ABI wheel records the floor release it was compiled against, so the old
+    # comparison force-reinstalled a correct 0.0.35 on every run.
     assert "Get-XformersExpectedTorchBuild -Version $_xfVersion" in block
 
 
@@ -241,8 +235,8 @@ def test_installer_never_installs_an_unpinned_xformers():
     source = _source()
     for match in re.finditer(r'"xformers[^"]*"', source):
         spec = match.group(0)
-        # A wheel FILENAME is not a spec: it names one exact file and cannot resolve to
-        # anything else, which is the whole point of preferring it.
+        # A wheel FILENAME is not a spec: it names one exact file and cannot resolve to anything else, which is the
+        # whole point of preferring it.
         if spec.endswith('.whl"'):
             continue
         assert spec == '"xformers==$_xfVersion"', f"unpinned xFormers spec in install.ps1: {spec}"
@@ -279,18 +273,17 @@ def test_installed_build_probe_reads_cpp_lib_json():
     block = _extract(r"    function Get-InstalledXformersBuild \{.*?^    \}", _source())
     assert "cpp_lib.json" in block
     assert "find_spec" in block
-    # Reading the file rather than importing xformers keeps a mismatched .pyd from writing
-    # its own warning into the probe output. Every release from 0.0.31 on ships
-    # cpp_lib.json, 0.0.35 included, so absence means an unbuilt or source install.
+    # Reading the file rather than importing xformers keeps a mismatched .pyd from writing its own warning into the
+    # probe output.
+    # Every release from 0.0.31 on ships cpp_lib.json, 0.0.35 included, so absence means an unbuilt or source install.
     assert "import xformers" not in block
     # Invoke-BoundedPythonProbe interpolates the code into a double-quoted -c argument.
     assert '"' not in block.split("$code = ", 1)[1].split("\n", 1)[0].strip("'")
 
 
 # Torch releases the exact tables cannot list, and the answer both selectors must give.
-# The two implementations resolve the same machine (install.ps1 during install, wheel_utils
-# on demand from Unsloth), so a fallback that lives in only one of them is a machine whose
-# answer changes depending on which one asked.
+# The two implementations resolve the same machine (install.ps1 during install, wheel_utils on demand from Unsloth), so
+# a fallback that lives in only one of them is a machine whose answer changes depending on which one asked.
 STABLE_ABI_PARITY_CASES = [
     ("2.10.1+cu130", "13.0", "0.0.35"),
     ("2.11.1+cu128", "12.8", "0.0.35"),
@@ -337,8 +330,8 @@ def test_the_already_installed_check_uses_the_wheels_own_build_target():
         "Write-Output \"[$(Get-XformersExpectedTorchBuild -Version '0.0.34' "
         "-TorchVersion '2.10.0+cu128' -CudaTag 'cu128')]\"\n"
     )
-    # The stable-ABI wheel reports the floor release; an exact-era wheel reports the torch
-    # it was pinned to, which is the resident one.
+    # The stable-ABI wheel reports the floor release; an exact-era wheel reports the torch it was pinned to, which is
+    # the resident one.
     assert out.splitlines() == ["[2.10.0+cu130]", "[2.10.0+cu128]"]
 
 

@@ -112,7 +112,8 @@ export function foldOverrideKey(key: string): string {
   }
   // splitQuantSuffix, not the last colon: a colon is legal in a POSIX filename, so
   // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would fold it
-  // onto a different real file. Mirrors the backend's split_quant_suffix.
+  // onto the real, different file "/models/foo:bar.gguf". Mirrors the backend's
+  // split_quant_suffix.
   const split = splitQuantSuffix(key);
   const id = split ? split[0] : key;
   const quant = split ? `:${split[1].toLowerCase()}` : "";
