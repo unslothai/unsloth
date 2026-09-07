@@ -4567,7 +4567,13 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # only reports that the user's own armed research is starting, and without it here
 # is_high_risk_tool_call's unknown-name default would prompt on every handoff.
 _ALWAYS_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation", "deep_research"}
+    {
+        "web_search",
+        "search_knowledge_base",
+        "search_conversation",
+        "read_skill",
+        "deep_research",
+    }
 )
 
 
@@ -10139,6 +10145,37 @@ SEARCH_CONVERSATION_TOOL = {
         },
     },
 }
+READ_SKILL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "read_skill",
+        "description": (
+            "Read instructions or a UTF-8 resource from an enabled Agent Skill. "
+            "Start with SKILL.md, then read referenced resources only when needed. "
+            "This tool reads files; it does not execute scripts."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Enabled skill name from the system skill catalog.",
+                },
+                "resource": {
+                    "type": "string",
+                    "description": "Relative resource path. Defaults to SKILL.md.",
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Character offset for the next page. Defaults to 0.",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+}
+
 
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
@@ -10447,6 +10484,29 @@ def execute_tool(
             "split across smaller calls if the content is long."
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name == "read_skill":
+        from .skills import MAX_SKILL_PAGE_CHARS, SkillError, read_skill_resource
+        try:
+            page_chars = MAX_SKILL_PAGE_CHARS
+            while True:
+                result = read_skill_resource(
+                    arguments.get("name", ""),
+                    arguments.get("resource", "SKILL.md"),
+                    arguments.get("offset", 0),
+                    page_chars = page_chars,
+                )
+                fitted = _fit_result_to_room(result, name)
+                if fitted == result:
+                    return result
+                if page_chars == 1:
+                    return (
+                        "Error: Not enough context room to read this skill resource. "
+                        "Reduce the conversation context and retry the same read_skill call."
+                    )
+                page_chars = max(1, page_chars // 2)
+        except SkillError as exc:
+            return f"Error: {exc}"
+
     if name == "search_knowledge_base":
         return _fit_result_to_room(
             _search_knowledge_base_with_budget(

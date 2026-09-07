@@ -1378,6 +1378,7 @@ export const it = {
           "Fissa le voci nel menu laterale «+» della chat. Le altre verranno spostate in «Altro».",
         chatWithFiles: "Chat con file (RAG)",
         mcp: "MCP",
+        skills: "Competenze degli agenti",
         savedPrompts: "Prompt salvati",
         compareChat: "Confronta chat",
         exportChat: "Esporta chat",

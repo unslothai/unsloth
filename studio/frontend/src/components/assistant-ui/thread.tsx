@@ -43,12 +43,16 @@ import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
 import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-generation";
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
+import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
+import { DirectiveText, SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  ChatSkillsDialog,
+
   PROMPT_QUEUE_DRAG_TYPE,
   attachmentsPastedText,
   hasPendingPromptQueueStart,
@@ -2267,6 +2271,8 @@ const Composer: FC<{
     (s) => s.setImageToolsEnabled,
   );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
+
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
@@ -2364,7 +2370,6 @@ const Composer: FC<{
   const draftKeyRef = useRef<string | null>(null);
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({
-      submitOnEnter: true,
       onModEnter: queueOnModEnter,
       justSentRef,
       draftKeyRef,
@@ -4847,6 +4852,8 @@ const Composer: FC<{
 
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
+    <ComposerPrimitive.Unstable_TriggerPopoverRoot>
+      <SkillMentionPopover enabled={supportsTools} />
     <ComposerPrimitive.Root
       ref={attachComposer}
       // Out of find-in-page's reach: the draft itself lives in a textarea the index cannot read, so
@@ -4903,6 +4910,7 @@ const Composer: FC<{
         </ComposerPrimitive.AttachmentDropzone>
       )}
     </ComposerPrimitive.Root>
+    </ComposerPrimitive.Unstable_TriggerPopoverRoot>
     </PromptQueueContext.Provider>
   );
 };
@@ -5860,6 +5868,7 @@ const ComposerToolsMenu: FC<{
   }, [navigate]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
@@ -5968,6 +5977,12 @@ const ComposerToolsMenu: FC<{
         {mcpEnabledForChat && !mcpDisabled ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
+      </DropdownMenuItem>
+    ),
+    skills: (
+      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+        <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={2} />
+        Agent Skills
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -6114,6 +6129,7 @@ const ComposerToolsMenu: FC<{
 
   return (
     <>
+    <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
@@ -7132,6 +7148,7 @@ const ASSISTANT_PART_COMPONENTS = {
     by_name: {
       web_search: WebSearchToolUIConfirmable,
       search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+      read_skill: ReadSkillToolUI,
       python: PythonToolUIConfirmable,
       terminal: TerminalToolUIConfirmable,
       code_execution: CodeExecutionToolUIConfirmable,
@@ -7141,6 +7158,8 @@ const ASSISTANT_PART_COMPONENTS = {
     Fallback: ToolFallbackConfirmable,
   },
 } as const;
+
+const USER_PART_COMPONENTS = { Text: DirectiveText } as const;
 
 // Live in-place denoising canvas for DiffusionGemma: while generating, render the
 // latest per-step canvas snapshot in the bubble so the user watches the answer resolve
@@ -8161,7 +8180,7 @@ const UserMessage: FC = () => {
 
       <div className="aui-user-message-content-wrapper flex max-w-[80%] min-w-0 flex-col items-end">
         <div className="aui-user-message-content wrap-break-word w-fit max-w-full rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
-          <MessagePrimitive.Parts />
+          <MessagePrimitive.Parts components={USER_PART_COMPONENTS} />
         </div>
         <div className="mt-1 -mr-[var(--icon-btn-inset)] flex min-h-8 items-center">
           <UserActionBar />

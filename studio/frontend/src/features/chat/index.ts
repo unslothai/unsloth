@@ -371,3 +371,10 @@ export {
   generateStudioTtsAudio,
   releaseTtsAudioUrl,
 } from "./adapters/studio-speech-synthesis-adapter";
+export { ChatSkillsDialog } from "./components/chat-skills-dialog";
+export {
+  listSkills,
+  setSkillEnabled,
+  useSkillsCatalog,
+  type SkillRecord,
+} from "./api/skills-api";
