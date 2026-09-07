@@ -239,10 +239,17 @@ def test_a_missing_strict_snapshot_fails_strict(oracle):
     (snapshot_dir / nv.COLAB_ORACLE_FILES["os-info-gpu.txt"]).unlink()
     assert _diff(snapshot_dir, strict = True) == 1
 
-    # The rule-bearing pip oracle counts the same way.
-    _, other_dir = oracle
-    (other_dir / nv.COLAB_ORACLE_FILES["pip-freeze.gpu.txt"]).unlink()
-    assert _diff(other_dir, strict = True) == 1
+
+def test_a_missing_pip_snapshot_fails_strict(oracle):
+    """The rule-bearing pip oracle counts the same way as os-info.
+
+    A separate test rather than a second assertion: `oracle` is function-scoped, so asking for
+    it twice in one test hands back the SAME directory, and the second check would have passed
+    on the first deletion however pip's absence were handled.
+    """
+    _, snapshot_dir = oracle
+    (snapshot_dir / nv.COLAB_ORACLE_FILES["pip-freeze.gpu.txt"]).unlink()
+    assert _diff(snapshot_dir, strict = True) == 1
 
 
 def test_a_missing_advisory_snapshot_stays_advisory(oracle):
@@ -283,3 +290,83 @@ def test_an_unreadable_strict_value_fails_strict(oracle):
         reformatted, encoding = "utf-8"
     )
     assert _diff(snapshot_dir, strict = True) == 1
+
+
+def test_an_advisory_oracle_that_will_not_fetch_does_not_fail_the_refresh(oracle, tmp_path, capsys):
+    """apt-list is unreachable: the other two still land and the cron stays green.
+
+    `--all` refused to write anything unless every oracle fetched, so a transient failure on the
+    one oracle no rule reads reddened the daily job and left the pip drift unacknowledged -- the
+    opposite of the disposition colab-diff gives that same file.
+    """
+    upstream, _ = oracle
+    real = nv.urllib.request.urlopen
+
+    def flaky(url, timeout = None):
+        if url.endswith("apt-list-gpu.txt"):
+            raise urllib.error.URLError("boom")
+        return real(url, timeout = timeout)
+
+    nv.urllib.request.urlopen = flaky
+    try:
+        out_dir = tmp_path / "partial"
+        rc = nv.cmd_refresh_colab(
+            argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
+        )
+    finally:
+        nv.urllib.request.urlopen = real
+    assert rc == 0
+    assert sorted(p.name for p in out_dir.iterdir()) == sorted(
+        [
+            nv.COLAB_ORACLE_FILES["pip-freeze.gpu.txt"],
+            nv.COLAB_ORACLE_FILES["os-info-gpu.txt"],
+        ]
+    )
+    assert "skipping apt-list-gpu.txt" in capsys.readouterr().out
+
+
+def test_a_rule_bearing_oracle_that_will_not_fetch_still_fails_the_refresh(oracle, tmp_path):
+    """pip is what --colab-pin resolves against, so its absence is fatal and writes nothing."""
+    upstream, _ = oracle
+
+    def dead(url, timeout = None):
+        raise urllib.error.URLError("boom")
+
+    real = nv.urllib.request.urlopen
+    nv.urllib.request.urlopen = dead
+    try:
+        out_dir = tmp_path / "none"
+        rc = nv.cmd_refresh_colab(
+            argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
+        )
+    finally:
+        nv.urllib.request.urlopen = real
+    assert rc == 2
+    assert not out_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "name, payload",
+    [
+        # An upstream rotation to a format _parse_os_lines cannot read the Python line out of.
+        ("os-info-gpu.txt", '{"python": "3.13.15"}\n'),
+        # The Python line present but holding something _marker_environment cannot parse.
+        ("os-info-gpu.txt", "Python (unknown)\n"),
+        # An empty pin file resolves every R-INST rule against nothing.
+        ("pip-freeze.gpu.txt", "\n"),
+    ],
+)
+def test_a_refresh_never_acknowledges_a_payload_the_rules_cannot_read(
+    oracle, tmp_path, name, payload
+):
+    """Writing it would leave upstream and snapshot equally empty of the key, and colab-diff
+    compares the two parses, so the strict tripwire would go quiet on the very rotation it
+    exists to catch."""
+    upstream, _ = oracle
+    upstream[name] = payload
+    out_dir = tmp_path / "rotated"
+    rc = nv.cmd_refresh_colab(
+        argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
+    )
+    assert rc == 2
+    assert not out_dir.exists()

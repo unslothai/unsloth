@@ -569,6 +569,10 @@ _SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "su
 # The subset bash resolves in-process. Everything else here is an external program, and an
 # `exec` behind one is an argument to it rather than the builtin.
 _SHELL_RESOLVED_PREFIXES = frozenset({"command", "exec", "time"})
+# Options that make a prefix report something and exit instead of running its operands.
+_PREFIX_TERMINAL_FLAGS = frozenset({"--help", "--version"})
+# Per prefix, the options that turn it into a lookup rather than an execution.
+_PREFIX_LOOKUP_FLAGS: dict[str, frozenset[str]] = {"command": frozenset({"-v", "-V"})}
 # `PATH+=:/opt/bin cmd` is an assignment prefix too: bash runs the child with the appended
 # value, so leaving the `+=` word standing made it the supposed executable.
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*\+?=")
@@ -781,6 +785,13 @@ def _strip_exec_prefixes(text: str, seen: list[str] | None = None) -> tuple[str,
                 raw = rest[: len(rest) - len(tail)].strip()
                 rest = f"{_env_split_string(raw.partition('=')[2])} {tail}".strip()
                 break
+            if token in _PREFIX_TERMINAL_FLAGS or token in _PREFIX_LOOKUP_FLAGS.get(
+                name, frozenset()
+            ):
+                # `env --help pip install ...` prints help and exits, and `command -v pip`
+                # only reports a path. Unwrapping past either fabricated an install from a
+                # command that never runs pip.
+                return text, prefixed
             if "=" in token and token.startswith("--"):
                 rest = tail  # `--unset=NAME` carries its operand inline
                 continue
@@ -1345,8 +1356,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         elif line.startswith("||", i):
             _fold_pending(list_has_pip, prev_ops, "".join(buf))
             prev_ops[-1] = "||"
+            # `false || pip install ...` always reaches the fallback, so it is no more
+            # conditional than a bare command. Only an UNKNOWN left side opens a tail.
+            certain_failure = _piece_success_model("".join(buf)) is False
             flush("||")
-            tails[-1] = True
+            tails[-1] = not certain_failure
             buf_conditional = any(tails)
             i += 2
         elif line.startswith("&&", i):
@@ -1442,30 +1456,47 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     # echo x; pip install ...; fi` runs neither command, but only the piece carrying the
     # `then` was being flagged, so the second one replayed as an install bash never performs.
     body_levels: list[bool] = []
+    # Per open compound: what its test is modelled as returning, or None when unknown. A body
+    # whose test can never succeed is unreachable rather than conditional.
+    test_models: list[bool | None] = []
     for (piece, flag), (text, command_flag), separator in zip(out, commands, seps):
         if handed_over:
             break
-        for keyword in _leading_shell_keywords(piece):
+        keywords = _leading_shell_keywords(piece)
+        # The SELECTOR of a `case` runs before any arm is chosen, so a substitution in it is
+        # unconditional even though the arms it opens are not.
+        opens_case = "case" in keywords
+        for keyword in keywords:
             if keyword == "case":
-                # Every command between `case` and `esac` sits in some arm, and only the
-                # matching arm runs. No body keyword ever opens one -- an arm starts with a
-                # pattern -- so the level is active from the word itself.
+                # Every command between here and its `esac` sits in some arm, and only the
+                # matching arm runs. No body keyword ever opens one, so the level is active
+                # from the word itself.
                 body_levels.append(True)
+                test_models.append(None)
             elif keyword in _SHELL_TEST_KEYWORDS:
                 body_levels.append(False)  # the test itself runs whenever the line does
+                test_models.append(None)
             elif keyword in _SHELL_BODY_KEYWORDS:
                 if body_levels:
                     body_levels[-1] = True
                 else:
                     body_levels.append(True)
+                    test_models.append(None)
             elif body_levels:
                 body_levels.pop()  # fi / done / esac
+                test_models.pop()
         # `flag` alone is the separator-level state: a substitution inside a compound body or
         # a case arm is expanded only when that body runs, so it inherits those too.
+        if any(model is False for model in test_models):
+            continue  # the enclosing test can never succeed, so nothing here runs
         piece_conditional = flag or command_flag or any(body_levels)
+        # A `case` selector sits in the same piece as the first arm, so the arm body keeps the
+        # level this piece opened while the substitutions ahead of it do not.
+        selector_levels = body_levels[:-1] if opens_case else body_levels
+        sub_conditional = flag or command_flag or any(selector_levels)
         for inner in _substitution_bodies(piece):
             ordered.extend(
-                (inner_text, piece_conditional or inner_flag)
+                (inner_text, sub_conditional or inner_flag)
                 for inner_text, inner_flag in _split_chained(f"!{inner}")
             )
         # `${READY:-$(pip install ...)}` expands its word only when READY is unset, so the
@@ -1473,6 +1504,14 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         for inner in _substitution_bodies(piece, conditional = True):
             ordered.extend((inner_text, True) for inner_text, _ in _split_chained(f"!{inner}"))
         if text:
+            # `if false` / `while false` / `until true` can never reach their body, so what
+            # follows is not merely conditional but unreachable, and reporting an install
+            # from it is a finding about a command bash cannot run.
+            if keywords and keywords[0] in ("if", "while", "until") and test_models:
+                model = _piece_success_model(text)
+                if keywords[0] == "until":
+                    model = None if model is None else not model
+                test_models[-1] = model
             ordered.append((text, piece_conditional))
             # The RAW piece: `_unwrap_shell_group` has already stripped `exec` out of `text`
             # along with every other transparent prefix. An `exec` bash may never reach hands
@@ -2820,6 +2859,21 @@ def _fetch_oracle(url: str) -> bytes | None:
         return None
 
 
+def _oracle_payload_is_usable(upstream_name: str, data: bytes) -> bool:
+    """Does a freshly fetched oracle still carry what a rule reads out of it?"""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    parsed = _COLAB_ORACLE_PARSERS[upstream_name](text)
+    if upstream_name == COLAB_STRICT_ORACLE and not parsed:
+        return False  # an empty pin file resolves every R-INST rule against nothing
+    return all(
+        _strict_key_usable(upstream_name, key, parsed)
+        for key in COLAB_STRICT_ORACLE_KEYS.get(upstream_name, frozenset())
+    )
+
+
 def cmd_refresh_colab(args: argparse.Namespace) -> int:
     """Pull the latest Colab pip-freeze.gpu.txt and write to disk. --all
     refreshes every oracle file into --snapshot-dir instead, which is how a
@@ -2831,20 +2885,43 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
         # since pip is fetched first and is the only oracle --strict reads, the
         # tripwire would go quiet on a refresh that actually failed.
         payloads: dict[str, bytes] = {}
+        skipped: list[str] = []
         for upstream_name, snapshot_name in COLAB_ORACLE_FILES.items():
+            rule_bearing = (
+                upstream_name == COLAB_STRICT_ORACLE
+                or upstream_name in COLAB_STRICT_ORACLE_KEYS
+            )
             data = _fetch_oracle(COLAB_ORACLE_BASE_URL + upstream_name)
+            reason = None
             if data is None:
+                reason = "could not be fetched"
+            elif rule_bearing and not _oracle_payload_is_usable(upstream_name, data):
+                # Acknowledging a payload the rules cannot read is worse than not
+                # acknowledging at all: colab-diff compares the two parses, so an upstream
+                # format change written into the snapshot leaves both sides equally empty
+                # and the tripwire goes quiet on the very rotation it exists to catch.
+                reason = "carries no key the rules can read"
+            if reason is None:
+                payloads[snapshot_name] = data
+                continue
+            if rule_bearing:
                 print(
-                    "FAIL: refresh-colab --all could not fetch every oracle; "
+                    f"FAIL: refresh-colab --all: {upstream_name} {reason}; "
                     "no snapshot was written",
                     file = sys.stderr,
                 )
                 return 2
-            payloads[snapshot_name] = data
+            # Advisory oracle. Nothing resolves a rule against it, so a transient upstream
+            # failure must leave its stale snapshot in place rather than redden the daily
+            # cron -- the same disposition colab-diff already gives its drift.
+            print(f"::notice::skipping {upstream_name}: {reason}")
+            skipped.append(upstream_name)
         snapshot_dir.mkdir(parents = True, exist_ok = True)
         for snapshot_name, data in payloads.items():
             _atomic_write_bytes(snapshot_dir / snapshot_name, data)
             print(f"wrote {len(data)} bytes to {snapshot_dir / snapshot_name}")
+        if skipped:
+            print(f"left as committed: {', '.join(skipped)}")
         return 0
     out = pathlib.Path(args.out).resolve()
     out.parent.mkdir(parents = True, exist_ok = True)

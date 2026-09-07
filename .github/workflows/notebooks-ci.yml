@@ -260,7 +260,9 @@ jobs:
         # the lint below. A Colab rotation is exactly when the live-metadata
         # pass is worth having, and skipping it there would mean the job only
         # ever lints on the days nothing changed. The strict step still decides
-        # the job's verdict.
+        # the job's verdict. An advisory oracle that will not fetch is skipped
+        # rather than fatal, matching how colab-diff treats its drift; only the
+        # rule-bearing ones stop the refresh.
         if: always()
         run: |
           python unsloth/scripts/notebook_validator.py refresh-colab \

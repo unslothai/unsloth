@@ -3205,8 +3205,13 @@ def test_exec_ends_the_command_list():
     ] == ["R-INST-001"]
     assert [
         (inv.action, inv.packages)
-        for inv in nv.unconditional_pip_invocations("!false || exec pip install a; pip install b")
+        for inv in nv.unconditional_pip_invocations("!maybe || exec pip install a; pip install b")
     ] == [("install", ["b"])]
+    # A fallback behind a command that cannot succeed always runs, so THAT exec does hand over.
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations("!false || exec pip install a; pip install b")
+    ] == [("install", ["a"])]
     # An `exec` inside `$( )` replaces that subshell only.
     assert [
         (inv.action, inv.packages)
@@ -3414,8 +3419,8 @@ def test_a_compound_body_stays_conditional_past_its_separators():
     """
     nv = _load_notebook_validator_module()
 
-    assert nv._split_chained('!if false; then echo x; pip install "torch==2.12.0"; fi') == [
-        ("!false", False),
+    assert nv._split_chained('!if maybe; then echo x; pip install "torch==2.12.0"; fi') == [
+        ("!maybe", False),
         ("!echo x", True),
         ('!pip install "torch==2.12.0"', True),
     ]
@@ -3429,8 +3434,8 @@ def test_a_compound_body_stays_conditional_past_its_separators():
         == []
     )
     # The body ends at its closer, and the test itself runs whenever the line does.
-    assert nv._split_chained("!if false; then pip install a; fi; pip install b") == [
-        ("!false", False),
+    assert nv._split_chained("!if maybe; then pip install a; fi; pip install b") == [
+        ("!maybe", False),
         ("!pip install a", True),
         ("!pip install b", False),
     ]
@@ -3588,7 +3593,7 @@ def test_a_substitution_inherits_the_body_condition():
 
     assert [
         flag
-        for _, flag in nv._split_chained("!if false; then echo $(pip install torch==2.10.0); fi")
+        for _, flag in nv._split_chained("!if maybe; then echo $(pip install torch==2.10.0); fi")
     ] == [False, True, True]
     assert (
         nv.rule_inst_004_torchcodec_torch(
@@ -3916,3 +3921,78 @@ def test_exec_behind_an_external_wrapper_hands_nothing_over():
     # The prefixes bash resolves in-process still preserve the builtin.
     assert nv._command_execs("!command exec pip install a") is True
     assert nv._command_execs("!exec pip install a") is True
+
+
+def test_a_fallback_behind_a_certain_failure_is_unconditional():
+    """`false || pip install x` always installs, so it is not a path the notebook MAY take.
+
+    Verified against bash: `false || printf ran` prints `ran`. Every `||` tail was recorded as
+    conditional, so the pinned install in `pip show torch || pip install torch==...` -- and the
+    common `python -c 'import x' || pip install x` -- was invisible to R-INST-004.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert [
+        (inv.action, inv.packages)
+        for inv in nv.unconditional_pip_invocations("!false || pip install torch==2.11.0")
+    ] == [("install", ["torch==2.11.0"])]
+    # A left side that MIGHT succeed keeps its fallback conditional.
+    assert (
+        list(nv.unconditional_pip_invocations("!maybe || pip install torch==2.11.0")) == []
+    )
+
+
+def test_a_case_selector_is_expanded_before_any_arm_is_chosen():
+    """`case $(pip install x) in ...` runs the install whatever the arms do.
+
+    The selector shares its piece with the first arm, and the arm's condition was being applied
+    to both, so a version the notebook certainly installs read as one it merely might.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!case $(pip install torch==2.11.0) in a) pip install b;; esac") == [
+        ("!pip install torch==2.11.0", False),
+        ("!$(pip install torch==2.11.0) in a) pip install b", True),
+    ]
+    # The arms themselves stay conditional, selector or no selector.
+    assert nv._split_chained("!case x in a) pip install b;; esac") == [("!pip install b", True)]
+
+
+def test_a_prefix_option_that_never_runs_a_command_is_not_unwrapped():
+    """`env --help` and `command -v pip` print and exit; neither runs pip.
+
+    Verified locally: `env --help` writes its usage and exits 0. Unwrapping past the option
+    reported `pip install` from a line that only asked where pip lives.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._strip_exec_prefixes("env --help") == ("env --help", True)
+    assert nv._strip_exec_prefixes("command -v pip") == ("command -v pip", True)
+    assert list(nv.unconditional_pip_invocations("!command -v pip install a")) == []
+    # A prefix carrying a real command still hands it over.
+    assert nv._strip_exec_prefixes("command pip install a") == ("pip install a", True)
+
+
+def test_a_body_whose_test_can_never_succeed_runs_nothing():
+    """`if false; then pip install x; fi` installs nothing at all.
+
+    The body was merely conditional, so a version bash cannot reach was replayed as a path the
+    notebook might take and R-INST-004 fired on it.
+    """
+    nv = _load_notebook_validator_module()
+
+    assert nv._split_chained("!if false; then pip install torch==2.12.0; fi") == [
+        ("!false", False)
+    ]
+    assert (
+        nv.rule_inst_004_torchcodec_torch(
+            "!if false; then pip install torch==2.12.0; fi", COLAB_TORCH211, "nb.ipynb", 0
+        )
+        == []
+    )
+    # `until true` never enters its body either, and an unknown test stays conditional.
+    assert nv._split_chained("!until true; do pip install a; done") == [("!true", False)]
+    assert nv._split_chained("!if maybe; then pip install a; fi") == [
+        ("!maybe", False),
+        ("!pip install a", True),
+    ]
