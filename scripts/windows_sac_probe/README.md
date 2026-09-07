@@ -104,8 +104,15 @@ If Studio runs from a custom home (`UNSLOTH_STUDIO_HOME`) or a custom runtime
 probe, so it inventories the runtime Studio actually loads and reads the logs
 Studio actually writes.
 
-`prepare` is slow the first time because it runs `winget upgrade --all` and
-`Update-MpSignature`. Add `-SkipUpdates` to skip both.
+`prepare` runs `Update-MpSignature`; add `-SkipUpdates` to skip it. It does not
+upgrade packages unless you pass `-UpgradePackages`: `winget upgrade --all` changes
+every managed package on the machine and `revert` cannot put them back, so it is
+not part of the reversible run.
+
+Running `prepare` again with the same label (after a failure, or to add
+`-AuditPolicy`) keeps the baseline the first pass captured, so `revert` still
+restores the machine as it was before the first pass. `collect` refuses a label
+that was never prepared rather than exporting unrelated events.
 
 ### On a machine with no Unsloth on it
 

@@ -124,6 +124,72 @@ def _request(
         return 0, str(exc)
 
 
+# /api/inference/load and /unload commit a 200 after about 15 seconds and pad
+# the body so a proxy cannot time the call out; a failure found after that
+# travels only under this key, and a proxy that gives up mid-pad leaves an
+# empty body. The same reading unsloth_cli/_inference.py applies.
+_DEFERRED_ERROR_KEY = "_deferred_error"
+
+
+def padded_route_failure(status: int, body: Any) -> Optional[str]:
+    """Why a /load or /unload reply is not a success, or None when it is."""
+    if status != 200:
+        return str(body)[:800]
+    if not isinstance(body, dict) or not body:
+        return "the connection closed before the server's reply arrived (empty or truncated body)"
+    deferred = body.get(_DEFERRED_ERROR_KEY)
+    if isinstance(deferred, dict):
+        return f"deferred {deferred.get('status_code')}: {str(deferred.get('detail'))[:700]}"
+    return None
+
+
+def _stream_events(
+    base_url: str,
+    path: str,
+    payload: dict,
+    token: Optional[str],
+    timeout: int = 900,
+) -> tuple[int, list[dict], Optional[str]]:
+    """POST a streaming request and return every parsed `data:` object.
+
+    Tool execution is visible only here: the non-streaming route drains the
+    tool loop and returns the final text alone, so a turn that never ran a
+    tool is indistinguishable from one that did.
+    """
+    headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(
+        base_url + path, data = json.dumps(payload).encode(), headers = headers, method = "POST"
+    )
+    start = time.monotonic()
+    events: list[dict] = []
+    try:
+        with urllib.request.urlopen(req, timeout = timeout) as response:
+            for raw in response:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    parsed = json.loads(data)
+                except ValueError:
+                    continue
+                if isinstance(parsed, dict):
+                    events.append(parsed)
+            TIMED.record("POST", path, (time.monotonic() - start) * 1000.0, response.status)
+            return response.status, events, None
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        TIMED.record("POST", path, (time.monotonic() - start) * 1000.0, exc.code, body[:400])
+        return exc.code, events, body[:400]
+    except Exception as exc:  # noqa: BLE001 - a transport failure is a result here
+        TIMED.record("POST", path, (time.monotonic() - start) * 1000.0, "error", str(exc)[:400])
+        return 0, events, str(exc)[:400]
+
+
 def discover_port(explicit: Optional[int]) -> int:
     ports = [explicit] if explicit else DEFAULT_PORTS
     for port in ports:
@@ -242,21 +308,53 @@ def chat(
         "stream": False,
     }
     if tools:
+        # Streamed, because tool_start / tool_end ride the stream and nothing
+        # else says a tool ran: the non-streaming route returns the final
+        # text alone, and a model answering from memory would pass as a tool
+        # turn. tool_choice pins the tool so an ignored instruction is a
+        # server finding rather than a model's mood.
+        names = enabled_tools or ["web_search"]
+        payload["stream"] = True
         payload["enable_tools"] = True
-        payload["enabled_tools"] = enabled_tools or ["web_search"]
+        payload["enabled_tools"] = names
+        payload["tool_choice"] = {"type": "function", "function": {"name": names[0]}}
+        status, events, error = _stream_events(
+            base_url, "/v1/chat/completions", payload, token = token
+        )
+        text = ""
+        started: list[str] = []
+        finished: list[str] = []
+        for event in events:
+            kind = event.get("type")
+            if kind == "tool_start":
+                started.append(str(event.get("tool_name") or ""))
+            elif kind == "tool_end":
+                finished.append(str(event.get("tool_name") or ""))
+            for choice in event.get("choices", []) or []:
+                text += (choice.get("delta") or {}).get("content") or ""
+        return {
+            "status": status,
+            "ok": status == 200 and bool(finished),
+            "chars": len(text),
+            "tool_calls": len(finished),
+            "tools_started": started,
+            "tools_run": finished,
+            "text": text[:600],
+            "error": error
+            if error
+            else (None if finished else "no tool_end event: the turn executed no tool"),
+        }
     status, body = _request(base_url, "POST", "/v1/chat/completions", payload, token = token)
     text = ""
-    tool_calls: list[Any] = []
     if status == 200 and isinstance(body, dict):
         for choice in body.get("choices", []) or []:
             message = choice.get("message") or {}
             text += message.get("content") or ""
-            tool_calls.extend(message.get("tool_calls") or [])
     return {
         "status": status,
-        "ok": status == 200 and bool(text.strip() or tool_calls),
+        "ok": status == 200 and bool(text.strip()),
         "chars": len(text),
-        "tool_calls": len(tool_calls),
+        "tool_calls": 0,
         "text": text[:600],
         "error": None if status == 200 else str(body)[:400],
     }
@@ -319,15 +417,18 @@ def main() -> int:
             token = token,
             timeout = 1800,
         )
+        load_error = padded_route_failure(status, body)
         results["steps"]["load"] = {
             "status": status,
-            "ok": status == 200,
-            "error": None if status == 200 else str(body)[:800],
+            "ok": load_error is None,
+            "error": load_error,
         }
-        if status != 200:
+        if load_error is not None:
             # This is the interesting failure. A blocked llama-server shows up
-            # here, and the backend log carries the code integrity reason.
-            print(f"  load FAILED ({status}): {str(body)[:400]}")
+            # here, and the backend log carries the code integrity reason. A
+            # slow download followed by the refusal arrives as a 200 whose
+            # body carries the error, which is why the status alone is not read.
+            print(f"  load FAILED ({status}): {load_error[:400]}")
         else:
             print("  loaded")
 
@@ -373,13 +474,16 @@ def main() -> int:
                 token = token,
                 timeout = 300,
             )
+            unload_error = padded_route_failure(status, body)
             results["steps"]["unload"] = {
                 "status": status,
-                "ok": status == 200,
-                "error": None if status == 200 else str(body)[:400],
+                "ok": unload_error is None,
+                "error": unload_error,
             }
             print(
-                "  unloaded" if status == 200 else f"  unload FAILED ({status}): {str(body)[:200]}"
+                "  unloaded"
+                if unload_error is None
+                else f"  unload FAILED ({status}): {unload_error[:200]}"
             )
     finally:
         poller.stop()

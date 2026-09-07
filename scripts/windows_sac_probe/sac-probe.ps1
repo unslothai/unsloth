@@ -54,8 +54,12 @@ param(
     # Model to exercise. Any GGUF repo Studio can load.
     [string] $Model = 'unsloth/Qwen3.5-2B-MTP-GGUF:UD-Q4_K_XL',
 
-    # prepare only: skip winget/Defender updates, which are slow.
+    # prepare only: skip the Defender signature update, which is slow.
     [switch] $SkipUpdates,
+
+    # prepare only: also run winget upgrade --all. Off by default because revert
+    # cannot undo it: the baseline records no package versions.
+    [switch] $UpgradePackages,
 
     # run only: skip the Studio scenario and just do the signature inventory.
     [switch] $SkipStudio,
@@ -115,6 +119,12 @@ function Invoke-Native([string] $Exe, [string[]] $Arguments) {
 # caller's finally can unmount exactly what it mounted.
 function Mount-Efi {
     if (Test-Path -LiteralPath 'S:\') {
+        # S: is already something. Only the EFI system partition may be used as
+        # is: the policy tree written onto a data or network volume installs
+        # nothing, and the missing 3076 events would then read as an allow.
+        if (-not (Test-Path -LiteralPath 'S:\EFI\Microsoft\Boot')) {
+            throw 'S: is mapped to a volume that is not the EFI system partition; free the drive letter and run again'
+        }
         return $false
     }
     Invoke-Native 'mountvol.exe' @('S:', '/S')
@@ -223,9 +233,11 @@ function Get-StudioPython {
         unsloth.exe would fail for a reason that has nothing to do with what we
         are measuring.
     #>
-    $roots = @()
-    if ($env:UNSLOTH_STUDIO_HOME) { $roots += $env:UNSLOTH_STUDIO_HOME }
-    $roots += (Join-Path $env:USERPROFILE '.unsloth\studio')
+    # The same precedence as Get-StudioHome, so a Studio configured through
+    # the STUDIO_HOME alias is found rather than reinstalled beside itself.
+    $legacy = Join-Path $env:USERPROFILE '.unsloth\studio'
+    $roots = @((Get-StudioHome))
+    if ($roots[0] -ne $legacy) { $roots += $legacy }
     foreach ($root in $roots) {
         $py = Join-Path $root 'unsloth_studio\Scripts\python.exe'
         if (Test-Path -LiteralPath $py) { return $py }
@@ -348,7 +360,16 @@ function Invoke-Prepare {
     Assert-Elevated
     $dir = Get-RunDir
     Write-Section 'Baseline'
-    $baseline = Save-Baseline $dir
+    $baselinePath = Join-Path $dir 'baseline.json'
+    if (Test-Path -LiteralPath $baselinePath) {
+        # A retry of this label. The machine already carries whatever the first
+        # pass changed, so snapshotting it again would record the raised
+        # settings, and our own policy, as the state revert should restore.
+        $baseline = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+        Write-Warning "reusing the baseline captured at $($baseline.CapturedAt) by an earlier prepare of this label; revert restores that state"
+    } else {
+        $baseline = Save-Baseline $dir
+    }
     Write-Host ("Smart App Control: {0} (registry state {1})" -f $baseline.Sac.Mode, $baseline.Sac.RegistryState)
     foreach ($p in $baseline.Sac.Policies) {
         Write-Host ("  policy {0} enforced={1}" -f $p.FriendlyName, $p.IsEnforced)
@@ -356,12 +377,16 @@ function Invoke-Prepare {
 
     if (-not $SkipUpdates) {
         Write-Section 'Updates'
-        # Both are best effort. A machine that cannot reach the update service
-        # is still worth probing, and failing here would waste the operator's time.
+        # Best effort. A machine that cannot reach the update service is still
+        # worth probing, and failing here would waste the operator's time.
         try {
             Write-Host 'Update-MpSignature ...'
             Update-MpSignature -ErrorAction Stop
         } catch { Write-Warning "Update-MpSignature failed: $_" }
+    }
+    if ($UpgradePackages) {
+        # Opt-in: this changes every winget-managed package on the machine and
+        # revert cannot put them back, so it is not part of the reversible run.
         try {
             Write-Host 'winget upgrade --all ...'
             & winget upgrade --all --accept-source-agreements --accept-package-agreements --silent 2>&1 |
@@ -403,23 +428,27 @@ function Invoke-Prepare {
         # one here. It logs 3076 for anything it would refuse.
         $mounted = Mount-Efi
         try {
-            if (Test-Path -LiteralPath $NOISG_DEST) {
-                # Somebody's policy already carries this GUID. Keep it so revert
-                # restores it instead of deleting an administrator's policy.
+            # A file already there is somebody's policy only if this label did
+            # not put it there: on a retry it is ours, and saving it as
+            # pre-existing would make revert reinstall it.
+            if ((Test-Path -LiteralPath $NOISG_DEST) -and -not $baseline.AuditPolicyApplied) {
+                # Keep it so revert restores it instead of deleting an
+                # administrator's policy.
                 Copy-Item -LiteralPath $NOISG_DEST -Destination (Join-Path $dir 'preexisting-policy.cip') -Force
                 $baseline.AuditPolicyPreexisting = $true
                 Write-Warning "a policy with $NOISG_GUID was already installed; saved to preexisting-policy.cip and will be restored by revert"
             }
             New-Item -ItemType Directory -Force -Path (Split-Path $NOISG_DEST) | Out-Null
             Copy-Item -LiteralPath $AuditPolicy -Destination $NOISG_DEST -Force
+            # Persisted before the refresh: if CiTool fails, the copied file is
+            # on the EFI partition and revert must know to remove or restore it.
+            $baseline.AuditPolicyApplied = $true
+            $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
             Invoke-Native 'CiTool.exe' @('-r')
         } finally {
             Dismount-Efi $mounted
         }
         Write-Host "applied $(Split-Path $AuditPolicy -Leaf) as $NOISG_GUID and refreshed policy"
-
-        $baseline.AuditPolicyApplied = $true
-        $baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $dir 'baseline.json') -Encoding UTF8
 
         Write-Section 'Policy state after applying'
         $after = Get-SacState
@@ -487,7 +516,9 @@ function Invoke-Run {
     # A machine that was prepared earlier may have been rebooted since, which is
     # itself part of the reported behaviour: Smart App Control re-evaluates from
     # a cleared cache after a restart. Bring Studio back rather than failing.
-    if (-not (Test-StudioResponding $Port)) { Initialize-Studio $dir }
+    # Not under -SkipStudio: a signature-only run must not start, let alone
+    # install, Studio inside the evidence window.
+    if (-not $SkipStudio -and -not (Test-StudioResponding $Port)) { Initialize-Studio $dir }
 
     Write-Section 'Signature inventory'
     Write-Host "runtime: $LLAMA_DIR"
@@ -540,11 +571,13 @@ function Invoke-Collect {
     $dir = Get-RunDir
 
     $startPath = Join-Path $dir 'window-start.txt'
-    $start = if (Test-Path -LiteralPath $startPath) {
-        [datetime]::Parse((Get-Content -LiteralPath $startPath -Raw).Trim())
-    } else {
-        (Get-Date).AddHours(-2)
+    if (-not (Test-Path -LiteralPath $startPath)) {
+        # Get-RunDir creates the directory, so a mistyped label or a collect
+        # without a prepare lands here. Inventing a window would export
+        # unrelated events as evidence for this scenario.
+        throw "no window-start.txt under ${dir}: prepare did not run for label '$Label', so there is no event window to collect"
     }
+    $start = [datetime]::Parse((Get-Content -LiteralPath $startPath -Raw).Trim())
     Write-Section "Events since $($start.ToString('o'))"
 
     $events = @()
@@ -591,9 +624,10 @@ function Invoke-Collect {
     } catch { Write-Warning "evtx export failed: $_" }
 
     try {
-        Get-MpThreatDetection -ErrorAction Stop |
-            Select-Object InitialDetectionTime, ThreatID, Resources |
-            ConvertTo-Json -Depth 4 |
+        # Captured into an array first: a clean machine yields nothing, and a
+        # pipeline with no input writes an empty file rather than [].
+        $detections = @(Get-MpThreatDetection -ErrorAction Stop | Select-Object InitialDetectionTime, ThreatID, Resources)
+        ConvertTo-Json -InputObject $detections -Depth 4 |
             Set-Content -LiteralPath (Join-Path $dir 'defender-detections.json') -Encoding UTF8
     } catch {
         '[]' | Set-Content -LiteralPath (Join-Path $dir 'defender-detections.json') -Encoding UTF8

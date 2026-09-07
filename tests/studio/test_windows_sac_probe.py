@@ -118,9 +118,23 @@ def test_the_scenario_loads_with_the_variant_field_and_unloads_by_model_path(tmp
             return 200, {"access_token": "tok"}
         if path == "/v1/chat/completions":
             return 200, {"choices": [{"message": {"content": "hi", "tool_calls": []}}]}
-        return 200, {}
+        # The padded routes answer with a real payload; {} is a truncated pad.
+        return 200, {"status": "done"}
+
+    def fake_stream(base_url, path, payload, token = None, timeout = 900):
+        calls.append(("STREAM", path, payload or {}))
+        return (
+            200,
+            [
+                {"type": "tool_start", "tool_name": "web_search"},
+                {"type": "tool_end", "tool_name": "web_search"},
+                {"choices": [{"delta": {"content": "found it"}}]},
+            ],
+            None,
+        )
 
     monkeypatch.setattr(s, "_request", fake)
+    monkeypatch.setattr(s, "_stream_events", fake_stream)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -147,6 +161,9 @@ def test_the_scenario_loads_with_the_variant_field_and_unloads_by_model_path(tmp
     assert unload[2] == {"model_path": "unsloth/Qwen3.5-2B-MTP-GGUF"}
     chat = next(c for c in calls if c[1] == "/v1/chat/completions")
     assert chat[2]["model"] == "unsloth/Qwen3.5-2B-MTP-GGUF"
+    streamed = [c for c in calls if c[0] == "STREAM"]
+    assert len(streamed) == 2 and all(c[2]["stream"] is True for c in streamed)
+    assert all(c[2]["tool_choice"]["function"]["name"] == "web_search" for c in streamed)
     results = json.loads((tmp_path / "scenario-results.json").read_text(encoding = "utf-8"))
     assert results["steps"]["unload"]["ok"] is True
     assert "in_flight_ms" in results["status_poll"]
@@ -220,3 +237,84 @@ def test_the_readme_does_not_claim_the_release_tag_pins_a_run():
     assert "read\nby the installer only" in body or "read by the installer only" in body
     assert "re-run the Studio installer" in body
     assert "$env:UNSLOTH_STUDIO_PASSWORD" in body
+
+
+def test_a_padded_load_reply_is_read_for_its_deferred_error():
+    """/api/inference/load commits a 200 after 15 seconds and reports a later
+    failure only in the body, so a download followed by the CodeIntegrity
+    refusal this probe exists to catch was recorded as a successful load."""
+    s = _load_scenario()
+    assert s.padded_route_failure(200, {"status": "loaded"}) is None
+    assert s.padded_route_failure(500, {"detail": "boom"}) == "{'detail': 'boom'}"
+    deferred = s.padded_route_failure(
+        200, {"_deferred_error": {"status_code": 500, "detail": "llama-server was blocked"}}
+    )
+    assert deferred and "llama-server was blocked" in deferred
+    assert s.padded_route_failure(200, {}) is not None, "a truncated padded body is not a load"
+    assert s.padded_route_failure(200, "") is not None
+    source = (PROBE_DIR / "studio_scenario.py").read_text(encoding = "utf-8")
+    assert source.count("padded_route_failure(status, body)") == 2, "both padded routes read it"
+
+
+def test_a_tool_turn_is_ok_only_when_a_tool_actually_ran(monkeypatch):
+    """The non-streaming route drains the tool loop and returns the final text
+    alone, so a model answering from memory passed as a tool turn."""
+    s = _load_scenario()
+    monkeypatch.setattr(
+        s,
+        "_stream_events",
+        lambda *a, **k: (200, [{"choices": [{"delta": {"content": "Burj Khalifa"}}]}], None),
+    )
+    memory = s.chat("http://x", "t", "m", "look it up", tools = True)
+    assert memory["ok"] is False and memory["tool_calls"] == 0 and "no tool_end" in memory["error"]
+    monkeypatch.setattr(
+        s,
+        "_stream_events",
+        lambda *a, **k: (
+            200,
+            [{"type": "tool_start", "tool_name": "web_search"}, {"type": "tool_end", "tool_name": "web_search"}],
+            None,
+        ),
+    )
+    ran = s.chat("http://x", "t", "m", "look it up", tools = True)
+    assert ran["ok"] is True and ran["tools_run"] == ["web_search"]
+
+
+def test_the_powershell_probe_handles_retries_skips_and_occupied_drives():
+    ps1 = (PROBE_DIR / "sac-probe.ps1").read_text(encoding = "utf-8")
+    # -SkipStudio means signature only: no Studio start or install in the window.
+    assert "if (-not $SkipStudio -and -not (Test-StudioResponding $Port)) { Initialize-Studio $dir }" in ps1
+    # collect refuses to invent an event window.
+    assert "(Get-Date).AddHours(-2)" not in ps1
+    assert "no window-start.txt under" in ps1
+    # An occupied S: that is not the EFI system partition is an error, not "already mounted".
+    assert "'S:\\EFI\\Microsoft\\Boot'" in ps1
+    # A clean machine's detections serialise as [].
+    assert "ConvertTo-Json -InputObject $detections" in ps1
+    # winget upgrade --all is opt-in, since revert cannot undo it.
+    assert "if ($UpgradePackages) {" in ps1 and "if (-not $SkipUpdates) {" in ps1
+    winget = ps1.index("winget upgrade --all --accept")
+    assert ps1.rfind("if ($UpgradePackages) {", 0, winget) > ps1.rfind("if (-not $SkipUpdates) {", 0, winget)
+    # A rerun keeps the first baseline and does not treat its own policy as pre-existing.
+    assert "$baseline = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json" in ps1
+    assert "(Test-Path -LiteralPath $NOISG_DEST) -and -not $baseline.AuditPolicyApplied" in ps1
+    # Rollback state is on disk before the refresh that can fail.
+    applied = ps1.index("$baseline.AuditPolicyApplied = $true")
+    refresh = ps1.index("Invoke-Native 'CiTool.exe' @('-r')")
+    persist = ps1.index("Set-Content -LiteralPath $baselinePath", applied)
+    assert applied < persist < refresh
+    # The interpreter locator shares Get-StudioHome's precedence (STUDIO_HOME alias included).
+    locator = ps1[ps1.index("function Get-StudioPython") : ps1.index("function Test-StudioResponding")]
+    assert "Get-StudioHome" in locator and "$env:UNSLOTH_STUDIO_HOME" not in locator
+
+
+def test_the_signature_audit_fails_on_any_missing_bundle():
+    """A native exit code is not terminating in pwsh and a later download
+    replaces $LASTEXITCODE, so a family whose asset was missing was audited as
+    absent and passed under enforce."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    download = body.index("gh release download $tag")
+    loop_end = body.index("Get-ChildItem bundles | Format-Table")
+    block = body[download:loop_end]
+    assert "if ($LASTEXITCODE -ne 0) { throw" in block
+    assert "Get-ChildItem bundles -Filter $pattern" in block

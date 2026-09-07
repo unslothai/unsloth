@@ -97,6 +97,12 @@ jobs:
             '*windows-x64-rocm-gfx110X.zip'
           )) {
             gh release download $tag --repo unslothai/llama.cpp --pattern $pattern --dir bundles --clobber
+            # A native exit code is not terminating under 'Stop', and a later
+            # successful download replaces $LASTEXITCODE, so a family whose
+            # asset is missing would be audited as absent and pass. Check each
+            # one, and that a file actually landed.
+            if ($LASTEXITCODE -ne 0) { throw "gh release download exited $LASTEXITCODE for $pattern" }
+            if (-not (Get-ChildItem bundles -Filter $pattern)) { throw "no asset of $tag matched $pattern" }
           }
           Get-ChildItem bundles | Format-Table Name, Length -AutoSize | Out-String | Write-Host
 
