@@ -390,6 +390,8 @@ def test_lora_gguf_converter_is_denied_the_host_token(monkeypatch, tmp_path):
     for key in save_mod._HF_TOKEN_ENV_KEYS:
         assert key not in env, f"{key} survived into a forced-anonymous converter"
     assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1", "the cached token is still implicit"
+    # Scrubbing the env still leaves the operator's token FILE readable by get_token().
+    assert env["HF_TOKEN_PATH"] == os.devnull
 
 
 def test_lora_gguf_converter_gets_an_explicit_token(monkeypatch, tmp_path):

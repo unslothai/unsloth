@@ -1883,6 +1883,9 @@ def _split_main_gguf(initial_files, gguf_shard_size: str, quantizer_location: st
                 check = True,
                 capture_output = True,
                 text = True,
+                # Windows defaults to cp1252 and crashes on the child's output (#2660).
+                encoding = "utf-8",
+                errors = "replace",
             )
         except subprocess.CalledProcessError as exception:
             details = (exception.stderr or exception.stdout or "").strip()
@@ -5569,31 +5572,24 @@ def save_lora_to_custom_dir(model, tokenizer, save_directory):
 # Valid output float types for llama.cpp's convert_lora_to_gguf.py.
 _LORA_GGUF_OUTTYPES = ("f32", "f16", "bf16", "q8_0", "auto")
 
-# huggingface_hub's get_token() reads exactly HF_TOKEN then HUGGING_FACE_HUB_TOKEN (utils/_auth.py,
-# unchanged 0.34 -> 1.30). The rest are third-party conventions -- HUGGINGFACEHUB_API_TOKEN is
-# LangChain's and appears nowhere in the Hub docs -- but our child may run code that reads them, and
-# withholding a credential is not the same as denying one.
+# get_token() reads only the first two; the rest are third-party conventions our child may read.
+# HF_OIDC_* hold no token but mint one, ahead of HF_TOKEN, on hub >= 1.19.
 _HF_TOKEN_ENV_KEYS = (
     "HF_TOKEN",
     "HF_HUB_TOKEN",
     "HUGGING_FACE_HUB_TOKEN",
     "HUGGINGFACE_HUB_TOKEN",
     "HUGGINGFACEHUB_API_TOKEN",
+    "HF_OIDC_RESOURCE",
+    "HF_OIDC_ID_TOKEN",
 )
-
-# These name a credential rather than holding one: huggingface_hub >= 1.19 exchanges them inside
-# get_token() BEFORE it looks at any name above, so a child that keeps them can still mint the
-# operator's token in CI. Studio's hub/utils/hf_tokens.py scrubs HF_OIDC_RESOURCE for the same
-# reason; HF_OIDC_ID_TOKEN is here too because _get_token_from_oidc reads both.
-_HF_OIDC_ENV_KEYS = ("HF_OIDC_RESOURCE", "HF_OIDC_ID_TOKEN")
 
 
 def _clean_save_token(token):
-    """Trim a token without laundering huggingface_hub's forced-anonymous ``False`` into ``None``.
+    """Trim a token, keeping huggingface_hub's forced-anonymous ``False`` out of ``None``.
 
-    Whitespace is not a credential. ``""`` and ``"   "`` used to survive as one: huggingface_hub 1.x
-    raises ``httpx.LocalProtocolError`` on the ``Bearer `` header they build, and 0.x sends it and
-    earns a 401. Both mean "I passed nothing", which is ``None``.
+    Blank is not a credential: it reaches the Hub as a literal ``Bearer `` header, which 1.x
+    rejects outright. It means "I passed nothing", which is ``None``.
     """
     if token is False or token is True:
         return token
@@ -5603,33 +5599,33 @@ def _clean_save_token(token):
 
 
 def _apply_token_to_child_env(env, token, *, explicit):
-    """Hand a spawned converter exactly one credential, or none at all.
+    """Hand a spawned converter exactly one credential, or none.
 
-    A child env is seeded from ours, so not *setting* a token is not denying one: the deny branch
-    has to scrub. ``explicit`` separates a token the caller passed from one we resolved with
-    ``get_token()``, and only the former may clear an operator's ``HF_HUB_DISABLE_IMPLICIT_TOKEN=1``
-    -- a resolved token *is* the implicit token that flag exists to suppress, so overriding it there
-    would answer the operator's opt-out on behalf of a caller who asked for nothing.
+    The child inherits our env, so withholding a token is not denying one: the deny branch has to
+    scrub, token file included. Only an *explicit* token may clear the operator's
+    HF_HUB_DISABLE_IMPLICIT_TOKEN, since a token we resolved ourselves is the very implicit one
+    that flag suppresses.
     """
     if token is False:
-        for key in (*_HF_TOKEN_ENV_KEYS, *_HF_OIDC_ENV_KEYS):
+        for key in _HF_TOKEN_ENV_KEYS:
             env.pop(key, None)
+        # The flag stops the header being sent; this stops get_token() reading the file at all.
+        env["HF_TOKEN_PATH"] = os.devnull
         env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
         return
     if not (isinstance(token, str) and token):
         return
     if not explicit:
-        # Ambient caller: promote the resolved token the way we always have, and touch nothing else.
+        # Ambient caller: promote the resolved token as always, and touch nothing else.
         env["HF_TOKEN"] = token
         env["HUGGING_FACE_HUB_TOKEN"] = token
         return
-    # Scrub before granting: setting HF_TOKEN alone leaves an operator credential in an alias, so
-    # the child would hold two.
-    for key in (*_HF_TOKEN_ENV_KEYS, *_HF_OIDC_ENV_KEYS):
+    # Scrub first, or granting HF_TOKEN leaves ours in an alias and the child holds two.
+    for key in _HF_TOKEN_ENV_KEYS:
         env.pop(key, None)
     env["HF_TOKEN"] = token
     env["HUGGING_FACE_HUB_TOKEN"] = token
-    # An inherited HF_HUB_DISABLE_IMPLICIT_TOKEN=1 would make the child ignore what we just granted.
+    # An inherited =1 would make the child ignore what we just granted.
     env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
 
 
@@ -5724,10 +5720,9 @@ def _resolve_imatrix_file(model, imatrix_file, token, dest_dir):
     # (save.py top); hf_hub_download is imported here since nothing else needs it.
     from huggingface_hub import hf_hub_download
 
-    # Hand the caller's token to huggingface_hub as-is rather than pre-resolving it. get_token()
-    # ignores HF_HUB_DISABLE_IMPLICIT_TOKEN, so resolving here and passing the result on as an
-    # explicit string sent the ambient credential for an operator who had switched it off; None
-    # lets the header builder make that decision, which is the one that honours the flag.
+    # Pass the token as-is. Pre-resolving with get_token() and handing on the result made an
+    # ambient token look explicit, bypassing HF_HUB_DISABLE_IMPLICIT_TOKEN; None lets the header
+    # builder decide, which is the layer that honours the flag.
     token = _clean_save_token(token)
     api = HfApi(token = token)
     repos = _gguf_repo_candidates(model)
@@ -5779,10 +5774,9 @@ def _unsloth_save_lora_gguf(
             f"Unsloth: LoRA GGUF outtype must be one of {_LORA_GGUF_OUTTYPES} (got '{outtype}')."
         )
     # Resolve a token even for local saves: the converter may fetch a gated/private base config.
-    # token=False is huggingface_hub's forced-anonymous sentinel, so it must not resolve one.
-    # Remember whether the caller supplied one BEFORE the fallback: get_token() ignores
-    # HF_HUB_DISABLE_IMPLICIT_TOKEN, so what comes back is precisely the implicit token, and the
-    # child env must not be told to re-enable it on an operator who turned it off.
+    # False is the forced-anonymous sentinel and must not resolve one. Record explicitness BEFORE
+    # the fallback: get_token() ignores HF_HUB_DISABLE_IMPLICIT_TOKEN, so what it returns is the
+    # implicit token itself, and the child must not be told to re-enable it.
     token = _clean_save_token(token)
     token_is_explicit = token is not None
     if token is None or token is True:
@@ -7122,9 +7116,8 @@ def _unsloth_save_compressed_tensors(
 
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
-    # Resolve a token for the hub push and/or loading a gated calibration dataset in the subprocess.
-    # Same rule as the LoRA GGUF converter: remember whether the caller supplied one before the
-    # fallback, since only an explicit token may overrule HF_HUB_DISABLE_IMPLICIT_TOKEN downstream.
+    # Resolve a token for the hub push and/or a gated calibration dataset in the subprocess.
+    # Explicitness recorded before the fallback, as in the LoRA GGUF converter.
     token = _clean_save_token(token)
     token_is_explicit = token is not None
     if token is None or token is True:
@@ -7324,8 +7317,8 @@ def _unsloth_save_compressed_tensors(
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # Expose the token so the subprocess can load a gated/private calibration dataset. Same
-        # boundary as the LoRA GGUF converter: token=False has to scrub, not merely withhold.
+        # Expose the token for a gated/private calibration dataset, under the same boundary as
+        # the LoRA GGUF converter: False has to scrub, not merely withhold.
         env = os.environ.copy()
         _apply_token_to_child_env(env, token, explicit = token_is_explicit)
 
