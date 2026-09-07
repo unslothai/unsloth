@@ -40,14 +40,22 @@ def isolated_auth_db(tmp_path, monkeypatch):
 
 
 class _State:
-    def __init__(self, bootstrap_password = None, **extra):
+    def __init__(
+        self,
+        bootstrap_password = None,
+        **extra,
+    ):
         self.bootstrap_password = bootstrap_password
         for key, value in extra.items():
             setattr(self, key, value)
 
 
 class _App:
-    def __init__(self, bootstrap_password = None, **extra):
+    def __init__(
+        self,
+        bootstrap_password = None,
+        **extra,
+    ):
         self.state = _State(bootstrap_password, **extra)
 
 
