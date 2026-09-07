@@ -7709,6 +7709,7 @@ def _vulkan_loader_allows(path: str) -> bool:
     Disable is read before select precisely so "disable everything, then name one back"
     works, hence select answering alone when it is set.
     """
+
     def _globs(env_name: str) -> list[str]:
         value = os.environ.get(env_name) or ""
         return [entry.strip() for entry in value.split(",") if entry.strip()]

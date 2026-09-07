@@ -2154,8 +2154,12 @@ def test_a_manifest_the_loader_filters_out_does_not_answer_for_the_driver(monkey
     # counting one hands this host a Vulkan build with no AMD device.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
     monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
-    for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_LOADER_DRIVERS_SELECT",
-                 "VK_LOADER_DRIVERS_DISABLE"):
+    for name in (
+        "VK_DRIVER_FILES",
+        "VK_ICD_FILENAMES",
+        "VK_LOADER_DRIVERS_SELECT",
+        "VK_LOADER_DRIVERS_DISABLE",
+    ):
         monkeypatch.delenv(name, raising = False)
     icd_dir = tmp_path / "usr/share/vulkan/icd.d"
     monkeypatch.setattr(ilp, "_vulkan_icd_search_dirs", lambda: [icd_dir])
