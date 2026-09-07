@@ -40,13 +40,15 @@ def isolated_auth_db(tmp_path, monkeypatch):
 
 
 class _State:
-    def __init__(self, bootstrap_password = None):
+    def __init__(self, bootstrap_password = None, **extra):
         self.bootstrap_password = bootstrap_password
+        for key, value in extra.items():
+            setattr(self, key, value)
 
 
 class _App:
-    def __init__(self, bootstrap_password = None):
-        self.state = _State(bootstrap_password)
+    def __init__(self, bootstrap_password = None, **extra):
+        self.state = _State(bootstrap_password, **extra)
 
 
 def _seed_admin(*, must_change_password: bool = True) -> str:
@@ -95,8 +97,8 @@ def test_two_page_loads_get_independent_tokens():
     # Minted per response, so two browsers opening setup do not race for one
     # token and burn each other's.
     _seed_admin()
-    first, _ = studio_main._inject_bootstrap(_HTML, _App())
-    second, _ = studio_main._inject_bootstrap(_HTML, _App())
+    first, _ = studio_main._inject_bootstrap(_HTML, _App(bootstrap_password = _SEED))
+    second, _ = studio_main._inject_bootstrap(_HTML, _App(bootstrap_password = _SEED))
     assert first != second
 
 
@@ -114,7 +116,7 @@ def test_setup_token_outlives_the_time_an_operator_takes_to_type(monkeypatch):
 
     _seed_admin()
     monkeypatch.delenv("UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT", raising = False)
-    studio_main._inject_bootstrap(_HTML, _App())
+    studio_main._inject_bootstrap(_HTML, _App(bootstrap_password = _SEED))
 
     row = storage.get_connection().execute("SELECT expires_at FROM link_tokens").fetchone()
     remaining = (datetime.fromisoformat(row[0]) - datetime.now(timezone.utc)).total_seconds()
@@ -154,10 +156,45 @@ def test_injection_does_not_depend_on_the_request():
         assert not hasattr(studio_main, gone), f"{gone} was reintroduced"
 
 
+def test_a_headless_public_launch_injects_nothing():
+    """A public URL must carry no credential at all, seeded or minted.
+
+    run.py's pre-bind gate nulls app.state.bootstrap_password (and sets
+    suppress_bootstrap_injection) when a public Cloudflare URL is about to
+    serve. That defence used to work because _inject_bootstrap read the seed
+    from app.state, so a None there meant an empty page. A token that can set
+    the first password is still an admin credential, so it has to obey the same
+    gate: handing one to whoever loads the public URL first would be strictly
+    worse than what this change set out to fix.
+    """
+    _seed_admin()
+    app = _App(bootstrap_password = None, suppress_bootstrap_injection = True)
+    out, nonce = studio_main._inject_bootstrap(_HTML, app)
+    assert out == _HTML, "a public launch served a usable setup credential"
+    assert nonce is None
+    assert storage.get_connection().execute("SELECT COUNT(*) FROM link_tokens").fetchone()[0] == 0
+
+
+def test_a_stripped_bootstrap_file_still_protects_version_independently():
+    """unsloth_cli deletes .bootstrap_password before a public re-exec.
+
+    Its docstring calls the removal itself the protection, precisely so that a
+    re-exec'd child of ANY version is covered rather than relying on the child
+    running a particular gate. Gating the mint on the seed's availability is
+    what preserves that: no seed on disk, no token in the page.
+    """
+    _seed_admin()
+    storage.clear_bootstrap_password()
+    # Whatever the child does at startup, it now reads no seed into app.state.
+    out, nonce = studio_main._inject_bootstrap(_HTML, _App(bootstrap_password = None))
+    assert out == _HTML
+    assert nonce is None
+
+
 def test_token_in_page_cannot_change_an_existing_password():
     """The injected credential's only power is setting the FIRST password."""
     admin = _seed_admin()
-    out, _ = studio_main._inject_bootstrap(_HTML, _App())
+    out, _ = studio_main._inject_bootstrap(_HTML, _App(bootstrap_password = _SEED))
     import json
     import re
 
