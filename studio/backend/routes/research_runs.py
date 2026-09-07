@@ -248,14 +248,10 @@ def _sanitize_config(
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
-        # The saved row is the source of truth for routing, so validate against
-        # it rather than against the type the client sent. A self-hosted
-        # connection is stored under the backend "openai" type but surfaced to
-        # the UI as "custom" / "vllm" / "ollama" / "llama_cpp", and the composer
-        # offers research for those aliases because their registry entries
-        # declare Unsloth tools. Comparing the two for equality therefore 400s
-        # exactly the connections this path exists to serve, while the ordinary
-        # inference route already overrides the type from the row.
+        # The saved row is the source of truth for routing, so validate against it rather than the type the client sent:
+        # a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
+        # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path exists to
+        # serve.
         saved_provider_type = provider["provider_type"]
         if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
             raise HTTPException(
@@ -391,10 +387,9 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    # A handed-off question counts as the text. An image-, audio- or video-only send is a
-    # normal composer turn, and a multimodal model that reads one and calls deep_research
-    # passes the question it wrote; the worker researches config.question, so refusing here
-    # on the message's own (empty) text ends an otherwise complete handoff in a toast.
+    # A handed-off question counts as the text. The worker researches config.question, so a multimodal turn that reads
+    # an image and calls deep_research passes the question it wrote, and refusing on the message's own empty text ends a
+    # complete handoff in a toast.
     if not message_text_with_pastes(user_message).strip() and not (payload.question or "").strip():
         raise HTTPException(
             status_code = 400,

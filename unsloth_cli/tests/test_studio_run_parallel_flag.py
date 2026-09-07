@@ -14,9 +14,7 @@ canonicaliser and the legacy `-m` / `-hfr` / `-f` shim.
 from __future__ import annotations
 
 import contextlib
-import io
 import json
-import sqlite3
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -127,10 +125,8 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
     import inspect
     import importlib.util
 
-    # Load llama_server_args.py directly so the test doesn't need the
-    # backend's full runtime chain (fastapi / structlog / loggers /
-    # utils.hardware) installed -- the invariant is just about the
-    # _DENYLIST_GROUPS tuple.
+    # Load llama_server_args.py directly so the test does not need the backend's full runtime chain
+    # installed; the invariant is just about the _DENYLIST_GROUPS tuple.
     lsa_path = (
         Path(__file__).resolve().parents[2]
         / "studio"
@@ -158,14 +154,13 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
     )
 
 
-# test_in_venv_path_passes_parallel_to_run_server (below) is the runtime
-# equivalent of the retired source-text guard for hardcoded
-# `llama_parallel_slots = 4`.
+# test_in_venv_path_passes_parallel_to_run_server (below) is the runtime equivalent of the retired
+# source-text guard for hardcoded `llama_parallel_slots = 4`.
 
 
-# Re-exec arg-builder coverage. run() re-execs into the studio venv
-# (execvp on POSIX, Popen on Windows). Without explicit forwarding the
-# child reverts to typer defaults and silently drops the user's value.
+# Re-exec arg-builder coverage. run() re-execs into the studio venv (execvp on POSIX, Popen on
+# Windows), and without explicit forwarding the child reverts to typer defaults and silently drops
+# the user's value.
 
 
 class _ExecCaptured(SystemExit):
@@ -687,8 +682,8 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
         monkeypatch,
-        # --top-k is now a first-class sampling flag (routed via UNSLOTH_SAMPLING_*), so use
-        # --seed / --temp here, which remain genuine llama-server pass-through flags.
+        # --top-k is now a first-class sampling flag (routed via UNSLOTH_SAMPLING_*), so use --seed /
+        # --temp here, which remain genuine llama-server pass-through flags.
         _BASE + ["--parallel", "8", "--seed", "42", "--temp", "0.7"],
     )
     assert len(captured) == 1
@@ -737,9 +732,8 @@ def test_reexec_forwards_load_in_4bit_in_both_directions(monkeypatch, user_flag,
     assert other_polarity not in argv, f"unexpected {other_polarity} in child argv; got {argv}"
 
 
-# Runtime check: fake sys.prefix into the studio venv to bypass
-# re-exec, then assert run_server receives --parallel as
-# llama_parallel_slots.
+# Runtime check: fake sys.prefix into the studio venv to bypass re-exec, then assert run_server
+# receives --parallel as llama_parallel_slots.
 
 
 class _RunServerCaptured(SystemExit):
@@ -842,9 +836,8 @@ def test_in_venv_path_passes_parallel_to_run_server(
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
 
-    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
-    # locks inside it, so an unwritable home now aborts the run before
-    # run_server is ever reached and the flag under test goes unchecked.
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and locks inside it, so an
+    # unwritable home aborts the run before run_server is reached.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     # Pin STUDIO_HOME so sys.prefix.startswith() picks the in-venv branch.
@@ -869,9 +862,9 @@ def test_in_venv_path_passes_parallel_to_run_server(
     )
     fake_backend_run.run_server = fake_run_server
     fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
-    # run() loads the backend via _load_run_module() (by file path), which
-    # ignores a sys.modules mock with no matching __file__; inject it as the
-    # cached run module so the stubbed run_server is used.
+    # run() loads the backend via _load_run_module() (by file path), which ignores a sys.modules mock
+    # with no matching __file__; inject it as the cached run module so the stubbed run_server is
+    # used.
     monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
 
     import typer as _typer
@@ -917,44 +910,19 @@ def test_reexec_forwards_api_only(monkeypatch, extra, present):
     assert ("--api-only" in argv) is present, argv
 
 
-def test_secure_api_only_autogenerates_then_reexecs(monkeypatch, tmp_path):
-    """`--secure --api-only` proceeds again, on an auto-generated admin password.
-
-    It used to be refused outright: api-only has no login page, so the bootstrap
-    SHUTDOWN DEADLINE never armed, and the seeded default would have stayed live on
-    a public URL indefinitely. Auto-generation removes that premise rather than
-    working around it -- the gate rotates the seeded credential and prints the new
-    one once BEFORE any re-exec, so nothing public is ever reachable under a
-    default password and there is no deadline left to depend on.
-    """
+def test_secure_api_only_is_refused_before_any_reexec(monkeypatch, tmp_path):
+    """`--secure --api-only` used to re-exec; the pre-exposure gate now refuses
+    it, because api-only has no login page and the bootstrap deadline does not
+    apply, so the seeded password could never be changed."""
     studio_mod = _load_run_command()
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
-    monkeypatch.setattr(studio_mod, "_tunnel_binary_confirmed_unavailable", lambda: False)
-    # CliRunner's captured stderr is not a tty and the one-time-secret selector
-    # refuses to write a credential to a non-tty; hand it a console so this test
-    # reaches the rotation rather than stopping at the preflight (which has its own
-    # test, test_studio_password_prompt.py).
-    shown = io.StringIO()
-    monkeypatch.setattr(studio_mod, "_one_time_secret_console_stream", lambda **_kw: shown)
 
     result, captured = _invoke_run(monkeypatch, _BASE + ["--secure", "--api-only"])
 
-    assert result.exit_code == 0, result.output
-    assert len(captured) == 1, captured
-    banner = shown.getvalue()
-    assert "auto-generated for this public launch" in banner.lower()
-
-    # The seeded default is gone: must_change cleared, bootstrap file removed.
-    with sqlite3.connect(tmp_path / "auth" / "auth.db") as conn:
-        must_change = conn.execute(
-            "SELECT must_change_password FROM auth_user WHERE username = ?",
-            (studio_mod.DEFAULT_ADMIN_USERNAME,),
-        ).fetchone()[0]
-    assert must_change == 0
-    assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
-
-    # The credential never crosses to the child on argv.
-    assert not any("password" in tok.lower() for tok in captured[0]["argv"]), captured[0]["argv"]
+    assert captured == [], captured
+    assert result.exit_code != 0
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "default admin password was never changed" in combined.lower()
 
 
 @pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])
@@ -964,9 +932,8 @@ def test_in_venv_path_passes_api_only_to_run_server(
     """In-venv path must forward --api-only to run_server(api_only=...)."""
     studio_mod = _load_run_command()
 
-    # A real directory, not /fake: the launch gate creates STUDIO_HOME and
-    # locks inside it, so an unwritable home now aborts the run before
-    # run_server is ever reached and the flag under test goes unchecked.
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and locks inside it, so an
+    # unwritable home aborts the run before run_server is reached.
     fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)

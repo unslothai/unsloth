@@ -185,7 +185,6 @@ class TestPreflightMacosInstalledBinaries:
     def test_skips_the_minos_comparison_when_host_version_unknown(self, tmp_path):
         install_dir, binaries = self._install_dir(tmp_path, (26, 0))
         # No host version to compare against, so the static check cannot run.
-        # These fixtures are not executable, so the load probe finds nothing either.
         ILP.preflight_macos_installed_binaries(binaries, install_dir, make_macos_host(None))
 
     def test_noop_on_non_macos_host(self, tmp_path):
@@ -224,8 +223,8 @@ class TestMacosDyldLoadProbe:
         bin_dir = tmp_path / "build" / "bin"
         bin_dir.mkdir(parents = True)
         # A real spawnable file, not a Mach-O sample: the point is to reach dyld.
-        # macho_minimum_macos returns None for a non-Mach-O, so the minos gate
-        # ahead of the probe stays quiet and the probe is what decides.
+        # macho_minimum_macos returns None for a non-Mach-O, so the minos gate ahead of the probe stays quiet and the
+        # probe is what decides.
         server = bin_dir / "llama-server"
         server.write_text(f'#!/bin/sh\necho "{message}" >&2\nexit {exit_code}\n')
         server.chmod(0o755)
@@ -394,7 +393,6 @@ class TestMacosReleasePin:
 
     def _patch_releases(self, monkeypatch):
         def fake_iter(repo, published_release_tag, requested_tag):
-            # Real iterator yields only the requested tag when one is pinned.
             if requested_tag and requested_tag != "latest":
                 return _fake_macos_releases([requested_tag])
             return _fake_macos_releases(self.TAGS)

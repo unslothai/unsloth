@@ -62,6 +62,7 @@ export {
 export {
   dedupeSameSourceHubCacheRows,
   findCompleteHfCacheLocalRow,
+  partialSetFromRows,
 } from "./inventory-dedupe";
 export {
   fetchInventorySource,

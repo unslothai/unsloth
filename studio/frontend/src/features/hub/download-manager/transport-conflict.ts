@@ -15,7 +15,6 @@ import {
   effectiveTransportMode,
 } from "./download-api-adapter";
 import type {
-  ConflictOwner,
   DownloadRequest,
   ManagedDownload,
 } from "./download-manager-types";
@@ -28,7 +27,11 @@ import {
   setConflict,
 } from "./download-manager-state";
 import { startJob } from "./poll-loop";
-import { currentRoute, showCallerToast } from "./start-toast";
+import {
+  currentRoute,
+  currentStartToastSelectionEpoch,
+  showCallerToast,
+} from "./start-toast";
 import { runtimeRegistry } from "./runtime-registry";
 import { resolveTransportMode } from "./transport-preference";
 import { ACTIVE_STATES, TRANSPORT_STATUS_TIMEOUT_MS } from "./download-manager-config";
@@ -156,11 +159,11 @@ async function runWithPendingStartGuard(
 
 export async function requestStart(
   req: DownloadRequest,
-  conflictOwner: ConflictOwner = "caller",
 ): Promise<DownloadStartOutcome> {
   // Before the preflight below, which is two round trips the user can navigate
   // during; read after them it would name the page they moved to.
   const originRoute = currentRoute();
+  const originSelectionEpoch = currentStartToastSelectionEpoch();
   return runWithPendingStartGuard(req, async () => {
     const preferred: TransportMode = await resolveTransportMode();
     let mode: TransportMode = preferred;
@@ -193,6 +196,8 @@ export async function requestStart(
     } catch (err) {
       console.warn("Active download transport check failed.", err);
     }
+    let restartDisclosure = false;
+
     try {
       const status = await apiTransportStatusWithRetry(req);
       const last = asTransportMode(status.last_transport);
@@ -206,7 +211,6 @@ export async function requestStart(
         );
         if (action === "conflict") {
           setConflict(jobKeyOf(req.kind, req.repoId, req.variant), {
-            owner: conflictOwner,
             info: {
               previous: last,
               next: resolved,
@@ -224,10 +228,9 @@ export async function requestStart(
         status.has_partial &&
         (status.resumable === false || !status.last_transport)
       ) {
-        toast.info("Restarting this download", {
-          description:
-            "An earlier partial download can't be resumed, so it will start again from the beginning.",
-        });
+        // Do not raise during preflight: the backend may still reject or attach
+        // this start. The accepted job owns and later dismisses the disclosure.
+        restartDisclosure = true;
       }
     } catch (err) {
       console.warn(
@@ -244,7 +247,12 @@ export async function requestStart(
           description:
             "Starting with HTTP so an existing partial is not discarded. Switch transport to retry with Xet.",
         });
-        await startJob(req, { useXet: false, originRoute });
+        await startJob(req, {
+          useXet: false,
+          originRoute,
+          originSelectionEpoch,
+          restartDisclosure,
+        });
         return isJobActiveFor(req) ? "started" : "error";
       }
       toast.warning("Couldn't verify existing partial download", {
@@ -262,46 +270,40 @@ export async function requestStart(
       return "busy";
     }
 
-    await startJob(req, { useXet: mode === TRANSPORT.XET, originRoute });
+    await startJob(req, {
+      useXet: mode === TRANSPORT.XET,
+      originRoute,
+      originSelectionEpoch,
+      restartDisclosure,
+    });
     return isJobActiveFor(req) ? "started" : "error";
   });
 }
 
-export async function resumeConflict(
-  conflictKey: string,
-  owner: ConflictOwner = "caller",
-): Promise<DownloadStartOutcome | undefined> {
+export function resumeConflict(conflictKey: string): void {
   const entry = getState().conflicts[conflictKey];
-  if (!entry || entry.owner !== owner) return;
+  if (!entry) return;
   setConflict(conflictKey, null);
-  return runWithPendingStartGuard(entry.pending, async () => {
+  void runWithPendingStartGuard(entry.pending, async () => {
     await startJob(entry.pending, {
       useXet: entry.info.previous === TRANSPORT.XET,
     });
-    return isJobActiveFor(entry.pending) ? "started" : "error";
+    return "started";
   });
 }
 
-export async function restartConflict(
-  conflictKey: string,
-  owner: ConflictOwner = "caller",
-): Promise<DownloadStartOutcome | undefined> {
+export function restartConflict(conflictKey: string): void {
   const entry = getState().conflicts[conflictKey];
-  if (!entry || entry.owner !== owner) return;
+  if (!entry) return;
   setConflict(conflictKey, null);
-  return runWithPendingStartGuard(entry.pending, async () => {
+  void runWithPendingStartGuard(entry.pending, async () => {
     await startJob(entry.pending, {
       useXet: entry.info.next === TRANSPORT.XET,
     });
-    return isJobActiveFor(entry.pending) ? "started" : "error";
+    return "started";
   });
 }
 
-export function cancelConflict(
-  conflictKey: string,
-  owner: ConflictOwner = "caller",
-): void {
-  const entry = getState().conflicts[conflictKey];
-  if (!entry || entry.owner !== owner) return;
+export function cancelConflict(conflictKey: string): void {
   setConflict(conflictKey, null);
 }

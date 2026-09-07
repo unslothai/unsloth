@@ -245,11 +245,11 @@ def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
     # Budgeting only the evidence cannot prevent an overflow: at a small context the
     # untrimmable scaffolding (system prompt, plan, source catalogs) is already several times
     # the window, and the old floor added 1500 chars on top of that.
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: None)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: None)
     assert research_runs._prompt_char_budget(4096) is None
     assert research_runs._trimmable_budget(None, 99_999, 500) == 500
 
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 16384)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 16384)
     total = research_runs._prompt_char_budget(4096)
     assert total == int((16384 - 4096) * research_runs._SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
     # A trimmable section never exceeds what is left, and never goes negative.
@@ -259,12 +259,71 @@ def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
 
 
 def test_resolve_max_tokens_clamps_to_loaded_context(monkeypatch):
-    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 12_288)
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 12_288)
     messages = [{"role": "user", "content": "x" * 33_000}]
     prompt_tokens = _estimate_prompt_tokens(messages)
     resolved = _resolve_max_tokens(16_384, {}, messages)
     assert resolved == 12_288 - prompt_tokens
     assert resolved < 16_384
+
+
+def _pin_local_context(monkeypatch, tokens: int) -> None:
+    import routes.inference as inference_routes
+    monkeypatch.setattr(
+        inference_routes,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(is_loaded = True, context_length = tokens),
+    )
+
+
+_EXTERNAL_INFERENCE = {
+    "model": "gpt-5.6-sol",
+    "providerId": "provider-1",
+    "providerType": "openai_codex",
+    "externalModel": "gpt-5.6-sol",
+}
+
+
+def test_a_run_on_a_saved_connection_is_not_sized_to_the_local_model(monkeypatch):
+    _pin_local_context(monkeypatch, 4096)
+    messages = [{"role": "user", "content": "x" * 4_000}]
+    reserve = research_runs._SYNTHESIS_CONTEXT_RESERVE_TOKENS
+
+    assert _resolve_max_tokens(16_384, {}, messages) == 4_096 - _estimate_prompt_tokens(messages)
+    assert _resolve_max_tokens(16_384, _EXTERNAL_INFERENCE, messages) == 16_384
+
+    assert research_runs._prompt_char_budget(reserve, {}) == 6_144
+    assert research_runs._prompt_char_budget(reserve, _EXTERNAL_INFERENCE) is None
+
+    assert research_runs._synthesis_evidence_budget(0, {}) == 6_144
+    assert (
+        research_runs._synthesis_evidence_budget(0, _EXTERNAL_INFERENCE)
+        == research_runs._MAX_SYNTHESIS_EVIDENCE_CHARS
+    )
+
+
+def test_a_saved_connection_run_is_not_blamed_on_the_loaded_context(monkeypatch):
+    _pin_local_context(monkeypatch, 4096)
+    usage = {"prompt_tokens": 3_000, "completion_tokens": 1_096, "total_tokens": 4_096}
+
+    assert _completion_hit_context_wall(usage, requested_max_tokens = 16_384)
+    assert not _completion_hit_context_wall(
+        usage, requested_max_tokens = 1_096, inference = _EXTERNAL_INFERENCE
+    )
+    assert "Increase Context Length" not in _synthesis_length_limit_error(
+        usage, requested_max_tokens = 1_096, inference = _EXTERNAL_INFERENCE
+    )
+
+    # Synthesis asks for 16_384 and a provider stops at its own output cap, so
+    # completion_tokens < requested is what an ordinary cloud run reports. That is the
+    # shape the notice has to get right, and the case above cannot see it.
+    capped = {"prompt_tokens": 40_000, "completion_tokens": 8_192, "total_tokens": 48_192}
+    message = _synthesis_length_limit_error(
+        capped, requested_max_tokens = 16_384, inference = _EXTERNAL_INFERENCE
+    )
+    assert "Increase Context Length" not in message
+    assert "Local model" not in message
+    assert "output limit" in message
 
 
 def test_completion_hit_context_wall_matches_live_probe():
@@ -306,7 +365,10 @@ def test_every_research_prompt_path_is_budgeted():
     # sections against the loaded context, else the run dies before or after doing the work.
     src = Path(research_runs.__file__).read_text(encoding = "utf-8")
     for budget in ("planning_total = ", "decision_total = ", "total_budget = "):
-        assert f"{budget}_prompt_char_budget(_SYNTHESIS_CONTEXT_RESERVE_TOKENS)" in src
+        assert f"{budget}_prompt_char_budget(" in src
+        call = src.split(f"{budget}_prompt_char_budget(", 1)[1].split(")", 1)[0]
+        assert "_SYNTHESIS_CONTEXT_RESERVE_TOKENS" in call
+        assert "_run_inference_request(run" in call
     assert "evidence[-60000:]" not in src
     # The question reaches the planner verbatim, so it is budgeted too, but never to nothing.
     assert "planning_question = question[" in src
@@ -324,7 +386,7 @@ def test_prompt_budget_never_empties_the_question_or_evidence(monkeypatch):
     # A flat 4096-token reserve on the 4096-token GGUF floor made the budget 0, which sliced the
     # question to "" so the planner never saw the request. Reserve at most half the window.
     for ctx in (1024, 2048, 4096):
-        monkeypatch.setattr(research_runs, "_loaded_context_length", lambda c = ctx: c)
+        monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None, c = ctx: c)
         total = research_runs._prompt_char_budget(research_runs._SYNTHESIS_CONTEXT_RESERVE_TOKENS)
         assert total is not None and total > 0
         assert total < int(ctx * research_runs._SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)

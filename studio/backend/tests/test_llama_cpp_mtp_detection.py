@@ -112,14 +112,16 @@ def _write_minimal_gguf(
     arch: str,
     nextn: int | None,
     extra_uint32: dict[str, int] | None = None,
+    nextn_first: bool = False,
 ) -> Path:
     """Header-only GGUF with arch + optional nextn_predict_layers."""
     extra_uint32 = dict(extra_uint32 or {})
-    body = _enc_kv_string("general.architecture", arch)
-    kv_count = 1
-    if nextn is not None:
-        body += _enc_kv_uint32(f"{arch}.nextn_predict_layers", nextn)
-        kv_count += 1
+    arch_entry = _enc_kv_string("general.architecture", arch)
+    nextn_entry = (
+        _enc_kv_uint32(f"{arch}.nextn_predict_layers", nextn) if nextn is not None else b""
+    )
+    body = nextn_entry + arch_entry if nextn_first else arch_entry + nextn_entry
+    kv_count = 1 + int(nextn is not None)
     for k, v in extra_uint32.items():
         body += _enc_kv_uint32(k, v)
         kv_count += 1
@@ -728,6 +730,19 @@ def test_read_gguf_metadata_captures_nextn_predict_layers(tmp_path, arch, nextn)
     assert backend._nextn_predict_layers == nextn
 
 
+def test_read_gguf_metadata_captures_nextn_before_architecture(tmp_path):
+    gguf = _write_minimal_gguf(
+        tmp_path / "reversed.gguf",
+        arch = "qwen35",
+        nextn = 1,
+        nextn_first = True,
+    )
+    backend = LlamaCppBackend()
+    backend._read_gguf_metadata(str(gguf))
+    assert backend._architecture == "qwen35"
+    assert backend._nextn_predict_layers == 1
+
+
 def test_read_gguf_metadata_leaves_nextn_unset_for_non_mtp_arch(tmp_path):
     gguf = _write_minimal_gguf(
         tmp_path / "model.gguf",
@@ -1214,6 +1229,11 @@ def test_build_ngram_mod_flags_legacy():
     assert flags == ["--spec-ngram-size-n", "24", "--draft-min", "48", "--draft-max", "64"]
 
 
+def test_build_ngram_mod_flags_legacy_chain_omits_shared_draft_range():
+    flags = _build_ngram_mod_flags({"ngram_mod_flavor": "legacy"}, chain_with_mtp = True)
+    assert flags == ["--spec-ngram-size-n", "24"]
+
+
 def test_build_ngram_mod_flags_empty_when_unsupported():
     assert _build_ngram_mod_flags({"ngram_mod_flavor": None}) == []
     assert _build_ngram_mod_flags(None) == []
@@ -1282,8 +1302,16 @@ def _draft_n_max_matches(
 
 
 def test_already_in_target_state_matches_when_draft_n_max_unset():
-    # None on the request means "platform default"; matches any backend.
+    # Both sides use the platform default.
     assert _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = None), None)
+
+
+def test_already_in_target_state_clears_explicit_draft_n_max_to_default():
+    assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), None)
+
+
+def test_already_in_target_state_sets_draft_n_max_from_default():
+    assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = None), 4)
 
 
 def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
@@ -1292,6 +1320,10 @@ def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
 
 def test_mtp_draft_n_max_mismatch_survives_active_runtime_state():
     assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 8, speculative_type = "mtp")
+
+
+def test_auto_promoted_mtp_draft_n_max_change_forces_reload():
+    assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 8)
 
 
 @pytest.mark.parametrize(
@@ -1542,6 +1574,9 @@ def test_backfill_usage_from_timings_passthrough_when_timings_empty():
         ("draft-mtp", "mtp"),
         ("draft-dspark", "dspark"),
         ("ngram-mod", "ngram"),
+        ("none", "off"),
+        ("disable", "off"),
+        ("disabled", "off"),
         # Comma-chained legacy values (e.g. from persisted state) collapse
         # to the right canonical mode.
         ("ngram-mod,draft-mtp", "mtp+ngram"),
@@ -1689,6 +1724,94 @@ def test_build_speculative_flags_matrix(
         assert "--spec-ngram-mod-n-max" in parsed
     else:
         assert "--spec-ngram-mod-n-match" not in parsed
+
+
+def test_build_speculative_flags_legacy_mtp_ngram_has_one_draft_max(monkeypatch):
+    caps = {
+        "found": True,
+        "mtp_token": "mtp",
+        "supports_mtp": True,
+        "supports_dspark": False,
+        "mtp_probe_inconclusive": False,
+        "ngram_mod_flavor": "legacy",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--draft-max",
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: caps),
+    )
+    backend = LlamaCppBackend()
+    backend._nextn_predict_layers = 1
+    flags = backend._build_speculative_flags(
+        speculative_type = "mtp+ngram",
+        spec_draft_n_max = 2,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    draft_max_positions = [i for i, flag in enumerate(flags) if flag == "--draft-max"]
+    assert len(draft_max_positions) == 1
+    assert flags[draft_max_positions[0] + 1] == "2"
+    assert "--draft-min" not in flags
+
+
+def test_forced_ngram_without_binary_support_skips_spec(monkeypatch):
+    backend = _resolver_backend(monkeypatch, ngram_supported = False)
+    flags = backend._build_speculative_flags(
+        speculative_type = "ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert "--spec-type" not in flags
+    assert backend.speculative_type is None
+    assert backend.requested_spec_mode == "ngram"
+    # The warning tells the user to update llama.cpp, so the stand-down has to be
+    # recorded or the update cannot reach a resident process: the reload comparator
+    # dedupes an identical request, and the picker never even sends one.
+    assert backend._spec_fallback_reason == "binary_outdated"
+
+
+def test_forced_ngram_stand_down_reloads_once_the_binary_changes(monkeypatch):
+    backend = _resolver_backend(monkeypatch, ngram_supported = False)
+    backend._build_speculative_flags(
+        speculative_type = "ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    backend._launch_binary_revision = "before-the-update"
+    # An untouched binary advertises nothing new, so the repair must not fire on every
+    # Apply; only a replaced one reopens the load.
+    monkeypatch.setattr(type(backend), "_binary_changed_since_launch", lambda self: False)
+    assert not backend.spec_binary_fallback_can_retry()
+    monkeypatch.setattr(type(backend), "_binary_changed_since_launch", lambda self: True)
+    assert backend.spec_binary_fallback_can_retry()
+
+
+def test_forced_ngram_with_binary_support_emits_spec(monkeypatch):
+    backend = _resolver_backend(monkeypatch, ngram_supported = True)
+    flags = backend._build_speculative_flags(
+        speculative_type = "ngram",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _NON_MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert _flags_dict(flags).get("--spec-type") == "ngram-mod"
+    assert backend.speculative_type == "ngram-mod"
 
 
 def test_build_speculative_flags_user_extra_args_owns_spec_type(monkeypatch):
@@ -1844,6 +1967,40 @@ def test_auto_keeps_embedded_mtp(monkeypatch):
     )
     parsed = _flags_dict(flags)
     assert parsed["--spec-type"] == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_spec_type"),
+    [
+        ("auto", "draft-mtp"),
+        ("mtp", "draft-mtp"),
+        ("mtp+ngram", "ngram-mod,draft-mtp"),
+    ],
+)
+def test_embedded_mtp_ignores_discovered_root_sidecar(
+    monkeypatch, tmp_path, mode, expected_spec_type
+):
+    backend = _resolver_backend(monkeypatch)
+    backend._nextn_predict_layers = 1
+    sidecar = tmp_path / "mtp-RVN.gguf"
+    sidecar.write_bytes(b"draft")
+
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "0bserverx/Qwen3.8-27B-GGUF",
+        model_path = str(tmp_path / "RVN-Q6_K-mtp.gguf"),
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = str(sidecar),
+        dspark_draft_path = None,
+    )
+
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == expected_spec_type
+    assert "--model-draft" not in parsed
     assert backend.spec_fallback_reason is None
 
 
@@ -2092,10 +2249,8 @@ def test_auto_non_mla_embedded_mtp_keeps_draft_mtp(monkeypatch):
     assert backend.spec_fallback_reason is None
 
 
-def test_auto_mla_separate_drafter_keeps_mtp(monkeypatch):
-    # Auto + MLA + a separate drafter (mtp_draft_path) -> the drafter exemption
-    # wins over the MLA gate: still draft-mtp (Gemma-style external drafter is
-    # not the slow embedded MLA/DSA path).
+def test_auto_mla_embedded_head_ignores_separate_drafter(monkeypatch):
+    # Embedded NextN metadata wins: -md would replace the head and bypass MLA's gate.
     backend = _mla_resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
         speculative_type = "auto",
@@ -2108,9 +2263,10 @@ def test_auto_mla_separate_drafter_keeps_mtp(monkeypatch):
         mtp_draft_path = "/fake/mtp-draft.gguf",
     )
     parsed = _flags_dict(flags)
-    assert parsed.get("--spec-type") == "draft-mtp"
-    assert backend.speculative_type == "draft-mtp"
-    assert backend.spec_fallback_reason is None
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert "--model-draft" not in parsed
+    assert backend.speculative_type == "ngram-mod"
+    assert backend.spec_fallback_reason == "mla_mtp_disabled"
 
 
 def test_auto_non_mtp_mla_model_unaffected(monkeypatch):

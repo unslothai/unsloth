@@ -14,7 +14,12 @@ test("mac titlebar navigation shifts buttons with centered glyphs", async () => 
     /const MAC_NATIVE_CHROME_STYLE = \{[\s\S]*?\} as CSSProperties;/,
   )?.[0];
   assert.ok(macStyle);
+  assert.match(macStyle, /"--studio-titlebar-navigation-margin-top": "4px"/);
   assert.match(macStyle, /"--studio-titlebar-navigation-offset-y": "4px"/);
+  assert.match(
+    titlebar,
+    /mt-\[var\(--studio-titlebar-navigation-margin-top,0px\)\]/,
+  );
 
   const enlargedIconClass =
     'className="size-icon !size-[calc(var(--icon-size)+1px)]"';

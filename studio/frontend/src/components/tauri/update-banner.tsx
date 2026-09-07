@@ -213,34 +213,16 @@ export function UpdateBanner({
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
               : cn(
-                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
-                  // Floor = the header and the action row, the parts of this
-                  // card that cannot give up height. Under it a capped rail
-                  // takes the height out of the notes, which clip;
-                  // min-height:auto would instead be the whole card, so this
-                  // one would yield nothing and clip the banner below it.
-                  //
-                  // Its own constants, not the browser card's: this card
-                  // carries one more status line under the version, worth about
-                  // 20px at the default type size and 24px at the largest.
-                  // Measured the same way, at every step from 15px to 20px:
-                  // 204, 210, 215, 221, 227, 233 at the widths where the action
-                  // pair holds together, and 204, 210, 262, 269, 277, 304 below
-                  // 384px where it wraps onto a row of its own. See
-                  // web/update-banner for why the floor is split into a fixed
-                  // and a scaled part, and why the narrow regime needs its own.
-                  //
-                  // The failure card has no notes to give up, so shrinking it
-                  // could only clip the diagnostics and the retry button. It
-                  // holds its height and the rail scrolls instead.
-                  showFailure
-                    ? "shrink-0"
-                    : "min-h-[calc(117px+93px*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] shrink-0 flex-col",
+                  // Only rendered notes may shrink in the capped rail. Without
+                  // them, shrink-0 keeps the compact card at its natural height.
+                  "has-[[data-slot=update-release-notes]]:min-h-[calc(117px+93px*var(--ui-font-scale,1))] has-[[data-slot=update-release-notes]]:shrink max-[383px]:has-[[data-slot=update-release-notes]]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
                 ),
           )}
           data-testid="tauri-update-banner"
         >
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          {/* Paint the full floor even when the notes content is short. */}
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
               onClick={onDismiss}
@@ -304,7 +286,6 @@ export function UpdateBanner({
               <ReleaseNotesPanel
                 version={notesTargetVersion}
                 open={notesOpen}
-                className="min-h-0 flex-1"
                 releaseNotesUrl={releasePageUrl ?? manualReleaseUrl}
               />
             ) : null}

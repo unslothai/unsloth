@@ -85,7 +85,7 @@ from ..device_type import (
 )
 
 transformers_version = Version(transformers_version)
-# Transformers moved rotary embeddings out of all attention layers
+# Transformers moved rotary embeddings out of all attention layers.
 IS_ATTENTION_REFACTOR = transformers_version > Version("4.47.1")
 try:
     from transformers.modeling_layers import GradientCheckpointingLayer
@@ -105,7 +105,6 @@ from ..kernels import *
 from ..tokenizer_utils import *
 from .vision import FastBaseModel
 
-# Final patching code
 from transformers.models.llama.modeling_llama import (
     LlamaAttention,
     LlamaDecoderLayer,
@@ -141,15 +140,14 @@ import types
 try:
     from huggingface_hub.utils import get_token
 except:
-    # Old HF Hub versions <= 0.0.25
+    # Old HF Hub versions <= 0.0.25.
     from huggingface_hub.utils._token import get_token
 from triton import __version__ as triton_version
 
-# Not `xformers is not None`: attention_dispatch probes the install and turns HAS_XFORMERS
-# off when the library imports but has no kernel that runs here. Recomputing it from the
-# import alone left the model code on the xFormers path the dispatcher had already left --
-# and Mistral answers "xFormers" by skipping the 4D sliding-window mask, so every sequence
-# longer than config.sliding_window attended to the whole causal history on SDPA instead.
+# Not `xformers is not None`: attention_dispatch turns HAS_XFORMERS off when the library imports
+# but has no kernel that runs here. Recomputing from the import alone left the model on the
+# xFormers path, and Mistral then skipped the 4D sliding-window mask, so every sequence longer
+# than config.sliding_window attended to the whole causal history on SDPA.
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
 
@@ -167,9 +165,9 @@ def original_apply_o(self, X):
 
 from math import sqrt as math_sqrt
 
-KV_CACHE_INCREMENT = 512  # KV Cache update size
+KV_CACHE_INCREMENT = 512
 torch_nn_functional_softmax = torch.nn.functional.softmax
-# SDPA has GQA internally
+# SDPA has GQA internally.
 SDPA_HAS_GQA = "enable_gqa" in scaled_dot_product_attention.__doc__
 
 from peft.utils.other import ModulesToSaveWrapper
@@ -195,16 +193,13 @@ def _offload_frozen_module_for_training(
 
     new_dtype = module.modules_to_save.default.weight.dtype
     if new_dtype == torch.float16:
-        # See https://github.com/unslothai/unsloth/pull/1200
-        # Tesla T4 must use float32 and not float16
+        # Tesla T4 must use float32 and not float16; see #1200.
         new_dtype = torch.float32
 
-    # `device_type` is a bare type like "cuda", and `.to("cuda")` resolves to the
-    # CURRENT device, which is cuda:0, so on a split model it drags the trainable
-    # copy off its own card and the forward then mixes devices. Prefer the index
-    # the copy already has; under the default `use_gradient_checkpointing =
-    # "unsloth"` it has none, because the disk offload above rebuilt it on CPU,
-    # so fall back to the placement recorded before that. Only then the bare type.
+    # `device_type` is bare ("cuda") and .to("cuda") resolves to the CURRENT device, so on a split
+    # model it drags the trainable copy off its card. Prefer the index the copy already has; under
+    # use_gradient_checkpointing="unsloth" it has none (rebuilt on CPU), so fall back to the
+    # placement recorded before that, then the bare type.
     wanted_type = torch.device(device_type).type
     target_device = device_type
     for candidate in (module.modules_to_save.default.weight.device, original_device):
@@ -215,13 +210,11 @@ def _offload_frozen_module_for_training(
     module.modules_to_save.default.to(device = target_device, dtype = new_dtype, non_blocking = True)
     module.modules_to_save.default.requires_grad_(True)
 
-    # [TODO] Move old module to CPU - should be disk!
     if offload_device is not None:
         module.original_module.to(device = offload_device, non_blocking = True)
     module.original_module.requires_grad_(False)
 
 
-# Fix new HF's inference code
 def _fast_prepare_inputs_for_generation(
     self,
     input_ids,
@@ -232,7 +225,7 @@ def _fast_prepare_inputs_for_generation(
     past_key_values = kwargs.get("past_key_values", None)
     original_attention_mask = attention_mask
 
-    # Only use inputs_embeds on the first step (no cache). Fixes issue #3798.
+    # Only use inputs_embeds on the first step (no cache); fixes #3798.
     use_inputs_embeds = inputs_embeds is not None and past_key_values is None
 
     if input_ids is not None and input_ids.numel() > 0:
@@ -246,12 +239,10 @@ def _fast_prepare_inputs_for_generation(
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if past_key_values is not None:
-        # Check for uninitialized DynamicCache
         if len(past_key_values) == 0:
             past_key_values = None
             kwargs["past_key_values"] = None
             use_inputs_embeds = inputs_embeds is not None
-        # New since 4.56
         elif hasattr(past_key_values, "get_seq_length") and past_key_values.get_seq_length() == 0:
             past_key_values = None
             kwargs["past_key_values"] = None
@@ -272,7 +263,7 @@ def _fast_prepare_inputs_for_generation(
             if hasattr(past_key_values, "get_seq_length"):
                 past_len = int(past_key_values.get_seq_length())
             else:
-                # legacy tuple cache: (layer, (K,V))
+                # Legacy tuple cache: (layer, (K, V)).
                 past_len = int(past_key_values[0][0].shape[-2])
 
             max_cache_len = None
@@ -283,7 +274,6 @@ def _fast_prepare_inputs_for_generation(
                 m = past_key_values.get_max_length()
                 max_cache_len = int(m) if m is not None else None
 
-            # ensure cache_position
             cache_position = kwargs.get("cache_position", None)
             if cache_position is None:
                 kwargs["cache_position"] = torch.arange(
@@ -296,7 +286,6 @@ def _fast_prepare_inputs_for_generation(
                 if hasattr(cache_position, "device") and cache_position.device != device:
                     kwargs["cache_position"] = cache_position.to(device)
 
-            # Get to the base model
             base_model = self
             if hasattr(base_model, "base_model_prefix"):
                 base_model = getattr(base_model, base_model.base_model_prefix)
@@ -309,7 +298,7 @@ def _fast_prepare_inputs_for_generation(
                             sig = inspect.signature(inspect.unwrap(fn))
                             return "device" in sig.parameters
                         except:
-                            # transformers <= 4.51.3 includes device arg but > 4.51.3 does not
+                            # transformers <= 4.51.3 includes the device arg; later versions do not.
                             return transformers_version < Version("4.52.0")
 
                     base_model._unsloth_mask_needs_device = _check_needs_device(
@@ -373,7 +362,6 @@ def _fast_prepare_inputs_for_generation(
 
 
 def fix_prepare_inputs_for_generation(module):
-    # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
 
@@ -427,15 +415,12 @@ def LlamaAttention_fast_forward_inference(
     n_groups = self.num_key_value_groups
     n_kv_heads = self.config.num_key_value_heads
     head_dim = self.head_dim
-    # assert(n_kv_heads * n_groups == n_heads)
 
     hidden_size = self.config.hidden_size
     attention_size = n_heads * head_dim
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 
-    # Prefill phase
-    # if not hasattr(self, "paged_attention"):
     device = hidden_states.device
     if do_prefill:
         self.paged_attention = torch.empty(
@@ -451,7 +436,7 @@ def LlamaAttention_fast_forward_inference(
         self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
         self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
 
-        # Mistral Nemo 12b has weird dimensions
+        # Mistral Nemo 12b has weird dimensions.
         if attention_size != hidden_size:
             self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         else:
@@ -483,15 +468,11 @@ def LlamaAttention_fast_forward_inference(
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
-    # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
-
-    # Need to do it prior 2 steps before hitting full on short KV cache
-    # or else error
+    # Must be done 2 steps before hitting full on a short KV cache, or it errors.
     if position_ids.dim() == 1:
         position_ids = position_ids[:, None]
-    # Transformers 5.x accumulates position_ids as [batch, full_seq_len] across
-    # decode steps; single-token inference only needs the last position.
+    # Transformers 5.x accumulates position_ids as [batch, full_seq_len] across decode steps;
+    # single-token inference only needs the last position.
     if position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
     position_ids = position_ids.to(Qn.device)
@@ -509,40 +490,34 @@ def LlamaAttention_fast_forward_inference(
     RH_Q = self.RH_Q
     RH_Q[:, :, :, :h] = Qn[:, :, :, h:]
     RH_Q[:, :, :, h:] = Qn[:, :, :, :h]
-    RH_Q[:, :, :, :h].neg_()  # torch.neg(RH_Q[:,:,:,:h], out = RH_Q[:,:,:,:h])
+    RH_Q[:, :, :, :h].neg_()
     Qn *= cos
     Qn.addcmul_(RH_Q, sin)
 
-    RH_K = RH_Q[
-        :, :n_kv_heads, :, :
-    ]  # torch.empty((n_kv_heads, 1, head_dim), dtype = dtype, device = "cuda:0")
+    RH_K = RH_Q[:, :n_kv_heads, :, :]
     RH_K[:, :, :, :h] = Kn[:, :, :, h:]
     RH_K[:, :, :, h:] = Kn[:, :, :, :h]
-    RH_K[:, :, :, :h].neg_()  # torch.neg(RH_K[:,:,:,:h], out = RH_K[:,:,:,:h])
+    RH_K[:, :, :, :h].neg_()
     Kn *= cos
     Kn.addcmul_(RH_K, sin)
 
-    # New KV cache
-    # Kn = torch.cat([K1, Kn], dim = 2)
-    # Vn = torch.cat([V1, Vn], dim = 2)
     self.paged_attention_K[seq_len] = Kn.permute(2, 0, 1, 3)
     self.paged_attention_V[seq_len] = Vn.permute(2, 0, 1, 3)
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Handle sliding windows
+    # Handle sliding windows, from transformers models/mistral/modeling_mistral.py#L193
     sliding_window = getattr(self.config, "sliding_window", None)
     if sliding_window is not None and kv_seq_len > sliding_window:
-        # From https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py#L193
         start = kv_seq_len - sliding_window
-        Knn = Kn[:, :, start:, :]  # .contiguous()
-        Vnn = Vn[:, :, start:, :]  # .contiguous()
+        Knn = Kn[:, :, start:, :]
+        Vnn = Vn[:, :, start:, :]
         if attention_mask is not None:
             attention_mask = attention_mask[..., start:]
     else:
         Knn, Vnn = Kn, Vn
 
-    # Grouped query attention
+    # Grouped query attention.
     _, _, cached_len, _ = Knn.shape
     if bsz == 1 or ((not SDPA_HAS_GQA) and n_groups != 1):
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
@@ -550,27 +525,23 @@ def LlamaAttention_fast_forward_inference(
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
-    # when qlen==vlen and attn_mask is None, we should use causal attention
+    # When qlen == vlen and attn_mask is None, causal attention is the right choice.
     Q_len = Qn.shape[-2]
     K_len = Knn.shape[-2]
     if attention_mask is None and Q_len == K_len:
         is_causal = True
     else:
         is_causal = False
-    # Attention
     if bsz == 1:
-        Qn *= (
-            self.scalar
-        )  # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
-        # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
+        Qn *= self.scalar
+        # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805.
         A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
-        A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)  # .to(A.dtype)
+        A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
         A = torch_matmul(A, Vnn, out = Qn)
-    # --- attention_mask fixup for SDPA if user passes 2D padding mask
+    # attention_mask fixup for SDPA when the user passes a 2D padding mask.
     else:
         if attention_mask is not None and attention_mask.dim() == 2:
             attention_mask = attention_mask[:, None, None, :].to(torch.bool)
-            # is it more appropriate to use _prepare_4d_causal_attention_mask_for_sdpa?
         elif (
             attention_mask is not None
             and attention_mask.dim() == 4
@@ -609,11 +580,7 @@ def fast_swiglu_inference(
     gate_multiplier = None,
     down_multiplier = None,
 ):
-    # gate = self.gate_proj(X)
-    # up   = self.up_proj(X)
     bsz, _, hd = X.shape
-    # mlp_size = self.config.intermediate_size
-    # temp = torch.empty((2, bsz, 1, mlp_size), dtype = X.dtype, device = "cuda:0")
 
     gate = fast_linear_forward(self.gate_proj, X, out = temp_gate)
 
@@ -625,7 +592,6 @@ def fast_swiglu_inference(
     gate = torch_nn_functional_silu(gate, inplace = True)
     gate *= up
 
-    # X = self.down_proj(gate)
     down = fast_linear_forward(self.down_proj, gate, out = up[:, :, :hd])
 
     if down_multiplier is not None:
@@ -684,7 +650,7 @@ def fast_rms_layernorm_inference_gemma(
     return XX.to(X.dtype)
 
 
-# Normal layernorm with mean removal
+# Normal layernorm with mean removal.
 @torch.compile(fullgraph = False, dynamic = True, options = torch_compile_options)
 def fast_layernorm_compiled(layernorm, X):
     old_dtype = X.dtype
@@ -699,7 +665,7 @@ def fast_layernorm_compiled(layernorm, X):
     return X.to(old_dtype)
 
 
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L320
+# Ported from transformers models/llama/modeling_llama.py#L320
 def LlamaAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -714,7 +680,6 @@ def LlamaAttention_fast_forward(
     *args,
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
         del self.paged_attention_V
@@ -754,11 +719,6 @@ def LlamaAttention_fast_forward(
     if rope_position_ids is None and seq_info is not None:
         rope_position_ids = kwargs.get("position_ids")
 
-    # Q, K = (
-    #     fast_rope_embedding(Q, K, cos, sin)
-    #     if rope_position_ids is None
-    #     else inplace_rope_embedding(Q, K, cos, sin, rope_position_ids)
-    # )
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
@@ -766,11 +726,10 @@ def LlamaAttention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
-    # Attention module
     use_varlen = seq_info is not None and past_key_value is None
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
 
-    # should dropout be hardcoded to 0.0?
+    # Should dropout be hardcoded to 0.0?
     config = AttentionConfig(
         backend = backend,
         n_kv_heads = n_kv_heads,
@@ -778,9 +737,9 @@ def LlamaAttention_fast_forward(
         flash_dense_kwargs = {"causal": True},
         flash_varlen_kwargs = {"dropout_p": 0.0, "causal": True},
     )
-    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward (same route
-    # as packed_seq_lengths); misuse (KV cache / padding mask) raises. None => byte-identical
-    # default. Reuse of this forward also carries the branch to qwen2 & gemma.
+    # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward (same route as
+    # packed_seq_lengths); misuse (KV cache / padding mask) raises. None means the byte-identical
+    # default. Reuse of this forward carries the branch to qwen2 and gemma.
     _pg_seg = resolve_prefix_seg_info(kwargs, past_key_value, attention_mask)
     context = AttentionContext(
         bsz = bsz,
@@ -802,7 +761,7 @@ def LlamaAttention_fast_forward(
     return attn_output, attn_weights, past_key_value
 
 
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L590
+# Ported from transformers models/llama/modeling_llama.py#L590
 def LlamaDecoderLayer_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -847,7 +806,6 @@ def LlamaDecoderLayer_fast_forward(
         )
         hidden_states += residual
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.post_attention_layernorm, hidden_states)
         hidden_states = fast_swiglu_inference(self.mlp, hidden_states)
@@ -869,7 +827,6 @@ def LlamaDecoderLayer_fast_forward(
         )
         hidden_states = residual + hidden_states
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states)
         hidden_states = self.mlp(hidden_states)
@@ -883,7 +840,7 @@ def LlamaDecoderLayer_fast_forward(
     return outputs
 
 
-# https://github.com/unslothai/unsloth/issues/404#issuecomment-2323473452
+# See unslothai/unsloth#404 (comment 2323473452).
 __DTYPE_MAP = {
     "float32": torch.float32,
     torch.float32: torch.float32,
@@ -894,7 +851,7 @@ __DTYPE_MAP = {
 }
 
 
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
+# Ported from transformers models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
     input_ids: Optional[torch.LongTensor] = None,
@@ -923,7 +880,6 @@ def LlamaModel_fast_forward(
 
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-    # retrieve input_ids and inputs_embeds
     if input_ids is not None and inputs_embeds is not None:
         raise ValueError(
             "Unsloth: You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time"
@@ -965,8 +921,8 @@ def LlamaModel_fast_forward(
         past_key_values_length = past_key_values[0][0].shape[2]
         seq_length_with_past = seq_length_with_past + past_key_values_length
 
-    # We already handle KV cache position_ids ourselves.
-    if False:  # (past_key_values_length != 0):
+    # KV cache position_ids are handled here already.
+    if False:
         position_ids = torch.arange(
             past_key_values_length,
             seq_length + past_key_values_length,
@@ -975,7 +931,7 @@ def LlamaModel_fast_forward(
         )
         position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
     elif position_ids is not None:
-        position_ids = position_ids.view(-1, seq_length).to(torch.int32)  # .long()
+        position_ids = position_ids.view(-1, seq_length).to(torch.int32)
     else:
         position_ids = None
 
@@ -983,13 +939,13 @@ def LlamaModel_fast_forward(
         if position_ids.shape[0] != batch_size:
             position_ids = position_ids.repeat((batch_size, 1))
 
-    # Embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
     inputs_embeds = inputs_embeds.to(_get_dtype(dtype_from_config(self.config)))
 
-    # Normalized from Gemma
+    # Normalized from Gemma: cast to bfloat16/float16 to match it exactly, since 3072**0.5 is
+    # 55.5000 in bfloat16 against 55.4256 in float32.
     IS_GEMMA = self.config.model_type.startswith("gemma")
     IS_GEMMA2 = self.config.model_type.startswith("gemma2")
     IS_COHERE = self.config.model_type.startswith("cohere")
@@ -999,14 +955,10 @@ def LlamaModel_fast_forward(
     train_embed_tokens = self.embed_tokens.weight.requires_grad
 
     if IS_GEMMA:
-        # Match Gemma exactly by casting to bfloat16 / float16
-        # inputs_embeds *= math_sqrt(self.config.hidden_size)
-        # Ie 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
-        # &  2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
         normalizer = torch.tensor(math_sqrt(self.config.hidden_size), dtype = inputs_embeds.dtype)
 
         if train_embed_tokens:
-            # Careful we must not do an inplace op!
+            # Careful: this must not be an inplace op.
             inputs_embeds = inputs_embeds * normalizer
         else:
             inputs_requires_grad = inputs_embeds.requires_grad
@@ -1016,12 +968,10 @@ def LlamaModel_fast_forward(
             elif inputs_requires_grad:
                 inputs_embeds.requires_grad_(False)
             inputs_embeds *= normalizer
-            # inputs_embeds *= math_sqrt(self.config.hidden_size)
             if inputs_requires_grad:
                 inputs_embeds.requires_grad_(True)
 
-    # Fix up attention mask by setting elements to 0
-    # Specifically for DPO
+    # Fix up the attention mask by setting elements to 0, specifically for DPO.
     if (
         getattr(self, "_has_no_labels", False) is True
         and (attention_mask is not None)
@@ -1030,8 +980,7 @@ def LlamaModel_fast_forward(
         and (not train_embed_tokens)
         and self.training
     ):
-        # Careful for inference the attention_mask is size (1, kv_seq_len)
-        # Whilst the input_embeds is size (1, 1, 4096)
+        # Careful: for inference the attention_mask is size (1, kv_seq_len) while input_embeds is (1, 1, 4096).
         inputs_requires_grad = inputs_embeds.requires_grad
         if not inputs_embeds.is_leaf:
             inputs_embeds = inputs_embeds.detach()
@@ -1043,16 +992,12 @@ def LlamaModel_fast_forward(
         if inputs_requires_grad:
             inputs_embeds.requires_grad_(True)
 
-    # Ignore attention_mask
     if attention_mask is None:
         padding_mask = None
     elif self.training:
         attention_mask = None
         padding_mask = None
     else:
-        # if 0 in attention_mask:
-        #     padding_mask = attention_mask
-        # else:
         padding_mask = None
 
         attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
@@ -1062,9 +1007,7 @@ def LlamaModel_fast_forward(
             past_key_values_length,
             sliding_window = getattr(self.config, "sliding_window", None),
         )
-        # Must NOT convert to bool - weirdly this causes stuff to error out!
-        # if attention_mask is not None:
-        #     attention_mask = attention_mask.to(torch.bool)
+        # Must NOT convert to bool; that weirdly causes errors.
 
     hidden_states = inputs_embeds
     if IS_GRANITE or IS_FALCON_H1:  # granite has embedding multiplier
@@ -1072,30 +1015,23 @@ def LlamaModel_fast_forward(
 
     if past_key_values is None and self.training:
         use_cache = False
-        # if use_cache:
-        #     logger.warning_once(
-        #         "Unsloth: `use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`"
-        #     )
-        #     use_cache = False
 
-    # decoder layers
     all_hidden_states = () if output_hidden_states else None
     all_self_attns = () if output_attentions else None
     next_decoder_cache = () if use_cache else None
 
-    # Gradient checkpointing methods (ie sqrt)
+    # Gradient checkpointing methods (ie sqrt).
     if hasattr(self, "_gradient_checkpointing_boundaries"):
         boundaries = self._gradient_checkpointing_boundaries
     else:
         boundaries = None
 
-    # Check checkpointing method
     gradient_checkpointing = False
 
     if self.gradient_checkpointing and self.training and not use_cache:
         gradient_checkpointing = True
 
-    # Gemma2 has alternating SWA and global attn
+    # Gemma2 has alternating SWA and global attn.
     use_static_mask = True
     dynamic_SWA_mask = None
     dynamic_GA_mask = None
@@ -1104,12 +1040,9 @@ def LlamaModel_fast_forward(
             self.SWA_mask = True
             self.GA_mask = False
         elif attention_mask is not None:
-            # Fixes https://github.com/unslothai/unsloth/issues/853
-            # Unsloth needs a 2D mask, not a [2, 1, n, n] mask!
+            # Unsloth needs a 2D mask, not [2, 1, n, n] (#853), converted to float not bool
+            # (pytorch/pytorch#103749).
 
-            # https://github.com/pytorch/pytorch/issues/103749
-            # Need to convert to float and not using bool
-            # attention_mask = (1.0 - attention_mask.float()) * torch.finfo(inputs_embeds.dtype).min
             dynamic_SWA_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (batch_size, seq_length),
@@ -1128,16 +1061,13 @@ def LlamaModel_fast_forward(
 
         elif not hasattr(self, "SWA_mask"):
             if HAS_FLEX_ATTENTION:
-                # Use Flex Attention instead!
                 self.SWA_mask = create_flex_attention_sliding_window_mask(
                     self.max_seq_length, self.config.sliding_window
                 )
                 self.GA_mask = create_flex_attention_causal_mask(self.max_seq_length)
             else:
-                n = self.max_seq_length  # self.config.max_position_embeddings
-                # masked_fill is making stuff slower!
-                # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
-                # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
+                n = self.max_seq_length
+                # masked_fill makes things slower.
                 self.SWA_mask = (
                     AttentionMaskConverter(
                         is_causal = True,
@@ -1174,8 +1104,8 @@ def LlamaModel_fast_forward(
         IS_ATTENTION_REFACTOR
         and (hasattr(self, "rotary_emb") or not hasattr(self.layers[0].self_attn, "rotary_emb"))
     ) or IS_GRANITE:
-        # position_embeddings is mandatory on main: https://github.com/huggingface/transformers/pull/34858
-        # granite always had the attention refactor, so let it always use this path.
+        # position_embeddings is mandatory on main (huggingface/transformers#34858), and granite always
+        # had the attention refactor, so it always takes this path.
         self.rotary_emb.extend_rope_embedding(hidden_states, self.config.max_position_embeddings)
         position_embeddings = self.rotary_emb.get_cached(
             self.config.max_position_embeddings, hidden_states.device.index
@@ -1183,7 +1113,6 @@ def LlamaModel_fast_forward(
     else:
         position_embeddings = None
 
-    # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
@@ -1244,7 +1173,6 @@ def LlamaModel_fast_forward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
 
-    # Final layernorm
     if use_cache:
         if IS_FALCON_H1:
             hidden_states = fast_rms_layernorm_inference(self.final_layernorm, hidden_states)
@@ -1277,7 +1205,7 @@ def LlamaModel_fast_forward(
     )
 
 
-# https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L825
+# Ported from transformers models/llama/modeling_llama.py#L825
 def _LlamaModel_fast_forward_inference(
     attention_fast_forward_inference = LlamaAttention_fast_forward_inference,
     mlp_fast_forward_inference = fast_swiglu_inference,
@@ -1300,7 +1228,6 @@ def _LlamaModel_fast_forward_inference(
         X = X.to(_get_dtype(dtype_from_config(self.config)))
         bsz, q_len, hd = X.shape
         assert q_len == 1
-        # Get saved buffers to reduce memory movement
         residual = torch.empty(
             (bsz, q_len, hd), dtype = torch.float32, device = f"{DEVICE_TYPE_TORCH}:0"
         )
@@ -1327,13 +1254,13 @@ def _LlamaModel_fast_forward_inference(
                 seq_len,
                 sliding_window = getattr(self.config, "sliding_window", None),
             )
-            # Pre-convert to bool once for all layers (avoids per-layer .eq(0))
+            # Pre-convert to bool once for all layers, avoiding a per-layer .eq(0).
             if attention_mask is not None and attention_mask.dtype != torch.bool:
                 attention_mask = attention_mask.eq(0)
         else:
             attention_mask = None
 
-        # Compute rotary_seq_len once to avoid per-layer GPU-CPU sync from .item()
+        # Compute rotary_seq_len once to avoid a per-layer GPU-CPU sync from .item().
         rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
         next_decoder_cache = []
@@ -1341,7 +1268,7 @@ def _LlamaModel_fast_forward_inference(
         for idx, decoder_layer in enumerate(self.model.layers):
             device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
             X, residual, position_ids = move_to_device(device_index, X, residual, position_ids)
-            residual.copy_(X)  # residual = X
+            residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,
                 X,
@@ -1360,7 +1287,7 @@ def _LlamaModel_fast_forward_inference(
             )
             X += residual
 
-            residual.copy_(X)  # residual = X
+            residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.post_attention_layernorm,
                 X,
@@ -1395,7 +1322,7 @@ def _LlamaModel_fast_forward_inference(
     return LlamaModel_fast_forward_inference_custom
 
 
-# For ensuring backwards compatibility, we create LlamaModel_fast_forward_inference that is consumed by other models
+# LlamaModel_fast_forward_inference exists for backwards compatibility and is consumed by other models.
 LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 
 
@@ -1441,7 +1368,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 else self.config.output_hidden_states
             )
             return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-            # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
             self.model._has_no_labels = labels is None
             outputs = self.model(
                 input_ids = input_ids,
@@ -1471,12 +1397,11 @@ def CausalLM_fast_forward(fast_forward_inference):
         else:
             num_logits_to_keep = max(num_logits_to_keep, logits_to_keep)
 
-        # Move items to same device as lm_head
         hidden_states = hidden_states.to(lm_head_device)
         if labels is not None:
             labels = labels.to(lm_head_device)
 
-        # Output last hidden states without logits if asked
+        # Output last hidden states without logits if asked.
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1":
             if num_logits_to_keep != 0:
                 hidden_states = hidden_states[:, -num_logits_to_keep:, :]
@@ -1495,9 +1420,9 @@ def CausalLM_fast_forward(fast_forward_inference):
             logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(dtype))
         else:
             RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
-            # < 1024 Normal Unsloth uses less VRAM!
+            # Below 1024 normal Unsloth uses less VRAM.
             if bsz * q_len <= 1024 and not RETURN_LOGITS:
-                # Use unsloth_fused_ce_loss which actually calculates the best chunk size to reduce VRAM usage
+                # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
                 RETURN_LOGITS = False
 
             if not RETURN_LOGITS and labels is not None:
@@ -1508,24 +1433,17 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if self.config.model_type == "falcon_h1":
                     hidden_states = hidden_states * self.config.lm_head_multiplier
 
-                # Packed-boundary guard on raw labels (the fused kernel shifts internally).
-                # This branch RETURNS, so mask_packed_sequence_boundaries() below is dead on
-                # packed training paths: it needs UNSLOTH_RETURN_LOGITS=1, which itself forces
-                # packing off (unsloth/trainer.py). Out-of-place, no-op without packed_seq_lengths.
+                # Packed-boundary guard on raw labels (the fused kernel shifts internally). This branch RETURNS,
+                # so mask_packed_sequence_boundaries() below is dead on packed paths: it needs
+                # UNSLOTH_RETURN_LOGITS=1, which forces packing off. Out-of-place, no-op without
+                # packed_seq_lengths.
                 labels = mask_packed_boundary_labels(
                     labels,
                     kwargs.get("packed_seq_lengths"),
                 )
 
-                ### DISABLED since T4 breaks
-                # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages` may help.
-                # loss = fused_linear_cross_entropy(
-                #     hidden_states      = hidden_states,
-                #     lm_weight          = lm_head,
-                #     labels             = labels,
-                #     num_items_in_batch = n_items,
-                #     logit_softcapping  = logit_softcapping,
-                # )
+                # fused_linear_cross_entropy is disabled: T4 raises OutOfResources (needs 98304 shared memory
+                # against a 65536 limit).
                 loss = unsloth_fused_ce_loss(
                     trainer = None,
                     hidden_states = hidden_states,
@@ -1540,8 +1458,7 @@ def CausalLM_fast_forward(fast_forward_inference):
                     logit_softcapping = logit_softcapping,
                 )
                 if not return_dict:
-                    # Fused CE never materializes `logits`; use EMPTY_LOGITS
-                    # like the return_dict branch below (fixes #2068).
+                    # Fused CE never materializes logits; use EMPTY_LOGITS like the return_dict branch below (#2068).
                     output = (EMPTY_LOGITS,) + outputs[1:]
                     return (loss,) + output if loss is not None else output
 
@@ -1558,12 +1475,9 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         logits = logits.to(_get_dtype(dtype_from_config(self.config)))
         loss = None
-        # Which field carries the scale is per family (cohere multiplies by logit_scale,
-        # granite divides by logits_scaling, falcon_h1 multiplies by lm_head_multiplier).
-        # The planner sizes the head's card from the same answer, so a new family is taught
-        # once, not twice.
-        # granite: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/granite/modeling_granite.py#L1103
-        # cohere: https://github.com/huggingface/transformers/blob/4d1d0f29a493098e6bc6b904b82e29cb331827f5/src/transformers/models/cohere/modeling_cohere.py#L1176
+        # Which field carries the scale is per family (cohere logit_scale, granite logits_scaling,
+        # falcon_h1 lm_head_multiplier). The planner sizes the head's card from the same answer, so a
+        # new family is taught once, not twice.
         if detect_logit_transforms is not None:
             _transforms = detect_logit_transforms(self.config)
             logit_softcapping = _transforms["logit_softcapping"]
@@ -1580,10 +1494,6 @@ def CausalLM_fast_forward(fast_forward_inference):
 
         if labels is not None:
             shift_logits = logits
-            # if not hasattr(self, "extra_ignored_labels"):
-            #     # Fixes https://github.com/unslothai/unsloth/issues/10
-            #     self.extra_ignored_labels = torch.full((self.max_seq_length, 1), -100, device = "cuda:0")
-            # pass
             shift_labels = torch.empty_like(labels)
             shift_labels[..., :-1] = labels[..., 1:]
             shift_labels[..., -1] = -100
@@ -1591,7 +1501,6 @@ def CausalLM_fast_forward(fast_forward_inference):
                 shift_labels,
                 kwargs.get("packed_seq_lengths"),
             )
-            # shift_labels = torch.hstack((labels[..., 1:], self.extra_ignored_labels[:labels.shape[0]]))
             n_items = kwargs.get("num_items_in_batch", None)
             if n_items is None:
                 n_items = kwargs.get("n_items", None)
@@ -1774,9 +1683,9 @@ def _compute_config_rope_inv_freq(config, rope_scaling):
     original_rope_scaling = rope_scaling
     rope_scaling = _rope_scaling_as_dict(rope_scaling)
     rope_type = rope_scaling.get("rope_type", None) or rope_scaling.get("type", None)
-    # "default"/unset means unscaled RoPE. transformers >=5 reports
-    # rope_type="default" for every plain config and dropped "default" from
-    # ROPE_INIT_FUNCTIONS, so compute it directly instead of warning per load.
+    # "default"/unset means unscaled RoPE: transformers >= 5 reports rope_type="default" for every
+    # plain config and dropped "default" from ROPE_INIT_FUNCTIONS, so compute it directly instead
+    # of warning per load.
     if rope_type in (None, "default"):
         return _vanilla_inv_freq_from_config(config).to(dtype = torch.float32, device = "cpu"), 1.0
     try:
@@ -1809,31 +1718,25 @@ def _compute_config_rope_inv_freq(config, rope_scaling):
         return None, 1.0
 
 
-# Solves https://github.com/unslothai/unsloth/issues/168
-# Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-# Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
-# https://github.com/huggingface/transformers/pull/27931
-# https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
+# Static KV Cache landed in 4.38.0 and made training much slower (#168,
+# huggingface/transformers#27931), so the old rotary embeddings are retained.
 class LlamaRotaryEmbedding(torch.nn.Module):
-    # Fixes https://github.com/huggingface/transformers/pull/28837
-    # https://github.com/microsoft/DeepSpeed/issues/4932
-    # The precision of RoPE buffers is not correct, so we cast to int64.
+    # RoPE buffer precision is wrong, so cast to int64; see huggingface/transformers#28837 and microsoft/DeepSpeed#4932.
     def __init__(
         self,
         dim = None,
         max_position_embeddings = 2048,
         base = 10000,
         device = None,
-        config = None,  # [TODO] Hack to pass in config - need to remove later
+        config = None,
     ):
         super().__init__()
         # cos/sin multiplier (1.0 except yarn / longrope); set before any cache build.
         self.attention_scaling = 1.0
-        # Base-class-from-config path (modern transformers): derive inv_freq like
-        # transformers so config.rope_scaling is not dropped (#2405). Scaled
-        # subclasses are excluded to avoid double-scaling.
+        # Base-class-from-config path (modern transformers): derive inv_freq like transformers so
+        # config.rope_scaling is not dropped (#2405). Scaled subclasses excluded to avoid
+        # double-scaling.
         if config is not None:
-            # [TODO] Hack to pass in config - need to remove later
             base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
@@ -1849,7 +1752,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         self.base = base
         # Kept so the v5 rope repair can rebuild the scaled inv_freq (#2405).
         self._unsloth_rope_config = config
-        # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
+        # Dynamic RoPE starts at a max of 4 * 8192 tokens and grows iteratively in increments of 8192.
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
         self.multi_gpu_cos_cached = [None] * DEVICE_COUNT
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
@@ -1857,7 +1760,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         inv_freq = self._unsloth_recompute_inv_freq()
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
-        # Build here to make `torch.jit.trace` work.
         for device_idx in range(DEVICE_COUNT):
             self._set_cos_sin_cache(
                 seq_len = self.current_rope_size,
@@ -1865,7 +1767,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
                 dtype = torch.get_default_dtype(),
             )
 
-        # dummy so that patch_utils doesn't fail for now
         self.cos_cached = torch.empty(
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
@@ -1878,8 +1779,8 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         return inv_freq
 
     def _unsloth_recompute_inv_freq(self):
-        # Config scaling (llama3/yarn) first, else vanilla + subclass scaling.
-        # Shared by __init__ and the v5 rope repair so they cannot diverge.
+        # Config scaling (llama3/yarn) first, else vanilla plus subclass scaling. Shared by __init__ and
+        # the v5 rope repair so they cannot diverge.
         config = getattr(self, "_unsloth_rope_config", None)
         config_inv_freq = None
         rope_scaling = getattr(config, "rope_scaling", None) if config is not None else None
@@ -1901,8 +1802,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         return t
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
-        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
-        # in FP32. They are applied (multiplied) in FP32 as well.
+        # The original Llama codebase creates these on the target device in FP32 and multiplies in FP32.
         self.current_rope_size = seq_len
         t = torch.arange(
             self.current_rope_size, device = self.inv_freq.device, dtype = torch.int64
@@ -1910,10 +1810,10 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         t = self._apply_time_scaling(t)
 
         freqs = torch.outer(t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        # Different from the paper, but it uses a different permutation to obtain the same calculation.
         emb = torch.cat((freqs, freqs), dim = -1)
-        # Applied here so attention_scaling survives extend_rope_embedding rebuilds;
-        # default 1.0 keeps unscaled paths bit-identical.
+        # Applied here so attention_scaling survives extend_rope_embedding rebuilds; the 1.0 default
+        # keeps unscaled paths bit-identical.
         cos = (emb.cos() * self.attention_scaling).to(dtype = dtype, device = device, non_blocking = True)
         sin = (emb.sin() * self.attention_scaling).to(dtype = dtype, device = device, non_blocking = True)
         self.multi_gpu_cos_cached[device.index] = cos
@@ -1926,7 +1826,6 @@ class LlamaRotaryEmbedding(torch.nn.Module):
         position_ids = None,
         seq_len = None,
     ):
-        # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len = seq_len, device = x.device, dtype = x.dtype)
 
@@ -1948,7 +1847,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
             return
-        # Iteratively grow by increments of 8192
+        # Iteratively grow by increments of 8192.
         self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
         for device_idx in range(DEVICE_COUNT):
             self._set_cos_sin_cache(
@@ -1959,9 +1858,7 @@ class LlamaRotaryEmbedding(torch.nn.Module):
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
     """LlamaRotaryEmbedding extended with linear scaling. Credits to the Reddit user /u/kaiokendev"""
 
-    # Fixes https://github.com/huggingface/transformers/pull/28837
-    # https://github.com/microsoft/DeepSpeed/issues/4932
-    # The precision of RoPE buffers is not correct, so we cast to int64.
+    # RoPE buffer precision is wrong, so cast to int64; see huggingface/transformers#28837 and microsoft/DeepSpeed#4932.
     def __init__(
         self,
         dim = None,
@@ -1969,7 +1866,7 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
         base = 10000,
         device = None,
         scaling_factor = 1.0,
-        config = None,  # [TODO] Hack to pass in config - need to remove later
+        config = None,
     ):
         self.scaling_factor = scaling_factor
         super().__init__(
@@ -1985,8 +1882,7 @@ class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
         return t / self.scaling_factor
 
 
-# See https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/rotary_embedding.py#L736
-# For Llama 3.1
+# For Llama 3.1; see vllm model_executor/layers/rotary_embedding.py#L736
 class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
     def __init__(
         self,
@@ -1994,7 +1890,7 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
         max_position_embeddings = 2048,
         base = 10000,
         device = None,
-        config = None,  # [TODO] Hack to pass in config - need to remove later
+        config = None,
     ):
         super().__init__(
             dim = dim,
@@ -2004,12 +1900,10 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
             config = config,
         )
 
-    # From https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/api/model.py#L41
+    # From meta-llama/llama-models llama3_1/api/model.py#L41
     def _apply_inv_freq_scaling(self, freqs: torch.Tensor):
-        # llama3 factors from config; Llama-3.1 defaults when built without one
-        # (legacy codegen path). Hardcoding 8 is wrong for e.g. Llama-3.2 (32).
-        # v5 renames rope_scaling -> rope_parameters; read either so the factor
-        # survives even if the rope_scaling back-compat shim is dropped.
+        # llama3 factors come from the config, with Llama-3.1 defaults when built without one: hardcoding
+        # 8 is wrong for Llama-3.2 (32). v5 renames rope_scaling to rope_parameters, so read either.
         config = getattr(self, "_unsloth_rope_config", None)
         rope_scaling = _rope_scaling_as_dict(
             getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None) or {}
@@ -2038,7 +1932,7 @@ class LlamaExtendedRotaryEmbedding(LlamaRotaryEmbedding):
 
 
 class LongRopeRotaryEmbedding(torch.nn.Module):
-    # For Phi 3.5 128K https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/main/modeling_phi3.py
+    # For Phi 3.5 128K; see microsoft/Phi-3.5-mini-instruct modeling_phi3.py
     def __init__(
         self,
         dim = None,
@@ -2048,7 +1942,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         short_factor = None,
         long_factor = None,
         device = None,
-        config = None,  # [TODO] Hack to pass in config - need to remove later
+        config = None,
     ):
         super().__init__()
         assert short_factor is not None
@@ -2056,7 +1950,6 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         assert type(original_max_position_embeddings) is int
 
         if config is not None:
-            # [TODO] Hack to pass in config - need to remove later
             base = _get_rope_theta(config, default = base)
             partial_rotary_factor = (
                 config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
@@ -2069,15 +1962,14 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         self.max_position_embeddings = max_position_embeddings
         self.original_max_position_embeddings = original_max_position_embeddings
         self.base = base
-        # Dynamic RoPE we first set it to a max of 4 * 8192 tokens then we iteratively grow this
+        # Dynamic RoPE starts at a max of 4 * 8192 tokens and grows iteratively.
         self.current_rope_size = min(original_max_position_embeddings, self.max_position_embeddings)
         self.multi_gpu_short_cos_cached = [None] * DEVICE_COUNT
         self.multi_gpu_short_sin_cached = [None] * DEVICE_COUNT
         self.multi_gpu_long_cos_cached = [None] * DEVICE_COUNT
         self.multi_gpu_long_sin_cached = [None] * DEVICE_COUNT
 
-        # Long RoPE similar to RoPE except short sequences have 1 cos / sin
-        # and long sequences have another cos / sin
+        # Long RoPE is like RoPE except short sequences have one cos/sin and long sequences another.
         inv_freq_shape = (
             torch.arange(0, self.dim, 2, dtype = torch.int64, device = "cpu").float() / self.dim
         )
@@ -2086,7 +1978,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         short_inv_freq = 1.0 / (short_factor * self.base**inv_freq_shape)
         long_inv_freq = 1.0 / (long_factor * self.base**inv_freq_shape)
 
-        # Phi-3 Scale factor
+        # Phi-3 scale factor.
         scale = self.max_position_embeddings / self.original_max_position_embeddings
         if scale <= 1.0:
             scaling_factor = 1.0
@@ -2096,12 +1988,10 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             )
         self.scaling_factor = scaling_factor
 
-        # Short and long inv_freq
         self.register_buffer("short_inv_freq", short_inv_freq, persistent = False)
         self.register_buffer("long_inv_freq", long_inv_freq, persistent = False)
 
-        # Build here to make `torch.jit.trace` work.
-        # Initialize short sequences cache for all devices
+        # Build here to make torch.jit.trace work, initializing the short-sequence cache for all devices.
         dtype = torch.bfloat16 if is_bfloat16_supported() else torch.float16
         t = torch.arange(
             original_max_position_embeddings,
@@ -2122,7 +2012,6 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
             self.multi_gpu_short_cos_cached[device_idx] = cos_cached
             self.multi_gpu_short_sin_cached[device_idx] = sin_cached
 
-        # dummy so that patch_utils doesn't fail for now
         self.short_cos_cached = torch.empty(
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
@@ -2137,14 +2026,12 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         )
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
-        # Note: on the original Llama codebase, these tensors are created on the target device (and not on CPU) and
-        # in FP32. They are applied (multiplied) in FP32 as well.
+        # The original Llama codebase creates these on the target device in FP32 and multiplies in FP32.
         self.current_rope_size = seq_len
 
         t = torch.arange(
             self.current_rope_size, device = self.long_inv_freq.device, dtype = torch.int64
         ).float()
-        # Long sequences
         freqs = torch.outer(t, self.long_inv_freq)
         emb = torch.cat((freqs, freqs), dim = -1)
         cos_cached = (emb.cos() * self.scaling_factor).to(
@@ -2163,7 +2050,6 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
         position_ids = None,
         seq_len = None,
     ):
-        # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len is not None and seq_len > self.current_rope_size:
             self._set_cos_sin_cache(seq_len = seq_len, device = x.device, dtype = x.dtype)
 
@@ -2198,7 +2084,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
     def extend_rope_embedding(self, x, seq_len):
         if seq_len <= self.current_rope_size:
             return
-        # Iteratively grow by increments of 8192
+        # Iteratively grow by increments of 8192.
         self.current_rope_size = ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
         for device_idx in range(DEVICE_COUNT):
             self._set_cos_sin_cache(
@@ -2207,10 +2093,9 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 
 
 def unsloth_fast_generate(self, *args, **kwargs):
-    # Restore training mode after generation if we started in it
     restore_training_mode = self.training
-    # Snapshot the real GC mode (e.g. "unsloth") before for_inference clears it,
-    # so the restore preserves it rather than collapsing to a plain bool.
+    # Snapshot the real GC mode (e.g. "unsloth") before for_inference clears it, so the restore
+    # preserves it rather than collapsing to a plain bool.
     use_gradient_checkpointing = next(
         (v for v in (getattr(m, "gradient_checkpointing", False) for m in self.modules()) if v),
         False,
@@ -2218,9 +2103,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     FastLlamaModel.for_inference(self)
 
-    # Unpack BatchEncoding passed as input_ids (old notebooks do
-    # generate(input_ids=tokenizer(...))). v5 generate() calls .shape on it and
-    # crashes; unpack into separate kwargs so v4 and v5 both work.
+    # Unpack a BatchEncoding passed as input_ids (old notebooks do generate(input_ids=tokenizer(...))):
+    # v5 generate() calls .shape on it and crashes.
     _maybe_encoding = kwargs.get("input_ids", None)
     if (
         _maybe_encoding is not None
@@ -2244,16 +2128,11 @@ def unsloth_fast_generate(self, *args, **kwargs):
                     "You will need to do long context extension by increasing the `max_seq_length` in `FastLanguageModel.from_pretrained`."
                 )
 
-    # Must patch accelerate for Xformers
-    # if accelerate_new_send_to_device is not None:
-    #     import accelerate.utils.operations
-    #     accelerate.utils.operations.send_to_device = accelerate_new_send_to_device
-    # pass
+    # Must patch accelerate for Xformers.
 
-    # For newer HF
     kwargs["cache_implementation"] = "dynamic"
-    # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep; pop both,
-    # re-emit under the spelling forward() accepts.
+    # transformers 4.50 renamed num_logits_to_keep to logits_to_keep; pop both and re-emit under the
+    # spelling forward() accepts.
     _provided_num = kwargs.pop("num_logits_to_keep", None)
     _provided_logits = kwargs.pop("logits_to_keep", None)
     _provided = _provided_logits if _provided_logits is not None else _provided_num
@@ -2262,7 +2141,7 @@ def unsloth_fast_generate(self, *args, **kwargs):
         _has_new = "logits_to_keep" in _fwd_params
         _has_old = "num_logits_to_keep" in _fwd_params
     except (TypeError, ValueError):
-        # Opaque forward: keep the caller's spelling, default to new.
+        # Opaque forward: keep the caller's spelling, defaulting to the new one.
         _has_old = _provided_num is not None and _provided_logits is None
         _has_new = not _has_old
     if _has_new:
@@ -2270,27 +2149,20 @@ def unsloth_fast_generate(self, *args, **kwargs):
     elif _has_old:
         kwargs["num_logits_to_keep"] = _provided if _provided is not None else 1
 
-    # Remove token_type_ids
     kwargs.pop("token_type_ids", None)
 
-    # Check pad_token
     model_eos_token_id = getattr(self.config, "eos_token_id", None)
     if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
         model_eos_token_id = model_eos_token_id[0]
 
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
-    # Mixed precision autocast
+    # Mixed precision autocast.
     with (
         _get_inference_mode_context_manager(self),
         torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
     ):
         output = self._old_generate(*args, **kwargs)
-
-    # Return accelerate back
-    # if accelerate_new_send_to_device is not None:
-    #     accelerate.utils.operations.send_to_device = accelerate_old_send_to_device
-    # pass
 
     if restore_training_mode:
         FastLlamaModel.for_training(
@@ -2348,11 +2220,8 @@ class FastLlamaModel:
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(LlamaForCausalLM)
 
-        # Solves https://github.com/unslothai/unsloth/issues/168
-        # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-        # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
-        # https://github.com/huggingface/transformers/pull/27931
-        # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
+        # Static KV Cache landed in 4.38.0 and made training much slower (#168,
+        # huggingface/transformers#27931), so the old rotary embeddings are retained.
         import transformers.models.llama.modeling_llama
 
         transformers.models.llama.modeling_llama.LlamaRotaryEmbedding = LlamaRotaryEmbedding
@@ -2417,11 +2286,10 @@ class FastLlamaModel:
                 raise RuntimeError(
                     "Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
                 )
-            # Only vLLM cannot take a revision; fast_inference may have just been cleared
-            # above, and a num_labels load stays in-process, so both can honour the pin.
+            # Only vLLM cannot take a revision, and fast_inference may have just been cleared above while a
+            # num_labels load stays in-process, so both can honour the pin. vLLM fetches the default branch,
+            # so pinning only the config and tokenizer would mix two refs in one model.
             if _vllm_will_load_weights(fast_inference, num_labels) and revision is not None:
-                # vLLM fetches the default branch, so pinning only the config and tokenizer
-                # would mix two refs in one model.
                 logger.warning_once(
                     f"Unsloth: Ignoring revision = `{revision}` since vLLM loads weights from "
                     "the default branch. Use `fast_inference = False` to load a pinned revision."
@@ -2455,7 +2323,6 @@ class FastLlamaModel:
 
         print(statistics)
 
-        # Warn about fast transfers
         if "HF_HUB_ENABLE_HF_TRANSFER" in os.environ:
             old_hf_transfer = os.environ["HF_HUB_ENABLE_HF_TRANSFER"]
             if old_hf_transfer in ("False", "false"):
@@ -2472,7 +2339,7 @@ class FastLlamaModel:
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
         model_patcher.pre_patch()
-        # For debugging - we use a download counter to see if environments are not breaking or if HF is down
+        # A download counter, to see whether environments are breaking or HF is down.
         get_statistics(kwargs.get("local_files_only", False))
 
         if dtype is None:
@@ -2480,22 +2347,16 @@ class FastLlamaModel:
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
-        # elif dtype == torch.float16 and SUPPORTS_BFLOAT16:
-        #     logger.warning_once("Device supports bfloat16 but you selected float16. Will change to bfloat16.")
-        #     dtype = torch.bfloat16
 
         assert dtype == torch.float16 or dtype == torch.bfloat16 or dtype == torch.float32
 
-        # RoPE Scaling
-        # Respect a user-provided config so it is the single config object used
-        # everywhere below; otherwise HF would receive it again through **kwargs
-        # alongside our own config= and fail with a duplicate-kwarg TypeError.
+        # Respect a user-provided config so it is the single config object used everywhere below; else
+        # HF gets it again through **kwargs alongside our config= and fails with a duplicate kwarg.
         user_config = kwargs.pop("config", None)
         if user_config is not None:
             model_config = user_config
-            # model_name may have been remapped to a prequantized repo whose
-            # checkpoint needs its quantization_config; graft it onto the user
-            # config or the 4bit weights load without their quant state.
+            # model_name may have been remapped to a prequantized repo whose checkpoint needs its
+            # quantization_config; graft it on, or the 4bit weights load without their quant state.
             if getattr(model_config, "quantization_config", None) is None:
                 _checkpoint_config = AutoConfig.from_pretrained(
                     model_name,
@@ -2527,8 +2388,8 @@ class FastLlamaModel:
         )
 
         # Prefetch the repo (killable child) so the weight load is a cache hit. Runs after the
-        # AutoConfig/model-class check so an unsupported repo fails on its small config fetch.
-        # Warm the revision the load uses, or the repo downloads twice.
+        # AutoConfig/model-class check so an unsupported repo fails on its small config fetch, and warms
+        # the revision the load uses or the repo downloads twice.
         _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
@@ -2543,21 +2404,20 @@ class FastLlamaModel:
             use_safetensors = kwargs.get("use_safetensors"),
             from_tf = kwargs.get("from_tf", False),
             from_flax = kwargs.get("from_flax", False),
-            # Bare load reads only ROOT weights; skip subdir weights. Ignored when a subfolder is set.
+            # A bare load reads only ROOT weights, so skip subdir weights; ignored when a subfolder is set.
             weights_at_root = True,
             variant = kwargs.get("variant"),  # forward so the warm keeps the variant .bin
             gguf_file = kwargs.get(
                 "gguf_file"
             ),  # forward so the warm fetches the GGUF (else ignored)
         )
-        # Child did the forced download; clear the flag so the load reuses the warm cache.
+        # The child did the forced download; clear the flag so the load reuses the warm cache.
         if _prefetched and kwargs.get("force_download", False):
             kwargs["force_download"] = False
 
-        # Tokenizer always loads in-process. Resolve the cache_dir the tokenizer load will actually
-        # use, mirroring load_correct_tokenizer: without an explicit cache_dir, Colab/Kaggle route to
-        # a special tokenizer cache (huggingface_tokenizers_cache / Kaggle tmp), NOT the HF-default
-        # cache the base snapshot warmed. So the base warm does not cover the tokenizer there.
+        # The tokenizer always loads in-process, and without an explicit cache_dir Colab/Kaggle route it
+        # to a special tokenizer cache rather than the one the base snapshot warmed, so resolve the
+        # cache_dir the tokenizer load will actually use.
         from ..tokenizer_utils import (
             IS_COLAB_ENVIRONMENT,
             IS_KAGGLE_ENVIRONMENT,
@@ -2573,9 +2433,8 @@ class FastLlamaModel:
                 _tokenizer_cache_dir = "huggingface_tokenizers_cache"
             elif IS_KAGGLE_ENVIRONMENT:
                 _tokenizer_cache_dir = os.path.join(KAGGLE_TMP, "huggingface_tokenizers_cache")
-        # Warm the tokenizer repo into the cache the load will use whenever the base warm did not
-        # cover it: a distinct tokenizer repo, fast_inference (base warm skipped), or a tokenizer
-        # cache_dir that differs from the base-warm cache_dir (Colab/Kaggle special cache).
+        # Warm the tokenizer repo into the cache the load will use whenever the base warm did not cover
+        # it: a distinct tokenizer repo, fast_inference (base warm skipped), or a differing cache_dir.
         _warm_tokenizer_repo = (
             isinstance(_tokenizer_repo, str)
             and bool(_tokenizer_repo)
@@ -2603,7 +2462,7 @@ class FastLlamaModel:
             pass
         has_rope_scaling = True
 
-        # If max_seq_length is not specified, use maximum from config
+        # If max_seq_length is not specified, use the maximum from the config.
         if max_seq_length is None:
             max_seq_length = model_max_seq_length
 
@@ -2642,24 +2501,20 @@ class FastLlamaModel:
         )
         from unsloth_zoo.utils import get_quant_type
 
-        # Extract load_in_8bit from kwargs if provided
         load_in_8bit = kwargs.get("load_in_8bit", False)
 
-        # Check and disable bitsandbytes loading if model has non-bitsandbytes quantization
+        # Disable bitsandbytes loading if the model has non-bitsandbytes quantization.
         load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
             model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
         )
-        # Correct UNSLOTH_MODEL_NAME's bnb tokens now that the effective bnb state is known
-        # (the per-load env was built before remap/disable). gpt-oss only; no-op otherwise.
+        # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env
+        # was built before remap/disable). gpt-oss only.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
 
-        # `num_labels` sends the load to AutoModelForSequenceClassification, whose `score`
-        # replaces the `lm_head` the planner named off the repo's config, so `dispatch_model`
-        # refuses the map: "does not give any device for ... score.weight".
+        # num_labels sends the load to AutoModelForSequenceClassification, whose `score` replaces the
+        # lm_head the planner named off the repo's config, so dispatch_model refuses the map. The weights
+        # load against user_config while the planner rebuilds the repo's from model_name.
         _planner_skip_reason = None
-        # The weights load against `user_config`; the planner rebuilds the repo's from
-        # `model_name`. A changed `num_hidden_layers` or `vocab_size` then gets a map for a
-        # different model, which dispatches short or budgets short.
         if user_config is not None:
             _planner_skip_reason = (
                 "a caller-supplied config may not describe the repo the planner rebuilds"
@@ -2673,15 +2528,12 @@ class FastLlamaModel:
                 or "num_labels loads a task head the repo config does not describe"
             )
 
-        # A prequantized checkpoint is always sized by the list in its own config.json:
-        # `merge_quantization_configs` overlays loading attributes for GPTQ / AWQ /
-        # AutoRound / FbgemmFp8 / CompressedTensors / Mxfp4 and never for bitsandbytes, so
-        # neither the merge below (#5027) nor any argument here reaches the plan. Modules
-        # the load then keeps dense are charged at 4bit, budgeting the head device short.
-        #
-        # Worth refusing over only for mamba, whose `out_proj` stacks are GiBs of error. The
-        # other reachable gap is MoE routers, ~70 MiB even on Qwen3-235B-A22B (4096 x 128
-        # experts x 94 layers), inside the planner's own 256 MiB safety margin.
+        # A prequantized checkpoint is always sized by its own config.json: merge_quantization_configs
+        # overlays loading attributes for GPTQ / AWQ / AutoRound / FbgemmFp8 / CompressedTensors / Mxfp4
+        # and never for bitsandbytes, so neither the merge below (#5027) nor any argument here reaches the
+        # plan. Worth refusing over only for mamba, whose out_proj stacks are GiBs of error; the other
+        # reachable gap is MoE routers, ~70 MiB even on Qwen3-235B-A22B, inside the planner's 256 MiB
+        # margin.
         if _planner_skip_reason is None and IS_FALCON_H1 and _ckpt_quant_method == "bitsandbytes":
             _bundled = getattr(model_config, "quantization_config", None)
             _bundled_skip = (
@@ -2695,9 +2547,8 @@ class FastLlamaModel:
                     "load adds, so the plan would size dense weights at 4bit"
                 )
 
-        # Here, not in loader.py: the mapper up there can still substitute the repo (a
-        # -bnb-4bit name resolving to its 16-bit twin), so a plan sized for the name the
-        # caller gave is the wrong plan for the one actually loaded.
+        # Here, not in loader.py: the mapper there can still substitute the repo (a -bnb-4bit name
+        # resolving to its 16-bit twin), so a plan sized for the caller's name is the wrong plan.
         device_map = resolve_unsloth_device_map(
             requested_device_map(device_map),
             model_name,
@@ -2709,11 +2560,11 @@ class FastLlamaModel:
             trust_remote_code = trust_remote_code,
             **planner_hub_kwargs(kwargs),
             revision = revision,
-            # The dtype the load gets, not the checkpoint's: `from_pretrained` overrides
-            # config.json, and planning the wrong one mis-sizes weights 2x either way.
+            # The dtype the load gets, not the checkpoint's: from_pretrained overrides config.json, and
+            # planning the wrong one mis-sizes weights 2x either way.
             **add_dtype_kwargs(dtype),
-            # The caller's own config, still untouched in kwargs here, overrides the
-            # flags: loader.py clears them whenever it forwards one.
+            # The caller's own config, still untouched in kwargs here, overrides the flags: loader.py clears
+            # them whenever it forwards one.
             **planner_quantization_kwargs(
                 load_in_4bit = load_in_4bit,
                 load_in_8bit = load_in_8bit,
@@ -2729,7 +2580,7 @@ class FastLlamaModel:
         if load_in_4bit:
             llm_int8_skip_modules = SKIP_QUANTIZATION_MODULES.copy()
             if IS_FALCON_H1:
-                # we cannot quantize out_proj layer due to mamba kernels: https://github.com/tiiuae/Falcon-H1/issues/13#issuecomment-2918671274
+                # out_proj cannot be quantized due to mamba kernels; see tiiuae/Falcon-H1#13 (comment 2918671274).
                 llm_int8_skip_modules.append("out_proj")
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit = True,
@@ -2738,10 +2589,9 @@ class FastLlamaModel:
                 bnb_4bit_compute_dtype = dtype,
                 llm_int8_skip_modules = llm_int8_skip_modules,
             )
-            # Pre-quantized checkpoints (e.g. unsloth/Qwen3-4B-bnb-4bit) use the
-            # quantization_config baked into config.json, ignoring our runtime
-            # BitsAndBytesConfig. Merge our skip list into the bundled config so
-            # task heads like `score` stay in compute dtype. See unslothai/unsloth#5027.
+            # Pre-quantized checkpoints use the quantization_config baked into config.json, ignoring our
+            # runtime BitsAndBytesConfig, so merge our skip list into it to keep task heads like `score` in
+            # compute dtype (#5027).
             if _ckpt_quant_method == "bitsandbytes" and _ckpt_qcfg is not None:
                 if isinstance(_ckpt_qcfg, dict):
                     _ckpt_skip = list(_ckpt_qcfg.get("llm_int8_skip_modules") or [])
@@ -2759,12 +2609,11 @@ class FastLlamaModel:
                     except Exception:
                         pass
 
-        # https://huggingface.co/togethercomputer/LLaMA-2-7B-32K/discussions/12
-        # RoPE Scaling's max_position_embeddings must be updated
+        # RoPE Scaling's max_position_embeddings must be updated; see togethercomputer/LLaMA-2-7B-32K discussion 12.
         max_position_embeddings = max(max_seq_length, model_max_seq_length)
         kwargs.pop("attn_implementation", None)  # No need since we auto call it
 
-        # Cannot be None, since HF now checks for the config
+        # Cannot be None, since HF now checks for the config.
         if load_in_4bit:
             kwargs["quantization_config"] = bnb_config
 
@@ -2773,13 +2622,12 @@ class FastLlamaModel:
         raise_handler = RaiseUninitialized()
         try:
             if num_labels is not None:
-                # Transformers 5.x @strict config classes reject unexpected kwargs
-                # like num_labels and max_position_embeddings. Set on the config
-                # object directly and pass config= instead.
+                # Transformers 5.x @strict config classes reject unexpected kwargs like num_labels and
+                # max_position_embeddings, so set them on the config object and pass config= instead.
                 set_task_config_attr(model_config, "num_labels", num_labels)
                 if max_position_embeddings is not None:
                     model_config.max_position_embeddings = max_position_embeddings
-                # Pop config-level attrs that would be rejected by @strict model init
+                # Pop config-level attrs that would be rejected by @strict model init.
                 for _cfg_key in ("id2label", "label2id", "rope_scaling"):
                     _cfg_val = kwargs.pop(_cfg_key, None)
                     if _cfg_val is not None:
@@ -2791,16 +2639,14 @@ class FastLlamaModel:
                     model_name,
                     config = model_config,
                     device_map = device_map,
-                    # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
-                    # quantization_config     = bnb_config,
                     token = token,
                     trust_remote_code = trust_remote_code,
                     attn_implementation = preferred_attn_impl,
                     revision = revision,
                     **kwargs,
                 )
-                # Defensive: ensure the task head is in a floating dtype, guarding
-                # against any path leaving it as integer storage. See unslothai/unsloth#5027.
+                # Defensive: ensure the task head is in a floating dtype, guarding against any path leaving it
+                # as integer storage (#5027).
                 for _head_name in ("score", "classifier", "qa_outputs"):
                     _head = getattr(model, _head_name, None)
                     if (
@@ -2819,13 +2665,13 @@ class FastLlamaModel:
                     offload_embedding = False,
                     fast_inference = fast_inference,
                 )
-                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
+                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200), reading
+                # scales from the same revision as the weights.
                 _restore_dropped_fp8_scales(
                     model,
                     model_name,
                     local_files_only = kwargs.get("local_files_only", False),
                     token = token,
-                    # Read scales from the same revision as the weights.
                     revision = revision,
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
@@ -2833,9 +2679,8 @@ class FastLlamaModel:
                 )
             elif not fast_inference:
                 if user_config is not None:
-                    # Transformers 5.x @strict model init rejects extra kwargs next
-                    # to config=; set the override on the config and pass the single
-                    # config object through so user overrides reach the actual load.
+                    # Transformers 5.x @strict model init rejects extra kwargs next to config=, so set the override
+                    # on the config and pass the single config object through.
                     if max_position_embeddings is not None:
                         model_config.max_position_embeddings = max_position_embeddings
                     model = AutoModelForCausalLM.from_pretrained(
@@ -2852,8 +2697,6 @@ class FastLlamaModel:
                     model = AutoModelForCausalLM.from_pretrained(
                         model_name,
                         device_map = device_map,
-                        # torch_dtype             = dtype, # transformers changed torch_dtype to dtype
-                        # quantization_config     = bnb_config,
                         token = token,
                         max_position_embeddings = max_position_embeddings,
                         trust_remote_code = trust_remote_code,
@@ -2861,7 +2704,6 @@ class FastLlamaModel:
                         revision = revision,
                         **kwargs,
                     )
-                # Attach dispatch hooks for bnb multi-device loads.
                 from unsloth.models.vision import _attach_bnb_multidevice_hooks
 
                 _attach_bnb_multidevice_hooks(
@@ -2871,13 +2713,13 @@ class FastLlamaModel:
                     offload_embedding = False,
                     fast_inference = False,
                 )
-                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
+                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200), reading
+                # scales from the same revision as the weights.
                 _restore_dropped_fp8_scales(
                     model,
                     model_name,
                     local_files_only = kwargs.get("local_files_only", False),
                     token = token,
-                    # Read scales from the same revision as the weights.
                     revision = revision,
                     subfolder = kwargs.get("subfolder"),
                     cache_dir = kwargs.get("cache_dir"),
@@ -2920,10 +2762,8 @@ class FastLlamaModel:
                         load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
                 pass
 
-                # Load vLLM first
                 llm = load_vllm(**load_vllm_kwargs)
 
-                # Convert to HF format
                 _, quant_state_dict = get_vllm_state_dict(
                     llm,
                     config = model_config,
@@ -2938,10 +2778,9 @@ class FastLlamaModel:
                 model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
         finally:
             raise_handler.remove()
-            # Return old flag
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
-        # Counteract saved tokenizers
+        # Counteract saved tokenizers.
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
         # Route the tokenizer load to the custom cache_dir the prefetch warmed.
         _tokenizer_cache_kwargs = {}
@@ -2961,12 +2800,10 @@ class FastLlamaModel:
         model, tokenizer = patch_tokenizer(model, tokenizer)
         model, tokenizer = model_patcher.post_patch(model, tokenizer, correct_dtype = dtype)
 
-        # Patch up QKV / O and MLP
         for idx, layer in enumerate(model.model.layers):
             layer.self_attn.apply_qkv = original_apply_qkv
             layer.self_attn.apply_o = original_apply_o
 
-        # Patch Trainer
         from transformers.trainer import Trainer
 
         try:
@@ -2998,8 +2835,7 @@ class FastLlamaModel:
         spaces = re.search(r"\n([\s\t]{1,})", original_debug).group(0)[1:]
         front_spaces = re.match(r"([\s\t]{1,})", inner_training_loop).group(0)
 
-        # Cannot use \\ since it will cause a SyntaxWarning in Python 3.12
-        # Instead use chr(92) == \\
+        # Cannot use a backslash escape (SyntaxWarning in Python 3.12), so use chr(92).
         debug_info = """debug_info = \\
         f"==((====))==  Unsloth - 2x faster free finetuning | Num GPUs used = {len(set(p.device for p in model.parameters()))}\\n"\\
         f"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\n"\\
@@ -3042,11 +2878,10 @@ class FastLlamaModel:
             "is_torch_tpu_available()",
             "False",
         )
-        # Wire the stray-forward compile-cache reset into the plain Trainer path: get_peft_model
-        # arms the pre-train detector for every LoRA model, but only the TRL SFT/RL wrappers run
-        # the reset. A grad-enabled probe before a bare transformers.Trainer.train() would
-        # otherwise keep the poisoned Dynamo cache and leave the detector hook installed. Anchored
-        # on the first body statement; a no-op (and harmless) if upstream drops that line.
+        # Wire the stray-forward compile-cache reset into the plain Trainer path: get_peft_model arms
+        # the detector for every LoRA model, but only the TRL SFT/RL wrappers run the reset, so a
+        # grad-enabled probe before a bare Trainer.train() would keep the poisoned Dynamo cache.
+        # Anchored on the first body statement; a harmless no-op if upstream drops that line.
         inner_training_loop = inner_training_loop.replace(
             "self.accelerator.free_memory()",
             "self.accelerator.free_memory()\n"
@@ -3059,18 +2894,15 @@ class FastLlamaModel:
         exec(inner_training_loop, globals())
         Trainer._inner_training_loop = _fast_inner_training_loop
 
-        # Save max_seq_length
         model.max_seq_length = max_seq_length
         m = model
         while hasattr(m, "model"):
             m.max_seq_length = max_seq_length
             m = m.model
         m.max_seq_length = max_seq_length
-        # Save to modules as well
         for module in model.modules():
             module.max_seq_length = max_seq_length
 
-        # We check the tokenizer first for errors
         if fix_tokenizer:
             tokenizer = check_tokenizer(
                 model = model,
@@ -3083,27 +2915,24 @@ class FastLlamaModel:
             )
         patch_saving_functions(tokenizer)
 
-        # Fix up config for transformers uploading PEFT
-        # Not necessary anymore since we require transformers>=4.37!
+        # Not necessary since we requires transformers >= 4.37
         if False:
             name = model.config._name_or_path
             if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
                 name = name[: len(name) - len("-bnb-4bit")]
                 model.config.update({"_name_or_path": name})
 
-        # Log Unsloth version for future fastpaths for inference
+        # Log the Unsloth version for future inference fastpaths.
         model.config.update({"unsloth_version": __version__})
 
-        # Add save modules
         patch_saving_functions(model)
         Trainer._inner_training_loop = _fast_inner_training_loop
 
-        # Fix gradient accumulation. See issue #4982.
+        # Fix gradient accumulation; see #4982.
         apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
-        # Save tokenizer for inference purposes
-        tokenizer.padding_side = "left"  # Force inference
+        tokenizer.padding_side = "left"
         internal_model = model
         while hasattr(internal_model, "model"):
             internal_model._saved_temp_tokenizer = tokenizer
@@ -3113,13 +2942,12 @@ class FastLlamaModel:
         # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
         _mark_unsloth_disable_data_parallel(model)
 
-        # For transformers > 4.47.1, we need to add rotary_emb to all attention layers
+        # For transformers > 4.47.1, rotary_emb must be added to all attention layers.
         if IS_ATTENTION_REFACTOR or hasattr(model.model, "rotary_emb"):
             rotary_emb = model.model.rotary_emb
             for layer in model.model.layers:
                 layer.self_attn.rotary_emb = rotary_emb
 
-        # Add for_inference and for_training
         model.for_training = functools.partial(FastLlamaModel.for_training, model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
         m = model
@@ -3128,16 +2956,14 @@ class FastLlamaModel:
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
 
-        # Patch generate
         is_classification = "Classification" in str(type(model))
         if not is_classification and model.generate.__name__ != "unsloth_fast_generate":
             model._old_generate = model.generate
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
-        # Zero weight[padding_idx] only for embeddings NOT tied to lm_head: when
-        # tied, zeroing the row forces pad logit = 0, which beats the (negative)
-        # logits of real tokens (e.g. Gemma) and makes the decoder emit <pad>.
-        # Skip if eos_token == pad_token to avoid zeroing the EOS embedding.
+        # Zero weight[padding_idx] only for embeddings NOT tied to lm_head: when tied, zeroing the row
+        # forces pad logit = 0, which beats the negative logits of real tokens (Gemma) and makes the
+        # decoder emit <pad>. Skipped when eos_token == pad_token.
         eos_token_id = getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
         pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
         if tokenizer is not None and eos_token_id != pad_token_id:
@@ -3151,7 +2977,6 @@ class FastLlamaModel:
                             and getattr(module, "padding_idx", None) is not None
                         ):
                             if module.padding_idx < module.weight.shape[0]:
-                                # Skip if tied to lm_head
                                 if (
                                     lm_head_weight is not None
                                     and module.weight.data_ptr() == lm_head_weight.data_ptr()
@@ -3159,9 +2984,9 @@ class FastLlamaModel:
                                     continue
                                 module.weight[module.padding_idx] = 0
 
-        # LAST: `post_patch` replaces the embedding modules and the QKV/MLP
-        # patching below it replaces the forwards a hook wraps, so an earlier
-        # attach is lost. Skipped under vLLM, which owns the weights.
+        # LAST: post_patch replaces the embedding modules and the QKV/MLP patching below replaces the
+        # forwards a hook wraps, so an earlier attach is lost. Skipped under vLLM, which owns the
+        # weights.
         if not fast_inference:
             try:
                 from unsloth.models.vision import _repair_dispatch_hooks
@@ -3222,7 +3047,6 @@ class FastLlamaModel:
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
-            # Check for other PEFT args in kwargs
             for peft_arg, flag in (
                 ("finetune_vision_layers", False),
                 ("finetune_language_layers", True),
@@ -3256,13 +3080,12 @@ class FastLlamaModel:
             )
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
-            # Full finetuning still compiles, so a stray pre-train forward can poison the
-            # cache; install the detector here too (it is idempotent).
+            # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the
+            # detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
             return model
         transformers_set_seed(random_state)
 
-        # Apply gradient checkpointing with smart heuristics
         max_seq = getattr(model, "max_seq_length", 512)
         dtype = model.get_input_embeddings().weight.dtype
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
@@ -3277,7 +3100,6 @@ class FastLlamaModel:
         if isinstance(model, PeftModelForCausalLM) or isinstance(
             model, PeftModelForSequenceClassification
         ):
-            # Check if exactly the same and then pass through!
             assert hasattr(model, "peft_config")
 
             peft_config = model.peft_config["default"].to_dict()
@@ -3295,18 +3117,15 @@ class FastLlamaModel:
             for param in check_parameters:
                 check_all = check_all and (peft_config[param] == eval(param))
 
-            # use_dora arrives via **kwargs, not a named parameter of this
-            # function, so it can't go in check_parameters (which uses
-            # eval(param) and needs each entry to be a bound local name).
-            # Compare it explicitly so a DoRA request against an existing
-            # plain-LoRA adapter doesn't silently pass through unchanged.
+            # use_dora arrives via **kwargs, not as a named parameter, so it cannot go in check_parameters
+            # (which evals each entry as a bound local); compare it explicitly, or a DoRA request against an
+            # existing plain-LoRA adapter silently passes through unchanged.
             check_all = check_all and (
                 bool(peft_config.get("use_dora", False)) == bool(kwargs.get("use_dora", False))
             )
 
-            # Everything the stored adapter trains, wherever PEFT filed it: tying moves
-            # the counterpart to modules_to_tie, which to_dict() drops, so read the
-            # config object.
+            # Everything the stored adapter trains, wherever PEFT filed it: tying moves the counterpart to
+            # modules_to_tie, which to_dict() drops, so read the config object.
             requested_modules_to_save = modules_to_save
             modules_to_save = list(peft_config["modules_to_save"] or [])
             old_target_modules = list(peft_config["target_modules"]) + modules_to_save
@@ -3314,8 +3133,8 @@ class FastLlamaModel:
                 getattr(model.peft_config["default"], "modules_to_tie", None) or []
             )
 
-            # The new side is what THIS call asks for, through the same redirect. Built
-            # from the stored lists instead, a narrowed request would compare equal.
+            # The new side is what THIS call asks for, through the same redirect; built from the stored
+            # lists instead, a narrowed request would compare equal.
             requested_targets, requested_saved, _ = _redirect_embedding_targets(
                 target_modules,
                 requested_modules_to_save,
@@ -3323,13 +3142,13 @@ class FastLlamaModel:
             )
             new_target_modules = list(requested_targets) + list(requested_saved or [])
             if isinstance(model, PeftModelForSequenceClassification):
-                # PeftModelForSequenceClassification.__init__ extends modules_to_save with
-                # these unconditionally, so the stored config names modules the caller
-                # never asked for. Mirror it, or an unchanged request looks different.
+                # PeftModelForSequenceClassification.__init__ extends modules_to_save with these
+                # unconditionally, so the stored config names modules the caller never asked for. Mirror it, or
+                # an unchanged request looks different.
                 new_target_modules += ["classifier", "score"]
-            # Tying is not in check_parameters and leaves both lists looking the same, so
-            # compare it separately. On what it actually does, not what was asked: on an
-            # untied model the request changes nothing either way.
+            # Tying is not in check_parameters and leaves both lists looking the same, so compare it
+            # separately, on what it does rather than what was asked: on an untied model the request changes
+            # nothing either way.
             _requested_ties = _effective_weight_tying(
                 model,
                 requested_saved,
@@ -3338,17 +3157,15 @@ class FastLlamaModel:
             _stored_ties = bool(getattr(model.peft_config["default"], "modules_to_tie", None))
             check_all = check_all and (_requested_ties == _stored_ties)
             if _requested_ties:
-                # PEFT files the counterpart under modules_to_tie, which the old side
-                # counts, so name it here even when the caller listed only one side.
+                # PEFT files the counterpart under modules_to_tie, which the old side counts, so name it here
+                # even when the caller listed only one side.
                 new_target_modules += list(EMBEDDING_MODULES)
-            # Per-expert Linear MoE experts (e.g. gpt-oss bnb-4bit) were auto-added to the
-            # saved target_modules when the adapter was first created. Recompute them so a
-            # repeat get_peft_model call with the same args stays idempotent instead of
-            # tripping the mismatch below. No-op for non per-expert-Linear models.
+            # Per-expert Linear MoE experts (gpt-oss bnb-4bit) were auto-added to the saved target_modules
+            # at creation, so recompute them and keep a repeat get_peft_model call idempotent.
             new_target_modules += get_moe_target_modules(model, target_modules)
 
-            # Now check! Fold away PEFT's model.embed_tokens alias, and only that one:
-            # layers.0.q_proj is a real target and is not layers.1.q_proj.
+            # Fold away PEFT's model.embed_tokens alias, and only that one: layers.0.q_proj is a real target
+            # and is not layers.1.q_proj.
             def _leaf_name(module):
                 return _embedding_leaf(module) or module
 
@@ -3362,11 +3179,8 @@ class FastLlamaModel:
             )
 
             if check_all:
-                # Simply pass through!
                 logger.warning("Unsloth: Already have LoRA adapters! We shall skip this step.")
 
-                # Offload!
-                # [TODO] First offload lm_head and embed_tokens to CPU (should be disk!!)
                 if "embed_tokens" in new_target_modules:
                     print("Unsloth: Training embed_tokens in mixed precision to save VRAM")
 
@@ -3381,8 +3195,8 @@ class FastLlamaModel:
                         model.get_output_embeddings(), DEVICE_TYPE_TORCH
                     )
 
-                # Pre-wrapped PEFT model passes through here; still arm the detector so an RL
-                # trainer can reset a compile cache poisoned by a pre-train forward.
+                # A pre-wrapped PEFT model passes through here; still arm the detector so an RL trainer can
+                # reset a compile cache poisoned by a pre-train forward.
                 _unsloth_install_pretrain_detector(model)
                 # This branch returns before patch_peft_model, so record here too;
                 # apply_unsloth_gradient_checkpointing above already re-patched global state to match (#4735).
@@ -3449,7 +3263,6 @@ class FastLlamaModel:
         assert type(use_rslora) is bool
         if use_rslora:
             if not SUPPORTS_RSLORA:
-                # We manually check for PEFT
                 import peft
                 raise RuntimeError(
                     f"Unsloth: Your PEFT version of {peft.__version__} does not support `use_rslora`.\n"
@@ -3477,8 +3290,8 @@ class FastLlamaModel:
         train_lm_head = False
         train_embed_tokens = False
         final_modules = []
-        # LoRA on these never trains (see _redirect_embedding_targets); modules_to_save
-        # does, and is what embedding_learning_rate matches.
+        # LoRA on these never trains (see _redirect_embedding_targets); modules_to_save does, and is
+        # what embedding_learning_rate matches.
         target_modules, modules_to_save, _moved_embedding_modules = _redirect_embedding_targets(
             target_modules,
             modules_to_save,
@@ -3521,10 +3334,9 @@ class FastLlamaModel:
                     "Beware - your finetuning might be noticeably slower!"
                 )
 
-        # Check if we added new tokens!
         if hasattr(model, "_need_to_train_embeddings"):
-            # Check if embed_tokens/lm_head are already being trained
-            # (either as LoRA targets in final_modules or via modules_to_save)
+            # embed_tokens/lm_head may already be trained, either as LoRA targets in final_modules or via
+            # modules_to_save.
             _embed_already_trained = train_embed_tokens or "embed_tokens" in final_modules
             _lm_head_already_trained = train_lm_head or "lm_head" in final_modules
             if not _lm_head_already_trained or not _embed_already_trained:
@@ -3533,7 +3345,7 @@ class FastLlamaModel:
                     "train the lm_head and embed_tokens.\nWe must turn it on for you."
                 )
 
-                # Only add to modules_to_save if not already a LoRA target
+                # Only add to modules_to_save if not already a LoRA target.
                 if not _embed_already_trained:
                     train_embed_tokens = True
                     if modules_to_save is None:
@@ -3548,18 +3360,8 @@ class FastLlamaModel:
                     elif "lm_head" not in modules_to_save:
                         modules_to_save.append("lm_head")
 
-        # Check for Llama-3
-        # if hasattr(model._saved_temp_tokenizer, "_using_llama3_template"):
-        #     if not train_embed_tokens and not train_lm_head:
-        #         raise RuntimeError("")
+        # Fixing untrained tokens here is wrong: it can cause reserved tokens to pop out.
 
-        # First fix untrained tokens
-        # Wrong - can cause reserved tokens to pop out!!
-        # if train_embed_tokens or train_lm_head:
-        #     fix_untrained_tokens(model, eps = 1e-16)
-        # pass
-
-        # Check modules_to_save
         if modules_to_save is not None:
             for module in modules_to_save:
                 # By leaf: PEFT resolves model.embed_tokens to the same module.
@@ -3577,7 +3379,6 @@ class FastLlamaModel:
 
         vllm_engine = None
         if hasattr(model, "vllm_engine"):
-            # Fast inference!
             vllm_engine = model.vllm_engine
             vllm_fast_generate = model.fast_generate
             vllm_fast_generate_batches = model.fast_generate_batches
@@ -3592,15 +3393,15 @@ class FastLlamaModel:
                     "Unsloth: Currently fast inference does not work with using biases for LoRA."
                 )
 
-        # Does not get lora yet, so get name from model, not base model
+        # Does not get lora yet, so take the name from model, not base model.
         is_classification = "Classification" in str(type(model))
 
-        # Auto-detect MoE models and populate target_parameters for expert layers
+        # Auto-detect MoE models and populate target_parameters for expert layers.
         if target_parameters is None:
             target_parameters = get_moe_target_parameters(model, target_modules)
 
-        # Per-expert Linear expert layouts (e.g. gpt-oss bnb-4bit) are Linear modules,
-        # not fused Parameters, so target them via target_modules. No-op otherwise.
+        # Per-expert Linear expert layouts (gpt-oss bnb-4bit) are Linear modules, not fused Parameters,
+        # so target them via target_modules.
         _moe_module_targets = get_moe_target_modules(model, target_modules)
         if _moe_module_targets:
             _added = [t for t in _moe_module_targets if t not in final_modules]
@@ -3635,7 +3436,7 @@ class FastLlamaModel:
             ensure_weight_tying = ensure_weight_tying,
             **kwargs,
         )
-        # Older PEFT has no `ensure_weight_tying`; passing it would TypeError.
+        # Older PEFT has no ensure_weight_tying; passing it would TypeError.
         if "ensure_weight_tying" not in inspect.signature(LoraConfig).parameters:
             del arguments["ensure_weight_tying"]
         if not SUPPORTS_LOFTQ:
@@ -3646,7 +3447,6 @@ class FastLlamaModel:
         _saved_temp_tokenizer = model._saved_temp_tokenizer
 
         lora_config = LoraConfig(**arguments)
-        # First offload lm_head and embed_tokens to disk
         input_embeddings_device = model.get_input_embeddings().weight.device
         if is_classification:
             output_embeddings_device = model.score.weight.device
@@ -3658,7 +3458,6 @@ class FastLlamaModel:
                 print("Unsloth: Offloading input_embeddings to disk to save VRAM")
                 offload_input_embeddings(model, temporary_location)
 
-            # Remove old items to save VRAM
             for _ in range(3):
                 gc.collect()
                 clean_gpu_cache()
@@ -3667,7 +3466,6 @@ class FastLlamaModel:
                 print("Unsloth: Offloading output_embeddings to disk to save VRAM")
                 offload_output_embeddings(model, temporary_location)
 
-            # Remove old items to save VRAM
             for _ in range(3):
                 gc.collect()
                 clean_gpu_cache()
@@ -3684,10 +3482,8 @@ class FastLlamaModel:
                 )
         except Exception as _exc:
             logger.warning_once(f"Unsloth: could not lift adapter hooks: {_exc}")
-        # Fix LoraConfig.auto_mapping is None
         fix_lora_auto_mapping(model)
 
-        # Apply QAT + LoRA if specified
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = FastLlamaModel._prepare_for_qat(model, qat_scheme)
@@ -3707,7 +3503,6 @@ class FastLlamaModel:
                         if not hasattr(source_module, "weight"):
                             return
                         weight = source_module.weight
-                        # Remove existing registration to avoid "attribute already exists"
                         if "weight" in getattr(target_module, "_parameters", {}):
                             target_module._parameters.pop("weight")
                         if hasattr(target_module, "weight"):
@@ -3720,7 +3515,8 @@ class FastLlamaModel:
                                 )
                         target_module.register_parameter("weight", weight)
 
-                    # Tie trainable copies created by ModulesToSaveWrapper first (these are used in forward)
+                    # Tie the trainable copies created by ModulesToSaveWrapper first, since those are used in
+                    # forward, then the original_module references if present.
                     if hasattr(input_embeddings, "modules_to_save") and hasattr(
                         output_embeddings, "modules_to_save"
                     ):
@@ -3732,7 +3528,6 @@ class FastLlamaModel:
                                 input_embeddings.modules_to_save.default,
                             )
 
-                    # Tie original_module references as well if present
                     if hasattr(input_embeddings, "original_module") and hasattr(
                         output_embeddings, "original_module"
                     ):
@@ -3767,7 +3562,6 @@ class FastLlamaModel:
                 original_device = output_embeddings_device,
             )
 
-        # Patch tokenizer to pad to the right
         internal_model = model
         while hasattr(internal_model, "model"):
             if hasattr(internal_model, "_saved_temp_tokenizer"):
@@ -3778,14 +3572,12 @@ class FastLlamaModel:
         # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
         _mark_unsloth_disable_data_parallel(model)
 
-        # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
             clean_gpu_cache()
 
         patch_peft_fast_inference(model)
 
-        # Add for_inference and for_training
         model.for_training = functools.partial(FastLlamaModel.for_training, model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
         m = model
@@ -3793,18 +3585,17 @@ class FastLlamaModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
-        # Detect a stray pre-train forward so train() can drop the torch.compile
-        # graph cache it would otherwise poison (see prepare_for_training_mode).
+        # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would
+        # otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
         return model
 
     @staticmethod
     def patch_peft_model(model, use_gradient_checkpointing = "unsloth"):
-        # Persist the effective GC mode so the trainer restores it verbatim: for_inference()
-        # clears the module flags every GRPO step, and a plain TrainingArguments defaults it to
-        # False, which would otherwise silently disable it at train time (#4735). Recorded here,
-        # not in get_peft_model, so adapters loaded via loader.py's from_pretrained path are covered.
+        # Persist the effective GC mode so the trainer restores it verbatim: for_inference() clears the
+        # module flags every GRPO step, and TrainingArguments defaults it to False, which would silently
+        # disable it at train time (#4735). Recorded here so loader.py's from_pretrained path is covered.
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
             return FastBaseModel.patch_peft_model(
@@ -3816,7 +3607,6 @@ class FastLlamaModel:
         ):
             raise TypeError("Unsloth: Your model needs to call `.get_peft_model` first!")
 
-        # Get activation function
         model_type = model.config.model_type
 
         if model_type == "llama":
@@ -3848,26 +3638,21 @@ class FastLlamaModel:
             use_reentrant = True,
         )
 
-        # Fix up config for transformers uploading PEFT
         for active_adapter in model.peft_config.keys():
-            # Not necessary since we requires transformers >= 4.37
             if False:
                 name = model.peft_config[active_adapter].base_model_name_or_path
                 if name.startswith("unsloth/") and name.endswith("-bnb-4bit"):
                     name = name[: len(name) - len("-bnb-4bit")]
                     model.peft_config[active_adapter].base_model_name_or_path = name
                 pass
-            # Add revision to enable future fast inference paths
-            # [TODO] Bugs out!see https://github.com/unslothai/unsloth/issues/492
-            # model.peft_config[active_adapter].revision = f"unsloth"
+            # Adding a revision to enable future fast inference paths bugs out; see #492.
 
         from transformers.trainer import Trainer
 
         if Trainer._inner_training_loop.__name__ != "_fast_inner_training_loop":
             raise RuntimeError("Unsloth: Unsuccessfully patched Trainer! Please file a bug report!")
 
-        # Fix loftq issues
-        # loftq_config must not = None, but rather {}
+        # loftq_config must not be None, but rather {}.
         all_configs = model.peft_config
         for key, current_config in all_configs.items():
             if hasattr(current_config, "loftq_config") and current_config.loftq_config is None:
@@ -3876,7 +3661,6 @@ class FastLlamaModel:
                 current_config = current_config.__class__(**new_args)
                 all_configs[key] = current_config
 
-        # Do patching
         n_mlp = 0
         n_qkv = 0
         n_o = 0
@@ -3885,11 +3669,10 @@ class FastLlamaModel:
             model.active_adapters[0] if hasattr(model, "active_adapters") else model.active_adapter
         )
 
-        # Get dropout and bias
         lora_dropout = model.peft_config[active_adapter].lora_dropout
         bias = model.peft_config[active_adapter].bias
 
-        # We also do not inplace edit QKV for Cohere!
+        # QKV is not inplace-edited for Cohere.
         _apply_lora_mlp = (
             functools.partial(apply_lora_mlp, inplace = False)
             if model_type == "cohere"
@@ -3899,10 +3682,8 @@ class FastLlamaModel:
         if lora_dropout == 0 and bias == "none":
             for idx, layer in enumerate(model.model.model.layers):
                 if model_type != "falcon_h1":
-                    # LoRAMLP.apply doesn't have functionality for gate and down multipliers yet.
-                    # Don't patch falcon h1 for the time being.
+                    # LoRAMLP.apply has no gate/down multiplier support yet, so falcon h1 is not patched for now.
 
-                    # MLP patching
                     mlp_module = layer.mlp
                     gate_proj = mlp_module.gate_proj
                     up_proj = mlp_module.up_proj
@@ -3919,9 +3700,9 @@ class FastLlamaModel:
                         and (len(getattr(up_proj, "lora_magnitude_vector", []) or []) == 0)
                         and (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0)
                     ):
-                        # https://stackoverflow.com/questions/50599045/python-replacing-a-function-within-a-class-of-a-module
+                        # See stackoverflow.com/questions/50599045 on replacing a function within a class of a module.
                         if hasattr(mlp_module, "_unsloth_forward"):
-                            # then we've patched the mlp to use TiledMLP
+                            # Then the mlp has been patched to use TiledMLP.
                             mlp_module._unsloth_forward = types.MethodType(
                                 _apply_lora_mlp, mlp_module
                             )
@@ -3934,7 +3715,6 @@ class FastLlamaModel:
                             "are not enabled or a bias term (like in Qwen) is used."
                         )
 
-                # QKV attention patching
                 q_proj = layer.self_attn.q_proj
                 k_proj = layer.self_attn.k_proj
                 v_proj = layer.self_attn.v_proj
@@ -3960,7 +3740,6 @@ class FastLlamaModel:
                             "are not enabled or a bias term (like in Qwen) is used."
                         )
 
-                # O attention patching
                 o_proj = layer.self_attn.o_proj
                 if (
                     hasattr(o_proj, "lora_A")
@@ -3981,21 +3760,18 @@ class FastLlamaModel:
         )
         patch_saving_functions(model)
 
-        # Patch cross entropy loss labels
-        # Fixes https://github.com/unslothai/unsloth/issues/10
+        # Patch cross entropy loss labels; fixes #10.
         max_seq_length = model.max_seq_length
-        # extra_ignored_labels = torch.full((max_seq_length, 1), -100, device = "cuda:0")
-        # model.model.extra_ignored_labels = extra_ignored_labels
         internal_model = model
         while hasattr(internal_model, "model"):
             internal_model.max_seq_length = max_seq_length
             internal_model = internal_model.model
         internal_model.max_seq_length = max_seq_length
-        # Save to modules as well
+        # Since transformers 4.53, must turn on explicitly
+        # Since transformers 4.53, must turn off explicitly
         for module in model.modules():
             module.max_seq_length = max_seq_length
 
-        # Patch tokenizer to pad to the right
         internal_model = model
         while hasattr(internal_model, "model"):
             if hasattr(internal_model, "_saved_temp_tokenizer"):
@@ -4004,14 +3780,12 @@ class FastLlamaModel:
         if hasattr(internal_model, "_saved_temp_tokenizer"):
             internal_model._saved_temp_tokenizer.padding_side = "right"
 
-        # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
             clean_gpu_cache()
 
         patch_peft_fast_inference(model)
 
-        # Add for_inference and for_training
         model.for_training = functools.partial(FastLlamaModel.for_training, model)
         model.for_inference = functools.partial(FastLlamaModel.for_inference, model)
         m = model
@@ -4019,8 +3793,6 @@ class FastLlamaModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
-        # Detect a stray pre-train forward so train() can drop the torch.compile
-        # graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         return model
 
@@ -4036,10 +3808,8 @@ class FastLlamaModel:
                 m.gradient_checkpointing = False
             if hasattr(m, "training"):
                 m.training = False
-            # Pad tokenizer to the left
             if hasattr(m, "_saved_temp_tokenizer"):
                 m._saved_temp_tokenizer.padding_side = "left"
-            # Set a flag for generation!
             m._flag_for_generation = True
 
         m = model
@@ -4049,12 +3819,11 @@ class FastLlamaModel:
         _for_inference(m)
         model.eval()  # to turn off training on modules deeper in
 
-        # Since transformers 4.53, must turn off explicitly
+        # Since transformers 4.53, this must be turned off explicitly.
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
                 module.gradient_checkpointing = False
 
-        # Also disable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
             embeddings = model.get_input_embeddings()
             if hasattr(embeddings, "training"):
@@ -4064,8 +3833,8 @@ class FastLlamaModel:
             if hasattr(embeddings, "training"):
                 embeddings.training = False
 
-        # Restore use_cache values that prepare_model_for_training disabled
-        # for gradient checkpointing (older unsloth_zoo has no restore helper)
+        # Restore use_cache values that prepare_model_for_training disabled for gradient checkpointing
+        # (older unsloth_zoo has no restore helper).
         try:
             from unsloth_zoo.training_utils import restore_use_cache
             restore_use_cache(model)
@@ -4080,7 +3849,6 @@ class FastLlamaModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
 
-        # Delete all fast inference loras
         for param in model.parameters():
             if hasattr(param, "_fast_lora"):
                 del param._fast_lora
@@ -4090,13 +3858,11 @@ class FastLlamaModel:
                 m.gradient_checkpointing = use_gradient_checkpointing
             if hasattr(m, "training"):
                 m.training = True
-            # Pad tokenizer to the left
             if hasattr(m, "_saved_temp_tokenizer"):
                 m._saved_temp_tokenizer.padding_side = "right"
-            # Set a flag for generation!
             if hasattr(m, "_flag_for_generation"):
                 try:
-                    # A PEFT wrapper delegates the read but owns nothing to delete
+                    # A PEFT wrapper delegates the read but owns nothing to delete.
                     del m._flag_for_generation
                 except AttributeError:
                     pass
@@ -4108,12 +3874,11 @@ class FastLlamaModel:
         _for_training(m)
         model.train()  # to turn on training on modules deeper in
 
-        # Since transformers 4.53, must turn on explicitly
+        # Since transformers 4.53, this must be turned on explicitly.
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
                 module.gradient_checkpointing = use_gradient_checkpointing
 
-        # Also re-enable training for embeddings for NEFTune
         if hasattr(model, "get_input_embeddings"):
             embeddings = model.get_input_embeddings()
             if hasattr(embeddings, "training"):
@@ -4123,8 +3888,8 @@ class FastLlamaModel:
             if hasattr(embeddings, "training"):
                 embeddings.training = True
 
-        # Re-disable use_cache if prepare_model_for_training had disabled it
-        # and for_inference restored it (record only exists after a disable)
+        # Re-disable use_cache if prepare_model_for_training had disabled it and for_inference restored
+        # it; the record only exists after a disable.
         if (
             use_gradient_checkpointing
             and getattr(model, "_unsloth_use_cache_originals", None) is not None
@@ -4140,7 +3905,7 @@ class FastLlamaModel:
 from .rl import PatchFastRL
 
 # Auto-enable grouped-GEMM MoE (tf<5 ModuleList experts) on built / PEFT'd models. Wrap the
-# loader leaves before PatchFastRL so downstream patchers see the wrapped versions. Guarded.
+# loader leaves before PatchFastRL so downstream patchers see the wrapped versions.
 try:
     from unsloth_zoo.temporary_patches.moe_grouped_modulelist import wrap_loader_for_grouped_moe
     FastLlamaModel.from_pretrained = staticmethod(

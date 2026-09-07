@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import * as messageOrder from "../src/features/chat/utils/message-order.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type RefreshModule = {
@@ -36,6 +37,7 @@ test("a prompt setting change clears local usage even during a run", async () =>
       "../stores/chat-runtime-store": {
         useChatRuntimeStore: { getState: () => state },
       },
+      "./message-order": messageOrder,
       "./chat-history-storage": {},
     },
   );
@@ -71,6 +73,7 @@ test("a prompt setting change leaves external usage intact", async () => {
       "../stores/chat-runtime-store": {
         useChatRuntimeStore: { getState: () => state },
       },
+      "./message-order": messageOrder,
       "./chat-history-storage": {},
     },
   );

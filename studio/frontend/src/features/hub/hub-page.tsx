@@ -499,6 +499,8 @@ export function ModelsPage() {
               applyActiveModelStatusToStore(status, {
                 previousCheckpoint: previous.checkpoint ?? undefined,
                 previousGgufVariant: previous.ggufVariant,
+                adoptingExistingServerModel:
+                  previous.checkpoint === null || previous.checkpoint === "",
               });
             },
           },

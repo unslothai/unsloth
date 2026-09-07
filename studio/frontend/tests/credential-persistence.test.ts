@@ -729,7 +729,18 @@ test("credential gate follows authentication session transitions", () => {
 
   assert.match(rootSource, /AUTH_SESSION_CLEARED_EVENT, reconcile/);
   assert.match(rootSource, /AUTH_SESSION_STORED_EVENT, reconcile/);
-  assert.match(rootSource, /\{!isAuthFlowRoute \? \(/);
+  assert.match(
+    rootSource,
+    /<CredentialBootstrapGate active=\{!isAuthFlowRoute\}>/,
+  );
+  assert.match(
+    rootSource,
+    /<SettingsDialogMount active=\{active && ready\} \/>/,
+  );
+  assert.match(
+    rootSource,
+    /\{active && !ready \? <RouteFallback \/> : children\}/,
+  );
   assert.match(sessionSource, /const sessionStarted = !localStorage\.getItem\(AUTH_TOKEN_KEY\)/);
   assert.match(sessionSource, /dispatchEvent\(new Event\(AUTH_SESSION_STORED_EVENT\)\)/);
   const bootstrapSource = readFileSync(
