@@ -73,7 +73,15 @@ class Harness:
         monkeypatch.setattr(start_cli.atexit, "register", lambda *a, **k: None)
         monkeypatch.setattr(start_cli.subprocess, "Popen", lambda *a, **k: self.server)
 
-    def http_json(self, method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        self,
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if "gguf-variants" in url:
             return {
                 "default_variant": "Q4_K_M",
@@ -89,12 +97,20 @@ class Harness:
             }
         raise AssertionError(f"unexpected request: {method} {url}")
 
-    def log_tail(self, path, lines = 20):
+    def log_tail(
+        self,
+        path,
+        lines = 20,
+    ):
         # The real file the child writes to, so `_log_size` runs its own stat().
         self.log_path = path
         return self.tail
 
-    def studio_healthy(self, base, timeout = 3.0):
+    def studio_healthy(
+        self,
+        base,
+        timeout = 3.0,
+    ):
         self.iterations += 1
         if self.log_chunk and self.log_path is not None:
             with open(self.log_path, "ab") as handle:
