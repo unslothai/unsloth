@@ -30,7 +30,7 @@ def _no_torch(monkeypatch):
     # The no_torch verdict reads the venv's install manifest; pin it so the answer does
     # not depend on which venv runs these tests.
     monkeypatch.setattr(hw, "_installed_without_torch", lambda: False)
-    monkeypatch.setattr(hw, "_NO_TORCH_STACK_SETTLED", False)
+    monkeypatch.setattr(hw, "_NO_TORCH_SETTLED_EPOCH", None)
     # detect_hardware() assigns these module globals directly (not via monkeypatch),
     # so save and restore them; otherwise a chat-only verdict here leaks into other
     # backend tests (e.g. test_utils.py) when they share a process on a GPU host.
@@ -100,19 +100,38 @@ def test_apple_silicon_no_torch_install_with_mlx_on_disk_waits_for_the_probe(mon
 def test_the_probe_settles_a_no_torch_host_once_the_stack_measures_unusable(monkeypatch):
     _no_torch_apple_silicon(monkeypatch, mlx_on_disk = True)
     hw.detect_hardware()
-    assert hw.settle_the_no_torch_verdict() is True
+    assert hw.settle_the_no_torch_verdict(hw.current_detection_epoch()) is True
     assert hw.CHAT_ONLY_REASON == "no_torch"
     assert hw.CHAT_ONLY_DETAIL is None
     assert hw.verdict_blames_the_mlx_stack() is False
-    # And a later pass stays settled rather than re-arming the sidebar's poll.
+    # And a later pass in this lifespan stays settled rather than re-arming the poll.
     hw.detect_hardware()
     assert hw.CHAT_ONLY_REASON == "no_torch"
+
+
+def test_a_probe_retired_by_a_shutdown_settles_nothing(monkeypatch):
+    # The worker's epoch predates its measurement; a shutdown since means the next lifespan
+    # measures for itself, so a stale settle neither flips the verdict nor pins the flag.
+    _no_torch_apple_silicon(monkeypatch, mlx_on_disk = True)
+    hw.detect_hardware()
+    assert hw.settle_the_no_torch_verdict(hw.current_detection_epoch() - 1) is False
+    assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
+    assert hw._NO_TORCH_SETTLED_EPOCH is None
+
+
+def test_a_settled_flag_does_not_outlive_its_lifespan(monkeypatch):
+    # A new lifespan must run its own probe: a transient import failure at its detection
+    # would otherwise publish no_torch and skip the probe that would have overturned it.
+    _no_torch_apple_silicon(monkeypatch, mlx_on_disk = True)
+    monkeypatch.setattr(hw, "_NO_TORCH_SETTLED_EPOCH", hw.current_detection_epoch() - 1)
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
 
 
 def test_settling_leaves_any_other_verdict_alone(monkeypatch):
     for chat_only, reason in ((False, None), (True, "intel_mac"), (True, "no_torch")):
         hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = chat_only, reason
-        assert hw.settle_the_no_torch_verdict() is False
+        assert hw.settle_the_no_torch_verdict(hw.current_detection_epoch()) is False
         assert (hw.CHAT_ONLY, hw.CHAT_ONLY_REASON) == (chat_only, reason)
 
 

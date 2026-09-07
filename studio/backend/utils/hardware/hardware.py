@@ -291,9 +291,11 @@ def _has_mlx() -> bool:
 # the detail, so a second run there can double detection latency or keep the pass from
 # reaching the repair scheduler. Written and consumed inside one locked detection pass.
 _MLX_BLOCKERS_MEASURED: Optional[list[str]] = None
-# Set once the post-warm probe has measured a --no-torch host's stack unusable: a later
-# detection pass then publishes no_torch directly rather than re-arming the sidebar's poll.
-_NO_TORCH_STACK_SETTLED = False
+# The lifespan whose post-warm probe measured a --no-torch host's stack unusable: a later
+# detection pass in that lifespan publishes no_torch directly rather than re-arming the
+# sidebar's poll. Keyed by epoch so the next lifespan runs its own probe, and so a worker
+# retired by a shutdown mid-probe cannot settle the lifespan that replaced it.
+_NO_TORCH_SETTLED_EPOCH: Optional[int] = None
 
 
 def _has_usable_mlx_stack() -> bool:
@@ -1599,12 +1601,16 @@ def verdict_blames_the_mlx_stack() -> bool:
     return bool(CHAT_ONLY) and CHAT_ONLY_REASON == "mlx_unavailable"
 
 
-def settle_the_no_torch_verdict() -> bool:
+def settle_the_no_torch_verdict(epoch: int) -> bool:
     """For the post-warm probe that measured a --no-torch host's stack unusable: nothing will
-    overturn mlx_unavailable now, so publish no_torch and let the sidebar stop polling."""
-    global CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, _NO_TORCH_STACK_SETTLED
+    overturn mlx_unavailable now, so publish no_torch and let the sidebar stop polling.
+    ``epoch`` predates the measurement, as for overturn_the_mlx_verdict: a shutdown since
+    retired that probe, and the next lifespan measures for itself."""
+    global CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, _NO_TORCH_SETTLED_EPOCH
     with _DETECT_LOCK:
-        _NO_TORCH_STACK_SETTLED = True
+        if epoch != current_detection_epoch():
+            return False
+        _NO_TORCH_SETTLED_EPOCH = epoch
         if not CHAT_ONLY or CHAT_ONLY_REASON != "mlx_unavailable":
             return False
         CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = "no_torch", None
@@ -1903,7 +1909,10 @@ def _detect_hardware_locked() -> DeviceType:
     if (
         is_apple_silicon()
         and _installed_without_torch()
-        and (_NO_TORCH_STACK_SETTLED or not _mlx_distribution_installed())
+        and (
+            _NO_TORCH_SETTLED_EPOCH == current_detection_epoch()
+            or not _mlx_distribution_installed()
+        )
     ):
         # GGUF-only by request: not a broken stack, and `unsloth studio update` cannot
         # change it. With mlx on disk the verdict stays mlx_unavailable until the post-warm

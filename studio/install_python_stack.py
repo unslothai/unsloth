@@ -6962,7 +6962,7 @@ def install_python_stack() -> int:
             base_total += 2  # flash-attn + torch final repair (step 13), Linux
         else:
             base_total += 1  # torch flavor invariant (step 13w), Windows
-    if IS_MAC_ARM and not skip_base:
+    if IS_MAC_ARM and not skip_base and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
@@ -7042,7 +7042,9 @@ def install_python_stack() -> int:
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
-    if IS_MAC_ARM and not skip_base:
+    # Not on a --no-torch install: it declined the training stack, and the runtime's
+    # no_torch verdict tells the user an update will not put it back.
+    if IS_MAC_ARM and not skip_base and not NO_TORCH:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
             "Installing MLX stack (mlx + mlx-lm + mlx-vlm)",

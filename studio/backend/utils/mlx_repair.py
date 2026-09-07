@@ -568,7 +568,7 @@ def start_mlx_autorepair_if_needed() -> bool:
     if opted_out:
         # Measured unusable and nothing will reinstall it, so a --no-torch host's verdict
         # settles as the opt-out it is instead of staying a repairable mlx_unavailable.
-        if no_torch and _hw.settle_the_no_torch_verdict():
+        if no_torch and _hw.settle_the_no_torch_verdict(epoch):
             logger.info(
                 "MLX stack measures unusable on a --no-torch install; Train/Export stay "
                 "off by request. Reinstall without --no-torch to enable them."
