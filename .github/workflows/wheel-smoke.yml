@@ -6,15 +6,8 @@
 # Unsloth bundle that 2026.5.1 published. This is the single workflow that
 # would have blocked the 2026.5.1 release before twine upload.
 #
-# The release publishes a WHEEL ONLY. Build it with:
-#
-#     python -m build --wheel && twine upload dist/*
-#
-# Not a bare `python -m build`: that also writes an sdist into dist/, which
-# twine would then upload.
-#
 # Verified locally end-to-end against this branch:
-#   - python -m build --wheel produces unsloth-<version>-py3-none-any.whl in 13s
+#   - python -m build produces unsloth-<version>-py3-none-any.whl in 13s
 #   - wheel content sanity passes:
 #       lockfile shipped, frontend dist shipped,
 #       no node_modules in wheel, no bun.lock in wheel,
@@ -87,19 +80,11 @@ jobs:
           npm ci --no-fund --no-audit
           npm run build
 
-      - name: Build wheel
-        # --wheel, not a bare `python -m build`, because that is what the release
-        # runs and the two are not the same code path. A bare build makes the
-        # sdist first and then builds the wheel FROM the sdist, where the
-        # packages.find and exclude-package-data vetoes in pyproject.toml no
-        # longer bite and MANIFEST.in is the only thing holding; --wheel builds
-        # straight from the checkout, where the reverse is true. Testing the
-        # sdist path while shipping the direct one would leave the shipped
-        # artifact unverified.
+      - name: Build wheel + sdist
         run: |
           python -m pip install --upgrade pip build
           rm -rf dist build ./*.egg-info
-          python -m build --wheel
+          python -m build
 
       - name: Wheel content sanity
         run: |
@@ -136,19 +121,45 @@ jobs:
               sys.exit(0 if all(checks.values()) else 1)
           PY
 
-      - name: No test suites in the wheel, and no sdist at all
+      - name: Publishing path uploads the wheel only
+        # #10202 made `./build.sh publish` upload dist/*.whl rather than dist/*,
+        # because the sdist is the larger half of a ~169MB release and the PyPI
+        # project limit is 10GB. It did not stick: 2026.9.2 was published the
+        # same day with an 86.6MB sdist, because the release was driven by a
+        # hand-typed `twine upload dist/*` instead of build.sh.
+        #
+        # build.sh still BUILDS the sdist on purpose, so --verify-dist can check
+        # the Studio release stamp in both artifacts. The thing that must not
+        # regress is the upload glob, so that is what this asserts.
+        run: |
+          python - <<'PY'
+          import re, sys
+          src = open("build.sh").read()
+          uploads = re.findall(r"twine upload\s+(\S+)", src)
+          print(f"twine upload targets in build.sh: {uploads}")
+          if not uploads:
+              print("FAIL: build.sh has no twine upload line; has the release path moved?")
+              sys.exit(1)
+          bad = [u for u in uploads if not u.endswith(".whl")]
+          if bad:
+              print(f"FAIL: build.sh would upload non-wheel artifacts: {bad}")
+              print("Publishing an sdist costs ~86MB of a 10GB project limit for an")
+              print("artifact nothing installs; the wheel is py3-none-any.")
+              sys.exit(1)
+          print("PASS: build.sh uploads wheels only")
+          PY
+
+      - name: No test suites in wheel or sdist
         # tests/security/fixtures embeds a real supply-chain IOC literal, which got
         # the published sdist flagged by antivirus vendors (discussion #9577).
         #
-        # The sdist is no longer published: it was ~48% of the project's PyPI
-        # storage (4.85 GB of 10.04 GB across 227 releases) for an artifact
-        # nothing installs, since the wheel is py3-none-any and matches every
-        # environment. So this step now also asserts the build produced no sdist,
-        # which is what keeps a future `python -m build` from quietly putting one
-        # back into dist/ for twine to upload.
+        # Both artifacts, still: the sdist is built locally by build.sh even
+        # though it is not uploaded, and a bare `python -m build` builds the
+        # wheel FROM the sdist, so a test suite reaching the sdist reaches the
+        # wheel too.
         run: |
           python - <<'PY'
-          import glob, sys, zipfile
+          import glob, sys, tarfile, zipfile
 
           def is_test(path):
               return "tests" in path.strip("/").split("/")
@@ -168,17 +179,17 @@ jobs:
           ok = True
           wheels = glob.glob("dist/unsloth-*.whl")
           sdists = glob.glob("dist/unsloth-*.tar.gz")
-          if not wheels:
-              print("FAIL: no wheel in dist/")
+          if not wheels or not sdists:
+              print("FAIL: expected one wheel and one sdist in dist/")
               sys.exit(2)
-          if sdists:
-              # Not a warning. dist/ is what twine uploads, so an sdist sitting
-              # here is an sdist published.
-              print(f"FAIL: the build produced an sdist: {sdists}")
-              print("Release builds with `python -m build --wheel`; see the header of this file.")
-              sys.exit(1)
           with zipfile.ZipFile(wheels[0]) as z:
               ok &= report(f"wheel {wheels[0]}", z.namelist())
+          with tarfile.open(sdists[0]) as t:
+              # Every sdist member carries an "unsloth-<version>/" prefix.
+              ok &= report(
+                  f"sdist {sdists[0]}",
+                  [n.split("/", 1)[1] for n in t.getnames() if "/" in n],
+              )
           print("PASS" if ok else "FAIL: test files are being shipped")
           sys.exit(0 if ok else 1)
           PY
