@@ -406,3 +406,137 @@ def test_lora_gguf_converter_keeps_the_ambient_token_when_none(monkeypatch, tmp_
     # None means "ambient allowed"; that fallback is what a UI session relies on.
     env = _run_lora_gguf(monkeypatch, tmp_path, token = None)
     assert env["HF_TOKEN"] == "host-ambient-token"
+
+
+def test_lora_gguf_converter_does_not_overrule_the_operator_optout(monkeypatch, tmp_path):
+    # get_token() ignores HF_HUB_DISABLE_IMPLICIT_TOKEN, so a caller who passed nothing arrives here
+    # holding the very token the operator switched off. Clearing the flag for them would answer the
+    # opt-out on their behalf; only a token they actually supplied earns that.
+    env = _run_lora_gguf(monkeypatch, tmp_path, token = None)
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+    # An ambient caller is not being denied anything, so nothing is taken off them either.
+    assert env["HUGGINGFACEHUB_API_TOKEN"] == "host-legacy-alias"
+
+
+@pytest.mark.parametrize(
+    "token,expected",
+    [
+        ("", None),
+        ("   ", None),
+        ("  hf_caller  ", "hf_caller"),
+        (None, None),
+        (False, False),
+        (True, True),
+    ],
+)
+def test_clean_save_token(token, expected):
+    # Whitespace is not a credential. Left alone it reaches HfApi as a literal "Bearer " header:
+    # huggingface_hub 1.x raises LocalProtocolError before sending, and 0.x sends it and earns a
+    # 401. False must survive as False -- collapsing it to None is the ambient token, not anonymity.
+    result = save_mod._clean_save_token(token)
+    assert result is expected if expected in (None, False, True) else result == expected
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_lora_gguf_converter_reads_a_blank_token_as_absent(monkeypatch, tmp_path, blank):
+    # A blank token means "I passed nothing", so the ambient caller's env is left exactly as it was
+    # -- in particular the operator's opt-out is not cleared on their behalf.
+    env = _run_lora_gguf(monkeypatch, tmp_path, token = blank)
+    assert env["HF_TOKEN"] == "host-ambient-token"
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+    assert env["HUGGINGFACEHUB_API_TOKEN"] == "host-legacy-alias"
+
+
+def test_lora_gguf_converter_denies_the_oidc_material(monkeypatch, tmp_path):
+    # hub >= 1.19 exchanges these inside get_token() ahead of HF_TOKEN, so scrubbing the token
+    # aliases alone still leaves a forced-anonymous child able to mint the operator's credential.
+    monkeypatch.setenv("HF_OIDC_RESOURCE", "https://huggingface.co")
+    monkeypatch.setenv("HF_OIDC_ID_TOKEN", "operator-oidc-assertion")
+    env = _run_lora_gguf(monkeypatch, tmp_path, token = False)
+    assert "HF_OIDC_RESOURCE" not in env
+    assert "HF_OIDC_ID_TOKEN" not in env
+
+
+def test_lora_gguf_converter_honours_token_true(monkeypatch, tmp_path):
+    # huggingface_hub reads True as "definitely use the cached token", and it deliberately
+    # outranks HF_HUB_DISABLE_IMPLICIT_TOKEN. Falling through every branch turned that into plain
+    # inheritance, which an ambient =1 then silently voided.
+    env = _run_lora_gguf(monkeypatch, tmp_path, token = True)
+    assert env["HF_TOKEN"] == "host-ambient-token"
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "0"
+
+
+# -- the same boundary, applied to every child env this module builds ------------------------
+
+
+@pytest.mark.parametrize(
+    "token,explicit,expected",
+    [
+        (False, True, {"scrubbed": True, "granted": None, "implicit": "1"}),
+        ("caller", True, {"scrubbed": True, "granted": "caller", "implicit": "0"}),
+        ("ambient", False, {"scrubbed": False, "granted": "ambient", "implicit": None}),
+        (None, False, {"scrubbed": False, "granted": None, "implicit": None}),
+    ],
+)
+def test_apply_token_to_child_env(token, explicit, expected):
+    env = {
+        "HF_TOKEN": "operator",
+        "HUGGINGFACEHUB_API_TOKEN": "operator-legacy",
+        "HF_OIDC_RESOURCE": "https://huggingface.co",
+        "PATH": "/usr/bin",
+        "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+    }
+    save_mod._apply_token_to_child_env(env, token, explicit = explicit)
+
+    assert env["PATH"] == "/usr/bin", "an unrelated variable was disturbed"
+    if expected["scrubbed"]:
+        assert "HUGGINGFACEHUB_API_TOKEN" not in env
+        assert "HF_OIDC_RESOURCE" not in env
+    else:
+        assert env["HUGGINGFACEHUB_API_TOKEN"] == "operator-legacy"
+        assert env["HF_OIDC_RESOURCE"] == "https://huggingface.co"
+    if expected["granted"] is None:
+        assert env.get("HF_TOKEN") in (None, "operator")
+    else:
+        assert env["HF_TOKEN"] == expected["granted"]
+        assert env["HUGGING_FACE_HUB_TOKEN"] == expected["granted"]
+    # None means "leave the inherited flag exactly as the operator set it".
+    assert env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == (expected["implicit"] or "1")
+
+
+def test_every_converter_child_env_goes_through_the_token_boundary():
+    """No child env in save.py may be built without applying the caller boundary to it.
+
+    Structural rather than textual: a third subprocess added next to these two would otherwise
+    repeat the leak silently, which is how _unsloth_save_compressed_tensors came to have it.
+    """
+    import ast
+    import pathlib
+
+    def _is_environ_copy(node):
+        # os.environ.copy() exactly -- not os.environ.get(...) next to some other .copy().
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "copy"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "environ"
+            and isinstance(node.func.value.value, ast.Name)
+            and node.func.value.value.id == "os"
+        )
+
+    tree = ast.parse(pathlib.Path(save_mod.__file__).read_text(encoding = "utf-8"))
+    builders, offenders = [], []
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not any(_is_environ_copy(node) for node in ast.walk(func)):
+            continue
+        builders.append(func.name)
+        if "_apply_token_to_child_env" not in ast.dump(func):
+            offenders.append(f"{func.name} (line {func.lineno})")
+
+    assert builders, "the AST matcher found no child-env builders at all; it has drifted"
+    assert not offenders, (
+        "these build a child env without applying the token boundary: " + ", ".join(offenders)
+    )
