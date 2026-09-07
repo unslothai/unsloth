@@ -3877,6 +3877,29 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     return _response_format_constrains_decoding(payload)
 
 
+def _folds_studio_tool_history(payload, llama_backend) -> bool:
+    """True when Unsloth's own replayed tool turns must be rewritten as user text.
+
+    The client replays that history forever, so refusing it 400s every later turn of the
+    thread. Same ownership test and first guard as ``_takes_tool_passthrough``.
+    """
+    supports_tools = getattr(llama_backend, "supports_tools", False)
+    if supports_tools and _explicit_studio_tool_loop_requested(payload):
+        return False
+    if getattr(llama_backend, "supports_tool_passthrough", supports_tools):
+        return False
+    return _has_openai_tool_history(payload.messages) and _only_studio_tool_history(payload)
+
+
+def _folded_studio_tool_messages(messages) -> list:
+    return [
+        ChatMessage.model_validate(message)
+        for message in fold_tool_results_into_user(
+            [m.model_dump(exclude_none = True) for m in messages]
+        )
+    ]
+
+
 def _passthrough_client_tools(payload):
     """The caller's own tool catalog exactly as the passthrough puts it on the wire.
 
@@ -21559,7 +21582,10 @@ async def produce_openai_chat_completions(
     _has_tool_messages = _has_openai_tool_history(payload.messages)
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
     _has_active_tool_catalog = _has_tool_catalog and payload.tool_choice != "none"
-    _has_client_tool_contract = _has_active_tool_catalog or _has_tool_messages
+    # Read the same way `_takes_tool_passthrough` reads it: history Unsloth's own loop
+    # produced is not a client contract.
+    _has_client_tool_history = _has_tool_messages and not _only_studio_tool_history(payload)
+    _has_client_tool_contract = _has_active_tool_catalog or _has_client_tool_history
     # The Unsloth tool loop needs a tool-capable backend, so a request that asks
     # for it on a backend that can't run it (DiffusionGemma forces supports_tools
     # off) must not steal client tools from the passthrough (#6851).
@@ -21591,6 +21617,10 @@ async def produce_openai_chat_completions(
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
+    # Before the passthrough dispatch and the parse, so every later reader sees the fold.
+    if using_gguf and _folds_studio_tool_history(payload, llama_backend):
+        payload.messages = _folded_studio_tool_messages(payload.messages)
+        _pre_parsed = None
     if (
         using_gguf
         and not _studio_tool_loop_requested
@@ -29423,8 +29453,11 @@ async def chat_count_tokens(
     # does not merge adjacent user turns, so coalescing here would price a prompt it never sends
     # (two user turns split by an empty assistant sentinel, after a stopped response).
     _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
+    _count_messages = payload.messages
+    if _folds_studio_tool_history(payload, llama_backend):
+        _count_messages = _folded_studio_tool_messages(_count_messages)
     openai_messages = _strip_provider_synthetic_tool_history(
-        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
+        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in _count_messages])
     )
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)

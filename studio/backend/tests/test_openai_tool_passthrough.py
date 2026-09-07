@@ -2252,6 +2252,144 @@ class TestChatCompletionRequestToolFields:
         assert entry["reply"] == "plain response"
         assert monitor.active_count() == 0
 
+    def _studio_tool_history_messages(self):
+        return [
+            {"role": "user", "content": "what did we say about seeds?"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_conversation",
+                            "arguments": '{"query": "seeds"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "name": "search_conversation",
+                "content": "we said 3407",
+            },
+            {"role": "user", "content": "and now?"},
+        ]
+
+    def test_studio_tool_history_still_answers_without_a_tool_template(self, monkeypatch):
+        """Switching a thread that already ran a Studio tool to a toolless GGUF used to 400
+        every later turn: the loop's own replayed calls were read as a client tool contract.
+        They are folded into user text instead, exactly as /v1/messages folds them."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **kwargs):
+                captured["messages"] = kwargs["messages"]
+                yield "plain response"
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "plain response"
+        assert not any(m.get("role") == "tool" for m in captured["messages"])
+        assert any(
+            m.get("role") == "user" and "tool_response" in (m.get("content") or "")
+            for m in captured["messages"]
+        )
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert monitor.active_count() == 0
+
+    def test_studio_tool_history_with_a_client_catalog_is_still_rejected(self, monkeypatch):
+        """The catalog is a live client contract whatever produced the history, and a
+        template with no tool markup would drop it and answer in prose instead."""
+        import routes.inference as inference_route
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = False
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **_kwargs):
+                raise AssertionError("a client tool catalog must not fall through")
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {"name": "lookup", "parameters": {"type": "object"}},
+                    }
+                ],
+            },
+        )
+
+        self._assert_unsupported_param(resp, "tools")
+        assert "does not advertise tools" in resp.json()["error"]["message"]
+        assert monitor.active_count() == 0
+
+    def test_studio_tool_history_keeps_the_passthrough_on_a_tool_capable_gguf(self, monkeypatch):
+        """A backend that can render tools is untouched: the history stays role="tool"."""
+        import routes.inference as inference_route
+
+        captured = {}
+
+        class _GGUFBackend:
+            is_loaded = True
+            model_identifier = "test-gguf"
+            supports_tools = True
+            is_vision = False
+            _is_audio = False
+            context_length = 4096
+
+            def generate_chat_completion(self, **kwargs):
+                captured["messages"] = kwargs["messages"]
+                yield "plain response"
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
+        client = self._v1_client(monkeypatch, _GGUFBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": self._studio_tool_history_messages(),
+                "studio_tool_history": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert any(m.get("role") == "tool" for m in captured["messages"])
+        assert monitor.active_count() == 0
+
     def test_tool_call_history_rejected_when_gguf_template_has_no_tool_support(self, monkeypatch):
         import routes.inference as inference_route
 
