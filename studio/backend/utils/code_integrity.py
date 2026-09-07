@@ -51,9 +51,7 @@ _BLOCK_WINERRORS = {
 
 # Matches the status in text form wherever it reaches us as a string: a child's
 # stderr, a Rust-side error, or the repr of an exception we did not raise.
-_STATUS_TEXT_RE = re.compile(
-    r"0x(c0e90002|c0000428|c0000602)\b", re.IGNORECASE
-)
+_STATUS_TEXT_RE = re.compile(r"0x(c0e90002|c0000428|c0000602)\b", re.IGNORECASE)
 _BAD_IMAGE_RE = re.compile(
     r"is either not designed to run on Windows or it contains an error", re.IGNORECASE
 )

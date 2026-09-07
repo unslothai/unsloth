@@ -43,7 +43,9 @@ def test_ntstatus_return_codes_are_recognised(status: int):
 
 def test_application_control_phrasing():
     """The wording from unslothai/unsloth#8490, where unsloth.exe was blocked."""
-    text = "Program 'unsloth.exe' failed to run: An Application Control policy has blocked this file"
+    text = (
+        "Program 'unsloth.exe' failed to run: An Application Control policy has blocked this file"
+    )
     assert code_integrity_block_reason(text) is not None
 
 

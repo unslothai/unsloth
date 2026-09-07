@@ -6903,7 +6903,14 @@ def _flat(groups: list[list[str]]) -> set[str]:
 
 @pytest.mark.parametrize(
     "install_kind",
-    ["windows-cpu", "windows-arm64", "windows-cuda", "windows-hip", "windows-rocm", "windows-vulkan"],
+    [
+        "windows-cpu",
+        "windows-arm64",
+        "windows-cuda",
+        "windows-hip",
+        "windows-rocm",
+        "windows-vulkan",
+    ],
 )
 def test_windows_prebuilt_health_requires_the_shared_runtime(install_kind: str):
     """Every Windows install kind owes llama-common.dll, not just llama.dll.
