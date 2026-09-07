@@ -8,7 +8,12 @@ import pytest
 from core.inference import srt_seccomp as guard
 
 
-def evaluate(machine, arch, number, family=0):
+def evaluate(
+    machine,
+    arch,
+    number,
+    family = 0,
+):
     code = guard.program(machine)
     data = {0: number, 4: arch, 16: family}
     accumulator = 0
@@ -34,7 +39,11 @@ def test_exact_syscall_predicates(machine):
     arch, sock, pair = guard.ABIS[machine]
     for number in range(0, 550):
         for family in (0, 1, 2, 10, 40):
-            expected = guard.DENY if number in (425,426,427) or (number in (sock,pair) and family == 40) else guard.ALLOW
+            expected = (
+                guard.DENY
+                if number in (425, 426, 427) or (number in (sock, pair) and family == 40)
+                else guard.ALLOW
+            )
             assert evaluate(machine, arch, number, family) == expected
     assert evaluate(machine, arch ^ 1, sock) == guard.KILL
     if machine == "x86_64":
@@ -57,26 +66,30 @@ def test_install_order_and_descriptor(monkeypatch):
     calls = []
     monkeypatch.setattr(guard, "_prctl", lambda *args: calls.append(args) or 0)
     guard.install()
-    assert calls == [(38,1,0,0,0), (22,2,guard._pointer,0,0)]
+    assert calls == [(38, 1, 0, 0, 0), (22, 2, guard._pointer, 0, 0)]
 
 
-@pytest.mark.parametrize("results", [[-1], [0,-1]])
+@pytest.mark.parametrize("results", [[-1], [0, -1]])
 def test_install_failure_is_closed(monkeypatch, results):
     calls = []
+
     def fake(*args):
         calls.append(args)
-        return results[len(calls)-1]
+        return results[len(calls) - 1]
+
     monkeypatch.setattr(guard, "_prctl", fake)
     with pytest.raises(RuntimeError):
         guard.install()
     assert len(calls) == len(results)
-    assert calls[0] == (38,1,0,0,0)
+    assert calls[0] == (38, 1, 0, 0, 0)
 
 
-@pytest.mark.skipif(sys.platform != "linux" or platform.machine().lower() not in guard.ABIS,
-                    reason="native Linux child required")
+@pytest.mark.skipif(
+    sys.platform != "linux" or platform.machine().lower() not in guard.ABIS,
+    reason = "native Linux child required",
+)
 def test_native_child_vsock_uring_denied_unix_allowed():
-    code = r'''
+    code = r"""
 import ctypes, errno, json, platform, socket
 from core.inference import srt_seccomp as guard
 libc = ctypes.CDLL(None, use_errno=True)
@@ -93,8 +106,13 @@ a.sendall(b'private')
 assert b.recv(7) == b'private'
 a.close(); b.close()
 print(json.dumps(results))
-'''
-    child = subprocess.run([sys.executable,"-c",code],capture_output=True,text=True,timeout=15,
-                           preexec_fn=guard.install)
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output = True,
+        text = True,
+        timeout = 15,
+        preexec_fn = guard.install,
+    )
     assert child.returncode == 0, child.stderr
     assert len(json.loads(child.stdout)) == 5

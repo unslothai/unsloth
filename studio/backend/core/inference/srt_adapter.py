@@ -24,26 +24,31 @@ MAX_REQUEST = 262_144
 
 def validate_roots(roots: list[str], workdir: str) -> list[str]:
     """Reject host IPC and return nested mounts for SRT to mask after runtime restores."""
-    canonical = sorted(set(os.path.realpath(root) for root in [*roots, workdir]), key=len)
+    canonical = sorted(set(os.path.realpath(root) for root in [*roots, workdir]), key = len)
     scan_roots = []
     for root in canonical:
         if not any(root == parent or root.startswith(parent + os.sep) for parent in scan_roots):
             scan_roots.append(root)
     try:
-        mount_lines = Path('/proc/self/mountinfo').read_text().splitlines()
+        mount_lines = Path("/proc/self/mountinfo").read_text().splitlines()
     except OSError as exc:
-        raise SrtError('Cannot inspect nested runtime mounts') from exc
+        raise SrtError("Cannot inspect nested runtime mounts") from exc
     denied_mounts = []
     for line in mount_lines:
         fields = line.split()
         if len(fields) < 6:
-            raise SrtError('Malformed runtime mount information')
+            raise SrtError("Malformed runtime mount information")
         mount = fields[4]
-        for escaped, character in ((r'\040', ' '), (r'\011', '\t'), (r'\012', '\n'), (r'\134', '\\')):
+        for escaped, character in (
+            (r"\040", " "),
+            (r"\011", "\t"),
+            (r"\012", "\n"),
+            (r"\134", "\\"),
+        ):
             mount = mount.replace(escaped, character)
         if any(mount.startswith(root + os.sep) for root in scan_roots):
             if mount.startswith(workdir + os.sep):
-                raise SrtError('Workdir contains a nested host mount')
+                raise SrtError("Workdir contains a nested host mount")
             denied_mounts.append(mount)
     count = 0
     deadline = time.monotonic() + 30
@@ -54,7 +59,7 @@ def validate_roots(roots: list[str], workdir: str) -> list[str]:
             continue
         count += 1
         if count > 500_000 or time.monotonic() > deadline:
-            raise SrtError('Runtime filesystem scan exceeded its safety bound')
+            raise SrtError("Runtime filesystem scan exceeded its safety bound")
         try:
             info = os.lstat(path)
             if stat.S_ISLNK(info.st_mode):
@@ -63,11 +68,11 @@ def validate_roots(roots: list[str], workdir: str) -> list[str]:
                 with os.scandir(path) as entries:
                     pending.extend(entry.path for entry in entries)
             elif not stat.S_ISREG(info.st_mode):
-                raise SrtError(f'Runtime or workdir contains a host IPC/device entry: {path}')
+                raise SrtError(f"Runtime or workdir contains a host IPC/device entry: {path}")
             elif info.st_nlink > 1 and (path == workdir or path.startswith(workdir + os.sep)):
-                raise SrtError('Workdir contains a hardlinked file with unrelated host authority')
+                raise SrtError("Workdir contains a hardlinked file with unrelated host authority")
         except OSError as exc:
-            raise SrtError(f'Cannot validate runtime entry: {path}') from exc
+            raise SrtError(f"Cannot validate runtime entry: {path}") from exc
     return sorted(set(denied_mounts))
 
 
@@ -109,26 +114,64 @@ def socat_executable() -> str:
 
 def read_roots(executable: str) -> list[str]:
     roots = {
-        "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib64", "/usr/libexec",
-        "/usr/share/zoneinfo", "/usr/share/fonts", "/usr/share/fontconfig", "/usr/share/locale",
-        "/usr/local/bin", "/usr/local/lib", "/bin", "/sbin", "/lib", "/lib64",
-        "/etc/ld.so.cache", "/etc/alternatives", "/etc/localtime", "/etc/nsswitch.conf",
+        "/usr/bin",
+        "/usr/sbin",
+        "/usr/lib",
+        "/usr/lib64",
+        "/usr/libexec",
+        "/usr/share/zoneinfo",
+        "/usr/share/fonts",
+        "/usr/share/fontconfig",
+        "/usr/share/locale",
+        "/usr/local/bin",
+        "/usr/local/lib",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/lib64",
+        "/etc/ld.so.cache",
+        "/etc/alternatives",
+        "/etc/localtime",
+        "/etc/nsswitch.conf",
         str(Path(__file__).with_name("sandbox_site")),
         os.path.dirname(os.path.realpath(executable)),
         *(value for key, value in sysconfig.get_paths().items() if key != "data"),
     }
-    roots.update(prefix for prefix in (sys.prefix, sys.base_prefix) if prefix not in ("/usr", "/usr/local"))
-    resolved = sorted({spelling for root in roots if os.path.exists(root)
-                       for spelling in (os.path.abspath(root), os.path.realpath(root))})
+    roots.update(
+        prefix for prefix in (sys.prefix, sys.base_prefix) if prefix not in ("/usr", "/usr/local")
+    )
+    resolved = sorted(
+        {
+            spelling
+            for root in roots
+            if os.path.exists(root)
+            for spelling in (os.path.abspath(root), os.path.realpath(root))
+        }
+    )
     if "/" in resolved:
         raise SrtError("The selected runtime would require granting the filesystem root")
     return resolved
 
 
-def request_for(argv, cwd, env, timeout, *, operation="run", additional_read_roots=()) -> dict:
-    if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0 or timeout > 86_400):
+def request_for(
+    argv,
+    cwd,
+    env,
+    timeout,
+    *,
+    operation = "run",
+    additional_read_roots = (),
+) -> dict:
+    if timeout is not None and (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or timeout <= 0
+        or timeout > 86_400
+    ):
         raise SrtError("SRT tool timeout must be positive and at most 24 hours")
-    executable = argv[0] if os.path.isabs(argv[0]) else shutil.which(argv[0], path=env.get("PATH", ""))
+    executable = (
+        argv[0] if os.path.isabs(argv[0]) else shutil.which(argv[0], path = env.get("PATH", ""))
+    )
     if not executable:
         raise SrtError("The selected tool executable is unavailable")
     # Keep the venv's lexical executable: resolving its symlink to the base
@@ -141,18 +184,32 @@ def request_for(argv, cwd, env, timeout, *, operation="run", additional_read_roo
     if any(os.path.realpath(root) == os.path.sep for root in roots):
         raise SrtError("Root filesystem read grant is forbidden")
     denied = validate_roots(roots, os.path.realpath(cwd))
-    roots = [root for root in roots if not any(root == mount or root.startswith(mount + os.sep) for mount in denied)]
+    roots = [
+        root
+        for root in roots
+        if not any(root == mount or root.startswith(mount + os.sep) for mount in denied)
+    ]
     return {
-        "v": 1, "operation": operation, "executable": executable, "argv": list(argv[1:]),
-        "cwd": os.path.realpath(cwd), "env": dict(env),
-        "readRoots": roots, "writeRoots": [os.path.realpath(cwd)],
+        "v": 1,
+        "operation": operation,
+        "executable": executable,
+        "argv": list(argv[1:]),
+        "cwd": os.path.realpath(cwd),
+        "env": dict(env),
+        "readRoots": roots,
+        "writeRoots": [os.path.realpath(cwd)],
         "denyReadRoots": denied,
         "privateUnixSockets": True,
         "timeoutMs": None if timeout is None else max(1, int(timeout * 1000)),
     }
 
 
-def spawn(request: dict, *, cancel_event=None, **kwargs):
+def spawn(
+    request: dict,
+    *,
+    cancel_event = None,
+    **kwargs,
+):
     """Start one helper and require its bounded private control acknowledgement."""
     if sys.platform != "linux":
         raise SrtError("SRT strict launch is unavailable on this platform")
@@ -162,8 +219,8 @@ def spawn(request: dict, *, cancel_event=None, **kwargs):
     try:
         if cancel_event is not None and cancel_event.is_set():
             raise SrtError("SRT launch cancelled before execution")
-        message = dict(request, controlFd=write_fd)
-        encoded = json.dumps(message, ensure_ascii=True, separators=(",", ":")).encode() + b"\n"
+        message = dict(request, controlFd = write_fd)
+        encoded = json.dumps(message, ensure_ascii = True, separators = (",", ":")).encode() + b"\n"
         if len(encoded) > MAX_REQUEST:
             raise SrtError("SRT launch request exceeds the protocol bound")
         options = dict(kwargs)
@@ -171,11 +228,13 @@ def spawn(request: dict, *, cancel_event=None, **kwargs):
         if parent_preexec is None:
             from .tools import _sandbox_launcher_preexec
             parent_preexec = _sandbox_launcher_preexec
+
         def guarded_preexec():
             parent_preexec()
             _install_srt_seccomp()
+
         options["preexec_fn"] = guarded_preexec
-        options.update(stdin=subprocess.PIPE, close_fds=True, pass_fds=(write_fd,))
+        options.update(stdin = subprocess.PIPE, close_fds = True, pass_fds = (write_fd,))
         # Loader settings from a user's selected Python environment must not affect Node.
         options["env"] = {"PATH": os.defpath, "HOME": request["cwd"], "LANG": "C.UTF-8"}
         proc = subprocess.Popen([node, str(RUNTIME / "bridge.mjs"), str(write_fd)], **options)
@@ -192,7 +251,7 @@ def spawn(request: dict, *, cancel_event=None, **kwargs):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise SrtError("SRT helper request timed out")
-            _, writable, _ = select.select([], [input_fd], [], min(.1, remaining))
+            _, writable, _ = select.select([], [input_fd], [], min(0.1, remaining))
             if writable:
                 try:
                     offset += os.write(input_fd, encoded[offset:])
@@ -205,7 +264,9 @@ def spawn(request: dict, *, cancel_event=None, **kwargs):
         while time.monotonic() < deadline:
             if cancel_event is not None and cancel_event.is_set():
                 raise SrtError("SRT launch cancelled before acknowledgement")
-            readable, _, _ = select.select([read_fd], [], [], min(.1, max(0, deadline - time.monotonic())))
+            readable, _, _ = select.select(
+                [read_fd], [], [], min(0.1, max(0, deadline - time.monotonic()))
+            )
             if not readable:
                 continue
             chunk = os.read(read_fd, MAX_CONTROL + 1)
@@ -244,7 +305,7 @@ def spawn(request: dict, *, cancel_event=None, **kwargs):
     except Exception:
         if proc is not None:
             proc.kill()
-            proc.wait(timeout=5)
+            proc.wait(timeout = 5)
         raise
     finally:
         if read_fd >= 0:
@@ -282,9 +343,13 @@ def verify_success(proc) -> None:
         if len(lines) != 1:
             raise SrtError("SRT completion receipt is missing or duplicated")
         receipt = json.loads(lines[0])
-        if not isinstance(receipt, dict) or receipt.get('v') != 1 or receipt.get('event') != 'exit':
+        if not isinstance(receipt, dict) or receipt.get("v") != 1 or receipt.get("event") != "exit":
             raise SrtError("SRT completion receipt is invalid")
-        if receipt.get('code') != 0 or receipt.get('signal') is not None or receipt.get('reason') != 'completed':
+        if (
+            receipt.get("code") != 0
+            or receipt.get("signal") is not None
+            or receipt.get("reason") != "completed"
+        ):
             raise SrtError("SRT did not attest successful completion")
     except (ValueError, UnicodeError) as exc:
         raise SrtError("SRT completion receipt is malformed") from exc

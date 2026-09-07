@@ -7393,7 +7393,11 @@ def _get_shell_cmd(
     if sys.platform == "win32":
         bash = _windows_bash()
         if bash:
-            return [bash, "--noprofile", "--norc", "-c", command] if os_isolated else [bash, "-c", command]
+            return (
+                [bash, "--noprofile", "--norc", "-c", command]
+                if os_isolated
+                else [bash, "-c", command]
+            )
         if script_path:
             return ["cmd", "/d", "/c", "call", script_path]
         return ["cmd", "/d", "/c", command]
@@ -16884,7 +16888,7 @@ def _python_exec(
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
         if cancel_event is not None and cancel_event.is_set():
-            raise SandboxUnavailableError('Execution cancelled before launch')
+            raise SandboxUnavailableError("Execution cancelled before launch")
         proc = spawn_prepared_launch(prepared_launch, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see
@@ -16900,7 +16904,11 @@ def _python_exec(
         else:
             pgid = _capture_process_group(proc)
         _adopt_tool_pid(proc.pid)
-        if launch_record_callback is not None and prepared_launch.execution_record is not None and prepared_launch.backend != 'srt':
+        if (
+            launch_record_callback is not None
+            and prepared_launch.execution_record is not None
+            and prepared_launch.backend != "srt"
+        ):
             try:
                 launch_record_callback(prepared_launch.execution_record)
             except Exception:
@@ -16931,7 +16939,12 @@ def _python_exec(
         _terminate_limited_windows_job(pgid, effective_execution_mode)
         # SRT acknowledges its launcher before the workload. Only a successful
         # completion attests execution; setup failure must never gain a label.
-        if prepared_launch.backend == 'srt' and proc.returncode == 0 and not timed_out and not (cancel_event is not None and cancel_event.is_set()):
+        if (
+            prepared_launch.backend == "srt"
+            and proc.returncode == 0
+            and not timed_out
+            and not (cancel_event is not None and cancel_event.is_set())
+        ):
             from .srt_adapter import verify_success
             verify_success(proc)
             if launch_record_callback is not None and prepared_launch.execution_record is not None:
@@ -17201,7 +17214,7 @@ def _bash_exec(
                 popen_kwargs["creationflags"] |= getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
 
         if cancel_event is not None and cancel_event.is_set():
-            raise SandboxUnavailableError('Execution cancelled before launch')
+            raise SandboxUnavailableError("Execution cancelled before launch")
         proc = spawn_prepared_launch(prepared_launch, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see
@@ -17217,7 +17230,11 @@ def _bash_exec(
         else:
             pgid = _capture_process_group(proc)
         _adopt_tool_pid(proc.pid)
-        if launch_record_callback is not None and prepared_launch.execution_record is not None and prepared_launch.backend != 'srt':
+        if (
+            launch_record_callback is not None
+            and prepared_launch.execution_record is not None
+            and prepared_launch.backend != "srt"
+        ):
             try:
                 launch_record_callback(prepared_launch.execution_record)
             except Exception:
@@ -17247,7 +17264,12 @@ def _bash_exec(
         _terminate_limited_windows_job(pgid, effective_execution_mode)
         # SRT acknowledges its launcher before the workload. Only a successful
         # completion attests execution; setup failure must never gain a label.
-        if prepared_launch.backend == 'srt' and proc.returncode == 0 and not timed_out and not (cancel_event is not None and cancel_event.is_set()):
+        if (
+            prepared_launch.backend == "srt"
+            and proc.returncode == 0
+            and not timed_out
+            and not (cancel_event is not None and cancel_event.is_set())
+        ):
             from .srt_adapter import verify_success
             verify_success(proc)
             if launch_record_callback is not None and prepared_launch.execution_record is not None:

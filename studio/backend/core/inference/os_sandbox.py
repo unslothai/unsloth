@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Studio tool launch contracts and the managed SRT adapter."""
+
 from __future__ import annotations
 import ctypes
 import hashlib
@@ -18,6 +19,7 @@ from typing import Any, BinaryIO, Callable, Literal
 from loggers import get_logger
 from .network_proxy import NetworkAudit
 from .network_proxy import AllowlistProxy, NetworkAllowlist, tls_trust_paths, tls_trust_environment
+
 logger = get_logger(__name__)
 ToolExecutionMode = Literal["os_isolation_required", "limited", "full"]
 NETWORK_POLICIES = ("deny", "allowlist")
@@ -28,9 +30,17 @@ _pidfd_support = None
 SRT_VERSION = "0.0.75"
 SRT_PROFILE = "srt-0.0.75-strict-v1"
 _LIMITED_SAFEGUARDS = (
-    "process_guard", "command_and_code_analysis", "sanitized_environment",
-    "resource_limits", "descriptor_closure", "workdir_policy", "streaming",
-    "timeout", "cancellation", "reaping", "cleanup",
+    "process_guard",
+    "command_and_code_analysis",
+    "sanitized_environment",
+    "resource_limits",
+    "descriptor_closure",
+    "workdir_policy",
+    "streaming",
+    "timeout",
+    "cancellation",
+    "reaping",
+    "cleanup",
 )
 _FULL_SAFEGUARDS = ("timeout", "cancellation", "reaping", "cleanup")
 
@@ -51,6 +61,7 @@ class SandboxUnavailableError(RuntimeError):
     ) -> None:
         super().__init__(message)
         self.transient = transient
+
 
 @dataclass(frozen = True)
 class SandboxCapability:
@@ -78,6 +89,7 @@ class SandboxCapability:
     network_allowlist: tuple[str, ...] = ()
     # Internal runtime proof, distinct from the UI consent generation.
     qualification_generation: str = ""
+
 
 @dataclass(frozen = True)
 class ToolExecutionRecord:
@@ -111,6 +123,7 @@ class ToolExecutionRecord:
             "network_allowlist": list(self.network_allowlist),
         }
 
+
 @dataclass(frozen = True)
 class ToolLaunchPlan:
     """Complete policy inputs for one final Python or Terminal process launch."""
@@ -134,6 +147,7 @@ class ToolLaunchPlan:
     # None preserves older direct backend callers until they adopt an explicit kind.
     execution_kind: Literal["python", "terminal"] | None = None
     cancel_event: Any = None
+
 
 @dataclass
 class PreparedSandboxLaunch:
@@ -182,11 +196,13 @@ class PreparedSandboxLaunch:
                 self.cleanup_diagnostics.append(f"could not remove private sandbox path: {path}")
                 logger.warning("Could not remove private sandbox path %s", path, exc_info = True)
 
+
 def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) -> object:
     """Spawn exactly one prepared launch, using its backend-owned launcher when set."""
     if prepared.spawn_callback is not None:
         return prepared.spawn_callback(prepared, popen_kwargs)
     return subprocess.Popen(prepared.argv, **popen_kwargs)
+
 
 def _pidfd_open(pid: int) -> int:
     """A file descriptor pinned to exactly this process (raises OSError)."""
@@ -199,6 +215,7 @@ def _pidfd_open(pid: int) -> int:
         raise OSError(errno_value, os.strerror(errno_value))
     return int(fd)
 
+
 def _pidfd_send_signal(pidfd: int, signum: int) -> None:
     if hasattr(signal, "pidfd_send_signal"):
         signal.pidfd_send_signal(pidfd, signum)
@@ -210,6 +227,7 @@ def _pidfd_send_signal(pidfd: int, signum: int) -> None:
     if result < 0:
         errno_value = ctypes.get_errno()
         raise OSError(errno_value, os.strerror(errno_value))
+
 
 def descendant_sweep_supported() -> bool:
     """Whether Limited launches can reap detached descendants after the leader exits.
@@ -254,7 +272,12 @@ def _runtime_identity() -> str:
     return digest.hexdigest()
 
 
-def capability_snapshot(*, force: bool = False, execution_kind=None, selected_executable=None) -> SandboxCapability:
+def capability_snapshot(
+    *,
+    force: bool = False,
+    execution_kind = None,
+    selected_executable = None,
+) -> SandboxCapability:
     """Describe the shipped backend without treating installed binaries as proof."""
     identity = _runtime_identity()
     if sys.platform == "win32":
@@ -265,10 +288,14 @@ def capability_snapshot(*, force: bool = False, execution_kind=None, selected_ex
         reason = "SRT system DNS and descendant ownership are not qualified on macOS."
     elif sys.platform == "linux":
         from .srt_probe import probe
-        available, reason = probe(force = force, execution_kind = execution_kind, selected_executable = selected_executable)
+
+        available, reason = probe(
+            force = force, execution_kind = execution_kind, selected_executable = selected_executable
+        )
         limitations = ("srt_platform_qualification_incomplete",)
         if available:
             from .srt_probe import probe_network
+
             network_policies = ("deny",)
             hosts = ()
             try:
@@ -278,9 +305,14 @@ def capability_snapshot(*, force: bool = False, execution_kind=None, selected_ex
             except ValueError:
                 hosts = ()
             return SandboxCapability(
-                backend = "srt", qualified = False, available = True,
-                reason = reason, environment = "linux", protection_state = "preview",
-                profile_id = SRT_PROFILE, limitations = limitations,
+                backend = "srt",
+                qualified = False,
+                available = True,
+                reason = reason,
+                environment = "linux",
+                protection_state = "preview",
+                profile_id = SRT_PROFILE,
+                limitations = limitations,
                 probe_generation = hashlib.sha256((identity + "available").encode()).hexdigest(),
                 environment_fingerprint = identity,
                 network_policies = network_policies,
@@ -291,15 +323,18 @@ def capability_snapshot(*, force: bool = False, execution_kind=None, selected_ex
         limitations = ("srt_platform_unqualified",)
         reason = "The selected SRT runtime has not passed Studio's strict isolation probes."
     return SandboxCapability(
-        backend = "srt", qualified = False, available = False,
-        reason = reason, environment = sys.platform,
-        profile_id = SRT_PROFILE, limitations = limitations,
+        backend = "srt",
+        qualified = False,
+        available = False,
+        reason = reason,
+        environment = sys.platform,
+        profile_id = SRT_PROFILE,
+        limitations = limitations,
         probe_generation = hashlib.sha256((identity + "unavailable").encode()).hexdigest(),
         environment_fingerprint = identity,
         remediation = "Required remains blocked. Use Limited only after reviewing its session warning, or separately confirm Full access.",
-        limited_limitations = ("unrestricted_network", "host_files_readable") + (
-            () if sys.platform == "win32" else ("detached_descendant_cleanup_unverified",)
-        ),
+        limited_limitations = ("unrestricted_network", "host_files_readable")
+        + (() if sys.platform == "win32" else ("detached_descendant_cleanup_unverified",)),
     )
 
 
@@ -325,16 +360,29 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
     canonical = replace(spec, workdir = workdir, env = dict(spec.env))
     if canonical.requested_mode == "full":
         record = ToolExecutionRecord(
-            requested_mode = "full", effective_mode = "full", environment = sys.platform,
-            backend = "none", profile_id = "full-access-v1", probe_generation = _runtime_identity(),
-            os_isolation = False, retained_safeguards = tuple(
-                item for item in _FULL_SAFEGUARDS if item != "timeout" or canonical.timeout_seconds is not None
+            requested_mode = "full",
+            effective_mode = "full",
+            environment = sys.platform,
+            backend = "none",
+            profile_id = "full-access-v1",
+            probe_generation = _runtime_identity(),
+            os_isolation = False,
+            retained_safeguards = tuple(
+                item
+                for item in _FULL_SAFEGUARDS
+                if item != "timeout" or canonical.timeout_seconds is not None
             ),
             network_policy = "unrestricted",
         )
     else:
-        selected = canonical.argv[0] if os.path.isabs(canonical.argv[0]) else shutil.which(canonical.argv[0], path=canonical.env.get("PATH", ""))
-        capability = capability_snapshot(execution_kind = canonical.execution_kind, selected_executable = selected)
+        selected = (
+            canonical.argv[0]
+            if os.path.isabs(canonical.argv[0])
+            else shutil.which(canonical.argv[0], path = canonical.env.get("PATH", ""))
+        )
+        capability = capability_snapshot(
+            execution_kind = canonical.execution_kind, selected_executable = selected
+        )
         if canonical.requested_mode == "os_isolation_required":
             if not capability.available:
                 raise SandboxUnavailableError(
@@ -348,20 +396,28 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 if "allowlist" not in capability.network_policies:
                     raise SandboxUnavailableError("SRT HTTPS allowlist transport is not qualified")
                 from .srt_network import SrtNetworkTransport
+
                 allowlist = NetworkAllowlist.from_env()
-                launch_env.update({key: os.path.realpath(value)
-                                   for key, value in tls_trust_environment().items()})
+                launch_env.update(
+                    {key: os.path.realpath(value) for key, value in tls_trust_environment().items()}
+                )
                 extra_reads = tls_trust_paths()
                 transport = SrtNetworkTransport(
-                    AllowlistProxy(allowlist), lifetime_seconds = (
-                        None if canonical.timeout_seconds is None else canonical.timeout_seconds + 60
+                    AllowlistProxy(allowlist),
+                    lifetime_seconds = (
+                        None
+                        if canonical.timeout_seconds is None
+                        else canonical.timeout_seconds + 60
                     ),
                 ).start()
                 allowlist_hosts = allowlist.hosts
                 launch_env.update(transport.environment)
             try:
                 request = srt_adapter.request_for(
-                    canonical.argv, canonical.workdir, launch_env, canonical.timeout_seconds,
+                    canonical.argv,
+                    canonical.workdir,
+                    launch_env,
+                    canonical.timeout_seconds,
                     additional_read_roots = extra_reads,
                 )
                 if transport is not None:
@@ -375,22 +431,35 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                     transport.close()
                 raise SandboxUnavailableError(str(exc)) from exc
             record = ToolExecutionRecord(
-                requested_mode = "os_isolation_required", effective_mode = "os_isolation_required",
-                environment = capability.environment, backend = "srt", profile_id = SRT_PROFILE,
-                probe_generation = capability.probe_generation, os_isolation = True,
-                retained_safeguards = tuple(item for item in (*_LIMITED_SAFEGUARDS, "os_isolation")
-                                           if item != "timeout" or canonical.timeout_seconds is not None),
-                limitations = capability.limitations, network_policy = canonical.network_policy,
+                requested_mode = "os_isolation_required",
+                effective_mode = "os_isolation_required",
+                environment = capability.environment,
+                backend = "srt",
+                profile_id = SRT_PROFILE,
+                probe_generation = capability.probe_generation,
+                os_isolation = True,
+                retained_safeguards = tuple(
+                    item
+                    for item in (*_LIMITED_SAFEGUARDS, "os_isolation")
+                    if item != "timeout" or canonical.timeout_seconds is not None
+                ),
+                limitations = capability.limitations,
+                network_policy = canonical.network_policy,
                 network_allowlist = allowlist_hosts,
             )
             prepared = PreparedSandboxLaunch(
-                argv = canonical.argv, workdir = canonical.workdir, env = canonical.env,
-                preexec_fn = canonical.launcher_preexec_fn, backend = "srt", execution_record = record,
+                argv = canonical.argv,
+                workdir = canonical.workdir,
+                env = canonical.env,
+                preexec_fn = canonical.launcher_preexec_fn,
+                backend = "srt",
+                execution_record = record,
                 timeout_seconds = canonical.timeout_seconds,
             )
             if transport is not None:
                 prepared.cleanup_callbacks.append(transport.close)
                 prepared.network_audit = transport.proxy.audit
+
             def launch(_prepared, kwargs):
                 try:
                     proc = srt_adapter.spawn(request, cancel_event = canonical.cancel_event, **kwargs)
@@ -398,33 +467,55 @@ def prepare_tool_launch(spec: ToolLaunchPlan) -> PreparedSandboxLaunch:
                     raise SandboxUnavailableError(f"SRT launch failed: {exc}") from exc
                 prepared.cleanup_callbacks.append(lambda: srt_adapter.release_control(proc))
                 return proc
+
             prepared.spawn_callback = launch
             return prepared
         if canonical.network_policy != "deny":
             raise SandboxUnavailableError("the network allowlist requires OS isolation")
         if capability.available:
-            raise SandboxUnavailableError("Limited mode is not authorized while OS isolation is available")
+            raise SandboxUnavailableError(
+                "Limited mode is not authorized while OS isolation is available"
+            )
         if not canonical.current_subject or not canonical.tool_ui_session_id:
-            raise SandboxUnavailableError("Limited mode requires an authenticated Studio UI session")
+            raise SandboxUnavailableError(
+                "Limited mode requires an authenticated Studio UI session"
+            )
         from .tool_isolation import LimitedGrantError, validate_limited_grant
+
         try:
             validate_limited_grant(
-                canonical.limited_grant, current_subject = canonical.current_subject,
+                canonical.limited_grant,
+                current_subject = canonical.current_subject,
                 tool_ui_session_id = canonical.tool_ui_session_id,
-                probe_generation = capability.probe_generation, requested_mode = "limited",
+                probe_generation = capability.probe_generation,
+                requested_mode = "limited",
             )
         except LimitedGrantError as exc:
             raise SandboxUnavailableError(f"Limited mode authorization failed: {exc}") from exc
         record = ToolExecutionRecord(
-            requested_mode = "limited", effective_mode = "limited", environment = capability.environment,
-            backend = "process-guard", profile_id = "limited-software-safeguards-v1",
-            probe_generation = capability.probe_generation, os_isolation = False,
-            retained_safeguards = tuple(item for item in _LIMITED_SAFEGUARDS
-                                       if item != "timeout" or canonical.timeout_seconds is not None),
-            limitations = capability.limited_limitations, network_policy = "unrestricted",
+            requested_mode = "limited",
+            effective_mode = "limited",
+            environment = capability.environment,
+            backend = "process-guard",
+            profile_id = "limited-software-safeguards-v1",
+            probe_generation = capability.probe_generation,
+            os_isolation = False,
+            retained_safeguards = tuple(
+                item
+                for item in _LIMITED_SAFEGUARDS
+                if item != "timeout" or canonical.timeout_seconds is not None
+            ),
+            limitations = capability.limited_limitations,
+            network_policy = "unrestricted",
         )
     return PreparedSandboxLaunch(
-        argv = canonical.argv, workdir = canonical.workdir, env = canonical.env,
-        preexec_fn = canonical.preexec_fn, backend = record.backend, execution_record = record,
-        timeout_seconds = canonical.timeout_seconds, close_fds = True, terminate_descendants = True,
+        argv = canonical.argv,
+        workdir = canonical.workdir,
+        env = canonical.env,
+        preexec_fn = canonical.preexec_fn,
+        backend = record.backend,
+        execution_record = record,
+        timeout_seconds = canonical.timeout_seconds,
+        close_fds = True,
+        terminate_descendants = True,
     )
