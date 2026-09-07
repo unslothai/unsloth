@@ -3,20 +3,11 @@
 
 """engine_stats must not attribute work to the tick its counter moved on.
 
-Neither token counter moves while the work happens, so a whole generation or a prefill
-spanning several polls lands in one scrape, and dividing it by the poll interval reports
-the rate of a window the work did not run in. Measured in the field: 48,216 records,
-gen_tok_s == 0.0 in 47,629 (98.77%), and two at 150.6 and 183.7 tok/s on a model whose
-ceiling is 24.6.
-
-The two sides are not symmetric, and these tests follow the source. add_prompt(n, n, t)
-counts every prompt token as a decode step, so the prompt counters are a matched pair.
-metrics_on_prediction() passes n_gen and n_gen - 1, since the first generated token comes
-from the prompt batch free, so the generation counters are NOT a pair -- generation
-throughput comes from llama.cpp's gauge or from nowhere.
-
-The clock is faked because the rate is under test: the shared _drive helper runs at a
-1 ms interval on the real clock, which cannot express a 10-second poll.
+Neither token counter moves while the work happens, so the poll interval prices a window
+the work did not run in. The sides are not symmetric: add_prompt(n, n, t) makes the prompt
+counters a pair, metrics_on_prediction() passes n_gen and n_gen - 1, so generation
+throughput comes from llama.cpp's gauge or from nowhere. The clock is faked because the
+shared _drive helper polls at 1 ms on the real one.
 """
 
 from __future__ import annotations
@@ -79,7 +70,6 @@ def _busy(
     waiting = 0.0,
     gen_gauge = None,
 ):
-    """One scrape. No throughput gauges unless asked, so the counter path is exercised."""
     snap = {
         "tokens_predicted_total": predicted,
         "tokens_predicted_seconds_total": predicted_s,
@@ -95,8 +85,6 @@ def _busy(
 
 
 def test_a_prefill_is_priced_by_the_seconds_it_reports_with_it(monkeypatch):
-    """1837 prompt tokens arrive in one scrape after 80 seconds of prefill: the honest
-    rate is 1837/80, not 1837 over the poll interval."""
     snaps = [_busy(decode = float(i)) for i in range(8)] + [
         _busy(prompt = 1837.0, prompt_s = 80.0, decode = 8.0)
     ]
@@ -108,7 +96,6 @@ def test_a_prefill_is_priced_by_the_seconds_it_reports_with_it(monkeypatch):
 
 
 def test_an_idle_gap_is_not_charged_to_the_prefill_after_it(monkeypatch):
-    """Idle for a minute, then 100 tokens in 20 seconds, is 5 tok/s and not 1.4."""
     idle = [_busy(running = 0.0) for _ in range(6)]
     working = [_busy(decode = 1.0), _busy(prompt = 100.0, prompt_s = 20.0, decode = 2.0)]
     stats = _drive(idle + working, monkeypatch)
@@ -117,9 +104,7 @@ def test_an_idle_gap_is_not_charged_to_the_prefill_after_it(monkeypatch):
 
 
 def test_deferred_requests_do_not_stretch_the_denominator(monkeypatch):
-    """A deferred request is queued, not running, so charging the seconds it waits is the
-    mirror of the bug above and understates instead. Trace: one tick of work, six holding
-    a queued request, then the flush."""
+    """A queued request is not running, so charging its wait understates instead."""
     snaps = [
         _busy(decode = 1.0),
         *[_busy(running = 0.0, waiting = 1.0, decode = 1.0) for _ in range(6)],
@@ -133,8 +118,7 @@ def test_deferred_requests_do_not_stretch_the_denominator(monkeypatch):
 
 
 def test_work_already_running_at_the_first_poll_is_priced_whole(monkeypatch):
-    """The logger can start mid-prefill with no reading from before its first scrape, so
-    elapsed poll time omits up to an interval; the engine's own seconds do not."""
+    """Starting mid-prefill, elapsed poll time omits up to an interval; the engine's does not."""
     snaps = [
         _busy(prompt = 200.0, prompt_s = 40.0, decode = 4.0),
         _busy(prompt = 1837.0, prompt_s = 80.0, decode = 8.0),
@@ -147,9 +131,7 @@ def test_work_already_running_at_the_first_poll_is_priced_whole(monkeypatch):
 
 
 def test_a_long_prefill_is_not_attributed_to_the_tick_it_flushed_on(monkeypatch):
-    """The prompt counter is flushed only on a decode that produced output, so a prefill
-    spanning many polls arrives whole: 130k tokens on one tick reads as 13,000 tok/s
-    against a real 200. The same call flushes the seconds, so the pair is the rate."""
+    """The prompt counter and its seconds flush together, on a decode with output."""
     snaps = (
         [_busy(prompt = 0.0)]
         + [_busy() for _ in range(64)]
@@ -162,9 +144,7 @@ def test_a_long_prefill_is_not_attributed_to_the_tick_it_flushed_on(monkeypatch)
 
 
 def test_the_decode_counter_reports_while_the_token_counters_are_still(monkeypatch):
-    """Why the line read 0 for 98.8% of the time: both token counters sit still through a
-    healthy generation. n_decode_total moves on every llama_decode(), so it is the live
-    signal, reported as calls rather than tokens."""
+    """Why the line read 0 for 98.8% of the time: only n_decode_total moves here."""
     snaps = [_busy(decode = float(i * 20), gen_gauge = 0.0) for i in range(4)]
     stats = _drive(snaps, monkeypatch)
 
@@ -174,9 +154,7 @@ def test_the_decode_counter_reports_while_the_token_counters_are_still(monkeypat
 
 
 def test_a_build_without_the_decode_counter_omits_the_field(monkeypatch):
-    """n_decode_total is not on every llama-server, and printing 0.0 would state the
-    engine was measured making no calls -- the opposite of what
-    engine_progress_unmeasurable says about the same build."""
+    """0.0 would state the engine was measured making no calls."""
     snaps = [
         {"tokens_predicted_total": 0.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
         {"tokens_predicted_total": 50.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
@@ -187,9 +165,7 @@ def test_a_build_without_the_decode_counter_omits_the_field(monkeypatch):
 
 
 def test_a_zero_gauge_is_a_reading_and_not_a_missing_one(monkeypatch):
-    """A one-token completion: the gauge numerator is decode steps, which excludes the
-    token produced from the prompt batch, so it reports 0. The counters include that free
-    token against near-zero time, so falling through divides one token by a millisecond."""
+    """One-token completion: the free prompt-batch token is no decode step, so 0."""
     snaps = [
         _busy(gen_gauge = 0.0),
         _busy(predicted = 1.0, predicted_s = 0.0001, gen_gauge = 0.0),
@@ -197,15 +173,11 @@ def test_a_zero_gauge_is_a_reading_and_not_a_missing_one(monkeypatch):
     stats = _drive(snaps, monkeypatch)
 
     assert stats and all(s["gen_tok_s"] == 0.0 for s in stats)
-    # What reading the zero as absent would have said.
     assert 1.0 / 0.0001 == 10000.0
 
 
 def test_a_zero_gauge_beside_moved_counters_is_still_a_reading(monkeypatch):
-    """Another client scraping /metrics empties the bucket too, so a zero gauge can cover
-    a window that carried work. It is indistinguishable from the test above, and the
-    counters cannot break the tie: understating such a window is the cost of never
-    fabricating one."""
+    """Another client's scrape empties the bucket, and understating beats inventing."""
     snaps = [
         _busy(predicted = 100.0, predicted_s = 5.0, gen_gauge = 20.0),
         _busy(predicted = 300.0, predicted_s = 15.0, gen_gauge = 0.0),
@@ -219,10 +191,8 @@ def test_a_zero_gauge_beside_moved_counters_is_still_a_reading(monkeypatch):
 
 
 def test_tokens_with_no_seconds_yet_are_kept_for_the_tick_that_brings_them(monkeypatch):
-    """/metrics renders doubles at six significant digits, so a long-lived server can
-    resolve a request in the token total while the seconds total still rounds the same.
-    Dropping the numerator charges those tokens to whatever seconds arrive next, so the
-    baseline is held until a usable pair exists."""
+    """Six significant digits can move one total a scrape before the other, so the
+    baseline is held until both have moved rather than charged to the next seconds."""
     snaps = [
         _busy(prompt = 100.0, prompt_s = 1000.0),
         _busy(prompt = 200.0, prompt_s = 1000.0),
@@ -234,9 +204,6 @@ def test_tokens_with_no_seconds_yet_are_kept_for_the_tick_that_brings_them(monke
 
 
 def test_seconds_that_resolve_before_their_tokens_are_kept_too(monkeypatch):
-    """The same rounding boundary the other way round: advancing the baseline on seconds
-    alone discards them, and the tokens that follow are divided by only the newer time --
-    the inflated rate again, from the opposite direction."""
     snaps = [
         _busy(prompt = 100.0, prompt_s = 1000.0),
         _busy(prompt = 100.0, prompt_s = 1020.0),
@@ -251,9 +218,7 @@ def test_seconds_that_resolve_before_their_tokens_are_kept_too(monkeypatch):
 
 
 def test_a_build_without_the_generation_gauge_omits_the_field(monkeypatch):
-    """Nothing else in /metrics says how long the generated tokens took: the seconds count
-    n_gen - 1 steps against n_gen tokens, so their ratio is not a rate. The line still
-    goes out, carrying what is measurable."""
+    """The seconds time n_gen - 1 steps against n_gen tokens, so the ratio is not a rate."""
     snaps = [
         _busy(predicted = 0.0),
         _busy(predicted = 1.0, predicted_s = 0.0001),
@@ -261,14 +226,11 @@ def test_a_build_without_the_generation_gauge_omits_the_field(monkeypatch):
     stats = _drive(snaps, monkeypatch)
 
     assert stats and all("gen_tok_s" not in s for s in stats)
-    # What the counter ratio would have said for that one-token completion.
     assert 1.0 / 0.0001 == 10000.0
 
 
 def test_a_build_with_no_prompt_metric_omits_the_field(monkeypatch):
-    """The third unmeasurable case, and it gets the same answer as the other two: a
-    scrape carrying no prompt gauge and no prompt counters measured no prompt, and
-    printing 0.0 would say a measurement was taken and found the engine at rest."""
+    """The third unmeasurable case: no prompt gauge and no prompt counters."""
     snaps = [
         {"tokens_predicted_total": 0.0, "requests_processing": 1.0},
         {"tokens_predicted_total": 50.0, "requests_processing": 1.0},
@@ -280,9 +242,7 @@ def test_a_build_with_no_prompt_metric_omits_the_field(monkeypatch):
 
 
 def test_a_non_finite_metric_value_never_reaches_the_line(monkeypatch):
-    """float() turns a long enough digit string into inf without raising, and an inf
-    rate is both unbounded by anything here and unreadable by a strict JSON parser.
-    _env_float already refuses the same text on the same grounds."""
+    """float() turns a long digit string into inf; _env_float refuses the same text."""
 
     class _Resp:
         status = 200
@@ -313,8 +273,6 @@ def test_a_non_finite_metric_value_never_reaches_the_line(monkeypatch):
 
 
 def test_the_llama_cpp_gauge_still_wins_when_it_reports(monkeypatch):
-    """predicted_tokens_seconds is llama.cpp's own per-generation average: where it is
-    present and non-zero it is authoritative, and this change does not touch it."""
     snaps = [
         _busy(gen_gauge = 24.6),
         _busy(predicted = 1837.0, predicted_s = 80.0, gen_gauge = 24.6),

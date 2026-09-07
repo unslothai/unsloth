@@ -80,9 +80,7 @@ def _stalls(cap):
 def _wedged(n, *, decode = 8192.0):
     """The user's signature: a held slot that never calls llama_decode().
 
-    The gauges are in the snapshot because the server that produced those records emits
-    them: /metrics renders the counters and the gauges from one table, so a build with
-    tokens_predicted_total has predicted_tokens_seconds beside it."""
+    The gauges are in the snapshot because /metrics renders them from the same table."""
     return [
         {
             "tokens_predicted_total": 4096.0,

@@ -121,9 +121,7 @@ def test_counters_without_gauges_still_report_what_is_measurable():
     # Older binaries expose only the counters. The generation pair is not a rate (the
     # seconds time n_gen - 1 steps while the tokens count n_gen), so no gen_tok_s is
     # claimed; running=1 keeps the line going out with the fields that are measured.
-    # The prompt pair is whole because /metrics renders one table: a build with
-    # prompt_tokens_total has prompt_seconds_total beside it, and a build with neither
-    # gets no prompt_tok_s at all.
+    # /metrics renders one table, so a build with prompt_tokens_total has the seconds too.
     snaps = [
         {
             "tokens_predicted_total": 100.0,
