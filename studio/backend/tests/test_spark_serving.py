@@ -1696,9 +1696,9 @@ def test_the_layer_boundary_is_explicit_and_the_rows_table_is_consistent():
 
     # The boundary that won is the one the even split lands on, and it beat both neighbours.
     by_blocks = sc.SPLIT_TENSOR_SPLIT_MEASURED_PEER_BLOCKS
-    assert max(by_blocks, key = by_blocks.get) == 33, (
-        "the even split of 66 assignment slots puts 33 blocks on the first device"
-    )
+    assert (
+        max(by_blocks, key = by_blocks.get) == 33
+    ), "the even split of 66 assignment slots puts 33 blocks on the first device"
     for blocks in (30, 34, 36, 27):
         assert by_blocks[blocks] < by_blocks[33], blocks
 

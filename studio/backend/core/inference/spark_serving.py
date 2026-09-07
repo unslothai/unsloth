@@ -1492,8 +1492,18 @@ def layer_split_extra_args(
     # n_layer + 1 assignment slots, the last of which is the output block: half of 66 is 33,
     # so blocks 0..32 go to the first device. The output block stays on the LAST device
     # either way, which is why the device order above is RPC first.
-    out = ["--rpc", f"{peer}:{port}", "--device", "RPC0,CUDA0", "-sm", "layer",
-           "--tensor-split", SPLIT_TENSOR_SPLIT_EVEN, "--cache-ram", "0"]
+    out = [
+        "--rpc",
+        f"{peer}:{port}",
+        "--device",
+        "RPC0,CUDA0",
+        "-sm",
+        "layer",
+        "--tensor-split",
+        SPLIT_TENSOR_SPLIT_EVEN,
+        "--cache-ram",
+        "0",
+    ]
     if pipeline_groups and int(pipeline_groups) > 1:
         out += [PIPELINE_GROUPS_FLAG, str(int(pipeline_groups))]
     return out
