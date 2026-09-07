@@ -9,7 +9,8 @@
 # Verified locally end-to-end against this branch:
 #   - python -m build produces unsloth-<version>-py3-none-any.whl in 13s
 #   - wheel content sanity passes:
-#       lockfile shipped, frontend dist shipped,
+#       frontend dist shipped, and none of the pre-build tree with it:
+#       no package-lock, no frontend public, no frontend src,
 #       no node_modules in wheel, no bun.lock in wheel,
 #       main bundle has unstable_Provider hits=1 (assistant-ui internals only).
 #   - Unsloth backend imports cleanly from the installed wheel with the
