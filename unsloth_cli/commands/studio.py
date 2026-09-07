@@ -3690,18 +3690,15 @@ def _uv_platform_cache_dir() -> Optional[Path]:
     return Path(home) / ".cache" / "uv" if home else None
 
 
-# clap's boolish spelling, which is what uv parses these as. A value outside this set is
-# an error uv refuses to run on, so it is not "no cache" either.
+# uv's boolish spelling. Anything outside it is a value uv refuses to run on, which is
+# not "no cache" either.
 _UV_TRUE = ("1", "true", "yes", "on")
 
 
 def _uv_no_cache_requested() -> bool:
-    """uv --no-cache puts the cache in a temporary directory and discards it on exit.
-
-    Nothing this module decides applies then: the probe would report that throwaway
-    directory, --no-cache outranks --cache-dir anyway, and recording what setup did not
-    keep would aim later updates at a cache that never existed.
-    """
+    """uv --no-cache caches in a temporary directory and discards it on exit, so the
+    probe would report that throwaway, --no-cache outranks --cache-dir anyway, and
+    recording it would aim later updates at a cache that never existed."""
     return (os.environ.get("UV_NO_CACHE") or "").strip().lower() in _UV_TRUE
 
 
@@ -3823,8 +3820,7 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     if (os.environ.get("UV_CACHE_DIR") or "").strip():
         return env
     if _uv_no_cache_requested():
-        # --no-cache outranks --cache-dir, so naming one would change nothing except what
-        # this reads back afterwards.
+        # --no-cache outranks --cache-dir, so naming one changes nothing.
         return env
     studio_cache = STUDIO_HOME / "cache" / "uv"
     recorded = _recorded_install_uv_cache()
