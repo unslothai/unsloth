@@ -1124,6 +1124,7 @@ class FastBaseModel:
         # True when auto_config came from the caller. It cannot be inferred here: FastModel pops config
         # out of kwargs before this sees them, so it looks exactly like one we resolved ourselves.
         auto_config_from_caller = False,
+        fix_tokenizer = True,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -2071,7 +2072,7 @@ class FastBaseModel:
 
         tokenizer = _apply_post_load_tokenizer_fixes(
             tokenizer,
-            fix_tokenizer = True,
+            fix_tokenizer = fix_tokenizer,
             config = auto_config if auto_config is not None else getattr(model, "config", None),
         )
         patch_saving_functions(tokenizer, vision = True)

@@ -233,6 +233,35 @@ def test_fastmodel_processor_path_skips_instruct_template():
     assert inner.add_bos_token is False
 
 
+def test_generic_fast_post_processor_gets_bos():
+    pytest.importorskip("tokenizers")
+    from tokenizers import processors
+
+    class _Backend:
+        post_processor = None
+
+    class _GenericFast:
+        bos_token = "<bos>"
+        bos_token_id = 2
+        add_eos_token = False
+        add_bos_token = False
+        init_kwargs = {}
+
+        def __init__(self):
+            self._tokenizer = _Backend()
+
+    obj = _GenericFast()
+    assert tu._update_generic_fast_post_processor(obj) is True
+    assert isinstance(obj._tokenizer.post_processor, processors.TemplateProcessing)
+    assert obj.add_bos_token is True
+    assert obj.init_kwargs["add_bos_token"] is True
+
+
+def test_generic_fast_post_processor_skips_without_backend():
+    obj = types.SimpleNamespace(bos_token = "<bos>", bos_token_id = 2, add_bos_token = False)
+    assert tu._update_generic_fast_post_processor(obj) is False
+
+
 @pytest.mark.e2e
 def test_gemma4_e2b_hub_tokenizer_prepends_bos():
     pytest.importorskip("transformers")

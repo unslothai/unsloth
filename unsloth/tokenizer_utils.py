@@ -161,9 +161,67 @@ def _needs_gemma4_base_bos(tokenizer, config = None):
     return _is_gemma4_tokenizer(tokenizer) or _is_gemma4_config(config)
 
 
+def _has_add_bos_token_setter(tokenizer):
+    prop = getattr(type(tokenizer), "add_bos_token", None)
+    return isinstance(prop, property) and prop.fset is not None
+
+
+def _update_generic_fast_post_processor(tokenizer):
+    """Rebuild the Rust post-processor for bare ``PreTrainedTokenizerFast`` loads."""
+    backend = getattr(tokenizer, "_tokenizer", None)
+    bos_token = getattr(tokenizer, "bos_token", None)
+    bos_token_id = getattr(tokenizer, "bos_token_id", None)
+    if backend is None or bos_token is None or bos_token_id is None:
+        return False
+
+    add_eos_token = bool(getattr(tokenizer, "add_eos_token", False))
+    eos_token = getattr(tokenizer, "eos_token", None)
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+
+    try:
+        from tokenizers import processors
+    except Exception:
+        return False
+
+    single = f"{bos_token}:0 $A:0"
+    if add_eos_token and eos_token is not None:
+        single += f" {eos_token}:0"
+    pair = f"{single} {bos_token}:1 $B:1"
+    if add_eos_token and eos_token is not None:
+        pair += f" {eos_token}:1"
+
+    special_tokens = [(bos_token, bos_token_id)]
+    if add_eos_token and eos_token is not None and eos_token_id is not None:
+        special_tokens.append((eos_token, eos_token_id))
+
+    backend.post_processor = processors.TemplateProcessing(
+        single = single,
+        pair = pair,
+        special_tokens = special_tokens,
+    )
+    if hasattr(tokenizer, "_add_bos_token"):
+        tokenizer._add_bos_token = True
+    init_kwargs = getattr(tokenizer, "init_kwargs", None)
+    if isinstance(init_kwargs, dict):
+        init_kwargs["add_bos_token"] = True
+    try:
+        tokenizer.add_bos_token = True
+    except Exception:
+        pass
+    return True
+
+
 def _enable_add_bos_token(tokenizer):
     for obj in _tokenizer_objects(tokenizer):
         if getattr(obj, "add_bos_token", False):
+            continue
+        if _has_add_bos_token_setter(obj):
+            try:
+                obj.add_bos_token = True
+                continue
+            except Exception:
+                pass
+        if _update_generic_fast_post_processor(obj):
             continue
         try:
             obj.add_bos_token = True
