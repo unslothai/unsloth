@@ -214,9 +214,7 @@ def test_a_stage_that_parks_nothing_leaves_the_live_marker_alone(monkeypatch, tm
     monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
     monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
 
-    _studio_stage.stage(
-        home, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0
-    )
+    _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0)
 
     live = home / "cache" / _studio_stage.UV_CACHE_MARKER
     assert live.read_text(encoding = "utf-8").strip() == "/live/uv"
