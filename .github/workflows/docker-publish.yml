@@ -11,7 +11,12 @@ name: Publish Blackwell Docker image
 
 on:
   push:
-    branches: [main]
+    # Deliberately NOT branches: [main]. Publishing on every merge meant 23 runs on
+    # 2026-09-06 and 14 on 2026-09-05 against one scheduled run each day, and since
+    # each is a two-arch build of both images it was the bulk of the repo's Actions
+    # cache and a large share of its runner minutes. The daily cron below is the
+    # release cadence for main now. Tags still publish immediately: a release that
+    # produced no image until the next morning would be worse than the spend.
     tags: ['v*']
   schedule:
     # Daily. Actions cron is UTC with no DST handling, so this is 11:17 in San
@@ -50,14 +55,17 @@ env:
   # Not a secret, and named once so the four login steps cannot drift apart.
   REGISTRY_USERNAME: unsloth
 
-# Serialise per-ref runs, EXCEPT on main where each commit gets its own group: a
-# shared group does not queue a main burst, it DISCARDS it (GitHub cancels any PENDING
-# run the moment a newer one is queued), so the earlier commit would publish no image
-# at all. The accepted cost is that two main commits can race to retag :core/:latest,
-# which is self-correcting on the next push, where a cancelled run leaves that commit
-# with no image at all. Each published image is still internally coherent: the digest
-# handoff and the smoke test resolve this run's own tag, not tags[0], and verify it.
-# tests/studio/test_main_runs_survive_merge_bursts.py enforces this shape.
+# Serialise per-ref runs, EXCEPT on main where each run gets its own group: a shared
+# group does not queue a burst, it DISCARDS it (GitHub cancels any PENDING run the
+# moment a newer one is queued), so the earlier one would publish no image at all.
+# Merges no longer trigger this workflow, so the burst it now guards against is a
+# scheduled run overlapping a workflow_dispatch, rather than a merge burst. Keeping
+# the per-sha key costs nothing and still prevents a dispatch being discarded.
+# Each published image is internally coherent either way: the digest handoff and the
+# smoke test resolve this run's own tag, not tags[0], and verify it.
+# Dropping the main push trigger also drops this workflow out of the scan in
+# tests/studio/test_main_runs_survive_merge_bursts.py, which selects on
+# `push.branches` containing main, so no exemption is needed there.
 concurrency:
   group: docker-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: false
@@ -254,8 +262,14 @@ jobs:
           file: ./docker/Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=build-${{ matrix.platform }}
-          cache-to:   type=gha,scope=build-${{ matrix.platform }},mode=max
+          # Registry cache, not type=gha. mode=max exports every intermediate layer,
+          # which on the GHA backend put 127 blob entries and 32GB into a 50GB repo
+          # cache in a single morning and starved the GGUF and pip caches sharing it.
+          # A cache tag on the image's own repo has no such budget, so mode=max keeps
+          # its rebuild speed without the eviction pressure. The Docker Hub login
+          # above covers both reading and writing this ref.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-core-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          cache-to:   type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-core-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }},mode=max
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           # Keep prose OUT of build-args: build-push-action forwards every non-empty
           # line verbatim, so a #-line becomes a bogus --build-arg.
@@ -439,9 +453,12 @@ jobs:
           file: ./docker/Dockerfile.studio
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          # mode=max here would blow the 10GB GHA quota and evict the base build's cache
-          cache-from: type=gha,scope=studio-${{ matrix.platform }}
-          cache-to:   type=gha,scope=studio-${{ matrix.platform }},mode=min
+          # Kept at mode=min. The original reason was the GHA cache quota, which no
+          # longer applies now that this is a registry ref on the image's own repo,
+          # but the remaining cost is Docker Hub storage rather than a hard budget,
+          # so raising it is a separate decision from moving the transport.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-studio-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          cache-to:   type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-studio-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }},mode=min
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           # the same values the base build baked, so Studio matches it even if upstream
           # moved mid-run (build-args must be KEY=VALUE only)
