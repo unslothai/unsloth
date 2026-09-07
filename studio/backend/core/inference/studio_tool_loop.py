@@ -1151,6 +1151,17 @@ def _advance_tool_stream(generator: Any, outcome: dict[str, Any]) -> Any:
 
 _PARALLEL_TOOL_CALLS_ENV = "UNSLOTH_PARALLEL_TOOL_CALLS"
 
+# The most calls one round overlaps. Each overlapped call is a `stream_tool_execution`
+# worker with a pump task on top of it, and every one of them starts its side effects at
+# once, so a provider turn carrying dozens of distinct calls -- prompt induced, or simply a
+# model that fanned out -- would multiply threads and side effects with nothing bounding
+# it. `max_tool_calls_per_message` cannot bound it either: at its unlimited value the
+# budget check above the launch never refuses a call. A round past this runs single file,
+# as every round did before overlapping existed, which is the same rule and the same figure
+# the local GGUF loop applies through `_MAX_PARALLEL_TOOL_CALLS_PER_ROUND`. Kept here
+# rather than imported, because the two loops must not import each other.
+_MAX_PARALLEL_TOOL_CALLS_PER_ROUND = 8
+
 
 def parallel_tool_calls_enabled() -> bool:
     """Whether one turn's tool calls may run at the same time. On unless switched off.
@@ -1626,6 +1637,9 @@ async def stream_with_studio_tools(
         parallel_round = (
             parallel_tool_calls_enabled()
             and len(calls) > 1
+            # Bounded, for the reason the constant gives: overlap is per call a thread
+            # and a task, and this round's length is the model's choice, not the user's.
+            and len(calls) <= _MAX_PARALLEL_TOOL_CALLS_PER_ROUND
             and not _approval_gate
             and len(set(_round_keys)) == len(_round_keys)
             and len(set(_round_one_shot)) == len(_round_one_shot)

@@ -253,6 +253,7 @@ import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
+  completedAfterGivingUp,
   CONTINUE_INSTRUCTION,
   createContinuationMerger,
   type IncompleteReason,
@@ -6918,6 +6919,16 @@ export function createOpenAIStreamAdapter(
                 incompleteReason = "length";
               } else if (chunk.choices?.[0]?.finish_reason) {
                 incompleteReason = null;
+                if (completedAfterGivingUp(chunk.choices[0].finish_reason)) {
+                  // The give-up latch too, not just the reason it set. A tool run that
+                  // gave up breaks into the final answering pass and that pass can finish
+                  // normally, and the override below is unconditional: without this, a
+                  // completed answer was stamped paused, kept the "did not get it back"
+                  // notice and offered a Continue with nothing to continue. `length` is
+                  // the shape a give-up really does end on, so it is not success here and
+                  // does not reach this branch.
+                  preemptGaveUp = false;
+                }
               }
               // Latch the chunk's `model` field so the openrouter/free chip shows the underlying model.
               if (

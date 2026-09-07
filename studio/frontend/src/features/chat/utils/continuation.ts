@@ -229,6 +229,25 @@ export function isPreemptGaveUp(
   return truncation?.reason === PREEMPT_GAVE_UP_REASON;
 }
 
+/** Whether a terminal `finish_reason` says the answer FINISHED, so an earlier give-up no
+ *  longer describes how this turn ended.
+ *
+ *  The backend's give-up on a tool run is not always the end of the turn. It breaks into
+ *  the final answering pass, which usually still writes the reply and stops normally, and
+ *  the give-up notice has already been sent by then. Latched and never cleared, it
+ *  relabelled that completed answer as paused: the "did not get it back" notice under a
+ *  finished reply, and a Continue offering to resume a turn that has nothing left to say.
+ *
+ *  `length` is excluded because it is exactly the shape a give-up ends on -- the backend
+ *  stamps `length` so the client can resume from it -- so treating it as success would
+ *  erase the real case. Anything else truthy means a terminal chunk arrived for a pass
+ *  that ran to its own end. */
+export function completedAfterGivingUp(
+  finishReason: string | null | undefined,
+): boolean {
+  return Boolean(finishReason) && finishReason !== "length";
+}
+
 /** Reasons a turn may offer Continue with no text behind it. Only `paused` does, and it is
  *  the only reason the backend can raise before the first token: it means the chat lost the
  *  cache to another chat and never got it back. */

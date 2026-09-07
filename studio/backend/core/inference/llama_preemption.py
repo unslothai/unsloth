@@ -365,6 +365,8 @@ class PreemptionPolicy(Protocol):
 
     def on_resumed(self) -> None: ...
 
+    def on_declined(self) -> None: ...
+
 
 class DeferredPreemptionPolicy:
     """A policy handed to the stream before the real one can exist.
@@ -403,6 +405,10 @@ class DeferredPreemptionPolicy:
         if self._inner is not None:
             self._inner.on_resumed()
 
+    def on_declined(self) -> None:
+        if self._inner is not None:
+            self._inner.on_declined()
+
 
 class NullPreemptionPolicy:
     """Never pauses. The default, so every existing call site is unchanged."""
@@ -417,6 +423,9 @@ class NullPreemptionPolicy:
         return True
 
     def on_resumed(self) -> None:
+        return None
+
+    def on_declined(self) -> None:
         return None
 
 
@@ -1259,6 +1268,41 @@ class PreemptionController:
             participant.preempt_event.clear()
             participant.state = ParticipantState.DECODING
 
+    def note_declined(self, gen_id: str) -> None:
+        """A chosen victim will not pause after all, and goes on decoding.
+
+        The stream side refuses a pause it has already been asked for when it has
+        paused too many times running: rather than pausing again it finishes the turn,
+        which for a tool run means breaking into the final answering pass and decoding
+        there. `plan_preemptions` had already moved the participant to PREEMPTING and set
+        its signal, and nothing in the ordinary path takes either back: `observe` moves
+        TOOLS_RUNNING and PARKED_ON_TOOL to DECODING and deliberately leaves PREEMPTING
+        alone, so the chat decoded on holding cells while sitting outside `_PREEMPTABLE`,
+        where no later sweep could ask it to stop. The room the planner had already
+        counted as reclaimed never came back and the chats waiting on it kept waiting.
+
+        Nothing is released here, because nothing was: the lease is handed back in
+        `on_preempted`, which this participant never reached, and its cells are exactly
+        where they were. This only undoes the DECISION -- the state, the signal, and the
+        promotion count the decision incremented, which describes pauses this chat took
+        and this one it did not.
+
+        Only from PREEMPTING. A participant that has since paused, finished or been
+        unregistered has moved on under its own transition, and putting it back to
+        DECODING from there would invent a holder.
+        """
+        with self._lock:
+            participant = self._participants.get(gen_id)
+            if participant is None or participant.state != ParticipantState.PREEMPTING:
+                return
+            participant.state = ParticipantState.DECODING
+            participant.preempt_chosen_at = 0.0
+            participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
+            # Last, and inside the lock: a signal still set aborts the very stream this
+            # is letting run, and clearing it before the state change would leave a
+            # window in which a sweep re-arms a participant this call is about to move.
+            participant.preempt_event.clear()
+
     def participant(self, gen_id: str) -> Optional[Participant]:
         """The registered participant, or None once it has finished.
 
@@ -1884,6 +1928,15 @@ class ControllerPreemptionPolicy:
 
     def on_resumed(self) -> None:
         self._controller.note_resumed(self._gen_id)
+
+    def on_declined(self) -> None:
+        """This generation was chosen to pause and is not going to. Undo the decision.
+
+        Called instead of the pause handshake, never beside it: `on_preempted` hands the
+        lease back, and a stream that goes on decoding must keep it.
+        """
+        _log.info("llama preemption declined: gen_id=%s (finishing instead)", self._gen_id)
+        self._controller.note_declined(self._gen_id)
 
 
 def _slot_decoded(slot: dict) -> int:
