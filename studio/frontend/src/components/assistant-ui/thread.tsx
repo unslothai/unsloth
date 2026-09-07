@@ -1237,7 +1237,6 @@ function startPromptQueue(
     if (existingRun.deepResearchConsumed) {
       target.consumeDeepResearch();
     }
-    existingRun.paused = false;
     existingRun.items.push(
       ...filtered.map((prompt) => createQueuedPrompt(prompt, target)),
     );
@@ -1562,17 +1561,13 @@ interface PromptQueueCallbacks {
     onAborted?: () => void,
   ) => boolean;
   stopQueue: () => void;
-  resumeQueue: () => void;
 }
 const noopStartPromptQueue: PromptQueueCallbacks["startQueue"] = () =>
   false;
 const noopStopPromptQueue: PromptQueueCallbacks["stopQueue"] = () => undefined;
-const noopResumePromptQueue: PromptQueueCallbacks["resumeQueue"] = () =>
-  undefined;
 const PromptQueueContext = createContext<PromptQueueCallbacks>({
   startQueue: noopStartPromptQueue,
   stopQueue: noopStopPromptQueue,
-  resumeQueue: noopResumePromptQueue,
 });
 
 // Gap (px) between last message and floating composer; bottom spacer tracks
@@ -4781,11 +4776,7 @@ const Composer: FC<{
     [aui, startHydratedPromptQueue, threadIsRunning, disableQueue],
   );
 
-  const queueContextValue: PromptQueueCallbacks = {
-    startQueue,
-    stopQueue,
-    resumeQueue,
-  };
+  const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
 
   const composerContent = (
     <>
@@ -6760,7 +6751,7 @@ const ComposerRightControls: FC<{
       </AuiIf>
       {isQueueRunning && !isResearchActive ? (
         <AuiIf condition={({ thread }) => !thread.isRunning}>
-          {queueEntry?.paused ? (
+          {queueEntry?.paused && queueDisabled ? (
             <TooltipIconButton
               tooltip="Resume queue"
               side="bottom"
@@ -6773,7 +6764,7 @@ const ComposerRightControls: FC<{
             >
               <FastForwardIcon className="size-[18px] stroke-2" />
             </TooltipIconButton>
-          ) : queueEntry?.dispatched ? (
+          ) : queueEntry?.dispatched && !queueEntry.paused ? (
             <Button
               type="button"
               variant="default"

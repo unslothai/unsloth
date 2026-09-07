@@ -49,16 +49,16 @@ const plans: Array<{
     want: { cancelActiveItem: true, retainedItemIndexes: [], pause: false },
   },
   {
-    name: "an undispatched stop keeps the whole queue and pauses",
-    items: [{ dispatched: false }, { dispatched: false }],
-    index: 0,
-    want: { cancelActiveItem: false, retainedItemIndexes: [0, 1], pause: true },
-  },
-  {
     name: "a queue still waiting to start is paused without cancelling",
     items: [{ dispatched: false }, { dispatched: false }],
     index: -1,
     want: { cancelActiveItem: false, retainedItemIndexes: [0, 1], pause: true },
+  },
+  {
+    name: "completed history without follow-ups is retained and not paused",
+    items: [{ dispatched: true }, { dispatched: true }, { dispatched: true }],
+    index: 2,
+    want: { cancelActiveItem: true, retainedItemIndexes: [0, 1], pause: false },
   },
 ];
 
