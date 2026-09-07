@@ -2888,8 +2888,7 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
         skipped: list[str] = []
         for upstream_name, snapshot_name in COLAB_ORACLE_FILES.items():
             rule_bearing = (
-                upstream_name == COLAB_STRICT_ORACLE
-                or upstream_name in COLAB_STRICT_ORACLE_KEYS
+                upstream_name == COLAB_STRICT_ORACLE or upstream_name in COLAB_STRICT_ORACLE_KEYS
             )
             data = _fetch_oracle(COLAB_ORACLE_BASE_URL + upstream_name)
             reason = None

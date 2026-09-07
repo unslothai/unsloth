@@ -310,9 +310,7 @@ def test_an_advisory_oracle_that_will_not_fetch_does_not_fail_the_refresh(oracle
     nv.urllib.request.urlopen = flaky
     try:
         out_dir = tmp_path / "partial"
-        rc = nv.cmd_refresh_colab(
-            argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
-        )
+        rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
     finally:
         nv.urllib.request.urlopen = real
     assert rc == 0
@@ -336,9 +334,7 @@ def test_a_rule_bearing_oracle_that_will_not_fetch_still_fails_the_refresh(oracl
     nv.urllib.request.urlopen = dead
     try:
         out_dir = tmp_path / "none"
-        rc = nv.cmd_refresh_colab(
-            argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
-        )
+        rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
     finally:
         nv.urllib.request.urlopen = real
     assert rc == 2
@@ -365,8 +361,6 @@ def test_a_refresh_never_acknowledges_a_payload_the_rules_cannot_read(
     upstream, _ = oracle
     upstream[name] = payload
     out_dir = tmp_path / "rotated"
-    rc = nv.cmd_refresh_colab(
-        argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
-    )
+    rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
     assert rc == 2
     assert not out_dir.exists()

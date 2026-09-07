@@ -3937,9 +3937,7 @@ def test_a_fallback_behind_a_certain_failure_is_unconditional():
         for inv in nv.unconditional_pip_invocations("!false || pip install torch==2.11.0")
     ] == [("install", ["torch==2.11.0"])]
     # A left side that MIGHT succeed keeps its fallback conditional.
-    assert (
-        list(nv.unconditional_pip_invocations("!maybe || pip install torch==2.11.0")) == []
-    )
+    assert list(nv.unconditional_pip_invocations("!maybe || pip install torch==2.11.0")) == []
 
 
 def test_a_case_selector_is_expanded_before_any_arm_is_chosen():
@@ -3981,9 +3979,7 @@ def test_a_body_whose_test_can_never_succeed_runs_nothing():
     """
     nv = _load_notebook_validator_module()
 
-    assert nv._split_chained("!if false; then pip install torch==2.12.0; fi") == [
-        ("!false", False)
-    ]
+    assert nv._split_chained("!if false; then pip install torch==2.12.0; fi") == [("!false", False)]
     assert (
         nv.rule_inst_004_torchcodec_torch(
             "!if false; then pip install torch==2.12.0; fi", COLAB_TORCH211, "nb.ipynb", 0
