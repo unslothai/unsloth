@@ -29,6 +29,8 @@ PathBackup registry key. In a default-mode install it also removes the shared
 prebuilts that sit beside the install dir:
 %USERPROFILE%\.unsloth\{llama.cpp,node,whisper.cpp,.cache}. The Hugging Face
 cache is left in place, as is anything else you keep under %USERPROFILE%\.unsloth.
+The uv package cache (uv cache dir) is also left, because install may reuse a
+shared cache other tools still need.
 
 Options:
   -Help, -h, --help, -?, /?  Print this message and exit without removing anything.
@@ -1040,6 +1042,8 @@ Environment:
     Write-Host "      http://localhost:<port> origin you used to remove them."
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
     Write-Host "Remove it manually with 'Remove-Item -Recurse -Force `"$env:USERPROFILE\.cache\huggingface\hub`"' if desired."
+    Write-Host "Note: the uv package cache was left in place (it may be shared with other tools)."
+    Write-Host "      Free unused entries with 'uv cache prune', or the whole cache with 'uv cache clean'."
     if (-not $env:UNSLOTH_STUDIO_HOME -and -not $env:STUDIO_HOME) {
         Write-Host ""
         Write-Host "If you installed Unsloth Studio with UNSLOTH_STUDIO_HOME or STUDIO_HOME"

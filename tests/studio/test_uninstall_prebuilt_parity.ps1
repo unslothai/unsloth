@@ -59,5 +59,12 @@ Check "uninstall.ps1 sweeps stale install locks" ($ps1Text -match '\.install\.lo
 Check "uninstall.ps1 prunes ~/.unsloth only when empty" `
     ($ps1Text -match 'Get-ChildItem -LiteralPath \$defaultUnslothHome')
 
+# Shared uv cache is left on purpose (#9651). Both scripts must name the
+# commands, and neither may delete the cache itself.
+Check "uninstall.sh names uv cache prune"  ($shText  -match 'uv cache prune')
+Check "uninstall.ps1 names uv cache prune" ($ps1Text -match 'uv cache prune')
+Check "uninstall.sh names uv cache clean"  ($shText  -match 'uv cache clean')
+Check "uninstall.ps1 names uv cache clean" ($ps1Text -match 'uv cache clean')
+
 if ($failures -gt 0) { Write-Host ""; Write-Host "FAILED ($failures)" -ForegroundColor Red; exit 1 }
 Write-Host ""; Write-Host "All tests passed."; exit 0

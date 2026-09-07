@@ -31,7 +31,8 @@ data dir, CLI shim, desktop shortcut, macOS .app bundle and Launch Services
 entry. In a default-mode install it also removes the shared prebuilts that sit
 beside the install dir: ~/.unsloth/{llama.cpp,node,whisper.cpp,.cache}. The
 Hugging Face cache at ~/.cache/huggingface is left in place, as is anything
-else you keep under ~/.unsloth.
+else you keep under ~/.unsloth. The uv package cache (`uv cache dir`) is also
+left, because install may reuse a shared cache other tools still need.
 
 On WSL it also removes this distro's Windows-side shortcuts under /mnt/*/Users,
 strips the Unsloth block from ~/.bashrc, and uses sudo to delete
@@ -887,6 +888,8 @@ _unsloth_uninstall_main() {
     echo "      http://localhost:<port> origin you used to remove them."
     echo "Note: Hugging Face model cache at ~/.cache/huggingface was left in place."
     echo "Remove it manually with 'rm -rf ~/.cache/huggingface/hub' if desired."
+    echo "Note: the uv package cache was left in place (it may be shared with other tools)."
+    echo "      Free unused entries with 'uv cache prune', or the whole cache with 'uv cache clean'."
     # Env-mode installs leave no breadcrumb in $HOME, so a custom root can
     # only be located if the user re-exports the variable. Print a hint when
     # neither var is set so the bare `curl | sh` flow doesn't silently miss.
