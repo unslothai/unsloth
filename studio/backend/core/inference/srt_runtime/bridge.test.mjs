@@ -167,7 +167,9 @@ test('bridge exits after flushing control while its controller keeps TCP open',a
   const server=net.createServer({allowHalfOpen:true});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   let peer;let received='';
-  server.on('connection',(socket)=>{peer=socket;socket.on('data',(data)=>{received+=data;});});
+  let ended;
+  const flushed=new Promise((resolve)=>{ended=resolve;});
+  server.on('connection',(socket)=>{peer=socket;socket.on('data',(data)=>{received+=data;});socket.once('end',ended);});
   const child=spawn(process.execPath,[path.join(here,'bridge.mjs'),'--control-socket'],{stdio:['pipe','pipe','pipe']});
   const timer=setTimeout(()=>child.kill(),5000);
   try {
@@ -175,6 +177,7 @@ test('bridge exits after flushing control while its controller keeps TCP open',a
     child.stdin.end(JSON.stringify({...request(),executable:process.execPath,cwd:missing,writeRoots:[missing],controlSocket:{port:server.address().port,token:'c'.repeat(64)}}));
     const status=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal}));});
     assert.deepEqual(status,{code:125,signal:null});
+    await flushed;
     const records=received.trim().split('\n').map(JSON.parse);
     assert.deepEqual(records.map((r)=>r.event),['hello','error']);
     assert.equal(records[0].token,'c'.repeat(64));

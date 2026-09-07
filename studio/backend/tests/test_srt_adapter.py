@@ -12,6 +12,25 @@ import pytest
 from core.inference import srt_adapter
 
 
+def test_windows_grants_private_runtime_once_without_stamping_program_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(srt_adapter.sys, "platform", "win32")
+    monkeypatch.setattr(srt_adapter, "RUNTIME", tmp_path)
+    machine = tmp_path / "Program Files"
+    private = tmp_path / "private-python"
+    monkeypatch.setenv("ProgramFiles", str(machine))
+    monkeypatch.setattr(
+        srt_adapter,
+        "read_roots",
+        lambda executable: [
+            str(machine / "Git" / "bin"),
+            str(private),
+            str(private / "Lib" / "site-packages"),
+        ],
+    )
+    request = srt_adapter.request_for([sys.executable, "-c", "print(1)"], str(tmp_path), {}, 30)
+    assert request["readRoots"] == [str(private)]
+
+
 @pytest.mark.parametrize("ports", [[55080, 55089], [1, 2], [55080, 55300], [True, 55089]])
 def test_installed_windows_range_is_validated_before_launch(tmp_path, monkeypatch, ports):
     monkeypatch.setattr(srt_adapter.sys, "platform", "win32")

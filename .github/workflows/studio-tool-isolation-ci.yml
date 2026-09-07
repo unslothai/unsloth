@@ -10,6 +10,7 @@ on:
       - 'studio/frontend/src/components/assistant-ui/tool-ui-*.tsx'
       - 'studio/frontend/tests/tool-isolation*'
       - 'studio/frontend/tests/tool-network-policy.test.ts'
+      - 'studio/frontend/scripts/srt-browser/**'
       - 'studio/install_srt_runtime.py'
       - 'studio/setup.*'
       - 'pyproject.toml'
@@ -60,7 +61,7 @@ jobs:
         run: |
           python -c 'from core.inference.os_sandbox import capability_snapshot; c = capability_snapshot(force=True); print(c); assert c.available, c.reason; assert not c.qualified'
       - name: Installer and proxy regressions
-        run: python -m pytest --noconftest studio/backend/tests/test_srt_install.py studio/backend/tests/test_srt_adapter.py studio/backend/tests/test_srt_seccomp.py studio/backend/tests/test_srt_launch_contract.py studio/backend/tests/test_srt_network.py studio/backend/tests/test_srt_platform_capability.py studio/backend/tests/test_srt_control.py studio/backend/tests/test_network_proxy.py -q --timeout=60
+        run: python -m pytest --noconftest studio/backend/tests/test_srt_install.py studio/backend/tests/test_srt_adapter.py studio/backend/tests/test_srt_seccomp.py studio/backend/tests/test_srt_launch_contract.py studio/backend/tests/test_srt_network.py studio/backend/tests/test_srt_platform_capability.py studio/backend/tests/test_srt_control.py studio/backend/tests/test_srt_process_lifetime.py studio/backend/tests/test_network_proxy.py -q --timeout=60
       - name: Actual Required tools, selected Pillow runtime and HTTPS allowlist
         env:
           UNSLOTH_SRT_NATIVE_TESTS: '1'
@@ -108,7 +109,30 @@ jobs:
       - name: Native selected runtime capability
         run: python -c "from core.inference.os_sandbox import capability_snapshot; c=capability_snapshot(force=True); print(c); assert c.available, c.reason"
       - name: Native Studio tool controls and installer regressions
-        run: python -m pytest --noconftest studio/backend/tests/test_srt_install.py studio/backend/tests/test_srt_platform_capability.py studio/backend/tests/test_srt_control.py studio/backend/tests/test_srt_native_platform.py -q --timeout=120
+        run: python -m pytest --noconftest studio/backend/tests/test_srt_install.py studio/backend/tests/test_srt_platform_capability.py studio/backend/tests/test_srt_control.py studio/backend/tests/test_srt_process_lifetime.py studio/backend/tests/test_srt_native_platform.py -q --timeout=120
+      - name: Install macOS production browser fixture dependencies
+        if: runner.os == 'macOS'
+        run: python -m pip install uvicorn httpx PyJWT python-multipart huggingface_hub requests packaging pyyaml python-dotenv cryptography
+      - name: Install macOS browser and locked frontend dependencies
+        if: runner.os == 'macOS'
+        working-directory: studio/frontend
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm install --ignore-scripts --no-save --package-lock=false --no-audit --no-fund playwright@1.58.2
+          npx playwright install chromium
+      - name: Click through native macOS Python and Terminal policy flows
+        if: runner.os == 'macOS'
+        working-directory: studio/frontend
+        env:
+          SRT_BROWSER_ARTIFACTS: ${{ runner.temp }}/srt-browser
+        run: SRT_BROWSER_PYTHON="$(command -v python)" node scripts/srt-browser/run.mjs
+      - name: Upload macOS browser proof and cleanup diagnostics
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: srt-browser-${{ matrix.os }}
+          path: ${{ runner.temp }}/srt-browser
+          if-no-files-found: warn
       - name: Remove upstream sandbox account and WFP from disposable Windows runner
         if: always() && runner.os == 'Windows'
         run: node studio/backend/core/inference/srt_runtime/node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js windows-uninstall

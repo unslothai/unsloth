@@ -14816,6 +14816,19 @@ def _forget_tool_pid(proc) -> None:
 
 
 def _capture_process_group(proc, *, require_windows_resource_limits: bool = False):
+    parent = _capture_parent_process_group(
+        proc, require_windows_resource_limits = require_windows_resource_limits
+    )
+    launcher = getattr(proc, "_srt_launcher_pid", None)
+    if type(launcher) is int and launcher > 1:
+        # SRT starts its native broker/group before acknowledging launch. A
+        # later Job assignment to Node does not adopt that existing child.
+        identity = _windows_pid_identity(launcher) if os.name == "nt" else None
+        return ("srt-tree", parent, launcher, identity)
+    return parent
+
+
+def _capture_parent_process_group(proc, *, require_windows_resource_limits: bool = False):
     """Return the setsid process-group id, or ``None`` when unavailable.
 
     Captured right after ``Popen`` so a later ``poll()`` / ``wait()`` that reaps
@@ -14931,7 +14944,12 @@ def _resume_windows_process(kernel32, ctypes, proc) -> bool:
         kernel32.CloseHandle(snapshot)
 
 
-def _windows_job_capture(proc, *, apply_resource_limits: bool = False) -> "_WindowsToolJob | None":
+def _windows_job_capture(
+    proc,
+    *,
+    apply_resource_limits: bool = False,
+    allow_breakaway: bool = False,
+) -> "_WindowsToolJob | None":
     """Put ``proc`` in its own job. ``None`` when that is not possible, leaving
     the pid-based fallback."""
     if os.name != "nt":
@@ -14968,7 +14986,7 @@ def _windows_job_capture(proc, *, apply_resource_limits: bool = False) -> "_Wind
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             return None
-        if apply_resource_limits:
+        if apply_resource_limits or allow_breakaway:
 
             class _BasicLimits(ctypes.Structure):
                 _fields_ = [
@@ -15006,37 +15024,43 @@ def _windows_job_capture(proc, *, apply_resource_limits: bool = False) -> "_Wind
                     ("PeakJobMemoryUsed", ctypes.c_size_t),
                 ]
 
-            try:
-                nproc = max(
-                    1,
-                    int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
-                )
-                memory = (
-                    max(
-                        1,
-                        int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")),
-                    )
-                    * 1024
-                    * 1024
-                    * 1024
-                )
-                cpu_time = (
-                    max(
-                        1,
-                        int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
-                    )
-                    * 10_000_000
-                )
-            except ValueError:
-                kernel32.CloseHandle(job)
-                return None
             info = _ExtendedLimits()
-            info.BasicLimitInformation.PerProcessUserTimeLimit = cpu_time
-            info.BasicLimitInformation.ActiveProcessLimit = nproc
-            # PROCESS_TIME | ACTIVE_PROCESS | PROCESS_MEMORY | JOB_MEMORY | KILL_ON_JOB_CLOSE
-            info.BasicLimitInformation.LimitFlags = 0x2 | 0x8 | 0x100 | 0x200 | 0x2000
-            info.ProcessMemoryLimit = memory
-            info.JobMemoryLimit = memory
+            if apply_resource_limits:
+                try:
+                    nproc = max(
+                        1,
+                        int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
+                    )
+                    memory = (
+                        max(
+                            1,
+                            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")),
+                        )
+                        * 1024
+                        * 1024
+                        * 1024
+                    )
+                    cpu_time = (
+                        max(
+                            1,
+                            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
+                        )
+                        * 10_000_000
+                    )
+                except ValueError:
+                    kernel32.CloseHandle(job)
+                    return None
+                info.BasicLimitInformation.PerProcessUserTimeLimit = cpu_time
+                info.BasicLimitInformation.ActiveProcessLimit = nproc
+                # PROCESS_TIME | ACTIVE_PROCESS | PROCESS_MEMORY | JOB_MEMORY
+                info.BasicLimitInformation.LimitFlags = 0x2 | 0x8 | 0x100 | 0x200
+                info.ProcessMemoryLimit = memory
+                info.JobMemoryLimit = memory
+            # SRT's runner places its workload in its own job. Its containing
+            # helper job must permit that explicit breakaway and own startup.
+            info.BasicLimitInformation.LimitFlags |= 0x2000
+            if allow_breakaway:
+                info.BasicLimitInformation.LimitFlags |= 0x800
             if not kernel32.SetInformationJobObject(
                 job,
                 9,
@@ -15203,6 +15227,22 @@ def _killpg_captured(pgid) -> None:
     if pgid is None:
         return
     if isinstance(pgid, tuple):
+        if pgid[0] == "srt-tree":
+            _, parent, launcher, identity = pgid
+            try:
+                if os.name == "nt":
+                    if identity is not None:
+                        _windows_taskkill_tree(launcher, identity)
+                elif hasattr(os, "killpg"):
+                    try:
+                        os.killpg(launcher, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+            finally:
+                # Kill the workload first: killing Node first prevents its
+                # own shutdown handler from reaching the separate SRT tree.
+                _killpg_captured(parent)
+            return
         if pgid[0] == "windows-job":
             pgid[1].terminate()
             return

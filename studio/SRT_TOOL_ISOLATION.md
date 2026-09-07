@@ -36,11 +36,19 @@ After helper installation, explicitly run this command once per machine:
 python studio/install_srt_runtime.py --windows-install
 ```
 
-The pinned upstream installer requests elevation through UAC. It creates the `srt-sandbox` local user and `sandbox-runtime-users` group, stores the encrypted credential and setup state in `HKLM\SOFTWARE\sandbox-runtime`, installs WFP rules keyed to the sandbox user SID, and stamps upstream's ambient write-deny ACLs. The default permitted proxy ports are loopback **60080–60089**. Re-running rotates the sandbox password and reconciles the filters; Studio does not pass `--force` to replace conflicting configuration. Declined elevation or incomplete setup leaves Required unavailable. No logout is required.
+The pinned upstream installer requests elevation through UAC. It creates the `srt-sandbox` local user and `sandbox-runtime-users` group, stores the encrypted credential and setup state in `HKLM\SOFTWARE\sandbox-runtime`, installs WFP rules keyed to the sandbox user SID, and stamps upstream's ambient write-deny ACLs. The default permitted proxy ports are loopback **60080–60089**. Re-running rotates the sandbox password and reconciles the filters; conflicting configuration is replaced only with the explicit `--windows-force` option. Declined elevation or incomplete setup leaves Required unavailable. No logout is required.
+
+If Windows has reserved those ports, choose another bindable range of 2–100 ports. For example, after verifying all ports in this range are free:
+
+```powershell
+python studio/install_srt_runtime.py --windows-install --windows-proxy-port-range 55080 55089 --windows-force
+```
+
+This changes SRT's permitted proxy range, not Windows port reservations. After successful provisioning, `srt_runtime/installed-runtime-settings.json` records the range so the runtime proxy matches the WFP rules. Normal helper reinstalls preserve and validate this machine-local file; wheels exclude it. Other Studio installations using the same machine-wide SRT account must use the same provisioned range.
 
 Commands keep Studio's selected Python and shell. The sandbox account needs explicit read grants for per-user runtime installations; Studio does not replace them with a machine-wide Python or WSL. Runtime filesystem grants follow upstream's session ACL lifecycle. Windows system DNS resolution is not fenced, and the shared sandbox account is not a strict separation boundary between concurrent sessions. macOS system services can likewise resolve DNS outside the process network restrictions. These are upstream model limits, not failed Linux-denial tests.
 
-Windows TLS interception and sandbox-user CA trust are upstream features separate from account/WFP installation. The helper installer does not itself import a CA into a certificate store. If the runtime enables upstream TLS termination, its CA setup and trust requirements apply; this is not a claim that Windows networking uses Linux's non-intercepting transport.
+Windows TLS interception and sandbox-user CA trust are upstream features separate from account/WFP installation. Studio's current native Windows adapter does not enable TLS interception or CA setup. Windows and macOS currently expose only the deny network policy; the Linux HTTPS allowlist option is not available on these platforms.
 
 To remove upstream's machine setup using the already installed pinned helper:
 
@@ -52,7 +60,7 @@ This elevated operation removes the upstream account/profile, group, WFP filters
 
 ## Current limits
 
-Linux Required denies networking by default. Linux HTTPS allowlists become available only when the separate private-transport probe passes. The configured hosts come from `UNSLOTH_STUDIO_TOOL_NETWORK_ALLOWLIST`; each launch receives its own private proxy sockets. The proxy permits HTTPS CONNECT on port 443 with host, public-address and TLS SNI checks. It refuses cleartext HTTP and SOCKS, while direct host networking and system DNS remain blocked. Linux installs no interception certificate or global proxy. Windows and macOS use upstream native platform enforcement and report measured capabilities of that model. Native controls have exercised real HTTPS success and these network denials; this evidence does not establish full platform qualification.
+Linux Required denies networking by default. Linux HTTPS allowlists become available only when the separate private-transport probe passes. The configured hosts come from `UNSLOTH_STUDIO_TOOL_NETWORK_ALLOWLIST`; each launch receives its own private proxy sockets. The proxy permits HTTPS CONNECT on port 443 with host, public-address and TLS SNI checks. It refuses cleartext HTTP and SOCKS, while direct host networking and system DNS remain blocked. Linux installs no interception certificate or global proxy. Windows and macOS use upstream native platform enforcement and report measured capabilities of that model. Linux native controls have exercised real HTTPS success and these network denials; this evidence does not establish full platform qualification.
 
 HTTPS launches preserve the selected CA file and snapshot hashed certificate/revocation entries from a single selected certificate directory into private read-only storage. This preserves symlink-backed trust stores without exposing their target directories or changing global trust. Explicit empty or missing stores remain empty or missing. Multi-directory `SSL_CERT_DIR` configurations remain unqualified.
 

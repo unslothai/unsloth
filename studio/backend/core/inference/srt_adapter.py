@@ -160,11 +160,6 @@ def read_roots(executable: str) -> list[str]:
             str(Path(__file__).with_name("sandbox_site")),
             *site.getsitepackages(),
         ]
-        if sys.platform == "win32":
-            # Git Bash loads its runtime from the installation beside bin/bash.exe.
-            bash = shutil.which("bash")
-            if bash and "git" in bash.lower():
-                roots.append(str(Path(bash).parent.parent))
         return sorted({os.path.realpath(root) for root in roots if os.path.exists(root)})
     roots = {
         "/usr/bin",
@@ -243,9 +238,39 @@ def request_for(
     # Python changes pyvenv.cfg discovery and silently drops selected packages.
     executable = os.path.abspath(executable)
     roots = read_roots(executable)
+    if sys.platform == "win32":
+        # Use the tool's selected shell PATH; the host PATH may point to WSL.
+        bash = shutil.which("bash", path = env.get("PATH", ""))
+        if bash and "git" in bash.lower():
+            roots.append(str(Path(bash).parent.parent))
     # Trust-store aliases can cross a restored runtime symlink. Binding the
     # alias again would traverse a read-only mount; expose its target instead.
     roots = sorted(set([*roots, *(os.path.realpath(path) for path in additional_read_roots)]))
+    if sys.platform == "win32":
+        # SRT applies inheriting ACEs. Avoid traversing the selected environment
+        # again for nested site-packages during every grant and reset.
+        minimal = []
+        selected_roots = []
+        # Standard users already have read/execute access to machine runtimes.
+        # Their ACLs belong to administrators; stamping them at tool launch
+        # fails for an ordinary Studio user (notably Program Files/Git).
+        system_roots = [
+            os.path.normcase(os.path.realpath(value))
+            for name in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432")
+            if (value := os.environ.get(name))
+        ]
+        for root in sorted(roots, key = len):
+            folded = os.path.normcase(os.path.realpath(root))
+            if any(
+                folded == parent or folded.startswith(parent + os.sep) for parent in system_roots
+            ):
+                continue
+            if not any(
+                folded == parent or folded.startswith(parent + os.sep) for parent in minimal
+            ):
+                minimal.append(folded)
+                selected_roots.append(os.path.realpath(root))
+        roots = selected_roots
     if any(os.path.realpath(root) == os.path.sep for root in roots):
         raise SrtError("Root filesystem read grant is forbidden")
     denied = validate_roots(roots, os.path.realpath(cwd)) if sys.platform == "linux" else []
@@ -377,11 +402,13 @@ def spawn(
                         raise SrtError("SRT dependency identity mismatch")
                     ready = True
                 elif event.get("event") == "spawned":
-                    if not ready or not isinstance(event.get("pid"), int):
+                    if not ready or type(event.get("pid")) is not int or event["pid"] <= 0:
                         raise SrtError("SRT sent an invalid launch acknowledgement")
                     # Keep the control pipe open until helper exit; it carries exit/error receipts.
                     proc._srt_control_fd = read_fd
                     proc._srt_control_pending = pending
+                    if sys.platform == "darwin":
+                        proc._srt_launcher_pid = event["pid"]
                     read_fd = -1
                     return proc
                 elif event.get("event") == "exit":
@@ -391,8 +418,7 @@ def spawn(
         raise SrtError("SRT helper launch acknowledgement timed out")
     except Exception:
         if proc is not None:
-            proc.kill()
-            proc.wait(timeout = 5)
+            _stop_failed_helper(proc)
         raise
     finally:
         if read_fd >= 0:
@@ -459,6 +485,14 @@ def _spawn_windows(
             proc = subprocess.Popen(
                 [node_executable(), str(RUNTIME / "bridge.mjs"), "--control-socket"], **options
             )
+            if os.name == "nt":
+                from .tools import _windows_job_capture
+
+                # Node has no request yet, so the broker cannot precede its job.
+                # SRT's runner needs permission to enter its own native job.
+                proc._unsloth_job = _windows_job_capture(proc, allow_breakaway = True)
+                if proc._unsloth_job is None:
+                    raise SrtError("Cannot establish SRT helper process ownership")
 
             def send_request():
                 stream = proc.stdin
@@ -517,27 +551,54 @@ def _spawn_windows(
                         raise SrtError(str(event.get("message", "SRT setup failed"))[:2000])
                     elif kind == "ready" and not ready and event.get("version") == "0.0.75":
                         ready = True
-                    elif kind == "spawned" and ready and type(event.get("pid")) is int:
+                    elif (
+                        kind == "spawned"
+                        and ready
+                        and type(event.get("pid")) is int
+                        and event["pid"] > 0
+                    ):
                         writer.join(timeout = 1)
                         if writer.is_alive():
                             raise SrtError("SRT request writer did not finish")
                         proc.stdin = None
                         proc._srt_control_socket = connection
                         proc._srt_control_pending = pending
+                        proc._srt_launcher_pid = event["pid"]
                         connection = None
                         return proc
                     else:
                         raise SrtError("Unexpected SRT launch control event")
         except Exception:
             if proc is not None:
-                proc.kill()
-                proc.wait(timeout = 5)
+                _stop_failed_helper(proc, connection)
             raise
         finally:
             if connection is not None:
                 connection.close()
             if writer is not None:
                 writer.join(timeout = 1)
+
+
+def _stop_failed_helper(proc, connection = None):
+    """Let the native launcher close its workload job/group before forcing exit."""
+    if connection is not None:
+        try:
+            connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        connection.close()
+    else:
+        proc.terminate()
+    try:
+        try:
+            proc.wait(timeout = 3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout = 5)
+    finally:
+        job = getattr(proc, "_unsloth_job", None)
+        if job is not None:
+            job.terminate()
 
 
 def release_control(proc) -> None:

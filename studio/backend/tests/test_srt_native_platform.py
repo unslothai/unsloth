@@ -4,6 +4,8 @@
 
 import os
 import sys
+import socket
+import subprocess
 import threading
 import time
 
@@ -74,23 +76,75 @@ def test_native_failure_cannot_attest_success(native_workdir):
     assert records == []
 
 
+def test_native_srt_blocks_direct_host_connection(native_workdir):
+    from core.inference import srt_adapter, tools
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        address = listener.getsockname()
+        with socket.create_connection(address, timeout = 2):
+            accepted, _ = listener.accept()
+            accepted.close()
+        code = """
+import socket, sys
+with socket.socket() as connection:
+    connection.settimeout(2)
+    try:
+        connection.connect(('127.0.0.1', int(sys.argv[1])))
+    except OSError:
+        print('NATIVE_NETWORK_DENIED')
+    else:
+        raise RuntimeError('Direct host connection escaped SRT network policy')
+"""
+        request = srt_adapter.request_for(
+            [sys.executable, "-I", "-S", "-c", code, str(address[1])],
+            str(native_workdir),
+            tools._build_safe_env(str(native_workdir)),
+            30,
+        )
+        proc = srt_adapter.spawn(request, stdout = subprocess.PIPE, stderr = subprocess.STDOUT)
+        try:
+            output, _ = proc.communicate(timeout = 45)
+            assert proc.returncode == 0, output.decode(errors = "replace")
+            srt_adapter.verify_success(proc)
+            assert b"NATIVE_NETWORK_DENIED" in output
+        finally:
+            if proc.poll() is None:
+                srt_adapter._stop_failed_helper(proc, getattr(proc, "_srt_control_socket", None))
+            srt_adapter.release_control(proc)
+
+
 def test_native_cancellation_returns_promptly(native_workdir):
     from core.inference import tools
 
     cancel = threading.Event()
-    timer = threading.Timer(3, cancel.set)
+    started_file = native_workdir / "cancel-started.txt"
+    observed = []
+
+    def cancel_running_payload():
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline and not cancel.is_set():
+            if started_file.exists():
+                observed.append(time.monotonic())
+                cancel.set()
+                return
+            time.sleep(0.05)
+        cancel.set()
+
+    watcher = threading.Thread(target = cancel_running_payload, daemon = True)
     records = []
-    started = time.monotonic()
-    timer.start()
+    watcher.start()
     try:
         tools._python_exec(
-            "import time\ntime.sleep(60)",
+            "from pathlib import Path\nimport time\nPath('cancel-started.txt').write_text('running')\ntime.sleep(60)",
             timeout = 30,
             session_id = "native-platform",
             cancel_event = cancel,
             launch_record_callback = records.append,
         )
     finally:
-        timer.cancel()
-    assert time.monotonic() - started < 15
+        cancel.set()
+        watcher.join(timeout = 1)
+    assert observed, "Cancellation control never reached the native payload"
+    assert time.monotonic() - observed[0] < 15
     assert records == []
