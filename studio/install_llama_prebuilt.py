@@ -7685,6 +7685,42 @@ _AMD_VULKAN_ICD_NEEDLES = ("radeon", "radv", "amdvlk", "amd_icd", "amd_pro", "am
 _AMD_VULKAN_ICD_32_BIT_NEEDLES = ("i686", "i386")
 
 
+def _vulkan_glob_matches(pattern: str, name: str) -> bool:
+    """The loader's four driver-filter globs, case-insensitively: "s", "s*", "*s", "*s*"."""
+    pattern, name = pattern.lower(), name.lower()
+    starts, ends = pattern.startswith("*"), pattern.endswith("*")
+    core = pattern[1 if starts else 0 : len(pattern) - 1 if ends else len(pattern)]
+    if starts and ends:
+        return core in name
+    if starts:
+        return name.endswith(core)
+    if ends:
+        return name.startswith(core)
+    return name == core
+
+
+def _vulkan_loader_allows(path: str) -> bool:
+    """Whether the loader's own driver filters leave this manifest loadable.
+
+    They apply to every driver the loader knows, a force list included, and match the
+    manifest's basename. A manifest filtered out is registered and never loaded, so
+    counting it hands an integrated host a Vulkan build with no AMD device.
+
+    Disable is read before select precisely so "disable everything, then name one back"
+    works, hence select answering alone when it is set.
+    """
+    def _globs(env_name: str) -> list[str]:
+        value = os.environ.get(env_name) or ""
+        return [entry.strip() for entry in value.split(",") if entry.strip()]
+
+    name = PurePath(path).name
+    select = _globs("VK_LOADER_DRIVERS_SELECT")
+    if select:
+        return any(_vulkan_glob_matches(pattern, name) for pattern in select)
+    disable = _globs("VK_LOADER_DRIVERS_DISABLE")
+    return not any(_vulkan_glob_matches(pattern, name) for pattern in disable)
+
+
 # Per call, not at import: Path.home() raises with no USERPROFILE.
 def _vulkan_icd_search_dirs() -> list[Path]:
     """The icd.d directories the loader would search, in its own order.
@@ -7828,7 +7864,9 @@ def _amd_vulkan_icd_present() -> bool:
 
     try:
         return any(
-            _is_amd_64_bit(PurePath(path).name) and _amd_vulkan_icd_usable(path)
+            _is_amd_64_bit(PurePath(path).name)
+            and _vulkan_loader_allows(path)
+            and _amd_vulkan_icd_usable(path)
             for path in _amd_vulkan_icd_manifest_paths()
         )
     except Exception:

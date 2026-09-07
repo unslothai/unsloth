@@ -2149,6 +2149,44 @@ def test_an_override_naming_a_removed_amd_manifest_does_not_answer_for_the_drive
     assert ilp._amd_vulkan_icd_present() is True
 
 
+def test_a_manifest_the_loader_filters_out_does_not_answer_for_the_driver(monkeypatch, tmp_path):
+    # VK_LOADER_DRIVERS_DISABLE / _SELECT exclude a registered driver from being loaded, so
+    # counting one hands this host a Vulkan build with no AMD device.
+    monkeypatch.setattr(ilp.sys, "platform", "linux")
+    monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
+    for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES", "VK_LOADER_DRIVERS_SELECT",
+                 "VK_LOADER_DRIVERS_DISABLE"):
+        monkeypatch.delenv(name, raising = False)
+    icd_dir = tmp_path / "usr/share/vulkan/icd.d"
+    monkeypatch.setattr(ilp, "_vulkan_icd_search_dirs", lambda: [icd_dir])
+    _icd(icd_dir / "radeon_icd.x86_64.json")
+    assert ilp._amd_vulkan_icd_present() is True
+
+    monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", "*radeon*")
+    assert ilp._amd_vulkan_icd_present() is False
+    # Disable is read first so a select list names drivers back in, which is the loader's order.
+    monkeypatch.setenv("VK_LOADER_DRIVERS_SELECT", "RADEON_ICD.X86_64.JSON")
+    assert ilp._amd_vulkan_icd_present() is True
+    # And a select list naming someone else's driver excludes this one on its own.
+    monkeypatch.setenv("VK_LOADER_DRIVERS_SELECT", "intel_*")
+    assert ilp._amd_vulkan_icd_present() is False
+
+
+def test_the_loader_filters_reach_a_force_list_as_well(monkeypatch, tmp_path):
+    # The filters apply to known drivers, and a force list is how the loader knows them.
+    monkeypatch.setattr(ilp.sys, "platform", "linux")
+    monkeypatch.setattr(ilp, "_amd_vulkan_icd_present", _REAL_AMD_VULKAN_ICD_PRESENT)
+    monkeypatch.delenv("VK_ICD_FILENAMES", raising = False)
+    for name in ("VK_LOADER_DRIVERS_SELECT", "VK_LOADER_DRIVERS_DISABLE"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(ilp, "_vulkan_icd_search_dirs", lambda: [])
+    monkeypatch.setenv("VK_DRIVER_FILES", _icd(tmp_path / "radeon_icd.x86_64.json"))
+    assert ilp._amd_vulkan_icd_present() is True
+
+    monkeypatch.setenv("VK_LOADER_DRIVERS_DISABLE", "*")
+    assert ilp._amd_vulkan_icd_present() is False
+
+
 def test_a_32_bit_linux_manifest_does_not_answer_for_the_x64_bundle(monkeypatch, tmp_path):
     # multilib mesa ships radeon_icd.i686.json, which a 64-bit llama-server cannot load.
     monkeypatch.setattr(ilp.sys, "platform", "linux")
