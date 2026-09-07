@@ -218,7 +218,6 @@ class TestExternalProviderMessages:
 
     def test_other_local_servers_still_get_a_synthesized_system_turn(self):
         import routes.inference as inference
-
         out = inference._prepend_current_date_to_messages(
             [{"role": "user", "content": "hi"}], provider_type = "llama_cpp"
         )
