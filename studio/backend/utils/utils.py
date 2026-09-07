@@ -285,9 +285,8 @@ def hf_probe_disabled() -> bool:
     }
 
 
-# The memo above expires on wall-clock, which is right between requests and wrong inside
-# one: on a slow link a single model-config request outlives the TTL, so its later guards
-# re-probe and can even reach a different verdict than the guard that opened the request.
+# The memo above expires on wall-clock, right between requests and wrong inside one: a slow
+# request outlives the TTL, so its later guards re-probe and can disagree with the first.
 _hf_reachability_pin: "ContextVar[Optional[list]]" = ContextVar("hf_reachability_pin", default = None)
 
 
@@ -327,8 +326,7 @@ def hf_reachability_memo() -> Optional[bool]:
     cached = _hf_reachability
     if not _reachability_fresh(cached):
         return None
-    # Answering from the memo is producing a verdict, so it pins like any other: this is
-    # the usual way a request gets its first one, the memo being warm when it opens.
+    # Answering from the memo produces a verdict, and a warm memo is the usual first one.
     return _pin_reachability(cached[1])
 
 
@@ -349,17 +347,10 @@ def hf_unreachable(timeout: int = 3) -> bool:
     reachable and the load decides as it does today.
     """
     if hf_probe_disabled():
-        # Not pinned, because this is not a verdict: the opt-out declines to answer rather
-        # than finding the hub reachable, and pinning the decline answers for the DNS
-        # shortcut as well. UNSLOTH_OFFLINE_PROBE turns off the TCP probe, not DNS, so that
-        # shortcut is the only detector the opt-out leaves standing and every guard has to
-        # reach it. Pinned, guards 2..N of a request read "reachable" from the pin and never
-        # look again -- a link dropping mid-request goes unnoticed for the whole request,
-        # where an unpinned decline catches it on the next guard.
-        #
-        # It costs no probe to leave it open: a dead lookup returns before the caller ever
-        # gets here, so the repeat only happens while DNS is answering, which is a resolver
-        # cache hit.
+        # A declination, not a verdict, so it does not pin. UNSLOTH_OFFLINE_PROBE turns off
+        # the TCP probe and not DNS, and pinning here answers for the DNS shortcut too:
+        # guards 2..N read "reachable" and never look again. Leaving it open costs no
+        # lookup, since a dead one returns above this and never reaches here.
         return False
 
     pinned = _hf_reachability_pin.get()

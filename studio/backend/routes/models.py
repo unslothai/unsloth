@@ -2407,9 +2407,7 @@ async def get_model_config(
     def _resolve(model_name: str) -> ModelDetails:
         # Each probe below can reach the hub, so the guard wraps the whole handler: offline they
         # must all resolve from the HF cache. Local paths stay on disk and skip the probe.
-        # The probes read one repo document between them, and each fetch of it costs a handshake.
-        # The reachability memo expires on wall-clock, and this handler outlives it on a slow
-        # link, so the guards it opens later would re-probe rather than reuse the verdict.
+        # One repo document between the probes, one verdict for a request that outlives the memo.
         with (
             pinned_hf_reachability(),
             _hf_offline_if_unreachable_for(model_name),

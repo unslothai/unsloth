@@ -739,8 +739,7 @@ def _current_cached_snapshot(
         return None
     try:
         repo_dir = get_cache_path(model_name)
-        # Cheap local check first: with nothing cached there is no snapshot to accept, and
-        # the repo document below would be a round trip spent to learn only that.
+        # Cheap check first: with nothing cached, the document below buys only that answer.
         if repo_dir is None or not (Path(repo_dir) / "snapshots").is_dir():
             return None
         info = _hub_model_info(model_name, hf_token)
@@ -754,12 +753,9 @@ def _current_cached_snapshot(
             getattr(sibling, "rfilename", None)
             for sibling in (getattr(info, "siblings", None) or ())
         }
-        # A document that named no files cannot distinguish a file the repo does not have
-        # from one that was not downloaded, which is the whole reason a caller asks for the
-        # list. Read as complete it is worse than nothing: every membership test comes back
-        # false, so a caller looking for paths it has yet to read finds none and takes the
-        # answer it already holds for the repo's. ``siblings`` is optional on the hub's own
-        # model, so this is a shape a real response can take.
+        # A document naming no files cannot tell a file the repo lacks from one not
+        # downloaded, and every membership test then reads as proof of absence. ``siblings``
+        # is optional on the hub's own model, so this shape is real.
         if not listed:
             return None
         return snapshot, listed
@@ -783,14 +779,10 @@ def _raw_config_has_vision_config(
         if is_local_path(model_name):
             config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
         elif current is not None and (current[0] / "config.json").is_file():
-            # This is the repo's current commit and the file is in it, so the fetch below
-            # would return what is already here. Saves both the absence probe and the
-            # download's own freshness check.
+            # The current commit's own copy: skips the absence probe and the freshness check.
             config_path = current[0] / "config.json"
         elif current is not None and "config.json" not in current[1]:
-            # The repo does not publish one, which the document just said. The absence
-            # probe below spends a round trip to be told the same, and it is the reason a
-            # GGUF-only repo cost this caller two reads where it used to cost one.
+            # The document just said the repo publishes none; the probe below re-asks.
             logger.debug("'%s' has no config.json on the Hub", model_name)
             return None
         else:
@@ -1102,24 +1094,21 @@ def _hub_model_info(
 ):
     from huggingface_hub import model_info as hf_model_info
 
-    # The remote-LoRA probe in ``ModelConfig.from_identifier`` reads this call raising rather
-    # than guarding itself, and ``_offline_while_reading`` can force offline mid-request.
+    # ``from_identifier``'s remote-LoRA probe reads this call raising rather than guarding
+    # itself, and ``_offline_while_reading`` can force offline mid-request.
     scope = None if _env_offline() else _hub_model_info_scope.get()
     # The forced-anonymous sentinel is a credential of its own, so key on its fingerprint.
     key = (repo_id, _token_fingerprint(hf_token))
     if scope is not None:
         if key in scope:
             return scope[key]
-        # File sizes measure as free to ask for even on a repo of many quants, and asking
-        # unconditionally is what lets one response serve every probe: the variant listing
-        # needs them, and a response without them could not be shared with it.
+        # Asked unconditionally so one response serves every probe; the listing needs sizes.
         files_metadata = True
 
     kwargs: Dict[str, Any] = {
         "token": hf_token,
         "files_metadata": files_metadata,
-        # The response is shared, so whichever probe reads first decides the bound every
-        # later one inherits. Default it here rather than per call site.
+        # Shared, so whichever probe reads first fixes the bound the rest inherit.
         "timeout": _HUB_MODEL_INFO_TIMEOUT if timeout is None else timeout,
     }
     info = hf_model_info(repo_id, **kwargs)
@@ -1533,8 +1522,7 @@ def _detect_audio_from_tokenizer(
                         roots.append(snapshot)
 
         current: list = []  # resolved lazily: only a negative answer needs it
-        # Whether a read here could stand in for the Hub copy, which is the only case that
-        # has to prove the file is whole rather than merely marker-free.
+        # Only a read standing in for the Hub copy has to prove the file whole.
         may_answer_for_hub = not local_files_only and not is_local_path(model_name)
         for root in roots:
             root_read: set = set()
@@ -1545,26 +1533,18 @@ def _detect_audio_from_tokenizer(
                         continue
                     raw = tok_file.read_text(encoding = "utf-8-sig")
                     if not _may_hold_audio_tokens(raw):
-                        # No marker anywhere, so no pattern can match. Reading a local
-                        # checkpoint stops there: parsing these was the bulk of a cold
-                        # /loras scan, and the trailing "}" is enough to tell a whole file
-                        # from one a run is still writing. A read that will answer for the
-                        # Hub copy has to parse, since a half-written file ending in "}"
-                        # would otherwise be a definitive "not audio" cached for the life
-                        # of the process, with the markers in the part that never arrived.
+                        # No marker, no pattern can match. A local checkpoint stops at the
+                        # trailing "}" (parsing these was the bulk of a cold /loras scan);
+                        # answering for the Hub copy must parse, or a half-written file
+                        # ending in "}" is a definitive "not audio" cached for the process.
                         if may_answer_for_hub:
                             try:
                                 decoded = json.loads(raw)
                             except Exception:
                                 continue
-                            # The scan above reads the raw text, so a content written as
-                            # an escape does not match it -- and Go's encoding/json
-                            # escapes < and > that way by default, so it is a shape real
-                            # tooling uploads. Standing in for the Hub copy means
-                            # classifying what that copy would have classified: the
-                            # fallback below decodes before it looks, and a miss here is
-                            # a definitive negative cached for the life of the process.
-                            # The parse is already paid for; only the lookup is new.
+                            # The scan above reads raw text, so a marker written as an
+                            # escape misses it, and Go's encoding/json writes them that way.
+                            # The fallback decodes before it looks; standing in for it must too.
                             result = _check_token_patterns(decoded)
                             if result:
                                 return result, True
@@ -1581,11 +1561,9 @@ def _detect_audio_from_tokenizer(
                         return result, True
                 except Exception as e:
                     logger.debug(f"Could not read {tok_file} for {model_name}: {e}")
-            # Every tokenizer path the repo actually has was read here, so re-fetching them
-            # only re-reads what was just read -- and a repo with no ``LLM/`` layout pays a
-            # round trip to be told so. Anything less may answer positively but never
-            # negatively: a path that was not read still has somewhere for the markers to
-            # hide, and the answer below is cached for the life of the process.
+            # Every tokenizer path the repo has was read, so a fetch re-reads what is here.
+            # Anything less may answer positively but never negatively: an unread path can
+            # still hide the markers, and the negative below is cached for the process.
             if root_read and not is_local_path(model_name):
                 if not current:
                     current.append(_current_cached_snapshot(model_name, hf_token, local_files_only))
