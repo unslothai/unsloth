@@ -3284,9 +3284,7 @@ def test_a_gpu_pin_is_mirrored_to_the_server_with_its_index_space():
     assert "payload.gpu_ids = config.selectedGpuIds;" in mirror
     # Omitted at the legacy default, so a physical pin's payload is what it always was and
     # a row written before this field still reads as physical.
-    assert (
-        'if (gpuIndexKind !== "physical") { payload.gpu_index_kind = gpuIndexKind; }' in mirror
-    )
+    assert 'if (gpuIndexKind !== "physical") { payload.gpu_index_kind = gpuIndexKind; }' in mirror
 
 
 def test_a_cached_repo_keeps_the_settings_saved_under_its_old_key():
