@@ -78,12 +78,9 @@ def _compile_runtime_independent_of_the_host(monkeypatch):
 
 
 def _stub_dynamo(monkeypatch):
-    """torch_compile_runtime_available's Windows probe does `import torch._dynamo` /
-    `import torch._dynamo.utils` for real, which needs a top-level `torch` package in
-    ``sys.modules`` too (the import system resolves the parent first). Give it a fully
-    initialized pair -- and a minimal top-level `torch` if the host has no real one -- so a
-    test that doesn't otherwise need torch doesn't fail this probe for a reason unrelated to
-    what it checks. Any test exercising the probe's OWN failure path overrides this after."""
+    """A fully initialized `torch._dynamo` / `.utils` pair (plus a top-level `torch` if the host
+    has none), so the Windows probe passes in tests that are not about it. The import system
+    resolves the parent first, hence the top-level entry. Failure-path tests override this."""
     dynamo = types.ModuleType("torch._dynamo")
     dynamo.utils = types.ModuleType("torch._dynamo.utils")
     if "torch" not in sys.modules:
@@ -849,10 +846,9 @@ def test_windows_partially_initialized_dynamo_falls_back_to_eager(monkeypatch):
     assert ds_mod.torch_compile_runtime_available() is False
     assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
 
-    # The state an `import` cannot see: `torch._dynamo.utils` IS in sys.modules, so both import
-    # statements return it straight from there -- but the deadlock fallback never bound it on the
-    # parent, and `torch._dynamo.utils.<x>` is how the compile stack reads it. Only the attribute
-    # access catches this one.
+    # The state an `import` cannot see: `torch._dynamo.utils` is in sys.modules, so the import
+    # returns it straight from there, but the deadlock fallback never bound it on the parent --
+    # which is how the compile stack reads it. Only the attribute access catches this one.
     orphaned_utils = types.ModuleType("torch._dynamo.utils")
     monkeypatch.setitem(sys.modules, "torch._dynamo.utils", orphaned_utils)
     assert not hasattr(partial_dynamo, "utils")

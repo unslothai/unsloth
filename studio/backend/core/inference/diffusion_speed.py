@@ -163,22 +163,20 @@ def _compile_toolchain_available() -> bool:
 
 
 def _dynamo_reachable() -> bool:
-    """Whether ``torch._dynamo.utils`` resolves BY ATTRIBUTE, which is how torch's own compile
-    stack reaches it (``_functorch/aot_autograd.py``, ``_inductor/pattern_matcher.py``, ...).
+    """Whether ``torch._dynamo.utils`` resolves BY ATTRIBUTE, the way torch's own compile stack
+    reaches it (``_functorch/aot_autograd.py``, ``_inductor/pattern_matcher.py``).
 
-    The SERVER process answers requests on a pool, unlike the three single-purpose workers, so two
-    threads can enter torch's dynamo/inductor import cycle at once; CPython breaks the resulting
-    deadlock by handing both a partially initialized module (``_lock_unlock_module``, CPython
-    importlib/_bootstrap.py). Left alone that surfaces as the reported ``partially initialized
-    module 'torch._dynamo' has no attribute 'utils'`` on the first compiled forward, mid-generation,
-    instead of here.
+    Two threads on the SERVER's pool can enter torch's dynamo/inductor import cycle at once, and
+    CPython breaks the deadlock by handing both a partially initialized module
+    (``_lock_unlock_module``, importlib/_bootstrap.py), which is the reported ``partially
+    initialized module 'torch._dynamo' has no attribute 'utils'`` on the first compiled forward.
 
-    The import alone does not prove it: a submodule already in ``sys.modules`` is returned WITHOUT
+    Importing is NOT enough to prove it: a submodule already in ``sys.modules`` comes back without
     being bound on its parent, and ``from torch._dynamo import utils`` falls back to ``sys.modules``
-    too, so both succeed in exactly the broken state. Only the attribute access sees it.
+    as well, so both succeed in exactly the broken state.
 
-    NOT cached, unlike the toolchain above: this answer is a race outcome, so one lost race must
-    not run the rest of the process eager. After the first success it is a ``sys.modules`` hit."""
+    Uncached, unlike the toolchain: a race outcome, so one lost race must not run the rest of the
+    process eager. A repeat call is a ``sys.modules`` hit."""
     if sys.platform != "win32":
         return True
     try:
