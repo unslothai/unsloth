@@ -4337,15 +4337,25 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
     backend, info = load(enforceable = lambda _s: False, max_seq_length = 4096, kv_bits = 4)
     assert (info["mlx_kv_bits"], verdicts) == (4, [(backend._model, False, 4)])
 
-    # A vision load keeps no prompt history, so it is fitted against a budget reserving none.
-    load(model = "fake/vlm", vision = True, max_seq_length = 0)
-    assert asked == [
-        (
-            "fake/vlm",
-            None,
-            dict(load_in_4bit = True, retains_history = False, kv_bits = None, is_vlm = True),
+    # A vision load keeps the snapshot store where it can build one, and that is the same
+    # allowance the text history occupies, so it is reserved on the same terms.
+    for available, reserved in ((True, True), (False, False)):
+        monkeypatch.setattr(
+            mlx_inference, "mlx_vlm_snapshot_store_available", lambda a = available: a
         )
-    ]
+        load(model = "fake/vlm", vision = True, max_seq_length = 0)
+        assert asked == [
+            (
+                "fake/vlm",
+                None,
+                dict(
+                    load_in_4bit = True,
+                    retains_history = reserved,
+                    kv_bits = None,
+                    is_vlm = True,
+                ),
+            )
+        ]
 
     # A shard, a width the sizing does not take, and an adapter reloading its base at its own
     # width are all loads the sizing cannot describe.

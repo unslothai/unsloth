@@ -3962,7 +3962,7 @@ class TestGenerationSettingsComeFromTheLoader:
         from core.inference import mlx_inference as mi
 
         # Nothing pins the step, so every path answers with its own runtime's default.
-        monkeypatch.setattr(mi, "mlx_vlm_prefills_on_the_snapshot_grid", lambda: False)
+        monkeypatch.setattr(mi, "mlx_vlm_snapshot_store_available", lambda: False)
         for vision, drafted in ((False, False), (True, False), (False, True), (True, True)):
             step = mi._generation_step(vision = vision, drafted = drafted)
             for setting, ask in (
@@ -3988,7 +3988,7 @@ class TestGenerationSettingsComeFromTheLoader:
         vlm_default = mi._generation_default("prefill_step_size", 0, vision = True, drafted = False)
         assert vlm_default != mi.VLM_PROMPT_CACHE_PREFILL_STEP
         for pinned, expected in ((True, mi.VLM_PROMPT_CACHE_PREFILL_STEP), (False, vlm_default)):
-            monkeypatch.setattr(mi, "mlx_vlm_prefills_on_the_snapshot_grid", lambda p = pinned: p)
+            monkeypatch.setattr(mi, "mlx_vlm_snapshot_store_available", lambda p = pinned: p)
             assert mi.mlx_prefill_chunk(vision = True) == expected
             # Only the vision path is pinned, and the group size never is.
             assert mi.mlx_prefill_chunk() == mi.MLX_PREFILL_CHUNK_FALLBACK
@@ -4000,7 +4000,7 @@ class TestGenerationSettingsComeFromTheLoader:
 
         from core.inference.mlx_inference import (
             MLXInferenceBackend,
-            mlx_vlm_prefills_on_the_snapshot_grid,
+            mlx_vlm_snapshot_store_available,
         )
 
         # `mlx_vlm.generate` is a submodule shadowed by a function of the same name.
@@ -4015,7 +4015,7 @@ class TestGenerationSettingsComeFromTheLoader:
                 "GenerationResult",
                 type("R", (), {"cached_tokens": 0} if cached_tokens else {}),
             )
-            assert mlx_vlm_prefills_on_the_snapshot_grid() is built
+            assert mlx_vlm_snapshot_store_available() is built
             assert (backend._vlm_prompt_cache_store() is not None) is built
 
     @pytest.mark.parametrize("chunk, group", [(None, 0), (True, "64")])

@@ -1013,13 +1013,14 @@ def _generation_default(setting: str, fallback: int, *, vision: bool, drafted: b
         return fallback
 
 
-def mlx_vlm_prefills_on_the_snapshot_grid() -> bool:
-    """Whether a vision load pins its prefill step rather than taking mlx-vlm's own default.
+def mlx_vlm_snapshot_store_available() -> bool:
+    """Whether a vision load can build the snapshot store, which decides two things about it.
 
-    ``_vlm_prompt_cache_session`` pins it so a reused turn chunks the rows an unreused one did,
-    which makes the pinned step the one a vision load really runs at wherever that store can be
-    built. The store's remaining test needs the model, and the loads it turns away -- diffusion
-    -- are refused before anything sizes them.
+    The store retains snapshots against its own budget for the load's whole life, and the session
+    pins ``prefill_step_size`` so a reused turn chunks the rows an unreused one did. So this
+    answers both what a vision load reserves and the step it really prefills at. The store's
+    remaining test needs the model, and the loads it turns away -- diffusion -- are refused
+    before anything sizes them.
     """
     if _prompt_cache_max_bytes() <= 0:
         return False
@@ -1033,7 +1034,7 @@ def mlx_vlm_prefills_on_the_snapshot_grid() -> bool:
 
 def mlx_prefill_chunk(*, vision: bool = False, drafted: bool = False) -> int:
     """Most tokens one prefill step takes; the last step of a prompt may be shorter."""
-    if vision and mlx_vlm_prefills_on_the_snapshot_grid():
+    if vision and mlx_vlm_snapshot_store_available():
         return VLM_PROMPT_CACHE_PREFILL_STEP
     return _generation_default(
         "prefill_step_size", MLX_PREFILL_CHUNK_FALLBACK, vision = vision, drafted = drafted
@@ -1632,8 +1633,9 @@ def mlx_memory_budget(*, retains_history: bool = True) -> Optional[int]:
     The cap ``_configure_memory_limits`` installs, less the prompt history a load that keeps one
     holds: those entries are evicted against their own cap rather than under pressure, so they sit
     alongside the load for its whole life and a context fitted to the undivided cap could not be
-    reached once the history fills. Only the text path keeps one, and reserving it for a load that
-    never will is a shorter context than the machine warrants.
+    reached once the history fills. A text load keeps one and a vision load keeps the snapshot
+    store, never both and under the same allowance, so this comes off once; reserving it for a
+    load that keeps neither is a shorter context than the machine warrants.
     """
     import mlx.core as mx
 
@@ -2897,7 +2899,8 @@ class MLXInferenceBackend:
                 model_name,
                 _served_ctx,
                 load_in_4bit = load_in_4bit,
-                retains_history = not is_vision,
+                # The vision snapshot store is the same allowance under another name.
+                retains_history = not is_vision or mlx_vlm_snapshot_store_available(),
                 # Fitted to the width this load will really run at.
                 kv_bits = _requested_bits,
                 is_vlm = is_vision,
