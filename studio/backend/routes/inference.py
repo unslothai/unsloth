@@ -2978,7 +2978,20 @@ async def _aiter_llama_stream_items(
         yield item
 
 
+from core.inference.mlx_speculative import (
+    mlx_speculative_reason_text,
+    mlx_speculative_refusal_text,
+    normalize_mlx_speculative_mode,
+    mlx_speculative_options,
+    mlx_speculative_reason_is_unproven,
+    mlx_speculative_request_reason,
+    mlx_speculative_refusal,
+    mlx_speculative_target_ineligible,
+    mlx_speculative_target_is_adapter,
+    resolve_mlx_speculative_request,
+)
 from models.inference import (
+    MlxSpeculativeOptionsResponse,
     _InferenceRuntimeFields,
     LoadRequest,
     UnloadRequest,
@@ -6435,6 +6448,13 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     fields.update(
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
+        mlx_speculative_mode = "off",
+        mlx_speculative_mode_requested = "off",
+        mlx_draft_model = None,
+        mlx_draft_model_requested = None,
+        mlx_draft_block_size = None,
+        mlx_draft_block_size_requested = None,
+        mlx_speculative_reason = None,
         mlx_kv_bits = None,
         mlx_kv_bits_requested = None,
         mlx_kv_quant_eligibility = None,
@@ -13012,9 +13032,45 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         return True
     from core.inference.mlx_inference import _normalize_mlx_kv_bits
 
-    return entry["mlx_kv_bits_requested"] == _normalize_mlx_kv_bits(request.mlx_kv_bits) and (
-        entry.get("chat_template_override_requested") or None
-    ) == (request.chat_template_override or None)
+    from core.inference.mlx_speculative import (
+        mlx_speculative_request_identity,
+        resolve_mlx_speculative_request,
+    )
+
+    # Without a reload the drafter is never attached and the request looks honoured.
+    requested = mlx_speculative_request_identity(
+        request.mlx_speculative_mode, request.mlx_draft_model, request.mlx_draft_block_size
+    )
+    speculative = (
+        mlx_speculative_request_identity(
+            entry.get("mlx_speculative_mode_requested"),
+            entry.get("mlx_draft_model_requested"),
+            entry.get("mlx_draft_block_size_requested"),
+        )
+        == requested
+    )
+    # Auto is compared as resolved, not as asked: the cache decides its drafter, and only a
+    # reload can attach or drop one.
+    if speculative and requested[0] == "auto":
+        resolution = resolve_mlx_speculative_request(
+            backend.active_model_name,
+            "auto",
+            request.mlx_draft_model,
+            # The resident target, so one no drafter can attach to compares equal to its Off.
+            is_vision = entry.get("is_vision", False),
+            is_lora = entry.get("is_lora", False),
+        )
+        # Against what Auto pinned, not what survived the load: a drafter that failed to load
+        # resolves to the same answer, not a new one.
+        speculative = resolution.method == (entry.get("mlx_speculative_pinned_mode") or "off") and (
+            resolution.draft_model or None
+        ) == (entry.get("mlx_speculative_pinned_draft_model") or None)
+    return (
+        entry["mlx_kv_bits_requested"] == _normalize_mlx_kv_bits(request.mlx_kv_bits)
+        and (entry.get("chat_template_override_requested") or None)
+        == (request.chat_template_override or None)
+        and speculative
+    )
 
 
 def _non_gguf_runtime_settings_match(backend, request) -> bool:
@@ -13040,6 +13096,74 @@ def _non_gguf_runtime_settings_match(backend, request) -> bool:
         if resident is not None and bool(resident) != bool(request.load_in_4bit):
             return False
     return True
+
+
+@studio_router.get("/mlx-speculative/options", response_model = MlxSpeculativeOptionsResponse)
+async def get_mlx_speculative_options(
+    target_model: str = Query(..., min_length = 1),
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """Return the speculative drafters that can serve one MLX target."""
+    del current_subject
+    from core.inference.mlx_speculative import _canonical_target_id, mlx_target_config_is_cached
+    from utils.models.model_config import is_vision_model
+
+    # The name the scan and the load both match on; the request's own spelling may name nothing.
+    canonical_target = await asyncio.to_thread(_canonical_target_id, target_model)
+    # Whether this target can attach any drafter is its own question, so a checkpoint the load
+    # could never accept is not offered for the download that would precede it. Ahead of the
+    # scan: this fetches the configuration a first-seen target has not cached yet, which the
+    # scan would otherwise pair against and freeze an empty list.
+    # With the caller's token: a gated target the probe cannot read caches no configuration,
+    # and the scan then pairs against nothing and offers no drafter at all.
+    # Asked offline first when that configuration is already here, which is the fetch this probe
+    # exists for: revalidating a cached file against the Hub costs seconds of round trips on an
+    # endpoint the picker calls for every model it shows. Only a positive is taken from it. A
+    # negative is the answer the online probe can still overturn, by escalating a raw config with
+    # no vision_config to the latest tier's sidecar, so that one is asked for rather than assumed.
+    target_config_cached = await asyncio.to_thread(mlx_target_config_is_cached, canonical_target)
+    target_is_vision = False
+    if target_config_cached:
+        target_is_vision = await asyncio.to_thread(
+            is_vision_model, canonical_target, hf_token = hf_token, local_files_only = True
+        )
+    if not target_is_vision:
+        target_is_vision = await asyncio.to_thread(
+            is_vision_model, canonical_target, hf_token = hf_token
+        )
+    target_is_adapter = await asyncio.to_thread(mlx_speculative_target_is_adapter, canonical_target)
+    options = await asyncio.to_thread(mlx_speculative_options, target_model)
+    ineligible = mlx_speculative_target_ineligible(
+        is_vision = target_is_vision, is_lora = target_is_adapter
+    )
+    if ineligible is not None:
+        options = dict(
+            options,
+            runtime_supported = False,
+            runtime_reason = ineligible,
+            candidates = [
+                dict(row, loadable = False, runtime_supported = False, reason = ineligible)
+                for row in options["candidates"]
+            ],
+        )
+    # Two of Auto's rules turn on the target, not on a drafter, so the panel is told the answer.
+    resolution = await asyncio.to_thread(
+        resolve_mlx_speculative_request,
+        target_model,
+        "auto",
+        None,
+        is_vision = target_is_vision,
+        is_lora = target_is_adapter,
+        options = options,
+    )
+    options = dict(
+        options,
+        auto_method = resolution.method,
+        auto_draft_model = resolution.draft_model,
+        auto_reason = resolution.reason,
+    )
+    return MlxSpeculativeOptionsResponse.model_validate(options)
 
 
 class _ScopedLoadAttempt(NamedTuple):
@@ -13469,6 +13593,25 @@ async def _load_model_impl(
             )
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
+
+        # Ahead of the reuse path and the unload, so a rejected setting never costs the user a
+        # resident model. Auto never refuses and needs a quantization not settled yet. The GGUF
+        # answer is taken from the request rather than the configuration, which is resolved
+        # further down: the reuse path below returns on these same two signals, so a drafter
+        # judged only there would be dropped without a word whenever the server is already up.
+        _mlx_resolution = None
+        if normalize_mlx_speculative_mode(request.mlx_speculative_mode) != "auto":
+            _mlx_resolution = await asyncio.to_thread(
+                resolve_mlx_speculative_request,
+                model_identifier,
+                request.mlx_speculative_mode,
+                request.mlx_draft_model,
+                is_gguf = bool(request.gguf_variant or is_direct_gguf_request),
+            )
+            _mlx_refusal = mlx_speculative_refusal(request.mlx_speculative_mode, _mlx_resolution)
+            if _mlx_refusal is not None:
+                raise HTTPException(status_code = 400, detail = _mlx_refusal)
+
         if llama_backend.is_loaded and (request.gguf_variant or is_direct_gguf_request):
             reused = _reuse_loaded_gguf(
                 _active_gguf_intent(
@@ -13490,7 +13633,7 @@ async def _load_model_impl(
         if not (request.gguf_variant or is_direct_gguf_request):
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
-                and _mlx_runtime_settings_match(backend, request)
+                and await asyncio.to_thread(_mlx_runtime_settings_match, backend, request)
                 and _non_gguf_runtime_settings_match(backend, request)
                 and _resident_context_satisfies(
                     backend.models.get(backend.active_model_name) or {},
@@ -13540,6 +13683,19 @@ async def _load_model_impl(
                     mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
                     mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
                     mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
+                    mlx_speculative_mode = _model_info.get("mlx_speculative_effective_mode") or "off",
+                    mlx_speculative_mode_requested = (
+                        _model_info.get("mlx_speculative_mode_requested") or "off"
+                    ),
+                    mlx_draft_model = _model_info.get("mlx_speculative_effective_draft_model"),
+                    mlx_draft_model_requested = _model_info.get("mlx_draft_model_requested"),
+                    mlx_draft_block_size = _model_info.get("mlx_speculative_effective_block_size"),
+                    mlx_draft_block_size_requested = _model_info.get(
+                        "mlx_draft_block_size_requested"
+                    ),
+                    mlx_speculative_reason = mlx_speculative_reason_text(
+                        _model_info.get("mlx_speculative_reason")
+                    ),
                     # Requested, as /status reports it: a null override would read
                     # as "using the default".
                     chat_template_override = _model_info.get("chat_template_override_requested"),
@@ -13589,6 +13745,22 @@ async def _load_model_impl(
             raise HTTPException(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
+            )
+
+        # The first point the target is known, and ahead of every path that can return without
+        # reaching the resolution below -- the GGUF reuse branch returns from inside it. A launch
+        # that carries no drafter reads none of the drafter fields, so an explicit request that is
+        # answered any later is not refused but dropped in silence.
+        _mlx_ineligible = mlx_speculative_target_ineligible(
+            is_vision = getattr(config, "is_vision", False),
+            is_lora = getattr(config, "is_lora", False),
+            is_gguf = getattr(config, "is_gguf", False),
+        )
+        if _mlx_ineligible is not None and normalize_mlx_speculative_mode(
+            request.mlx_speculative_mode
+        ) not in {"off", "auto"}:
+            raise HTTPException(
+                status_code = 400, detail = mlx_speculative_refusal_text(_mlx_ineligible)
             )
 
         # Resolve inherited extras once before command-dependent preflights.
@@ -13723,6 +13895,20 @@ async def _load_model_impl(
                     "sizing and loading in 16-bit (4-bit is disabled for brand-new "
                     "architectures)"
                 )
+
+        # Pinned here, not in the worker, so one view of the cache decides it.
+        _mlx_resolution = await asyncio.to_thread(
+            resolve_mlx_speculative_request,
+            model_identifier,
+            request.mlx_speculative_mode,
+            request.mlx_draft_model,
+            is_vision = getattr(config, "is_vision", False),
+            is_lora = getattr(config, "is_lora", False),
+            is_gguf = getattr(config, "is_gguf", False),
+        )
+        _mlx_refusal = mlx_speculative_refusal(request.mlx_speculative_mode, _mlx_resolution)
+        if _mlx_refusal is not None:
+            raise HTTPException(status_code = 400, detail = _mlx_refusal)
 
         placement = await _preflight_native_audio_placement(config, request, placement)
 
@@ -14187,6 +14373,26 @@ async def _load_model_impl(
             _restore_marker_if_prior_preview_still_resident()
             _restore_alias_if_failed_load_left_the_prior_model(backend, _prior_alias, _prior_active)
             raise
+        success = await asyncio.to_thread(
+            backend.load_model,
+            config = config,
+            max_seq_length = request.max_seq_length,
+            load_in_4bit = load_in_4bit,
+            hf_token = request.hf_token,
+            trust_remote_code = request.trust_remote_code,
+            approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
+            gpu_ids = placement.requested_gpu_ids,
+            subject = current_subject,
+            mlx_kv_bits = request.mlx_kv_bits,
+            chat_template_override = request.chat_template_override,
+            load_cancel_event = load_cancel_event,
+            mlx_speculative_mode = request.mlx_speculative_mode,
+            mlx_draft_model = request.mlx_draft_model,
+            mlx_draft_block_size = request.mlx_draft_block_size,
+            mlx_speculative_resolved_mode = _mlx_resolution.method,
+            mlx_speculative_resolved_draft_model = _mlx_resolution.draft_model,
+            mlx_speculative_resolution_reason = _mlx_resolution.reason,
+        )
 
         if not success:
             _restore_marker_if_prior_preview_still_resident()
@@ -14304,6 +14510,17 @@ async def _load_model_impl(
             mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
             mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
+            mlx_speculative_mode = _model_info.get("mlx_speculative_effective_mode") or "off",
+            mlx_speculative_mode_requested = (
+                _model_info.get("mlx_speculative_mode_requested") or "off"
+            ),
+            mlx_draft_model = _model_info.get("mlx_speculative_effective_draft_model"),
+            mlx_draft_model_requested = _model_info.get("mlx_draft_model_requested"),
+            mlx_draft_block_size = _model_info.get("mlx_speculative_effective_block_size"),
+            mlx_draft_block_size_requested = _model_info.get("mlx_draft_block_size_requested"),
+            mlx_speculative_reason = mlx_speculative_reason_text(
+                _model_info.get("mlx_speculative_reason")
+            ),
             # Requested, as /status reports it: a null override would read as
             # "using the default".
             chat_template_override = _model_info.get("chat_template_override_requested"),
@@ -14762,6 +14979,35 @@ async def validate_model(
                 request.hf_token,
             ):
                 effective_load_in_4bit = False
+        # After the fetch, never before: asked earlier this answers from whatever revision was
+        # cached rather than the one being loaded. An undecided comparison is still deferred.
+        _mlx_spec_reason = await asyncio.to_thread(
+            mlx_speculative_request_reason,
+            model_identifier,
+            request.mlx_speculative_mode,
+            request.mlx_draft_model,
+        )
+        if _mlx_spec_reason is not None and not mlx_speculative_reason_is_unproven(
+            _mlx_spec_reason
+        ):
+            raise HTTPException(
+                status_code = 400, detail = mlx_speculative_refusal_text(_mlx_spec_reason)
+            )
+
+        # Settled by the target alone, so it is asked of every request. Auto resolves to ordinary
+        # MLX generation rather than being refused.
+        _mlx_ineligible = mlx_speculative_target_ineligible(
+            is_vision = getattr(config, "is_vision", False),
+            is_lora = getattr(config, "is_lora", False),
+            is_gguf = getattr(config, "is_gguf", False),
+        )
+        if _mlx_ineligible is not None and normalize_mlx_speculative_mode(
+            request.mlx_speculative_mode
+        ) not in {"off", "auto"}:
+            raise HTTPException(
+                status_code = 400, detail = mlx_speculative_refusal_text(_mlx_ineligible)
+            )
+
         # A metadata-only probe reads the GGUF header and allocates no VRAM, so the
         # training guard must not refuse it. Real loads omit include_context_length /
         # include_chat_template, and /load applies the guard again.
@@ -16424,6 +16670,18 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = model_info.get("mlx_kv_quant_reason"),
             mlx_kv_quant_note = model_info.get("mlx_kv_quant_note"),
+            # Requested, not effective: a caller compares this against its own request.
+            mlx_speculative_mode = model_info.get("mlx_speculative_effective_mode") or "off",
+            mlx_speculative_mode_requested = (
+                model_info.get("mlx_speculative_mode_requested") or "off"
+            ),
+            mlx_draft_model = model_info.get("mlx_speculative_effective_draft_model"),
+            mlx_draft_model_requested = model_info.get("mlx_draft_model_requested"),
+            mlx_draft_block_size = model_info.get("mlx_speculative_effective_block_size"),
+            mlx_draft_block_size_requested = model_info.get("mlx_draft_block_size_requested"),
+            mlx_speculative_reason = mlx_speculative_reason_text(
+                model_info.get("mlx_speculative_reason")
+            ),
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,

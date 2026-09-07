@@ -9,6 +9,7 @@ import {
   stripManagedOffloadFlags,
 } from "./llama-extra-args-normalize";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
+import { mlxSpeculativeLoadFields } from "@/lib/speculative-modes";
 
 import type { InferenceStatusResponse } from "../types/api";
 
@@ -18,6 +19,10 @@ type ResidentRuntime = Pick<
   | "requested_context_length"
   | "cache_type_kv"
   | "mlx_kv_bits_requested"
+  | "is_mlx"
+  | "mlx_speculative_mode_requested"
+  | "mlx_draft_model_requested"
+  | "mlx_draft_block_size_requested"
   | "speculative_type"
   | "spec_draft_n_max"
   | "requested_parallel_slots"
@@ -256,6 +261,37 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s) =>
       (c.mlxKvBits ?? null) === (s.mlx_kv_bits_requested ?? null),
+  },
+  {
+    // The requested tuple, not the effective one. Both sides go through the load's own helper,
+    // so an unset mode resolves alike and a non-MLX resident collapses to Off rather than
+    // comparing.
+    //
+    // Auto is compared as requested even though the backend compares it as resolved, which
+    // leaves one gap: a drafter downloaded while the model is already resident does not
+    // attach until something else about the request changes. Declining to adopt instead is
+    // worse — a resident model would then re-enter the load path on every re-pick, which
+    // prompts to stop running chats and drops queued prompts before /load answers that
+    // nothing changed.
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) => {
+      const enabled = s.is_mlx === true;
+      const sent = mlxSpeculativeLoadFields(c, enabled);
+      const resident = mlxSpeculativeLoadFields(
+        {
+          mlxSpeculativeMode: s.mlx_speculative_mode_requested,
+          mlxDraftModel: s.mlx_draft_model_requested,
+          mlxDraftBlockSize: s.mlx_draft_block_size_requested,
+        },
+        enabled,
+      );
+      return (
+        sent.mlx_speculative_mode === resident.mlx_speculative_mode &&
+        sent.mlx_draft_model === resident.mlx_draft_model &&
+        sent.mlx_draft_block_size === resident.mlx_draft_block_size
+      );
+    },
   },
   {
     // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading

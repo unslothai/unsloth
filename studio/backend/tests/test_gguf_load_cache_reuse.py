@@ -746,6 +746,110 @@ class TestLoadHubDownloadExclusion:
 
         assert result is response
 
+    def test_resident_gguf_reuse_refuses_an_explicit_mlx_drafter(self):
+        # The reuse fast path answers before the configuration exists, so a drafter judged only
+        # from the configuration would be dropped without a word on every load of a resident GGUF.
+        from fastapi import HTTPException
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_resident_mlx_refusal_test",
+            "routes/inference.py",
+        )
+        backend = SimpleNamespace(
+            is_loaded = True,
+            model_identifier = REPO,
+            adopt_load_intent_if_matched = lambda _intent: True,
+            _audio_probed = True,
+            holds_no_vram = False,
+        )
+        request = LoadRequest(
+            model_path = REPO,
+            gguf_variant = VARIANT,
+            mlx_speculative_mode = "mtp",
+            mlx_draft_model = "org/Drafter",
+        )
+
+        with (
+            _reuse_route(route, backend, object()),
+            patch.object(route, "_active_gguf_intent", return_value = object()),
+            pytest.raises(HTTPException) as refused,
+        ):
+            _run_route_load(route, request)
+
+        assert refused.value.status_code == 400
+
+    def test_post_config_gguf_reuse_refuses_an_explicit_mlx_drafter(self):
+        # The second reuse path: a GGUF named without a variant or a .gguf suffix is only known to
+        # be one once the configuration resolves, and that branch returns from inside itself. The
+        # target is vision here, so the GGUF classification is the only thing that can refuse it.
+        from fastapi import HTTPException
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_post_config_mlx_refusal_test",
+            "routes/inference.py",
+        )
+        backend = SimpleNamespace(
+            is_loaded = True,
+            model_identifier = REPO,
+            gguf_path = None,
+            matches_load_source = lambda _intent: True,
+            adopt_load_intent_if_matched = lambda _intent: True,
+            _audio_probed = True,
+            holds_no_vram = False,
+        )
+        config = SimpleNamespace(
+            identifier = REPO,
+            display_name = "Gemma Test (UD-Q4_K_XL)",
+            is_gguf = True,
+            is_lora = False,
+            is_vision = True,
+            gguf_hf_repo = None,
+        )
+
+        with (
+            _reuse_route(route, backend, object()),
+            patch.object(
+                route,
+                "ModelConfig",
+                SimpleNamespace(from_identifier = lambda **_kwargs: config),
+            ),
+            # What an uncached GGUF repository answers: unproven, so the earlier gate defers it.
+            patch.object(
+                route,
+                "resolve_mlx_speculative_request",
+                return_value = SimpleNamespace(
+                    method = "mtp",
+                    draft_model = "org/Drafter",
+                    reason = "target_config_unavailable",
+                ),
+            ),
+            patch.object(route, "_resolve_inherited_extra_args", return_value = None),
+            patch.object(
+                route,
+                "_prepare_load_placement",
+                return_value = route._LoadPlacement(None, None, False, False),
+            ),
+            patch.object(
+                route,
+                "_resolve_gguf_load_intent",
+                return_value = GgufLoadIntent(model_identifier = REPO, gguf_path = "/cached/model.gguf"),
+            ),
+            patch.object(route, "_loaded_is_local_model", return_value = False),
+            pytest.raises(HTTPException) as refused,
+        ):
+            _run_route_load(
+                route,
+                LoadRequest(
+                    model_path = REPO,
+                    mlx_speculative_mode = "mtp",
+                    mlx_draft_model = "org/Drafter",
+                ),
+            )
+
+        assert refused.value.status_code == 400
+
     def test_post_config_reuse_preserves_resolved_display_name(self):
         from models.inference import LoadRequest
 
@@ -859,6 +963,13 @@ class TestLoadHubDownloadExclusion:
             "requested_parallel_slots",
             "parallel_slots",
             "is_mlx",
+            "mlx_speculative_mode",
+            "mlx_speculative_mode_requested",
+            "mlx_draft_model",
+            "mlx_draft_model_requested",
+            "mlx_draft_block_size",
+            "mlx_draft_block_size_requested",
+            "mlx_speculative_reason",
             "mlx_kv_bits",
             "mlx_kv_bits_requested",
             "mlx_kv_quant_eligibility",

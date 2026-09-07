@@ -245,6 +245,15 @@ async function getInferenceStatus() {
 // scenario here does.
 async function waitForModelReady(_signal?: any) {}
 const window: any = { location: { href: "http://localhost/chat" } };
+function mlxSpeculativeLoadFields(intent: any, enabled: boolean) {
+  const mode = enabled ? (intent?.mlxSpeculativeMode ?? "auto") : "off";
+  return {
+    mlx_speculative_mode: mode,
+    mlx_draft_model: mode === "off" ? null : (intent?.mlxDraftModel ?? null),
+    mlx_draft_block_size: mode === "off" ? null : (intent?.mlxDraftBlockSize ?? null),
+  };
+}
+
 function isExternalModelId(value: unknown) {
   return typeof value === "string" && value.startsWith("external::");
 }

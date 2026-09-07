@@ -31,7 +31,10 @@ import {
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
-import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
+import {
+  DRAFT_N_MAX_SPEC_TYPES,
+  mlxSpeculativeLoadFields,
+} from "@/lib/speculative-modes";
 import {
   StudioDictationAdapter,
   isStudioDictationAvailable,
@@ -1471,6 +1474,16 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
+          // The same tuple the load below sends: validated without it, a drafter the load
+          // refuses is approved here, and the stop decision has already run by then.
+          ...mlxSpeculativeLoadFields(
+            ownConfig,
+            isServedByMlx(
+              targetIsGguf,
+              usePlatformStore.getState().deviceType,
+              usePlatformStore.getState().chatOnlyReason,
+            ),
+          ),
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
           // Scope the validate to the picked GPUs. GGUF-only, like the load below: a non-GGUF target must
@@ -1559,6 +1572,14 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           mlx_kv_bits: ownConfig.mlxKvBits ?? null,
+          ...mlxSpeculativeLoadFields(
+            ownConfig,
+            isServedByMlx(
+              targetIsGguf,
+              usePlatformStore.getState().deviceType,
+              usePlatformStore.getState().chatOnlyReason,
+            ),
+          ),
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,

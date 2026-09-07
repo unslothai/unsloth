@@ -435,6 +435,100 @@ def test_default_caches_keyed_on_inventory_version():
     assert src.count("${inventoryVersion}") >= 2
 
 
+def test_validate_sends_the_mlx_speculative_tuple_it_will_load_with():
+    """``validateModel`` builds an allowlisted body, so a field added to the caller's payload
+    object does not reach the wire on its own. Without these three the preflight judges Off
+    while /load judges the drafter, and the refusal lands after the switch is committed to."""
+    body = _code_only(_read("features/chat/api/chat-api.ts"))
+    start = body.index("/api/inference/validate")
+    sent = body[start : body.index("});", start)]
+    # The caller's own tuple, not a placeholder: hardcoding "off" here typechecks and keeps the
+    # field names, while validate judges a request nothing sent.
+    for field in ("mlx_speculative_mode", "mlx_draft_model", "mlx_draft_block_size"):
+        assert f"{field}: payload.{field}" in sent, field
+
+
+def test_the_drafter_probe_asks_about_the_snapshot_the_pick_loads():
+    """`loadId` is the model_path a pick sends when it loads from elsewhere -- a repository
+    cached outside the active HF cache loads by snapshot path. Probing the repository id there
+    pairs a drafter against another revision's config and weights than the load opens."""
+    page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    # The call, not the hook's own definition further up the same file.
+    start = page.index("const mlxSpeculative = useMlxSpeculativeOptions(")
+    call = page[start : page.index(")", start)]
+    assert "target.meta?.loadId" in call, call
+    # Falling back to the id, or a pick that loads by repository id probes nothing.
+    assert "target.id" in call, call
+
+
+def test_a_drafter_download_is_watched_from_outside_the_collapsible():
+    """A listener held by the download row stops existing the moment Advanced settings collapse,
+    while the transfer keeps running. Remounting does not recover it: the adopt probe takes over
+    running jobs only, never finished ones."""
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    flat = " ".join(page.split())
+    # Watched from the page body, not the row.
+    assert "useMlxDraftDownloadRefresh(mlxSpeculative.options, mlxSpeculative.retry)" in flat
+    assert flat.index("useMlxDraftDownloadRefresh(mlxSpeculative.options") < flat.index(
+        "{showAdvanced && ( <MlxAdvancedSettings"
+    ), "the refresh moved inside the collapsible it exists to outlive"
+    # The row keeps its progress bar but no longer owns completion.
+    row = page[page.index("function MlxDraftCheckpointDownload(") :]
+    row = row[: row.index("\nfunction ")]
+    assert "onComplete" not in row, row
+    # A hook that only reads the candidates satisfies every check above while the download
+    # still lands unnoticed.
+    hook = flat[flat.index("function useMlxDraftDownloadRefresh(") :]
+    hook = hook[: hook.index("export function ModelConfigPage(")]
+    assert "subscribeJobListeners(DOWNLOAD_KIND.MODEL, repoId, {" in hook, hook
+    assert "onComplete: () => refresh()" in hook, hook
+    # Every candidate not here yet, one subscription each: a single call over the joined ids
+    # watches a repository named nothing.
+    assert "!candidate.downloaded" in hook, hook
+    assert '.split("\\n") .map((repoId) =>' in hook, hook
+    # Nothing between the filter and the subscriptions may narrow the set again.
+    assert ".slice(" not in hook, hook
+    assert ".at(" not in hook and "[0]" not in hook, hook
+
+
+def test_the_picker_and_the_backend_name_the_same_speculative_methods():
+    """A method only the backend knows is never offered, and one only the picker knows is
+    refused by the request schema once picked. Labels and listing order are keyed by method, so
+    a missing entry there is a compile error rather than something this has to catch.
+    """
+    spec = _read_backend("core/inference/mlx_speculative.py")
+    start = spec.index("MLX_SPECULATIVE_METHODS = frozenset(")
+    backend = set(re.findall(r'"([a-z0-9_]+)"', spec[start : spec.index(")", start)]))
+    assert backend, "the backend's method set moved"
+
+    modes = " ".join(_read("lib/speculative-modes.ts").split())
+    start = modes.index("MLX_SPECULATIVE_METHODS = [")
+    assert set(re.findall(r'"([a-z0-9_]+)"', modes[start : modes.index("]", start)])) == backend
+
+    # The request schema is the third copy, and the door every picked method has to pass.
+    literal = _read_backend("models/inference.py")
+    start = literal.index("MlxSpeculativeMode = Literal[")
+    accepted = set(re.findall(r'"([a-z0-9_]+)"', literal[start : literal.index("]", start)]))
+    assert accepted == backend | {"off", "auto"}
+
+
+def test_the_picker_offers_every_pairing_the_backend_defers():
+    """A deferred reason is not a refusal -- the backend declines to judge until the load
+    supplies the target's own files, then settles it. Drop one from the picker's set and the
+    user cannot request the first load the backend was built to accept."""
+    spec = _read_backend("core/inference/mlx_speculative.py")
+    start = spec.index("_UNPROVEN_REASONS = frozenset(")
+    deferred = set(re.findall(r'"([a-z_]+)"', spec[start : spec.index(")", start)]))
+    assert deferred, "the backend's deferred-reason set moved"
+
+    modes = " ".join(_read("lib/speculative-modes.ts").split())
+    start = modes.index("UNSETTLED_REASONS = new Set([")
+    offered = set(re.findall(r'"([a-z_]+)"', modes[start : modes.index("]", start)]))
+    # Exactly, in both directions: a reason the backend does refuse on, listed here, makes a
+    # candidate selectable that no download and no load can make loadable.
+    assert offered == deferred | {"checkpoint_not_downloaded"}
+
+
 def test_hidden_infra_model_needles_present():
     """The frontend static needle list must keep hiding the RAG embedder and the
     llama.cpp validation probe."""
