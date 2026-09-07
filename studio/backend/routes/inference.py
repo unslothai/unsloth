@@ -28588,7 +28588,15 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         payload, _ui_stream_events_enabled(request)
     ):
         _tools_on = False
-    _mcp_on = bool(getattr(payload, "mcp_enabled", False)) and _get_tool_policy_mlx() is not False
+    # tool_choice "none" withdraws the catalogue outright on the completion's safetensors
+    # branch, so neither the schemas nor the MCP discovery 503 belong in a count for it.
+    if getattr(payload, "tool_choice", None) == "none":
+        _tools_on = False
+    _mcp_on = (
+        getattr(payload, "tool_choice", None) != "none"
+        and bool(getattr(payload, "mcp_enabled", False))
+        and _get_tool_policy_mlx() is not False
+    )
 
     # Classified from the template the way the completion classifies it. A named template
     # exposes tool markup only in its tool_use branch, and which branch is read depends on

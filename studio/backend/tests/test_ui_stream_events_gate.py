@@ -581,6 +581,18 @@ def test_both_local_branches_consult_the_launcher_default_rule():
     assert src.count("_launcher_tool_default_applies(payload, _ui_events)") == 2
 
 
+def test_the_mlx_counter_honours_tool_choice_none():
+    # The safetensors completion withdraws the catalogue outright for tool_choice "none",
+    # so a count that still prices the schemas -- or trips the MCP discovery 503 -- no
+    # longer describes the prompt generation renders. The GGUF counter already draws this
+    # line with _client_disabled_tool_calls; this is the MLX branch of the same rule.
+    from routes import inference as inf
+
+    src = inspect.getsource(inf._mlx_count_chat_tokens)
+    assert 'tool_choice", None) == "none"' in src
+    assert 'tool_choice", None) != "none"' in src
+
+
 def test_external_provider_relay_drops_control_frames_too():
     # The provider proxy returns before the local producer's per-yield gates and relays
     # stream_with_studio_tools' frames verbatim, so it filters the same vocabulary.
