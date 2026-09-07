@@ -180,7 +180,13 @@ export function getGroundedExternalMaxOutputTokens(
   connectionMaxOutputTokens?: number | null,
 ): number | null {
   const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
-  const documented = _documentedMaxOutputTokens(providerType, modelId);
+  // An OpenRouter id resolves through the direct provider's table, and a router endpoint is
+  // not that provider: `deepseek/deepseek-r1` reads as the direct API's 384000 while the
+  // router serves it at a fraction of that. Good enough for a slider maximum, not for a
+  // budget sent unattended, so a router connection is grounded only by the user's own
+  // override.
+  const documented =
+    providerType === "openrouter" ? null : _documentedMaxOutputTokens(providerType, modelId);
   if (override == null && documented == null) return null;
   return getExternalMaxOutputTokens(providerType, modelId, connectionMaxOutputTokens);
 }

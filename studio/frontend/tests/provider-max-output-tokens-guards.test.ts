@@ -284,3 +284,23 @@ test("a grounded ceiling is only sent when something documents or overrides it",
     getExternalMaxOutputTokens("gemini", "gemini-3.6-flash", null),
   );
 });
+
+test("an openrouter model is not grounded by the direct provider's published cap", () => {
+  // The id resolves through the direct provider's table, and a router endpoint is not that
+  // provider: OpenRouter serves deepseek at a fraction of the direct API's ceiling. Fine as
+  // a slider maximum, wrong as a budget sent unattended.
+  assert.equal(
+    getExternalMaxOutputTokens("openrouter", "deepseek/deepseek-r1-0528", null),
+    384000,
+  );
+  assert.equal(
+    getGroundedExternalMaxOutputTokens("openrouter", "deepseek/deepseek-r1-0528", null),
+    null,
+  );
+
+  // The user's own override still grounds a router connection.
+  assert.equal(
+    getGroundedExternalMaxOutputTokens("openrouter", "deepseek/deepseek-r1-0528", 32000),
+    32000,
+  );
+});
