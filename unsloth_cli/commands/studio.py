@@ -3650,6 +3650,130 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 )
 
 
+_UV_CACHE_BUCKETS = ("archive-", "builds-", "built-wheels-", "wheels-", "sdists-")
+_UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
+
+
+def _uv_cache_has_packages(cache_dir: Path) -> bool:
+    """Does this uv cache hold package bytes, or only metadata?
+
+    Same rule as install.sh:_configure_uv_cache, deliberately: wheels-* carries only
+    .msgpack/.http on uv 0.10, so counting any file at all reads a cache that has merely
+    been resolved against as if it were warm.
+    """
+    try:
+        buckets = [
+            entry
+            for entry in cache_dir.iterdir()
+            if entry.name.startswith(_UV_CACHE_BUCKETS) and entry.is_dir()
+        ]
+    except OSError:
+        return False
+    for bucket in buckets:
+        for _root, _dirs, files in os.walk(bucket):
+            for name in files:
+                if name in ("CACHEDIR.TAG", ".git", ".gitignore"):
+                    continue
+                if name.endswith(_UV_CACHE_METADATA_SUFFIXES):
+                    continue
+                return True
+    return False
+
+
+def _uv_platform_cache_dir() -> Optional[Path]:
+    """Where uv puts its cache with no configuration, mirroring install.sh:646.
+
+    Only reached when uv cannot be asked. Asking is better, since it accounts for uv.toml
+    and UV_CONFIG_FILE, but "we could not ask" must not read as "there is no cache".
+    """
+    if platform.system() == "Windows":
+        local_app_data = (os.environ.get("LOCALAPPDATA") or "").strip()
+        return Path(local_app_data) / "uv" / "cache" if local_app_data else None
+    xdg = (os.environ.get("XDG_CACHE_HOME") or "").strip()
+    if xdg:
+        return Path(xdg) / "uv"
+    home = (os.environ.get("HOME") or "").strip()
+    return Path(home) / ".cache" / "uv" if home else None
+
+
+def _uv_default_cache_dir() -> Optional[Path]:
+    """Where uv would put its cache if we set nothing.
+
+    Asked of uv rather than reconstructed, so uv.toml, UV_CONFIG_FILE and the platform
+    default all count; UV_CACHE_DIR is dropped so a blank inherited value cannot answer
+    for them, and the last nonblank line is the path in case a notice precedes it.
+    """
+    uv = shutil.which("uv")
+    if not uv:
+        return _uv_platform_cache_dir()
+    child_env = {key: value for key, value in os.environ.items() if key != "UV_CACHE_DIR"}
+    try:
+        result = subprocess.run(
+            [uv, "cache", "dir"],
+            capture_output = True,
+            text = True,
+            # text=True alone decodes with the locale codec and STRICT errors, so a
+            # non-ASCII cache path on an ANSI console raises UnicodeDecodeError -- neither
+            # OSError nor SubprocessError, so it would escape the handler below and take
+            # the update down, exactly as it did for the profile probe above.
+            encoding = "utf-8",
+            errors = "replace",
+            env = child_env,
+            timeout = 30,
+            # Creation flags are not inherited, so a desktop update that is itself hidden
+            # still has to hide each process it starts.
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except Exception:
+        # Best effort by design. Not knowing where uv would have put its cache costs the
+        # update a preference, never the update itself, so no failure to probe is worth
+        # raising through the caller.
+        return _uv_platform_cache_dir()
+    if result.returncode != 0:
+        # uv discovers config from the CURRENT directory, so a malformed uv.toml beside
+        # whoever ran `unsloth studio update` makes this exit nonzero even though setup.sh
+        # changes directory before it runs uv at all. install.sh:646 falls back to the
+        # platform default rather than declaring the cache cold, and so does this.
+        return _uv_platform_cache_dir()
+    lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return _uv_platform_cache_dir()
+    # Absolute, because uv answers `cache-dir = "relcache"` with "relcache" and setup.sh
+    # changes directory before it runs uv: a relative path we verified here would name a
+    # different, cold directory there. Resolved against uv's working directory, which
+    # --directory / UV_WORKING_DIR moves out from under ours, and WITHOUT expanduser,
+    # because uv prints a configured `~/...` verbatim and then treats the tilde as an
+    # ordinary path segment, creating a literal "~" directory rather than one in $HOME.
+    base = os.environ.get("UV_WORKING_DIR") or os.getcwd()
+    return Path(os.path.abspath(os.path.join(base, lines[-1])))
+
+
+def _with_studio_uv_cache(env: Optional[dict]) -> Optional[dict]:
+    """Point the setup script's uv at the cache the install used.
+
+    The installers set UV_CACHE_DIR and storage_roots._setup_cache_env sets it for the
+    server, but an update runs setup.sh/setup.ps1 from here and reached neither, so uv
+    re-downloaded into its own default what the install had just fetched.
+    """
+    if (os.environ.get("UV_CACHE_DIR") or "").strip():
+        return env
+    studio_cache = STUDIO_HOME / "cache" / "uv"
+    if not _uv_cache_has_packages(studio_cache):
+        # A shared-mode install left the wheels in uv's own cache and _setup_cache_env
+        # mkdirs this one empty on every server start, so redirecting here would send the
+        # update to a cache that has nothing in it. Online that is one wasted download;
+        # under --offline / UV_OFFLINE / uv.toml offline = true, where uv may read only
+        # what is already cached, it is an update that cannot resolve at all.
+        default_cache = _uv_default_cache_dir()
+        if default_cache is not None and _uv_cache_has_packages(default_cache):
+            # Named, not left for the child to resolve a second time. A blank inherited
+            # UV_CACHE_DIR reaches uv as `--cache-dir ''`, which exits 2 with "a value is
+            # required" on every uv command, and a cache that came from a uv.toml beside
+            # the caller is not the one uv finds once setup.sh changes directory.
+            return {**(env or os.environ), "UV_CACHE_DIR": str(default_cache)}
+    return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
     script = _find_setup_script(repo_root)
@@ -3664,6 +3788,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
         raise typer.Exit(1)
 
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
+    env = _with_studio_uv_cache(env)
 
     if platform.system() == "Windows":
         # Resolved, not bare: the gate that runs immediately before this in setup() and update()
