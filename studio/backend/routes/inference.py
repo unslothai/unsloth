@@ -3272,6 +3272,7 @@ from core.inference.mcp_images import (
     append_placeholder_turn as mark_mcp_image_turn_local,
     image_marker_parts as mcp_image_marker_parts,
     DETACHED_IMAGE_TURN_TEXT as _MCP_DETACHED_IMAGE_TURN_TEXT,
+    flattened_rgb as _mcp_flattened_rgb,
     insert_placeholder_turn as insert_mcp_image_turn_before,
     pixels_in_marker_order as mcp_pixels_in_marker_order,
     trim_image_turns as trim_mcp_image_turns,
@@ -30236,7 +30237,11 @@ def _select_anthropic_server_tools(
 
 def _pil_to_png_b64(img) -> str:
     buf = io.BytesIO()
-    img.convert("RGB").save(buf, format = "PNG")
+    # Composited, not merely converted: convert("RGB") keeps whatever colour sits
+    # under the alpha, so a transparent attachment whose background was never painted
+    # reaches the worker as black -- and its dark text with it. The ordinary IPC path
+    # carries the PNG's alpha through, so only this serialisation flattened it.
+    _mcp_flattened_rgb(img).save(buf, format = "PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 

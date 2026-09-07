@@ -121,7 +121,10 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     const keep: McpImage[] = [];
     for (const image of candidates) {
       const cost = image.data.length;
-      if (charsLeft - cost < 0) break;
+      // Skip the one that does not fit and keep looking: breaking here threw away
+      // three 1MB pictures sitting behind a 5MB one, which the backend could have
+      // replayed. The live-result budget already skips rather than stops.
+      if (charsLeft - cost < 0) continue;
       charsLeft -= cost;
       keep.push(image);
     }

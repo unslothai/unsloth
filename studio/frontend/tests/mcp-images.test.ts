@@ -272,3 +272,39 @@ test("an ordinary conversation is untouched by the byte budget", () => {
 
   assert.deepEqual(bounded, messages, "nothing was rewritten");
 });
+
+test("an oversized replay image is skipped, not the rest of its result", () => {
+  // Breaking on the first candidate that does not fit threw away three 1MB pictures
+  // sitting behind a 5MB one, which the backend could have replayed.
+  const newest = "N".repeat(9_000_000);
+  const oversized = "X".repeat(5_000_000);
+  const small = (tag: string) => tag.repeat(900_000);
+
+  const messages = [
+    {
+      role: "tool",
+      name: "mcp__s__old",
+      content:
+        "old" +
+        mcpImagesEnvelope([
+          { data: oversized, mimeType: "image/png" },
+          { data: small("a"), mimeType: "image/png" },
+          { data: small("b"), mimeType: "image/png" },
+        ]),
+    },
+    { role: "tool", name: "mcp__s__new", content: "new" + mcpImagesEnvelope([{ data: newest, mimeType: "image/png" }]) },
+  ];
+
+  const bounded = boundMcpImageEnvelopes(messages);
+  const older = splitMcpImages(bounded[0].content as string).images;
+
+  assert.ok(
+    !older.some((image) => image.data === oversized),
+    "the oversized candidate should not fit",
+  );
+  assert.equal(older.length, 2, "the two that DO fit must survive it");
+  const chars = bounded
+    .flatMap((m) => splitMcpImages(m.content as string).images)
+    .reduce((n, image) => n + image.data.length, 0);
+  assert.ok(chars <= MAX_TOTAL_MCP_IMAGE_CHARS, `${chars} characters uploaded`);
+});

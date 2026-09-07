@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import json as _json
 import sys
 from pathlib import Path
 
@@ -1441,3 +1442,83 @@ def test_the_local_loop_keeps_its_own_allowance_beside_an_attachment():
         if other is part
     )
     assert survived == len(attachments), "the loop's cap is still not the caller's"
+
+
+def test_an_unnamed_tool_result_is_judged_by_the_call_that_made_it():
+    """role="tool" carries no name in plain OpenAI (the field is optional) or in
+    anything translated from Anthropic, and an absent name is read as legacy MCP
+    history that may be trusted -- so any client tool whose output merely ends in a
+    valid envelope was promoted as image input."""
+    for tool, promotes in (("read_file", False), ("mcp__shot__capture", True)):
+        history = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {"name": tool, "arguments": "{}"},
+                    }
+                ],
+            },
+            # No "name" on the result, as the wire format allows.
+            {"role": "tool", "tool_call_id": "call_0", "content": _envelope("[1]", _image())},
+        ]
+
+        out = promote_history(history, vision = True)
+        parts = sum(
+            1
+            for message in out
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+            if part.get("type") == "image_url"
+        )
+        assert bool(parts) is promotes, f"{tool}: promoted={bool(parts)}"
+        # Either way the suffix comes off the text; only IMAGE input is gated.
+        assert mcp_images.SENTINEL not in _json.dumps(out)
+
+
+def test_the_note_reports_what_the_tool_returned_not_what_admission_allowed():
+    """The admission pass slices the candidates before promotion sees them, so
+    summing those made a 100-image result read as a handful -- the note describing
+    the admission pass rather than the tool, next to a result saying 100."""
+    history = [
+        {
+            "role": "tool",
+            "name": "mcp__s__shot",
+            "content": _envelope("[100 images returned]", *[_image() for _ in range(100)]),
+        }
+    ]
+
+    out = promote_history(history, vision = True)
+
+    note = next(
+        part["text"]
+        for message in out
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "text"
+    )
+    assert "of 100)" in note, note
+
+
+def test_the_caller_attachment_is_composited_on_the_way_to_the_worker():
+    """The server-tool path serialises the attachment to base64 for the worker. Plain
+    convert("RGB") kept whatever colour sat under the alpha, so a transparent
+    attachment whose background was never painted arrived black -- with its dark text
+    gone. The ordinary IPC path carries the PNG's alpha through untouched."""
+    import base64 as _b64
+    import io as _io
+
+    from PIL import Image
+
+    from routes.inference import _pil_to_png_b64
+
+    image = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+    image.putpixel((4, 4), (0, 0, 0, 255))
+
+    out = Image.open(_io.BytesIO(_b64.b64decode(_pil_to_png_b64(image))))
+
+    assert out.getpixel((0, 0)) == (255, 255, 255), "transparency flattened to black"
+    assert out.getpixel((4, 4)) == (0, 0, 0), "the drawn pixel was lost"

@@ -224,7 +224,7 @@ def png_payloads_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
     return [url.split(",", 1)[1] for url in _decoded_urls_per_result(results)]
 
 
-def _flattened(image):
+def flattened_rgb(image):
     """RGB with any transparency composited onto white, not simply dropped.
 
     ``convert("RGB")`` keeps whatever colour sits UNDER the alpha, and a tool that
@@ -269,7 +269,7 @@ def _png_data_url(data: str) -> str | None:
         if max(image.size) > MAX_IMAGE_EDGE:
             image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
-        _flattened(image).save(buffer, format = "PNG")
+        flattened_rgb(image).save(buffer, format = "PNG")
     except Exception:
         logger.debug("MCP image could not be decoded", exc_info = True)
         return None
@@ -580,6 +580,7 @@ def append_image_turn(
     per_result: bool = False,
     owned: "list | None" = None,
     reserve_caller_images: bool = False,
+    returned: "int | None" = None,
 ) -> None:
     """A user turn, not the ``role=tool`` result they came with: tool messages take
     no image parts, and local templates render tool content as a string.
@@ -591,7 +592,14 @@ def append_image_turn(
     parts = content_parts_per_result(images) if per_result else content_parts(images)
     if not parts:
         return
-    total = sum(len(result) for result in images) if per_result else len(images)
+    # What the TOOL returned. The caller passes it when the candidates it hands over
+    # have already been sliced by admission, since counting those would describe the
+    # admission pass rather than the result the note sits beside.
+    total = (
+        returned
+        if returned is not None
+        else (sum(len(result) for result in images) if per_result else len(images))
+    )
     if owned is not None:
         # Everything this loop has appended, across turns. The cap counts what the
         # tools returned and never a caller's own attachments, which admission has
@@ -856,8 +864,36 @@ def promote_history_local(
     return out, payloads
 
 
+def tool_names_by_call_id(messages: Sequence[dict]) -> dict:
+    """Which tool each result answers, read off the assistant call that made it.
+
+    A role="tool" message carries no ``name`` in plain OpenAI (the field is
+    optional) or in anything translated from Anthropic, and an absent name is read
+    below as legacy MCP history that may be trusted. Correlating the id is what lets
+    the mcp__ gate run at all on those wire formats -- without it any client tool
+    whose output merely ends in a valid envelope is promoted as image input.
+    """
+    names: dict = {}
+    for message in messages or ():
+        if not isinstance(message, dict):
+            continue
+        for call in message.get("tool_calls") or ():
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function")
+            call_id = call.get("id")
+            if isinstance(function, dict) and isinstance(call_id, str):
+                name = function.get("name")
+                if isinstance(name, str) and name:
+                    names[call_id] = name
+    return names
+
+
 def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[str], list[dict]]:
     out: list[dict] = []
+    # Resolved once for the whole conversation, so the provenance gate below works on
+    # every wire format rather than only the ones that happen to send ``name``.
+    call_names = tool_names_by_call_id(messages)
     # Resolved before a single decode runs: the trim at the bottom keeps the newest
     # eight, and decoding a whole replayed history to throw nearly all of it away is
     # work a caller's own message list gets to choose the size of.
@@ -866,6 +902,8 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
     # four images would otherwise share a single result's quota and replay only the
     # first call's four.
     pending: list[list[dict]] = []
+    # One per entry in *pending*: how many that result really returned.
+    returned_totals: list[int] = []
     payloads: list[str] = []
     # The exact part objects promotion creates, so the cap below can leave a
     # caller's own attachments alone.
@@ -874,11 +912,13 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
     def flush(into: "dict | None" = None) -> "dict | None":
         if not pending or not vision:
             pending.clear()
+            returned_totals.clear()
             return into
-        returned = sum(len(result) for result in pending)
+        returned = sum(returned_totals) or sum(len(result) for result in pending)
         if local:
             encoded = png_payloads_per_result(pending)
             pending.clear()
+            returned_totals.clear()
             if not encoded:
                 return into
             payloads.extend(encoded)
@@ -889,9 +929,12 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
             return _with_parts(into, markers)
         results = list(pending)
         pending.clear()
+        returned_totals.clear()
         if into is None:
             before = {id(part) for part in _all_image_url_parts(out)}
-            append_image_turn(out, results, per_result = True, limit = None)
+            append_image_turn(
+                out, results, per_result = True, limit = None, returned = returned
+            )
             promoted.extend(part for part in _all_image_url_parts(out) if id(part) not in before)
             return None
         parts = content_parts_per_result(results)
@@ -906,7 +949,7 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
             # must never read it as text. Provenance decides only whether it becomes
             # IMAGE input: a named non-MCP tool that happens to end in a valid
             # envelope is not one an MCP server served.
-            name = message.get("name")
+            name = message.get("name") or call_names.get(message.get("tool_call_id"))
             if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
                 out.append(
                     {**message, "content": text or "[image returned]"} if images else message
@@ -918,6 +961,11 @@ def _promote(messages, vision: bool, *, local: bool) -> tuple[list[dict], list[s
                 admitted = images[: eligible.get(position, len(images))]
                 if admitted:
                     pending.append(admitted)
+                    # What the TOOL returned, which the slice above has already lost.
+                    # Summing the admitted candidates instead made a 100-image result
+                    # read "(4 of 8)" beside a tool result saying 100 -- the note
+                    # describing the admission pass rather than the tool.
+                    returned_totals.append(len(images))
             out.append({**message, "content": text or "[image returned]"} if images else message)
             continue
         if pending and vision and message.get("role") == "user":
