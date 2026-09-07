@@ -3689,23 +3689,24 @@ def _tools_on_by_launcher_default_only(payload) -> bool:
     )
 
 
-def _tools_on_by_process_policy_only(payload) -> bool:
-    """True when tools are on only because the PROCESS says so: the request asked for none.
+def _request_states_no_tool_flag(payload) -> bool:
+    """True when the request set no tool flag of its own, so something else turned tools on.
 
-    The wider sibling of _tools_on_by_launcher_default_only, which reads the same request
-    fields but additionally insists the process installed no CLI override. That extra
-    condition is right where the question is "may the launcher default answer for this
-    request", and wrong where it is "can this caller be prompted at all": `unsloth studio
-    run --enable-tools` fills the override slot rather than the default one, so under it
-    every ordinary OpenAI stream -- `unsloth chat`'s own included -- states no tool intent,
-    inherits the full catalogue, and would be refused for a gate it never asked to open.
-    Which slot the operator used is not something the caller can see or act on, so it must
-    not decide whether the caller is served.
+    The wider sibling of _tools_on_by_launcher_default_only, which reads the same two
+    request fields but additionally insists the process installed no CLI override. That
+    extra condition is right where the question is "may the launcher DEFAULT answer for
+    this request", and wrong where it is "did this caller ask for anything the gate could
+    hold it to": `unsloth studio run --enable-tools` fills the override slot rather than
+    the default one, so under it every ordinary OpenAI stream -- `unsloth chat`'s own
+    included -- states no tool intent, inherits the full catalogue, and would be refused
+    for a gate it never asked to open. Which slot the operator used is not something the
+    caller can see or act on, so it must not decide whether the caller is served.
+
+    Named for what it tests rather than for the conclusion drawn from it: on a plain
+    `unsloth studio` process, where tools are on for nobody, this is still true.
     """
-    from state.tool_policy import get_tool_policy
     return (
-        get_tool_policy() is not False
-        and payload.enable_tools is None
+        payload.enable_tools is None
         and not getattr(payload, "mcp_enabled", False)
     )
 
@@ -4029,21 +4030,36 @@ def _confirm_gate_has_no_channel(
     way the loop itself defaults it, so an always-safe selection (deep research sends
     enabled_tools: []) passes. Non-streaming keeps the reading it has always had.
     """
-    if getattr(payload, "bypass_permissions", False):
-        return False
     if not getattr(payload, "stream", False):
         return _confirm_gate_needs_stream(payload)
     if ui_events:
         return False
-    if _tool_calls_are_disabled(payload):
-        return False
-    if _tools_on_by_process_policy_only(payload):
+    if _request_states_no_tool_flag(payload):
         # The request never asked for tools, so it cannot be asked to know about the
         # header either. `unsloth studio run` turns tools on for the process -- as a
         # default, or as an override under --enable-tools -- and refusing here would 400
         # every ordinary OpenAI request on that launcher, `unsloth chat`'s own included.
         # Tools are withdrawn for this caller instead (see _launcher_tool_default_applies),
-        # so the loop it could not be prompted for never opens.
+        # so the loop it could not be prompted for never opens. The external-provider
+        # sites never reach this line: both gate on _explicit_studio_tool_loop_requested,
+        # which is this predicate's exact complement.
+        return False
+    return _confirm_gate_would_prompt(payload, selected_names)
+
+
+def _confirm_gate_would_prompt(payload, selected_names = None) -> bool:
+    """Whether the confirm gate would actually stop and ask on this streaming request.
+
+    The one question behind both the refusal and the withdrawal, so that the two stay
+    complements of each other: a caller is refused only over a prompt that can really
+    fire, and only such a caller has the tools taken away instead. Tool calls must be
+    reachable at all, and an unset permission_mode is read as "auto", the way the loop
+    itself defaults it, so an always-safe selection (deep research sends enabled_tools:
+    []) and an explicit off/full both pass without ever being asked.
+    """
+    if getattr(payload, "bypass_permissions", False):
+        return False
+    if _tool_calls_are_disabled(payload):
         return False
     if getattr(payload, "permission_mode", None) is None:
         payload = _AutoPermissionMode(payload)
@@ -4051,7 +4067,7 @@ def _confirm_gate_has_no_channel(
 
 
 def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
-    """Whether the launcher's tools-on default still answers for this request.
+    """Whether a tools-on default the request did not ask for still answers it.
 
     It answers a request that said nothing about tools. A request that stated its own
     intent has already answered (the sibling rule at the safetensors and GGUF branches),
@@ -4059,12 +4075,20 @@ def _launcher_tool_default_applies(payload, ui_events: bool) -> bool:
     control frames, so running a default nobody asked for behind a gate nobody can
     answer would park the caller in wait_tool_decision on the first high-risk call.
     Plain chat is what such a request asked for and what it gets.
+
+    Withdrawn only from a stream the gate would really have stopped, which is what keeps
+    this the exact complement of the refusal above. A frameless caller that sent
+    permission_mode "off" or bypass_permissions is never asked anything, so it keeps the
+    tools the operator turned on: trading a refusal it would not have got for a silent
+    loss of capability would be the worse half of both.
     """
-    if not _tools_on_by_process_policy_only(payload):
+    if not _request_states_no_tool_flag(payload):
         return True
     if _request_states_tool_intent(payload):
         return False
-    return not (getattr(payload, "stream", False) and not ui_events)
+    if not (getattr(payload, "stream", False) and not ui_events):
+        return True
+    return not _confirm_gate_would_prompt(payload)
 
 
 def _reject_confirm_gate_without_channel(
@@ -19876,6 +19900,11 @@ async def _proxy_to_external_provider(
                                 yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             continue
                     yield f"{line}\n\n"
+                # The loop can end without opening the turn a withheld call promised, and
+                # the reason removed with that call was this stream's last one.
+                _owed = _tool_call_stripper.owed_terminal_chunk()
+                if _owed is not None:
+                    yield f"{_owed}\n\n"
                 yield "data: [DONE]\n\n"
             except asyncio.CancelledError:
                 raise
@@ -20208,6 +20237,13 @@ async def _proxy_to_external_provider(
                 # trusting it would append a second [DONE] after the provider's.
                 if _is_openai_sse_done(line):
                     sent_done = True
+            # The loop can end without opening the turn a withheld call promised, and the
+            # reason removed with that call was this stream's last one. Before [DONE], as
+            # the GGUF passthrough places its own synthetic finish.
+            _owed = _tool_call_stripper.owed_terminal_chunk()
+            if _owed is not None and not stream_failed:
+                _monitor_openai_sse_line(monitor_id, _owed)
+                yield f"{_owed}\n\n"
             if not sent_done:
                 if not stream_failed:
                     _monitor_openai_sse_line(monitor_id, "data: [DONE]")
@@ -28530,11 +28566,12 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
 
     _tools_on = bool(_effective_enable_tools(payload))
     # The launcher's default answers a request that said nothing about tools; one that
-    # stated its intent goes to the passthrough, not the tool loop.
-    if (
-        _tools_on
-        and _tools_on_by_launcher_default_only(payload)
-        and _request_states_tool_intent(payload)
+    # stated its intent goes to the passthrough, not the tool loop. Called rather than
+    # restated, so a count cannot price the tool_use branch of a template the completion
+    # renders plain: the same helper decides it at the safetensors and GGUF branches, and
+    # it now also withdraws the default from a stream the confirm gate could not prompt.
+    if _tools_on and not _launcher_tool_default_applies(
+        payload, _ui_stream_events_enabled(request)
     ):
         _tools_on = False
     _mcp_on = bool(getattr(payload, "mcp_enabled", False)) and _get_tool_policy_mlx() is not False

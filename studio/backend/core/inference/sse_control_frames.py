@@ -220,7 +220,12 @@ def strip_server_executed_tool_call(line: str, pending_call: bool = False) -> st
 
 
 def _line_offers_tool_call(line: str) -> bool:
-    """Whether this line carries a ``tool_calls`` fragment at all."""
+    """Whether this line carries a ``tool_calls`` fragment at all.
+
+    Keyed on the key being present, not on it being truthy, so it reads the same
+    condition the strip itself does: a line whose only evidence is an empty list is
+    still stripped, and the two must not disagree about whether a call was withheld.
+    """
     payload = _sse_payload(line)
     choices = payload.get("choices") if payload else None
     if not isinstance(choices, list):
@@ -230,7 +235,7 @@ def _line_offers_tool_call(line: str) -> bool:
             continue
         for src_key in ("delta", "message"):
             src = choice.get(src_key)
-            if isinstance(src, dict) and src.get("tool_calls"):
+            if isinstance(src, dict) and "tool_calls" in src:
                 return True
     return False
 
@@ -248,21 +253,68 @@ class ServerToolCallStripper:
     So remember, per stream, that a call was withheld and no reply has followed it, and
     treat the "stop" that closes that turn the way "tool_calls" is already treated. The
     next turn opens with the flag clear, so its own finish_reason is relayed untouched.
+
+    The flag is raised BEFORE the strip reads it, because a provider may co-emit the call
+    and the finish_reason on one line (any non-streamed upstream relayed as a single line
+    does), and the turn boundary is read on every line, because that same line both opens
+    and closes the turn. Getting either wrong leaks the empty "stop" this exists to hold
+    back, or swallows a later turn's legitimate one.
+
+    Blanking the last finish_reason of a stream would leave the caller none at all --
+    openai-node raises "missing finish_reason for choice 0" outright -- so the withheld
+    ones are counted and ``owed_terminal_chunk`` mints a replacement when the loop ends
+    without opening the turn it promised (a spent tool budget, a discarded call, a
+    provider that failed mid-loop).
+
+    One instance per request. The state is per line, not per choice index, which is exact
+    here because the loop reads choice 0 only and this path rejects n > 1 upstream.
     """
 
     def __init__(self) -> None:
         self._pending_call = False
+        self._owes_finish = False
+        self._last_envelope: dict[str, Any] | None = None
 
     def strip(self, line: str) -> str | None:
-        offers_call = _line_offers_tool_call(line)
-        out = strip_server_executed_tool_call(line, pending_call = self._pending_call)
-        if offers_call:
-            self._pending_call = True
-        elif self._pending_call and _line_ends_turn(line):
-            # The turn the withheld call belonged to has closed. Whatever the loop does
-            # next opens a turn of its own, whose finish_reason is the caller's to read.
-            self._pending_call = False
+        pending = self._pending_call or _line_offers_tool_call(line)
+        out = strip_server_executed_tool_call(line, pending_call = pending)
+        ends_turn = _line_ends_turn(line)
+        # The turn the withheld call belonged to has closed. Whatever the loop does next
+        # opens a turn of its own, whose finish_reason is the caller's to read.
+        self._pending_call = pending and not ends_turn
+        if ends_turn:
+            # Owed while the reason we removed has not been replaced by a relayed one.
+            self._owes_finish = not (out is not None and _line_ends_turn(out))
+        self._remember_envelope(line)
         return out
+
+    def _remember_envelope(self, line: str) -> None:
+        """Keep the last chunk's identity, so a minted finish matches the stream."""
+        payload = _sse_payload(line)
+        if not payload or "choices" not in payload:
+            return
+        envelope = {
+            key: payload[key]
+            for key in ("id", "object", "created", "model")
+            if key in payload
+        }
+        if envelope:
+            self._last_envelope = envelope
+
+    def owed_terminal_chunk(self) -> str | None:
+        """A finish chunk to send before [DONE], or None when the caller already has one.
+
+        finish_reason is a required key in the OpenAI chunk schema, so a stream that ends
+        without one is not merely unhelpful: openai-node raises, and openai-python hands
+        back a parsed completion whose finish_reason is None in a field its own type
+        declares non-nullable. Mirrors the GGUF passthrough's _synthetic_finish_line.
+        """
+        if not self._owes_finish:
+            return None
+        self._owes_finish = False
+        payload = dict(self._last_envelope or {})
+        payload["choices"] = [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+        return "data: " + json.dumps(payload, separators = (",", ":"))
 
 
 def _line_ends_turn(line: str) -> bool:

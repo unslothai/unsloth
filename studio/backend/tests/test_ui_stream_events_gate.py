@@ -418,6 +418,67 @@ def test_a_stop_the_loop_will_not_run_past_stays_final():
         assert json.loads(stripper.strip(end)[5:])["choices"][0]["finish_reason"] == reason
 
 
+def _call_chunk(delta, finish = None):
+    return "data: " + json.dumps({
+        "id": "x", "object": "chat.completion.chunk", "created": 1, "model": "m",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    })
+
+
+_ONE_CALL = [{"index": 0, "id": "c1", "type": "function",
+              "function": {"name": "python", "arguments": "{}"}}]
+
+
+def test_a_call_co_emitted_with_its_finish_reason_is_still_held_back():
+    # A provider may put the call and the reason that ends its turn on ONE line -- any
+    # non-streamed upstream relayed as a single line does. The withheld-call flag has to
+    # be raised before the strip reads it, or this leaks the exact empty "stop" chunk the
+    # gate exists to prevent, and then eats the real one that follows.
+    for reason in ("stop", "tool_calls"):
+        stripper = ServerToolCallStripper()
+        assert stripper.strip(_call_chunk({"tool_calls": _ONE_CALL}, reason)) is None
+        answer = _call_chunk({"content": "56088"})
+        assert json.loads(stripper.strip(answer)[5:])["choices"][0]["delta"]["content"] == "56088"
+        # The loop's own turn ends normally, and that reason is the caller's to read.
+        end = _call_chunk({}, "stop")
+        assert json.loads(stripper.strip(end)[5:])["choices"][0]["finish_reason"] == "stop"
+        assert stripper.owed_terminal_chunk() is None
+
+
+def test_a_withheld_call_the_loop_never_runs_still_ends_the_stream():
+    # The loop can close without opening the turn a withheld call promised: a spent tool
+    # budget, a discarded or unparsable call, a provider that failed mid-loop. The reason
+    # removed with that call was then this stream's last one, and finish_reason is a
+    # required key -- openai-node raises "missing finish_reason for choice 0" outright.
+    stripper = ServerToolCallStripper()
+    assert stripper.strip(_call_chunk({"tool_calls": _ONE_CALL})) is None
+    assert stripper.strip(_call_chunk({}, "stop")) is None
+    owed = stripper.owed_terminal_chunk()
+    assert owed is not None
+    payload = json.loads(owed[5:])
+    assert payload["choices"][0]["finish_reason"] == "stop"
+    # Minted in the stream's own envelope, not a bare choices list.
+    assert payload["object"] == "chat.completion.chunk"
+    assert (payload["id"], payload["model"]) == ("x", "m")
+    # Owed once, not on every later poll.
+    assert stripper.owed_terminal_chunk() is None
+
+
+def test_an_empty_tool_calls_entry_counts_as_a_withheld_call():
+    # The strip removes the key whether or not it is truthy, so the flag must read the
+    # same condition; otherwise the line is dropped without arming the turn and the
+    # following "stop" leaks.
+    stripper = ServerToolCallStripper()
+    stripper.strip(_call_chunk({"tool_calls": []}))
+    assert stripper.strip(_call_chunk({}, "stop")) is None
+
+
+def test_both_relays_send_a_finish_the_stripper_still_owes():
+    # A blanked terminal reason is only safe if something replaces it before [DONE].
+    src = inspect.getsource(_proxy_to_external_provider)
+    assert src.count("_tool_call_stripper.owed_terminal_chunk()") == 2
+
+
 def test_a_turn_with_no_withheld_call_keeps_its_own_stop():
     # The state is per turn, not per stream: an ordinary turn must be relayed untouched.
     stripper = ServerToolCallStripper()
