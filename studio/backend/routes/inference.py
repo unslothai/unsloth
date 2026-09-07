@@ -19861,7 +19861,11 @@ def _user_ordinal_supplying_the_image(messages: list) -> Optional[int]:
     return ordinal
 
 
-def _mark_image_owner_turn(messages: list, ordinal: int, marked_at: "list | None" = None) -> list:
+def _mark_image_owner_turn(
+    messages: list,
+    ordinal: int,
+    marked_at: "list | None" = None,
+) -> list:
     """Give the *ordinal*-th user turn a structured image part ahead of its text: the
     renderers attach it to the newest turn unless one already carries it.
 
